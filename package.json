@@ -10,7 +10,9 @@
     "build:server": "tsc",
     "build:ui": "node ui/esbuild.config.js",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "tauri": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -24,6 +26,7 @@
     "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.10.0",
     "@testing-library/preact": "^3.2.3",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
