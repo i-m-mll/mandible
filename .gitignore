@@ -5,3 +5,4 @@ vendor/
 *.db-wal
 *.db-shm
 target/
+worktrees/
