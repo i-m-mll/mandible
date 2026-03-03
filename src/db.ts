@@ -1,0 +1,544 @@
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { compressContent } from "./compression.js";
+
+export type Db = Database.Database;
+
+const DEFAULT_CACHE_DIR = path.join(os.homedir(), ".cache", "mandible");
+const DEFAULT_DB_PATH = path.join(DEFAULT_CACHE_DIR, "mandible.db");
+const SCHEMA_VERSION_KEY = "schema_version";
+
+interface Migration {
+  version: number;
+  name: string;
+  statements: string[];
+}
+
+const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    name: "init",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS sessions (
+        id            TEXT PRIMARY KEY,
+        app           TEXT NOT NULL,
+        parent_id     TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+        status        TEXT NOT NULL DEFAULT 'active',
+        pid           INTEGER,
+        pid_start     TEXT,
+        cwd           TEXT,
+        branch        TEXT,
+        worktree      TEXT,
+        task          TEXT,
+        terminal      TEXT,
+        multiplexer   TEXT,
+        nav_session   TEXT,
+        nav_tab       TEXT,
+        nav_pane_id   TEXT,
+        nav_extra     TEXT,
+        agent_type    TEXT,
+        description   TEXT,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        ended_at      TEXT,
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      `CREATE INDEX IF NOT EXISTS sessions_parent_idx ON sessions(parent_id)`,
+      `CREATE INDEX IF NOT EXISTS sessions_status_idx ON sessions(status)`,
+      `CREATE INDEX IF NOT EXISTS sessions_app_idx ON sessions(app)`,
+      `CREATE TABLE IF NOT EXISTS auth_requests (
+        id            TEXT PRIMARY KEY,
+        session_id    TEXT,
+        command       TEXT NOT NULL,
+        title         TEXT NOT NULL,
+        cwd           TEXT,
+        diff_summary  TEXT,
+        spec_content  TEXT,
+        status        TEXT NOT NULL DEFAULT 'pending',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        approved_at   INTEGER,
+        resolved_at   INTEGER,
+        skipped_at    INTEGER,
+        expires_at    INTEGER NOT NULL,
+        exit_code     INTEGER,
+        output        TEXT NOT NULL DEFAULT '',
+        error         TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_requests_status_created
+        ON auth_requests(status, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_requests_queue
+        ON auth_requests(status, skipped_at, created_at)`,
+      `CREATE TABLE IF NOT EXISTS branches (
+        repo_root     TEXT NOT NULL,
+        branch        TEXT NOT NULL,
+        is_current    INTEGER NOT NULL DEFAULT 0,
+        is_worktree   INTEGER DEFAULT 0,
+        worktree_path TEXT,
+        is_dirty      INTEGER DEFAULT 0,
+        ahead         INTEGER DEFAULT 0,
+        behind        INTEGER DEFAULT 0,
+        last_commit_hash    TEXT,
+        last_commit_message TEXT,
+        last_commit_author  TEXT,
+        last_commit_date    TEXT,
+        diff_stat     TEXT,
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (repo_root, branch)
+      )`
+    ]
+  },
+  {
+    version: 2,
+    name: "session_nav_metadata_status",
+    statements: [
+      `ALTER TABLE sessions ADD COLUMN nav_metadata_status TEXT NOT NULL DEFAULT 'not_applicable'`,
+      `ALTER TABLE sessions ADD COLUMN nav_metadata_attempts INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE sessions ADD COLUMN nav_metadata_last_error TEXT`,
+      `ALTER TABLE sessions ADD COLUMN nav_metadata_last_attempt_at TEXT`,
+      `ALTER TABLE sessions ADD COLUMN nav_metadata_next_retry_at TEXT`,
+      `CREATE INDEX IF NOT EXISTS sessions_nav_metadata_idx
+        ON sessions(nav_metadata_status, nav_metadata_next_retry_at)`
+    ]
+  },
+  {
+    version: 3,
+    name: "auth_request_git_context",
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN repo TEXT`,
+      `ALTER TABLE auth_requests ADD COLUMN base_branch TEXT`,
+      `ALTER TABLE auth_requests ADD COLUMN head_branch TEXT`,
+      `ALTER TABLE auth_requests ADD COLUMN files_changed INTEGER DEFAULT 0`,
+      `ALTER TABLE auth_requests ADD COLUMN additions INTEGER DEFAULT 0`,
+      `ALTER TABLE auth_requests ADD COLUMN deletions INTEGER DEFAULT 0`,
+      `ALTER TABLE auth_requests ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'daemon'`
+    ]
+  },
+  {
+    version: 4,
+    name: "auth_request_commit_message",
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN commit_message TEXT`
+    ]
+  },
+  {
+    version: 5,
+    name: "auth_request_execution_tracking",
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN last_executed_at INTEGER`
+    ]
+  },
+  {
+    version: 6,
+    name: "cleanup_stuck_approved",
+    statements: [
+      `UPDATE auth_requests SET status = 'dismissed', resolved_at = CAST(strftime('%s','now') * 1000 AS INTEGER), error = 'Cleaned up: stuck in approved state (pre-cwd-fix orphan)' WHERE status = 'approved' AND exit_code IS NULL AND created_at < CAST((strftime('%s','now') - 86400) * 1000 AS INTEGER)`
+    ]
+  },
+  {
+    version: 7,
+    name: "session_issues",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS session_issues (
+        session_id  TEXT NOT NULL,
+        issue_id    TEXT NOT NULL,
+        repo_id     TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (session_id, issue_id, repo_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_session_issues_session
+        ON session_issues(session_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_session_issues_issue
+        ON session_issues(issue_id, repo_id)`,
+    ],
+  },
+  {
+    version: 8,
+    name: "starred_chats",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS starred_chats (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        label TEXT NOT NULL,
+        notes TEXT,
+        transcript_path TEXT,
+        cwd TEXT,
+        branch TEXT,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_starred_chats_created
+        ON starred_chats(created_at)`
+    ]
+  },
+  {
+    version: 9,
+    name: "session_continuation",
+    statements: [
+      `ALTER TABLE sessions ADD COLUMN continuation TEXT`,
+      `ALTER TABLE sessions ADD COLUMN continuation_acked_by TEXT`
+    ]
+  },
+  {
+    version: 10,
+    name: "auth_request_acknowledged_by",
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN acknowledged_by TEXT`
+    ]
+  },
+  {
+    version: 11,
+    name: "settings",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('protected_branches', 'main,develop', CAST(strftime('%s','now') * 1000 AS INTEGER))`
+    ]
+  },
+  {
+    version: 12,
+    name: "branch_ahead_behind_default",
+    statements: [
+      `ALTER TABLE branches ADD COLUMN ahead_default INTEGER DEFAULT 0`,
+      `ALTER TABLE branches ADD COLUMN behind_default INTEGER DEFAULT 0`,
+      `ALTER TABLE branches ADD COLUMN default_branch TEXT DEFAULT ''`
+    ]
+  },
+  {
+    version: 13,
+    name: "session_projects",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS session_projects (
+        session_id TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        repo_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, repo_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_session_projects_session
+        ON session_projects(session_id)`
+    ]
+  },
+  {
+    version: 14,
+    name: "setting_subagent_panes_default",
+    statements: [
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('subagent_panes_enabled', 'false', CAST(strftime('%s','now') * 1000 AS INTEGER))`
+    ]
+  },
+  {
+    version: 15,
+    name: "settings_expansion_defaults",
+    statements: [
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('claude_notifications_enabled', 'true', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('codex_notifications_enabled', 'true', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('notification_sound', 'Blow', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('quiet_hours', '', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('reaper_enabled', 'true', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('reaper_claude_idle_minutes', '30', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('reaper_codex_idle_minutes', '45', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('reaper_dry_run', 'false', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('reaper_cleanup_orphan_mcps', 'true', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('pretool_hooks_enabled', 'true', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('log_retention_days', '7', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('theme', 'catppuccin-mocha', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('prompt', 'powerlevel10k', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('multiplexer', 'both', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+    ]
+  },
+  {
+    version: 16,
+    name: "conversations",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL CHECK(source IN ('claude_code', 'codex', 'gemini')),
+        source_path TEXT NOT NULL,
+        source_hash TEXT NOT NULL,
+        source_mtime INTEGER NOT NULL,
+        title TEXT NOT NULL DEFAULT '',
+        summary TEXT,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        block_count INTEGER NOT NULL DEFAULT 0,
+        session_id TEXT NOT NULL,
+        project_path TEXT,
+        cwd TEXT,
+        branch TEXT,
+        model TEXT,
+        cli_version TEXT,
+        starred INTEGER NOT NULL DEFAULT 0,
+        label TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_conv_source ON conversations(source)`,
+      `CREATE INDEX IF NOT EXISTS idx_conv_started ON conversations(started_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_conv_starred ON conversations(starred) WHERE starred = 1`,
+      `CREATE INDEX IF NOT EXISTS idx_conv_session ON conversations(session_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_conv_source_path ON conversations(source_path)`,
+      `CREATE TABLE IF NOT EXISTS conversation_blocks (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        position INTEGER NOT NULL,
+        timestamp TEXT,
+        parent_id TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        UNIQUE(conversation_id, position)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_blocks_conv ON conversation_blocks(conversation_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_blocks_type ON conversation_blocks(conversation_id, type)`,
+      `CREATE INDEX IF NOT EXISTS idx_blocks_parent ON conversation_blocks(parent_id) WHERE parent_id IS NOT NULL`,
+      // Migrate starred_chats data into conversations table
+      `INSERT OR IGNORE INTO conversations (id, source, source_path, source_hash, source_mtime, title, summary, started_at, session_id, starred, label, notes, created_at, updated_at)
+       SELECT 'migrated:' || id, 'claude_code', COALESCE(transcript_path, ''), '', 0,
+              COALESCE(label, 'Starred Chat'), notes, created_at, COALESCE(session_id, id),
+              1, label, notes, created_at, created_at
+       FROM starred_chats`,
+    ]
+  },
+  {
+    version: 17,
+    name: "setting_auto_close_issues_on_merge",
+    statements: [
+      `INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES ('auto_close_issues_on_merge', 'true', CAST(strftime('%s','now') * 1000 AS INTEGER))`
+    ]
+  },
+  {
+    version: 18,
+    name: "conversation_parent_linkage",
+    statements: [
+      `ALTER TABLE conversations ADD COLUMN parent_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_conv_parent ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL`,
+      // Backfill: link conversations whose session has a parent session that also has a conversation
+      `UPDATE conversations SET parent_conversation_id = (
+        SELECT c2.id FROM sessions s1
+        JOIN sessions s2 ON s1.parent_id = s2.id
+        JOIN conversations c2 ON c2.session_id = s2.id
+        WHERE s1.id = conversations.session_id
+        LIMIT 1
+      ) WHERE parent_conversation_id IS NULL`,
+    ]
+  },
+  {
+    version: 19,
+    name: "compress_conversation_blocks",
+    statements: [
+      // Bug: e5a945d — add compressed flag; data migration runs post-DDL
+      `ALTER TABLE conversation_blocks ADD COLUMN compressed INTEGER NOT NULL DEFAULT 0`,
+    ]
+  },
+  {
+    version: 20,
+    name: "session_pinned",
+    statements: [
+      // Bug: 568eca7 — pin visibility & actions for Agent Registry UI
+      `ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0`,
+    ]
+  },
+  {
+    version: 21,
+    name: "console_sessions",
+    // Bug: e980dd8 — console tab PTY session management
+    statements: [
+      `CREATE TABLE IF NOT EXISTS console_sessions (
+        id            TEXT PRIMARY KEY,
+        label         TEXT NOT NULL,
+        command       TEXT NOT NULL,
+        args_json     TEXT NOT NULL DEFAULT '[]',
+        cwd           TEXT,
+        env_json      TEXT NOT NULL DEFAULT '{}',
+        cols          INTEGER NOT NULL DEFAULT 120,
+        rows          INTEGER NOT NULL DEFAULT 30,
+        status        TEXT NOT NULL DEFAULT 'stopped',
+        pid           INTEGER,
+        exit_code     INTEGER,
+        auto_restart  INTEGER NOT NULL DEFAULT 0,
+        is_operator   INTEGER NOT NULL DEFAULT 0,
+        interaction_mode TEXT NOT NULL DEFAULT 'both',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        started_at    INTEGER,
+        stopped_at    INTEGER
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_console_sessions_status
+         ON console_sessions(status)`,
+      `CREATE INDEX IF NOT EXISTS idx_console_sessions_operator
+         ON console_sessions(is_operator) WHERE is_operator = 1`
+    ]
+  },
+  {
+    version: 22,
+    name: "console_pinned_sessions_setting",
+    // Bug: e980dd8 — console tab pinned sessions and operator session settings
+    statements: [
+      `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('console_pinned_sessions', '[]',
+               CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('console_operator_session_id', '',
+               CAST(strftime('%s','now') * 1000 AS INTEGER))`
+    ]
+  },
+  {
+    version: 23,
+    name: "session_last_active",
+    // Bug: e01653d — track real user activity time from JSONL transcript mtime
+    statements: [
+      `ALTER TABLE sessions ADD COLUMN last_active TEXT`
+    ]
+  }
+];
+
+export function getDbPath(): string {
+  return process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH;
+}
+
+export function openDb(dbPath: string = getDbPath()): Db {
+  // Bug: 727a44b — one-time migration from control-plane to mandible cache dir.
+  // If the mandible DB doesn't exist yet but the old control-plane DB does, copy it.
+  if (!fs.existsSync(dbPath)) {
+    const oldPath = path.join(os.homedir(), ".cache", "control-plane", "control-plane.db");
+    if (fs.existsSync(oldPath)) {
+      ensureDir(path.dirname(dbPath));
+      try {
+        fs.copyFileSync(oldPath, dbPath);
+        // Also copy WAL/SHM if present (preserves in-progress transactions)
+        for (const ext of ["-wal", "-shm"]) {
+          if (fs.existsSync(oldPath + ext)) {
+            fs.copyFileSync(oldPath + ext, dbPath + ext);
+          }
+        }
+      } catch {
+        // Non-fatal: if copy fails, start fresh
+      }
+    }
+  }
+
+  ensureDir(path.dirname(dbPath));
+  const db = new Database(dbPath);
+  db.pragma("journal_mode = WAL");
+  migrate(db);
+  return db;
+}
+
+export function migrate(db: Db): void {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`
+  );
+
+  const currentVersion = getSchemaVersion(db);
+  const pending = MIGRATIONS.filter((migration) => migration.version > currentVersion);
+
+  if (pending.length === 0) {
+    return;
+  }
+
+  const apply = db.transaction(() => {
+    for (const migration of pending) {
+      for (const statement of migration.statements) {
+        db.exec(statement);
+      }
+      setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
+    }
+  });
+
+  apply();
+
+  // Run post-DDL data migrations that require Node.js logic.
+  // Bug: e5a945d — batch-compress existing uncompressed content
+  if (pending.some((m) => m.version === 19)) {
+    compressExistingBlocks(db);
+  }
+}
+
+// --- Singleton accessor for partition code ---
+
+let _db: Db | null = null;
+
+export function getDb(dbPath?: string): Db {
+  if (!_db) {
+    _db = openDb(dbPath);
+  }
+  return _db;
+}
+
+export function setDb(db: Db): void {
+  _db = db;
+}
+
+/**
+ * Batch-compress all uncompressed conversation_blocks rows.
+ * Runs in batches of 500 to avoid holding a long write-lock.
+ * Idempotent: only touches rows where compressed=0.
+ * Bug: e5a945d
+ */
+function compressExistingBlocks(db: Db): void {
+  const BATCH_SIZE = 500;
+  const selectBatch = db.prepare(
+    "SELECT id, content FROM conversation_blocks WHERE compressed = 0 LIMIT ?"
+  );
+  const updateRow = db.prepare(
+    "UPDATE conversation_blocks SET content = ?, compressed = 1 WHERE id = ?"
+  );
+
+  let totalCompressed = 0;
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const rows = selectBatch.all(BATCH_SIZE) as Array<{ id: string; content: string }>;
+    if (rows.length === 0) break;
+
+    const batchUpdate = db.transaction(() => {
+      for (const row of rows) {
+        const compressed = compressContent(row.content);
+        updateRow.run(compressed, row.id);
+      }
+    });
+
+    batchUpdate();
+    totalCompressed += rows.length;
+  }
+
+  if (totalCompressed > 0) {
+    // Log to stderr so daemon startup shows the migration result
+    console.error(`[db] Compressed ${totalCompressed} conversation blocks`);
+  }
+}
+
+function getSchemaVersion(db: Db): number {
+  const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(SCHEMA_VERSION_KEY) as
+    | { value: string }
+    | undefined;
+  if (!row) {
+    return 0;
+  }
+  const version = Number(row.value);
+  return Number.isFinite(version) ? version : 0;
+}
+
+function setMeta(db: Db, key: string, value: string): void {
+  db.prepare(
+    "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(key, value);
+}
+
+function ensureDir(dir: string): void {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+}

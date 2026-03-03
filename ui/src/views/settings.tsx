@@ -1,0 +1,700 @@
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { getBackupStatus, runBackupNow, updateBackupSettings, type BackupStatus } from '../api';
+
+export type SettingsViewProps = {
+  settings: Record<string, string>;
+  onSave: (key: string, value: string) => Promise<void>;
+};
+
+type FeedbackState = {
+  type: 'success' | 'error';
+  message: string;
+} | null;
+
+const SOUNDS = ['Blow', 'Glass', 'Ping', 'Pop', 'Purr', 'Sosumi', 'Submarine', 'Tink'];
+const THEMES = [
+  'catppuccin-mocha',
+  'catppuccin-macchiato',
+  'catppuccin-frappe',
+  'catppuccin-latte',
+  'tokyo-night',
+  'gruvbox',
+  'nord',
+];
+const PROMPTS = ['powerlevel10k', 'starship'];
+const MULTIPLEXERS = ['zellij', 'tmux', 'both', 'none'];
+
+function Toggle(props: {
+  enabled: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={
+        'settings-view__toggle' + (props.enabled ? ' settings-view__toggle--on' : '')
+      }
+      onClick={props.onToggle}
+      disabled={props.disabled}
+      role="switch"
+      aria-checked={props.enabled}
+      aria-label={props.label}
+    >
+      <span className="settings-view__toggle-knob" />
+    </button>
+  );
+}
+
+function ToggleRow(props: {
+  title: string;
+  desc: string;
+  settingKey: string;
+  settings: Record<string, string>;
+  onSave: (key: string, value: string) => Promise<void>;
+  warning?: string;
+}) {
+  const [toggling, setToggling] = useState(false);
+  const enabled = props.settings[props.settingKey] === 'true';
+
+  const handleToggle = useCallback(async () => {
+    setToggling(true);
+    try {
+      await props.onSave(props.settingKey, enabled ? 'false' : 'true');
+    } catch {
+      // ignore
+    } finally {
+      setToggling(false);
+    }
+  }, [enabled, props.onSave, props.settingKey]);
+
+  return (
+    <div className="settings-view__toggle-row">
+      <div className="settings-view__toggle-info">
+        <h3 className="settings-view__section-title">{props.title}</h3>
+        <p className="settings-view__section-desc">{props.desc}</p>
+        {props.warning && !enabled && (
+          <p className="settings-view__warning">{props.warning}</p>
+        )}
+      </div>
+      <Toggle enabled={enabled} onToggle={handleToggle} disabled={toggling} label={`Toggle ${props.title}`} />
+    </div>
+  );
+}
+
+function NumberInput(props: {
+  label: string;
+  desc: string;
+  settingKey: string;
+  settings: Record<string, string>;
+  onSave: (key: string, value: string) => Promise<void>;
+  min?: number;
+  max?: number;
+  suffix?: string;
+}) {
+  const [value, setValue] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<FeedbackState>(null);
+  const feedbackTimer = useRef<number | null>(null);
+  const initialized = useRef(false);
+
+  useEffect(() => {
+    const incoming = props.settings[props.settingKey];
+    if (typeof incoming === 'string' && !initialized.current) {
+      setValue(incoming);
+      initialized.current = true;
+    }
+  }, [props.settings[props.settingKey]]);
+
+  const showFeedback = useCallback((state: FeedbackState) => {
+    if (feedbackTimer.current != null) window.clearTimeout(feedbackTimer.current);
+    setFeedback(state);
+    if (state) {
+      feedbackTimer.current = window.setTimeout(() => {
+        setFeedback(null);
+        feedbackTimer.current = null;
+      }, 3000);
+    }
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    try {
+      await props.onSave(props.settingKey, value);
+      showFeedback({ type: 'success', message: 'Saved' });
+    } catch (err) {
+      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
+    } finally {
+      setSaving(false);
+    }
+  }, [value, props.onSave, props.settingKey, showFeedback]);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void handleSave();
+  }, [handleSave]);
+
+  return (
+    <div className="settings-view__number-row">
+      <div className="settings-view__number-info">
+        <span className="settings-view__number-label">{props.label}</span>
+        {props.desc && <span className="settings-view__number-desc">{props.desc}</span>}
+      </div>
+      <div className="settings-view__number-controls">
+        <input
+          type="number"
+          className="settings-view__number-input"
+          value={value}
+          onInput={(e) => setValue((e.target as HTMLInputElement).value)}
+          onKeyDown={handleKeyDown}
+          min={props.min}
+          max={props.max}
+          disabled={saving}
+        />
+        {props.suffix && <span className="settings-view__number-suffix">{props.suffix}</span>}
+        <button type="button" className="btn btn--active btn--sm" onClick={handleSave} disabled={saving}>
+          {saving ? '...' : 'Save'}
+        </button>
+        {feedback && (
+          <span className={feedback.type === 'success' ? 'settings-view__feedback settings-view__feedback--success' : 'settings-view__feedback settings-view__feedback--error'}>
+            {feedback.message}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SelectInput(props: {
+  label: string;
+  desc: string;
+  settingKey: string;
+  settings: Record<string, string>;
+  onSave: (key: string, value: string) => Promise<void>;
+  options: string[];
+  requiresRestart?: boolean;
+}) {
+  const [saving, setSaving] = useState(false);
+  const current = props.settings[props.settingKey] ?? props.options[0];
+
+  const handleChange = useCallback(async (e: Event) => {
+    const newValue = (e.target as HTMLSelectElement).value;
+    setSaving(true);
+    try {
+      await props.onSave(props.settingKey, newValue);
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  }, [props.onSave, props.settingKey]);
+
+  return (
+    <div className="settings-view__select-row">
+      <div className="settings-view__select-info">
+        <span className="settings-view__select-label">{props.label}</span>
+        {props.desc && <span className="settings-view__select-desc">{props.desc}</span>}
+        {props.requiresRestart && (
+          <span className="settings-view__badge--restart">shell restart</span>
+        )}
+      </div>
+      <select
+        className="settings-view__select"
+        value={current}
+        onChange={handleChange}
+        disabled={saving}
+      >
+        {props.options.map((opt) => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function formatRelativeTime(ts: number): string {
+  const diffMs = Date.now() - ts;
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return 'just now';
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} minute${diffMin === 1 ? '' : 's'} ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr} hour${diffHr === 1 ? '' : 's'} ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay} day${diffDay === 1 ? '' : 's'} ago`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(1)} MB`;
+}
+
+function BackupSection(): JSX.Element {
+  const [status, setStatus] = useState<BackupStatus | null>(null);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [toggling, setToggling] = useState(false);
+
+  useEffect(() => {
+    getBackupStatus().then(setStatus).catch(() => {});
+  }, []);
+
+  const handleToggle = useCallback(async () => {
+    if (!status) return;
+    setToggling(true);
+    try {
+      const newEnabled = !status.enabled;
+      await updateBackupSettings({ enabled: newEnabled });
+      setStatus((prev) => prev ? { ...prev, enabled: newEnabled } : prev);
+    } catch {
+      // ignore
+    } finally {
+      setToggling(false);
+    }
+  }, [status]);
+
+  const handleIntervalChange = useCallback(async (e: Event) => {
+    const hours = parseInt((e.target as HTMLSelectElement).value, 10);
+    if (!Number.isFinite(hours)) return;
+    try {
+      await updateBackupSettings({ interval_hours: hours });
+      setStatus((prev) => prev ? { ...prev, interval_hours: hours } : prev);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleRunNow = useCallback(async () => {
+    setRunning(true);
+    setRunError(null);
+    try {
+      const result = await runBackupNow();
+      if (result.ok) {
+        // Refresh status to get updated last_run_at / last_size_bytes
+        const updated = await getBackupStatus();
+        setStatus(updated);
+      } else {
+        setRunError(result.error ?? 'Backup failed');
+      }
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : 'Backup failed');
+    } finally {
+      setRunning(false);
+    }
+  }, []);
+
+  const enabled = status?.enabled ?? true;
+
+  return (
+    <div className="settings-view__section">
+      <div className="settings-view__section-header">
+        <h3 className="settings-view__section-title">Backup</h3>
+        <p className="settings-view__section-desc">
+          Automatic metadata dump to private/backups/.
+        </p>
+      </div>
+
+      <div className="settings-view__section-body">
+        {/* Toggle row */}
+        <div className="settings-view__toggle-row">
+          <div className="settings-view__toggle-info">
+            <h3 className="settings-view__section-title">Automatic backup</h3>
+            <p className="settings-view__section-desc">Run mandible-backup on a schedule.</p>
+          </div>
+          <Toggle
+            enabled={enabled}
+            onToggle={handleToggle}
+            disabled={toggling || status === null}
+            label="Toggle automatic backup"
+          />
+        </div>
+
+        {/* Interval selector — only shown when enabled */}
+        {enabled && (
+          <div className="settings-view__select-row">
+            <div className="settings-view__select-info">
+              <span className="settings-view__select-label">Interval</span>
+            </div>
+            <select
+              className="settings-view__select"
+              value={status?.interval_hours ?? 6}
+              onChange={handleIntervalChange}
+            >
+              <option value={6}>6h</option>
+              <option value={12}>12h</option>
+              <option value={24}>24h</option>
+            </select>
+          </div>
+        )}
+
+        {/* Status row */}
+        <div className="settings-view__number-row">
+          <div className="settings-view__number-info">
+            <span className="settings-view__number-label">Last backup</span>
+          </div>
+          <div className="settings-view__number-controls">
+            {status === null ? (
+              <span className="text-muted">Loading...</span>
+            ) : status.last_run_at ? (
+              <span>
+                {formatRelativeTime(status.last_run_at)}
+                {status.last_size_bytes != null && (
+                  <span className="text-muted"> &mdash; {formatBytes(status.last_size_bytes)}</span>
+                )}
+              </span>
+            ) : (
+              <span className="text-muted">Never</span>
+            )}
+            {status?.last_error && (
+              <span style={{ color: 'var(--color-error, #f38ba8)', marginLeft: '0.5rem' }}>
+                {status.last_error}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Run Now button */}
+        <div className="settings-view__number-row">
+          <div className="settings-view__number-info">
+            <span className="settings-view__number-label">Manual run</span>
+          </div>
+          <div className="settings-view__number-controls">
+            <button
+              type="button"
+              className="btn btn--active btn--sm"
+              onClick={handleRunNow}
+              disabled={running || status === null}
+            >
+              {running ? '...' : 'Run Now'}
+            </button>
+            {runError && (
+              <span className="settings-view__feedback settings-view__feedback--error">
+                {runError}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function SettingsView(props: SettingsViewProps): JSX.Element {
+  const { settings, onSave } = props;
+  const [protectedBranches, setProtectedBranches] = useState('');
+  const [quietHours, setQuietHours] = useState('');
+  const [saving, setSaving] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState>(null);
+  const feedbackTimer = useRef<number | null>(null);
+  const initialized = useRef(false);
+  const quietInitialized = useRef(false);
+
+  useEffect(() => {
+    if (typeof settings.protected_branches === 'string' && !initialized.current) {
+      setProtectedBranches(settings.protected_branches);
+      initialized.current = true;
+    }
+  }, [settings.protected_branches]);
+
+  useEffect(() => {
+    if (typeof settings.quiet_hours === 'string' && !quietInitialized.current) {
+      setQuietHours(settings.quiet_hours);
+      quietInitialized.current = true;
+    }
+  }, [settings.quiet_hours]);
+
+  const showFeedback = useCallback((state: FeedbackState) => {
+    if (feedbackTimer.current != null) window.clearTimeout(feedbackTimer.current);
+    setFeedback(state);
+    if (state) {
+      feedbackTimer.current = window.setTimeout(() => {
+        setFeedback(null);
+        feedbackTimer.current = null;
+      }, 3000);
+    }
+  }, []);
+
+  const handleSaveField = useCallback(async (key: string, value: string) => {
+    setSaving(key);
+    try {
+      await onSave(key, value);
+      showFeedback({ type: 'success', message: 'Saved' });
+    } catch (err) {
+      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
+    } finally {
+      setSaving(null);
+    }
+  }, [onSave, showFeedback]);
+
+  const handleKeyDown = useCallback(
+    (key: string, value: string) => (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void handleSaveField(key, value);
+    },
+    [handleSaveField],
+  );
+
+  return (
+    <div className="settings-view">
+      <div className="view-header">
+        <div>
+          <h2>Settings</h2>
+          <div className="text-muted">Mandible configuration.</div>
+        </div>
+      </div>
+
+      {/* ── Section 1: Notifications ── */}
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Notifications</h3>
+          <p className="settings-view__section-desc">
+            Desktop alerts when AI tools finish and are waiting for input.
+          </p>
+        </div>
+
+        <div className="settings-view__section-body">
+          <ToggleRow
+            title="Claude notifications"
+            desc="Show desktop notification when Claude Code stops."
+            settingKey="claude_notifications_enabled"
+            settings={settings}
+            onSave={onSave}
+          />
+          <ToggleRow
+            title="Codex notifications"
+            desc="Show desktop notification when Codex CLI stops."
+            settingKey="codex_notifications_enabled"
+            settings={settings}
+            onSave={onSave}
+          />
+          <SelectInput
+            label="Sound"
+            desc="macOS notification sound"
+            settingKey="notification_sound"
+            settings={settings}
+            onSave={onSave}
+            options={SOUNDS}
+          />
+          <div className="settings-view__text-row">
+            <div className="settings-view__text-info">
+              <span className="settings-view__text-label">Quiet hours</span>
+              <span className="settings-view__text-desc">Suppress notifications during this window (HH:MM-HH:MM)</span>
+            </div>
+            <div className="settings-view__text-controls">
+              <input
+                type="text"
+                className="settings-view__input settings-view__input--narrow"
+                value={quietHours}
+                onInput={(e) => setQuietHours((e.target as HTMLInputElement).value)}
+                onKeyDown={handleKeyDown('quiet_hours', quietHours)}
+                placeholder="22:00-08:00"
+                disabled={saving === 'quiet_hours'}
+              />
+              <button
+                type="button"
+                className="btn btn--active btn--sm"
+                onClick={() => void handleSaveField('quiet_hours', quietHours)}
+                disabled={saving === 'quiet_hours'}
+              >
+                {saving === 'quiet_hours' ? '...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Section 2: Process Management ── */}
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Process Management</h3>
+          <p className="settings-view__section-desc">
+            Automatic cleanup of idle AI processes in multiplexer panes.
+          </p>
+        </div>
+
+        <div className="settings-view__section-body">
+          <ToggleRow
+            title="Reaper"
+            desc="Automatically terminate idle Claude/Codex processes."
+            settingKey="reaper_enabled"
+            settings={settings}
+            onSave={onSave}
+          />
+          <NumberInput
+            label="Claude idle threshold"
+            desc=""
+            settingKey="reaper_claude_idle_minutes"
+            settings={settings}
+            onSave={onSave}
+            min={5}
+            max={480}
+            suffix="min"
+          />
+          <NumberInput
+            label="Codex idle threshold"
+            desc=""
+            settingKey="reaper_codex_idle_minutes"
+            settings={settings}
+            onSave={onSave}
+            min={5}
+            max={480}
+            suffix="min"
+          />
+          <ToggleRow
+            title="Dry run"
+            desc="Log what would be reaped without actually terminating."
+            settingKey="reaper_dry_run"
+            settings={settings}
+            onSave={onSave}
+          />
+          <ToggleRow
+            title="Cleanup orphan MCPs"
+            desc="Terminate MCP server processes whose parent has exited."
+            settingKey="reaper_cleanup_orphan_mcps"
+            settings={settings}
+            onSave={onSave}
+          />
+        </div>
+      </div>
+
+      {/* ── Section 3: Agent Hooks ── */}
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Agent Hooks</h3>
+          <p className="settings-view__section-desc">
+            PreToolUse safety hooks and subagent behavior.
+          </p>
+        </div>
+
+        <div className="settings-view__section-body">
+          <ToggleRow
+            title="PreToolUse hooks"
+            desc="Safety hooks that block dangerous git operations (merge into protected branch, raw commit, etc)."
+            settingKey="pretool_hooks_enabled"
+            settings={settings}
+            onSave={onSave}
+            warning="Disabling hooks removes safety guards. Agents may execute dangerous operations unchecked."
+          />
+          <ToggleRow
+            title="Subagent panes"
+            desc="Spawn Zellij panes for subagent output streams. Requires Zellij and a working zj-control plugin."
+            settingKey="subagent_panes_enabled"
+            settings={settings}
+            onSave={onSave}
+          />
+        </div>
+      </div>
+
+      {/* ── Section 4: Appearance ── */}
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Appearance</h3>
+          <p className="settings-view__section-desc">
+            Shell theme, prompt, and multiplexer. Changes take effect in new shell sessions.
+          </p>
+        </div>
+
+        <div className="settings-view__section-body">
+          <SelectInput
+            label="Theme"
+            desc="Color theme for Neovim, Zellij, and tmux"
+            settingKey="theme"
+            settings={settings}
+            onSave={onSave}
+            options={THEMES}
+            requiresRestart
+          />
+          <SelectInput
+            label="Prompt"
+            desc="Shell prompt engine"
+            settingKey="prompt"
+            settings={settings}
+            onSave={onSave}
+            options={PROMPTS}
+            requiresRestart
+          />
+          <SelectInput
+            label="Multiplexer"
+            desc="Terminal multiplexer preference"
+            settingKey="multiplexer"
+            settings={settings}
+            onSave={onSave}
+            options={MULTIPLEXERS}
+            requiresRestart
+          />
+        </div>
+      </div>
+
+      {/* ── Section 5: Version Control ── */}
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Version Control</h3>
+          <p className="settings-view__section-desc">
+            Comma-separated branch names that are pinned in the Work tab and used as the baseline
+            for ahead/behind counts.
+          </p>
+        </div>
+        <div className="settings-view__field">
+          <input
+            type="text"
+            className="settings-view__input"
+            value={protectedBranches}
+            onInput={(e) => setProtectedBranches((e.target as HTMLInputElement).value)}
+            onKeyDown={handleKeyDown('protected_branches', protectedBranches)}
+            placeholder="main, develop"
+            disabled={saving === 'protected_branches'}
+          />
+          <div className="settings-view__field-actions">
+            <button
+              type="button"
+              className="btn btn--active"
+              onClick={() => void handleSaveField('protected_branches', protectedBranches)}
+              disabled={saving === 'protected_branches'}
+            >
+              {saving === 'protected_branches' ? 'Saving...' : 'Save'}
+            </button>
+            {feedback && (
+              <span
+                className={
+                  feedback.type === 'success'
+                    ? 'settings-view__feedback settings-view__feedback--success'
+                    : 'settings-view__feedback settings-view__feedback--error'
+                }
+              >
+                {feedback.message}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Section 6: Maintenance ── */}
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Maintenance</h3>
+          <p className="settings-view__section-desc">
+            Log retention and housekeeping.
+          </p>
+        </div>
+
+        <div className="settings-view__section-body">
+          <NumberInput
+            label="Log retention"
+            desc="Days to keep Mandible logs"
+            settingKey="log_retention_days"
+            settings={settings}
+            onSave={onSave}
+            min={1}
+            max={365}
+            suffix="days"
+          />
+        </div>
+      </div>
+
+      {/* ── Section 7: Backup ── */}
+      <BackupSection />
+    </div>
+  );
+}
