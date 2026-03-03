@@ -531,7 +531,10 @@ export async function createConsoleSession(
     body.args = [];
   }
   const response = await apiPost('/api/console/sessions', body);
-  return (await parseMaybeJson(response)) as { id: string };
+  const json = await parseMaybeJson(response);
+  // Backend returns { session: { id, ... } }; handle both shapes for safety
+  const data = json as { session?: { id: string }; id?: string };
+  return { id: data.session?.id ?? data.id ?? '' };
 }
 
 export async function closeConsoleSession(sessionId: string): Promise<void> {

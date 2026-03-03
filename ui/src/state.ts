@@ -555,8 +555,11 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
       }
       return state;
     case 'console:session:created': {
+      // Server sends { session: { id, label, ... } }; unwrapSseData returns that wrapper.
+      // Extract the nested .session key so we don't cast { session: {...} } as ConsoleSession.
       const data = unwrapSseData(payload);
-      const session = data as ConsoleSession | null;
+      const record = data as Record<string, unknown> | null;
+      const session = ((record?.session as ConsoleSession) ?? record) as ConsoleSession | null;
       if (session?.id) {
         return appReducer(state, { type: 'upsertConsoleSession', session });
       }
@@ -564,7 +567,8 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
     }
     case 'console:session:updated': {
       const data = unwrapSseData(payload);
-      const session = data as ConsoleSession | null;
+      const record = data as Record<string, unknown> | null;
+      const session = ((record?.session as ConsoleSession) ?? record) as ConsoleSession | null;
       if (session?.id) {
         return appReducer(state, { type: 'upsertConsoleSession', session });
       }
@@ -572,7 +576,10 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
     }
     case 'console:session:ended': {
       const data = unwrapSseData(payload);
-      const sessionId = typeof data?.id === 'string' ? data.id : null;
+      // Unwrap nested .session key if present (same pattern as created/updated)
+      const record = data as Record<string, unknown> | null;
+      const sessionData = ((record?.session as Record<string, unknown>) ?? record) as Record<string, unknown> | null;
+      const sessionId = typeof sessionData?.id === 'string' ? sessionData.id : null;
       if (sessionId) {
         // Mark as stopped rather than removing, so the tab stays visible
         const existing = state.consoleSessions.find((s) => s.id === sessionId);

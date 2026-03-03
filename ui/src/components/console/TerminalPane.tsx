@@ -33,6 +33,11 @@ export function TerminalPane({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  // Pre-ready write queue: holds binary frames that arrived before xterm had non-zero cols
+  const pendingWritesRef = useRef<Uint8Array[]>([]);
+  // Refs to track current prop values inside effects/callbacks that capture stale closures
+  const isVisibleRef = useRef(isVisible);
+  const viewModeRef = useRef(viewMode);
 
   // WebSocket connection state
   const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed' | 'error'>('connecting');
@@ -40,6 +45,10 @@ export function TerminalPane({
   // SSE stream events for rich view (accumulated)
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [streaming, setStreaming] = useState(false);
+
+  // Keep visibility/viewMode refs current so ResizeObserver callback doesn't see stale values
+  useEffect(() => { isVisibleRef.current = isVisible; }, [isVisible]);
+  useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
 
   // Initialize xterm.js terminal
   useEffect(() => {
@@ -66,10 +75,12 @@ export function TerminalPane({
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // ResizeObserver: refit when container dimensions change
+    // ResizeObserver: refit when container dimensions change.
+    // Use isVisibleRef/viewModeRef instead of the captured isVisible/viewMode props
+    // to avoid stale closure values (effect deps are [sessionId] only).
     const observer = new ResizeObserver(() => {
       // Skip fit when not visible — xterm would use wrong dimensions (0×0)
-      if (!isVisible || viewMode !== 'terminal') return;
+      if (!isVisibleRef.current || viewModeRef.current !== 'terminal') return;
       try {
         fitAddon.fit();
         const ws = wsRef.current;
@@ -105,16 +116,27 @@ export function TerminalPane({
 
     ws.onopen = () => {
       setWsStatus('open');
-      // Fit and send initial resize so server knows the viewport
+      // Fit and send initial resize so server knows the viewport.
+      // Guard: skip fit if the container has zero dimensions (pane is hidden behind
+      // another tab). The ResizeObserver + isVisible effect will fit correctly once
+      // the pane becomes visible. Sending a 0-column resize crashes the PTY output.
       const fitAddon = fitAddonRef.current;
       const term = termRef.current;
-      if (fitAddon && term) {
+      const container = containerRef.current;
+      if (fitAddon && term && container && container.offsetWidth > 0) {
         try {
           fitAddon.fit();
         } catch {
           // ignore
         }
         ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        // Flush any writes that queued before onopen
+        if (pendingWritesRef.current.length > 0) {
+          for (const bytes of pendingWritesRef.current) {
+            term.write(bytes);
+          }
+          pendingWritesRef.current = [];
+        }
       }
     };
 
@@ -122,8 +144,14 @@ export function TerminalPane({
       const term = termRef.current;
       if (!term) return;
       if (event.data instanceof ArrayBuffer) {
-        // Binary: raw PTY output
-        term.write(new Uint8Array(event.data));
+        // Binary: raw PTY output.
+        // Queue writes if xterm hasn't been sized yet (cols=0 silently discards bytes).
+        const bytes = new Uint8Array(event.data as ArrayBuffer);
+        if (term.cols > 0) {
+          term.write(bytes);
+        } else {
+          pendingWritesRef.current.push(bytes);
+        }
       } else if (typeof event.data === 'string') {
         // JSON control messages (e.g. session metadata, error signals)
         try {
@@ -170,36 +198,70 @@ export function TerminalPane({
     };
   }, [sessionId, interactionMode]);
 
-  // When view mode switches back to terminal and pane becomes visible, refit
+  // When view mode switches back to terminal and pane becomes visible, refit.
+  // Use requestAnimationFrame so CSS display:flex has taken effect before we
+  // measure — otherwise offsetWidth is still 0 and xterm measures 0 columns.
   useEffect(() => {
     if (isVisible && viewMode === 'terminal') {
-      const fitAddon = fitAddonRef.current;
-      const term = termRef.current;
-      if (fitAddon && term) {
-        try {
-          fitAddon.fit();
-          term.focus();
-          const ws = wsRef.current;
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      const rafId = requestAnimationFrame(() => {
+        const fitAddon = fitAddonRef.current;
+        const term = termRef.current;
+        if (fitAddon && term) {
+          try {
+            fitAddon.fit();
+            term.focus();
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+            }
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
+          // Flush pending writes that arrived before xterm was sized
+          if (pendingWritesRef.current.length > 0) {
+            for (const bytes of pendingWritesRef.current) {
+              term.write(bytes);
+            }
+            pendingWritesRef.current = [];
+          } else {
+            // Queue was already empty — the content may have been lost (e.g. ring buffer
+            // replay arrived at 0 cols and was discarded). Fetch the buffer via HTTP as a
+            // backstop so the pane shows content even after page-load or WS reconnect.
+            const sessionId_ = sessionId; // capture for async
+            fetch(`/api/console/sessions/${sessionId_}/buffer`)
+              .then(r => r.ok ? r.json() as Promise<{ buffer?: string }> : null)
+              .then((data) => {
+                if (data?.buffer && termRef.current) {
+                  const bytes = Uint8Array.from(atob(data.buffer), c => c.charCodeAt(0));
+                  termRef.current.write(bytes);
+                }
+              })
+              .catch(() => {}); // non-fatal backstop
+          }
         }
-      }
+      });
+      return () => cancelAnimationFrame(rafId);
     }
-  }, [isVisible, viewMode]);
+  }, [isVisible, viewMode, sessionId]);
 
-  // SSE: subscribe to console:stream_event for the rich view
+  // SSE: subscribe to console:stream_event for the rich view.
+  // The server broadcasts: { console_session_id, event: StreamEvent }
+  // app.tsx spreads payload.data into the CustomEvent detail, so:
+  //   detail = { console_session_id, event: { type, ... } }
+  // We extract detail.event to get the raw StreamEvent.
   useEffect(() => {
-    // Listen for SSE events carrying stream data for this session
-    // These arrive on the global EventSource connection (/api/events)
-    // We listen via a custom DOM event that app.tsx dispatches when it receives the SSE event.
-    // Format: CustomEvent('console:stream_event', { detail: { console_session_id, ...event } })
     const handleStreamEvent = (e: Event) => {
-      const detail = (e as CustomEvent<{ console_session_id: string } & StreamEvent>).detail;
+      const detail = (e as CustomEvent<{ console_session_id: string; event: StreamEvent }>).detail;
       if (!detail || detail.console_session_id !== sessionId) return;
-      setStreamEvents((prev) => [...prev, detail]);
+      const streamEvent = detail.event;
+      if (!streamEvent) return;
+      setStreamEvents((prev) => [...prev, streamEvent]);
+      // Mark streaming active when first event arrives; clear on result/stop
+      if (streamEvent.type === 'result') {
+        setStreaming(false);
+      } else {
+        setStreaming(true);
+      }
     };
 
     window.addEventListener('console:stream_event', handleStreamEvent);
@@ -256,9 +318,8 @@ export function TerminalPane({
       className="terminal-pane"
       style={{ display: isVisible ? 'flex' : 'none' }}
     >
-      {/* Pane header: session label + view toggle */}
+      {/* Pane header: view toggle only — session label is shown in sub-tab bar above */}
       <div className="terminal-pane__header">
-        <span style={{ color: 'var(--text-muted)', fontSize: '13px' }}>{sessionLabel}</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {interactionMode === 'both' && (
             <span
