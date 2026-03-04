@@ -406,6 +406,12 @@ restart_mandible_if_dist_changed() {
     return 0
   fi
 
+  # Bug: 326a3e2 — notify the UI before restarting so it can show a splash screen
+  local port="${MANDIBLE_PORT:-19420}"
+  if curl -sf --max-time 2 -X POST "http://127.0.0.1:${port}/api/admin/rebuilding" >/dev/null 2>&1; then
+    err "${DIM_WHITE}[post-merge] notified UI of impending restart${RESET}"
+  fi
+
   local uid
   uid=$(id -u)
   if launchctl kickstart -k "gui/${uid}/com.mll.mandible" >/dev/null 2>&1; then

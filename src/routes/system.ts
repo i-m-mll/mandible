@@ -2,6 +2,7 @@ import { exec } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { broadcast } from "../sse.js";
 import type { WorkScanner } from "../work-scanner.js";
 
 export interface SystemServer {
@@ -164,6 +165,15 @@ export function registerSystemRoutes(server: SystemServer, workScanner: WorkScan
       log_file: LOG_FILE_PATH,
       exists: true,
     });
+  });
+
+  // POST /api/admin/rebuilding — broadcast a mandible:rebuilding SSE event to all
+  // connected clients, then return 200. Called by the post-merge hook immediately
+  // before initiating a daemon restart so the UI can show a full-page splash.
+  // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
+  server.post("/api/admin/rebuilding", (_req, res) => {
+    broadcast("mandible:rebuilding", {});
+    sendJson(res, 200, { ok: true });
   });
 
   server.post("/api/system/open-path", (req, res) => {
