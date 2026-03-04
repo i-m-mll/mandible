@@ -14,6 +14,7 @@
 #   --spec <text>           Spec/notes content
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
 #   --cwd <path>            Override auto-detected protected branch worktree path
+#   --target <branch>       Override auto-detected target/base branch (default: protected branch)
 #   --timeout <seconds>     SSE listen timeout (default: 14400 / 4 hours)
 #   --no-watch              Submit only, don't poll
 #
@@ -42,6 +43,7 @@ diff_summary=""
 spec_content=""
 repo=""
 cwd_override=""
+target_override=""
 timeout=14400
 no_watch=0
 
@@ -53,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --spec)           spec_content="$2"; shift 2 ;;
     --repo)           repo="$2"; shift 2 ;;
     --cwd)            cwd_override="$2"; shift 2 ;;
+    --target)         target_override="$2"; shift 2 ;;
     --timeout)        timeout="$2"; shift 2 ;;
     --no-watch)       no_watch=1; shift ;;
     -h|--help)        usage; exit 0 ;;
@@ -87,7 +90,14 @@ detect_protected_branch() {
   fi
 }
 
-base_branch=$(detect_protected_branch)
+# Bug: c6bd770 — allow explicit --target override so callers can target a branch
+# other than the auto-detected protected branch (e.g., merging a CLAUDE.md update
+# into main in a repo where develop is protected).
+if [[ -n "$target_override" ]]; then
+  base_branch="$target_override"
+else
+  base_branch=$(detect_protected_branch)
+fi
 
 # --- Auto-detect cwd (protected branch worktree) ---
 
@@ -218,7 +228,7 @@ fi
 
 # --- Build command and metadata ---
 
-command="${HOME}/.dotfiles/bin/mandible auth merge ${branch}"
+command="${HOME}/.dotfiles/bin/mandible auth merge ${branch} --into ${base_branch}"
 head_branch="$branch"
 execution_mode="daemon"
 
@@ -260,7 +270,8 @@ payload=$(jq -nc \
 # caused a terminal pane to spawn instead of recognising the duplicate.
 # The response body is written to a temp file; HTTP status in the exit variable.
 tmp_response=$(mktemp)
-trap 'rm -f "$tmp_response"' EXIT
+tmp_sse_result=$(mktemp)
+trap 'rm -f "$tmp_response" "$tmp_sse_result"' EXIT
 
 http_status=$(curl -s --max-time 5 -o "$tmp_response" -w "%{http_code}" \
   -X POST "${MANDIBLE_BASE}/api/auth/request" \
@@ -273,7 +284,7 @@ if [[ -z "$http_status" || "$http_status" == "000" ]]; then
   # Connection failed — Mandible unreachable
   echo "Mandible unreachable. Falling back to terminal pane..." >&2
 
-  auth_merge_cmd="${HOME}/.dotfiles/bin/mandible auth merge ${branch}"
+  auth_merge_cmd="${HOME}/.dotfiles/bin/mandible auth merge ${branch} --into ${base_branch}"
 
   if [[ -n "${ZELLIJ:-}" ]]; then
     # Bug: 36a37d7 — pass --cwd so the pane starts in the main worktree, not
@@ -337,7 +348,16 @@ echo "Listening for auth resolution via SSE (timeout: ${timeout}s)..."
 # Mandible emits auth:resolved when a request reaches terminal state.
 # Heartbeats every 15s keep the connection alive.
 
-curl -sfN --max-time "$timeout" \
+#
+# Bug: 2fa626e — when the while-loop exits inside a pipeline, curl gets SIGPIPE
+# and exits 23. With set -o pipefail, the pipeline exit code becomes 23 (non-zero),
+# causing false failure even when the auth succeeded.
+#
+# Fix: disable pipefail for the SSE pipeline, communicate resolution via a temp
+# file written from within the while-subshell, then check it after the pipeline
+# completes. This avoids exit 23 propagating as a failure.
+set +o pipefail
+curl -sN --max-time "$timeout" \
   "${MANDIBLE_BASE}/api/events?topic=auth:" 2>/dev/null | \
 while IFS= read -r line; do
   # Skip heartbeat comments and empty lines
@@ -356,36 +376,48 @@ while IFS= read -r line; do
     case "$evt_type" in
       auth:resolved)
         status=$(printf '%s' "$json" | jq -r '.data.status // "unknown"' 2>/dev/null)
-        exit_code=$(printf '%s' "$json" | jq -r '.data.exit_code // "null"' 2>/dev/null)
+        exit_code_val=$(printf '%s' "$json" | jq -r '.data.exit_code // "null"' 2>/dev/null)
         case "$status" in
           completed)
-            echo "Auth request ${request_id}: completed (exit ${exit_code})"
-            exit 0
+            echo "Auth request ${request_id}: completed (exit ${exit_code_val})"
+            printf 'ok' > "$tmp_sse_result"
+            break
             ;;
           rejected|expired|dismissed)
             error=$(printf '%s' "$json" | jq -r '.data.error // "none"' 2>/dev/null)
             echo "Auth request ${request_id}: ${status} -- ${error}"
-            exit 1
+            printf 'fail' > "$tmp_sse_result"
+            break
             ;;
           *)
             echo "Auth request ${request_id}: resolved with status '${status}'"
-            exit 0
+            printf 'ok' > "$tmp_sse_result"
+            break
             ;;
         esac
         ;;
     esac
   fi
-done
+done || true
+set -o pipefail
 
-# If we reach here, curl exited (timeout or connection lost).
+sse_result=$(cat "$tmp_sse_result" 2>/dev/null || echo "")
+
+if [[ "$sse_result" == "ok" ]]; then
+  exit 0
+elif [[ "$sse_result" == "fail" ]]; then
+  exit 1
+fi
+
+# If we reach here, curl exited (timeout or connection lost) without resolving.
 # Do a single fallback poll to check final status.
 final=$(curl -sf --max-time 5 "${MANDIBLE_BASE}/api/auth/request/${request_id}" 2>/dev/null)
 if [[ -n "$final" ]]; then
   status=$(printf '%s' "$final" | jq -r '.status // "unknown"')
   case "$status" in
     completed)
-      exit_code=$(printf '%s' "$final" | jq -r '.exit_code // "null"')
-      echo "Auth request ${request_id}: completed (exit ${exit_code})"
+      exit_code_val=$(printf '%s' "$final" | jq -r '.exit_code // "null"')
+      echo "Auth request ${request_id}: completed (exit ${exit_code_val})"
       exit 0
       ;;
     rejected|expired|dismissed)

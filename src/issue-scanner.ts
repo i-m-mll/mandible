@@ -12,6 +12,11 @@ import type {
 
 const CACHE_TTL_MS = 60_000;
 
+// Bug: e139954 — retry on non-zero exit to handle git-bug lock contention
+// when Claude Code and Mandible both call git-bug concurrently.
+const GITBUG_RETRY_COUNT = 3;
+const GITBUG_RETRY_BASE_MS = 100;
+
 interface RepoCache {
   summary: IssueRepoSummary;
   scannedAt: number;
@@ -21,16 +26,26 @@ function runGitBug(
   args: string[],
   cwd: string,
 ): string | null {
-  const result = spawnSync("git-bug", args, {
-    cwd,
-    encoding: "utf8",
-    env: process.env,
-    timeout: 15_000,
-  });
-  if (result.status !== 0) {
-    return null;
+  for (let attempt = 0; attempt < GITBUG_RETRY_COUNT; attempt++) {
+    const result = spawnSync("git-bug", args, {
+      cwd,
+      encoding: "utf8",
+      env: process.env,
+      timeout: 15_000,
+    });
+    if (result.status === 0) {
+      return result.stdout.trimEnd();
+    }
+    if (attempt < GITBUG_RETRY_COUNT - 1) {
+      // Synchronous sleep with jitter to back off before retry.
+      // spawnSync is inherently blocking so a busy-wait is acceptable here —
+      // we're already on the blocking path.
+      const delayMs = GITBUG_RETRY_BASE_MS * (attempt + 1) + Math.floor(Math.random() * 100);
+      const deadline = Date.now() + delayMs;
+      while (Date.now() < deadline) { /* busy-wait */ }
+    }
   }
-  return result.stdout.trimEnd();
+  return null;
 }
 
 function runCommandAsync(
@@ -79,15 +94,22 @@ function runCommandAsync(
   });
 }
 
+// Bug: e139954 — retry with jitter for async path to handle lock contention
 async function runGitBugAsync(
   args: string[],
   cwd: string,
 ): Promise<string | null> {
-  const result = await runCommandAsync("git-bug", args, cwd, 15_000);
-  if (result.status !== 0) {
-    return null;
+  for (let attempt = 0; attempt < GITBUG_RETRY_COUNT; attempt++) {
+    const result = await runCommandAsync("git-bug", args, cwd, 15_000);
+    if (result.status === 0) {
+      return result.stdout;
+    }
+    if (attempt < GITBUG_RETRY_COUNT - 1) {
+      const delayMs = GITBUG_RETRY_BASE_MS * (attempt + 1) + Math.floor(Math.random() * 100);
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
   }
-  return result.stdout;
+  return null;
 }
 
 function hasGitBugRefs(repoRoot: string): boolean {

@@ -47,7 +47,18 @@ export function ConsoleView({
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
 
-  const getViewMode = (sessionId: string): ViewMode => viewModes[sessionId] ?? 'terminal';
+  // CL/CX/operator sessions (stream-json output) default to 'rich' view so the
+  // conversation stream is shown immediately. SH (shell) sessions default to
+  // 'terminal' since they produce raw PTY output only. The user can switch
+  // via the ViewToggle at any time.
+  const getViewMode = (sessionId: string): ViewMode => {
+    if (sessionId in viewModes) return viewModes[sessionId];
+    const session = sessions.find((s) => s.id === sessionId);
+    if (session && session.agent_type !== 'shell') {
+      return 'rich';
+    }
+    return 'terminal';
+  };
 
   const handleViewModeChange = (sessionId: string, mode: ViewMode) => {
     setViewModes((prev) => ({ ...prev, [sessionId]: mode }));
@@ -106,7 +117,6 @@ export function ConsoleView({
               isVisible={session.id === activeSessionId}
               viewMode={getViewMode(session.id)}
               onViewModeChange={(mode) => handleViewModeChange(session.id, mode)}
-              sessionLabel={activeSession?.id === session.id ? session.label : session.label}
             />
           ))
         )}

@@ -143,7 +143,8 @@ export class Router implements RouteRegistrar {
       });
 
       let body: unknown = undefined;
-      if (method === "POST" || method === "PATCH" || method === "PUT") {
+      // Bug: a21979a — include DELETE so body.reason is parsed for DELETE /api/auth/request/:id
+      if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
         const rawBody = await readBody(req);
         if (rawBody) {
           try { body = JSON.parse(rawBody); } catch { body = rawBody; }

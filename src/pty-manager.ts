@@ -315,8 +315,29 @@ export class PtySession {
   /**
    * Add a WebSocket client. Replays ring buffer immediately, then sends
    * init metadata. Removes client on 'close'.
+   *
+   * If the session is no longer running (crashed or ended), sends a UTF-8
+   * error banner to the terminal and closes the WebSocket with code 1001
+   * rather than adding it to the active client set. This prevents the
+   * "cursor but no output" zombie state after a Mandible restart.
    */
   addWsClient(ws: WebSocket): void {
+    // Reject clients connecting to a dead/ended session
+    if (this.meta.status !== "running") {
+      try {
+        ws.send(
+          Buffer.from(
+            `\r\n\x1b[33m[Session ${this.meta.status} — create a new session]\x1b[0m\r\n`,
+            "utf8"
+          )
+        );
+      } catch {
+        // ignore send errors on already-closing sockets
+      }
+      ws.close(1001, "session ended");
+      return;
+    }
+
     this.wsClients.add(ws);
 
     // Replay ring buffer as a single binary message
@@ -567,8 +588,11 @@ export class PtyManager {
 
   /**
    * Initialize from DB: reconcile running/stopped state after daemon restart.
-   * Operator sessions with auto_restart=1 are restarted. All other previously
-   * 'running' sessions are marked 'stopped' (their PTYs are gone).
+   * All previously 'running' sessions are marked 'stopped' (their PTYs are
+   * gone after restart). Operator sessions with auto_restart=1 are then
+   * restarted, transitioning them back to 'running' via start().
+   * This prevents the zombie terminal state where addWsClient() would accept
+   * WS connections for dead sessions that produce no output.
    */
   init(): void {
     const db = getDb();
@@ -582,13 +606,16 @@ export class PtyManager {
       this.sessions.set(session.id, ptySession);
 
       if (session.status === "running") {
-        // Mark non-operator running sessions as stopped (PTY is gone after restart)
-        if (!session.is_operator) {
-          db.prepare(
-            "UPDATE console_sessions SET status = 'stopped', pid = NULL, updated_at = ? WHERE id = ?"
-          ).run(Date.now(), session.id);
-          ptySession.meta = { ...ptySession.meta, status: "stopped", pid: null };
-        }
+        // All PTY processes are gone after a daemon restart. Mark every
+        // previously-running session as 'stopped' so that addWsClient() rejects
+        // incoming WS connections with an informative error rather than accepting
+        // them and silently producing no output (zombie terminal state).
+        // Operator sessions with auto_restart=1 will be restarted below and
+        // will transition back to 'running' once start() is called.
+        db.prepare(
+          "UPDATE console_sessions SET status = 'stopped', pid = NULL, updated_at = ? WHERE id = ?"
+        ).run(Date.now(), session.id);
+        ptySession.meta = { ...ptySession.meta, status: "stopped", pid: null };
       }
     }
 

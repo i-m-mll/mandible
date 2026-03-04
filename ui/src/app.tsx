@@ -681,9 +681,32 @@ function App(): JSX.Element {
 
   const handleConsoleNewSession = async (label: string, agentType: string) => {
     try {
-      const { id } = await createConsoleSession(label, agentType);
+      const result = await createConsoleSession(label, agentType);
+      // createConsoleSession returns { id } — extract from session wrapper if needed
+      const rawResult = result as unknown as { id?: string; session?: { id: string } };
+      const id = rawResult.id ?? rawResult.session?.id ?? '';
+      if (!id) return;
+
+      // Optimistic upsert: add the session immediately so the tab appears
+      // without waiting for the SSE console:session:created event to arrive.
+      // The SSE event will upsert again (idempotent) with the authoritative data.
+      dispatch({
+        type: 'upsertConsoleSession',
+        session: {
+          id,
+          label,
+          agent_type: agentType as ConsoleSession['agent_type'],
+          interaction_mode: 'both',
+          pinned: false,
+          status: 'running',
+          is_operator: agentType === 'operator',
+          unread_count: 0,
+          created_at: Date.now(),
+          started_at: Date.now(),
+          stopped_at: null,
+        },
+      });
       dispatch({ type: 'setConsoleActiveSessionId', sessionId: id });
-      // The SSE console:session:created event will add it to consoleSessions
     } catch {
       return;
     }

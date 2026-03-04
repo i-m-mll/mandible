@@ -17,7 +17,6 @@ type TerminalPaneProps = {
   isVisible: boolean;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
-  sessionLabel: string;
 };
 
 export function TerminalPane({
@@ -26,7 +25,6 @@ export function TerminalPane({
   isVisible,
   viewMode,
   onViewModeChange,
-  sessionLabel,
 }: TerminalPaneProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
