@@ -221,6 +221,82 @@ has_conflicts() {
   [[ -n "$(git diff --name-only --diff-filter=U)" ]]
 }
 
+# Bug: bb2d9ef — auto-resolve conflicts in generated dist files.
+# When git merge encounters conflicts, check if ALL conflicts are in
+# generated/dist paths. If so, take --theirs for each and stage them,
+# returning 0. If any non-dist conflicts remain, return 1.
+# Patterns (prefix match on path): */dist/*.js, */dist/*.js.map,
+# */dist/*.css, */dist/*.css.map
+is_dist_file() {
+  local f="$1"
+  case "$f" in
+    */dist/*.js|*/dist/*.js.map|*/dist/*.css|*/dist/*.css.map) return 0 ;;
+  esac
+  return 1
+}
+
+auto_resolve_dist_conflicts() {
+  local conflict_files
+  local IFS_BAK="$IFS"
+  IFS=$'\n'
+  conflict_files=( $(git diff --name-only --diff-filter=U) )
+  IFS="$IFS_BAK"
+
+  if [[ ${#conflict_files[@]} -eq 0 ]]; then
+    return 1  # no conflicts, something else went wrong
+  fi
+
+  # Check that every conflicted file is a dist file
+  local f
+  local non_dist=0
+  for f in "${conflict_files[@]}"; do
+    if [[ -n "$f" ]] && ! is_dist_file "$f"; then
+      non_dist=$((non_dist + 1))
+    fi
+  done
+
+  if [[ "$non_dist" -gt 0 ]]; then
+    err "${BOLD_YELLOW}Conflicts in non-generated files require manual resolution.${RESET}"
+    local g
+    for g in "${conflict_files[@]}"; do
+      if [[ -n "$g" ]] && ! is_dist_file "$g"; then
+        err "  ${RED}${g}${RESET}"
+      fi
+    done
+    return 1
+  fi
+
+  # All conflicts are in dist files — auto-resolve with --theirs
+  err "${DIM_WHITE}Auto-resolving dist file conflicts (taking --theirs):${RESET}"
+  for f in "${conflict_files[@]}"; do
+    if [[ -n "$f" ]]; then
+      git checkout --theirs -- "$f"
+      git add -- "$f"
+      err "  ${GREEN}resolved: ${f}${RESET}"
+    fi
+  done
+
+  return 0
+}
+
+# Safety: after any successful merge, verify the result actually
+# contains changes. A merge whose tree matches parent-1 is a no-op
+# that silently discards the feature branch.
+verify_merge_not_empty() {
+  local merge_tree parent_tree
+  merge_tree=$(git rev-parse HEAD^{tree})
+  parent_tree=$(git rev-parse HEAD^1^{tree})
+  if [[ "$merge_tree" == "$parent_tree" ]]; then
+    err ""
+    err "  ${RED}FATAL: Merge produced no changes — tree is identical to parent.${RESET}"
+    err "  ${DIM_WHITE}This means the feature branch changes were silently dropped.${RESET}"
+    err "  ${DIM_WHITE}Reverting the empty merge...${RESET}"
+    git reset --hard HEAD~1
+    err ""
+    die "Empty merge reverted. Investigate before retrying." 1
+  fi
+}
+
 preflight_signing_check() {
   local effective
   effective=$(git config --get commit.gpgsign 2>/dev/null || true)
@@ -395,6 +471,67 @@ main() {
     target=$(protected_branch)
   fi
 
+  # Bug: bb2d9ef — detect MERGE_HEAD before running pre-auth-check.
+  # When Mandible restarts mid-merge (e.g. a dist rebuild triggers a
+  # process restart), the executor re-runs auth-merge from scratch.
+  # pre-auth-check sees staged mid-merge files and fails with "dirty tree".
+  # Instead: detect the in-progress merge and resume it with --continue.
+  local merge_head_file
+  merge_head_file="$(git rev-parse --git-dir)/MERGE_HEAD"
+  if [[ -f "$merge_head_file" ]]; then
+    err ""
+    err "${BOLD_YELLOW}Merge already in progress — resuming with git merge --continue${RESET}"
+    err ""
+
+    # Show what's staged
+    local staged_status
+    staged_status=$(git status --short)
+    if [[ -n "$staged_status" ]]; then
+      err "${DIM_WHITE}Staged files:${RESET}"
+      local line
+      local IFS_BAK_MH="$IFS"
+      IFS=$'\n'
+      for line in $staged_status; do
+        err "  ${DIM_WHITE}${line}${RESET}"
+      done
+      IFS="$IFS_BAK_MH"
+      err ""
+    fi
+
+    preflight_signing_check
+
+    local resume_response
+    resume_response=$(prompt_confirm "Resume merge with --continue? (requires YubiKey) [y/N]")
+    resume_response=$(printf "%s" "$resume_response" | tr '[:upper:]' '[:lower:]')
+    case "$resume_response" in
+      y|yes) ;;
+      *)
+        err "Merge resume cancelled. Run 'git merge --continue' or 'git merge --abort' manually."
+        exit 1
+        ;;
+    esac
+
+    # ORIG_HEAD is the pre-merge HEAD (set by git when the merge started)
+    local pre_merge_head
+    pre_merge_head=$(git rev-parse ORIG_HEAD 2>/dev/null || git rev-parse HEAD)
+
+    if git merge --continue -S; then
+      verify_merge_not_empty
+      if [[ ${#sources[@]} -gt 0 ]]; then
+        auto_close_issues "$target" "$pre_merge_head"
+        cleanup_merged_worktrees "${sources[0]}"
+      fi
+      restart_mandible_if_dist_changed "$pre_merge_head"
+      exit 0
+    else
+      err "${RED}git merge --continue failed.${RESET}"
+      if has_conflicts; then
+        err "Conflicts remain — resolve them manually and run 'git merge --continue'."
+      fi
+      exit 1
+    fi
+  fi
+
   # Pre-flight: ensure working tree is clean and merge will succeed
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -502,35 +639,6 @@ main() {
       ;;
   esac
 
-  # If a previous merge attempt left MERGE_HEAD, abort it and start
-  # fresh. Resuming a stale merge is unsafe — the index may have been
-  # reset between attempts (e.g., by `git checkout HEAD -- .`), which
-  # would produce a merge commit with the parent's tree (no changes).
-  local merge_head_file
-  merge_head_file="$(git rev-parse --git-dir)/MERGE_HEAD"
-  if [[ -f "$merge_head_file" ]]; then
-    err "Cleaning up stale MERGE_HEAD from a previous attempt..."
-    git merge --abort 2>/dev/null || rm -f "$merge_head_file"
-  fi
-
-  # Safety: after any successful merge, verify the result actually
-  # contains changes. A merge whose tree matches parent-1 is a no-op
-  # that silently discards the feature branch.
-  verify_merge_not_empty() {
-    local merge_tree parent_tree
-    merge_tree=$(git rev-parse HEAD^{tree})
-    parent_tree=$(git rev-parse HEAD^1^{tree})
-    if [[ "$merge_tree" == "$parent_tree" ]]; then
-      err ""
-      err "  ${RED}FATAL: Merge produced no changes — tree is identical to parent.${RESET}"
-      err "  ${DIM_WHITE}This means the feature branch changes were silently dropped.${RESET}"
-      err "  ${DIM_WHITE}Reverting the empty merge...${RESET}"
-      git reset --hard HEAD~1
-      err ""
-      die "Empty merge reverted. Investigate before retrying." 1
-    fi
-  }
-
   if [[ "$hierarchical" == "false" ]]; then
     source=${sources[0]}
     local pre_merge_head
@@ -543,8 +651,21 @@ main() {
       exit 0
     fi
 
+    # Bug: bb2d9ef — auto-resolve dist file conflicts before giving up.
     if has_conflicts; then
       err "Merge conflict detected."
+      if auto_resolve_dist_conflicts; then
+        err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
+        if git merge --continue -S; then
+          verify_merge_not_empty
+          auto_close_issues "$target" "$pre_merge_head"
+          cleanup_merged_worktrees "$source"
+          restart_mandible_if_dist_changed "$pre_merge_head"
+          exit 0
+        else
+          err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
+        fi
+      fi
     else
       err "Merge failed."
     fi
@@ -561,8 +682,19 @@ main() {
       continue
     fi
 
+    # Bug: bb2d9ef — auto-resolve dist file conflicts before giving up.
     if has_conflicts; then
       err "Merge conflict detected while merging $source."
+      if auto_resolve_dist_conflicts; then
+        err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
+        if git merge --continue -S; then
+          verify_merge_not_empty
+          succeeded+=("$source")
+          continue
+        else
+          err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
+        fi
+      fi
     else
       err "Merge failed while merging $source."
     fi
