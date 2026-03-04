@@ -114,6 +114,19 @@ function parseHashRoute(): Route {
   return { tab, params };
 }
 
+// Bug: 326a3e2 — rebuilding/restarting splash on self-merge
+function RebuildingSplash(): JSX.Element {
+  return (
+    <div className="rebuilding-splash">
+      <div className="rebuilding-splash__content">
+        <div className="rebuilding-splash__spinner" aria-hidden="true" />
+        <div className="rebuilding-splash__title">Rebuilding &amp; restarting…</div>
+        <div className="rebuilding-splash__subtitle">Mandible is restarting after a self-merge. This page will reload automatically.</div>
+      </div>
+    </div>
+  );
+}
+
 function App(): JSX.Element {
   const [state, dispatch] = useReducer(appReducer, undefined, () => ({
     ...initialState,
@@ -124,6 +137,8 @@ function App(): JSX.Element {
   const overflowRef = useRef<HTMLDivElement>(null);
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const errorToastTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
+  const [rebuilding, setRebuilding] = useState(false);
 
   useEffect(() => {
     const handleChange = () => setRoute(parseHashRoute());
@@ -345,6 +360,11 @@ function App(): JSX.Element {
       );
     };
 
+    // Bug: 326a3e2 — show full-page splash when daemon is about to restart
+    const rebuildingHandler = () => {
+      setRebuilding(true);
+    };
+
     const unsubscribes = [
       client.on('session:registered', handler),
       client.on('session:updated', handler),
@@ -362,6 +382,7 @@ function App(): JSX.Element {
       client.on('console:session:ended', handler),
       client.on('console:inbox:badge', handler),
       client.on('console:stream_event', consoleStreamHandler),
+      client.on('mandible:rebuilding', rebuildingHandler),
     ];
 
     // Connect AFTER all handlers are registered
@@ -391,6 +412,27 @@ function App(): JSX.Element {
 
     return () => window.clearInterval(timer);
   }, []);
+
+  // Bug: 326a3e2 — poll /api/health every 2s while rebuilding; reload when server responds
+  useEffect(() => {
+    if (!rebuilding) return;
+    const POLL_MS = 2_000;
+    // Give the daemon a moment to shut down before starting to poll
+    const startTimer = window.setTimeout(() => {
+      const interval = window.setInterval(async () => {
+        try {
+          const res = await fetch('/api/health');
+          if (res.ok) {
+            window.location.reload();
+          }
+        } catch {
+          // Server not yet up — keep polling
+        }
+      }, POLL_MS);
+      return () => window.clearInterval(interval);
+    }, 1_000);
+    return () => window.clearTimeout(startTimer);
+  }, [rebuilding]);
 
   // Persist cacheable state to localStorage for stale-while-revalidate on next load.
   // Bug: 099fa86 — eliminate blank flash when refreshing the page
@@ -725,6 +767,11 @@ function App(): JSX.Element {
     dispatch({ type: 'setSelectedInboxItemId', id });
   };
 
+
+  // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
+  if (rebuilding) {
+    return <RebuildingSplash />;
+  }
 
   return (
     <div className="app-shell">
