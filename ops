@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":1,"timestamp":1772727771,"nonce":"QlJ897iiInPqtw8ViGrHL++9D+4=","title":"Settings tab: replace text with gear icon","message":"Replace Settings text label in nav with minimal inline SVG gear icon for cleaner UI.","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":4,"timestamp":1772732603,"nonce":"6VTeUYxiyx+TTu0f8TGjM5c0noA=","status":2}]}
