@@ -592,6 +592,61 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
       }
       return state;
     }
+    case 'console:session:exit': {
+      const data = unwrapSseData(payload);
+      const record = data as Record<string, unknown> | null;
+      const sessionId = typeof record?.id === 'string' ? record.id : null;
+      const exitStatus = typeof record?.status === 'string' ? record.status : 'crashed';
+      if (sessionId) {
+        const existing = state.consoleSessions.find((s) => s.id === sessionId);
+        if (existing) {
+          return appReducer(state, {
+            type: 'upsertConsoleSession',
+            session: { ...existing, status: exitStatus as ConsoleSession['status'] },
+          });
+        }
+      }
+      return state;
+    }
+    case 'console:session:started': {
+      const data = unwrapSseData(payload);
+      const record = data as Record<string, unknown> | null;
+      const sessionId = typeof record?.id === 'string' ? record.id : null;
+      if (sessionId) {
+        const existing = state.consoleSessions.find((s) => s.id === sessionId);
+        if (existing) {
+          return appReducer(state, {
+            type: 'upsertConsoleSession',
+            session: { ...existing, status: 'running' },
+          });
+        }
+      }
+      return state;
+    }
+    case 'console:session:stopped': {
+      const data = unwrapSseData(payload);
+      const record = data as Record<string, unknown> | null;
+      const sessionId = typeof record?.id === 'string' ? record.id : null;
+      if (sessionId) {
+        const existing = state.consoleSessions.find((s) => s.id === sessionId);
+        if (existing) {
+          return appReducer(state, {
+            type: 'upsertConsoleSession',
+            session: { ...existing, status: 'stopped' },
+          });
+        }
+      }
+      return state;
+    }
+    case 'console:session:deleted': {
+      const data = unwrapSseData(payload);
+      const record = data as Record<string, unknown> | null;
+      const sessionId = typeof record?.id === 'string' ? record.id : null;
+      if (sessionId) {
+        return appReducer(state, { type: 'removeConsoleSession', sessionId });
+      }
+      return state;
+    }
     case 'console:inbox:badge': {
       const data = unwrapSseData(payload);
       const count = typeof data?.count === 'number' ? data.count : 0;

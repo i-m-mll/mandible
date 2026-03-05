@@ -1,4 +1,5 @@
 // Bug: b949700 — Console tab: xterm.js terminal pane with WebSocket PTY and SSE stream events
+// Bug: 1d286c1 — console tab overhaul: reconnect, overlay, SSE events, xterm rendering
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Terminal } from '@xterm/xterm';
@@ -8,6 +9,7 @@ import type { ConsoleSession } from '../../state';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
 import type { StreamEvent } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
+import { restartConsoleSession } from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
 
@@ -40,6 +42,9 @@ export function TerminalPane({
   // WebSocket connection state
   const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed' | 'error'>('connecting');
 
+  // Nonce to re-trigger the WS effect on manual reconnect
+  const [reconnectNonce, setReconnectNonce] = useState(0);
+
   // SSE stream events for rich view (accumulated)
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -55,6 +60,7 @@ export function TerminalPane({
     const term = new Terminal({
       fontFamily: 'var(--font-mono)',
       fontSize: 13,
+      lineHeight: 1.2,
       theme: {
         background: '#0b0f14',
         foreground: '#e6edf3',
@@ -103,7 +109,7 @@ export function TerminalPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // Open WebSocket for PTY
+  // Open WebSocket for PTY — re-runs on sessionId change or manual reconnect (reconnectNonce)
   useEffect(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/terminal/${encodeURIComponent(sessionId)}`;
@@ -164,6 +170,8 @@ export function TerminalPane({
 
     ws.onclose = () => {
       setWsStatus('closed');
+      // Stop cursor from appearing active when disconnected
+      termRef.current?.blur();
     };
 
     ws.onerror = () => {
@@ -173,7 +181,9 @@ export function TerminalPane({
     return () => {
       ws.close();
     };
-  }, [sessionId]);
+    // reconnectNonce is intentional: incrementing it re-runs this effect to reconnect
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, reconnectNonce]);
 
   // Forward keyboard input to WebSocket.
   // Input is sent as binary (Uint8Array) so the server's isBinary check routes
@@ -225,12 +235,13 @@ export function TerminalPane({
             // Queue was already empty — the content may have been lost (e.g. ring buffer
             // replay arrived at 0 cols and was discarded). Fetch the buffer via HTTP as a
             // backstop so the pane shows content even after page-load or WS reconnect.
+            // Bug: 1d286c1 — fixed key: backend returns { data: base64 }, not { buffer: base64 }
             const sessionId_ = sessionId; // capture for async
             fetch(`/api/console/sessions/${sessionId_}/buffer`)
-              .then(r => r.ok ? r.json() as Promise<{ buffer?: string }> : null)
-              .then((data) => {
-                if (data?.buffer && termRef.current) {
-                  const bytes = Uint8Array.from(atob(data.buffer), c => c.charCodeAt(0));
+              .then(r => r.ok ? r.json() as Promise<{ data?: string }> : null)
+              .then((resp) => {
+                if (resp?.data && termRef.current) {
+                  const bytes = Uint8Array.from(atob(resp.data), c => c.charCodeAt(0));
                   termRef.current.write(bytes);
                 }
               })
@@ -270,43 +281,18 @@ export function TerminalPane({
     };
   }, [sessionId]);
 
-  const handleReconnect = () => {
-    // Close existing WS and reopen by re-mounting the effect
-    // This is handled by triggering a state change that causes the WS effect to re-run.
-    // We do this by closing and letting the effect cleanup handle it; user must navigate away and back.
-    // For now, close the current WS — the effect will NOT auto-reconnect (manual reconnect UX).
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
-    // Re-trigger WS connection: navigate to same session hash to force re-mount
-    // This is a deliberate limitation per the plan: manual reconnect, no auto-loop
-    const ws_protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${ws_protocol}//${window.location.host}/terminal/${encodeURIComponent(sessionId)}`;
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer';
-    wsRef.current = ws;
+  // Bug: 1d286c1 — handleReconnect now calls backend restart API before opening WS.
+  // The previous version only opened a new WS but never restarted the PTY process,
+  // so reconnect always got immediately rejected by the backend.
+  const handleReconnect = async () => {
     setWsStatus('connecting');
-
-    ws.onopen = () => {
-      setWsStatus('open');
-      const fitAddon = fitAddonRef.current;
-      const term = termRef.current;
-      if (fitAddon && term) {
-        try { fitAddon.fit(); } catch { /* ignore */ }
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      }
-    };
-    ws.onmessage = (event) => {
-      const term = termRef.current;
-      if (!term) return;
-      if (event.data instanceof ArrayBuffer) {
-        term.write(new Uint8Array(event.data));
-      } else if (typeof event.data === 'string') {
-        try { JSON.parse(event.data); } catch { term.write(event.data); }
-      }
-    };
-    ws.onclose = () => setWsStatus('closed');
-    ws.onerror = () => setWsStatus('error');
+    try {
+      await restartConsoleSession(sessionId);
+      // Incrementing the nonce re-triggers the WS useEffect to open a fresh connection
+      setReconnectNonce((n) => n + 1);
+    } catch {
+      setWsStatus('error');
+    }
   };
 
   const showReconnectOverlay = wsStatus === 'closed' || wsStatus === 'error';
@@ -316,7 +302,9 @@ export function TerminalPane({
       className="terminal-pane"
       style={{ display: isVisible ? 'flex' : 'none' }}
     >
-      {/* Pane header: view toggle only — session label is shown in sub-tab bar above */}
+      {/* Pane header: view toggle only — session label is shown in sub-tab bar above.
+          Bug: 1d286c1 — header is outside .terminal-pane__body so the reconnect overlay
+          cannot cover it; users can switch to rich view even when disconnected. */}
       <div className="terminal-pane__header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {interactionMode === 'both' && (
@@ -346,48 +334,75 @@ export function TerminalPane({
         </div>
       )}
 
-      {/* Terminal container — always mounted, hidden when rich view is active */}
-      <div
-        className="terminal-pane__container"
-        ref={containerRef}
-        style={{ display: viewMode === 'terminal' ? 'flex' : 'none', flex: 1 }}
-      />
+      {/* Body: everything below the header. Reconnect overlay is scoped here,
+          so it cannot cover the header/ViewToggle. */}
+      <div className="terminal-pane__body">
+        {/* Terminal container — always mounted, hidden when rich view is active */}
+        <div
+          className="terminal-pane__container"
+          ref={containerRef}
+          style={{ display: viewMode === 'terminal' ? 'flex' : 'none', flex: 1 }}
+        />
 
-      {/* Reconnect overlay */}
-      {showReconnectOverlay && viewMode === 'terminal' && (
-        <div className="terminal-pane__reconnect-overlay">
-          <span>
-            {wsStatus === 'error' ? 'Connection error' : 'Disconnected'}
-          </span>
-          <button
-            type="button"
-            onClick={handleReconnect}
-            style={{
-              padding: '8px 20px',
-              borderRadius: '8px',
-              background: 'var(--accent-blue)',
-              border: 'none',
-              color: '#fff',
-              cursor: 'pointer',
-              fontSize: '14px',
-              fontFamily: 'var(--font-sans)',
-            }}
-          >
-            Reconnect
-          </button>
-        </div>
-      )}
+        {/* Reconnect overlay — only covers the body area, not the header */}
+        {showReconnectOverlay && viewMode === 'terminal' && (
+          <div className="terminal-pane__reconnect-overlay">
+            <span>
+              {wsStatus === 'error' ? 'Connection error' : 'Disconnected'}
+            </span>
+            <button
+              type="button"
+              onClick={() => { void handleReconnect(); }}
+              style={{
+                padding: '8px 20px',
+                borderRadius: '8px',
+                background: 'var(--accent-blue)',
+                border: 'none',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontFamily: 'var(--font-sans)',
+              }}
+            >
+              Reconnect
+            </button>
+          </div>
+        )}
 
-      {/* Rich view: StreamRenderer */}
-      {viewMode === 'rich' && (
-        <div style={{ flex: 1, overflow: 'auto' }}>
-          <StreamRenderer
-            events={streamEvents}
-            streaming={streaming}
-            sessionInfo={{ sessionId }}
-          />
-        </div>
-      )}
+        {/* Rich view: StreamRenderer */}
+        {viewMode === 'rich' && (
+          <div style={{ flex: 1, overflow: 'auto' }}>
+            <StreamRenderer
+              events={streamEvents}
+              streaming={streaming}
+              sessionInfo={{ sessionId }}
+            />
+          </div>
+        )}
+
+        {/* Rich view disconnected banner */}
+        {viewMode === 'rich' && showReconnectOverlay && (
+          <div className="terminal-pane__rich-disconnected">
+            Session disconnected —{' '}
+            <button
+              type="button"
+              onClick={() => { void handleReconnect(); }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--accent-blue)',
+                cursor: 'pointer',
+                padding: 0,
+                fontSize: 'inherit',
+                fontFamily: 'inherit',
+                textDecoration: 'underline',
+              }}
+            >
+              Restart
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

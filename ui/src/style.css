@@ -4574,12 +4574,25 @@ tr:hover .work-actions__trigger {
   border-bottom: 1px solid rgba(255,255,255,0.04);
   flex-shrink: 0;
   font-size: 13px;
+  position: relative;
+  z-index: 20;                          /* ensure header stays above body overlay */
+}
+
+/* Bug: 1d286c1 — body wraps everything below the header so the reconnect overlay
+   is scoped here and cannot cover the header/ViewToggle controls */
+.terminal-pane__body {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .terminal-pane__container {
   flex: 1;
   overflow: hidden;
-  padding: 4px;                         /* small inset so xterm.js border isn't flush */
+  /* Removed padding: 4px — xterm manages its own internal padding; external
+     padding interferes with FitAddon size calculations causing squashed text */
 }
 
 .terminal-pane__inbox-banner {
@@ -4603,6 +4616,15 @@ tr:hover .work-actions__trigger {
   font-size: 14px;
   color: var(--text-muted);
   z-index: 10;
+}
+
+.terminal-pane__rich-disconnected {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: rgba(248,81,73,0.08);
+  border-top: 1px solid rgba(248,81,73,0.2);
 }
 
 /* ── View toggle ── */

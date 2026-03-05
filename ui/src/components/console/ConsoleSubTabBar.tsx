@@ -113,6 +113,22 @@ export function ConsoleSubTabBar({
             {/* Session name */}
             <span className="console-tab__name">{session.label}</span>
 
+            {/* Status indicator: red dot for crashed, muted dot for stopped.
+                Bug: 1d286c1 — requires Bug 3 (SSE events) to propagate status correctly */}
+            {(session.status === 'crashed' || session.status === 'stopped') && (
+              <span
+                style={{
+                  width: '6px',
+                  height: '6px',
+                  borderRadius: '50%',
+                  background: session.status === 'crashed' ? 'var(--accent-red, #f85149)' : 'var(--text-muted)',
+                  flexShrink: 0,
+                  display: 'inline-block',
+                }}
+                title={`Session ${session.status}`}
+              />
+            )}
+
             {/* Unread badge */}
             {session.unread_count > 0 && (
               <span
