@@ -502,6 +502,14 @@ export async function getConsoleSessions<T>(): Promise<T[]> {
   return normalizeList(payload);
 }
 
+export async function restartConsoleSession(sessionId: string): Promise<void> {
+  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/restart`);
+}
+
+export async function startConsoleSession(sessionId: string): Promise<void> {
+  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
+}
+
 export async function createConsoleSession(
   label: string,
   agentType: string,
@@ -513,12 +521,14 @@ export async function createConsoleSession(
     args: string[];
     cwd?: string;
     auto_restart?: boolean;
+    is_operator?: boolean;
   };
   const body: SessionBody = { label, command: '', args: [] };
   if (agentType === 'operator') {
     body.command = 'claude';
     body.args = ['--dangerously-skip-permissions', '--output-format', 'stream-json'];
     body.auto_restart = true;
+    body.is_operator = true;
   } else if (agentType === 'claude') {
     body.command = 'claude';
     body.args = ['--dangerously-skip-permissions', '--output-format', 'stream-json'];
