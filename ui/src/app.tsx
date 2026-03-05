@@ -878,8 +878,11 @@ function App(): JSX.Element {
               )}
             </a>
           </div>
-          <a href="#/settings" className={route.tab === 'settings' ? 'active' : ''}>
-            Settings
+          <a href="#/settings" className={route.tab === 'settings' ? 'active' : ''} aria-label="Settings" title="Settings">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{verticalAlign: 'middle', display: 'inline-block'}}>
+              <path d="M6.5 1.5l-.5 1.5A4.5 4.5 0 0 0 4.5 4l-1.5-.5L1.5 6l1.2.9A4.5 4.5 0 0 0 2.5 8a4.5 4.5 0 0 0 .2 1.1L1.5 10l1.5 2.5 1.5-.5a4.5 4.5 0 0 0 1.5 1l.5 1.5h3l.5-1.5a4.5 4.5 0 0 0 1.5-1l1.5.5 1.5-2.5-1.2-.9A4.5 4.5 0 0 0 13.5 8a4.5 4.5 0 0 0-.2-1.1L14.5 6 13 3.5l-1.5.5A4.5 4.5 0 0 0 10 3L9.5 1.5h-3Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
+              <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.3"/>
+            </svg>
           </a>
           <div className="tab-overflow" ref={overflowRef}>
             <button
