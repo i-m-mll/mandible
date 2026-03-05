@@ -12,6 +12,7 @@
     "build:watch": "node ui/esbuild.config.js --watch",
     "dev": "tsc --watch & node ui/esbuild.config.js --watch",
     "start": "node dist/index.js",
+    "postinstall": "node scripts/fix-pty-permissions.js",
     "test": "vitest run",
     "tauri": "tauri dev",
     "tauri:build": "tauri build"
