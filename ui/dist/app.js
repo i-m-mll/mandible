@@ -1,0 +1,21107 @@
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __defNormalProp = (obj, key2, value) => key2 in obj ? __defProp(obj, key2, { enumerable: true, configurable: true, writable: true, value }) : obj[key2] = value;
+var __commonJS = (cb, mod) => function __require() {
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key2 of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key2) && key2 !== except)
+        __defProp(to, key2, { get: () => from[key2], enumerable: !(desc = __getOwnPropDesc(from, key2)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __publicField = (obj, key2, value) => {
+  __defNormalProp(obj, typeof key2 !== "symbol" ? key2 + "" : key2, value);
+  return value;
+};
+var __accessCheck = (obj, member, msg) => {
+  if (!member.has(obj))
+    throw TypeError("Cannot " + msg);
+};
+var __privateAdd = (obj, member, value) => {
+  if (member.has(obj))
+    throw TypeError("Cannot add the same private member more than once");
+  member instanceof WeakSet ? member.add(obj) : member.set(obj, value);
+};
+var __privateMethod = (obj, member, method) => {
+  __accessCheck(obj, member, "access private method");
+  return method;
+};
+
+// ../../node_modules/@xterm/xterm/lib/xterm.js
+var require_xterm = __commonJS({
+  "../../node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
+    !function(e3, t3) {
+      if ("object" == typeof exports && "object" == typeof module)
+        module.exports = t3();
+      else if ("function" == typeof define && define.amd)
+        define([], t3);
+      else {
+        var i4 = t3();
+        for (var s3 in i4)
+          ("object" == typeof exports ? exports : e3)[s3] = i4[s3];
+      }
+    }(globalThis, () => (() => {
+      "use strict";
+      var e3 = { 4567: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.AccessibilityManager = void 0;
+        const n2 = i5(9042), o3 = i5(9924), a3 = i5(844), h3 = i5(4725), c3 = i5(2585), l3 = i5(3656);
+        let d3 = t4.AccessibilityManager = class extends a3.Disposable {
+          constructor(e5, t5, i6, s5) {
+            super(), this._terminal = e5, this._coreBrowserService = i6, this._renderService = s5, this._rowColumns = /* @__PURE__ */ new WeakMap(), this._liveRegionLineCount = 0, this._charsToConsume = [], this._charsToAnnounce = "", this._accessibilityContainer = this._coreBrowserService.mainDocument.createElement("div"), this._accessibilityContainer.classList.add("xterm-accessibility"), this._rowContainer = this._coreBrowserService.mainDocument.createElement("div"), this._rowContainer.setAttribute("role", "list"), this._rowContainer.classList.add("xterm-accessibility-tree"), this._rowElements = [];
+            for (let e6 = 0; e6 < this._terminal.rows; e6++)
+              this._rowElements[e6] = this._createAccessibilityTreeNode(), this._rowContainer.appendChild(this._rowElements[e6]);
+            if (this._topBoundaryFocusListener = (e6) => this._handleBoundaryFocus(e6, 0), this._bottomBoundaryFocusListener = (e6) => this._handleBoundaryFocus(e6, 1), this._rowElements[0].addEventListener("focus", this._topBoundaryFocusListener), this._rowElements[this._rowElements.length - 1].addEventListener("focus", this._bottomBoundaryFocusListener), this._refreshRowsDimensions(), this._accessibilityContainer.appendChild(this._rowContainer), this._liveRegion = this._coreBrowserService.mainDocument.createElement("div"), this._liveRegion.classList.add("live-region"), this._liveRegion.setAttribute("aria-live", "assertive"), this._accessibilityContainer.appendChild(this._liveRegion), this._liveRegionDebouncer = this.register(new o3.TimeBasedDebouncer(this._renderRows.bind(this))), !this._terminal.element)
+              throw new Error("Cannot enable accessibility before Terminal.open");
+            this._terminal.element.insertAdjacentElement("afterbegin", this._accessibilityContainer), this.register(this._terminal.onResize((e6) => this._handleResize(e6.rows))), this.register(this._terminal.onRender((e6) => this._refreshRows(e6.start, e6.end))), this.register(this._terminal.onScroll(() => this._refreshRows())), this.register(this._terminal.onA11yChar((e6) => this._handleChar(e6))), this.register(this._terminal.onLineFeed(() => this._handleChar("\n"))), this.register(this._terminal.onA11yTab((e6) => this._handleTab(e6))), this.register(this._terminal.onKey((e6) => this._handleKey(e6.key))), this.register(this._terminal.onBlur(() => this._clearLiveRegion())), this.register(this._renderService.onDimensionsChange(() => this._refreshRowsDimensions())), this.register((0, l3.addDisposableDomListener)(document, "selectionchange", () => this._handleSelectionChange())), this.register(this._coreBrowserService.onDprChange(() => this._refreshRowsDimensions())), this._refreshRows(), this.register((0, a3.toDisposable)(() => {
+              this._accessibilityContainer.remove(), this._rowElements.length = 0;
+            }));
+          }
+          _handleTab(e5) {
+            for (let t5 = 0; t5 < e5; t5++)
+              this._handleChar(" ");
+          }
+          _handleChar(e5) {
+            this._liveRegionLineCount < 21 && (this._charsToConsume.length > 0 ? this._charsToConsume.shift() !== e5 && (this._charsToAnnounce += e5) : this._charsToAnnounce += e5, "\n" === e5 && (this._liveRegionLineCount++, 21 === this._liveRegionLineCount && (this._liveRegion.textContent += n2.tooMuchOutput)));
+          }
+          _clearLiveRegion() {
+            this._liveRegion.textContent = "", this._liveRegionLineCount = 0;
+          }
+          _handleKey(e5) {
+            this._clearLiveRegion(), /\p{Control}/u.test(e5) || this._charsToConsume.push(e5);
+          }
+          _refreshRows(e5, t5) {
+            this._liveRegionDebouncer.refresh(e5, t5, this._terminal.rows);
+          }
+          _renderRows(e5, t5) {
+            const i6 = this._terminal.buffer, s5 = i6.lines.length.toString();
+            for (let r4 = e5; r4 <= t5; r4++) {
+              const e6 = i6.lines.get(i6.ydisp + r4), t6 = [], n3 = e6?.translateToString(true, void 0, void 0, t6) || "", o4 = (i6.ydisp + r4 + 1).toString(), a4 = this._rowElements[r4];
+              a4 && (0 === n3.length ? (a4.innerText = "\xA0", this._rowColumns.set(a4, [0, 1])) : (a4.textContent = n3, this._rowColumns.set(a4, t6)), a4.setAttribute("aria-posinset", o4), a4.setAttribute("aria-setsize", s5));
+            }
+            this._announceCharacters();
+          }
+          _announceCharacters() {
+            0 !== this._charsToAnnounce.length && (this._liveRegion.textContent += this._charsToAnnounce, this._charsToAnnounce = "");
+          }
+          _handleBoundaryFocus(e5, t5) {
+            const i6 = e5.target, s5 = this._rowElements[0 === t5 ? 1 : this._rowElements.length - 2];
+            if (i6.getAttribute("aria-posinset") === (0 === t5 ? "1" : `${this._terminal.buffer.lines.length}`))
+              return;
+            if (e5.relatedTarget !== s5)
+              return;
+            let r4, n3;
+            if (0 === t5 ? (r4 = i6, n3 = this._rowElements.pop(), this._rowContainer.removeChild(n3)) : (r4 = this._rowElements.shift(), n3 = i6, this._rowContainer.removeChild(r4)), r4.removeEventListener("focus", this._topBoundaryFocusListener), n3.removeEventListener("focus", this._bottomBoundaryFocusListener), 0 === t5) {
+              const e6 = this._createAccessibilityTreeNode();
+              this._rowElements.unshift(e6), this._rowContainer.insertAdjacentElement("afterbegin", e6);
+            } else {
+              const e6 = this._createAccessibilityTreeNode();
+              this._rowElements.push(e6), this._rowContainer.appendChild(e6);
+            }
+            this._rowElements[0].addEventListener("focus", this._topBoundaryFocusListener), this._rowElements[this._rowElements.length - 1].addEventListener("focus", this._bottomBoundaryFocusListener), this._terminal.scrollLines(0 === t5 ? -1 : 1), this._rowElements[0 === t5 ? 1 : this._rowElements.length - 2].focus(), e5.preventDefault(), e5.stopImmediatePropagation();
+          }
+          _handleSelectionChange() {
+            if (0 === this._rowElements.length)
+              return;
+            const e5 = document.getSelection();
+            if (!e5)
+              return;
+            if (e5.isCollapsed)
+              return void (this._rowContainer.contains(e5.anchorNode) && this._terminal.clearSelection());
+            if (!e5.anchorNode || !e5.focusNode)
+              return void console.error("anchorNode and/or focusNode are null");
+            let t5 = { node: e5.anchorNode, offset: e5.anchorOffset }, i6 = { node: e5.focusNode, offset: e5.focusOffset };
+            if ((t5.node.compareDocumentPosition(i6.node) & Node.DOCUMENT_POSITION_PRECEDING || t5.node === i6.node && t5.offset > i6.offset) && ([t5, i6] = [i6, t5]), t5.node.compareDocumentPosition(this._rowElements[0]) & (Node.DOCUMENT_POSITION_CONTAINED_BY | Node.DOCUMENT_POSITION_FOLLOWING) && (t5 = { node: this._rowElements[0].childNodes[0], offset: 0 }), !this._rowContainer.contains(t5.node))
+              return;
+            const s5 = this._rowElements.slice(-1)[0];
+            if (i6.node.compareDocumentPosition(s5) & (Node.DOCUMENT_POSITION_CONTAINED_BY | Node.DOCUMENT_POSITION_PRECEDING) && (i6 = { node: s5, offset: s5.textContent?.length ?? 0 }), !this._rowContainer.contains(i6.node))
+              return;
+            const r4 = ({ node: e6, offset: t6 }) => {
+              const i7 = e6 instanceof Text ? e6.parentNode : e6;
+              let s6 = parseInt(i7?.getAttribute("aria-posinset"), 10) - 1;
+              if (isNaN(s6))
+                return console.warn("row is invalid. Race condition?"), null;
+              const r5 = this._rowColumns.get(i7);
+              if (!r5)
+                return console.warn("columns is null. Race condition?"), null;
+              let n4 = t6 < r5.length ? r5[t6] : r5.slice(-1)[0] + 1;
+              return n4 >= this._terminal.cols && (++s6, n4 = 0), { row: s6, column: n4 };
+            }, n3 = r4(t5), o4 = r4(i6);
+            if (n3 && o4) {
+              if (n3.row > o4.row || n3.row === o4.row && n3.column >= o4.column)
+                throw new Error("invalid range");
+              this._terminal.select(n3.column, n3.row, (o4.row - n3.row) * this._terminal.cols - n3.column + o4.column);
+            }
+          }
+          _handleResize(e5) {
+            this._rowElements[this._rowElements.length - 1].removeEventListener("focus", this._bottomBoundaryFocusListener);
+            for (let e6 = this._rowContainer.children.length; e6 < this._terminal.rows; e6++)
+              this._rowElements[e6] = this._createAccessibilityTreeNode(), this._rowContainer.appendChild(this._rowElements[e6]);
+            for (; this._rowElements.length > e5; )
+              this._rowContainer.removeChild(this._rowElements.pop());
+            this._rowElements[this._rowElements.length - 1].addEventListener("focus", this._bottomBoundaryFocusListener), this._refreshRowsDimensions();
+          }
+          _createAccessibilityTreeNode() {
+            const e5 = this._coreBrowserService.mainDocument.createElement("div");
+            return e5.setAttribute("role", "listitem"), e5.tabIndex = -1, this._refreshRowDimensions(e5), e5;
+          }
+          _refreshRowsDimensions() {
+            if (this._renderService.dimensions.css.cell.height) {
+              this._accessibilityContainer.style.width = `${this._renderService.dimensions.css.canvas.width}px`, this._rowElements.length !== this._terminal.rows && this._handleResize(this._terminal.rows);
+              for (let e5 = 0; e5 < this._terminal.rows; e5++)
+                this._refreshRowDimensions(this._rowElements[e5]);
+            }
+          }
+          _refreshRowDimensions(e5) {
+            e5.style.height = `${this._renderService.dimensions.css.cell.height}px`;
+          }
+        };
+        t4.AccessibilityManager = d3 = s4([r3(1, c3.IInstantiationService), r3(2, h3.ICoreBrowserService), r3(3, h3.IRenderService)], d3);
+      }, 3614: (e4, t4) => {
+        function i5(e5) {
+          return e5.replace(/\r?\n/g, "\r");
+        }
+        function s4(e5, t5) {
+          return t5 ? "\x1B[200~" + e5 + "\x1B[201~" : e5;
+        }
+        function r3(e5, t5, r4, n3) {
+          e5 = s4(e5 = i5(e5), r4.decPrivateModes.bracketedPasteMode && true !== n3.rawOptions.ignoreBracketedPasteMode), r4.triggerDataEvent(e5, true), t5.value = "";
+        }
+        function n2(e5, t5, i6) {
+          const s5 = i6.getBoundingClientRect(), r4 = e5.clientX - s5.left - 10, n3 = e5.clientY - s5.top - 10;
+          t5.style.width = "20px", t5.style.height = "20px", t5.style.left = `${r4}px`, t5.style.top = `${n3}px`, t5.style.zIndex = "1000", t5.focus();
+        }
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.rightClickHandler = t4.moveTextAreaUnderMouseCursor = t4.paste = t4.handlePasteEvent = t4.copyHandler = t4.bracketTextForPaste = t4.prepareTextForTerminal = void 0, t4.prepareTextForTerminal = i5, t4.bracketTextForPaste = s4, t4.copyHandler = function(e5, t5) {
+          e5.clipboardData && e5.clipboardData.setData("text/plain", t5.selectionText), e5.preventDefault();
+        }, t4.handlePasteEvent = function(e5, t5, i6, s5) {
+          e5.stopPropagation(), e5.clipboardData && r3(e5.clipboardData.getData("text/plain"), t5, i6, s5);
+        }, t4.paste = r3, t4.moveTextAreaUnderMouseCursor = n2, t4.rightClickHandler = function(e5, t5, i6, s5, r4) {
+          n2(e5, t5, i6), r4 && s5.rightClickSelect(e5), t5.value = s5.selectionText, t5.select();
+        };
+      }, 7239: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.ColorContrastCache = void 0;
+        const s4 = i5(1505);
+        t4.ColorContrastCache = class {
+          constructor() {
+            this._color = new s4.TwoKeyMap(), this._css = new s4.TwoKeyMap();
+          }
+          setCss(e5, t5, i6) {
+            this._css.set(e5, t5, i6);
+          }
+          getCss(e5, t5) {
+            return this._css.get(e5, t5);
+          }
+          setColor(e5, t5, i6) {
+            this._color.set(e5, t5, i6);
+          }
+          getColor(e5, t5) {
+            return this._color.get(e5, t5);
+          }
+          clear() {
+            this._color.clear(), this._css.clear();
+          }
+        };
+      }, 3656: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.addDisposableDomListener = void 0, t4.addDisposableDomListener = function(e5, t5, i5, s4) {
+          e5.addEventListener(t5, i5, s4);
+          let r3 = false;
+          return { dispose: () => {
+            r3 || (r3 = true, e5.removeEventListener(t5, i5, s4));
+          } };
+        };
+      }, 3551: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.Linkifier = void 0;
+        const n2 = i5(3656), o3 = i5(8460), a3 = i5(844), h3 = i5(2585), c3 = i5(4725);
+        let l3 = t4.Linkifier = class extends a3.Disposable {
+          get currentLink() {
+            return this._currentLink;
+          }
+          constructor(e5, t5, i6, s5, r4) {
+            super(), this._element = e5, this._mouseService = t5, this._renderService = i6, this._bufferService = s5, this._linkProviderService = r4, this._linkCacheDisposables = [], this._isMouseOut = true, this._wasResized = false, this._activeLine = -1, this._onShowLinkUnderline = this.register(new o3.EventEmitter()), this.onShowLinkUnderline = this._onShowLinkUnderline.event, this._onHideLinkUnderline = this.register(new o3.EventEmitter()), this.onHideLinkUnderline = this._onHideLinkUnderline.event, this.register((0, a3.getDisposeArrayDisposable)(this._linkCacheDisposables)), this.register((0, a3.toDisposable)(() => {
+              this._lastMouseEvent = void 0, this._activeProviderReplies?.clear();
+            })), this.register(this._bufferService.onResize(() => {
+              this._clearCurrentLink(), this._wasResized = true;
+            })), this.register((0, n2.addDisposableDomListener)(this._element, "mouseleave", () => {
+              this._isMouseOut = true, this._clearCurrentLink();
+            })), this.register((0, n2.addDisposableDomListener)(this._element, "mousemove", this._handleMouseMove.bind(this))), this.register((0, n2.addDisposableDomListener)(this._element, "mousedown", this._handleMouseDown.bind(this))), this.register((0, n2.addDisposableDomListener)(this._element, "mouseup", this._handleMouseUp.bind(this)));
+          }
+          _handleMouseMove(e5) {
+            this._lastMouseEvent = e5;
+            const t5 = this._positionFromMouseEvent(e5, this._element, this._mouseService);
+            if (!t5)
+              return;
+            this._isMouseOut = false;
+            const i6 = e5.composedPath();
+            for (let e6 = 0; e6 < i6.length; e6++) {
+              const t6 = i6[e6];
+              if (t6.classList.contains("xterm"))
+                break;
+              if (t6.classList.contains("xterm-hover"))
+                return;
+            }
+            this._lastBufferCell && t5.x === this._lastBufferCell.x && t5.y === this._lastBufferCell.y || (this._handleHover(t5), this._lastBufferCell = t5);
+          }
+          _handleHover(e5) {
+            if (this._activeLine !== e5.y || this._wasResized)
+              return this._clearCurrentLink(), this._askForLink(e5, false), void (this._wasResized = false);
+            this._currentLink && this._linkAtPosition(this._currentLink.link, e5) || (this._clearCurrentLink(), this._askForLink(e5, true));
+          }
+          _askForLink(e5, t5) {
+            this._activeProviderReplies && t5 || (this._activeProviderReplies?.forEach((e6) => {
+              e6?.forEach((e7) => {
+                e7.link.dispose && e7.link.dispose();
+              });
+            }), this._activeProviderReplies = /* @__PURE__ */ new Map(), this._activeLine = e5.y);
+            let i6 = false;
+            for (const [s5, r4] of this._linkProviderService.linkProviders.entries())
+              if (t5) {
+                const t6 = this._activeProviderReplies?.get(s5);
+                t6 && (i6 = this._checkLinkProviderResult(s5, e5, i6));
+              } else
+                r4.provideLinks(e5.y, (t6) => {
+                  if (this._isMouseOut)
+                    return;
+                  const r5 = t6?.map((e6) => ({ link: e6 }));
+                  this._activeProviderReplies?.set(s5, r5), i6 = this._checkLinkProviderResult(s5, e5, i6), this._activeProviderReplies?.size === this._linkProviderService.linkProviders.length && this._removeIntersectingLinks(e5.y, this._activeProviderReplies);
+                });
+          }
+          _removeIntersectingLinks(e5, t5) {
+            const i6 = /* @__PURE__ */ new Set();
+            for (let s5 = 0; s5 < t5.size; s5++) {
+              const r4 = t5.get(s5);
+              if (r4)
+                for (let t6 = 0; t6 < r4.length; t6++) {
+                  const s6 = r4[t6], n3 = s6.link.range.start.y < e5 ? 0 : s6.link.range.start.x, o4 = s6.link.range.end.y > e5 ? this._bufferService.cols : s6.link.range.end.x;
+                  for (let e6 = n3; e6 <= o4; e6++) {
+                    if (i6.has(e6)) {
+                      r4.splice(t6--, 1);
+                      break;
+                    }
+                    i6.add(e6);
+                  }
+                }
+            }
+          }
+          _checkLinkProviderResult(e5, t5, i6) {
+            if (!this._activeProviderReplies)
+              return i6;
+            const s5 = this._activeProviderReplies.get(e5);
+            let r4 = false;
+            for (let t6 = 0; t6 < e5; t6++)
+              this._activeProviderReplies.has(t6) && !this._activeProviderReplies.get(t6) || (r4 = true);
+            if (!r4 && s5) {
+              const e6 = s5.find((e7) => this._linkAtPosition(e7.link, t5));
+              e6 && (i6 = true, this._handleNewLink(e6));
+            }
+            if (this._activeProviderReplies.size === this._linkProviderService.linkProviders.length && !i6)
+              for (let e6 = 0; e6 < this._activeProviderReplies.size; e6++) {
+                const s6 = this._activeProviderReplies.get(e6)?.find((e7) => this._linkAtPosition(e7.link, t5));
+                if (s6) {
+                  i6 = true, this._handleNewLink(s6);
+                  break;
+                }
+              }
+            return i6;
+          }
+          _handleMouseDown() {
+            this._mouseDownLink = this._currentLink;
+          }
+          _handleMouseUp(e5) {
+            if (!this._currentLink)
+              return;
+            const t5 = this._positionFromMouseEvent(e5, this._element, this._mouseService);
+            t5 && this._mouseDownLink === this._currentLink && this._linkAtPosition(this._currentLink.link, t5) && this._currentLink.link.activate(e5, this._currentLink.link.text);
+          }
+          _clearCurrentLink(e5, t5) {
+            this._currentLink && this._lastMouseEvent && (!e5 || !t5 || this._currentLink.link.range.start.y >= e5 && this._currentLink.link.range.end.y <= t5) && (this._linkLeave(this._element, this._currentLink.link, this._lastMouseEvent), this._currentLink = void 0, (0, a3.disposeArray)(this._linkCacheDisposables));
+          }
+          _handleNewLink(e5) {
+            if (!this._lastMouseEvent)
+              return;
+            const t5 = this._positionFromMouseEvent(this._lastMouseEvent, this._element, this._mouseService);
+            t5 && this._linkAtPosition(e5.link, t5) && (this._currentLink = e5, this._currentLink.state = { decorations: { underline: void 0 === e5.link.decorations || e5.link.decorations.underline, pointerCursor: void 0 === e5.link.decorations || e5.link.decorations.pointerCursor }, isHovered: true }, this._linkHover(this._element, e5.link, this._lastMouseEvent), e5.link.decorations = {}, Object.defineProperties(e5.link.decorations, { pointerCursor: { get: () => this._currentLink?.state?.decorations.pointerCursor, set: (e6) => {
+              this._currentLink?.state && this._currentLink.state.decorations.pointerCursor !== e6 && (this._currentLink.state.decorations.pointerCursor = e6, this._currentLink.state.isHovered && this._element.classList.toggle("xterm-cursor-pointer", e6));
+            } }, underline: { get: () => this._currentLink?.state?.decorations.underline, set: (t6) => {
+              this._currentLink?.state && this._currentLink?.state?.decorations.underline !== t6 && (this._currentLink.state.decorations.underline = t6, this._currentLink.state.isHovered && this._fireUnderlineEvent(e5.link, t6));
+            } } }), this._linkCacheDisposables.push(this._renderService.onRenderedViewportChange((e6) => {
+              if (!this._currentLink)
+                return;
+              const t6 = 0 === e6.start ? 0 : e6.start + 1 + this._bufferService.buffer.ydisp, i6 = this._bufferService.buffer.ydisp + 1 + e6.end;
+              if (this._currentLink.link.range.start.y >= t6 && this._currentLink.link.range.end.y <= i6 && (this._clearCurrentLink(t6, i6), this._lastMouseEvent)) {
+                const e7 = this._positionFromMouseEvent(this._lastMouseEvent, this._element, this._mouseService);
+                e7 && this._askForLink(e7, false);
+              }
+            })));
+          }
+          _linkHover(e5, t5, i6) {
+            this._currentLink?.state && (this._currentLink.state.isHovered = true, this._currentLink.state.decorations.underline && this._fireUnderlineEvent(t5, true), this._currentLink.state.decorations.pointerCursor && e5.classList.add("xterm-cursor-pointer")), t5.hover && t5.hover(i6, t5.text);
+          }
+          _fireUnderlineEvent(e5, t5) {
+            const i6 = e5.range, s5 = this._bufferService.buffer.ydisp, r4 = this._createLinkUnderlineEvent(i6.start.x - 1, i6.start.y - s5 - 1, i6.end.x, i6.end.y - s5 - 1, void 0);
+            (t5 ? this._onShowLinkUnderline : this._onHideLinkUnderline).fire(r4);
+          }
+          _linkLeave(e5, t5, i6) {
+            this._currentLink?.state && (this._currentLink.state.isHovered = false, this._currentLink.state.decorations.underline && this._fireUnderlineEvent(t5, false), this._currentLink.state.decorations.pointerCursor && e5.classList.remove("xterm-cursor-pointer")), t5.leave && t5.leave(i6, t5.text);
+          }
+          _linkAtPosition(e5, t5) {
+            const i6 = e5.range.start.y * this._bufferService.cols + e5.range.start.x, s5 = e5.range.end.y * this._bufferService.cols + e5.range.end.x, r4 = t5.y * this._bufferService.cols + t5.x;
+            return i6 <= r4 && r4 <= s5;
+          }
+          _positionFromMouseEvent(e5, t5, i6) {
+            const s5 = i6.getCoords(e5, t5, this._bufferService.cols, this._bufferService.rows);
+            if (s5)
+              return { x: s5[0], y: s5[1] + this._bufferService.buffer.ydisp };
+          }
+          _createLinkUnderlineEvent(e5, t5, i6, s5, r4) {
+            return { x1: e5, y1: t5, x2: i6, y2: s5, cols: this._bufferService.cols, fg: r4 };
+          }
+        };
+        t4.Linkifier = l3 = s4([r3(1, c3.IMouseService), r3(2, c3.IRenderService), r3(3, h3.IBufferService), r3(4, c3.ILinkProviderService)], l3);
+      }, 9042: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.tooMuchOutput = t4.promptLabel = void 0, t4.promptLabel = "Terminal input", t4.tooMuchOutput = "Too much output to announce, navigate to rows manually to read";
+      }, 3730: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.OscLinkProvider = void 0;
+        const n2 = i5(511), o3 = i5(2585);
+        let a3 = t4.OscLinkProvider = class {
+          constructor(e5, t5, i6) {
+            this._bufferService = e5, this._optionsService = t5, this._oscLinkService = i6;
+          }
+          provideLinks(e5, t5) {
+            const i6 = this._bufferService.buffer.lines.get(e5 - 1);
+            if (!i6)
+              return void t5(void 0);
+            const s5 = [], r4 = this._optionsService.rawOptions.linkHandler, o4 = new n2.CellData(), a4 = i6.getTrimmedLength();
+            let c3 = -1, l3 = -1, d3 = false;
+            for (let t6 = 0; t6 < a4; t6++)
+              if (-1 !== l3 || i6.hasContent(t6)) {
+                if (i6.loadCell(t6, o4), o4.hasExtendedAttrs() && o4.extended.urlId) {
+                  if (-1 === l3) {
+                    l3 = t6, c3 = o4.extended.urlId;
+                    continue;
+                  }
+                  d3 = o4.extended.urlId !== c3;
+                } else
+                  -1 !== l3 && (d3 = true);
+                if (d3 || -1 !== l3 && t6 === a4 - 1) {
+                  const i7 = this._oscLinkService.getLinkData(c3)?.uri;
+                  if (i7) {
+                    const n3 = { start: { x: l3 + 1, y: e5 }, end: { x: t6 + (d3 || t6 !== a4 - 1 ? 0 : 1), y: e5 } };
+                    let o5 = false;
+                    if (!r4?.allowNonHttpProtocols)
+                      try {
+                        const e6 = new URL(i7);
+                        ["http:", "https:"].includes(e6.protocol) || (o5 = true);
+                      } catch (e6) {
+                        o5 = true;
+                      }
+                    o5 || s5.push({ text: i7, range: n3, activate: (e6, t7) => r4 ? r4.activate(e6, t7, n3) : h3(0, t7), hover: (e6, t7) => r4?.hover?.(e6, t7, n3), leave: (e6, t7) => r4?.leave?.(e6, t7, n3) });
+                  }
+                  d3 = false, o4.hasExtendedAttrs() && o4.extended.urlId ? (l3 = t6, c3 = o4.extended.urlId) : (l3 = -1, c3 = -1);
+                }
+              }
+            t5(s5);
+          }
+        };
+        function h3(e5, t5) {
+          if (confirm(`Do you want to navigate to ${t5}?
+
+WARNING: This link could potentially be dangerous`)) {
+            const e6 = window.open();
+            if (e6) {
+              try {
+                e6.opener = null;
+              } catch {
+              }
+              e6.location.href = t5;
+            } else
+              console.warn("Opening link blocked as opener could not be cleared");
+          }
+        }
+        t4.OscLinkProvider = a3 = s4([r3(0, o3.IBufferService), r3(1, o3.IOptionsService), r3(2, o3.IOscLinkService)], a3);
+      }, 6193: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.RenderDebouncer = void 0, t4.RenderDebouncer = class {
+          constructor(e5, t5) {
+            this._renderCallback = e5, this._coreBrowserService = t5, this._refreshCallbacks = [];
+          }
+          dispose() {
+            this._animationFrame && (this._coreBrowserService.window.cancelAnimationFrame(this._animationFrame), this._animationFrame = void 0);
+          }
+          addRefreshCallback(e5) {
+            return this._refreshCallbacks.push(e5), this._animationFrame || (this._animationFrame = this._coreBrowserService.window.requestAnimationFrame(() => this._innerRefresh())), this._animationFrame;
+          }
+          refresh(e5, t5, i5) {
+            this._rowCount = i5, e5 = void 0 !== e5 ? e5 : 0, t5 = void 0 !== t5 ? t5 : this._rowCount - 1, this._rowStart = void 0 !== this._rowStart ? Math.min(this._rowStart, e5) : e5, this._rowEnd = void 0 !== this._rowEnd ? Math.max(this._rowEnd, t5) : t5, this._animationFrame || (this._animationFrame = this._coreBrowserService.window.requestAnimationFrame(() => this._innerRefresh()));
+          }
+          _innerRefresh() {
+            if (this._animationFrame = void 0, void 0 === this._rowStart || void 0 === this._rowEnd || void 0 === this._rowCount)
+              return void this._runRefreshCallbacks();
+            const e5 = Math.max(this._rowStart, 0), t5 = Math.min(this._rowEnd, this._rowCount - 1);
+            this._rowStart = void 0, this._rowEnd = void 0, this._renderCallback(e5, t5), this._runRefreshCallbacks();
+          }
+          _runRefreshCallbacks() {
+            for (const e5 of this._refreshCallbacks)
+              e5(0);
+            this._refreshCallbacks = [];
+          }
+        };
+      }, 3236: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.Terminal = void 0;
+        const s4 = i5(3614), r3 = i5(3656), n2 = i5(3551), o3 = i5(9042), a3 = i5(3730), h3 = i5(1680), c3 = i5(3107), l3 = i5(5744), d3 = i5(2950), _2 = i5(1296), u4 = i5(428), f4 = i5(4269), v3 = i5(5114), p3 = i5(8934), g2 = i5(3230), m3 = i5(9312), S2 = i5(4725), C3 = i5(6731), b = i5(8055), w3 = i5(8969), y3 = i5(8460), E2 = i5(844), k3 = i5(6114), L2 = i5(8437), D3 = i5(2584), R = i5(7399), x2 = i5(5941), A3 = i5(9074), B3 = i5(2585), T3 = i5(5435), M2 = i5(4567), O2 = i5(779);
+        class P2 extends w3.CoreTerminal {
+          get onFocus() {
+            return this._onFocus.event;
+          }
+          get onBlur() {
+            return this._onBlur.event;
+          }
+          get onA11yChar() {
+            return this._onA11yCharEmitter.event;
+          }
+          get onA11yTab() {
+            return this._onA11yTabEmitter.event;
+          }
+          get onWillOpen() {
+            return this._onWillOpen.event;
+          }
+          constructor(e5 = {}) {
+            super(e5), this.browser = k3, this._keyDownHandled = false, this._keyDownSeen = false, this._keyPressHandled = false, this._unprocessedDeadKey = false, this._accessibilityManager = this.register(new E2.MutableDisposable()), this._onCursorMove = this.register(new y3.EventEmitter()), this.onCursorMove = this._onCursorMove.event, this._onKey = this.register(new y3.EventEmitter()), this.onKey = this._onKey.event, this._onRender = this.register(new y3.EventEmitter()), this.onRender = this._onRender.event, this._onSelectionChange = this.register(new y3.EventEmitter()), this.onSelectionChange = this._onSelectionChange.event, this._onTitleChange = this.register(new y3.EventEmitter()), this.onTitleChange = this._onTitleChange.event, this._onBell = this.register(new y3.EventEmitter()), this.onBell = this._onBell.event, this._onFocus = this.register(new y3.EventEmitter()), this._onBlur = this.register(new y3.EventEmitter()), this._onA11yCharEmitter = this.register(new y3.EventEmitter()), this._onA11yTabEmitter = this.register(new y3.EventEmitter()), this._onWillOpen = this.register(new y3.EventEmitter()), this._setup(), this._decorationService = this._instantiationService.createInstance(A3.DecorationService), this._instantiationService.setService(B3.IDecorationService, this._decorationService), this._linkProviderService = this._instantiationService.createInstance(O2.LinkProviderService), this._instantiationService.setService(S2.ILinkProviderService, this._linkProviderService), this._linkProviderService.registerLinkProvider(this._instantiationService.createInstance(a3.OscLinkProvider)), this.register(this._inputHandler.onRequestBell(() => this._onBell.fire())), this.register(this._inputHandler.onRequestRefreshRows((e6, t5) => this.refresh(e6, t5))), this.register(this._inputHandler.onRequestSendFocus(() => this._reportFocus())), this.register(this._inputHandler.onRequestReset(() => this.reset())), this.register(this._inputHandler.onRequestWindowsOptionsReport((e6) => this._reportWindowsOptions(e6))), this.register(this._inputHandler.onColor((e6) => this._handleColorEvent(e6))), this.register((0, y3.forwardEvent)(this._inputHandler.onCursorMove, this._onCursorMove)), this.register((0, y3.forwardEvent)(this._inputHandler.onTitleChange, this._onTitleChange)), this.register((0, y3.forwardEvent)(this._inputHandler.onA11yChar, this._onA11yCharEmitter)), this.register((0, y3.forwardEvent)(this._inputHandler.onA11yTab, this._onA11yTabEmitter)), this.register(this._bufferService.onResize((e6) => this._afterResize(e6.cols, e6.rows))), this.register((0, E2.toDisposable)(() => {
+              this._customKeyEventHandler = void 0, this.element?.parentNode?.removeChild(this.element);
+            }));
+          }
+          _handleColorEvent(e5) {
+            if (this._themeService)
+              for (const t5 of e5) {
+                let e6, i6 = "";
+                switch (t5.index) {
+                  case 256:
+                    e6 = "foreground", i6 = "10";
+                    break;
+                  case 257:
+                    e6 = "background", i6 = "11";
+                    break;
+                  case 258:
+                    e6 = "cursor", i6 = "12";
+                    break;
+                  default:
+                    e6 = "ansi", i6 = "4;" + t5.index;
+                }
+                switch (t5.type) {
+                  case 0:
+                    const s5 = b.color.toColorRGB("ansi" === e6 ? this._themeService.colors.ansi[t5.index] : this._themeService.colors[e6]);
+                    this.coreService.triggerDataEvent(`${D3.C0.ESC}]${i6};${(0, x2.toRgbString)(s5)}${D3.C1_ESCAPED.ST}`);
+                    break;
+                  case 1:
+                    if ("ansi" === e6)
+                      this._themeService.modifyColors((e7) => e7.ansi[t5.index] = b.channels.toColor(...t5.color));
+                    else {
+                      const i7 = e6;
+                      this._themeService.modifyColors((e7) => e7[i7] = b.channels.toColor(...t5.color));
+                    }
+                    break;
+                  case 2:
+                    this._themeService.restoreColor(t5.index);
+                }
+              }
+          }
+          _setup() {
+            super._setup(), this._customKeyEventHandler = void 0;
+          }
+          get buffer() {
+            return this.buffers.active;
+          }
+          focus() {
+            this.textarea && this.textarea.focus({ preventScroll: true });
+          }
+          _handleScreenReaderModeOptionChange(e5) {
+            e5 ? !this._accessibilityManager.value && this._renderService && (this._accessibilityManager.value = this._instantiationService.createInstance(M2.AccessibilityManager, this)) : this._accessibilityManager.clear();
+          }
+          _handleTextAreaFocus(e5) {
+            this.coreService.decPrivateModes.sendFocus && this.coreService.triggerDataEvent(D3.C0.ESC + "[I"), this.element.classList.add("focus"), this._showCursor(), this._onFocus.fire();
+          }
+          blur() {
+            return this.textarea?.blur();
+          }
+          _handleTextAreaBlur() {
+            this.textarea.value = "", this.refresh(this.buffer.y, this.buffer.y), this.coreService.decPrivateModes.sendFocus && this.coreService.triggerDataEvent(D3.C0.ESC + "[O"), this.element.classList.remove("focus"), this._onBlur.fire();
+          }
+          _syncTextArea() {
+            if (!this.textarea || !this.buffer.isCursorInViewport || this._compositionHelper.isComposing || !this._renderService)
+              return;
+            const e5 = this.buffer.ybase + this.buffer.y, t5 = this.buffer.lines.get(e5);
+            if (!t5)
+              return;
+            const i6 = Math.min(this.buffer.x, this.cols - 1), s5 = this._renderService.dimensions.css.cell.height, r4 = t5.getWidth(i6), n3 = this._renderService.dimensions.css.cell.width * r4, o4 = this.buffer.y * this._renderService.dimensions.css.cell.height, a4 = i6 * this._renderService.dimensions.css.cell.width;
+            this.textarea.style.left = a4 + "px", this.textarea.style.top = o4 + "px", this.textarea.style.width = n3 + "px", this.textarea.style.height = s5 + "px", this.textarea.style.lineHeight = s5 + "px", this.textarea.style.zIndex = "-5";
+          }
+          _initGlobal() {
+            this._bindKeys(), this.register((0, r3.addDisposableDomListener)(this.element, "copy", (e6) => {
+              this.hasSelection() && (0, s4.copyHandler)(e6, this._selectionService);
+            }));
+            const e5 = (e6) => (0, s4.handlePasteEvent)(e6, this.textarea, this.coreService, this.optionsService);
+            this.register((0, r3.addDisposableDomListener)(this.textarea, "paste", e5)), this.register((0, r3.addDisposableDomListener)(this.element, "paste", e5)), k3.isFirefox ? this.register((0, r3.addDisposableDomListener)(this.element, "mousedown", (e6) => {
+              2 === e6.button && (0, s4.rightClickHandler)(e6, this.textarea, this.screenElement, this._selectionService, this.options.rightClickSelectsWord);
+            })) : this.register((0, r3.addDisposableDomListener)(this.element, "contextmenu", (e6) => {
+              (0, s4.rightClickHandler)(e6, this.textarea, this.screenElement, this._selectionService, this.options.rightClickSelectsWord);
+            })), k3.isLinux && this.register((0, r3.addDisposableDomListener)(this.element, "auxclick", (e6) => {
+              1 === e6.button && (0, s4.moveTextAreaUnderMouseCursor)(e6, this.textarea, this.screenElement);
+            }));
+          }
+          _bindKeys() {
+            this.register((0, r3.addDisposableDomListener)(this.textarea, "keyup", (e5) => this._keyUp(e5), true)), this.register((0, r3.addDisposableDomListener)(this.textarea, "keydown", (e5) => this._keyDown(e5), true)), this.register((0, r3.addDisposableDomListener)(this.textarea, "keypress", (e5) => this._keyPress(e5), true)), this.register((0, r3.addDisposableDomListener)(this.textarea, "compositionstart", () => this._compositionHelper.compositionstart())), this.register((0, r3.addDisposableDomListener)(this.textarea, "compositionupdate", (e5) => this._compositionHelper.compositionupdate(e5))), this.register((0, r3.addDisposableDomListener)(this.textarea, "compositionend", () => this._compositionHelper.compositionend())), this.register((0, r3.addDisposableDomListener)(this.textarea, "input", (e5) => this._inputEvent(e5), true)), this.register(this.onRender(() => this._compositionHelper.updateCompositionElements()));
+          }
+          open(e5) {
+            if (!e5)
+              throw new Error("Terminal requires a parent element.");
+            if (e5.isConnected || this._logService.debug("Terminal.open was called on an element that was not attached to the DOM"), this.element?.ownerDocument.defaultView && this._coreBrowserService)
+              return void (this.element.ownerDocument.defaultView !== this._coreBrowserService.window && (this._coreBrowserService.window = this.element.ownerDocument.defaultView));
+            this._document = e5.ownerDocument, this.options.documentOverride && this.options.documentOverride instanceof Document && (this._document = this.optionsService.rawOptions.documentOverride), this.element = this._document.createElement("div"), this.element.dir = "ltr", this.element.classList.add("terminal"), this.element.classList.add("xterm"), e5.appendChild(this.element);
+            const t5 = this._document.createDocumentFragment();
+            this._viewportElement = this._document.createElement("div"), this._viewportElement.classList.add("xterm-viewport"), t5.appendChild(this._viewportElement), this._viewportScrollArea = this._document.createElement("div"), this._viewportScrollArea.classList.add("xterm-scroll-area"), this._viewportElement.appendChild(this._viewportScrollArea), this.screenElement = this._document.createElement("div"), this.screenElement.classList.add("xterm-screen"), this.register((0, r3.addDisposableDomListener)(this.screenElement, "mousemove", (e6) => this.updateCursorStyle(e6))), this._helperContainer = this._document.createElement("div"), this._helperContainer.classList.add("xterm-helpers"), this.screenElement.appendChild(this._helperContainer), t5.appendChild(this.screenElement), this.textarea = this._document.createElement("textarea"), this.textarea.classList.add("xterm-helper-textarea"), this.textarea.setAttribute("aria-label", o3.promptLabel), k3.isChromeOS || this.textarea.setAttribute("aria-multiline", "false"), this.textarea.setAttribute("autocorrect", "off"), this.textarea.setAttribute("autocapitalize", "off"), this.textarea.setAttribute("spellcheck", "false"), this.textarea.tabIndex = 0, this._coreBrowserService = this.register(this._instantiationService.createInstance(v3.CoreBrowserService, this.textarea, e5.ownerDocument.defaultView ?? window, this._document ?? "undefined" != typeof window ? window.document : null)), this._instantiationService.setService(S2.ICoreBrowserService, this._coreBrowserService), this.register((0, r3.addDisposableDomListener)(this.textarea, "focus", (e6) => this._handleTextAreaFocus(e6))), this.register((0, r3.addDisposableDomListener)(this.textarea, "blur", () => this._handleTextAreaBlur())), this._helperContainer.appendChild(this.textarea), this._charSizeService = this._instantiationService.createInstance(u4.CharSizeService, this._document, this._helperContainer), this._instantiationService.setService(S2.ICharSizeService, this._charSizeService), this._themeService = this._instantiationService.createInstance(C3.ThemeService), this._instantiationService.setService(S2.IThemeService, this._themeService), this._characterJoinerService = this._instantiationService.createInstance(f4.CharacterJoinerService), this._instantiationService.setService(S2.ICharacterJoinerService, this._characterJoinerService), this._renderService = this.register(this._instantiationService.createInstance(g2.RenderService, this.rows, this.screenElement)), this._instantiationService.setService(S2.IRenderService, this._renderService), this.register(this._renderService.onRenderedViewportChange((e6) => this._onRender.fire(e6))), this.onResize((e6) => this._renderService.resize(e6.cols, e6.rows)), this._compositionView = this._document.createElement("div"), this._compositionView.classList.add("composition-view"), this._compositionHelper = this._instantiationService.createInstance(d3.CompositionHelper, this.textarea, this._compositionView), this._helperContainer.appendChild(this._compositionView), this._mouseService = this._instantiationService.createInstance(p3.MouseService), this._instantiationService.setService(S2.IMouseService, this._mouseService), this.linkifier = this.register(this._instantiationService.createInstance(n2.Linkifier, this.screenElement)), this.element.appendChild(t5);
+            try {
+              this._onWillOpen.fire(this.element);
+            } catch {
+            }
+            this._renderService.hasRenderer() || this._renderService.setRenderer(this._createRenderer()), this.viewport = this._instantiationService.createInstance(h3.Viewport, this._viewportElement, this._viewportScrollArea), this.viewport.onRequestScrollLines((e6) => this.scrollLines(e6.amount, e6.suppressScrollEvent, 1)), this.register(this._inputHandler.onRequestSyncScrollBar(() => this.viewport.syncScrollArea())), this.register(this.viewport), this.register(this.onCursorMove(() => {
+              this._renderService.handleCursorMove(), this._syncTextArea();
+            })), this.register(this.onResize(() => this._renderService.handleResize(this.cols, this.rows))), this.register(this.onBlur(() => this._renderService.handleBlur())), this.register(this.onFocus(() => this._renderService.handleFocus())), this.register(this._renderService.onDimensionsChange(() => this.viewport.syncScrollArea())), this._selectionService = this.register(this._instantiationService.createInstance(m3.SelectionService, this.element, this.screenElement, this.linkifier)), this._instantiationService.setService(S2.ISelectionService, this._selectionService), this.register(this._selectionService.onRequestScrollLines((e6) => this.scrollLines(e6.amount, e6.suppressScrollEvent))), this.register(this._selectionService.onSelectionChange(() => this._onSelectionChange.fire())), this.register(this._selectionService.onRequestRedraw((e6) => this._renderService.handleSelectionChanged(e6.start, e6.end, e6.columnSelectMode))), this.register(this._selectionService.onLinuxMouseSelection((e6) => {
+              this.textarea.value = e6, this.textarea.focus(), this.textarea.select();
+            })), this.register(this._onScroll.event((e6) => {
+              this.viewport.syncScrollArea(), this._selectionService.refresh();
+            })), this.register((0, r3.addDisposableDomListener)(this._viewportElement, "scroll", () => this._selectionService.refresh())), this.register(this._instantiationService.createInstance(c3.BufferDecorationRenderer, this.screenElement)), this.register((0, r3.addDisposableDomListener)(this.element, "mousedown", (e6) => this._selectionService.handleMouseDown(e6))), this.coreMouseService.areMouseEventsActive ? (this._selectionService.disable(), this.element.classList.add("enable-mouse-events")) : this._selectionService.enable(), this.options.screenReaderMode && (this._accessibilityManager.value = this._instantiationService.createInstance(M2.AccessibilityManager, this)), this.register(this.optionsService.onSpecificOptionChange("screenReaderMode", (e6) => this._handleScreenReaderModeOptionChange(e6))), this.options.overviewRulerWidth && (this._overviewRulerRenderer = this.register(this._instantiationService.createInstance(l3.OverviewRulerRenderer, this._viewportElement, this.screenElement))), this.optionsService.onSpecificOptionChange("overviewRulerWidth", (e6) => {
+              !this._overviewRulerRenderer && e6 && this._viewportElement && this.screenElement && (this._overviewRulerRenderer = this.register(this._instantiationService.createInstance(l3.OverviewRulerRenderer, this._viewportElement, this.screenElement)));
+            }), this._charSizeService.measure(), this.refresh(0, this.rows - 1), this._initGlobal(), this.bindMouse();
+          }
+          _createRenderer() {
+            return this._instantiationService.createInstance(_2.DomRenderer, this, this._document, this.element, this.screenElement, this._viewportElement, this._helperContainer, this.linkifier);
+          }
+          bindMouse() {
+            const e5 = this, t5 = this.element;
+            function i6(t6) {
+              const i7 = e5._mouseService.getMouseReportCoords(t6, e5.screenElement);
+              if (!i7)
+                return false;
+              let s6, r4;
+              switch (t6.overrideType || t6.type) {
+                case "mousemove":
+                  r4 = 32, void 0 === t6.buttons ? (s6 = 3, void 0 !== t6.button && (s6 = t6.button < 3 ? t6.button : 3)) : s6 = 1 & t6.buttons ? 0 : 4 & t6.buttons ? 1 : 2 & t6.buttons ? 2 : 3;
+                  break;
+                case "mouseup":
+                  r4 = 0, s6 = t6.button < 3 ? t6.button : 3;
+                  break;
+                case "mousedown":
+                  r4 = 1, s6 = t6.button < 3 ? t6.button : 3;
+                  break;
+                case "wheel":
+                  if (e5._customWheelEventHandler && false === e5._customWheelEventHandler(t6))
+                    return false;
+                  if (0 === e5.viewport.getLinesScrolled(t6))
+                    return false;
+                  r4 = t6.deltaY < 0 ? 0 : 1, s6 = 4;
+                  break;
+                default:
+                  return false;
+              }
+              return !(void 0 === r4 || void 0 === s6 || s6 > 4) && e5.coreMouseService.triggerMouseEvent({ col: i7.col, row: i7.row, x: i7.x, y: i7.y, button: s6, action: r4, ctrl: t6.ctrlKey, alt: t6.altKey, shift: t6.shiftKey });
+            }
+            const s5 = { mouseup: null, wheel: null, mousedrag: null, mousemove: null }, n3 = { mouseup: (e6) => (i6(e6), e6.buttons || (this._document.removeEventListener("mouseup", s5.mouseup), s5.mousedrag && this._document.removeEventListener("mousemove", s5.mousedrag)), this.cancel(e6)), wheel: (e6) => (i6(e6), this.cancel(e6, true)), mousedrag: (e6) => {
+              e6.buttons && i6(e6);
+            }, mousemove: (e6) => {
+              e6.buttons || i6(e6);
+            } };
+            this.register(this.coreMouseService.onProtocolChange((e6) => {
+              e6 ? ("debug" === this.optionsService.rawOptions.logLevel && this._logService.debug("Binding to mouse events:", this.coreMouseService.explainEvents(e6)), this.element.classList.add("enable-mouse-events"), this._selectionService.disable()) : (this._logService.debug("Unbinding from mouse events."), this.element.classList.remove("enable-mouse-events"), this._selectionService.enable()), 8 & e6 ? s5.mousemove || (t5.addEventListener("mousemove", n3.mousemove), s5.mousemove = n3.mousemove) : (t5.removeEventListener("mousemove", s5.mousemove), s5.mousemove = null), 16 & e6 ? s5.wheel || (t5.addEventListener("wheel", n3.wheel, { passive: false }), s5.wheel = n3.wheel) : (t5.removeEventListener("wheel", s5.wheel), s5.wheel = null), 2 & e6 ? s5.mouseup || (s5.mouseup = n3.mouseup) : (this._document.removeEventListener("mouseup", s5.mouseup), s5.mouseup = null), 4 & e6 ? s5.mousedrag || (s5.mousedrag = n3.mousedrag) : (this._document.removeEventListener("mousemove", s5.mousedrag), s5.mousedrag = null);
+            })), this.coreMouseService.activeProtocol = this.coreMouseService.activeProtocol, this.register((0, r3.addDisposableDomListener)(t5, "mousedown", (e6) => {
+              if (e6.preventDefault(), this.focus(), this.coreMouseService.areMouseEventsActive && !this._selectionService.shouldForceSelection(e6))
+                return i6(e6), s5.mouseup && this._document.addEventListener("mouseup", s5.mouseup), s5.mousedrag && this._document.addEventListener("mousemove", s5.mousedrag), this.cancel(e6);
+            })), this.register((0, r3.addDisposableDomListener)(t5, "wheel", (e6) => {
+              if (!s5.wheel) {
+                if (this._customWheelEventHandler && false === this._customWheelEventHandler(e6))
+                  return false;
+                if (!this.buffer.hasScrollback) {
+                  const t6 = this.viewport.getLinesScrolled(e6);
+                  if (0 === t6)
+                    return;
+                  const i7 = D3.C0.ESC + (this.coreService.decPrivateModes.applicationCursorKeys ? "O" : "[") + (e6.deltaY < 0 ? "A" : "B");
+                  let s6 = "";
+                  for (let e7 = 0; e7 < Math.abs(t6); e7++)
+                    s6 += i7;
+                  return this.coreService.triggerDataEvent(s6, true), this.cancel(e6, true);
+                }
+                return this.viewport.handleWheel(e6) ? this.cancel(e6) : void 0;
+              }
+            }, { passive: false })), this.register((0, r3.addDisposableDomListener)(t5, "touchstart", (e6) => {
+              if (!this.coreMouseService.areMouseEventsActive)
+                return this.viewport.handleTouchStart(e6), this.cancel(e6);
+            }, { passive: true })), this.register((0, r3.addDisposableDomListener)(t5, "touchmove", (e6) => {
+              if (!this.coreMouseService.areMouseEventsActive)
+                return this.viewport.handleTouchMove(e6) ? void 0 : this.cancel(e6);
+            }, { passive: false }));
+          }
+          refresh(e5, t5) {
+            this._renderService?.refreshRows(e5, t5);
+          }
+          updateCursorStyle(e5) {
+            this._selectionService?.shouldColumnSelect(e5) ? this.element.classList.add("column-select") : this.element.classList.remove("column-select");
+          }
+          _showCursor() {
+            this.coreService.isCursorInitialized || (this.coreService.isCursorInitialized = true, this.refresh(this.buffer.y, this.buffer.y));
+          }
+          scrollLines(e5, t5, i6 = 0) {
+            1 === i6 ? (super.scrollLines(e5, t5, i6), this.refresh(0, this.rows - 1)) : this.viewport?.scrollLines(e5);
+          }
+          paste(e5) {
+            (0, s4.paste)(e5, this.textarea, this.coreService, this.optionsService);
+          }
+          attachCustomKeyEventHandler(e5) {
+            this._customKeyEventHandler = e5;
+          }
+          attachCustomWheelEventHandler(e5) {
+            this._customWheelEventHandler = e5;
+          }
+          registerLinkProvider(e5) {
+            return this._linkProviderService.registerLinkProvider(e5);
+          }
+          registerCharacterJoiner(e5) {
+            if (!this._characterJoinerService)
+              throw new Error("Terminal must be opened first");
+            const t5 = this._characterJoinerService.register(e5);
+            return this.refresh(0, this.rows - 1), t5;
+          }
+          deregisterCharacterJoiner(e5) {
+            if (!this._characterJoinerService)
+              throw new Error("Terminal must be opened first");
+            this._characterJoinerService.deregister(e5) && this.refresh(0, this.rows - 1);
+          }
+          get markers() {
+            return this.buffer.markers;
+          }
+          registerMarker(e5) {
+            return this.buffer.addMarker(this.buffer.ybase + this.buffer.y + e5);
+          }
+          registerDecoration(e5) {
+            return this._decorationService.registerDecoration(e5);
+          }
+          hasSelection() {
+            return !!this._selectionService && this._selectionService.hasSelection;
+          }
+          select(e5, t5, i6) {
+            this._selectionService.setSelection(e5, t5, i6);
+          }
+          getSelection() {
+            return this._selectionService ? this._selectionService.selectionText : "";
+          }
+          getSelectionPosition() {
+            if (this._selectionService && this._selectionService.hasSelection)
+              return { start: { x: this._selectionService.selectionStart[0], y: this._selectionService.selectionStart[1] }, end: { x: this._selectionService.selectionEnd[0], y: this._selectionService.selectionEnd[1] } };
+          }
+          clearSelection() {
+            this._selectionService?.clearSelection();
+          }
+          selectAll() {
+            this._selectionService?.selectAll();
+          }
+          selectLines(e5, t5) {
+            this._selectionService?.selectLines(e5, t5);
+          }
+          _keyDown(e5) {
+            if (this._keyDownHandled = false, this._keyDownSeen = true, this._customKeyEventHandler && false === this._customKeyEventHandler(e5))
+              return false;
+            const t5 = this.browser.isMac && this.options.macOptionIsMeta && e5.altKey;
+            if (!t5 && !this._compositionHelper.keydown(e5))
+              return this.options.scrollOnUserInput && this.buffer.ybase !== this.buffer.ydisp && this.scrollToBottom(), false;
+            t5 || "Dead" !== e5.key && "AltGraph" !== e5.key || (this._unprocessedDeadKey = true);
+            const i6 = (0, R.evaluateKeyboardEvent)(e5, this.coreService.decPrivateModes.applicationCursorKeys, this.browser.isMac, this.options.macOptionIsMeta);
+            if (this.updateCursorStyle(e5), 3 === i6.type || 2 === i6.type) {
+              const t6 = this.rows - 1;
+              return this.scrollLines(2 === i6.type ? -t6 : t6), this.cancel(e5, true);
+            }
+            return 1 === i6.type && this.selectAll(), !!this._isThirdLevelShift(this.browser, e5) || (i6.cancel && this.cancel(e5, true), !i6.key || !!(e5.key && !e5.ctrlKey && !e5.altKey && !e5.metaKey && 1 === e5.key.length && e5.key.charCodeAt(0) >= 65 && e5.key.charCodeAt(0) <= 90) || (this._unprocessedDeadKey ? (this._unprocessedDeadKey = false, true) : (i6.key !== D3.C0.ETX && i6.key !== D3.C0.CR || (this.textarea.value = ""), this._onKey.fire({ key: i6.key, domEvent: e5 }), this._showCursor(), this.coreService.triggerDataEvent(i6.key, true), !this.optionsService.rawOptions.screenReaderMode || e5.altKey || e5.ctrlKey ? this.cancel(e5, true) : void (this._keyDownHandled = true))));
+          }
+          _isThirdLevelShift(e5, t5) {
+            const i6 = e5.isMac && !this.options.macOptionIsMeta && t5.altKey && !t5.ctrlKey && !t5.metaKey || e5.isWindows && t5.altKey && t5.ctrlKey && !t5.metaKey || e5.isWindows && t5.getModifierState("AltGraph");
+            return "keypress" === t5.type ? i6 : i6 && (!t5.keyCode || t5.keyCode > 47);
+          }
+          _keyUp(e5) {
+            this._keyDownSeen = false, this._customKeyEventHandler && false === this._customKeyEventHandler(e5) || (function(e6) {
+              return 16 === e6.keyCode || 17 === e6.keyCode || 18 === e6.keyCode;
+            }(e5) || this.focus(), this.updateCursorStyle(e5), this._keyPressHandled = false);
+          }
+          _keyPress(e5) {
+            let t5;
+            if (this._keyPressHandled = false, this._keyDownHandled)
+              return false;
+            if (this._customKeyEventHandler && false === this._customKeyEventHandler(e5))
+              return false;
+            if (this.cancel(e5), e5.charCode)
+              t5 = e5.charCode;
+            else if (null === e5.which || void 0 === e5.which)
+              t5 = e5.keyCode;
+            else {
+              if (0 === e5.which || 0 === e5.charCode)
+                return false;
+              t5 = e5.which;
+            }
+            return !(!t5 || (e5.altKey || e5.ctrlKey || e5.metaKey) && !this._isThirdLevelShift(this.browser, e5) || (t5 = String.fromCharCode(t5), this._onKey.fire({ key: t5, domEvent: e5 }), this._showCursor(), this.coreService.triggerDataEvent(t5, true), this._keyPressHandled = true, this._unprocessedDeadKey = false, 0));
+          }
+          _inputEvent(e5) {
+            if (e5.data && "insertText" === e5.inputType && (!e5.composed || !this._keyDownSeen) && !this.optionsService.rawOptions.screenReaderMode) {
+              if (this._keyPressHandled)
+                return false;
+              this._unprocessedDeadKey = false;
+              const t5 = e5.data;
+              return this.coreService.triggerDataEvent(t5, true), this.cancel(e5), true;
+            }
+            return false;
+          }
+          resize(e5, t5) {
+            e5 !== this.cols || t5 !== this.rows ? super.resize(e5, t5) : this._charSizeService && !this._charSizeService.hasValidSize && this._charSizeService.measure();
+          }
+          _afterResize(e5, t5) {
+            this._charSizeService?.measure(), this.viewport?.syncScrollArea(true);
+          }
+          clear() {
+            if (0 !== this.buffer.ybase || 0 !== this.buffer.y) {
+              this.buffer.clearAllMarkers(), this.buffer.lines.set(0, this.buffer.lines.get(this.buffer.ybase + this.buffer.y)), this.buffer.lines.length = 1, this.buffer.ydisp = 0, this.buffer.ybase = 0, this.buffer.y = 0;
+              for (let e5 = 1; e5 < this.rows; e5++)
+                this.buffer.lines.push(this.buffer.getBlankLine(L2.DEFAULT_ATTR_DATA));
+              this._onScroll.fire({ position: this.buffer.ydisp, source: 0 }), this.viewport?.reset(), this.refresh(0, this.rows - 1);
+            }
+          }
+          reset() {
+            this.options.rows = this.rows, this.options.cols = this.cols;
+            const e5 = this._customKeyEventHandler;
+            this._setup(), super.reset(), this._selectionService?.reset(), this._decorationService.reset(), this.viewport?.reset(), this._customKeyEventHandler = e5, this.refresh(0, this.rows - 1);
+          }
+          clearTextureAtlas() {
+            this._renderService?.clearTextureAtlas();
+          }
+          _reportFocus() {
+            this.element?.classList.contains("focus") ? this.coreService.triggerDataEvent(D3.C0.ESC + "[I") : this.coreService.triggerDataEvent(D3.C0.ESC + "[O");
+          }
+          _reportWindowsOptions(e5) {
+            if (this._renderService)
+              switch (e5) {
+                case T3.WindowsOptionsReportType.GET_WIN_SIZE_PIXELS:
+                  const e6 = this._renderService.dimensions.css.canvas.width.toFixed(0), t5 = this._renderService.dimensions.css.canvas.height.toFixed(0);
+                  this.coreService.triggerDataEvent(`${D3.C0.ESC}[4;${t5};${e6}t`);
+                  break;
+                case T3.WindowsOptionsReportType.GET_CELL_SIZE_PIXELS:
+                  const i6 = this._renderService.dimensions.css.cell.width.toFixed(0), s5 = this._renderService.dimensions.css.cell.height.toFixed(0);
+                  this.coreService.triggerDataEvent(`${D3.C0.ESC}[6;${s5};${i6}t`);
+              }
+          }
+          cancel(e5, t5) {
+            if (this.options.cancelEvents || t5)
+              return e5.preventDefault(), e5.stopPropagation(), false;
+          }
+        }
+        t4.Terminal = P2;
+      }, 9924: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.TimeBasedDebouncer = void 0, t4.TimeBasedDebouncer = class {
+          constructor(e5, t5 = 1e3) {
+            this._renderCallback = e5, this._debounceThresholdMS = t5, this._lastRefreshMs = 0, this._additionalRefreshRequested = false;
+          }
+          dispose() {
+            this._refreshTimeoutID && clearTimeout(this._refreshTimeoutID);
+          }
+          refresh(e5, t5, i5) {
+            this._rowCount = i5, e5 = void 0 !== e5 ? e5 : 0, t5 = void 0 !== t5 ? t5 : this._rowCount - 1, this._rowStart = void 0 !== this._rowStart ? Math.min(this._rowStart, e5) : e5, this._rowEnd = void 0 !== this._rowEnd ? Math.max(this._rowEnd, t5) : t5;
+            const s4 = Date.now();
+            if (s4 - this._lastRefreshMs >= this._debounceThresholdMS)
+              this._lastRefreshMs = s4, this._innerRefresh();
+            else if (!this._additionalRefreshRequested) {
+              const e6 = s4 - this._lastRefreshMs, t6 = this._debounceThresholdMS - e6;
+              this._additionalRefreshRequested = true, this._refreshTimeoutID = window.setTimeout(() => {
+                this._lastRefreshMs = Date.now(), this._innerRefresh(), this._additionalRefreshRequested = false, this._refreshTimeoutID = void 0;
+              }, t6);
+            }
+          }
+          _innerRefresh() {
+            if (void 0 === this._rowStart || void 0 === this._rowEnd || void 0 === this._rowCount)
+              return;
+            const e5 = Math.max(this._rowStart, 0), t5 = Math.min(this._rowEnd, this._rowCount - 1);
+            this._rowStart = void 0, this._rowEnd = void 0, this._renderCallback(e5, t5);
+          }
+        };
+      }, 1680: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.Viewport = void 0;
+        const n2 = i5(3656), o3 = i5(4725), a3 = i5(8460), h3 = i5(844), c3 = i5(2585);
+        let l3 = t4.Viewport = class extends h3.Disposable {
+          constructor(e5, t5, i6, s5, r4, o4, h4, c4) {
+            super(), this._viewportElement = e5, this._scrollArea = t5, this._bufferService = i6, this._optionsService = s5, this._charSizeService = r4, this._renderService = o4, this._coreBrowserService = h4, this.scrollBarWidth = 0, this._currentRowHeight = 0, this._currentDeviceCellHeight = 0, this._lastRecordedBufferLength = 0, this._lastRecordedViewportHeight = 0, this._lastRecordedBufferHeight = 0, this._lastTouchY = 0, this._lastScrollTop = 0, this._wheelPartialScroll = 0, this._refreshAnimationFrame = null, this._ignoreNextScrollEvent = false, this._smoothScrollState = { startTime: 0, origin: -1, target: -1 }, this._onRequestScrollLines = this.register(new a3.EventEmitter()), this.onRequestScrollLines = this._onRequestScrollLines.event, this.scrollBarWidth = this._viewportElement.offsetWidth - this._scrollArea.offsetWidth || 15, this.register((0, n2.addDisposableDomListener)(this._viewportElement, "scroll", this._handleScroll.bind(this))), this._activeBuffer = this._bufferService.buffer, this.register(this._bufferService.buffers.onBufferActivate((e6) => this._activeBuffer = e6.activeBuffer)), this._renderDimensions = this._renderService.dimensions, this.register(this._renderService.onDimensionsChange((e6) => this._renderDimensions = e6)), this._handleThemeChange(c4.colors), this.register(c4.onChangeColors((e6) => this._handleThemeChange(e6))), this.register(this._optionsService.onSpecificOptionChange("scrollback", () => this.syncScrollArea())), setTimeout(() => this.syncScrollArea());
+          }
+          _handleThemeChange(e5) {
+            this._viewportElement.style.backgroundColor = e5.background.css;
+          }
+          reset() {
+            this._currentRowHeight = 0, this._currentDeviceCellHeight = 0, this._lastRecordedBufferLength = 0, this._lastRecordedViewportHeight = 0, this._lastRecordedBufferHeight = 0, this._lastTouchY = 0, this._lastScrollTop = 0, this._coreBrowserService.window.requestAnimationFrame(() => this.syncScrollArea());
+          }
+          _refresh(e5) {
+            if (e5)
+              return this._innerRefresh(), void (null !== this._refreshAnimationFrame && this._coreBrowserService.window.cancelAnimationFrame(this._refreshAnimationFrame));
+            null === this._refreshAnimationFrame && (this._refreshAnimationFrame = this._coreBrowserService.window.requestAnimationFrame(() => this._innerRefresh()));
+          }
+          _innerRefresh() {
+            if (this._charSizeService.height > 0) {
+              this._currentRowHeight = this._renderDimensions.device.cell.height / this._coreBrowserService.dpr, this._currentDeviceCellHeight = this._renderDimensions.device.cell.height, this._lastRecordedViewportHeight = this._viewportElement.offsetHeight;
+              const e6 = Math.round(this._currentRowHeight * this._lastRecordedBufferLength) + (this._lastRecordedViewportHeight - this._renderDimensions.css.canvas.height);
+              this._lastRecordedBufferHeight !== e6 && (this._lastRecordedBufferHeight = e6, this._scrollArea.style.height = this._lastRecordedBufferHeight + "px");
+            }
+            const e5 = this._bufferService.buffer.ydisp * this._currentRowHeight;
+            this._viewportElement.scrollTop !== e5 && (this._ignoreNextScrollEvent = true, this._viewportElement.scrollTop = e5), this._refreshAnimationFrame = null;
+          }
+          syncScrollArea(e5 = false) {
+            if (this._lastRecordedBufferLength !== this._bufferService.buffer.lines.length)
+              return this._lastRecordedBufferLength = this._bufferService.buffer.lines.length, void this._refresh(e5);
+            this._lastRecordedViewportHeight === this._renderService.dimensions.css.canvas.height && this._lastScrollTop === this._activeBuffer.ydisp * this._currentRowHeight && this._renderDimensions.device.cell.height === this._currentDeviceCellHeight || this._refresh(e5);
+          }
+          _handleScroll(e5) {
+            if (this._lastScrollTop = this._viewportElement.scrollTop, !this._viewportElement.offsetParent)
+              return;
+            if (this._ignoreNextScrollEvent)
+              return this._ignoreNextScrollEvent = false, void this._onRequestScrollLines.fire({ amount: 0, suppressScrollEvent: true });
+            const t5 = Math.round(this._lastScrollTop / this._currentRowHeight) - this._bufferService.buffer.ydisp;
+            this._onRequestScrollLines.fire({ amount: t5, suppressScrollEvent: true });
+          }
+          _smoothScroll() {
+            if (this._isDisposed || -1 === this._smoothScrollState.origin || -1 === this._smoothScrollState.target)
+              return;
+            const e5 = this._smoothScrollPercent();
+            this._viewportElement.scrollTop = this._smoothScrollState.origin + Math.round(e5 * (this._smoothScrollState.target - this._smoothScrollState.origin)), e5 < 1 ? this._coreBrowserService.window.requestAnimationFrame(() => this._smoothScroll()) : this._clearSmoothScrollState();
+          }
+          _smoothScrollPercent() {
+            return this._optionsService.rawOptions.smoothScrollDuration && this._smoothScrollState.startTime ? Math.max(Math.min((Date.now() - this._smoothScrollState.startTime) / this._optionsService.rawOptions.smoothScrollDuration, 1), 0) : 1;
+          }
+          _clearSmoothScrollState() {
+            this._smoothScrollState.startTime = 0, this._smoothScrollState.origin = -1, this._smoothScrollState.target = -1;
+          }
+          _bubbleScroll(e5, t5) {
+            const i6 = this._viewportElement.scrollTop + this._lastRecordedViewportHeight;
+            return !(t5 < 0 && 0 !== this._viewportElement.scrollTop || t5 > 0 && i6 < this._lastRecordedBufferHeight) || (e5.cancelable && e5.preventDefault(), false);
+          }
+          handleWheel(e5) {
+            const t5 = this._getPixelsScrolled(e5);
+            return 0 !== t5 && (this._optionsService.rawOptions.smoothScrollDuration ? (this._smoothScrollState.startTime = Date.now(), this._smoothScrollPercent() < 1 ? (this._smoothScrollState.origin = this._viewportElement.scrollTop, -1 === this._smoothScrollState.target ? this._smoothScrollState.target = this._viewportElement.scrollTop + t5 : this._smoothScrollState.target += t5, this._smoothScrollState.target = Math.max(Math.min(this._smoothScrollState.target, this._viewportElement.scrollHeight), 0), this._smoothScroll()) : this._clearSmoothScrollState()) : this._viewportElement.scrollTop += t5, this._bubbleScroll(e5, t5));
+          }
+          scrollLines(e5) {
+            if (0 !== e5)
+              if (this._optionsService.rawOptions.smoothScrollDuration) {
+                const t5 = e5 * this._currentRowHeight;
+                this._smoothScrollState.startTime = Date.now(), this._smoothScrollPercent() < 1 ? (this._smoothScrollState.origin = this._viewportElement.scrollTop, this._smoothScrollState.target = this._smoothScrollState.origin + t5, this._smoothScrollState.target = Math.max(Math.min(this._smoothScrollState.target, this._viewportElement.scrollHeight), 0), this._smoothScroll()) : this._clearSmoothScrollState();
+              } else
+                this._onRequestScrollLines.fire({ amount: e5, suppressScrollEvent: false });
+          }
+          _getPixelsScrolled(e5) {
+            if (0 === e5.deltaY || e5.shiftKey)
+              return 0;
+            let t5 = this._applyScrollModifier(e5.deltaY, e5);
+            return e5.deltaMode === WheelEvent.DOM_DELTA_LINE ? t5 *= this._currentRowHeight : e5.deltaMode === WheelEvent.DOM_DELTA_PAGE && (t5 *= this._currentRowHeight * this._bufferService.rows), t5;
+          }
+          getBufferElements(e5, t5) {
+            let i6, s5 = "";
+            const r4 = [], n3 = t5 ?? this._bufferService.buffer.lines.length, o4 = this._bufferService.buffer.lines;
+            for (let t6 = e5; t6 < n3; t6++) {
+              const e6 = o4.get(t6);
+              if (!e6)
+                continue;
+              const n4 = o4.get(t6 + 1)?.isWrapped;
+              if (s5 += e6.translateToString(!n4), !n4 || t6 === o4.length - 1) {
+                const e7 = document.createElement("div");
+                e7.textContent = s5, r4.push(e7), s5.length > 0 && (i6 = e7), s5 = "";
+              }
+            }
+            return { bufferElements: r4, cursorElement: i6 };
+          }
+          getLinesScrolled(e5) {
+            if (0 === e5.deltaY || e5.shiftKey)
+              return 0;
+            let t5 = this._applyScrollModifier(e5.deltaY, e5);
+            return e5.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? (t5 /= this._currentRowHeight + 0, this._wheelPartialScroll += t5, t5 = Math.floor(Math.abs(this._wheelPartialScroll)) * (this._wheelPartialScroll > 0 ? 1 : -1), this._wheelPartialScroll %= 1) : e5.deltaMode === WheelEvent.DOM_DELTA_PAGE && (t5 *= this._bufferService.rows), t5;
+          }
+          _applyScrollModifier(e5, t5) {
+            const i6 = this._optionsService.rawOptions.fastScrollModifier;
+            return "alt" === i6 && t5.altKey || "ctrl" === i6 && t5.ctrlKey || "shift" === i6 && t5.shiftKey ? e5 * this._optionsService.rawOptions.fastScrollSensitivity * this._optionsService.rawOptions.scrollSensitivity : e5 * this._optionsService.rawOptions.scrollSensitivity;
+          }
+          handleTouchStart(e5) {
+            this._lastTouchY = e5.touches[0].pageY;
+          }
+          handleTouchMove(e5) {
+            const t5 = this._lastTouchY - e5.touches[0].pageY;
+            return this._lastTouchY = e5.touches[0].pageY, 0 !== t5 && (this._viewportElement.scrollTop += t5, this._bubbleScroll(e5, t5));
+          }
+        };
+        t4.Viewport = l3 = s4([r3(2, c3.IBufferService), r3(3, c3.IOptionsService), r3(4, o3.ICharSizeService), r3(5, o3.IRenderService), r3(6, o3.ICoreBrowserService), r3(7, o3.IThemeService)], l3);
+      }, 3107: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferDecorationRenderer = void 0;
+        const n2 = i5(4725), o3 = i5(844), a3 = i5(2585);
+        let h3 = t4.BufferDecorationRenderer = class extends o3.Disposable {
+          constructor(e5, t5, i6, s5, r4) {
+            super(), this._screenElement = e5, this._bufferService = t5, this._coreBrowserService = i6, this._decorationService = s5, this._renderService = r4, this._decorationElements = /* @__PURE__ */ new Map(), this._altBufferIsActive = false, this._dimensionsChanged = false, this._container = document.createElement("div"), this._container.classList.add("xterm-decoration-container"), this._screenElement.appendChild(this._container), this.register(this._renderService.onRenderedViewportChange(() => this._doRefreshDecorations())), this.register(this._renderService.onDimensionsChange(() => {
+              this._dimensionsChanged = true, this._queueRefresh();
+            })), this.register(this._coreBrowserService.onDprChange(() => this._queueRefresh())), this.register(this._bufferService.buffers.onBufferActivate(() => {
+              this._altBufferIsActive = this._bufferService.buffer === this._bufferService.buffers.alt;
+            })), this.register(this._decorationService.onDecorationRegistered(() => this._queueRefresh())), this.register(this._decorationService.onDecorationRemoved((e6) => this._removeDecoration(e6))), this.register((0, o3.toDisposable)(() => {
+              this._container.remove(), this._decorationElements.clear();
+            }));
+          }
+          _queueRefresh() {
+            void 0 === this._animationFrame && (this._animationFrame = this._renderService.addRefreshCallback(() => {
+              this._doRefreshDecorations(), this._animationFrame = void 0;
+            }));
+          }
+          _doRefreshDecorations() {
+            for (const e5 of this._decorationService.decorations)
+              this._renderDecoration(e5);
+            this._dimensionsChanged = false;
+          }
+          _renderDecoration(e5) {
+            this._refreshStyle(e5), this._dimensionsChanged && this._refreshXPosition(e5);
+          }
+          _createElement(e5) {
+            const t5 = this._coreBrowserService.mainDocument.createElement("div");
+            t5.classList.add("xterm-decoration"), t5.classList.toggle("xterm-decoration-top-layer", "top" === e5?.options?.layer), t5.style.width = `${Math.round((e5.options.width || 1) * this._renderService.dimensions.css.cell.width)}px`, t5.style.height = (e5.options.height || 1) * this._renderService.dimensions.css.cell.height + "px", t5.style.top = (e5.marker.line - this._bufferService.buffers.active.ydisp) * this._renderService.dimensions.css.cell.height + "px", t5.style.lineHeight = `${this._renderService.dimensions.css.cell.height}px`;
+            const i6 = e5.options.x ?? 0;
+            return i6 && i6 > this._bufferService.cols && (t5.style.display = "none"), this._refreshXPosition(e5, t5), t5;
+          }
+          _refreshStyle(e5) {
+            const t5 = e5.marker.line - this._bufferService.buffers.active.ydisp;
+            if (t5 < 0 || t5 >= this._bufferService.rows)
+              e5.element && (e5.element.style.display = "none", e5.onRenderEmitter.fire(e5.element));
+            else {
+              let i6 = this._decorationElements.get(e5);
+              i6 || (i6 = this._createElement(e5), e5.element = i6, this._decorationElements.set(e5, i6), this._container.appendChild(i6), e5.onDispose(() => {
+                this._decorationElements.delete(e5), i6.remove();
+              })), i6.style.top = t5 * this._renderService.dimensions.css.cell.height + "px", i6.style.display = this._altBufferIsActive ? "none" : "block", e5.onRenderEmitter.fire(i6);
+            }
+          }
+          _refreshXPosition(e5, t5 = e5.element) {
+            if (!t5)
+              return;
+            const i6 = e5.options.x ?? 0;
+            "right" === (e5.options.anchor || "left") ? t5.style.right = i6 ? i6 * this._renderService.dimensions.css.cell.width + "px" : "" : t5.style.left = i6 ? i6 * this._renderService.dimensions.css.cell.width + "px" : "";
+          }
+          _removeDecoration(e5) {
+            this._decorationElements.get(e5)?.remove(), this._decorationElements.delete(e5), e5.dispose();
+          }
+        };
+        t4.BufferDecorationRenderer = h3 = s4([r3(1, a3.IBufferService), r3(2, n2.ICoreBrowserService), r3(3, a3.IDecorationService), r3(4, n2.IRenderService)], h3);
+      }, 5871: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.ColorZoneStore = void 0, t4.ColorZoneStore = class {
+          constructor() {
+            this._zones = [], this._zonePool = [], this._zonePoolIndex = 0, this._linePadding = { full: 0, left: 0, center: 0, right: 0 };
+          }
+          get zones() {
+            return this._zonePool.length = Math.min(this._zonePool.length, this._zones.length), this._zones;
+          }
+          clear() {
+            this._zones.length = 0, this._zonePoolIndex = 0;
+          }
+          addDecoration(e5) {
+            if (e5.options.overviewRulerOptions) {
+              for (const t5 of this._zones)
+                if (t5.color === e5.options.overviewRulerOptions.color && t5.position === e5.options.overviewRulerOptions.position) {
+                  if (this._lineIntersectsZone(t5, e5.marker.line))
+                    return;
+                  if (this._lineAdjacentToZone(t5, e5.marker.line, e5.options.overviewRulerOptions.position))
+                    return void this._addLineToZone(t5, e5.marker.line);
+                }
+              if (this._zonePoolIndex < this._zonePool.length)
+                return this._zonePool[this._zonePoolIndex].color = e5.options.overviewRulerOptions.color, this._zonePool[this._zonePoolIndex].position = e5.options.overviewRulerOptions.position, this._zonePool[this._zonePoolIndex].startBufferLine = e5.marker.line, this._zonePool[this._zonePoolIndex].endBufferLine = e5.marker.line, void this._zones.push(this._zonePool[this._zonePoolIndex++]);
+              this._zones.push({ color: e5.options.overviewRulerOptions.color, position: e5.options.overviewRulerOptions.position, startBufferLine: e5.marker.line, endBufferLine: e5.marker.line }), this._zonePool.push(this._zones[this._zones.length - 1]), this._zonePoolIndex++;
+            }
+          }
+          setPadding(e5) {
+            this._linePadding = e5;
+          }
+          _lineIntersectsZone(e5, t5) {
+            return t5 >= e5.startBufferLine && t5 <= e5.endBufferLine;
+          }
+          _lineAdjacentToZone(e5, t5, i5) {
+            return t5 >= e5.startBufferLine - this._linePadding[i5 || "full"] && t5 <= e5.endBufferLine + this._linePadding[i5 || "full"];
+          }
+          _addLineToZone(e5, t5) {
+            e5.startBufferLine = Math.min(e5.startBufferLine, t5), e5.endBufferLine = Math.max(e5.endBufferLine, t5);
+          }
+        };
+      }, 5744: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.OverviewRulerRenderer = void 0;
+        const n2 = i5(5871), o3 = i5(4725), a3 = i5(844), h3 = i5(2585), c3 = { full: 0, left: 0, center: 0, right: 0 }, l3 = { full: 0, left: 0, center: 0, right: 0 }, d3 = { full: 0, left: 0, center: 0, right: 0 };
+        let _2 = t4.OverviewRulerRenderer = class extends a3.Disposable {
+          get _width() {
+            return this._optionsService.options.overviewRulerWidth || 0;
+          }
+          constructor(e5, t5, i6, s5, r4, o4, h4) {
+            super(), this._viewportElement = e5, this._screenElement = t5, this._bufferService = i6, this._decorationService = s5, this._renderService = r4, this._optionsService = o4, this._coreBrowserService = h4, this._colorZoneStore = new n2.ColorZoneStore(), this._shouldUpdateDimensions = true, this._shouldUpdateAnchor = true, this._lastKnownBufferLength = 0, this._canvas = this._coreBrowserService.mainDocument.createElement("canvas"), this._canvas.classList.add("xterm-decoration-overview-ruler"), this._refreshCanvasDimensions(), this._viewportElement.parentElement?.insertBefore(this._canvas, this._viewportElement);
+            const c4 = this._canvas.getContext("2d");
+            if (!c4)
+              throw new Error("Ctx cannot be null");
+            this._ctx = c4, this._registerDecorationListeners(), this._registerBufferChangeListeners(), this._registerDimensionChangeListeners(), this.register((0, a3.toDisposable)(() => {
+              this._canvas?.remove();
+            }));
+          }
+          _registerDecorationListeners() {
+            this.register(this._decorationService.onDecorationRegistered(() => this._queueRefresh(void 0, true))), this.register(this._decorationService.onDecorationRemoved(() => this._queueRefresh(void 0, true)));
+          }
+          _registerBufferChangeListeners() {
+            this.register(this._renderService.onRenderedViewportChange(() => this._queueRefresh())), this.register(this._bufferService.buffers.onBufferActivate(() => {
+              this._canvas.style.display = this._bufferService.buffer === this._bufferService.buffers.alt ? "none" : "block";
+            })), this.register(this._bufferService.onScroll(() => {
+              this._lastKnownBufferLength !== this._bufferService.buffers.normal.lines.length && (this._refreshDrawHeightConstants(), this._refreshColorZonePadding());
+            }));
+          }
+          _registerDimensionChangeListeners() {
+            this.register(this._renderService.onRender(() => {
+              this._containerHeight && this._containerHeight === this._screenElement.clientHeight || (this._queueRefresh(true), this._containerHeight = this._screenElement.clientHeight);
+            })), this.register(this._optionsService.onSpecificOptionChange("overviewRulerWidth", () => this._queueRefresh(true))), this.register(this._coreBrowserService.onDprChange(() => this._queueRefresh(true))), this._queueRefresh(true);
+          }
+          _refreshDrawConstants() {
+            const e5 = Math.floor(this._canvas.width / 3), t5 = Math.ceil(this._canvas.width / 3);
+            l3.full = this._canvas.width, l3.left = e5, l3.center = t5, l3.right = e5, this._refreshDrawHeightConstants(), d3.full = 0, d3.left = 0, d3.center = l3.left, d3.right = l3.left + l3.center;
+          }
+          _refreshDrawHeightConstants() {
+            c3.full = Math.round(2 * this._coreBrowserService.dpr);
+            const e5 = this._canvas.height / this._bufferService.buffer.lines.length, t5 = Math.round(Math.max(Math.min(e5, 12), 6) * this._coreBrowserService.dpr);
+            c3.left = t5, c3.center = t5, c3.right = t5;
+          }
+          _refreshColorZonePadding() {
+            this._colorZoneStore.setPadding({ full: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c3.full), left: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c3.left), center: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c3.center), right: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c3.right) }), this._lastKnownBufferLength = this._bufferService.buffers.normal.lines.length;
+          }
+          _refreshCanvasDimensions() {
+            this._canvas.style.width = `${this._width}px`, this._canvas.width = Math.round(this._width * this._coreBrowserService.dpr), this._canvas.style.height = `${this._screenElement.clientHeight}px`, this._canvas.height = Math.round(this._screenElement.clientHeight * this._coreBrowserService.dpr), this._refreshDrawConstants(), this._refreshColorZonePadding();
+          }
+          _refreshDecorations() {
+            this._shouldUpdateDimensions && this._refreshCanvasDimensions(), this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height), this._colorZoneStore.clear();
+            for (const e6 of this._decorationService.decorations)
+              this._colorZoneStore.addDecoration(e6);
+            this._ctx.lineWidth = 1;
+            const e5 = this._colorZoneStore.zones;
+            for (const t5 of e5)
+              "full" !== t5.position && this._renderColorZone(t5);
+            for (const t5 of e5)
+              "full" === t5.position && this._renderColorZone(t5);
+            this._shouldUpdateDimensions = false, this._shouldUpdateAnchor = false;
+          }
+          _renderColorZone(e5) {
+            this._ctx.fillStyle = e5.color, this._ctx.fillRect(d3[e5.position || "full"], Math.round((this._canvas.height - 1) * (e5.startBufferLine / this._bufferService.buffers.active.lines.length) - c3[e5.position || "full"] / 2), l3[e5.position || "full"], Math.round((this._canvas.height - 1) * ((e5.endBufferLine - e5.startBufferLine) / this._bufferService.buffers.active.lines.length) + c3[e5.position || "full"]));
+          }
+          _queueRefresh(e5, t5) {
+            this._shouldUpdateDimensions = e5 || this._shouldUpdateDimensions, this._shouldUpdateAnchor = t5 || this._shouldUpdateAnchor, void 0 === this._animationFrame && (this._animationFrame = this._coreBrowserService.window.requestAnimationFrame(() => {
+              this._refreshDecorations(), this._animationFrame = void 0;
+            }));
+          }
+        };
+        t4.OverviewRulerRenderer = _2 = s4([r3(2, h3.IBufferService), r3(3, h3.IDecorationService), r3(4, o3.IRenderService), r3(5, h3.IOptionsService), r3(6, o3.ICoreBrowserService)], _2);
+      }, 2950: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CompositionHelper = void 0;
+        const n2 = i5(4725), o3 = i5(2585), a3 = i5(2584);
+        let h3 = t4.CompositionHelper = class {
+          get isComposing() {
+            return this._isComposing;
+          }
+          constructor(e5, t5, i6, s5, r4, n3) {
+            this._textarea = e5, this._compositionView = t5, this._bufferService = i6, this._optionsService = s5, this._coreService = r4, this._renderService = n3, this._isComposing = false, this._isSendingComposition = false, this._compositionPosition = { start: 0, end: 0 }, this._dataAlreadySent = "";
+          }
+          compositionstart() {
+            this._isComposing = true, this._compositionPosition.start = this._textarea.value.length, this._compositionView.textContent = "", this._dataAlreadySent = "", this._compositionView.classList.add("active");
+          }
+          compositionupdate(e5) {
+            this._compositionView.textContent = e5.data, this.updateCompositionElements(), setTimeout(() => {
+              this._compositionPosition.end = this._textarea.value.length;
+            }, 0);
+          }
+          compositionend() {
+            this._finalizeComposition(true);
+          }
+          keydown(e5) {
+            if (this._isComposing || this._isSendingComposition) {
+              if (229 === e5.keyCode)
+                return false;
+              if (16 === e5.keyCode || 17 === e5.keyCode || 18 === e5.keyCode)
+                return false;
+              this._finalizeComposition(false);
+            }
+            return 229 !== e5.keyCode || (this._handleAnyTextareaChanges(), false);
+          }
+          _finalizeComposition(e5) {
+            if (this._compositionView.classList.remove("active"), this._isComposing = false, e5) {
+              const e6 = { start: this._compositionPosition.start, end: this._compositionPosition.end };
+              this._isSendingComposition = true, setTimeout(() => {
+                if (this._isSendingComposition) {
+                  let t5;
+                  this._isSendingComposition = false, e6.start += this._dataAlreadySent.length, t5 = this._isComposing ? this._textarea.value.substring(e6.start, e6.end) : this._textarea.value.substring(e6.start), t5.length > 0 && this._coreService.triggerDataEvent(t5, true);
+                }
+              }, 0);
+            } else {
+              this._isSendingComposition = false;
+              const e6 = this._textarea.value.substring(this._compositionPosition.start, this._compositionPosition.end);
+              this._coreService.triggerDataEvent(e6, true);
+            }
+          }
+          _handleAnyTextareaChanges() {
+            const e5 = this._textarea.value;
+            setTimeout(() => {
+              if (!this._isComposing) {
+                const t5 = this._textarea.value, i6 = t5.replace(e5, "");
+                this._dataAlreadySent = i6, t5.length > e5.length ? this._coreService.triggerDataEvent(i6, true) : t5.length < e5.length ? this._coreService.triggerDataEvent(`${a3.C0.DEL}`, true) : t5.length === e5.length && t5 !== e5 && this._coreService.triggerDataEvent(t5, true);
+              }
+            }, 0);
+          }
+          updateCompositionElements(e5) {
+            if (this._isComposing) {
+              if (this._bufferService.buffer.isCursorInViewport) {
+                const e6 = Math.min(this._bufferService.buffer.x, this._bufferService.cols - 1), t5 = this._renderService.dimensions.css.cell.height, i6 = this._bufferService.buffer.y * this._renderService.dimensions.css.cell.height, s5 = e6 * this._renderService.dimensions.css.cell.width;
+                this._compositionView.style.left = s5 + "px", this._compositionView.style.top = i6 + "px", this._compositionView.style.height = t5 + "px", this._compositionView.style.lineHeight = t5 + "px", this._compositionView.style.fontFamily = this._optionsService.rawOptions.fontFamily, this._compositionView.style.fontSize = this._optionsService.rawOptions.fontSize + "px";
+                const r4 = this._compositionView.getBoundingClientRect();
+                this._textarea.style.left = s5 + "px", this._textarea.style.top = i6 + "px", this._textarea.style.width = Math.max(r4.width, 1) + "px", this._textarea.style.height = Math.max(r4.height, 1) + "px", this._textarea.style.lineHeight = r4.height + "px";
+              }
+              e5 || setTimeout(() => this.updateCompositionElements(true), 0);
+            }
+          }
+        };
+        t4.CompositionHelper = h3 = s4([r3(2, o3.IBufferService), r3(3, o3.IOptionsService), r3(4, o3.ICoreService), r3(5, n2.IRenderService)], h3);
+      }, 9806: (e4, t4) => {
+        function i5(e5, t5, i6) {
+          const s4 = i6.getBoundingClientRect(), r3 = e5.getComputedStyle(i6), n2 = parseInt(r3.getPropertyValue("padding-left")), o3 = parseInt(r3.getPropertyValue("padding-top"));
+          return [t5.clientX - s4.left - n2, t5.clientY - s4.top - o3];
+        }
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.getCoords = t4.getCoordsRelativeToElement = void 0, t4.getCoordsRelativeToElement = i5, t4.getCoords = function(e5, t5, s4, r3, n2, o3, a3, h3, c3) {
+          if (!o3)
+            return;
+          const l3 = i5(e5, t5, s4);
+          return l3 ? (l3[0] = Math.ceil((l3[0] + (c3 ? a3 / 2 : 0)) / a3), l3[1] = Math.ceil(l3[1] / h3), l3[0] = Math.min(Math.max(l3[0], 1), r3 + (c3 ? 1 : 0)), l3[1] = Math.min(Math.max(l3[1], 1), n2), l3) : void 0;
+        };
+      }, 9504: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.moveToCellSequence = void 0;
+        const s4 = i5(2584);
+        function r3(e5, t5, i6, s5) {
+          const r4 = e5 - n2(e5, i6), a4 = t5 - n2(t5, i6), l3 = Math.abs(r4 - a4) - function(e6, t6, i7) {
+            let s6 = 0;
+            const r5 = e6 - n2(e6, i7), a5 = t6 - n2(t6, i7);
+            for (let n3 = 0; n3 < Math.abs(r5 - a5); n3++) {
+              const a6 = "A" === o3(e6, t6) ? -1 : 1, h4 = i7.buffer.lines.get(r5 + a6 * n3);
+              h4?.isWrapped && s6++;
+            }
+            return s6;
+          }(e5, t5, i6);
+          return c3(l3, h3(o3(e5, t5), s5));
+        }
+        function n2(e5, t5) {
+          let i6 = 0, s5 = t5.buffer.lines.get(e5), r4 = s5?.isWrapped;
+          for (; r4 && e5 >= 0 && e5 < t5.rows; )
+            i6++, s5 = t5.buffer.lines.get(--e5), r4 = s5?.isWrapped;
+          return i6;
+        }
+        function o3(e5, t5) {
+          return e5 > t5 ? "A" : "B";
+        }
+        function a3(e5, t5, i6, s5, r4, n3) {
+          let o4 = e5, a4 = t5, h4 = "";
+          for (; o4 !== i6 || a4 !== s5; )
+            o4 += r4 ? 1 : -1, r4 && o4 > n3.cols - 1 ? (h4 += n3.buffer.translateBufferLineToString(a4, false, e5, o4), o4 = 0, e5 = 0, a4++) : !r4 && o4 < 0 && (h4 += n3.buffer.translateBufferLineToString(a4, false, 0, e5 + 1), o4 = n3.cols - 1, e5 = o4, a4--);
+          return h4 + n3.buffer.translateBufferLineToString(a4, false, e5, o4);
+        }
+        function h3(e5, t5) {
+          const i6 = t5 ? "O" : "[";
+          return s4.C0.ESC + i6 + e5;
+        }
+        function c3(e5, t5) {
+          e5 = Math.floor(e5);
+          let i6 = "";
+          for (let s5 = 0; s5 < e5; s5++)
+            i6 += t5;
+          return i6;
+        }
+        t4.moveToCellSequence = function(e5, t5, i6, s5) {
+          const o4 = i6.buffer.x, l3 = i6.buffer.y;
+          if (!i6.buffer.hasScrollback)
+            return function(e6, t6, i7, s6, o5, l4) {
+              return 0 === r3(t6, s6, o5, l4).length ? "" : c3(a3(e6, t6, e6, t6 - n2(t6, o5), false, o5).length, h3("D", l4));
+            }(o4, l3, 0, t5, i6, s5) + r3(l3, t5, i6, s5) + function(e6, t6, i7, s6, o5, l4) {
+              let d4;
+              d4 = r3(t6, s6, o5, l4).length > 0 ? s6 - n2(s6, o5) : t6;
+              const _3 = s6, u4 = function(e7, t7, i8, s7, o6, a4) {
+                let h4;
+                return h4 = r3(i8, s7, o6, a4).length > 0 ? s7 - n2(s7, o6) : t7, e7 < i8 && h4 <= s7 || e7 >= i8 && h4 < s7 ? "C" : "D";
+              }(e6, t6, i7, s6, o5, l4);
+              return c3(a3(e6, d4, i7, _3, "C" === u4, o5).length, h3(u4, l4));
+            }(o4, l3, e5, t5, i6, s5);
+          let d3;
+          if (l3 === t5)
+            return d3 = o4 > e5 ? "D" : "C", c3(Math.abs(o4 - e5), h3(d3, s5));
+          d3 = l3 > t5 ? "D" : "C";
+          const _2 = Math.abs(l3 - t5);
+          return c3(function(e6, t6) {
+            return t6.cols - e6;
+          }(l3 > t5 ? e5 : o4, i6) + (_2 - 1) * i6.cols + 1 + ((l3 > t5 ? o4 : e5) - 1), h3(d3, s5));
+        };
+      }, 1296: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.DomRenderer = void 0;
+        const n2 = i5(3787), o3 = i5(2550), a3 = i5(2223), h3 = i5(6171), c3 = i5(6052), l3 = i5(4725), d3 = i5(8055), _2 = i5(8460), u4 = i5(844), f4 = i5(2585), v3 = "xterm-dom-renderer-owner-", p3 = "xterm-rows", g2 = "xterm-fg-", m3 = "xterm-bg-", S2 = "xterm-focus", C3 = "xterm-selection";
+        let b = 1, w3 = t4.DomRenderer = class extends u4.Disposable {
+          constructor(e5, t5, i6, s5, r4, a4, l4, d4, f5, g3, m4, S3, w4) {
+            super(), this._terminal = e5, this._document = t5, this._element = i6, this._screenElement = s5, this._viewportElement = r4, this._helperContainer = a4, this._linkifier2 = l4, this._charSizeService = f5, this._optionsService = g3, this._bufferService = m4, this._coreBrowserService = S3, this._themeService = w4, this._terminalClass = b++, this._rowElements = [], this._selectionRenderModel = (0, c3.createSelectionRenderModel)(), this.onRequestRedraw = this.register(new _2.EventEmitter()).event, this._rowContainer = this._document.createElement("div"), this._rowContainer.classList.add(p3), this._rowContainer.style.lineHeight = "normal", this._rowContainer.setAttribute("aria-hidden", "true"), this._refreshRowElements(this._bufferService.cols, this._bufferService.rows), this._selectionContainer = this._document.createElement("div"), this._selectionContainer.classList.add(C3), this._selectionContainer.setAttribute("aria-hidden", "true"), this.dimensions = (0, h3.createRenderDimensions)(), this._updateDimensions(), this.register(this._optionsService.onOptionChange(() => this._handleOptionsChanged())), this.register(this._themeService.onChangeColors((e6) => this._injectCss(e6))), this._injectCss(this._themeService.colors), this._rowFactory = d4.createInstance(n2.DomRendererRowFactory, document), this._element.classList.add(v3 + this._terminalClass), this._screenElement.appendChild(this._rowContainer), this._screenElement.appendChild(this._selectionContainer), this.register(this._linkifier2.onShowLinkUnderline((e6) => this._handleLinkHover(e6))), this.register(this._linkifier2.onHideLinkUnderline((e6) => this._handleLinkLeave(e6))), this.register((0, u4.toDisposable)(() => {
+              this._element.classList.remove(v3 + this._terminalClass), this._rowContainer.remove(), this._selectionContainer.remove(), this._widthCache.dispose(), this._themeStyleElement.remove(), this._dimensionsStyleElement.remove();
+            })), this._widthCache = new o3.WidthCache(this._document, this._helperContainer), this._widthCache.setFont(this._optionsService.rawOptions.fontFamily, this._optionsService.rawOptions.fontSize, this._optionsService.rawOptions.fontWeight, this._optionsService.rawOptions.fontWeightBold), this._setDefaultSpacing();
+          }
+          _updateDimensions() {
+            const e5 = this._coreBrowserService.dpr;
+            this.dimensions.device.char.width = this._charSizeService.width * e5, this.dimensions.device.char.height = Math.ceil(this._charSizeService.height * e5), this.dimensions.device.cell.width = this.dimensions.device.char.width + Math.round(this._optionsService.rawOptions.letterSpacing), this.dimensions.device.cell.height = Math.floor(this.dimensions.device.char.height * this._optionsService.rawOptions.lineHeight), this.dimensions.device.char.left = 0, this.dimensions.device.char.top = 0, this.dimensions.device.canvas.width = this.dimensions.device.cell.width * this._bufferService.cols, this.dimensions.device.canvas.height = this.dimensions.device.cell.height * this._bufferService.rows, this.dimensions.css.canvas.width = Math.round(this.dimensions.device.canvas.width / e5), this.dimensions.css.canvas.height = Math.round(this.dimensions.device.canvas.height / e5), this.dimensions.css.cell.width = this.dimensions.css.canvas.width / this._bufferService.cols, this.dimensions.css.cell.height = this.dimensions.css.canvas.height / this._bufferService.rows;
+            for (const e6 of this._rowElements)
+              e6.style.width = `${this.dimensions.css.canvas.width}px`, e6.style.height = `${this.dimensions.css.cell.height}px`, e6.style.lineHeight = `${this.dimensions.css.cell.height}px`, e6.style.overflow = "hidden";
+            this._dimensionsStyleElement || (this._dimensionsStyleElement = this._document.createElement("style"), this._screenElement.appendChild(this._dimensionsStyleElement));
+            const t5 = `${this._terminalSelector} .${p3} span { display: inline-block; height: 100%; vertical-align: top;}`;
+            this._dimensionsStyleElement.textContent = t5, this._selectionContainer.style.height = this._viewportElement.style.height, this._screenElement.style.width = `${this.dimensions.css.canvas.width}px`, this._screenElement.style.height = `${this.dimensions.css.canvas.height}px`;
+          }
+          _injectCss(e5) {
+            this._themeStyleElement || (this._themeStyleElement = this._document.createElement("style"), this._screenElement.appendChild(this._themeStyleElement));
+            let t5 = `${this._terminalSelector} .${p3} { color: ${e5.foreground.css}; font-family: ${this._optionsService.rawOptions.fontFamily}; font-size: ${this._optionsService.rawOptions.fontSize}px; font-kerning: none; white-space: pre}`;
+            t5 += `${this._terminalSelector} .${p3} .xterm-dim { color: ${d3.color.multiplyOpacity(e5.foreground, 0.5).css};}`, t5 += `${this._terminalSelector} span:not(.xterm-bold) { font-weight: ${this._optionsService.rawOptions.fontWeight};}${this._terminalSelector} span.xterm-bold { font-weight: ${this._optionsService.rawOptions.fontWeightBold};}${this._terminalSelector} span.xterm-italic { font-style: italic;}`;
+            const i6 = `blink_underline_${this._terminalClass}`, s5 = `blink_bar_${this._terminalClass}`, r4 = `blink_block_${this._terminalClass}`;
+            t5 += `@keyframes ${i6} { 50% {  border-bottom-style: hidden; }}`, t5 += `@keyframes ${s5} { 50% {  box-shadow: none; }}`, t5 += `@keyframes ${r4} { 0% {  background-color: ${e5.cursor.css};  color: ${e5.cursorAccent.css}; } 50% {  background-color: inherit;  color: ${e5.cursor.css}; }}`, t5 += `${this._terminalSelector} .${p3}.${S2} .xterm-cursor.xterm-cursor-blink.xterm-cursor-underline { animation: ${i6} 1s step-end infinite;}${this._terminalSelector} .${p3}.${S2} .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar { animation: ${s5} 1s step-end infinite;}${this._terminalSelector} .${p3}.${S2} .xterm-cursor.xterm-cursor-blink.xterm-cursor-block { animation: ${r4} 1s step-end infinite;}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-block { background-color: ${e5.cursor.css}; color: ${e5.cursorAccent.css};}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-block:not(.xterm-cursor-blink) { background-color: ${e5.cursor.css} !important; color: ${e5.cursorAccent.css} !important;}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-outline { outline: 1px solid ${e5.cursor.css}; outline-offset: -1px;}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-bar { box-shadow: ${this._optionsService.rawOptions.cursorWidth}px 0 0 ${e5.cursor.css} inset;}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-underline { border-bottom: 1px ${e5.cursor.css}; border-bottom-style: solid; height: calc(100% - 1px);}`, t5 += `${this._terminalSelector} .${C3} { position: absolute; top: 0; left: 0; z-index: 1; pointer-events: none;}${this._terminalSelector}.focus .${C3} div { position: absolute; background-color: ${e5.selectionBackgroundOpaque.css};}${this._terminalSelector} .${C3} div { position: absolute; background-color: ${e5.selectionInactiveBackgroundOpaque.css};}`;
+            for (const [i7, s6] of e5.ansi.entries())
+              t5 += `${this._terminalSelector} .${g2}${i7} { color: ${s6.css}; }${this._terminalSelector} .${g2}${i7}.xterm-dim { color: ${d3.color.multiplyOpacity(s6, 0.5).css}; }${this._terminalSelector} .${m3}${i7} { background-color: ${s6.css}; }`;
+            t5 += `${this._terminalSelector} .${g2}${a3.INVERTED_DEFAULT_COLOR} { color: ${d3.color.opaque(e5.background).css}; }${this._terminalSelector} .${g2}${a3.INVERTED_DEFAULT_COLOR}.xterm-dim { color: ${d3.color.multiplyOpacity(d3.color.opaque(e5.background), 0.5).css}; }${this._terminalSelector} .${m3}${a3.INVERTED_DEFAULT_COLOR} { background-color: ${e5.foreground.css}; }`, this._themeStyleElement.textContent = t5;
+          }
+          _setDefaultSpacing() {
+            const e5 = this.dimensions.css.cell.width - this._widthCache.get("W", false, false);
+            this._rowContainer.style.letterSpacing = `${e5}px`, this._rowFactory.defaultSpacing = e5;
+          }
+          handleDevicePixelRatioChange() {
+            this._updateDimensions(), this._widthCache.clear(), this._setDefaultSpacing();
+          }
+          _refreshRowElements(e5, t5) {
+            for (let e6 = this._rowElements.length; e6 <= t5; e6++) {
+              const e7 = this._document.createElement("div");
+              this._rowContainer.appendChild(e7), this._rowElements.push(e7);
+            }
+            for (; this._rowElements.length > t5; )
+              this._rowContainer.removeChild(this._rowElements.pop());
+          }
+          handleResize(e5, t5) {
+            this._refreshRowElements(e5, t5), this._updateDimensions(), this.handleSelectionChanged(this._selectionRenderModel.selectionStart, this._selectionRenderModel.selectionEnd, this._selectionRenderModel.columnSelectMode);
+          }
+          handleCharSizeChanged() {
+            this._updateDimensions(), this._widthCache.clear(), this._setDefaultSpacing();
+          }
+          handleBlur() {
+            this._rowContainer.classList.remove(S2), this.renderRows(0, this._bufferService.rows - 1);
+          }
+          handleFocus() {
+            this._rowContainer.classList.add(S2), this.renderRows(this._bufferService.buffer.y, this._bufferService.buffer.y);
+          }
+          handleSelectionChanged(e5, t5, i6) {
+            if (this._selectionContainer.replaceChildren(), this._rowFactory.handleSelectionChanged(e5, t5, i6), this.renderRows(0, this._bufferService.rows - 1), !e5 || !t5)
+              return;
+            this._selectionRenderModel.update(this._terminal, e5, t5, i6);
+            const s5 = this._selectionRenderModel.viewportStartRow, r4 = this._selectionRenderModel.viewportEndRow, n3 = this._selectionRenderModel.viewportCappedStartRow, o4 = this._selectionRenderModel.viewportCappedEndRow;
+            if (n3 >= this._bufferService.rows || o4 < 0)
+              return;
+            const a4 = this._document.createDocumentFragment();
+            if (i6) {
+              const i7 = e5[0] > t5[0];
+              a4.appendChild(this._createSelectionElement(n3, i7 ? t5[0] : e5[0], i7 ? e5[0] : t5[0], o4 - n3 + 1));
+            } else {
+              const i7 = s5 === n3 ? e5[0] : 0, h4 = n3 === r4 ? t5[0] : this._bufferService.cols;
+              a4.appendChild(this._createSelectionElement(n3, i7, h4));
+              const c4 = o4 - n3 - 1;
+              if (a4.appendChild(this._createSelectionElement(n3 + 1, 0, this._bufferService.cols, c4)), n3 !== o4) {
+                const e6 = r4 === o4 ? t5[0] : this._bufferService.cols;
+                a4.appendChild(this._createSelectionElement(o4, 0, e6));
+              }
+            }
+            this._selectionContainer.appendChild(a4);
+          }
+          _createSelectionElement(e5, t5, i6, s5 = 1) {
+            const r4 = this._document.createElement("div"), n3 = t5 * this.dimensions.css.cell.width;
+            let o4 = this.dimensions.css.cell.width * (i6 - t5);
+            return n3 + o4 > this.dimensions.css.canvas.width && (o4 = this.dimensions.css.canvas.width - n3), r4.style.height = s5 * this.dimensions.css.cell.height + "px", r4.style.top = e5 * this.dimensions.css.cell.height + "px", r4.style.left = `${n3}px`, r4.style.width = `${o4}px`, r4;
+          }
+          handleCursorMove() {
+          }
+          _handleOptionsChanged() {
+            this._updateDimensions(), this._injectCss(this._themeService.colors), this._widthCache.setFont(this._optionsService.rawOptions.fontFamily, this._optionsService.rawOptions.fontSize, this._optionsService.rawOptions.fontWeight, this._optionsService.rawOptions.fontWeightBold), this._setDefaultSpacing();
+          }
+          clear() {
+            for (const e5 of this._rowElements)
+              e5.replaceChildren();
+          }
+          renderRows(e5, t5) {
+            const i6 = this._bufferService.buffer, s5 = i6.ybase + i6.y, r4 = Math.min(i6.x, this._bufferService.cols - 1), n3 = this._optionsService.rawOptions.cursorBlink, o4 = this._optionsService.rawOptions.cursorStyle, a4 = this._optionsService.rawOptions.cursorInactiveStyle;
+            for (let h4 = e5; h4 <= t5; h4++) {
+              const e6 = h4 + i6.ydisp, t6 = this._rowElements[h4], c4 = i6.lines.get(e6);
+              if (!t6 || !c4)
+                break;
+              t6.replaceChildren(...this._rowFactory.createRow(c4, e6, e6 === s5, o4, a4, r4, n3, this.dimensions.css.cell.width, this._widthCache, -1, -1));
+            }
+          }
+          get _terminalSelector() {
+            return `.${v3}${this._terminalClass}`;
+          }
+          _handleLinkHover(e5) {
+            this._setCellUnderline(e5.x1, e5.x2, e5.y1, e5.y2, e5.cols, true);
+          }
+          _handleLinkLeave(e5) {
+            this._setCellUnderline(e5.x1, e5.x2, e5.y1, e5.y2, e5.cols, false);
+          }
+          _setCellUnderline(e5, t5, i6, s5, r4, n3) {
+            i6 < 0 && (e5 = 0), s5 < 0 && (t5 = 0);
+            const o4 = this._bufferService.rows - 1;
+            i6 = Math.max(Math.min(i6, o4), 0), s5 = Math.max(Math.min(s5, o4), 0), r4 = Math.min(r4, this._bufferService.cols);
+            const a4 = this._bufferService.buffer, h4 = a4.ybase + a4.y, c4 = Math.min(a4.x, r4 - 1), l4 = this._optionsService.rawOptions.cursorBlink, d4 = this._optionsService.rawOptions.cursorStyle, _3 = this._optionsService.rawOptions.cursorInactiveStyle;
+            for (let o5 = i6; o5 <= s5; ++o5) {
+              const u5 = o5 + a4.ydisp, f5 = this._rowElements[o5], v4 = a4.lines.get(u5);
+              if (!f5 || !v4)
+                break;
+              f5.replaceChildren(...this._rowFactory.createRow(v4, u5, u5 === h4, d4, _3, c4, l4, this.dimensions.css.cell.width, this._widthCache, n3 ? o5 === i6 ? e5 : 0 : -1, n3 ? (o5 === s5 ? t5 : r4) - 1 : -1));
+            }
+          }
+        };
+        t4.DomRenderer = w3 = s4([r3(7, f4.IInstantiationService), r3(8, l3.ICharSizeService), r3(9, f4.IOptionsService), r3(10, f4.IBufferService), r3(11, l3.ICoreBrowserService), r3(12, l3.IThemeService)], w3);
+      }, 3787: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.DomRendererRowFactory = void 0;
+        const n2 = i5(2223), o3 = i5(643), a3 = i5(511), h3 = i5(2585), c3 = i5(8055), l3 = i5(4725), d3 = i5(4269), _2 = i5(6171), u4 = i5(3734);
+        let f4 = t4.DomRendererRowFactory = class {
+          constructor(e5, t5, i6, s5, r4, n3, o4) {
+            this._document = e5, this._characterJoinerService = t5, this._optionsService = i6, this._coreBrowserService = s5, this._coreService = r4, this._decorationService = n3, this._themeService = o4, this._workCell = new a3.CellData(), this._columnSelectMode = false, this.defaultSpacing = 0;
+          }
+          handleSelectionChanged(e5, t5, i6) {
+            this._selectionStart = e5, this._selectionEnd = t5, this._columnSelectMode = i6;
+          }
+          createRow(e5, t5, i6, s5, r4, a4, h4, l4, _3, f5, p3) {
+            const g2 = [], m3 = this._characterJoinerService.getJoinedCharacters(t5), S2 = this._themeService.colors;
+            let C3, b = e5.getNoBgTrimmedLength();
+            i6 && b < a4 + 1 && (b = a4 + 1);
+            let w3 = 0, y3 = "", E2 = 0, k3 = 0, L2 = 0, D3 = false, R = 0, x2 = false, A3 = 0;
+            const B3 = [], T3 = -1 !== f5 && -1 !== p3;
+            for (let M2 = 0; M2 < b; M2++) {
+              e5.loadCell(M2, this._workCell);
+              let b2 = this._workCell.getWidth();
+              if (0 === b2)
+                continue;
+              let O2 = false, P2 = M2, I2 = this._workCell;
+              if (m3.length > 0 && M2 === m3[0][0]) {
+                O2 = true;
+                const t6 = m3.shift();
+                I2 = new d3.JoinedCellData(this._workCell, e5.translateToString(true, t6[0], t6[1]), t6[1] - t6[0]), P2 = t6[1] - 1, b2 = I2.getWidth();
+              }
+              const H = this._isCellInSelection(M2, t5), F2 = i6 && M2 === a4, W = T3 && M2 >= f5 && M2 <= p3;
+              let U = false;
+              this._decorationService.forEachDecorationAtCell(M2, t5, void 0, (e6) => {
+                U = true;
+              });
+              let N2 = I2.getChars() || o3.WHITESPACE_CELL_CHAR;
+              if (" " === N2 && (I2.isUnderline() || I2.isOverline()) && (N2 = "\xA0"), A3 = b2 * l4 - _3.get(N2, I2.isBold(), I2.isItalic()), C3) {
+                if (w3 && (H && x2 || !H && !x2 && I2.bg === E2) && (H && x2 && S2.selectionForeground || I2.fg === k3) && I2.extended.ext === L2 && W === D3 && A3 === R && !F2 && !O2 && !U) {
+                  I2.isInvisible() ? y3 += o3.WHITESPACE_CELL_CHAR : y3 += N2, w3++;
+                  continue;
+                }
+                w3 && (C3.textContent = y3), C3 = this._document.createElement("span"), w3 = 0, y3 = "";
+              } else
+                C3 = this._document.createElement("span");
+              if (E2 = I2.bg, k3 = I2.fg, L2 = I2.extended.ext, D3 = W, R = A3, x2 = H, O2 && a4 >= M2 && a4 <= P2 && (a4 = M2), !this._coreService.isCursorHidden && F2 && this._coreService.isCursorInitialized) {
+                if (B3.push("xterm-cursor"), this._coreBrowserService.isFocused)
+                  h4 && B3.push("xterm-cursor-blink"), B3.push("bar" === s5 ? "xterm-cursor-bar" : "underline" === s5 ? "xterm-cursor-underline" : "xterm-cursor-block");
+                else if (r4)
+                  switch (r4) {
+                    case "outline":
+                      B3.push("xterm-cursor-outline");
+                      break;
+                    case "block":
+                      B3.push("xterm-cursor-block");
+                      break;
+                    case "bar":
+                      B3.push("xterm-cursor-bar");
+                      break;
+                    case "underline":
+                      B3.push("xterm-cursor-underline");
+                  }
+              }
+              if (I2.isBold() && B3.push("xterm-bold"), I2.isItalic() && B3.push("xterm-italic"), I2.isDim() && B3.push("xterm-dim"), y3 = I2.isInvisible() ? o3.WHITESPACE_CELL_CHAR : I2.getChars() || o3.WHITESPACE_CELL_CHAR, I2.isUnderline() && (B3.push(`xterm-underline-${I2.extended.underlineStyle}`), " " === y3 && (y3 = "\xA0"), !I2.isUnderlineColorDefault()))
+                if (I2.isUnderlineColorRGB())
+                  C3.style.textDecorationColor = `rgb(${u4.AttributeData.toColorRGB(I2.getUnderlineColor()).join(",")})`;
+                else {
+                  let e6 = I2.getUnderlineColor();
+                  this._optionsService.rawOptions.drawBoldTextInBrightColors && I2.isBold() && e6 < 8 && (e6 += 8), C3.style.textDecorationColor = S2.ansi[e6].css;
+                }
+              I2.isOverline() && (B3.push("xterm-overline"), " " === y3 && (y3 = "\xA0")), I2.isStrikethrough() && B3.push("xterm-strikethrough"), W && (C3.style.textDecoration = "underline");
+              let $2 = I2.getFgColor(), j3 = I2.getFgColorMode(), z3 = I2.getBgColor(), K = I2.getBgColorMode();
+              const q3 = !!I2.isInverse();
+              if (q3) {
+                const e6 = $2;
+                $2 = z3, z3 = e6;
+                const t6 = j3;
+                j3 = K, K = t6;
+              }
+              let V2, G2, X, J = false;
+              switch (this._decorationService.forEachDecorationAtCell(M2, t5, void 0, (e6) => {
+                "top" !== e6.options.layer && J || (e6.backgroundColorRGB && (K = 50331648, z3 = e6.backgroundColorRGB.rgba >> 8 & 16777215, V2 = e6.backgroundColorRGB), e6.foregroundColorRGB && (j3 = 50331648, $2 = e6.foregroundColorRGB.rgba >> 8 & 16777215, G2 = e6.foregroundColorRGB), J = "top" === e6.options.layer);
+              }), !J && H && (V2 = this._coreBrowserService.isFocused ? S2.selectionBackgroundOpaque : S2.selectionInactiveBackgroundOpaque, z3 = V2.rgba >> 8 & 16777215, K = 50331648, J = true, S2.selectionForeground && (j3 = 50331648, $2 = S2.selectionForeground.rgba >> 8 & 16777215, G2 = S2.selectionForeground)), J && B3.push("xterm-decoration-top"), K) {
+                case 16777216:
+                case 33554432:
+                  X = S2.ansi[z3], B3.push(`xterm-bg-${z3}`);
+                  break;
+                case 50331648:
+                  X = c3.channels.toColor(z3 >> 16, z3 >> 8 & 255, 255 & z3), this._addStyle(C3, `background-color:#${v3((z3 >>> 0).toString(16), "0", 6)}`);
+                  break;
+                default:
+                  q3 ? (X = S2.foreground, B3.push(`xterm-bg-${n2.INVERTED_DEFAULT_COLOR}`)) : X = S2.background;
+              }
+              switch (V2 || I2.isDim() && (V2 = c3.color.multiplyOpacity(X, 0.5)), j3) {
+                case 16777216:
+                case 33554432:
+                  I2.isBold() && $2 < 8 && this._optionsService.rawOptions.drawBoldTextInBrightColors && ($2 += 8), this._applyMinimumContrast(C3, X, S2.ansi[$2], I2, V2, void 0) || B3.push(`xterm-fg-${$2}`);
+                  break;
+                case 50331648:
+                  const e6 = c3.channels.toColor($2 >> 16 & 255, $2 >> 8 & 255, 255 & $2);
+                  this._applyMinimumContrast(C3, X, e6, I2, V2, G2) || this._addStyle(C3, `color:#${v3($2.toString(16), "0", 6)}`);
+                  break;
+                default:
+                  this._applyMinimumContrast(C3, X, S2.foreground, I2, V2, G2) || q3 && B3.push(`xterm-fg-${n2.INVERTED_DEFAULT_COLOR}`);
+              }
+              B3.length && (C3.className = B3.join(" "), B3.length = 0), F2 || O2 || U ? C3.textContent = y3 : w3++, A3 !== this.defaultSpacing && (C3.style.letterSpacing = `${A3}px`), g2.push(C3), M2 = P2;
+            }
+            return C3 && w3 && (C3.textContent = y3), g2;
+          }
+          _applyMinimumContrast(e5, t5, i6, s5, r4, n3) {
+            if (1 === this._optionsService.rawOptions.minimumContrastRatio || (0, _2.treatGlyphAsBackgroundColor)(s5.getCode()))
+              return false;
+            const o4 = this._getContrastCache(s5);
+            let a4;
+            if (r4 || n3 || (a4 = o4.getColor(t5.rgba, i6.rgba)), void 0 === a4) {
+              const e6 = this._optionsService.rawOptions.minimumContrastRatio / (s5.isDim() ? 2 : 1);
+              a4 = c3.color.ensureContrastRatio(r4 || t5, n3 || i6, e6), o4.setColor((r4 || t5).rgba, (n3 || i6).rgba, a4 ?? null);
+            }
+            return !!a4 && (this._addStyle(e5, `color:${a4.css}`), true);
+          }
+          _getContrastCache(e5) {
+            return e5.isDim() ? this._themeService.colors.halfContrastCache : this._themeService.colors.contrastCache;
+          }
+          _addStyle(e5, t5) {
+            e5.setAttribute("style", `${e5.getAttribute("style") || ""}${t5};`);
+          }
+          _isCellInSelection(e5, t5) {
+            const i6 = this._selectionStart, s5 = this._selectionEnd;
+            return !(!i6 || !s5) && (this._columnSelectMode ? i6[0] <= s5[0] ? e5 >= i6[0] && t5 >= i6[1] && e5 < s5[0] && t5 <= s5[1] : e5 < i6[0] && t5 >= i6[1] && e5 >= s5[0] && t5 <= s5[1] : t5 > i6[1] && t5 < s5[1] || i6[1] === s5[1] && t5 === i6[1] && e5 >= i6[0] && e5 < s5[0] || i6[1] < s5[1] && t5 === s5[1] && e5 < s5[0] || i6[1] < s5[1] && t5 === i6[1] && e5 >= i6[0]);
+          }
+        };
+        function v3(e5, t5, i6) {
+          for (; e5.length < i6; )
+            e5 = t5 + e5;
+          return e5;
+        }
+        t4.DomRendererRowFactory = f4 = s4([r3(1, l3.ICharacterJoinerService), r3(2, h3.IOptionsService), r3(3, l3.ICoreBrowserService), r3(4, h3.ICoreService), r3(5, h3.IDecorationService), r3(6, l3.IThemeService)], f4);
+      }, 2550: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.WidthCache = void 0, t4.WidthCache = class {
+          constructor(e5, t5) {
+            this._flat = new Float32Array(256), this._font = "", this._fontSize = 0, this._weight = "normal", this._weightBold = "bold", this._measureElements = [], this._container = e5.createElement("div"), this._container.classList.add("xterm-width-cache-measure-container"), this._container.setAttribute("aria-hidden", "true"), this._container.style.whiteSpace = "pre", this._container.style.fontKerning = "none";
+            const i5 = e5.createElement("span");
+            i5.classList.add("xterm-char-measure-element");
+            const s4 = e5.createElement("span");
+            s4.classList.add("xterm-char-measure-element"), s4.style.fontWeight = "bold";
+            const r3 = e5.createElement("span");
+            r3.classList.add("xterm-char-measure-element"), r3.style.fontStyle = "italic";
+            const n2 = e5.createElement("span");
+            n2.classList.add("xterm-char-measure-element"), n2.style.fontWeight = "bold", n2.style.fontStyle = "italic", this._measureElements = [i5, s4, r3, n2], this._container.appendChild(i5), this._container.appendChild(s4), this._container.appendChild(r3), this._container.appendChild(n2), t5.appendChild(this._container), this.clear();
+          }
+          dispose() {
+            this._container.remove(), this._measureElements.length = 0, this._holey = void 0;
+          }
+          clear() {
+            this._flat.fill(-9999), this._holey = /* @__PURE__ */ new Map();
+          }
+          setFont(e5, t5, i5, s4) {
+            e5 === this._font && t5 === this._fontSize && i5 === this._weight && s4 === this._weightBold || (this._font = e5, this._fontSize = t5, this._weight = i5, this._weightBold = s4, this._container.style.fontFamily = this._font, this._container.style.fontSize = `${this._fontSize}px`, this._measureElements[0].style.fontWeight = `${i5}`, this._measureElements[1].style.fontWeight = `${s4}`, this._measureElements[2].style.fontWeight = `${i5}`, this._measureElements[3].style.fontWeight = `${s4}`, this.clear());
+          }
+          get(e5, t5, i5) {
+            let s4 = 0;
+            if (!t5 && !i5 && 1 === e5.length && (s4 = e5.charCodeAt(0)) < 256) {
+              if (-9999 !== this._flat[s4])
+                return this._flat[s4];
+              const t6 = this._measure(e5, 0);
+              return t6 > 0 && (this._flat[s4] = t6), t6;
+            }
+            let r3 = e5;
+            t5 && (r3 += "B"), i5 && (r3 += "I");
+            let n2 = this._holey.get(r3);
+            if (void 0 === n2) {
+              let s5 = 0;
+              t5 && (s5 |= 1), i5 && (s5 |= 2), n2 = this._measure(e5, s5), n2 > 0 && this._holey.set(r3, n2);
+            }
+            return n2;
+          }
+          _measure(e5, t5) {
+            const i5 = this._measureElements[t5];
+            return i5.textContent = e5.repeat(32), i5.offsetWidth / 32;
+          }
+        };
+      }, 2223: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.TEXT_BASELINE = t4.DIM_OPACITY = t4.INVERTED_DEFAULT_COLOR = void 0;
+        const s4 = i5(6114);
+        t4.INVERTED_DEFAULT_COLOR = 257, t4.DIM_OPACITY = 0.5, t4.TEXT_BASELINE = s4.isFirefox || s4.isLegacyEdge ? "bottom" : "ideographic";
+      }, 6171: (e4, t4) => {
+        function i5(e5) {
+          return 57508 <= e5 && e5 <= 57558;
+        }
+        function s4(e5) {
+          return e5 >= 128512 && e5 <= 128591 || e5 >= 127744 && e5 <= 128511 || e5 >= 128640 && e5 <= 128767 || e5 >= 9728 && e5 <= 9983 || e5 >= 9984 && e5 <= 10175 || e5 >= 65024 && e5 <= 65039 || e5 >= 129280 && e5 <= 129535 || e5 >= 127462 && e5 <= 127487;
+        }
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.computeNextVariantOffset = t4.createRenderDimensions = t4.treatGlyphAsBackgroundColor = t4.allowRescaling = t4.isEmoji = t4.isRestrictedPowerlineGlyph = t4.isPowerlineGlyph = t4.throwIfFalsy = void 0, t4.throwIfFalsy = function(e5) {
+          if (!e5)
+            throw new Error("value must not be falsy");
+          return e5;
+        }, t4.isPowerlineGlyph = i5, t4.isRestrictedPowerlineGlyph = function(e5) {
+          return 57520 <= e5 && e5 <= 57527;
+        }, t4.isEmoji = s4, t4.allowRescaling = function(e5, t5, r3, n2) {
+          return 1 === t5 && r3 > Math.ceil(1.5 * n2) && void 0 !== e5 && e5 > 255 && !s4(e5) && !i5(e5) && !function(e6) {
+            return 57344 <= e6 && e6 <= 63743;
+          }(e5);
+        }, t4.treatGlyphAsBackgroundColor = function(e5) {
+          return i5(e5) || function(e6) {
+            return 9472 <= e6 && e6 <= 9631;
+          }(e5);
+        }, t4.createRenderDimensions = function() {
+          return { css: { canvas: { width: 0, height: 0 }, cell: { width: 0, height: 0 } }, device: { canvas: { width: 0, height: 0 }, cell: { width: 0, height: 0 }, char: { width: 0, height: 0, left: 0, top: 0 } } };
+        }, t4.computeNextVariantOffset = function(e5, t5, i6 = 0) {
+          return (e5 - (2 * Math.round(t5) - i6)) % (2 * Math.round(t5));
+        };
+      }, 6052: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.createSelectionRenderModel = void 0;
+        class i5 {
+          constructor() {
+            this.clear();
+          }
+          clear() {
+            this.hasSelection = false, this.columnSelectMode = false, this.viewportStartRow = 0, this.viewportEndRow = 0, this.viewportCappedStartRow = 0, this.viewportCappedEndRow = 0, this.startCol = 0, this.endCol = 0, this.selectionStart = void 0, this.selectionEnd = void 0;
+          }
+          update(e5, t5, i6, s4 = false) {
+            if (this.selectionStart = t5, this.selectionEnd = i6, !t5 || !i6 || t5[0] === i6[0] && t5[1] === i6[1])
+              return void this.clear();
+            const r3 = e5.buffers.active.ydisp, n2 = t5[1] - r3, o3 = i6[1] - r3, a3 = Math.max(n2, 0), h3 = Math.min(o3, e5.rows - 1);
+            a3 >= e5.rows || h3 < 0 ? this.clear() : (this.hasSelection = true, this.columnSelectMode = s4, this.viewportStartRow = n2, this.viewportEndRow = o3, this.viewportCappedStartRow = a3, this.viewportCappedEndRow = h3, this.startCol = t5[0], this.endCol = i6[0]);
+          }
+          isCellSelected(e5, t5, i6) {
+            return !!this.hasSelection && (i6 -= e5.buffer.active.viewportY, this.columnSelectMode ? this.startCol <= this.endCol ? t5 >= this.startCol && i6 >= this.viewportCappedStartRow && t5 < this.endCol && i6 <= this.viewportCappedEndRow : t5 < this.startCol && i6 >= this.viewportCappedStartRow && t5 >= this.endCol && i6 <= this.viewportCappedEndRow : i6 > this.viewportStartRow && i6 < this.viewportEndRow || this.viewportStartRow === this.viewportEndRow && i6 === this.viewportStartRow && t5 >= this.startCol && t5 < this.endCol || this.viewportStartRow < this.viewportEndRow && i6 === this.viewportEndRow && t5 < this.endCol || this.viewportStartRow < this.viewportEndRow && i6 === this.viewportStartRow && t5 >= this.startCol);
+          }
+        }
+        t4.createSelectionRenderModel = function() {
+          return new i5();
+        };
+      }, 456: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.SelectionModel = void 0, t4.SelectionModel = class {
+          constructor(e5) {
+            this._bufferService = e5, this.isSelectAllActive = false, this.selectionStartLength = 0;
+          }
+          clearSelection() {
+            this.selectionStart = void 0, this.selectionEnd = void 0, this.isSelectAllActive = false, this.selectionStartLength = 0;
+          }
+          get finalSelectionStart() {
+            return this.isSelectAllActive ? [0, 0] : this.selectionEnd && this.selectionStart && this.areSelectionValuesReversed() ? this.selectionEnd : this.selectionStart;
+          }
+          get finalSelectionEnd() {
+            if (this.isSelectAllActive)
+              return [this._bufferService.cols, this._bufferService.buffer.ybase + this._bufferService.rows - 1];
+            if (this.selectionStart) {
+              if (!this.selectionEnd || this.areSelectionValuesReversed()) {
+                const e5 = this.selectionStart[0] + this.selectionStartLength;
+                return e5 > this._bufferService.cols ? e5 % this._bufferService.cols == 0 ? [this._bufferService.cols, this.selectionStart[1] + Math.floor(e5 / this._bufferService.cols) - 1] : [e5 % this._bufferService.cols, this.selectionStart[1] + Math.floor(e5 / this._bufferService.cols)] : [e5, this.selectionStart[1]];
+              }
+              if (this.selectionStartLength && this.selectionEnd[1] === this.selectionStart[1]) {
+                const e5 = this.selectionStart[0] + this.selectionStartLength;
+                return e5 > this._bufferService.cols ? [e5 % this._bufferService.cols, this.selectionStart[1] + Math.floor(e5 / this._bufferService.cols)] : [Math.max(e5, this.selectionEnd[0]), this.selectionEnd[1]];
+              }
+              return this.selectionEnd;
+            }
+          }
+          areSelectionValuesReversed() {
+            const e5 = this.selectionStart, t5 = this.selectionEnd;
+            return !(!e5 || !t5) && (e5[1] > t5[1] || e5[1] === t5[1] && e5[0] > t5[0]);
+          }
+          handleTrim(e5) {
+            return this.selectionStart && (this.selectionStart[1] -= e5), this.selectionEnd && (this.selectionEnd[1] -= e5), this.selectionEnd && this.selectionEnd[1] < 0 ? (this.clearSelection(), true) : (this.selectionStart && this.selectionStart[1] < 0 && (this.selectionStart[1] = 0), false);
+          }
+        };
+      }, 428: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CharSizeService = void 0;
+        const n2 = i5(2585), o3 = i5(8460), a3 = i5(844);
+        let h3 = t4.CharSizeService = class extends a3.Disposable {
+          get hasValidSize() {
+            return this.width > 0 && this.height > 0;
+          }
+          constructor(e5, t5, i6) {
+            super(), this._optionsService = i6, this.width = 0, this.height = 0, this._onCharSizeChange = this.register(new o3.EventEmitter()), this.onCharSizeChange = this._onCharSizeChange.event;
+            try {
+              this._measureStrategy = this.register(new d3(this._optionsService));
+            } catch {
+              this._measureStrategy = this.register(new l3(e5, t5, this._optionsService));
+            }
+            this.register(this._optionsService.onMultipleOptionChange(["fontFamily", "fontSize"], () => this.measure()));
+          }
+          measure() {
+            const e5 = this._measureStrategy.measure();
+            e5.width === this.width && e5.height === this.height || (this.width = e5.width, this.height = e5.height, this._onCharSizeChange.fire());
+          }
+        };
+        t4.CharSizeService = h3 = s4([r3(2, n2.IOptionsService)], h3);
+        class c3 extends a3.Disposable {
+          constructor() {
+            super(...arguments), this._result = { width: 0, height: 0 };
+          }
+          _validateAndSet(e5, t5) {
+            void 0 !== e5 && e5 > 0 && void 0 !== t5 && t5 > 0 && (this._result.width = e5, this._result.height = t5);
+          }
+        }
+        class l3 extends c3 {
+          constructor(e5, t5, i6) {
+            super(), this._document = e5, this._parentElement = t5, this._optionsService = i6, this._measureElement = this._document.createElement("span"), this._measureElement.classList.add("xterm-char-measure-element"), this._measureElement.textContent = "W".repeat(32), this._measureElement.setAttribute("aria-hidden", "true"), this._measureElement.style.whiteSpace = "pre", this._measureElement.style.fontKerning = "none", this._parentElement.appendChild(this._measureElement);
+          }
+          measure() {
+            return this._measureElement.style.fontFamily = this._optionsService.rawOptions.fontFamily, this._measureElement.style.fontSize = `${this._optionsService.rawOptions.fontSize}px`, this._validateAndSet(Number(this._measureElement.offsetWidth) / 32, Number(this._measureElement.offsetHeight)), this._result;
+          }
+        }
+        class d3 extends c3 {
+          constructor(e5) {
+            super(), this._optionsService = e5, this._canvas = new OffscreenCanvas(100, 100), this._ctx = this._canvas.getContext("2d");
+            const t5 = this._ctx.measureText("W");
+            if (!("width" in t5 && "fontBoundingBoxAscent" in t5 && "fontBoundingBoxDescent" in t5))
+              throw new Error("Required font metrics not supported");
+          }
+          measure() {
+            this._ctx.font = `${this._optionsService.rawOptions.fontSize}px ${this._optionsService.rawOptions.fontFamily}`;
+            const e5 = this._ctx.measureText("W");
+            return this._validateAndSet(e5.width, e5.fontBoundingBoxAscent + e5.fontBoundingBoxDescent), this._result;
+          }
+        }
+      }, 4269: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CharacterJoinerService = t4.JoinedCellData = void 0;
+        const n2 = i5(3734), o3 = i5(643), a3 = i5(511), h3 = i5(2585);
+        class c3 extends n2.AttributeData {
+          constructor(e5, t5, i6) {
+            super(), this.content = 0, this.combinedData = "", this.fg = e5.fg, this.bg = e5.bg, this.combinedData = t5, this._width = i6;
+          }
+          isCombined() {
+            return 2097152;
+          }
+          getWidth() {
+            return this._width;
+          }
+          getChars() {
+            return this.combinedData;
+          }
+          getCode() {
+            return 2097151;
+          }
+          setFromCharData(e5) {
+            throw new Error("not implemented");
+          }
+          getAsCharData() {
+            return [this.fg, this.getChars(), this.getWidth(), this.getCode()];
+          }
+        }
+        t4.JoinedCellData = c3;
+        let l3 = t4.CharacterJoinerService = class e5 {
+          constructor(e6) {
+            this._bufferService = e6, this._characterJoiners = [], this._nextCharacterJoinerId = 0, this._workCell = new a3.CellData();
+          }
+          register(e6) {
+            const t5 = { id: this._nextCharacterJoinerId++, handler: e6 };
+            return this._characterJoiners.push(t5), t5.id;
+          }
+          deregister(e6) {
+            for (let t5 = 0; t5 < this._characterJoiners.length; t5++)
+              if (this._characterJoiners[t5].id === e6)
+                return this._characterJoiners.splice(t5, 1), true;
+            return false;
+          }
+          getJoinedCharacters(e6) {
+            if (0 === this._characterJoiners.length)
+              return [];
+            const t5 = this._bufferService.buffer.lines.get(e6);
+            if (!t5 || 0 === t5.length)
+              return [];
+            const i6 = [], s5 = t5.translateToString(true);
+            let r4 = 0, n3 = 0, a4 = 0, h4 = t5.getFg(0), c4 = t5.getBg(0);
+            for (let e7 = 0; e7 < t5.getTrimmedLength(); e7++)
+              if (t5.loadCell(e7, this._workCell), 0 !== this._workCell.getWidth()) {
+                if (this._workCell.fg !== h4 || this._workCell.bg !== c4) {
+                  if (e7 - r4 > 1) {
+                    const e8 = this._getJoinedRanges(s5, a4, n3, t5, r4);
+                    for (let t6 = 0; t6 < e8.length; t6++)
+                      i6.push(e8[t6]);
+                  }
+                  r4 = e7, a4 = n3, h4 = this._workCell.fg, c4 = this._workCell.bg;
+                }
+                n3 += this._workCell.getChars().length || o3.WHITESPACE_CELL_CHAR.length;
+              }
+            if (this._bufferService.cols - r4 > 1) {
+              const e7 = this._getJoinedRanges(s5, a4, n3, t5, r4);
+              for (let t6 = 0; t6 < e7.length; t6++)
+                i6.push(e7[t6]);
+            }
+            return i6;
+          }
+          _getJoinedRanges(t5, i6, s5, r4, n3) {
+            const o4 = t5.substring(i6, s5);
+            let a4 = [];
+            try {
+              a4 = this._characterJoiners[0].handler(o4);
+            } catch (e6) {
+              console.error(e6);
+            }
+            for (let t6 = 1; t6 < this._characterJoiners.length; t6++)
+              try {
+                const i7 = this._characterJoiners[t6].handler(o4);
+                for (let t7 = 0; t7 < i7.length; t7++)
+                  e5._mergeRanges(a4, i7[t7]);
+              } catch (e6) {
+                console.error(e6);
+              }
+            return this._stringRangesToCellRanges(a4, r4, n3), a4;
+          }
+          _stringRangesToCellRanges(e6, t5, i6) {
+            let s5 = 0, r4 = false, n3 = 0, a4 = e6[s5];
+            if (a4) {
+              for (let h4 = i6; h4 < this._bufferService.cols; h4++) {
+                const i7 = t5.getWidth(h4), c4 = t5.getString(h4).length || o3.WHITESPACE_CELL_CHAR.length;
+                if (0 !== i7) {
+                  if (!r4 && a4[0] <= n3 && (a4[0] = h4, r4 = true), a4[1] <= n3) {
+                    if (a4[1] = h4, a4 = e6[++s5], !a4)
+                      break;
+                    a4[0] <= n3 ? (a4[0] = h4, r4 = true) : r4 = false;
+                  }
+                  n3 += c4;
+                }
+              }
+              a4 && (a4[1] = this._bufferService.cols);
+            }
+          }
+          static _mergeRanges(e6, t5) {
+            let i6 = false;
+            for (let s5 = 0; s5 < e6.length; s5++) {
+              const r4 = e6[s5];
+              if (i6) {
+                if (t5[1] <= r4[0])
+                  return e6[s5 - 1][1] = t5[1], e6;
+                if (t5[1] <= r4[1])
+                  return e6[s5 - 1][1] = Math.max(t5[1], r4[1]), e6.splice(s5, 1), e6;
+                e6.splice(s5, 1), s5--;
+              } else {
+                if (t5[1] <= r4[0])
+                  return e6.splice(s5, 0, t5), e6;
+                if (t5[1] <= r4[1])
+                  return r4[0] = Math.min(t5[0], r4[0]), e6;
+                t5[0] < r4[1] && (r4[0] = Math.min(t5[0], r4[0]), i6 = true);
+              }
+            }
+            return i6 ? e6[e6.length - 1][1] = t5[1] : e6.push(t5), e6;
+          }
+        };
+        t4.CharacterJoinerService = l3 = s4([r3(0, h3.IBufferService)], l3);
+      }, 5114: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CoreBrowserService = void 0;
+        const s4 = i5(844), r3 = i5(8460), n2 = i5(3656);
+        class o3 extends s4.Disposable {
+          constructor(e5, t5, i6) {
+            super(), this._textarea = e5, this._window = t5, this.mainDocument = i6, this._isFocused = false, this._cachedIsFocused = void 0, this._screenDprMonitor = new a3(this._window), this._onDprChange = this.register(new r3.EventEmitter()), this.onDprChange = this._onDprChange.event, this._onWindowChange = this.register(new r3.EventEmitter()), this.onWindowChange = this._onWindowChange.event, this.register(this.onWindowChange((e6) => this._screenDprMonitor.setWindow(e6))), this.register((0, r3.forwardEvent)(this._screenDprMonitor.onDprChange, this._onDprChange)), this._textarea.addEventListener("focus", () => this._isFocused = true), this._textarea.addEventListener("blur", () => this._isFocused = false);
+          }
+          get window() {
+            return this._window;
+          }
+          set window(e5) {
+            this._window !== e5 && (this._window = e5, this._onWindowChange.fire(this._window));
+          }
+          get dpr() {
+            return this.window.devicePixelRatio;
+          }
+          get isFocused() {
+            return void 0 === this._cachedIsFocused && (this._cachedIsFocused = this._isFocused && this._textarea.ownerDocument.hasFocus(), queueMicrotask(() => this._cachedIsFocused = void 0)), this._cachedIsFocused;
+          }
+        }
+        t4.CoreBrowserService = o3;
+        class a3 extends s4.Disposable {
+          constructor(e5) {
+            super(), this._parentWindow = e5, this._windowResizeListener = this.register(new s4.MutableDisposable()), this._onDprChange = this.register(new r3.EventEmitter()), this.onDprChange = this._onDprChange.event, this._outerListener = () => this._setDprAndFireIfDiffers(), this._currentDevicePixelRatio = this._parentWindow.devicePixelRatio, this._updateDpr(), this._setWindowResizeListener(), this.register((0, s4.toDisposable)(() => this.clearListener()));
+          }
+          setWindow(e5) {
+            this._parentWindow = e5, this._setWindowResizeListener(), this._setDprAndFireIfDiffers();
+          }
+          _setWindowResizeListener() {
+            this._windowResizeListener.value = (0, n2.addDisposableDomListener)(this._parentWindow, "resize", () => this._setDprAndFireIfDiffers());
+          }
+          _setDprAndFireIfDiffers() {
+            this._parentWindow.devicePixelRatio !== this._currentDevicePixelRatio && this._onDprChange.fire(this._parentWindow.devicePixelRatio), this._updateDpr();
+          }
+          _updateDpr() {
+            this._outerListener && (this._resolutionMediaMatchList?.removeListener(this._outerListener), this._currentDevicePixelRatio = this._parentWindow.devicePixelRatio, this._resolutionMediaMatchList = this._parentWindow.matchMedia(`screen and (resolution: ${this._parentWindow.devicePixelRatio}dppx)`), this._resolutionMediaMatchList.addListener(this._outerListener));
+          }
+          clearListener() {
+            this._resolutionMediaMatchList && this._outerListener && (this._resolutionMediaMatchList.removeListener(this._outerListener), this._resolutionMediaMatchList = void 0, this._outerListener = void 0);
+          }
+        }
+      }, 779: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.LinkProviderService = void 0;
+        const s4 = i5(844);
+        class r3 extends s4.Disposable {
+          constructor() {
+            super(), this.linkProviders = [], this.register((0, s4.toDisposable)(() => this.linkProviders.length = 0));
+          }
+          registerLinkProvider(e5) {
+            return this.linkProviders.push(e5), { dispose: () => {
+              const t5 = this.linkProviders.indexOf(e5);
+              -1 !== t5 && this.linkProviders.splice(t5, 1);
+            } };
+          }
+        }
+        t4.LinkProviderService = r3;
+      }, 8934: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.MouseService = void 0;
+        const n2 = i5(4725), o3 = i5(9806);
+        let a3 = t4.MouseService = class {
+          constructor(e5, t5) {
+            this._renderService = e5, this._charSizeService = t5;
+          }
+          getCoords(e5, t5, i6, s5, r4) {
+            return (0, o3.getCoords)(window, e5, t5, i6, s5, this._charSizeService.hasValidSize, this._renderService.dimensions.css.cell.width, this._renderService.dimensions.css.cell.height, r4);
+          }
+          getMouseReportCoords(e5, t5) {
+            const i6 = (0, o3.getCoordsRelativeToElement)(window, e5, t5);
+            if (this._charSizeService.hasValidSize)
+              return i6[0] = Math.min(Math.max(i6[0], 0), this._renderService.dimensions.css.canvas.width - 1), i6[1] = Math.min(Math.max(i6[1], 0), this._renderService.dimensions.css.canvas.height - 1), { col: Math.floor(i6[0] / this._renderService.dimensions.css.cell.width), row: Math.floor(i6[1] / this._renderService.dimensions.css.cell.height), x: Math.floor(i6[0]), y: Math.floor(i6[1]) };
+          }
+        };
+        t4.MouseService = a3 = s4([r3(0, n2.IRenderService), r3(1, n2.ICharSizeService)], a3);
+      }, 3230: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.RenderService = void 0;
+        const n2 = i5(6193), o3 = i5(4725), a3 = i5(8460), h3 = i5(844), c3 = i5(7226), l3 = i5(2585);
+        let d3 = t4.RenderService = class extends h3.Disposable {
+          get dimensions() {
+            return this._renderer.value.dimensions;
+          }
+          constructor(e5, t5, i6, s5, r4, o4, l4, d4) {
+            super(), this._rowCount = e5, this._charSizeService = s5, this._renderer = this.register(new h3.MutableDisposable()), this._pausedResizeTask = new c3.DebouncedIdleTask(), this._observerDisposable = this.register(new h3.MutableDisposable()), this._isPaused = false, this._needsFullRefresh = false, this._isNextRenderRedrawOnly = true, this._needsSelectionRefresh = false, this._canvasWidth = 0, this._canvasHeight = 0, this._selectionState = { start: void 0, end: void 0, columnSelectMode: false }, this._onDimensionsChange = this.register(new a3.EventEmitter()), this.onDimensionsChange = this._onDimensionsChange.event, this._onRenderedViewportChange = this.register(new a3.EventEmitter()), this.onRenderedViewportChange = this._onRenderedViewportChange.event, this._onRender = this.register(new a3.EventEmitter()), this.onRender = this._onRender.event, this._onRefreshRequest = this.register(new a3.EventEmitter()), this.onRefreshRequest = this._onRefreshRequest.event, this._renderDebouncer = new n2.RenderDebouncer((e6, t6) => this._renderRows(e6, t6), l4), this.register(this._renderDebouncer), this.register(l4.onDprChange(() => this.handleDevicePixelRatioChange())), this.register(o4.onResize(() => this._fullRefresh())), this.register(o4.buffers.onBufferActivate(() => this._renderer.value?.clear())), this.register(i6.onOptionChange(() => this._handleOptionsChanged())), this.register(this._charSizeService.onCharSizeChange(() => this.handleCharSizeChanged())), this.register(r4.onDecorationRegistered(() => this._fullRefresh())), this.register(r4.onDecorationRemoved(() => this._fullRefresh())), this.register(i6.onMultipleOptionChange(["customGlyphs", "drawBoldTextInBrightColors", "letterSpacing", "lineHeight", "fontFamily", "fontSize", "fontWeight", "fontWeightBold", "minimumContrastRatio", "rescaleOverlappingGlyphs"], () => {
+              this.clear(), this.handleResize(o4.cols, o4.rows), this._fullRefresh();
+            })), this.register(i6.onMultipleOptionChange(["cursorBlink", "cursorStyle"], () => this.refreshRows(o4.buffer.y, o4.buffer.y, true))), this.register(d4.onChangeColors(() => this._fullRefresh())), this._registerIntersectionObserver(l4.window, t5), this.register(l4.onWindowChange((e6) => this._registerIntersectionObserver(e6, t5)));
+          }
+          _registerIntersectionObserver(e5, t5) {
+            if ("IntersectionObserver" in e5) {
+              const i6 = new e5.IntersectionObserver((e6) => this._handleIntersectionChange(e6[e6.length - 1]), { threshold: 0 });
+              i6.observe(t5), this._observerDisposable.value = (0, h3.toDisposable)(() => i6.disconnect());
+            }
+          }
+          _handleIntersectionChange(e5) {
+            this._isPaused = void 0 === e5.isIntersecting ? 0 === e5.intersectionRatio : !e5.isIntersecting, this._isPaused || this._charSizeService.hasValidSize || this._charSizeService.measure(), !this._isPaused && this._needsFullRefresh && (this._pausedResizeTask.flush(), this.refreshRows(0, this._rowCount - 1), this._needsFullRefresh = false);
+          }
+          refreshRows(e5, t5, i6 = false) {
+            this._isPaused ? this._needsFullRefresh = true : (i6 || (this._isNextRenderRedrawOnly = false), this._renderDebouncer.refresh(e5, t5, this._rowCount));
+          }
+          _renderRows(e5, t5) {
+            this._renderer.value && (e5 = Math.min(e5, this._rowCount - 1), t5 = Math.min(t5, this._rowCount - 1), this._renderer.value.renderRows(e5, t5), this._needsSelectionRefresh && (this._renderer.value.handleSelectionChanged(this._selectionState.start, this._selectionState.end, this._selectionState.columnSelectMode), this._needsSelectionRefresh = false), this._isNextRenderRedrawOnly || this._onRenderedViewportChange.fire({ start: e5, end: t5 }), this._onRender.fire({ start: e5, end: t5 }), this._isNextRenderRedrawOnly = true);
+          }
+          resize(e5, t5) {
+            this._rowCount = t5, this._fireOnCanvasResize();
+          }
+          _handleOptionsChanged() {
+            this._renderer.value && (this.refreshRows(0, this._rowCount - 1), this._fireOnCanvasResize());
+          }
+          _fireOnCanvasResize() {
+            this._renderer.value && (this._renderer.value.dimensions.css.canvas.width === this._canvasWidth && this._renderer.value.dimensions.css.canvas.height === this._canvasHeight || this._onDimensionsChange.fire(this._renderer.value.dimensions));
+          }
+          hasRenderer() {
+            return !!this._renderer.value;
+          }
+          setRenderer(e5) {
+            this._renderer.value = e5, this._renderer.value && (this._renderer.value.onRequestRedraw((e6) => this.refreshRows(e6.start, e6.end, true)), this._needsSelectionRefresh = true, this._fullRefresh());
+          }
+          addRefreshCallback(e5) {
+            return this._renderDebouncer.addRefreshCallback(e5);
+          }
+          _fullRefresh() {
+            this._isPaused ? this._needsFullRefresh = true : this.refreshRows(0, this._rowCount - 1);
+          }
+          clearTextureAtlas() {
+            this._renderer.value && (this._renderer.value.clearTextureAtlas?.(), this._fullRefresh());
+          }
+          handleDevicePixelRatioChange() {
+            this._charSizeService.measure(), this._renderer.value && (this._renderer.value.handleDevicePixelRatioChange(), this.refreshRows(0, this._rowCount - 1));
+          }
+          handleResize(e5, t5) {
+            this._renderer.value && (this._isPaused ? this._pausedResizeTask.set(() => this._renderer.value?.handleResize(e5, t5)) : this._renderer.value.handleResize(e5, t5), this._fullRefresh());
+          }
+          handleCharSizeChanged() {
+            this._renderer.value?.handleCharSizeChanged();
+          }
+          handleBlur() {
+            this._renderer.value?.handleBlur();
+          }
+          handleFocus() {
+            this._renderer.value?.handleFocus();
+          }
+          handleSelectionChanged(e5, t5, i6) {
+            this._selectionState.start = e5, this._selectionState.end = t5, this._selectionState.columnSelectMode = i6, this._renderer.value?.handleSelectionChanged(e5, t5, i6);
+          }
+          handleCursorMove() {
+            this._renderer.value?.handleCursorMove();
+          }
+          clear() {
+            this._renderer.value?.clear();
+          }
+        };
+        t4.RenderService = d3 = s4([r3(2, l3.IOptionsService), r3(3, o3.ICharSizeService), r3(4, l3.IDecorationService), r3(5, l3.IBufferService), r3(6, o3.ICoreBrowserService), r3(7, o3.IThemeService)], d3);
+      }, 9312: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.SelectionService = void 0;
+        const n2 = i5(9806), o3 = i5(9504), a3 = i5(456), h3 = i5(4725), c3 = i5(8460), l3 = i5(844), d3 = i5(6114), _2 = i5(4841), u4 = i5(511), f4 = i5(2585), v3 = String.fromCharCode(160), p3 = new RegExp(v3, "g");
+        let g2 = t4.SelectionService = class extends l3.Disposable {
+          constructor(e5, t5, i6, s5, r4, n3, o4, h4, d4) {
+            super(), this._element = e5, this._screenElement = t5, this._linkifier = i6, this._bufferService = s5, this._coreService = r4, this._mouseService = n3, this._optionsService = o4, this._renderService = h4, this._coreBrowserService = d4, this._dragScrollAmount = 0, this._enabled = true, this._workCell = new u4.CellData(), this._mouseDownTimeStamp = 0, this._oldHasSelection = false, this._oldSelectionStart = void 0, this._oldSelectionEnd = void 0, this._onLinuxMouseSelection = this.register(new c3.EventEmitter()), this.onLinuxMouseSelection = this._onLinuxMouseSelection.event, this._onRedrawRequest = this.register(new c3.EventEmitter()), this.onRequestRedraw = this._onRedrawRequest.event, this._onSelectionChange = this.register(new c3.EventEmitter()), this.onSelectionChange = this._onSelectionChange.event, this._onRequestScrollLines = this.register(new c3.EventEmitter()), this.onRequestScrollLines = this._onRequestScrollLines.event, this._mouseMoveListener = (e6) => this._handleMouseMove(e6), this._mouseUpListener = (e6) => this._handleMouseUp(e6), this._coreService.onUserInput(() => {
+              this.hasSelection && this.clearSelection();
+            }), this._trimListener = this._bufferService.buffer.lines.onTrim((e6) => this._handleTrim(e6)), this.register(this._bufferService.buffers.onBufferActivate((e6) => this._handleBufferActivate(e6))), this.enable(), this._model = new a3.SelectionModel(this._bufferService), this._activeSelectionMode = 0, this.register((0, l3.toDisposable)(() => {
+              this._removeMouseDownListeners();
+            }));
+          }
+          reset() {
+            this.clearSelection();
+          }
+          disable() {
+            this.clearSelection(), this._enabled = false;
+          }
+          enable() {
+            this._enabled = true;
+          }
+          get selectionStart() {
+            return this._model.finalSelectionStart;
+          }
+          get selectionEnd() {
+            return this._model.finalSelectionEnd;
+          }
+          get hasSelection() {
+            const e5 = this._model.finalSelectionStart, t5 = this._model.finalSelectionEnd;
+            return !(!e5 || !t5 || e5[0] === t5[0] && e5[1] === t5[1]);
+          }
+          get selectionText() {
+            const e5 = this._model.finalSelectionStart, t5 = this._model.finalSelectionEnd;
+            if (!e5 || !t5)
+              return "";
+            const i6 = this._bufferService.buffer, s5 = [];
+            if (3 === this._activeSelectionMode) {
+              if (e5[0] === t5[0])
+                return "";
+              const r4 = e5[0] < t5[0] ? e5[0] : t5[0], n3 = e5[0] < t5[0] ? t5[0] : e5[0];
+              for (let o4 = e5[1]; o4 <= t5[1]; o4++) {
+                const e6 = i6.translateBufferLineToString(o4, true, r4, n3);
+                s5.push(e6);
+              }
+            } else {
+              const r4 = e5[1] === t5[1] ? t5[0] : void 0;
+              s5.push(i6.translateBufferLineToString(e5[1], true, e5[0], r4));
+              for (let r5 = e5[1] + 1; r5 <= t5[1] - 1; r5++) {
+                const e6 = i6.lines.get(r5), t6 = i6.translateBufferLineToString(r5, true);
+                e6?.isWrapped ? s5[s5.length - 1] += t6 : s5.push(t6);
+              }
+              if (e5[1] !== t5[1]) {
+                const e6 = i6.lines.get(t5[1]), r5 = i6.translateBufferLineToString(t5[1], true, 0, t5[0]);
+                e6 && e6.isWrapped ? s5[s5.length - 1] += r5 : s5.push(r5);
+              }
+            }
+            return s5.map((e6) => e6.replace(p3, " ")).join(d3.isWindows ? "\r\n" : "\n");
+          }
+          clearSelection() {
+            this._model.clearSelection(), this._removeMouseDownListeners(), this.refresh(), this._onSelectionChange.fire();
+          }
+          refresh(e5) {
+            this._refreshAnimationFrame || (this._refreshAnimationFrame = this._coreBrowserService.window.requestAnimationFrame(() => this._refresh())), d3.isLinux && e5 && this.selectionText.length && this._onLinuxMouseSelection.fire(this.selectionText);
+          }
+          _refresh() {
+            this._refreshAnimationFrame = void 0, this._onRedrawRequest.fire({ start: this._model.finalSelectionStart, end: this._model.finalSelectionEnd, columnSelectMode: 3 === this._activeSelectionMode });
+          }
+          _isClickInSelection(e5) {
+            const t5 = this._getMouseBufferCoords(e5), i6 = this._model.finalSelectionStart, s5 = this._model.finalSelectionEnd;
+            return !!(i6 && s5 && t5) && this._areCoordsInSelection(t5, i6, s5);
+          }
+          isCellInSelection(e5, t5) {
+            const i6 = this._model.finalSelectionStart, s5 = this._model.finalSelectionEnd;
+            return !(!i6 || !s5) && this._areCoordsInSelection([e5, t5], i6, s5);
+          }
+          _areCoordsInSelection(e5, t5, i6) {
+            return e5[1] > t5[1] && e5[1] < i6[1] || t5[1] === i6[1] && e5[1] === t5[1] && e5[0] >= t5[0] && e5[0] < i6[0] || t5[1] < i6[1] && e5[1] === i6[1] && e5[0] < i6[0] || t5[1] < i6[1] && e5[1] === t5[1] && e5[0] >= t5[0];
+          }
+          _selectWordAtCursor(e5, t5) {
+            const i6 = this._linkifier.currentLink?.link?.range;
+            if (i6)
+              return this._model.selectionStart = [i6.start.x - 1, i6.start.y - 1], this._model.selectionStartLength = (0, _2.getRangeLength)(i6, this._bufferService.cols), this._model.selectionEnd = void 0, true;
+            const s5 = this._getMouseBufferCoords(e5);
+            return !!s5 && (this._selectWordAt(s5, t5), this._model.selectionEnd = void 0, true);
+          }
+          selectAll() {
+            this._model.isSelectAllActive = true, this.refresh(), this._onSelectionChange.fire();
+          }
+          selectLines(e5, t5) {
+            this._model.clearSelection(), e5 = Math.max(e5, 0), t5 = Math.min(t5, this._bufferService.buffer.lines.length - 1), this._model.selectionStart = [0, e5], this._model.selectionEnd = [this._bufferService.cols, t5], this.refresh(), this._onSelectionChange.fire();
+          }
+          _handleTrim(e5) {
+            this._model.handleTrim(e5) && this.refresh();
+          }
+          _getMouseBufferCoords(e5) {
+            const t5 = this._mouseService.getCoords(e5, this._screenElement, this._bufferService.cols, this._bufferService.rows, true);
+            if (t5)
+              return t5[0]--, t5[1]--, t5[1] += this._bufferService.buffer.ydisp, t5;
+          }
+          _getMouseEventScrollAmount(e5) {
+            let t5 = (0, n2.getCoordsRelativeToElement)(this._coreBrowserService.window, e5, this._screenElement)[1];
+            const i6 = this._renderService.dimensions.css.canvas.height;
+            return t5 >= 0 && t5 <= i6 ? 0 : (t5 > i6 && (t5 -= i6), t5 = Math.min(Math.max(t5, -50), 50), t5 /= 50, t5 / Math.abs(t5) + Math.round(14 * t5));
+          }
+          shouldForceSelection(e5) {
+            return d3.isMac ? e5.altKey && this._optionsService.rawOptions.macOptionClickForcesSelection : e5.shiftKey;
+          }
+          handleMouseDown(e5) {
+            if (this._mouseDownTimeStamp = e5.timeStamp, (2 !== e5.button || !this.hasSelection) && 0 === e5.button) {
+              if (!this._enabled) {
+                if (!this.shouldForceSelection(e5))
+                  return;
+                e5.stopPropagation();
+              }
+              e5.preventDefault(), this._dragScrollAmount = 0, this._enabled && e5.shiftKey ? this._handleIncrementalClick(e5) : 1 === e5.detail ? this._handleSingleClick(e5) : 2 === e5.detail ? this._handleDoubleClick(e5) : 3 === e5.detail && this._handleTripleClick(e5), this._addMouseDownListeners(), this.refresh(true);
+            }
+          }
+          _addMouseDownListeners() {
+            this._screenElement.ownerDocument && (this._screenElement.ownerDocument.addEventListener("mousemove", this._mouseMoveListener), this._screenElement.ownerDocument.addEventListener("mouseup", this._mouseUpListener)), this._dragScrollIntervalTimer = this._coreBrowserService.window.setInterval(() => this._dragScroll(), 50);
+          }
+          _removeMouseDownListeners() {
+            this._screenElement.ownerDocument && (this._screenElement.ownerDocument.removeEventListener("mousemove", this._mouseMoveListener), this._screenElement.ownerDocument.removeEventListener("mouseup", this._mouseUpListener)), this._coreBrowserService.window.clearInterval(this._dragScrollIntervalTimer), this._dragScrollIntervalTimer = void 0;
+          }
+          _handleIncrementalClick(e5) {
+            this._model.selectionStart && (this._model.selectionEnd = this._getMouseBufferCoords(e5));
+          }
+          _handleSingleClick(e5) {
+            if (this._model.selectionStartLength = 0, this._model.isSelectAllActive = false, this._activeSelectionMode = this.shouldColumnSelect(e5) ? 3 : 0, this._model.selectionStart = this._getMouseBufferCoords(e5), !this._model.selectionStart)
+              return;
+            this._model.selectionEnd = void 0;
+            const t5 = this._bufferService.buffer.lines.get(this._model.selectionStart[1]);
+            t5 && t5.length !== this._model.selectionStart[0] && 0 === t5.hasWidth(this._model.selectionStart[0]) && this._model.selectionStart[0]++;
+          }
+          _handleDoubleClick(e5) {
+            this._selectWordAtCursor(e5, true) && (this._activeSelectionMode = 1);
+          }
+          _handleTripleClick(e5) {
+            const t5 = this._getMouseBufferCoords(e5);
+            t5 && (this._activeSelectionMode = 2, this._selectLineAt(t5[1]));
+          }
+          shouldColumnSelect(e5) {
+            return e5.altKey && !(d3.isMac && this._optionsService.rawOptions.macOptionClickForcesSelection);
+          }
+          _handleMouseMove(e5) {
+            if (e5.stopImmediatePropagation(), !this._model.selectionStart)
+              return;
+            const t5 = this._model.selectionEnd ? [this._model.selectionEnd[0], this._model.selectionEnd[1]] : null;
+            if (this._model.selectionEnd = this._getMouseBufferCoords(e5), !this._model.selectionEnd)
+              return void this.refresh(true);
+            2 === this._activeSelectionMode ? this._model.selectionEnd[1] < this._model.selectionStart[1] ? this._model.selectionEnd[0] = 0 : this._model.selectionEnd[0] = this._bufferService.cols : 1 === this._activeSelectionMode && this._selectToWordAt(this._model.selectionEnd), this._dragScrollAmount = this._getMouseEventScrollAmount(e5), 3 !== this._activeSelectionMode && (this._dragScrollAmount > 0 ? this._model.selectionEnd[0] = this._bufferService.cols : this._dragScrollAmount < 0 && (this._model.selectionEnd[0] = 0));
+            const i6 = this._bufferService.buffer;
+            if (this._model.selectionEnd[1] < i6.lines.length) {
+              const e6 = i6.lines.get(this._model.selectionEnd[1]);
+              e6 && 0 === e6.hasWidth(this._model.selectionEnd[0]) && this._model.selectionEnd[0] < this._bufferService.cols && this._model.selectionEnd[0]++;
+            }
+            t5 && t5[0] === this._model.selectionEnd[0] && t5[1] === this._model.selectionEnd[1] || this.refresh(true);
+          }
+          _dragScroll() {
+            if (this._model.selectionEnd && this._model.selectionStart && this._dragScrollAmount) {
+              this._onRequestScrollLines.fire({ amount: this._dragScrollAmount, suppressScrollEvent: false });
+              const e5 = this._bufferService.buffer;
+              this._dragScrollAmount > 0 ? (3 !== this._activeSelectionMode && (this._model.selectionEnd[0] = this._bufferService.cols), this._model.selectionEnd[1] = Math.min(e5.ydisp + this._bufferService.rows, e5.lines.length - 1)) : (3 !== this._activeSelectionMode && (this._model.selectionEnd[0] = 0), this._model.selectionEnd[1] = e5.ydisp), this.refresh();
+            }
+          }
+          _handleMouseUp(e5) {
+            const t5 = e5.timeStamp - this._mouseDownTimeStamp;
+            if (this._removeMouseDownListeners(), this.selectionText.length <= 1 && t5 < 500 && e5.altKey && this._optionsService.rawOptions.altClickMovesCursor) {
+              if (this._bufferService.buffer.ybase === this._bufferService.buffer.ydisp) {
+                const t6 = this._mouseService.getCoords(e5, this._element, this._bufferService.cols, this._bufferService.rows, false);
+                if (t6 && void 0 !== t6[0] && void 0 !== t6[1]) {
+                  const e6 = (0, o3.moveToCellSequence)(t6[0] - 1, t6[1] - 1, this._bufferService, this._coreService.decPrivateModes.applicationCursorKeys);
+                  this._coreService.triggerDataEvent(e6, true);
+                }
+              }
+            } else
+              this._fireEventIfSelectionChanged();
+          }
+          _fireEventIfSelectionChanged() {
+            const e5 = this._model.finalSelectionStart, t5 = this._model.finalSelectionEnd, i6 = !(!e5 || !t5 || e5[0] === t5[0] && e5[1] === t5[1]);
+            i6 ? e5 && t5 && (this._oldSelectionStart && this._oldSelectionEnd && e5[0] === this._oldSelectionStart[0] && e5[1] === this._oldSelectionStart[1] && t5[0] === this._oldSelectionEnd[0] && t5[1] === this._oldSelectionEnd[1] || this._fireOnSelectionChange(e5, t5, i6)) : this._oldHasSelection && this._fireOnSelectionChange(e5, t5, i6);
+          }
+          _fireOnSelectionChange(e5, t5, i6) {
+            this._oldSelectionStart = e5, this._oldSelectionEnd = t5, this._oldHasSelection = i6, this._onSelectionChange.fire();
+          }
+          _handleBufferActivate(e5) {
+            this.clearSelection(), this._trimListener.dispose(), this._trimListener = e5.activeBuffer.lines.onTrim((e6) => this._handleTrim(e6));
+          }
+          _convertViewportColToCharacterIndex(e5, t5) {
+            let i6 = t5;
+            for (let s5 = 0; t5 >= s5; s5++) {
+              const r4 = e5.loadCell(s5, this._workCell).getChars().length;
+              0 === this._workCell.getWidth() ? i6-- : r4 > 1 && t5 !== s5 && (i6 += r4 - 1);
+            }
+            return i6;
+          }
+          setSelection(e5, t5, i6) {
+            this._model.clearSelection(), this._removeMouseDownListeners(), this._model.selectionStart = [e5, t5], this._model.selectionStartLength = i6, this.refresh(), this._fireEventIfSelectionChanged();
+          }
+          rightClickSelect(e5) {
+            this._isClickInSelection(e5) || (this._selectWordAtCursor(e5, false) && this.refresh(true), this._fireEventIfSelectionChanged());
+          }
+          _getWordAt(e5, t5, i6 = true, s5 = true) {
+            if (e5[0] >= this._bufferService.cols)
+              return;
+            const r4 = this._bufferService.buffer, n3 = r4.lines.get(e5[1]);
+            if (!n3)
+              return;
+            const o4 = r4.translateBufferLineToString(e5[1], false);
+            let a4 = this._convertViewportColToCharacterIndex(n3, e5[0]), h4 = a4;
+            const c4 = e5[0] - a4;
+            let l4 = 0, d4 = 0, _3 = 0, u5 = 0;
+            if (" " === o4.charAt(a4)) {
+              for (; a4 > 0 && " " === o4.charAt(a4 - 1); )
+                a4--;
+              for (; h4 < o4.length && " " === o4.charAt(h4 + 1); )
+                h4++;
+            } else {
+              let t6 = e5[0], i7 = e5[0];
+              0 === n3.getWidth(t6) && (l4++, t6--), 2 === n3.getWidth(i7) && (d4++, i7++);
+              const s6 = n3.getString(i7).length;
+              for (s6 > 1 && (u5 += s6 - 1, h4 += s6 - 1); t6 > 0 && a4 > 0 && !this._isCharWordSeparator(n3.loadCell(t6 - 1, this._workCell)); ) {
+                n3.loadCell(t6 - 1, this._workCell);
+                const e6 = this._workCell.getChars().length;
+                0 === this._workCell.getWidth() ? (l4++, t6--) : e6 > 1 && (_3 += e6 - 1, a4 -= e6 - 1), a4--, t6--;
+              }
+              for (; i7 < n3.length && h4 + 1 < o4.length && !this._isCharWordSeparator(n3.loadCell(i7 + 1, this._workCell)); ) {
+                n3.loadCell(i7 + 1, this._workCell);
+                const e6 = this._workCell.getChars().length;
+                2 === this._workCell.getWidth() ? (d4++, i7++) : e6 > 1 && (u5 += e6 - 1, h4 += e6 - 1), h4++, i7++;
+              }
+            }
+            h4++;
+            let f5 = a4 + c4 - l4 + _3, v4 = Math.min(this._bufferService.cols, h4 - a4 + l4 + d4 - _3 - u5);
+            if (t5 || "" !== o4.slice(a4, h4).trim()) {
+              if (i6 && 0 === f5 && 32 !== n3.getCodePoint(0)) {
+                const t6 = r4.lines.get(e5[1] - 1);
+                if (t6 && n3.isWrapped && 32 !== t6.getCodePoint(this._bufferService.cols - 1)) {
+                  const t7 = this._getWordAt([this._bufferService.cols - 1, e5[1] - 1], false, true, false);
+                  if (t7) {
+                    const e6 = this._bufferService.cols - t7.start;
+                    f5 -= e6, v4 += e6;
+                  }
+                }
+              }
+              if (s5 && f5 + v4 === this._bufferService.cols && 32 !== n3.getCodePoint(this._bufferService.cols - 1)) {
+                const t6 = r4.lines.get(e5[1] + 1);
+                if (t6?.isWrapped && 32 !== t6.getCodePoint(0)) {
+                  const t7 = this._getWordAt([0, e5[1] + 1], false, false, true);
+                  t7 && (v4 += t7.length);
+                }
+              }
+              return { start: f5, length: v4 };
+            }
+          }
+          _selectWordAt(e5, t5) {
+            const i6 = this._getWordAt(e5, t5);
+            if (i6) {
+              for (; i6.start < 0; )
+                i6.start += this._bufferService.cols, e5[1]--;
+              this._model.selectionStart = [i6.start, e5[1]], this._model.selectionStartLength = i6.length;
+            }
+          }
+          _selectToWordAt(e5) {
+            const t5 = this._getWordAt(e5, true);
+            if (t5) {
+              let i6 = e5[1];
+              for (; t5.start < 0; )
+                t5.start += this._bufferService.cols, i6--;
+              if (!this._model.areSelectionValuesReversed())
+                for (; t5.start + t5.length > this._bufferService.cols; )
+                  t5.length -= this._bufferService.cols, i6++;
+              this._model.selectionEnd = [this._model.areSelectionValuesReversed() ? t5.start : t5.start + t5.length, i6];
+            }
+          }
+          _isCharWordSeparator(e5) {
+            return 0 !== e5.getWidth() && this._optionsService.rawOptions.wordSeparator.indexOf(e5.getChars()) >= 0;
+          }
+          _selectLineAt(e5) {
+            const t5 = this._bufferService.buffer.getWrappedRangeForLine(e5), i6 = { start: { x: 0, y: t5.first }, end: { x: this._bufferService.cols - 1, y: t5.last } };
+            this._model.selectionStart = [0, t5.first], this._model.selectionEnd = void 0, this._model.selectionStartLength = (0, _2.getRangeLength)(i6, this._bufferService.cols);
+          }
+        };
+        t4.SelectionService = g2 = s4([r3(3, f4.IBufferService), r3(4, f4.ICoreService), r3(5, h3.IMouseService), r3(6, f4.IOptionsService), r3(7, h3.IRenderService), r3(8, h3.ICoreBrowserService)], g2);
+      }, 4725: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.ILinkProviderService = t4.IThemeService = t4.ICharacterJoinerService = t4.ISelectionService = t4.IRenderService = t4.IMouseService = t4.ICoreBrowserService = t4.ICharSizeService = void 0;
+        const s4 = i5(8343);
+        t4.ICharSizeService = (0, s4.createDecorator)("CharSizeService"), t4.ICoreBrowserService = (0, s4.createDecorator)("CoreBrowserService"), t4.IMouseService = (0, s4.createDecorator)("MouseService"), t4.IRenderService = (0, s4.createDecorator)("RenderService"), t4.ISelectionService = (0, s4.createDecorator)("SelectionService"), t4.ICharacterJoinerService = (0, s4.createDecorator)("CharacterJoinerService"), t4.IThemeService = (0, s4.createDecorator)("ThemeService"), t4.ILinkProviderService = (0, s4.createDecorator)("LinkProviderService");
+      }, 6731: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.ThemeService = t4.DEFAULT_ANSI_COLORS = void 0;
+        const n2 = i5(7239), o3 = i5(8055), a3 = i5(8460), h3 = i5(844), c3 = i5(2585), l3 = o3.css.toColor("#ffffff"), d3 = o3.css.toColor("#000000"), _2 = o3.css.toColor("#ffffff"), u4 = o3.css.toColor("#000000"), f4 = { css: "rgba(255, 255, 255, 0.3)", rgba: 4294967117 };
+        t4.DEFAULT_ANSI_COLORS = Object.freeze((() => {
+          const e5 = [o3.css.toColor("#2e3436"), o3.css.toColor("#cc0000"), o3.css.toColor("#4e9a06"), o3.css.toColor("#c4a000"), o3.css.toColor("#3465a4"), o3.css.toColor("#75507b"), o3.css.toColor("#06989a"), o3.css.toColor("#d3d7cf"), o3.css.toColor("#555753"), o3.css.toColor("#ef2929"), o3.css.toColor("#8ae234"), o3.css.toColor("#fce94f"), o3.css.toColor("#729fcf"), o3.css.toColor("#ad7fa8"), o3.css.toColor("#34e2e2"), o3.css.toColor("#eeeeec")], t5 = [0, 95, 135, 175, 215, 255];
+          for (let i6 = 0; i6 < 216; i6++) {
+            const s5 = t5[i6 / 36 % 6 | 0], r4 = t5[i6 / 6 % 6 | 0], n3 = t5[i6 % 6];
+            e5.push({ css: o3.channels.toCss(s5, r4, n3), rgba: o3.channels.toRgba(s5, r4, n3) });
+          }
+          for (let t6 = 0; t6 < 24; t6++) {
+            const i6 = 8 + 10 * t6;
+            e5.push({ css: o3.channels.toCss(i6, i6, i6), rgba: o3.channels.toRgba(i6, i6, i6) });
+          }
+          return e5;
+        })());
+        let v3 = t4.ThemeService = class extends h3.Disposable {
+          get colors() {
+            return this._colors;
+          }
+          constructor(e5) {
+            super(), this._optionsService = e5, this._contrastCache = new n2.ColorContrastCache(), this._halfContrastCache = new n2.ColorContrastCache(), this._onChangeColors = this.register(new a3.EventEmitter()), this.onChangeColors = this._onChangeColors.event, this._colors = { foreground: l3, background: d3, cursor: _2, cursorAccent: u4, selectionForeground: void 0, selectionBackgroundTransparent: f4, selectionBackgroundOpaque: o3.color.blend(d3, f4), selectionInactiveBackgroundTransparent: f4, selectionInactiveBackgroundOpaque: o3.color.blend(d3, f4), ansi: t4.DEFAULT_ANSI_COLORS.slice(), contrastCache: this._contrastCache, halfContrastCache: this._halfContrastCache }, this._updateRestoreColors(), this._setTheme(this._optionsService.rawOptions.theme), this.register(this._optionsService.onSpecificOptionChange("minimumContrastRatio", () => this._contrastCache.clear())), this.register(this._optionsService.onSpecificOptionChange("theme", () => this._setTheme(this._optionsService.rawOptions.theme)));
+          }
+          _setTheme(e5 = {}) {
+            const i6 = this._colors;
+            if (i6.foreground = p3(e5.foreground, l3), i6.background = p3(e5.background, d3), i6.cursor = p3(e5.cursor, _2), i6.cursorAccent = p3(e5.cursorAccent, u4), i6.selectionBackgroundTransparent = p3(e5.selectionBackground, f4), i6.selectionBackgroundOpaque = o3.color.blend(i6.background, i6.selectionBackgroundTransparent), i6.selectionInactiveBackgroundTransparent = p3(e5.selectionInactiveBackground, i6.selectionBackgroundTransparent), i6.selectionInactiveBackgroundOpaque = o3.color.blend(i6.background, i6.selectionInactiveBackgroundTransparent), i6.selectionForeground = e5.selectionForeground ? p3(e5.selectionForeground, o3.NULL_COLOR) : void 0, i6.selectionForeground === o3.NULL_COLOR && (i6.selectionForeground = void 0), o3.color.isOpaque(i6.selectionBackgroundTransparent)) {
+              const e6 = 0.3;
+              i6.selectionBackgroundTransparent = o3.color.opacity(i6.selectionBackgroundTransparent, e6);
+            }
+            if (o3.color.isOpaque(i6.selectionInactiveBackgroundTransparent)) {
+              const e6 = 0.3;
+              i6.selectionInactiveBackgroundTransparent = o3.color.opacity(i6.selectionInactiveBackgroundTransparent, e6);
+            }
+            if (i6.ansi = t4.DEFAULT_ANSI_COLORS.slice(), i6.ansi[0] = p3(e5.black, t4.DEFAULT_ANSI_COLORS[0]), i6.ansi[1] = p3(e5.red, t4.DEFAULT_ANSI_COLORS[1]), i6.ansi[2] = p3(e5.green, t4.DEFAULT_ANSI_COLORS[2]), i6.ansi[3] = p3(e5.yellow, t4.DEFAULT_ANSI_COLORS[3]), i6.ansi[4] = p3(e5.blue, t4.DEFAULT_ANSI_COLORS[4]), i6.ansi[5] = p3(e5.magenta, t4.DEFAULT_ANSI_COLORS[5]), i6.ansi[6] = p3(e5.cyan, t4.DEFAULT_ANSI_COLORS[6]), i6.ansi[7] = p3(e5.white, t4.DEFAULT_ANSI_COLORS[7]), i6.ansi[8] = p3(e5.brightBlack, t4.DEFAULT_ANSI_COLORS[8]), i6.ansi[9] = p3(e5.brightRed, t4.DEFAULT_ANSI_COLORS[9]), i6.ansi[10] = p3(e5.brightGreen, t4.DEFAULT_ANSI_COLORS[10]), i6.ansi[11] = p3(e5.brightYellow, t4.DEFAULT_ANSI_COLORS[11]), i6.ansi[12] = p3(e5.brightBlue, t4.DEFAULT_ANSI_COLORS[12]), i6.ansi[13] = p3(e5.brightMagenta, t4.DEFAULT_ANSI_COLORS[13]), i6.ansi[14] = p3(e5.brightCyan, t4.DEFAULT_ANSI_COLORS[14]), i6.ansi[15] = p3(e5.brightWhite, t4.DEFAULT_ANSI_COLORS[15]), e5.extendedAnsi) {
+              const s5 = Math.min(i6.ansi.length - 16, e5.extendedAnsi.length);
+              for (let r4 = 0; r4 < s5; r4++)
+                i6.ansi[r4 + 16] = p3(e5.extendedAnsi[r4], t4.DEFAULT_ANSI_COLORS[r4 + 16]);
+            }
+            this._contrastCache.clear(), this._halfContrastCache.clear(), this._updateRestoreColors(), this._onChangeColors.fire(this.colors);
+          }
+          restoreColor(e5) {
+            this._restoreColor(e5), this._onChangeColors.fire(this.colors);
+          }
+          _restoreColor(e5) {
+            if (void 0 !== e5)
+              switch (e5) {
+                case 256:
+                  this._colors.foreground = this._restoreColors.foreground;
+                  break;
+                case 257:
+                  this._colors.background = this._restoreColors.background;
+                  break;
+                case 258:
+                  this._colors.cursor = this._restoreColors.cursor;
+                  break;
+                default:
+                  this._colors.ansi[e5] = this._restoreColors.ansi[e5];
+              }
+            else
+              for (let e6 = 0; e6 < this._restoreColors.ansi.length; ++e6)
+                this._colors.ansi[e6] = this._restoreColors.ansi[e6];
+          }
+          modifyColors(e5) {
+            e5(this._colors), this._onChangeColors.fire(this.colors);
+          }
+          _updateRestoreColors() {
+            this._restoreColors = { foreground: this._colors.foreground, background: this._colors.background, cursor: this._colors.cursor, ansi: this._colors.ansi.slice() };
+          }
+        };
+        function p3(e5, t5) {
+          if (void 0 !== e5)
+            try {
+              return o3.css.toColor(e5);
+            } catch {
+            }
+          return t5;
+        }
+        t4.ThemeService = v3 = s4([r3(0, c3.IOptionsService)], v3);
+      }, 6349: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CircularList = void 0;
+        const s4 = i5(8460), r3 = i5(844);
+        class n2 extends r3.Disposable {
+          constructor(e5) {
+            super(), this._maxLength = e5, this.onDeleteEmitter = this.register(new s4.EventEmitter()), this.onDelete = this.onDeleteEmitter.event, this.onInsertEmitter = this.register(new s4.EventEmitter()), this.onInsert = this.onInsertEmitter.event, this.onTrimEmitter = this.register(new s4.EventEmitter()), this.onTrim = this.onTrimEmitter.event, this._array = new Array(this._maxLength), this._startIndex = 0, this._length = 0;
+          }
+          get maxLength() {
+            return this._maxLength;
+          }
+          set maxLength(e5) {
+            if (this._maxLength === e5)
+              return;
+            const t5 = new Array(e5);
+            for (let i6 = 0; i6 < Math.min(e5, this.length); i6++)
+              t5[i6] = this._array[this._getCyclicIndex(i6)];
+            this._array = t5, this._maxLength = e5, this._startIndex = 0;
+          }
+          get length() {
+            return this._length;
+          }
+          set length(e5) {
+            if (e5 > this._length)
+              for (let t5 = this._length; t5 < e5; t5++)
+                this._array[t5] = void 0;
+            this._length = e5;
+          }
+          get(e5) {
+            return this._array[this._getCyclicIndex(e5)];
+          }
+          set(e5, t5) {
+            this._array[this._getCyclicIndex(e5)] = t5;
+          }
+          push(e5) {
+            this._array[this._getCyclicIndex(this._length)] = e5, this._length === this._maxLength ? (this._startIndex = ++this._startIndex % this._maxLength, this.onTrimEmitter.fire(1)) : this._length++;
+          }
+          recycle() {
+            if (this._length !== this._maxLength)
+              throw new Error("Can only recycle when the buffer is full");
+            return this._startIndex = ++this._startIndex % this._maxLength, this.onTrimEmitter.fire(1), this._array[this._getCyclicIndex(this._length - 1)];
+          }
+          get isFull() {
+            return this._length === this._maxLength;
+          }
+          pop() {
+            return this._array[this._getCyclicIndex(this._length-- - 1)];
+          }
+          splice(e5, t5, ...i6) {
+            if (t5) {
+              for (let i7 = e5; i7 < this._length - t5; i7++)
+                this._array[this._getCyclicIndex(i7)] = this._array[this._getCyclicIndex(i7 + t5)];
+              this._length -= t5, this.onDeleteEmitter.fire({ index: e5, amount: t5 });
+            }
+            for (let t6 = this._length - 1; t6 >= e5; t6--)
+              this._array[this._getCyclicIndex(t6 + i6.length)] = this._array[this._getCyclicIndex(t6)];
+            for (let t6 = 0; t6 < i6.length; t6++)
+              this._array[this._getCyclicIndex(e5 + t6)] = i6[t6];
+            if (i6.length && this.onInsertEmitter.fire({ index: e5, amount: i6.length }), this._length + i6.length > this._maxLength) {
+              const e6 = this._length + i6.length - this._maxLength;
+              this._startIndex += e6, this._length = this._maxLength, this.onTrimEmitter.fire(e6);
+            } else
+              this._length += i6.length;
+          }
+          trimStart(e5) {
+            e5 > this._length && (e5 = this._length), this._startIndex += e5, this._length -= e5, this.onTrimEmitter.fire(e5);
+          }
+          shiftElements(e5, t5, i6) {
+            if (!(t5 <= 0)) {
+              if (e5 < 0 || e5 >= this._length)
+                throw new Error("start argument out of range");
+              if (e5 + i6 < 0)
+                throw new Error("Cannot shift elements in list beyond index 0");
+              if (i6 > 0) {
+                for (let s6 = t5 - 1; s6 >= 0; s6--)
+                  this.set(e5 + s6 + i6, this.get(e5 + s6));
+                const s5 = e5 + t5 + i6 - this._length;
+                if (s5 > 0)
+                  for (this._length += s5; this._length > this._maxLength; )
+                    this._length--, this._startIndex++, this.onTrimEmitter.fire(1);
+              } else
+                for (let s5 = 0; s5 < t5; s5++)
+                  this.set(e5 + s5 + i6, this.get(e5 + s5));
+            }
+          }
+          _getCyclicIndex(e5) {
+            return (this._startIndex + e5) % this._maxLength;
+          }
+        }
+        t4.CircularList = n2;
+      }, 1439: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.clone = void 0, t4.clone = function e5(t5, i5 = 5) {
+          if ("object" != typeof t5)
+            return t5;
+          const s4 = Array.isArray(t5) ? [] : {};
+          for (const r3 in t5)
+            s4[r3] = i5 <= 1 ? t5[r3] : t5[r3] && e5(t5[r3], i5 - 1);
+          return s4;
+        };
+      }, 8055: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.contrastRatio = t4.toPaddedHex = t4.rgba = t4.rgb = t4.css = t4.color = t4.channels = t4.NULL_COLOR = void 0;
+        let i5 = 0, s4 = 0, r3 = 0, n2 = 0;
+        var o3, a3, h3, c3, l3;
+        function d3(e5) {
+          const t5 = e5.toString(16);
+          return t5.length < 2 ? "0" + t5 : t5;
+        }
+        function _2(e5, t5) {
+          return e5 < t5 ? (t5 + 0.05) / (e5 + 0.05) : (e5 + 0.05) / (t5 + 0.05);
+        }
+        t4.NULL_COLOR = { css: "#00000000", rgba: 0 }, function(e5) {
+          e5.toCss = function(e6, t5, i6, s5) {
+            return void 0 !== s5 ? `#${d3(e6)}${d3(t5)}${d3(i6)}${d3(s5)}` : `#${d3(e6)}${d3(t5)}${d3(i6)}`;
+          }, e5.toRgba = function(e6, t5, i6, s5 = 255) {
+            return (e6 << 24 | t5 << 16 | i6 << 8 | s5) >>> 0;
+          }, e5.toColor = function(t5, i6, s5, r4) {
+            return { css: e5.toCss(t5, i6, s5, r4), rgba: e5.toRgba(t5, i6, s5, r4) };
+          };
+        }(o3 || (t4.channels = o3 = {})), function(e5) {
+          function t5(e6, t6) {
+            return n2 = Math.round(255 * t6), [i5, s4, r3] = l3.toChannels(e6.rgba), { css: o3.toCss(i5, s4, r3, n2), rgba: o3.toRgba(i5, s4, r3, n2) };
+          }
+          e5.blend = function(e6, t6) {
+            if (n2 = (255 & t6.rgba) / 255, 1 === n2)
+              return { css: t6.css, rgba: t6.rgba };
+            const a4 = t6.rgba >> 24 & 255, h4 = t6.rgba >> 16 & 255, c4 = t6.rgba >> 8 & 255, l4 = e6.rgba >> 24 & 255, d4 = e6.rgba >> 16 & 255, _3 = e6.rgba >> 8 & 255;
+            return i5 = l4 + Math.round((a4 - l4) * n2), s4 = d4 + Math.round((h4 - d4) * n2), r3 = _3 + Math.round((c4 - _3) * n2), { css: o3.toCss(i5, s4, r3), rgba: o3.toRgba(i5, s4, r3) };
+          }, e5.isOpaque = function(e6) {
+            return 255 == (255 & e6.rgba);
+          }, e5.ensureContrastRatio = function(e6, t6, i6) {
+            const s5 = l3.ensureContrastRatio(e6.rgba, t6.rgba, i6);
+            if (s5)
+              return o3.toColor(s5 >> 24 & 255, s5 >> 16 & 255, s5 >> 8 & 255);
+          }, e5.opaque = function(e6) {
+            const t6 = (255 | e6.rgba) >>> 0;
+            return [i5, s4, r3] = l3.toChannels(t6), { css: o3.toCss(i5, s4, r3), rgba: t6 };
+          }, e5.opacity = t5, e5.multiplyOpacity = function(e6, i6) {
+            return n2 = 255 & e6.rgba, t5(e6, n2 * i6 / 255);
+          }, e5.toColorRGB = function(e6) {
+            return [e6.rgba >> 24 & 255, e6.rgba >> 16 & 255, e6.rgba >> 8 & 255];
+          };
+        }(a3 || (t4.color = a3 = {})), function(e5) {
+          let t5, a4;
+          try {
+            const e6 = document.createElement("canvas");
+            e6.width = 1, e6.height = 1;
+            const i6 = e6.getContext("2d", { willReadFrequently: true });
+            i6 && (t5 = i6, t5.globalCompositeOperation = "copy", a4 = t5.createLinearGradient(0, 0, 1, 1));
+          } catch {
+          }
+          e5.toColor = function(e6) {
+            if (e6.match(/#[\da-f]{3,8}/i))
+              switch (e6.length) {
+                case 4:
+                  return i5 = parseInt(e6.slice(1, 2).repeat(2), 16), s4 = parseInt(e6.slice(2, 3).repeat(2), 16), r3 = parseInt(e6.slice(3, 4).repeat(2), 16), o3.toColor(i5, s4, r3);
+                case 5:
+                  return i5 = parseInt(e6.slice(1, 2).repeat(2), 16), s4 = parseInt(e6.slice(2, 3).repeat(2), 16), r3 = parseInt(e6.slice(3, 4).repeat(2), 16), n2 = parseInt(e6.slice(4, 5).repeat(2), 16), o3.toColor(i5, s4, r3, n2);
+                case 7:
+                  return { css: e6, rgba: (parseInt(e6.slice(1), 16) << 8 | 255) >>> 0 };
+                case 9:
+                  return { css: e6, rgba: parseInt(e6.slice(1), 16) >>> 0 };
+              }
+            const h4 = e6.match(/rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(,\s*(0|1|\d?\.(\d+))\s*)?\)/);
+            if (h4)
+              return i5 = parseInt(h4[1]), s4 = parseInt(h4[2]), r3 = parseInt(h4[3]), n2 = Math.round(255 * (void 0 === h4[5] ? 1 : parseFloat(h4[5]))), o3.toColor(i5, s4, r3, n2);
+            if (!t5 || !a4)
+              throw new Error("css.toColor: Unsupported css format");
+            if (t5.fillStyle = a4, t5.fillStyle = e6, "string" != typeof t5.fillStyle)
+              throw new Error("css.toColor: Unsupported css format");
+            if (t5.fillRect(0, 0, 1, 1), [i5, s4, r3, n2] = t5.getImageData(0, 0, 1, 1).data, 255 !== n2)
+              throw new Error("css.toColor: Unsupported css format");
+            return { rgba: o3.toRgba(i5, s4, r3, n2), css: e6 };
+          };
+        }(h3 || (t4.css = h3 = {})), function(e5) {
+          function t5(e6, t6, i6) {
+            const s5 = e6 / 255, r4 = t6 / 255, n3 = i6 / 255;
+            return 0.2126 * (s5 <= 0.03928 ? s5 / 12.92 : Math.pow((s5 + 0.055) / 1.055, 2.4)) + 0.7152 * (r4 <= 0.03928 ? r4 / 12.92 : Math.pow((r4 + 0.055) / 1.055, 2.4)) + 0.0722 * (n3 <= 0.03928 ? n3 / 12.92 : Math.pow((n3 + 0.055) / 1.055, 2.4));
+          }
+          e5.relativeLuminance = function(e6) {
+            return t5(e6 >> 16 & 255, e6 >> 8 & 255, 255 & e6);
+          }, e5.relativeLuminance2 = t5;
+        }(c3 || (t4.rgb = c3 = {})), function(e5) {
+          function t5(e6, t6, i6) {
+            const s5 = e6 >> 24 & 255, r4 = e6 >> 16 & 255, n3 = e6 >> 8 & 255;
+            let o4 = t6 >> 24 & 255, a5 = t6 >> 16 & 255, h4 = t6 >> 8 & 255, l4 = _2(c3.relativeLuminance2(o4, a5, h4), c3.relativeLuminance2(s5, r4, n3));
+            for (; l4 < i6 && (o4 > 0 || a5 > 0 || h4 > 0); )
+              o4 -= Math.max(0, Math.ceil(0.1 * o4)), a5 -= Math.max(0, Math.ceil(0.1 * a5)), h4 -= Math.max(0, Math.ceil(0.1 * h4)), l4 = _2(c3.relativeLuminance2(o4, a5, h4), c3.relativeLuminance2(s5, r4, n3));
+            return (o4 << 24 | a5 << 16 | h4 << 8 | 255) >>> 0;
+          }
+          function a4(e6, t6, i6) {
+            const s5 = e6 >> 24 & 255, r4 = e6 >> 16 & 255, n3 = e6 >> 8 & 255;
+            let o4 = t6 >> 24 & 255, a5 = t6 >> 16 & 255, h4 = t6 >> 8 & 255, l4 = _2(c3.relativeLuminance2(o4, a5, h4), c3.relativeLuminance2(s5, r4, n3));
+            for (; l4 < i6 && (o4 < 255 || a5 < 255 || h4 < 255); )
+              o4 = Math.min(255, o4 + Math.ceil(0.1 * (255 - o4))), a5 = Math.min(255, a5 + Math.ceil(0.1 * (255 - a5))), h4 = Math.min(255, h4 + Math.ceil(0.1 * (255 - h4))), l4 = _2(c3.relativeLuminance2(o4, a5, h4), c3.relativeLuminance2(s5, r4, n3));
+            return (o4 << 24 | a5 << 16 | h4 << 8 | 255) >>> 0;
+          }
+          e5.blend = function(e6, t6) {
+            if (n2 = (255 & t6) / 255, 1 === n2)
+              return t6;
+            const a5 = t6 >> 24 & 255, h4 = t6 >> 16 & 255, c4 = t6 >> 8 & 255, l4 = e6 >> 24 & 255, d4 = e6 >> 16 & 255, _3 = e6 >> 8 & 255;
+            return i5 = l4 + Math.round((a5 - l4) * n2), s4 = d4 + Math.round((h4 - d4) * n2), r3 = _3 + Math.round((c4 - _3) * n2), o3.toRgba(i5, s4, r3);
+          }, e5.ensureContrastRatio = function(e6, i6, s5) {
+            const r4 = c3.relativeLuminance(e6 >> 8), n3 = c3.relativeLuminance(i6 >> 8);
+            if (_2(r4, n3) < s5) {
+              if (n3 < r4) {
+                const n4 = t5(e6, i6, s5), o5 = _2(r4, c3.relativeLuminance(n4 >> 8));
+                if (o5 < s5) {
+                  const t6 = a4(e6, i6, s5);
+                  return o5 > _2(r4, c3.relativeLuminance(t6 >> 8)) ? n4 : t6;
+                }
+                return n4;
+              }
+              const o4 = a4(e6, i6, s5), h4 = _2(r4, c3.relativeLuminance(o4 >> 8));
+              if (h4 < s5) {
+                const n4 = t5(e6, i6, s5);
+                return h4 > _2(r4, c3.relativeLuminance(n4 >> 8)) ? o4 : n4;
+              }
+              return o4;
+            }
+          }, e5.reduceLuminance = t5, e5.increaseLuminance = a4, e5.toChannels = function(e6) {
+            return [e6 >> 24 & 255, e6 >> 16 & 255, e6 >> 8 & 255, 255 & e6];
+          };
+        }(l3 || (t4.rgba = l3 = {})), t4.toPaddedHex = d3, t4.contrastRatio = _2;
+      }, 8969: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CoreTerminal = void 0;
+        const s4 = i5(844), r3 = i5(2585), n2 = i5(4348), o3 = i5(7866), a3 = i5(744), h3 = i5(7302), c3 = i5(6975), l3 = i5(8460), d3 = i5(1753), _2 = i5(1480), u4 = i5(7994), f4 = i5(9282), v3 = i5(5435), p3 = i5(5981), g2 = i5(2660);
+        let m3 = false;
+        class S2 extends s4.Disposable {
+          get onScroll() {
+            return this._onScrollApi || (this._onScrollApi = this.register(new l3.EventEmitter()), this._onScroll.event((e5) => {
+              this._onScrollApi?.fire(e5.position);
+            })), this._onScrollApi.event;
+          }
+          get cols() {
+            return this._bufferService.cols;
+          }
+          get rows() {
+            return this._bufferService.rows;
+          }
+          get buffers() {
+            return this._bufferService.buffers;
+          }
+          get options() {
+            return this.optionsService.options;
+          }
+          set options(e5) {
+            for (const t5 in e5)
+              this.optionsService.options[t5] = e5[t5];
+          }
+          constructor(e5) {
+            super(), this._windowsWrappingHeuristics = this.register(new s4.MutableDisposable()), this._onBinary = this.register(new l3.EventEmitter()), this.onBinary = this._onBinary.event, this._onData = this.register(new l3.EventEmitter()), this.onData = this._onData.event, this._onLineFeed = this.register(new l3.EventEmitter()), this.onLineFeed = this._onLineFeed.event, this._onResize = this.register(new l3.EventEmitter()), this.onResize = this._onResize.event, this._onWriteParsed = this.register(new l3.EventEmitter()), this.onWriteParsed = this._onWriteParsed.event, this._onScroll = this.register(new l3.EventEmitter()), this._instantiationService = new n2.InstantiationService(), this.optionsService = this.register(new h3.OptionsService(e5)), this._instantiationService.setService(r3.IOptionsService, this.optionsService), this._bufferService = this.register(this._instantiationService.createInstance(a3.BufferService)), this._instantiationService.setService(r3.IBufferService, this._bufferService), this._logService = this.register(this._instantiationService.createInstance(o3.LogService)), this._instantiationService.setService(r3.ILogService, this._logService), this.coreService = this.register(this._instantiationService.createInstance(c3.CoreService)), this._instantiationService.setService(r3.ICoreService, this.coreService), this.coreMouseService = this.register(this._instantiationService.createInstance(d3.CoreMouseService)), this._instantiationService.setService(r3.ICoreMouseService, this.coreMouseService), this.unicodeService = this.register(this._instantiationService.createInstance(_2.UnicodeService)), this._instantiationService.setService(r3.IUnicodeService, this.unicodeService), this._charsetService = this._instantiationService.createInstance(u4.CharsetService), this._instantiationService.setService(r3.ICharsetService, this._charsetService), this._oscLinkService = this._instantiationService.createInstance(g2.OscLinkService), this._instantiationService.setService(r3.IOscLinkService, this._oscLinkService), this._inputHandler = this.register(new v3.InputHandler(this._bufferService, this._charsetService, this.coreService, this._logService, this.optionsService, this._oscLinkService, this.coreMouseService, this.unicodeService)), this.register((0, l3.forwardEvent)(this._inputHandler.onLineFeed, this._onLineFeed)), this.register(this._inputHandler), this.register((0, l3.forwardEvent)(this._bufferService.onResize, this._onResize)), this.register((0, l3.forwardEvent)(this.coreService.onData, this._onData)), this.register((0, l3.forwardEvent)(this.coreService.onBinary, this._onBinary)), this.register(this.coreService.onRequestScrollToBottom(() => this.scrollToBottom())), this.register(this.coreService.onUserInput(() => this._writeBuffer.handleUserInput())), this.register(this.optionsService.onMultipleOptionChange(["windowsMode", "windowsPty"], () => this._handleWindowsPtyOptionChange())), this.register(this._bufferService.onScroll((e6) => {
+              this._onScroll.fire({ position: this._bufferService.buffer.ydisp, source: 0 }), this._inputHandler.markRangeDirty(this._bufferService.buffer.scrollTop, this._bufferService.buffer.scrollBottom);
+            })), this.register(this._inputHandler.onScroll((e6) => {
+              this._onScroll.fire({ position: this._bufferService.buffer.ydisp, source: 0 }), this._inputHandler.markRangeDirty(this._bufferService.buffer.scrollTop, this._bufferService.buffer.scrollBottom);
+            })), this._writeBuffer = this.register(new p3.WriteBuffer((e6, t5) => this._inputHandler.parse(e6, t5))), this.register((0, l3.forwardEvent)(this._writeBuffer.onWriteParsed, this._onWriteParsed));
+          }
+          write(e5, t5) {
+            this._writeBuffer.write(e5, t5);
+          }
+          writeSync(e5, t5) {
+            this._logService.logLevel <= r3.LogLevelEnum.WARN && !m3 && (this._logService.warn("writeSync is unreliable and will be removed soon."), m3 = true), this._writeBuffer.writeSync(e5, t5);
+          }
+          input(e5, t5 = true) {
+            this.coreService.triggerDataEvent(e5, t5);
+          }
+          resize(e5, t5) {
+            isNaN(e5) || isNaN(t5) || (e5 = Math.max(e5, a3.MINIMUM_COLS), t5 = Math.max(t5, a3.MINIMUM_ROWS), this._bufferService.resize(e5, t5));
+          }
+          scroll(e5, t5 = false) {
+            this._bufferService.scroll(e5, t5);
+          }
+          scrollLines(e5, t5, i6) {
+            this._bufferService.scrollLines(e5, t5, i6);
+          }
+          scrollPages(e5) {
+            this.scrollLines(e5 * (this.rows - 1));
+          }
+          scrollToTop() {
+            this.scrollLines(-this._bufferService.buffer.ydisp);
+          }
+          scrollToBottom() {
+            this.scrollLines(this._bufferService.buffer.ybase - this._bufferService.buffer.ydisp);
+          }
+          scrollToLine(e5) {
+            const t5 = e5 - this._bufferService.buffer.ydisp;
+            0 !== t5 && this.scrollLines(t5);
+          }
+          registerEscHandler(e5, t5) {
+            return this._inputHandler.registerEscHandler(e5, t5);
+          }
+          registerDcsHandler(e5, t5) {
+            return this._inputHandler.registerDcsHandler(e5, t5);
+          }
+          registerCsiHandler(e5, t5) {
+            return this._inputHandler.registerCsiHandler(e5, t5);
+          }
+          registerOscHandler(e5, t5) {
+            return this._inputHandler.registerOscHandler(e5, t5);
+          }
+          _setup() {
+            this._handleWindowsPtyOptionChange();
+          }
+          reset() {
+            this._inputHandler.reset(), this._bufferService.reset(), this._charsetService.reset(), this.coreService.reset(), this.coreMouseService.reset();
+          }
+          _handleWindowsPtyOptionChange() {
+            let e5 = false;
+            const t5 = this.optionsService.rawOptions.windowsPty;
+            t5 && void 0 !== t5.buildNumber && void 0 !== t5.buildNumber ? e5 = !!("conpty" === t5.backend && t5.buildNumber < 21376) : this.optionsService.rawOptions.windowsMode && (e5 = true), e5 ? this._enableWindowsWrappingHeuristics() : this._windowsWrappingHeuristics.clear();
+          }
+          _enableWindowsWrappingHeuristics() {
+            if (!this._windowsWrappingHeuristics.value) {
+              const e5 = [];
+              e5.push(this.onLineFeed(f4.updateWindowsModeWrappedState.bind(null, this._bufferService))), e5.push(this.registerCsiHandler({ final: "H" }, () => ((0, f4.updateWindowsModeWrappedState)(this._bufferService), false))), this._windowsWrappingHeuristics.value = (0, s4.toDisposable)(() => {
+                for (const t5 of e5)
+                  t5.dispose();
+              });
+            }
+          }
+        }
+        t4.CoreTerminal = S2;
+      }, 8460: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.runAndSubscribe = t4.forwardEvent = t4.EventEmitter = void 0, t4.EventEmitter = class {
+          constructor() {
+            this._listeners = [], this._disposed = false;
+          }
+          get event() {
+            return this._event || (this._event = (e5) => (this._listeners.push(e5), { dispose: () => {
+              if (!this._disposed) {
+                for (let t5 = 0; t5 < this._listeners.length; t5++)
+                  if (this._listeners[t5] === e5)
+                    return void this._listeners.splice(t5, 1);
+              }
+            } })), this._event;
+          }
+          fire(e5, t5) {
+            const i5 = [];
+            for (let e6 = 0; e6 < this._listeners.length; e6++)
+              i5.push(this._listeners[e6]);
+            for (let s4 = 0; s4 < i5.length; s4++)
+              i5[s4].call(void 0, e5, t5);
+          }
+          dispose() {
+            this.clearListeners(), this._disposed = true;
+          }
+          clearListeners() {
+            this._listeners && (this._listeners.length = 0);
+          }
+        }, t4.forwardEvent = function(e5, t5) {
+          return e5((e6) => t5.fire(e6));
+        }, t4.runAndSubscribe = function(e5, t5) {
+          return t5(void 0), e5((e6) => t5(e6));
+        };
+      }, 5435: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.InputHandler = t4.WindowsOptionsReportType = void 0;
+        const n2 = i5(2584), o3 = i5(7116), a3 = i5(2015), h3 = i5(844), c3 = i5(482), l3 = i5(8437), d3 = i5(8460), _2 = i5(643), u4 = i5(511), f4 = i5(3734), v3 = i5(2585), p3 = i5(1480), g2 = i5(6242), m3 = i5(6351), S2 = i5(5941), C3 = { "(": 0, ")": 1, "*": 2, "+": 3, "-": 1, ".": 2 }, b = 131072;
+        function w3(e5, t5) {
+          if (e5 > 24)
+            return t5.setWinLines || false;
+          switch (e5) {
+            case 1:
+              return !!t5.restoreWin;
+            case 2:
+              return !!t5.minimizeWin;
+            case 3:
+              return !!t5.setWinPosition;
+            case 4:
+              return !!t5.setWinSizePixels;
+            case 5:
+              return !!t5.raiseWin;
+            case 6:
+              return !!t5.lowerWin;
+            case 7:
+              return !!t5.refreshWin;
+            case 8:
+              return !!t5.setWinSizeChars;
+            case 9:
+              return !!t5.maximizeWin;
+            case 10:
+              return !!t5.fullscreenWin;
+            case 11:
+              return !!t5.getWinState;
+            case 13:
+              return !!t5.getWinPosition;
+            case 14:
+              return !!t5.getWinSizePixels;
+            case 15:
+              return !!t5.getScreenSizePixels;
+            case 16:
+              return !!t5.getCellSizePixels;
+            case 18:
+              return !!t5.getWinSizeChars;
+            case 19:
+              return !!t5.getScreenSizeChars;
+            case 20:
+              return !!t5.getIconTitle;
+            case 21:
+              return !!t5.getWinTitle;
+            case 22:
+              return !!t5.pushTitle;
+            case 23:
+              return !!t5.popTitle;
+            case 24:
+              return !!t5.setWinLines;
+          }
+          return false;
+        }
+        var y3;
+        !function(e5) {
+          e5[e5.GET_WIN_SIZE_PIXELS = 0] = "GET_WIN_SIZE_PIXELS", e5[e5.GET_CELL_SIZE_PIXELS = 1] = "GET_CELL_SIZE_PIXELS";
+        }(y3 || (t4.WindowsOptionsReportType = y3 = {}));
+        let E2 = 0;
+        class k3 extends h3.Disposable {
+          getAttrData() {
+            return this._curAttrData;
+          }
+          constructor(e5, t5, i6, s5, r4, h4, _3, f5, v4 = new a3.EscapeSequenceParser()) {
+            super(), this._bufferService = e5, this._charsetService = t5, this._coreService = i6, this._logService = s5, this._optionsService = r4, this._oscLinkService = h4, this._coreMouseService = _3, this._unicodeService = f5, this._parser = v4, this._parseBuffer = new Uint32Array(4096), this._stringDecoder = new c3.StringToUtf32(), this._utf8Decoder = new c3.Utf8ToUtf32(), this._workCell = new u4.CellData(), this._windowTitle = "", this._iconName = "", this._windowTitleStack = [], this._iconNameStack = [], this._curAttrData = l3.DEFAULT_ATTR_DATA.clone(), this._eraseAttrDataInternal = l3.DEFAULT_ATTR_DATA.clone(), this._onRequestBell = this.register(new d3.EventEmitter()), this.onRequestBell = this._onRequestBell.event, this._onRequestRefreshRows = this.register(new d3.EventEmitter()), this.onRequestRefreshRows = this._onRequestRefreshRows.event, this._onRequestReset = this.register(new d3.EventEmitter()), this.onRequestReset = this._onRequestReset.event, this._onRequestSendFocus = this.register(new d3.EventEmitter()), this.onRequestSendFocus = this._onRequestSendFocus.event, this._onRequestSyncScrollBar = this.register(new d3.EventEmitter()), this.onRequestSyncScrollBar = this._onRequestSyncScrollBar.event, this._onRequestWindowsOptionsReport = this.register(new d3.EventEmitter()), this.onRequestWindowsOptionsReport = this._onRequestWindowsOptionsReport.event, this._onA11yChar = this.register(new d3.EventEmitter()), this.onA11yChar = this._onA11yChar.event, this._onA11yTab = this.register(new d3.EventEmitter()), this.onA11yTab = this._onA11yTab.event, this._onCursorMove = this.register(new d3.EventEmitter()), this.onCursorMove = this._onCursorMove.event, this._onLineFeed = this.register(new d3.EventEmitter()), this.onLineFeed = this._onLineFeed.event, this._onScroll = this.register(new d3.EventEmitter()), this.onScroll = this._onScroll.event, this._onTitleChange = this.register(new d3.EventEmitter()), this.onTitleChange = this._onTitleChange.event, this._onColor = this.register(new d3.EventEmitter()), this.onColor = this._onColor.event, this._parseStack = { paused: false, cursorStartX: 0, cursorStartY: 0, decodedLength: 0, position: 0 }, this._specialColors = [256, 257, 258], this.register(this._parser), this._dirtyRowTracker = new L2(this._bufferService), this._activeBuffer = this._bufferService.buffer, this.register(this._bufferService.buffers.onBufferActivate((e6) => this._activeBuffer = e6.activeBuffer)), this._parser.setCsiHandlerFallback((e6, t6) => {
+              this._logService.debug("Unknown CSI code: ", { identifier: this._parser.identToString(e6), params: t6.toArray() });
+            }), this._parser.setEscHandlerFallback((e6) => {
+              this._logService.debug("Unknown ESC code: ", { identifier: this._parser.identToString(e6) });
+            }), this._parser.setExecuteHandlerFallback((e6) => {
+              this._logService.debug("Unknown EXECUTE code: ", { code: e6 });
+            }), this._parser.setOscHandlerFallback((e6, t6, i7) => {
+              this._logService.debug("Unknown OSC code: ", { identifier: e6, action: t6, data: i7 });
+            }), this._parser.setDcsHandlerFallback((e6, t6, i7) => {
+              "HOOK" === t6 && (i7 = i7.toArray()), this._logService.debug("Unknown DCS code: ", { identifier: this._parser.identToString(e6), action: t6, payload: i7 });
+            }), this._parser.setPrintHandler((e6, t6, i7) => this.print(e6, t6, i7)), this._parser.registerCsiHandler({ final: "@" }, (e6) => this.insertChars(e6)), this._parser.registerCsiHandler({ intermediates: " ", final: "@" }, (e6) => this.scrollLeft(e6)), this._parser.registerCsiHandler({ final: "A" }, (e6) => this.cursorUp(e6)), this._parser.registerCsiHandler({ intermediates: " ", final: "A" }, (e6) => this.scrollRight(e6)), this._parser.registerCsiHandler({ final: "B" }, (e6) => this.cursorDown(e6)), this._parser.registerCsiHandler({ final: "C" }, (e6) => this.cursorForward(e6)), this._parser.registerCsiHandler({ final: "D" }, (e6) => this.cursorBackward(e6)), this._parser.registerCsiHandler({ final: "E" }, (e6) => this.cursorNextLine(e6)), this._parser.registerCsiHandler({ final: "F" }, (e6) => this.cursorPrecedingLine(e6)), this._parser.registerCsiHandler({ final: "G" }, (e6) => this.cursorCharAbsolute(e6)), this._parser.registerCsiHandler({ final: "H" }, (e6) => this.cursorPosition(e6)), this._parser.registerCsiHandler({ final: "I" }, (e6) => this.cursorForwardTab(e6)), this._parser.registerCsiHandler({ final: "J" }, (e6) => this.eraseInDisplay(e6, false)), this._parser.registerCsiHandler({ prefix: "?", final: "J" }, (e6) => this.eraseInDisplay(e6, true)), this._parser.registerCsiHandler({ final: "K" }, (e6) => this.eraseInLine(e6, false)), this._parser.registerCsiHandler({ prefix: "?", final: "K" }, (e6) => this.eraseInLine(e6, true)), this._parser.registerCsiHandler({ final: "L" }, (e6) => this.insertLines(e6)), this._parser.registerCsiHandler({ final: "M" }, (e6) => this.deleteLines(e6)), this._parser.registerCsiHandler({ final: "P" }, (e6) => this.deleteChars(e6)), this._parser.registerCsiHandler({ final: "S" }, (e6) => this.scrollUp(e6)), this._parser.registerCsiHandler({ final: "T" }, (e6) => this.scrollDown(e6)), this._parser.registerCsiHandler({ final: "X" }, (e6) => this.eraseChars(e6)), this._parser.registerCsiHandler({ final: "Z" }, (e6) => this.cursorBackwardTab(e6)), this._parser.registerCsiHandler({ final: "`" }, (e6) => this.charPosAbsolute(e6)), this._parser.registerCsiHandler({ final: "a" }, (e6) => this.hPositionRelative(e6)), this._parser.registerCsiHandler({ final: "b" }, (e6) => this.repeatPrecedingCharacter(e6)), this._parser.registerCsiHandler({ final: "c" }, (e6) => this.sendDeviceAttributesPrimary(e6)), this._parser.registerCsiHandler({ prefix: ">", final: "c" }, (e6) => this.sendDeviceAttributesSecondary(e6)), this._parser.registerCsiHandler({ final: "d" }, (e6) => this.linePosAbsolute(e6)), this._parser.registerCsiHandler({ final: "e" }, (e6) => this.vPositionRelative(e6)), this._parser.registerCsiHandler({ final: "f" }, (e6) => this.hVPosition(e6)), this._parser.registerCsiHandler({ final: "g" }, (e6) => this.tabClear(e6)), this._parser.registerCsiHandler({ final: "h" }, (e6) => this.setMode(e6)), this._parser.registerCsiHandler({ prefix: "?", final: "h" }, (e6) => this.setModePrivate(e6)), this._parser.registerCsiHandler({ final: "l" }, (e6) => this.resetMode(e6)), this._parser.registerCsiHandler({ prefix: "?", final: "l" }, (e6) => this.resetModePrivate(e6)), this._parser.registerCsiHandler({ final: "m" }, (e6) => this.charAttributes(e6)), this._parser.registerCsiHandler({ final: "n" }, (e6) => this.deviceStatus(e6)), this._parser.registerCsiHandler({ prefix: "?", final: "n" }, (e6) => this.deviceStatusPrivate(e6)), this._parser.registerCsiHandler({ intermediates: "!", final: "p" }, (e6) => this.softReset(e6)), this._parser.registerCsiHandler({ intermediates: " ", final: "q" }, (e6) => this.setCursorStyle(e6)), this._parser.registerCsiHandler({ final: "r" }, (e6) => this.setScrollRegion(e6)), this._parser.registerCsiHandler({ final: "s" }, (e6) => this.saveCursor(e6)), this._parser.registerCsiHandler({ final: "t" }, (e6) => this.windowOptions(e6)), this._parser.registerCsiHandler({ final: "u" }, (e6) => this.restoreCursor(e6)), this._parser.registerCsiHandler({ intermediates: "'", final: "}" }, (e6) => this.insertColumns(e6)), this._parser.registerCsiHandler({ intermediates: "'", final: "~" }, (e6) => this.deleteColumns(e6)), this._parser.registerCsiHandler({ intermediates: '"', final: "q" }, (e6) => this.selectProtected(e6)), this._parser.registerCsiHandler({ intermediates: "$", final: "p" }, (e6) => this.requestMode(e6, true)), this._parser.registerCsiHandler({ prefix: "?", intermediates: "$", final: "p" }, (e6) => this.requestMode(e6, false)), this._parser.setExecuteHandler(n2.C0.BEL, () => this.bell()), this._parser.setExecuteHandler(n2.C0.LF, () => this.lineFeed()), this._parser.setExecuteHandler(n2.C0.VT, () => this.lineFeed()), this._parser.setExecuteHandler(n2.C0.FF, () => this.lineFeed()), this._parser.setExecuteHandler(n2.C0.CR, () => this.carriageReturn()), this._parser.setExecuteHandler(n2.C0.BS, () => this.backspace()), this._parser.setExecuteHandler(n2.C0.HT, () => this.tab()), this._parser.setExecuteHandler(n2.C0.SO, () => this.shiftOut()), this._parser.setExecuteHandler(n2.C0.SI, () => this.shiftIn()), this._parser.setExecuteHandler(n2.C1.IND, () => this.index()), this._parser.setExecuteHandler(n2.C1.NEL, () => this.nextLine()), this._parser.setExecuteHandler(n2.C1.HTS, () => this.tabSet()), this._parser.registerOscHandler(0, new g2.OscHandler((e6) => (this.setTitle(e6), this.setIconName(e6), true))), this._parser.registerOscHandler(1, new g2.OscHandler((e6) => this.setIconName(e6))), this._parser.registerOscHandler(2, new g2.OscHandler((e6) => this.setTitle(e6))), this._parser.registerOscHandler(4, new g2.OscHandler((e6) => this.setOrReportIndexedColor(e6))), this._parser.registerOscHandler(8, new g2.OscHandler((e6) => this.setHyperlink(e6))), this._parser.registerOscHandler(10, new g2.OscHandler((e6) => this.setOrReportFgColor(e6))), this._parser.registerOscHandler(11, new g2.OscHandler((e6) => this.setOrReportBgColor(e6))), this._parser.registerOscHandler(12, new g2.OscHandler((e6) => this.setOrReportCursorColor(e6))), this._parser.registerOscHandler(104, new g2.OscHandler((e6) => this.restoreIndexedColor(e6))), this._parser.registerOscHandler(110, new g2.OscHandler((e6) => this.restoreFgColor(e6))), this._parser.registerOscHandler(111, new g2.OscHandler((e6) => this.restoreBgColor(e6))), this._parser.registerOscHandler(112, new g2.OscHandler((e6) => this.restoreCursorColor(e6))), this._parser.registerEscHandler({ final: "7" }, () => this.saveCursor()), this._parser.registerEscHandler({ final: "8" }, () => this.restoreCursor()), this._parser.registerEscHandler({ final: "D" }, () => this.index()), this._parser.registerEscHandler({ final: "E" }, () => this.nextLine()), this._parser.registerEscHandler({ final: "H" }, () => this.tabSet()), this._parser.registerEscHandler({ final: "M" }, () => this.reverseIndex()), this._parser.registerEscHandler({ final: "=" }, () => this.keypadApplicationMode()), this._parser.registerEscHandler({ final: ">" }, () => this.keypadNumericMode()), this._parser.registerEscHandler({ final: "c" }, () => this.fullReset()), this._parser.registerEscHandler({ final: "n" }, () => this.setgLevel(2)), this._parser.registerEscHandler({ final: "o" }, () => this.setgLevel(3)), this._parser.registerEscHandler({ final: "|" }, () => this.setgLevel(3)), this._parser.registerEscHandler({ final: "}" }, () => this.setgLevel(2)), this._parser.registerEscHandler({ final: "~" }, () => this.setgLevel(1)), this._parser.registerEscHandler({ intermediates: "%", final: "@" }, () => this.selectDefaultCharset()), this._parser.registerEscHandler({ intermediates: "%", final: "G" }, () => this.selectDefaultCharset());
+            for (const e6 in o3.CHARSETS)
+              this._parser.registerEscHandler({ intermediates: "(", final: e6 }, () => this.selectCharset("(" + e6)), this._parser.registerEscHandler({ intermediates: ")", final: e6 }, () => this.selectCharset(")" + e6)), this._parser.registerEscHandler({ intermediates: "*", final: e6 }, () => this.selectCharset("*" + e6)), this._parser.registerEscHandler({ intermediates: "+", final: e6 }, () => this.selectCharset("+" + e6)), this._parser.registerEscHandler({ intermediates: "-", final: e6 }, () => this.selectCharset("-" + e6)), this._parser.registerEscHandler({ intermediates: ".", final: e6 }, () => this.selectCharset("." + e6)), this._parser.registerEscHandler({ intermediates: "/", final: e6 }, () => this.selectCharset("/" + e6));
+            this._parser.registerEscHandler({ intermediates: "#", final: "8" }, () => this.screenAlignmentPattern()), this._parser.setErrorHandler((e6) => (this._logService.error("Parsing error: ", e6), e6)), this._parser.registerDcsHandler({ intermediates: "$", final: "q" }, new m3.DcsHandler((e6, t6) => this.requestStatusString(e6, t6)));
+          }
+          _preserveStack(e5, t5, i6, s5) {
+            this._parseStack.paused = true, this._parseStack.cursorStartX = e5, this._parseStack.cursorStartY = t5, this._parseStack.decodedLength = i6, this._parseStack.position = s5;
+          }
+          _logSlowResolvingAsync(e5) {
+            this._logService.logLevel <= v3.LogLevelEnum.WARN && Promise.race([e5, new Promise((e6, t5) => setTimeout(() => t5("#SLOW_TIMEOUT"), 5e3))]).catch((e6) => {
+              if ("#SLOW_TIMEOUT" !== e6)
+                throw e6;
+              console.warn("async parser handler taking longer than 5000 ms");
+            });
+          }
+          _getCurrentLinkId() {
+            return this._curAttrData.extended.urlId;
+          }
+          parse(e5, t5) {
+            let i6, s5 = this._activeBuffer.x, r4 = this._activeBuffer.y, n3 = 0;
+            const o4 = this._parseStack.paused;
+            if (o4) {
+              if (i6 = this._parser.parse(this._parseBuffer, this._parseStack.decodedLength, t5))
+                return this._logSlowResolvingAsync(i6), i6;
+              s5 = this._parseStack.cursorStartX, r4 = this._parseStack.cursorStartY, this._parseStack.paused = false, e5.length > b && (n3 = this._parseStack.position + b);
+            }
+            if (this._logService.logLevel <= v3.LogLevelEnum.DEBUG && this._logService.debug("parsing data" + ("string" == typeof e5 ? ` "${e5}"` : ` "${Array.prototype.map.call(e5, (e6) => String.fromCharCode(e6)).join("")}"`), "string" == typeof e5 ? e5.split("").map((e6) => e6.charCodeAt(0)) : e5), this._parseBuffer.length < e5.length && this._parseBuffer.length < b && (this._parseBuffer = new Uint32Array(Math.min(e5.length, b))), o4 || this._dirtyRowTracker.clearRange(), e5.length > b)
+              for (let t6 = n3; t6 < e5.length; t6 += b) {
+                const n4 = t6 + b < e5.length ? t6 + b : e5.length, o5 = "string" == typeof e5 ? this._stringDecoder.decode(e5.substring(t6, n4), this._parseBuffer) : this._utf8Decoder.decode(e5.subarray(t6, n4), this._parseBuffer);
+                if (i6 = this._parser.parse(this._parseBuffer, o5))
+                  return this._preserveStack(s5, r4, o5, t6), this._logSlowResolvingAsync(i6), i6;
+              }
+            else if (!o4) {
+              const t6 = "string" == typeof e5 ? this._stringDecoder.decode(e5, this._parseBuffer) : this._utf8Decoder.decode(e5, this._parseBuffer);
+              if (i6 = this._parser.parse(this._parseBuffer, t6))
+                return this._preserveStack(s5, r4, t6, 0), this._logSlowResolvingAsync(i6), i6;
+            }
+            this._activeBuffer.x === s5 && this._activeBuffer.y === r4 || this._onCursorMove.fire();
+            const a4 = this._dirtyRowTracker.end + (this._bufferService.buffer.ybase - this._bufferService.buffer.ydisp), h4 = this._dirtyRowTracker.start + (this._bufferService.buffer.ybase - this._bufferService.buffer.ydisp);
+            h4 < this._bufferService.rows && this._onRequestRefreshRows.fire(Math.min(h4, this._bufferService.rows - 1), Math.min(a4, this._bufferService.rows - 1));
+          }
+          print(e5, t5, i6) {
+            let s5, r4;
+            const n3 = this._charsetService.charset, o4 = this._optionsService.rawOptions.screenReaderMode, a4 = this._bufferService.cols, h4 = this._coreService.decPrivateModes.wraparound, d4 = this._coreService.modes.insertMode, u5 = this._curAttrData;
+            let f5 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y);
+            this._dirtyRowTracker.markDirty(this._activeBuffer.y), this._activeBuffer.x && i6 - t5 > 0 && 2 === f5.getWidth(this._activeBuffer.x - 1) && f5.setCellFromCodepoint(this._activeBuffer.x - 1, 0, 1, u5);
+            let v4 = this._parser.precedingJoinState;
+            for (let g3 = t5; g3 < i6; ++g3) {
+              if (s5 = e5[g3], s5 < 127 && n3) {
+                const e6 = n3[String.fromCharCode(s5)];
+                e6 && (s5 = e6.charCodeAt(0));
+              }
+              const t6 = this._unicodeService.charProperties(s5, v4);
+              r4 = p3.UnicodeService.extractWidth(t6);
+              const i7 = p3.UnicodeService.extractShouldJoin(t6), m4 = i7 ? p3.UnicodeService.extractWidth(v4) : 0;
+              if (v4 = t6, o4 && this._onA11yChar.fire((0, c3.stringFromCodePoint)(s5)), this._getCurrentLinkId() && this._oscLinkService.addLineToLink(this._getCurrentLinkId(), this._activeBuffer.ybase + this._activeBuffer.y), this._activeBuffer.x + r4 - m4 > a4) {
+                if (h4) {
+                  const e6 = f5;
+                  let t7 = this._activeBuffer.x - m4;
+                  for (this._activeBuffer.x = m4, this._activeBuffer.y++, this._activeBuffer.y === this._activeBuffer.scrollBottom + 1 ? (this._activeBuffer.y--, this._bufferService.scroll(this._eraseAttrData(), true)) : (this._activeBuffer.y >= this._bufferService.rows && (this._activeBuffer.y = this._bufferService.rows - 1), this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y).isWrapped = true), f5 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y), m4 > 0 && f5 instanceof l3.BufferLine && f5.copyCellsFrom(e6, t7, 0, m4, false); t7 < a4; )
+                    e6.setCellFromCodepoint(t7++, 0, 1, u5);
+                } else if (this._activeBuffer.x = a4 - 1, 2 === r4)
+                  continue;
+              }
+              if (i7 && this._activeBuffer.x) {
+                const e6 = f5.getWidth(this._activeBuffer.x - 1) ? 1 : 2;
+                f5.addCodepointToCell(this._activeBuffer.x - e6, s5, r4);
+                for (let e7 = r4 - m4; --e7 >= 0; )
+                  f5.setCellFromCodepoint(this._activeBuffer.x++, 0, 0, u5);
+              } else if (d4 && (f5.insertCells(this._activeBuffer.x, r4 - m4, this._activeBuffer.getNullCell(u5)), 2 === f5.getWidth(a4 - 1) && f5.setCellFromCodepoint(a4 - 1, _2.NULL_CELL_CODE, _2.NULL_CELL_WIDTH, u5)), f5.setCellFromCodepoint(this._activeBuffer.x++, s5, r4, u5), r4 > 0)
+                for (; --r4; )
+                  f5.setCellFromCodepoint(this._activeBuffer.x++, 0, 0, u5);
+            }
+            this._parser.precedingJoinState = v4, this._activeBuffer.x < a4 && i6 - t5 > 0 && 0 === f5.getWidth(this._activeBuffer.x) && !f5.hasContent(this._activeBuffer.x) && f5.setCellFromCodepoint(this._activeBuffer.x, 0, 1, u5), this._dirtyRowTracker.markDirty(this._activeBuffer.y);
+          }
+          registerCsiHandler(e5, t5) {
+            return "t" !== e5.final || e5.prefix || e5.intermediates ? this._parser.registerCsiHandler(e5, t5) : this._parser.registerCsiHandler(e5, (e6) => !w3(e6.params[0], this._optionsService.rawOptions.windowOptions) || t5(e6));
+          }
+          registerDcsHandler(e5, t5) {
+            return this._parser.registerDcsHandler(e5, new m3.DcsHandler(t5));
+          }
+          registerEscHandler(e5, t5) {
+            return this._parser.registerEscHandler(e5, t5);
+          }
+          registerOscHandler(e5, t5) {
+            return this._parser.registerOscHandler(e5, new g2.OscHandler(t5));
+          }
+          bell() {
+            return this._onRequestBell.fire(), true;
+          }
+          lineFeed() {
+            return this._dirtyRowTracker.markDirty(this._activeBuffer.y), this._optionsService.rawOptions.convertEol && (this._activeBuffer.x = 0), this._activeBuffer.y++, this._activeBuffer.y === this._activeBuffer.scrollBottom + 1 ? (this._activeBuffer.y--, this._bufferService.scroll(this._eraseAttrData())) : this._activeBuffer.y >= this._bufferService.rows ? this._activeBuffer.y = this._bufferService.rows - 1 : this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y).isWrapped = false, this._activeBuffer.x >= this._bufferService.cols && this._activeBuffer.x--, this._dirtyRowTracker.markDirty(this._activeBuffer.y), this._onLineFeed.fire(), true;
+          }
+          carriageReturn() {
+            return this._activeBuffer.x = 0, true;
+          }
+          backspace() {
+            if (!this._coreService.decPrivateModes.reverseWraparound)
+              return this._restrictCursor(), this._activeBuffer.x > 0 && this._activeBuffer.x--, true;
+            if (this._restrictCursor(this._bufferService.cols), this._activeBuffer.x > 0)
+              this._activeBuffer.x--;
+            else if (0 === this._activeBuffer.x && this._activeBuffer.y > this._activeBuffer.scrollTop && this._activeBuffer.y <= this._activeBuffer.scrollBottom && this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y)?.isWrapped) {
+              this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y).isWrapped = false, this._activeBuffer.y--, this._activeBuffer.x = this._bufferService.cols - 1;
+              const e5 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y);
+              e5.hasWidth(this._activeBuffer.x) && !e5.hasContent(this._activeBuffer.x) && this._activeBuffer.x--;
+            }
+            return this._restrictCursor(), true;
+          }
+          tab() {
+            if (this._activeBuffer.x >= this._bufferService.cols)
+              return true;
+            const e5 = this._activeBuffer.x;
+            return this._activeBuffer.x = this._activeBuffer.nextStop(), this._optionsService.rawOptions.screenReaderMode && this._onA11yTab.fire(this._activeBuffer.x - e5), true;
+          }
+          shiftOut() {
+            return this._charsetService.setgLevel(1), true;
+          }
+          shiftIn() {
+            return this._charsetService.setgLevel(0), true;
+          }
+          _restrictCursor(e5 = this._bufferService.cols - 1) {
+            this._activeBuffer.x = Math.min(e5, Math.max(0, this._activeBuffer.x)), this._activeBuffer.y = this._coreService.decPrivateModes.origin ? Math.min(this._activeBuffer.scrollBottom, Math.max(this._activeBuffer.scrollTop, this._activeBuffer.y)) : Math.min(this._bufferService.rows - 1, Math.max(0, this._activeBuffer.y)), this._dirtyRowTracker.markDirty(this._activeBuffer.y);
+          }
+          _setCursor(e5, t5) {
+            this._dirtyRowTracker.markDirty(this._activeBuffer.y), this._coreService.decPrivateModes.origin ? (this._activeBuffer.x = e5, this._activeBuffer.y = this._activeBuffer.scrollTop + t5) : (this._activeBuffer.x = e5, this._activeBuffer.y = t5), this._restrictCursor(), this._dirtyRowTracker.markDirty(this._activeBuffer.y);
+          }
+          _moveCursor(e5, t5) {
+            this._restrictCursor(), this._setCursor(this._activeBuffer.x + e5, this._activeBuffer.y + t5);
+          }
+          cursorUp(e5) {
+            const t5 = this._activeBuffer.y - this._activeBuffer.scrollTop;
+            return t5 >= 0 ? this._moveCursor(0, -Math.min(t5, e5.params[0] || 1)) : this._moveCursor(0, -(e5.params[0] || 1)), true;
+          }
+          cursorDown(e5) {
+            const t5 = this._activeBuffer.scrollBottom - this._activeBuffer.y;
+            return t5 >= 0 ? this._moveCursor(0, Math.min(t5, e5.params[0] || 1)) : this._moveCursor(0, e5.params[0] || 1), true;
+          }
+          cursorForward(e5) {
+            return this._moveCursor(e5.params[0] || 1, 0), true;
+          }
+          cursorBackward(e5) {
+            return this._moveCursor(-(e5.params[0] || 1), 0), true;
+          }
+          cursorNextLine(e5) {
+            return this.cursorDown(e5), this._activeBuffer.x = 0, true;
+          }
+          cursorPrecedingLine(e5) {
+            return this.cursorUp(e5), this._activeBuffer.x = 0, true;
+          }
+          cursorCharAbsolute(e5) {
+            return this._setCursor((e5.params[0] || 1) - 1, this._activeBuffer.y), true;
+          }
+          cursorPosition(e5) {
+            return this._setCursor(e5.length >= 2 ? (e5.params[1] || 1) - 1 : 0, (e5.params[0] || 1) - 1), true;
+          }
+          charPosAbsolute(e5) {
+            return this._setCursor((e5.params[0] || 1) - 1, this._activeBuffer.y), true;
+          }
+          hPositionRelative(e5) {
+            return this._moveCursor(e5.params[0] || 1, 0), true;
+          }
+          linePosAbsolute(e5) {
+            return this._setCursor(this._activeBuffer.x, (e5.params[0] || 1) - 1), true;
+          }
+          vPositionRelative(e5) {
+            return this._moveCursor(0, e5.params[0] || 1), true;
+          }
+          hVPosition(e5) {
+            return this.cursorPosition(e5), true;
+          }
+          tabClear(e5) {
+            const t5 = e5.params[0];
+            return 0 === t5 ? delete this._activeBuffer.tabs[this._activeBuffer.x] : 3 === t5 && (this._activeBuffer.tabs = {}), true;
+          }
+          cursorForwardTab(e5) {
+            if (this._activeBuffer.x >= this._bufferService.cols)
+              return true;
+            let t5 = e5.params[0] || 1;
+            for (; t5--; )
+              this._activeBuffer.x = this._activeBuffer.nextStop();
+            return true;
+          }
+          cursorBackwardTab(e5) {
+            if (this._activeBuffer.x >= this._bufferService.cols)
+              return true;
+            let t5 = e5.params[0] || 1;
+            for (; t5--; )
+              this._activeBuffer.x = this._activeBuffer.prevStop();
+            return true;
+          }
+          selectProtected(e5) {
+            const t5 = e5.params[0];
+            return 1 === t5 && (this._curAttrData.bg |= 536870912), 2 !== t5 && 0 !== t5 || (this._curAttrData.bg &= -536870913), true;
+          }
+          _eraseInBufferLine(e5, t5, i6, s5 = false, r4 = false) {
+            const n3 = this._activeBuffer.lines.get(this._activeBuffer.ybase + e5);
+            n3.replaceCells(t5, i6, this._activeBuffer.getNullCell(this._eraseAttrData()), r4), s5 && (n3.isWrapped = false);
+          }
+          _resetBufferLine(e5, t5 = false) {
+            const i6 = this._activeBuffer.lines.get(this._activeBuffer.ybase + e5);
+            i6 && (i6.fill(this._activeBuffer.getNullCell(this._eraseAttrData()), t5), this._bufferService.buffer.clearMarkers(this._activeBuffer.ybase + e5), i6.isWrapped = false);
+          }
+          eraseInDisplay(e5, t5 = false) {
+            let i6;
+            switch (this._restrictCursor(this._bufferService.cols), e5.params[0]) {
+              case 0:
+                for (i6 = this._activeBuffer.y, this._dirtyRowTracker.markDirty(i6), this._eraseInBufferLine(i6++, this._activeBuffer.x, this._bufferService.cols, 0 === this._activeBuffer.x, t5); i6 < this._bufferService.rows; i6++)
+                  this._resetBufferLine(i6, t5);
+                this._dirtyRowTracker.markDirty(i6);
+                break;
+              case 1:
+                for (i6 = this._activeBuffer.y, this._dirtyRowTracker.markDirty(i6), this._eraseInBufferLine(i6, 0, this._activeBuffer.x + 1, true, t5), this._activeBuffer.x + 1 >= this._bufferService.cols && (this._activeBuffer.lines.get(i6 + 1).isWrapped = false); i6--; )
+                  this._resetBufferLine(i6, t5);
+                this._dirtyRowTracker.markDirty(0);
+                break;
+              case 2:
+                for (i6 = this._bufferService.rows, this._dirtyRowTracker.markDirty(i6 - 1); i6--; )
+                  this._resetBufferLine(i6, t5);
+                this._dirtyRowTracker.markDirty(0);
+                break;
+              case 3:
+                const e6 = this._activeBuffer.lines.length - this._bufferService.rows;
+                e6 > 0 && (this._activeBuffer.lines.trimStart(e6), this._activeBuffer.ybase = Math.max(this._activeBuffer.ybase - e6, 0), this._activeBuffer.ydisp = Math.max(this._activeBuffer.ydisp - e6, 0), this._onScroll.fire(0));
+            }
+            return true;
+          }
+          eraseInLine(e5, t5 = false) {
+            switch (this._restrictCursor(this._bufferService.cols), e5.params[0]) {
+              case 0:
+                this._eraseInBufferLine(this._activeBuffer.y, this._activeBuffer.x, this._bufferService.cols, 0 === this._activeBuffer.x, t5);
+                break;
+              case 1:
+                this._eraseInBufferLine(this._activeBuffer.y, 0, this._activeBuffer.x + 1, false, t5);
+                break;
+              case 2:
+                this._eraseInBufferLine(this._activeBuffer.y, 0, this._bufferService.cols, true, t5);
+            }
+            return this._dirtyRowTracker.markDirty(this._activeBuffer.y), true;
+          }
+          insertLines(e5) {
+            this._restrictCursor();
+            let t5 = e5.params[0] || 1;
+            if (this._activeBuffer.y > this._activeBuffer.scrollBottom || this._activeBuffer.y < this._activeBuffer.scrollTop)
+              return true;
+            const i6 = this._activeBuffer.ybase + this._activeBuffer.y, s5 = this._bufferService.rows - 1 - this._activeBuffer.scrollBottom, r4 = this._bufferService.rows - 1 + this._activeBuffer.ybase - s5 + 1;
+            for (; t5--; )
+              this._activeBuffer.lines.splice(r4 - 1, 1), this._activeBuffer.lines.splice(i6, 0, this._activeBuffer.getBlankLine(this._eraseAttrData()));
+            return this._dirtyRowTracker.markRangeDirty(this._activeBuffer.y, this._activeBuffer.scrollBottom), this._activeBuffer.x = 0, true;
+          }
+          deleteLines(e5) {
+            this._restrictCursor();
+            let t5 = e5.params[0] || 1;
+            if (this._activeBuffer.y > this._activeBuffer.scrollBottom || this._activeBuffer.y < this._activeBuffer.scrollTop)
+              return true;
+            const i6 = this._activeBuffer.ybase + this._activeBuffer.y;
+            let s5;
+            for (s5 = this._bufferService.rows - 1 - this._activeBuffer.scrollBottom, s5 = this._bufferService.rows - 1 + this._activeBuffer.ybase - s5; t5--; )
+              this._activeBuffer.lines.splice(i6, 1), this._activeBuffer.lines.splice(s5, 0, this._activeBuffer.getBlankLine(this._eraseAttrData()));
+            return this._dirtyRowTracker.markRangeDirty(this._activeBuffer.y, this._activeBuffer.scrollBottom), this._activeBuffer.x = 0, true;
+          }
+          insertChars(e5) {
+            this._restrictCursor();
+            const t5 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y);
+            return t5 && (t5.insertCells(this._activeBuffer.x, e5.params[0] || 1, this._activeBuffer.getNullCell(this._eraseAttrData())), this._dirtyRowTracker.markDirty(this._activeBuffer.y)), true;
+          }
+          deleteChars(e5) {
+            this._restrictCursor();
+            const t5 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y);
+            return t5 && (t5.deleteCells(this._activeBuffer.x, e5.params[0] || 1, this._activeBuffer.getNullCell(this._eraseAttrData())), this._dirtyRowTracker.markDirty(this._activeBuffer.y)), true;
+          }
+          scrollUp(e5) {
+            let t5 = e5.params[0] || 1;
+            for (; t5--; )
+              this._activeBuffer.lines.splice(this._activeBuffer.ybase + this._activeBuffer.scrollTop, 1), this._activeBuffer.lines.splice(this._activeBuffer.ybase + this._activeBuffer.scrollBottom, 0, this._activeBuffer.getBlankLine(this._eraseAttrData()));
+            return this._dirtyRowTracker.markRangeDirty(this._activeBuffer.scrollTop, this._activeBuffer.scrollBottom), true;
+          }
+          scrollDown(e5) {
+            let t5 = e5.params[0] || 1;
+            for (; t5--; )
+              this._activeBuffer.lines.splice(this._activeBuffer.ybase + this._activeBuffer.scrollBottom, 1), this._activeBuffer.lines.splice(this._activeBuffer.ybase + this._activeBuffer.scrollTop, 0, this._activeBuffer.getBlankLine(l3.DEFAULT_ATTR_DATA));
+            return this._dirtyRowTracker.markRangeDirty(this._activeBuffer.scrollTop, this._activeBuffer.scrollBottom), true;
+          }
+          scrollLeft(e5) {
+            if (this._activeBuffer.y > this._activeBuffer.scrollBottom || this._activeBuffer.y < this._activeBuffer.scrollTop)
+              return true;
+            const t5 = e5.params[0] || 1;
+            for (let e6 = this._activeBuffer.scrollTop; e6 <= this._activeBuffer.scrollBottom; ++e6) {
+              const i6 = this._activeBuffer.lines.get(this._activeBuffer.ybase + e6);
+              i6.deleteCells(0, t5, this._activeBuffer.getNullCell(this._eraseAttrData())), i6.isWrapped = false;
+            }
+            return this._dirtyRowTracker.markRangeDirty(this._activeBuffer.scrollTop, this._activeBuffer.scrollBottom), true;
+          }
+          scrollRight(e5) {
+            if (this._activeBuffer.y > this._activeBuffer.scrollBottom || this._activeBuffer.y < this._activeBuffer.scrollTop)
+              return true;
+            const t5 = e5.params[0] || 1;
+            for (let e6 = this._activeBuffer.scrollTop; e6 <= this._activeBuffer.scrollBottom; ++e6) {
+              const i6 = this._activeBuffer.lines.get(this._activeBuffer.ybase + e6);
+              i6.insertCells(0, t5, this._activeBuffer.getNullCell(this._eraseAttrData())), i6.isWrapped = false;
+            }
+            return this._dirtyRowTracker.markRangeDirty(this._activeBuffer.scrollTop, this._activeBuffer.scrollBottom), true;
+          }
+          insertColumns(e5) {
+            if (this._activeBuffer.y > this._activeBuffer.scrollBottom || this._activeBuffer.y < this._activeBuffer.scrollTop)
+              return true;
+            const t5 = e5.params[0] || 1;
+            for (let e6 = this._activeBuffer.scrollTop; e6 <= this._activeBuffer.scrollBottom; ++e6) {
+              const i6 = this._activeBuffer.lines.get(this._activeBuffer.ybase + e6);
+              i6.insertCells(this._activeBuffer.x, t5, this._activeBuffer.getNullCell(this._eraseAttrData())), i6.isWrapped = false;
+            }
+            return this._dirtyRowTracker.markRangeDirty(this._activeBuffer.scrollTop, this._activeBuffer.scrollBottom), true;
+          }
+          deleteColumns(e5) {
+            if (this._activeBuffer.y > this._activeBuffer.scrollBottom || this._activeBuffer.y < this._activeBuffer.scrollTop)
+              return true;
+            const t5 = e5.params[0] || 1;
+            for (let e6 = this._activeBuffer.scrollTop; e6 <= this._activeBuffer.scrollBottom; ++e6) {
+              const i6 = this._activeBuffer.lines.get(this._activeBuffer.ybase + e6);
+              i6.deleteCells(this._activeBuffer.x, t5, this._activeBuffer.getNullCell(this._eraseAttrData())), i6.isWrapped = false;
+            }
+            return this._dirtyRowTracker.markRangeDirty(this._activeBuffer.scrollTop, this._activeBuffer.scrollBottom), true;
+          }
+          eraseChars(e5) {
+            this._restrictCursor();
+            const t5 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y);
+            return t5 && (t5.replaceCells(this._activeBuffer.x, this._activeBuffer.x + (e5.params[0] || 1), this._activeBuffer.getNullCell(this._eraseAttrData())), this._dirtyRowTracker.markDirty(this._activeBuffer.y)), true;
+          }
+          repeatPrecedingCharacter(e5) {
+            const t5 = this._parser.precedingJoinState;
+            if (!t5)
+              return true;
+            const i6 = e5.params[0] || 1, s5 = p3.UnicodeService.extractWidth(t5), r4 = this._activeBuffer.x - s5, n3 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y).getString(r4), o4 = new Uint32Array(n3.length * i6);
+            let a4 = 0;
+            for (let e6 = 0; e6 < n3.length; ) {
+              const t6 = n3.codePointAt(e6) || 0;
+              o4[a4++] = t6, e6 += t6 > 65535 ? 2 : 1;
+            }
+            let h4 = a4;
+            for (let e6 = 1; e6 < i6; ++e6)
+              o4.copyWithin(h4, 0, a4), h4 += a4;
+            return this.print(o4, 0, h4), true;
+          }
+          sendDeviceAttributesPrimary(e5) {
+            return e5.params[0] > 0 || (this._is("xterm") || this._is("rxvt-unicode") || this._is("screen") ? this._coreService.triggerDataEvent(n2.C0.ESC + "[?1;2c") : this._is("linux") && this._coreService.triggerDataEvent(n2.C0.ESC + "[?6c")), true;
+          }
+          sendDeviceAttributesSecondary(e5) {
+            return e5.params[0] > 0 || (this._is("xterm") ? this._coreService.triggerDataEvent(n2.C0.ESC + "[>0;276;0c") : this._is("rxvt-unicode") ? this._coreService.triggerDataEvent(n2.C0.ESC + "[>85;95;0c") : this._is("linux") ? this._coreService.triggerDataEvent(e5.params[0] + "c") : this._is("screen") && this._coreService.triggerDataEvent(n2.C0.ESC + "[>83;40003;0c")), true;
+          }
+          _is(e5) {
+            return 0 === (this._optionsService.rawOptions.termName + "").indexOf(e5);
+          }
+          setMode(e5) {
+            for (let t5 = 0; t5 < e5.length; t5++)
+              switch (e5.params[t5]) {
+                case 4:
+                  this._coreService.modes.insertMode = true;
+                  break;
+                case 20:
+                  this._optionsService.options.convertEol = true;
+              }
+            return true;
+          }
+          setModePrivate(e5) {
+            for (let t5 = 0; t5 < e5.length; t5++)
+              switch (e5.params[t5]) {
+                case 1:
+                  this._coreService.decPrivateModes.applicationCursorKeys = true;
+                  break;
+                case 2:
+                  this._charsetService.setgCharset(0, o3.DEFAULT_CHARSET), this._charsetService.setgCharset(1, o3.DEFAULT_CHARSET), this._charsetService.setgCharset(2, o3.DEFAULT_CHARSET), this._charsetService.setgCharset(3, o3.DEFAULT_CHARSET);
+                  break;
+                case 3:
+                  this._optionsService.rawOptions.windowOptions.setWinLines && (this._bufferService.resize(132, this._bufferService.rows), this._onRequestReset.fire());
+                  break;
+                case 6:
+                  this._coreService.decPrivateModes.origin = true, this._setCursor(0, 0);
+                  break;
+                case 7:
+                  this._coreService.decPrivateModes.wraparound = true;
+                  break;
+                case 12:
+                  this._optionsService.options.cursorBlink = true;
+                  break;
+                case 45:
+                  this._coreService.decPrivateModes.reverseWraparound = true;
+                  break;
+                case 66:
+                  this._logService.debug("Serial port requested application keypad."), this._coreService.decPrivateModes.applicationKeypad = true, this._onRequestSyncScrollBar.fire();
+                  break;
+                case 9:
+                  this._coreMouseService.activeProtocol = "X10";
+                  break;
+                case 1e3:
+                  this._coreMouseService.activeProtocol = "VT200";
+                  break;
+                case 1002:
+                  this._coreMouseService.activeProtocol = "DRAG";
+                  break;
+                case 1003:
+                  this._coreMouseService.activeProtocol = "ANY";
+                  break;
+                case 1004:
+                  this._coreService.decPrivateModes.sendFocus = true, this._onRequestSendFocus.fire();
+                  break;
+                case 1005:
+                  this._logService.debug("DECSET 1005 not supported (see #2507)");
+                  break;
+                case 1006:
+                  this._coreMouseService.activeEncoding = "SGR";
+                  break;
+                case 1015:
+                  this._logService.debug("DECSET 1015 not supported (see #2507)");
+                  break;
+                case 1016:
+                  this._coreMouseService.activeEncoding = "SGR_PIXELS";
+                  break;
+                case 25:
+                  this._coreService.isCursorHidden = false;
+                  break;
+                case 1048:
+                  this.saveCursor();
+                  break;
+                case 1049:
+                  this.saveCursor();
+                case 47:
+                case 1047:
+                  this._bufferService.buffers.activateAltBuffer(this._eraseAttrData()), this._coreService.isCursorInitialized = true, this._onRequestRefreshRows.fire(0, this._bufferService.rows - 1), this._onRequestSyncScrollBar.fire();
+                  break;
+                case 2004:
+                  this._coreService.decPrivateModes.bracketedPasteMode = true;
+              }
+            return true;
+          }
+          resetMode(e5) {
+            for (let t5 = 0; t5 < e5.length; t5++)
+              switch (e5.params[t5]) {
+                case 4:
+                  this._coreService.modes.insertMode = false;
+                  break;
+                case 20:
+                  this._optionsService.options.convertEol = false;
+              }
+            return true;
+          }
+          resetModePrivate(e5) {
+            for (let t5 = 0; t5 < e5.length; t5++)
+              switch (e5.params[t5]) {
+                case 1:
+                  this._coreService.decPrivateModes.applicationCursorKeys = false;
+                  break;
+                case 3:
+                  this._optionsService.rawOptions.windowOptions.setWinLines && (this._bufferService.resize(80, this._bufferService.rows), this._onRequestReset.fire());
+                  break;
+                case 6:
+                  this._coreService.decPrivateModes.origin = false, this._setCursor(0, 0);
+                  break;
+                case 7:
+                  this._coreService.decPrivateModes.wraparound = false;
+                  break;
+                case 12:
+                  this._optionsService.options.cursorBlink = false;
+                  break;
+                case 45:
+                  this._coreService.decPrivateModes.reverseWraparound = false;
+                  break;
+                case 66:
+                  this._logService.debug("Switching back to normal keypad."), this._coreService.decPrivateModes.applicationKeypad = false, this._onRequestSyncScrollBar.fire();
+                  break;
+                case 9:
+                case 1e3:
+                case 1002:
+                case 1003:
+                  this._coreMouseService.activeProtocol = "NONE";
+                  break;
+                case 1004:
+                  this._coreService.decPrivateModes.sendFocus = false;
+                  break;
+                case 1005:
+                  this._logService.debug("DECRST 1005 not supported (see #2507)");
+                  break;
+                case 1006:
+                case 1016:
+                  this._coreMouseService.activeEncoding = "DEFAULT";
+                  break;
+                case 1015:
+                  this._logService.debug("DECRST 1015 not supported (see #2507)");
+                  break;
+                case 25:
+                  this._coreService.isCursorHidden = true;
+                  break;
+                case 1048:
+                  this.restoreCursor();
+                  break;
+                case 1049:
+                case 47:
+                case 1047:
+                  this._bufferService.buffers.activateNormalBuffer(), 1049 === e5.params[t5] && this.restoreCursor(), this._coreService.isCursorInitialized = true, this._onRequestRefreshRows.fire(0, this._bufferService.rows - 1), this._onRequestSyncScrollBar.fire();
+                  break;
+                case 2004:
+                  this._coreService.decPrivateModes.bracketedPasteMode = false;
+              }
+            return true;
+          }
+          requestMode(e5, t5) {
+            const i6 = this._coreService.decPrivateModes, { activeProtocol: s5, activeEncoding: r4 } = this._coreMouseService, o4 = this._coreService, { buffers: a4, cols: h4 } = this._bufferService, { active: c4, alt: l4 } = a4, d4 = this._optionsService.rawOptions, _3 = (e6) => e6 ? 1 : 2, u5 = e5.params[0];
+            return f5 = u5, v4 = t5 ? 2 === u5 ? 4 : 4 === u5 ? _3(o4.modes.insertMode) : 12 === u5 ? 3 : 20 === u5 ? _3(d4.convertEol) : 0 : 1 === u5 ? _3(i6.applicationCursorKeys) : 3 === u5 ? d4.windowOptions.setWinLines ? 80 === h4 ? 2 : 132 === h4 ? 1 : 0 : 0 : 6 === u5 ? _3(i6.origin) : 7 === u5 ? _3(i6.wraparound) : 8 === u5 ? 3 : 9 === u5 ? _3("X10" === s5) : 12 === u5 ? _3(d4.cursorBlink) : 25 === u5 ? _3(!o4.isCursorHidden) : 45 === u5 ? _3(i6.reverseWraparound) : 66 === u5 ? _3(i6.applicationKeypad) : 67 === u5 ? 4 : 1e3 === u5 ? _3("VT200" === s5) : 1002 === u5 ? _3("DRAG" === s5) : 1003 === u5 ? _3("ANY" === s5) : 1004 === u5 ? _3(i6.sendFocus) : 1005 === u5 ? 4 : 1006 === u5 ? _3("SGR" === r4) : 1015 === u5 ? 4 : 1016 === u5 ? _3("SGR_PIXELS" === r4) : 1048 === u5 ? 1 : 47 === u5 || 1047 === u5 || 1049 === u5 ? _3(c4 === l4) : 2004 === u5 ? _3(i6.bracketedPasteMode) : 0, o4.triggerDataEvent(`${n2.C0.ESC}[${t5 ? "" : "?"}${f5};${v4}$y`), true;
+            var f5, v4;
+          }
+          _updateAttrColor(e5, t5, i6, s5, r4) {
+            return 2 === t5 ? (e5 |= 50331648, e5 &= -16777216, e5 |= f4.AttributeData.fromColorRGB([i6, s5, r4])) : 5 === t5 && (e5 &= -50331904, e5 |= 33554432 | 255 & i6), e5;
+          }
+          _extractColor(e5, t5, i6) {
+            const s5 = [0, 0, -1, 0, 0, 0];
+            let r4 = 0, n3 = 0;
+            do {
+              if (s5[n3 + r4] = e5.params[t5 + n3], e5.hasSubParams(t5 + n3)) {
+                const i7 = e5.getSubParams(t5 + n3);
+                let o4 = 0;
+                do {
+                  5 === s5[1] && (r4 = 1), s5[n3 + o4 + 1 + r4] = i7[o4];
+                } while (++o4 < i7.length && o4 + n3 + 1 + r4 < s5.length);
+                break;
+              }
+              if (5 === s5[1] && n3 + r4 >= 2 || 2 === s5[1] && n3 + r4 >= 5)
+                break;
+              s5[1] && (r4 = 1);
+            } while (++n3 + t5 < e5.length && n3 + r4 < s5.length);
+            for (let e6 = 2; e6 < s5.length; ++e6)
+              -1 === s5[e6] && (s5[e6] = 0);
+            switch (s5[0]) {
+              case 38:
+                i6.fg = this._updateAttrColor(i6.fg, s5[1], s5[3], s5[4], s5[5]);
+                break;
+              case 48:
+                i6.bg = this._updateAttrColor(i6.bg, s5[1], s5[3], s5[4], s5[5]);
+                break;
+              case 58:
+                i6.extended = i6.extended.clone(), i6.extended.underlineColor = this._updateAttrColor(i6.extended.underlineColor, s5[1], s5[3], s5[4], s5[5]);
+            }
+            return n3;
+          }
+          _processUnderline(e5, t5) {
+            t5.extended = t5.extended.clone(), (!~e5 || e5 > 5) && (e5 = 1), t5.extended.underlineStyle = e5, t5.fg |= 268435456, 0 === e5 && (t5.fg &= -268435457), t5.updateExtended();
+          }
+          _processSGR0(e5) {
+            e5.fg = l3.DEFAULT_ATTR_DATA.fg, e5.bg = l3.DEFAULT_ATTR_DATA.bg, e5.extended = e5.extended.clone(), e5.extended.underlineStyle = 0, e5.extended.underlineColor &= -67108864, e5.updateExtended();
+          }
+          charAttributes(e5) {
+            if (1 === e5.length && 0 === e5.params[0])
+              return this._processSGR0(this._curAttrData), true;
+            const t5 = e5.length;
+            let i6;
+            const s5 = this._curAttrData;
+            for (let r4 = 0; r4 < t5; r4++)
+              i6 = e5.params[r4], i6 >= 30 && i6 <= 37 ? (s5.fg &= -50331904, s5.fg |= 16777216 | i6 - 30) : i6 >= 40 && i6 <= 47 ? (s5.bg &= -50331904, s5.bg |= 16777216 | i6 - 40) : i6 >= 90 && i6 <= 97 ? (s5.fg &= -50331904, s5.fg |= 16777224 | i6 - 90) : i6 >= 100 && i6 <= 107 ? (s5.bg &= -50331904, s5.bg |= 16777224 | i6 - 100) : 0 === i6 ? this._processSGR0(s5) : 1 === i6 ? s5.fg |= 134217728 : 3 === i6 ? s5.bg |= 67108864 : 4 === i6 ? (s5.fg |= 268435456, this._processUnderline(e5.hasSubParams(r4) ? e5.getSubParams(r4)[0] : 1, s5)) : 5 === i6 ? s5.fg |= 536870912 : 7 === i6 ? s5.fg |= 67108864 : 8 === i6 ? s5.fg |= 1073741824 : 9 === i6 ? s5.fg |= 2147483648 : 2 === i6 ? s5.bg |= 134217728 : 21 === i6 ? this._processUnderline(2, s5) : 22 === i6 ? (s5.fg &= -134217729, s5.bg &= -134217729) : 23 === i6 ? s5.bg &= -67108865 : 24 === i6 ? (s5.fg &= -268435457, this._processUnderline(0, s5)) : 25 === i6 ? s5.fg &= -536870913 : 27 === i6 ? s5.fg &= -67108865 : 28 === i6 ? s5.fg &= -1073741825 : 29 === i6 ? s5.fg &= 2147483647 : 39 === i6 ? (s5.fg &= -67108864, s5.fg |= 16777215 & l3.DEFAULT_ATTR_DATA.fg) : 49 === i6 ? (s5.bg &= -67108864, s5.bg |= 16777215 & l3.DEFAULT_ATTR_DATA.bg) : 38 === i6 || 48 === i6 || 58 === i6 ? r4 += this._extractColor(e5, r4, s5) : 53 === i6 ? s5.bg |= 1073741824 : 55 === i6 ? s5.bg &= -1073741825 : 59 === i6 ? (s5.extended = s5.extended.clone(), s5.extended.underlineColor = -1, s5.updateExtended()) : 100 === i6 ? (s5.fg &= -67108864, s5.fg |= 16777215 & l3.DEFAULT_ATTR_DATA.fg, s5.bg &= -67108864, s5.bg |= 16777215 & l3.DEFAULT_ATTR_DATA.bg) : this._logService.debug("Unknown SGR attribute: %d.", i6);
+            return true;
+          }
+          deviceStatus(e5) {
+            switch (e5.params[0]) {
+              case 5:
+                this._coreService.triggerDataEvent(`${n2.C0.ESC}[0n`);
+                break;
+              case 6:
+                const e6 = this._activeBuffer.y + 1, t5 = this._activeBuffer.x + 1;
+                this._coreService.triggerDataEvent(`${n2.C0.ESC}[${e6};${t5}R`);
+            }
+            return true;
+          }
+          deviceStatusPrivate(e5) {
+            if (6 === e5.params[0]) {
+              const e6 = this._activeBuffer.y + 1, t5 = this._activeBuffer.x + 1;
+              this._coreService.triggerDataEvent(`${n2.C0.ESC}[?${e6};${t5}R`);
+            }
+            return true;
+          }
+          softReset(e5) {
+            return this._coreService.isCursorHidden = false, this._onRequestSyncScrollBar.fire(), this._activeBuffer.scrollTop = 0, this._activeBuffer.scrollBottom = this._bufferService.rows - 1, this._curAttrData = l3.DEFAULT_ATTR_DATA.clone(), this._coreService.reset(), this._charsetService.reset(), this._activeBuffer.savedX = 0, this._activeBuffer.savedY = this._activeBuffer.ybase, this._activeBuffer.savedCurAttrData.fg = this._curAttrData.fg, this._activeBuffer.savedCurAttrData.bg = this._curAttrData.bg, this._activeBuffer.savedCharset = this._charsetService.charset, this._coreService.decPrivateModes.origin = false, true;
+          }
+          setCursorStyle(e5) {
+            const t5 = e5.params[0] || 1;
+            switch (t5) {
+              case 1:
+              case 2:
+                this._optionsService.options.cursorStyle = "block";
+                break;
+              case 3:
+              case 4:
+                this._optionsService.options.cursorStyle = "underline";
+                break;
+              case 5:
+              case 6:
+                this._optionsService.options.cursorStyle = "bar";
+            }
+            const i6 = t5 % 2 == 1;
+            return this._optionsService.options.cursorBlink = i6, true;
+          }
+          setScrollRegion(e5) {
+            const t5 = e5.params[0] || 1;
+            let i6;
+            return (e5.length < 2 || (i6 = e5.params[1]) > this._bufferService.rows || 0 === i6) && (i6 = this._bufferService.rows), i6 > t5 && (this._activeBuffer.scrollTop = t5 - 1, this._activeBuffer.scrollBottom = i6 - 1, this._setCursor(0, 0)), true;
+          }
+          windowOptions(e5) {
+            if (!w3(e5.params[0], this._optionsService.rawOptions.windowOptions))
+              return true;
+            const t5 = e5.length > 1 ? e5.params[1] : 0;
+            switch (e5.params[0]) {
+              case 14:
+                2 !== t5 && this._onRequestWindowsOptionsReport.fire(y3.GET_WIN_SIZE_PIXELS);
+                break;
+              case 16:
+                this._onRequestWindowsOptionsReport.fire(y3.GET_CELL_SIZE_PIXELS);
+                break;
+              case 18:
+                this._bufferService && this._coreService.triggerDataEvent(`${n2.C0.ESC}[8;${this._bufferService.rows};${this._bufferService.cols}t`);
+                break;
+              case 22:
+                0 !== t5 && 2 !== t5 || (this._windowTitleStack.push(this._windowTitle), this._windowTitleStack.length > 10 && this._windowTitleStack.shift()), 0 !== t5 && 1 !== t5 || (this._iconNameStack.push(this._iconName), this._iconNameStack.length > 10 && this._iconNameStack.shift());
+                break;
+              case 23:
+                0 !== t5 && 2 !== t5 || this._windowTitleStack.length && this.setTitle(this._windowTitleStack.pop()), 0 !== t5 && 1 !== t5 || this._iconNameStack.length && this.setIconName(this._iconNameStack.pop());
+            }
+            return true;
+          }
+          saveCursor(e5) {
+            return this._activeBuffer.savedX = this._activeBuffer.x, this._activeBuffer.savedY = this._activeBuffer.ybase + this._activeBuffer.y, this._activeBuffer.savedCurAttrData.fg = this._curAttrData.fg, this._activeBuffer.savedCurAttrData.bg = this._curAttrData.bg, this._activeBuffer.savedCharset = this._charsetService.charset, true;
+          }
+          restoreCursor(e5) {
+            return this._activeBuffer.x = this._activeBuffer.savedX || 0, this._activeBuffer.y = Math.max(this._activeBuffer.savedY - this._activeBuffer.ybase, 0), this._curAttrData.fg = this._activeBuffer.savedCurAttrData.fg, this._curAttrData.bg = this._activeBuffer.savedCurAttrData.bg, this._charsetService.charset = this._savedCharset, this._activeBuffer.savedCharset && (this._charsetService.charset = this._activeBuffer.savedCharset), this._restrictCursor(), true;
+          }
+          setTitle(e5) {
+            return this._windowTitle = e5, this._onTitleChange.fire(e5), true;
+          }
+          setIconName(e5) {
+            return this._iconName = e5, true;
+          }
+          setOrReportIndexedColor(e5) {
+            const t5 = [], i6 = e5.split(";");
+            for (; i6.length > 1; ) {
+              const e6 = i6.shift(), s5 = i6.shift();
+              if (/^\d+$/.exec(e6)) {
+                const i7 = parseInt(e6);
+                if (D3(i7))
+                  if ("?" === s5)
+                    t5.push({ type: 0, index: i7 });
+                  else {
+                    const e7 = (0, S2.parseColor)(s5);
+                    e7 && t5.push({ type: 1, index: i7, color: e7 });
+                  }
+              }
+            }
+            return t5.length && this._onColor.fire(t5), true;
+          }
+          setHyperlink(e5) {
+            const t5 = e5.split(";");
+            return !(t5.length < 2) && (t5[1] ? this._createHyperlink(t5[0], t5[1]) : !t5[0] && this._finishHyperlink());
+          }
+          _createHyperlink(e5, t5) {
+            this._getCurrentLinkId() && this._finishHyperlink();
+            const i6 = e5.split(":");
+            let s5;
+            const r4 = i6.findIndex((e6) => e6.startsWith("id="));
+            return -1 !== r4 && (s5 = i6[r4].slice(3) || void 0), this._curAttrData.extended = this._curAttrData.extended.clone(), this._curAttrData.extended.urlId = this._oscLinkService.registerLink({ id: s5, uri: t5 }), this._curAttrData.updateExtended(), true;
+          }
+          _finishHyperlink() {
+            return this._curAttrData.extended = this._curAttrData.extended.clone(), this._curAttrData.extended.urlId = 0, this._curAttrData.updateExtended(), true;
+          }
+          _setOrReportSpecialColor(e5, t5) {
+            const i6 = e5.split(";");
+            for (let e6 = 0; e6 < i6.length && !(t5 >= this._specialColors.length); ++e6, ++t5)
+              if ("?" === i6[e6])
+                this._onColor.fire([{ type: 0, index: this._specialColors[t5] }]);
+              else {
+                const s5 = (0, S2.parseColor)(i6[e6]);
+                s5 && this._onColor.fire([{ type: 1, index: this._specialColors[t5], color: s5 }]);
+              }
+            return true;
+          }
+          setOrReportFgColor(e5) {
+            return this._setOrReportSpecialColor(e5, 0);
+          }
+          setOrReportBgColor(e5) {
+            return this._setOrReportSpecialColor(e5, 1);
+          }
+          setOrReportCursorColor(e5) {
+            return this._setOrReportSpecialColor(e5, 2);
+          }
+          restoreIndexedColor(e5) {
+            if (!e5)
+              return this._onColor.fire([{ type: 2 }]), true;
+            const t5 = [], i6 = e5.split(";");
+            for (let e6 = 0; e6 < i6.length; ++e6)
+              if (/^\d+$/.exec(i6[e6])) {
+                const s5 = parseInt(i6[e6]);
+                D3(s5) && t5.push({ type: 2, index: s5 });
+              }
+            return t5.length && this._onColor.fire(t5), true;
+          }
+          restoreFgColor(e5) {
+            return this._onColor.fire([{ type: 2, index: 256 }]), true;
+          }
+          restoreBgColor(e5) {
+            return this._onColor.fire([{ type: 2, index: 257 }]), true;
+          }
+          restoreCursorColor(e5) {
+            return this._onColor.fire([{ type: 2, index: 258 }]), true;
+          }
+          nextLine() {
+            return this._activeBuffer.x = 0, this.index(), true;
+          }
+          keypadApplicationMode() {
+            return this._logService.debug("Serial port requested application keypad."), this._coreService.decPrivateModes.applicationKeypad = true, this._onRequestSyncScrollBar.fire(), true;
+          }
+          keypadNumericMode() {
+            return this._logService.debug("Switching back to normal keypad."), this._coreService.decPrivateModes.applicationKeypad = false, this._onRequestSyncScrollBar.fire(), true;
+          }
+          selectDefaultCharset() {
+            return this._charsetService.setgLevel(0), this._charsetService.setgCharset(0, o3.DEFAULT_CHARSET), true;
+          }
+          selectCharset(e5) {
+            return 2 !== e5.length ? (this.selectDefaultCharset(), true) : ("/" === e5[0] || this._charsetService.setgCharset(C3[e5[0]], o3.CHARSETS[e5[1]] || o3.DEFAULT_CHARSET), true);
+          }
+          index() {
+            return this._restrictCursor(), this._activeBuffer.y++, this._activeBuffer.y === this._activeBuffer.scrollBottom + 1 ? (this._activeBuffer.y--, this._bufferService.scroll(this._eraseAttrData())) : this._activeBuffer.y >= this._bufferService.rows && (this._activeBuffer.y = this._bufferService.rows - 1), this._restrictCursor(), true;
+          }
+          tabSet() {
+            return this._activeBuffer.tabs[this._activeBuffer.x] = true, true;
+          }
+          reverseIndex() {
+            if (this._restrictCursor(), this._activeBuffer.y === this._activeBuffer.scrollTop) {
+              const e5 = this._activeBuffer.scrollBottom - this._activeBuffer.scrollTop;
+              this._activeBuffer.lines.shiftElements(this._activeBuffer.ybase + this._activeBuffer.y, e5, 1), this._activeBuffer.lines.set(this._activeBuffer.ybase + this._activeBuffer.y, this._activeBuffer.getBlankLine(this._eraseAttrData())), this._dirtyRowTracker.markRangeDirty(this._activeBuffer.scrollTop, this._activeBuffer.scrollBottom);
+            } else
+              this._activeBuffer.y--, this._restrictCursor();
+            return true;
+          }
+          fullReset() {
+            return this._parser.reset(), this._onRequestReset.fire(), true;
+          }
+          reset() {
+            this._curAttrData = l3.DEFAULT_ATTR_DATA.clone(), this._eraseAttrDataInternal = l3.DEFAULT_ATTR_DATA.clone();
+          }
+          _eraseAttrData() {
+            return this._eraseAttrDataInternal.bg &= -67108864, this._eraseAttrDataInternal.bg |= 67108863 & this._curAttrData.bg, this._eraseAttrDataInternal;
+          }
+          setgLevel(e5) {
+            return this._charsetService.setgLevel(e5), true;
+          }
+          screenAlignmentPattern() {
+            const e5 = new u4.CellData();
+            e5.content = 1 << 22 | "E".charCodeAt(0), e5.fg = this._curAttrData.fg, e5.bg = this._curAttrData.bg, this._setCursor(0, 0);
+            for (let t5 = 0; t5 < this._bufferService.rows; ++t5) {
+              const i6 = this._activeBuffer.ybase + this._activeBuffer.y + t5, s5 = this._activeBuffer.lines.get(i6);
+              s5 && (s5.fill(e5), s5.isWrapped = false);
+            }
+            return this._dirtyRowTracker.markAllDirty(), this._setCursor(0, 0), true;
+          }
+          requestStatusString(e5, t5) {
+            const i6 = this._bufferService.buffer, s5 = this._optionsService.rawOptions;
+            return ((e6) => (this._coreService.triggerDataEvent(`${n2.C0.ESC}${e6}${n2.C0.ESC}\\`), true))('"q' === e5 ? `P1$r${this._curAttrData.isProtected() ? 1 : 0}"q` : '"p' === e5 ? 'P1$r61;1"p' : "r" === e5 ? `P1$r${i6.scrollTop + 1};${i6.scrollBottom + 1}r` : "m" === e5 ? "P1$r0m" : " q" === e5 ? `P1$r${{ block: 2, underline: 4, bar: 6 }[s5.cursorStyle] - (s5.cursorBlink ? 1 : 0)} q` : "P0$r");
+          }
+          markRangeDirty(e5, t5) {
+            this._dirtyRowTracker.markRangeDirty(e5, t5);
+          }
+        }
+        t4.InputHandler = k3;
+        let L2 = class {
+          constructor(e5) {
+            this._bufferService = e5, this.clearRange();
+          }
+          clearRange() {
+            this.start = this._bufferService.buffer.y, this.end = this._bufferService.buffer.y;
+          }
+          markDirty(e5) {
+            e5 < this.start ? this.start = e5 : e5 > this.end && (this.end = e5);
+          }
+          markRangeDirty(e5, t5) {
+            e5 > t5 && (E2 = e5, e5 = t5, t5 = E2), e5 < this.start && (this.start = e5), t5 > this.end && (this.end = t5);
+          }
+          markAllDirty() {
+            this.markRangeDirty(0, this._bufferService.rows - 1);
+          }
+        };
+        function D3(e5) {
+          return 0 <= e5 && e5 < 256;
+        }
+        L2 = s4([r3(0, v3.IBufferService)], L2);
+      }, 844: (e4, t4) => {
+        function i5(e5) {
+          for (const t5 of e5)
+            t5.dispose();
+          e5.length = 0;
+        }
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.getDisposeArrayDisposable = t4.disposeArray = t4.toDisposable = t4.MutableDisposable = t4.Disposable = void 0, t4.Disposable = class {
+          constructor() {
+            this._disposables = [], this._isDisposed = false;
+          }
+          dispose() {
+            this._isDisposed = true;
+            for (const e5 of this._disposables)
+              e5.dispose();
+            this._disposables.length = 0;
+          }
+          register(e5) {
+            return this._disposables.push(e5), e5;
+          }
+          unregister(e5) {
+            const t5 = this._disposables.indexOf(e5);
+            -1 !== t5 && this._disposables.splice(t5, 1);
+          }
+        }, t4.MutableDisposable = class {
+          constructor() {
+            this._isDisposed = false;
+          }
+          get value() {
+            return this._isDisposed ? void 0 : this._value;
+          }
+          set value(e5) {
+            this._isDisposed || e5 === this._value || (this._value?.dispose(), this._value = e5);
+          }
+          clear() {
+            this.value = void 0;
+          }
+          dispose() {
+            this._isDisposed = true, this._value?.dispose(), this._value = void 0;
+          }
+        }, t4.toDisposable = function(e5) {
+          return { dispose: e5 };
+        }, t4.disposeArray = i5, t4.getDisposeArrayDisposable = function(e5) {
+          return { dispose: () => i5(e5) };
+        };
+      }, 1505: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.FourKeyMap = t4.TwoKeyMap = void 0;
+        class i5 {
+          constructor() {
+            this._data = {};
+          }
+          set(e5, t5, i6) {
+            this._data[e5] || (this._data[e5] = {}), this._data[e5][t5] = i6;
+          }
+          get(e5, t5) {
+            return this._data[e5] ? this._data[e5][t5] : void 0;
+          }
+          clear() {
+            this._data = {};
+          }
+        }
+        t4.TwoKeyMap = i5, t4.FourKeyMap = class {
+          constructor() {
+            this._data = new i5();
+          }
+          set(e5, t5, s4, r3, n2) {
+            this._data.get(e5, t5) || this._data.set(e5, t5, new i5()), this._data.get(e5, t5).set(s4, r3, n2);
+          }
+          get(e5, t5, i6, s4) {
+            return this._data.get(e5, t5)?.get(i6, s4);
+          }
+          clear() {
+            this._data.clear();
+          }
+        };
+      }, 6114: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.isChromeOS = t4.isLinux = t4.isWindows = t4.isIphone = t4.isIpad = t4.isMac = t4.getSafariVersion = t4.isSafari = t4.isLegacyEdge = t4.isFirefox = t4.isNode = void 0, t4.isNode = "undefined" != typeof process && "title" in process;
+        const i5 = t4.isNode ? "node" : navigator.userAgent, s4 = t4.isNode ? "node" : navigator.platform;
+        t4.isFirefox = i5.includes("Firefox"), t4.isLegacyEdge = i5.includes("Edge"), t4.isSafari = /^((?!chrome|android).)*safari/i.test(i5), t4.getSafariVersion = function() {
+          if (!t4.isSafari)
+            return 0;
+          const e5 = i5.match(/Version\/(\d+)/);
+          return null === e5 || e5.length < 2 ? 0 : parseInt(e5[1]);
+        }, t4.isMac = ["Macintosh", "MacIntel", "MacPPC", "Mac68K"].includes(s4), t4.isIpad = "iPad" === s4, t4.isIphone = "iPhone" === s4, t4.isWindows = ["Windows", "Win16", "Win32", "WinCE"].includes(s4), t4.isLinux = s4.indexOf("Linux") >= 0, t4.isChromeOS = /\bCrOS\b/.test(i5);
+      }, 6106: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.SortedList = void 0;
+        let i5 = 0;
+        t4.SortedList = class {
+          constructor(e5) {
+            this._getKey = e5, this._array = [];
+          }
+          clear() {
+            this._array.length = 0;
+          }
+          insert(e5) {
+            0 !== this._array.length ? (i5 = this._search(this._getKey(e5)), this._array.splice(i5, 0, e5)) : this._array.push(e5);
+          }
+          delete(e5) {
+            if (0 === this._array.length)
+              return false;
+            const t5 = this._getKey(e5);
+            if (void 0 === t5)
+              return false;
+            if (i5 = this._search(t5), -1 === i5)
+              return false;
+            if (this._getKey(this._array[i5]) !== t5)
+              return false;
+            do {
+              if (this._array[i5] === e5)
+                return this._array.splice(i5, 1), true;
+            } while (++i5 < this._array.length && this._getKey(this._array[i5]) === t5);
+            return false;
+          }
+          *getKeyIterator(e5) {
+            if (0 !== this._array.length && (i5 = this._search(e5), !(i5 < 0 || i5 >= this._array.length) && this._getKey(this._array[i5]) === e5))
+              do {
+                yield this._array[i5];
+              } while (++i5 < this._array.length && this._getKey(this._array[i5]) === e5);
+          }
+          forEachByKey(e5, t5) {
+            if (0 !== this._array.length && (i5 = this._search(e5), !(i5 < 0 || i5 >= this._array.length) && this._getKey(this._array[i5]) === e5))
+              do {
+                t5(this._array[i5]);
+              } while (++i5 < this._array.length && this._getKey(this._array[i5]) === e5);
+          }
+          values() {
+            return [...this._array].values();
+          }
+          _search(e5) {
+            let t5 = 0, i6 = this._array.length - 1;
+            for (; i6 >= t5; ) {
+              let s4 = t5 + i6 >> 1;
+              const r3 = this._getKey(this._array[s4]);
+              if (r3 > e5)
+                i6 = s4 - 1;
+              else {
+                if (!(r3 < e5)) {
+                  for (; s4 > 0 && this._getKey(this._array[s4 - 1]) === e5; )
+                    s4--;
+                  return s4;
+                }
+                t5 = s4 + 1;
+              }
+            }
+            return t5;
+          }
+        };
+      }, 7226: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.DebouncedIdleTask = t4.IdleTaskQueue = t4.PriorityTaskQueue = void 0;
+        const s4 = i5(6114);
+        class r3 {
+          constructor() {
+            this._tasks = [], this._i = 0;
+          }
+          enqueue(e5) {
+            this._tasks.push(e5), this._start();
+          }
+          flush() {
+            for (; this._i < this._tasks.length; )
+              this._tasks[this._i]() || this._i++;
+            this.clear();
+          }
+          clear() {
+            this._idleCallback && (this._cancelCallback(this._idleCallback), this._idleCallback = void 0), this._i = 0, this._tasks.length = 0;
+          }
+          _start() {
+            this._idleCallback || (this._idleCallback = this._requestCallback(this._process.bind(this)));
+          }
+          _process(e5) {
+            this._idleCallback = void 0;
+            let t5 = 0, i6 = 0, s5 = e5.timeRemaining(), r4 = 0;
+            for (; this._i < this._tasks.length; ) {
+              if (t5 = Date.now(), this._tasks[this._i]() || this._i++, t5 = Math.max(1, Date.now() - t5), i6 = Math.max(t5, i6), r4 = e5.timeRemaining(), 1.5 * i6 > r4)
+                return s5 - t5 < -20 && console.warn(`task queue exceeded allotted deadline by ${Math.abs(Math.round(s5 - t5))}ms`), void this._start();
+              s5 = r4;
+            }
+            this.clear();
+          }
+        }
+        class n2 extends r3 {
+          _requestCallback(e5) {
+            return setTimeout(() => e5(this._createDeadline(16)));
+          }
+          _cancelCallback(e5) {
+            clearTimeout(e5);
+          }
+          _createDeadline(e5) {
+            const t5 = Date.now() + e5;
+            return { timeRemaining: () => Math.max(0, t5 - Date.now()) };
+          }
+        }
+        t4.PriorityTaskQueue = n2, t4.IdleTaskQueue = !s4.isNode && "requestIdleCallback" in window ? class extends r3 {
+          _requestCallback(e5) {
+            return requestIdleCallback(e5);
+          }
+          _cancelCallback(e5) {
+            cancelIdleCallback(e5);
+          }
+        } : n2, t4.DebouncedIdleTask = class {
+          constructor() {
+            this._queue = new t4.IdleTaskQueue();
+          }
+          set(e5) {
+            this._queue.clear(), this._queue.enqueue(e5);
+          }
+          flush() {
+            this._queue.flush();
+          }
+        };
+      }, 9282: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.updateWindowsModeWrappedState = void 0;
+        const s4 = i5(643);
+        t4.updateWindowsModeWrappedState = function(e5) {
+          const t5 = e5.buffer.lines.get(e5.buffer.ybase + e5.buffer.y - 1), i6 = t5?.get(e5.cols - 1), r3 = e5.buffer.lines.get(e5.buffer.ybase + e5.buffer.y);
+          r3 && i6 && (r3.isWrapped = i6[s4.CHAR_DATA_CODE_INDEX] !== s4.NULL_CELL_CODE && i6[s4.CHAR_DATA_CODE_INDEX] !== s4.WHITESPACE_CELL_CODE);
+        };
+      }, 3734: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.ExtendedAttrs = t4.AttributeData = void 0;
+        class i5 {
+          constructor() {
+            this.fg = 0, this.bg = 0, this.extended = new s4();
+          }
+          static toColorRGB(e5) {
+            return [e5 >>> 16 & 255, e5 >>> 8 & 255, 255 & e5];
+          }
+          static fromColorRGB(e5) {
+            return (255 & e5[0]) << 16 | (255 & e5[1]) << 8 | 255 & e5[2];
+          }
+          clone() {
+            const e5 = new i5();
+            return e5.fg = this.fg, e5.bg = this.bg, e5.extended = this.extended.clone(), e5;
+          }
+          isInverse() {
+            return 67108864 & this.fg;
+          }
+          isBold() {
+            return 134217728 & this.fg;
+          }
+          isUnderline() {
+            return this.hasExtendedAttrs() && 0 !== this.extended.underlineStyle ? 1 : 268435456 & this.fg;
+          }
+          isBlink() {
+            return 536870912 & this.fg;
+          }
+          isInvisible() {
+            return 1073741824 & this.fg;
+          }
+          isItalic() {
+            return 67108864 & this.bg;
+          }
+          isDim() {
+            return 134217728 & this.bg;
+          }
+          isStrikethrough() {
+            return 2147483648 & this.fg;
+          }
+          isProtected() {
+            return 536870912 & this.bg;
+          }
+          isOverline() {
+            return 1073741824 & this.bg;
+          }
+          getFgColorMode() {
+            return 50331648 & this.fg;
+          }
+          getBgColorMode() {
+            return 50331648 & this.bg;
+          }
+          isFgRGB() {
+            return 50331648 == (50331648 & this.fg);
+          }
+          isBgRGB() {
+            return 50331648 == (50331648 & this.bg);
+          }
+          isFgPalette() {
+            return 16777216 == (50331648 & this.fg) || 33554432 == (50331648 & this.fg);
+          }
+          isBgPalette() {
+            return 16777216 == (50331648 & this.bg) || 33554432 == (50331648 & this.bg);
+          }
+          isFgDefault() {
+            return 0 == (50331648 & this.fg);
+          }
+          isBgDefault() {
+            return 0 == (50331648 & this.bg);
+          }
+          isAttributeDefault() {
+            return 0 === this.fg && 0 === this.bg;
+          }
+          getFgColor() {
+            switch (50331648 & this.fg) {
+              case 16777216:
+              case 33554432:
+                return 255 & this.fg;
+              case 50331648:
+                return 16777215 & this.fg;
+              default:
+                return -1;
+            }
+          }
+          getBgColor() {
+            switch (50331648 & this.bg) {
+              case 16777216:
+              case 33554432:
+                return 255 & this.bg;
+              case 50331648:
+                return 16777215 & this.bg;
+              default:
+                return -1;
+            }
+          }
+          hasExtendedAttrs() {
+            return 268435456 & this.bg;
+          }
+          updateExtended() {
+            this.extended.isEmpty() ? this.bg &= -268435457 : this.bg |= 268435456;
+          }
+          getUnderlineColor() {
+            if (268435456 & this.bg && ~this.extended.underlineColor)
+              switch (50331648 & this.extended.underlineColor) {
+                case 16777216:
+                case 33554432:
+                  return 255 & this.extended.underlineColor;
+                case 50331648:
+                  return 16777215 & this.extended.underlineColor;
+                default:
+                  return this.getFgColor();
+              }
+            return this.getFgColor();
+          }
+          getUnderlineColorMode() {
+            return 268435456 & this.bg && ~this.extended.underlineColor ? 50331648 & this.extended.underlineColor : this.getFgColorMode();
+          }
+          isUnderlineColorRGB() {
+            return 268435456 & this.bg && ~this.extended.underlineColor ? 50331648 == (50331648 & this.extended.underlineColor) : this.isFgRGB();
+          }
+          isUnderlineColorPalette() {
+            return 268435456 & this.bg && ~this.extended.underlineColor ? 16777216 == (50331648 & this.extended.underlineColor) || 33554432 == (50331648 & this.extended.underlineColor) : this.isFgPalette();
+          }
+          isUnderlineColorDefault() {
+            return 268435456 & this.bg && ~this.extended.underlineColor ? 0 == (50331648 & this.extended.underlineColor) : this.isFgDefault();
+          }
+          getUnderlineStyle() {
+            return 268435456 & this.fg ? 268435456 & this.bg ? this.extended.underlineStyle : 1 : 0;
+          }
+          getUnderlineVariantOffset() {
+            return this.extended.underlineVariantOffset;
+          }
+        }
+        t4.AttributeData = i5;
+        class s4 {
+          get ext() {
+            return this._urlId ? -469762049 & this._ext | this.underlineStyle << 26 : this._ext;
+          }
+          set ext(e5) {
+            this._ext = e5;
+          }
+          get underlineStyle() {
+            return this._urlId ? 5 : (469762048 & this._ext) >> 26;
+          }
+          set underlineStyle(e5) {
+            this._ext &= -469762049, this._ext |= e5 << 26 & 469762048;
+          }
+          get underlineColor() {
+            return 67108863 & this._ext;
+          }
+          set underlineColor(e5) {
+            this._ext &= -67108864, this._ext |= 67108863 & e5;
+          }
+          get urlId() {
+            return this._urlId;
+          }
+          set urlId(e5) {
+            this._urlId = e5;
+          }
+          get underlineVariantOffset() {
+            const e5 = (3758096384 & this._ext) >> 29;
+            return e5 < 0 ? 4294967288 ^ e5 : e5;
+          }
+          set underlineVariantOffset(e5) {
+            this._ext &= 536870911, this._ext |= e5 << 29 & 3758096384;
+          }
+          constructor(e5 = 0, t5 = 0) {
+            this._ext = 0, this._urlId = 0, this._ext = e5, this._urlId = t5;
+          }
+          clone() {
+            return new s4(this._ext, this._urlId);
+          }
+          isEmpty() {
+            return 0 === this.underlineStyle && 0 === this._urlId;
+          }
+        }
+        t4.ExtendedAttrs = s4;
+      }, 9092: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.Buffer = t4.MAX_BUFFER_SIZE = void 0;
+        const s4 = i5(6349), r3 = i5(7226), n2 = i5(3734), o3 = i5(8437), a3 = i5(4634), h3 = i5(511), c3 = i5(643), l3 = i5(4863), d3 = i5(7116);
+        t4.MAX_BUFFER_SIZE = 4294967295, t4.Buffer = class {
+          constructor(e5, t5, i6) {
+            this._hasScrollback = e5, this._optionsService = t5, this._bufferService = i6, this.ydisp = 0, this.ybase = 0, this.y = 0, this.x = 0, this.tabs = {}, this.savedY = 0, this.savedX = 0, this.savedCurAttrData = o3.DEFAULT_ATTR_DATA.clone(), this.savedCharset = d3.DEFAULT_CHARSET, this.markers = [], this._nullCell = h3.CellData.fromCharData([0, c3.NULL_CELL_CHAR, c3.NULL_CELL_WIDTH, c3.NULL_CELL_CODE]), this._whitespaceCell = h3.CellData.fromCharData([0, c3.WHITESPACE_CELL_CHAR, c3.WHITESPACE_CELL_WIDTH, c3.WHITESPACE_CELL_CODE]), this._isClearing = false, this._memoryCleanupQueue = new r3.IdleTaskQueue(), this._memoryCleanupPosition = 0, this._cols = this._bufferService.cols, this._rows = this._bufferService.rows, this.lines = new s4.CircularList(this._getCorrectBufferLength(this._rows)), this.scrollTop = 0, this.scrollBottom = this._rows - 1, this.setupTabStops();
+          }
+          getNullCell(e5) {
+            return e5 ? (this._nullCell.fg = e5.fg, this._nullCell.bg = e5.bg, this._nullCell.extended = e5.extended) : (this._nullCell.fg = 0, this._nullCell.bg = 0, this._nullCell.extended = new n2.ExtendedAttrs()), this._nullCell;
+          }
+          getWhitespaceCell(e5) {
+            return e5 ? (this._whitespaceCell.fg = e5.fg, this._whitespaceCell.bg = e5.bg, this._whitespaceCell.extended = e5.extended) : (this._whitespaceCell.fg = 0, this._whitespaceCell.bg = 0, this._whitespaceCell.extended = new n2.ExtendedAttrs()), this._whitespaceCell;
+          }
+          getBlankLine(e5, t5) {
+            return new o3.BufferLine(this._bufferService.cols, this.getNullCell(e5), t5);
+          }
+          get hasScrollback() {
+            return this._hasScrollback && this.lines.maxLength > this._rows;
+          }
+          get isCursorInViewport() {
+            const e5 = this.ybase + this.y - this.ydisp;
+            return e5 >= 0 && e5 < this._rows;
+          }
+          _getCorrectBufferLength(e5) {
+            if (!this._hasScrollback)
+              return e5;
+            const i6 = e5 + this._optionsService.rawOptions.scrollback;
+            return i6 > t4.MAX_BUFFER_SIZE ? t4.MAX_BUFFER_SIZE : i6;
+          }
+          fillViewportRows(e5) {
+            if (0 === this.lines.length) {
+              void 0 === e5 && (e5 = o3.DEFAULT_ATTR_DATA);
+              let t5 = this._rows;
+              for (; t5--; )
+                this.lines.push(this.getBlankLine(e5));
+            }
+          }
+          clear() {
+            this.ydisp = 0, this.ybase = 0, this.y = 0, this.x = 0, this.lines = new s4.CircularList(this._getCorrectBufferLength(this._rows)), this.scrollTop = 0, this.scrollBottom = this._rows - 1, this.setupTabStops();
+          }
+          resize(e5, t5) {
+            const i6 = this.getNullCell(o3.DEFAULT_ATTR_DATA);
+            let s5 = 0;
+            const r4 = this._getCorrectBufferLength(t5);
+            if (r4 > this.lines.maxLength && (this.lines.maxLength = r4), this.lines.length > 0) {
+              if (this._cols < e5)
+                for (let t6 = 0; t6 < this.lines.length; t6++)
+                  s5 += +this.lines.get(t6).resize(e5, i6);
+              let n3 = 0;
+              if (this._rows < t5)
+                for (let s6 = this._rows; s6 < t5; s6++)
+                  this.lines.length < t5 + this.ybase && (this._optionsService.rawOptions.windowsMode || void 0 !== this._optionsService.rawOptions.windowsPty.backend || void 0 !== this._optionsService.rawOptions.windowsPty.buildNumber ? this.lines.push(new o3.BufferLine(e5, i6)) : this.ybase > 0 && this.lines.length <= this.ybase + this.y + n3 + 1 ? (this.ybase--, n3++, this.ydisp > 0 && this.ydisp--) : this.lines.push(new o3.BufferLine(e5, i6)));
+              else
+                for (let e6 = this._rows; e6 > t5; e6--)
+                  this.lines.length > t5 + this.ybase && (this.lines.length > this.ybase + this.y + 1 ? this.lines.pop() : (this.ybase++, this.ydisp++));
+              if (r4 < this.lines.maxLength) {
+                const e6 = this.lines.length - r4;
+                e6 > 0 && (this.lines.trimStart(e6), this.ybase = Math.max(this.ybase - e6, 0), this.ydisp = Math.max(this.ydisp - e6, 0), this.savedY = Math.max(this.savedY - e6, 0)), this.lines.maxLength = r4;
+              }
+              this.x = Math.min(this.x, e5 - 1), this.y = Math.min(this.y, t5 - 1), n3 && (this.y += n3), this.savedX = Math.min(this.savedX, e5 - 1), this.scrollTop = 0;
+            }
+            if (this.scrollBottom = t5 - 1, this._isReflowEnabled && (this._reflow(e5, t5), this._cols > e5))
+              for (let t6 = 0; t6 < this.lines.length; t6++)
+                s5 += +this.lines.get(t6).resize(e5, i6);
+            this._cols = e5, this._rows = t5, this._memoryCleanupQueue.clear(), s5 > 0.1 * this.lines.length && (this._memoryCleanupPosition = 0, this._memoryCleanupQueue.enqueue(() => this._batchedMemoryCleanup()));
+          }
+          _batchedMemoryCleanup() {
+            let e5 = true;
+            this._memoryCleanupPosition >= this.lines.length && (this._memoryCleanupPosition = 0, e5 = false);
+            let t5 = 0;
+            for (; this._memoryCleanupPosition < this.lines.length; )
+              if (t5 += this.lines.get(this._memoryCleanupPosition++).cleanupMemory(), t5 > 100)
+                return true;
+            return e5;
+          }
+          get _isReflowEnabled() {
+            const e5 = this._optionsService.rawOptions.windowsPty;
+            return e5 && e5.buildNumber ? this._hasScrollback && "conpty" === e5.backend && e5.buildNumber >= 21376 : this._hasScrollback && !this._optionsService.rawOptions.windowsMode;
+          }
+          _reflow(e5, t5) {
+            this._cols !== e5 && (e5 > this._cols ? this._reflowLarger(e5, t5) : this._reflowSmaller(e5, t5));
+          }
+          _reflowLarger(e5, t5) {
+            const i6 = (0, a3.reflowLargerGetLinesToRemove)(this.lines, this._cols, e5, this.ybase + this.y, this.getNullCell(o3.DEFAULT_ATTR_DATA));
+            if (i6.length > 0) {
+              const s5 = (0, a3.reflowLargerCreateNewLayout)(this.lines, i6);
+              (0, a3.reflowLargerApplyNewLayout)(this.lines, s5.layout), this._reflowLargerAdjustViewport(e5, t5, s5.countRemoved);
+            }
+          }
+          _reflowLargerAdjustViewport(e5, t5, i6) {
+            const s5 = this.getNullCell(o3.DEFAULT_ATTR_DATA);
+            let r4 = i6;
+            for (; r4-- > 0; )
+              0 === this.ybase ? (this.y > 0 && this.y--, this.lines.length < t5 && this.lines.push(new o3.BufferLine(e5, s5))) : (this.ydisp === this.ybase && this.ydisp--, this.ybase--);
+            this.savedY = Math.max(this.savedY - i6, 0);
+          }
+          _reflowSmaller(e5, t5) {
+            const i6 = this.getNullCell(o3.DEFAULT_ATTR_DATA), s5 = [];
+            let r4 = 0;
+            for (let n3 = this.lines.length - 1; n3 >= 0; n3--) {
+              let h4 = this.lines.get(n3);
+              if (!h4 || !h4.isWrapped && h4.getTrimmedLength() <= e5)
+                continue;
+              const c4 = [h4];
+              for (; h4.isWrapped && n3 > 0; )
+                h4 = this.lines.get(--n3), c4.unshift(h4);
+              const l4 = this.ybase + this.y;
+              if (l4 >= n3 && l4 < n3 + c4.length)
+                continue;
+              const d4 = c4[c4.length - 1].getTrimmedLength(), _2 = (0, a3.reflowSmallerGetNewLineLengths)(c4, this._cols, e5), u4 = _2.length - c4.length;
+              let f4;
+              f4 = 0 === this.ybase && this.y !== this.lines.length - 1 ? Math.max(0, this.y - this.lines.maxLength + u4) : Math.max(0, this.lines.length - this.lines.maxLength + u4);
+              const v3 = [];
+              for (let e6 = 0; e6 < u4; e6++) {
+                const e7 = this.getBlankLine(o3.DEFAULT_ATTR_DATA, true);
+                v3.push(e7);
+              }
+              v3.length > 0 && (s5.push({ start: n3 + c4.length + r4, newLines: v3 }), r4 += v3.length), c4.push(...v3);
+              let p3 = _2.length - 1, g2 = _2[p3];
+              0 === g2 && (p3--, g2 = _2[p3]);
+              let m3 = c4.length - u4 - 1, S2 = d4;
+              for (; m3 >= 0; ) {
+                const e6 = Math.min(S2, g2);
+                if (void 0 === c4[p3])
+                  break;
+                if (c4[p3].copyCellsFrom(c4[m3], S2 - e6, g2 - e6, e6, true), g2 -= e6, 0 === g2 && (p3--, g2 = _2[p3]), S2 -= e6, 0 === S2) {
+                  m3--;
+                  const e7 = Math.max(m3, 0);
+                  S2 = (0, a3.getWrappedLineTrimmedLength)(c4, e7, this._cols);
+                }
+              }
+              for (let t6 = 0; t6 < c4.length; t6++)
+                _2[t6] < e5 && c4[t6].setCell(_2[t6], i6);
+              let C3 = u4 - f4;
+              for (; C3-- > 0; )
+                0 === this.ybase ? this.y < t5 - 1 ? (this.y++, this.lines.pop()) : (this.ybase++, this.ydisp++) : this.ybase < Math.min(this.lines.maxLength, this.lines.length + r4) - t5 && (this.ybase === this.ydisp && this.ydisp++, this.ybase++);
+              this.savedY = Math.min(this.savedY + u4, this.ybase + t5 - 1);
+            }
+            if (s5.length > 0) {
+              const e6 = [], t6 = [];
+              for (let e7 = 0; e7 < this.lines.length; e7++)
+                t6.push(this.lines.get(e7));
+              const i7 = this.lines.length;
+              let n3 = i7 - 1, o4 = 0, a4 = s5[o4];
+              this.lines.length = Math.min(this.lines.maxLength, this.lines.length + r4);
+              let h4 = 0;
+              for (let c5 = Math.min(this.lines.maxLength - 1, i7 + r4 - 1); c5 >= 0; c5--)
+                if (a4 && a4.start > n3 + h4) {
+                  for (let e7 = a4.newLines.length - 1; e7 >= 0; e7--)
+                    this.lines.set(c5--, a4.newLines[e7]);
+                  c5++, e6.push({ index: n3 + 1, amount: a4.newLines.length }), h4 += a4.newLines.length, a4 = s5[++o4];
+                } else
+                  this.lines.set(c5, t6[n3--]);
+              let c4 = 0;
+              for (let t7 = e6.length - 1; t7 >= 0; t7--)
+                e6[t7].index += c4, this.lines.onInsertEmitter.fire(e6[t7]), c4 += e6[t7].amount;
+              const l4 = Math.max(0, i7 + r4 - this.lines.maxLength);
+              l4 > 0 && this.lines.onTrimEmitter.fire(l4);
+            }
+          }
+          translateBufferLineToString(e5, t5, i6 = 0, s5) {
+            const r4 = this.lines.get(e5);
+            return r4 ? r4.translateToString(t5, i6, s5) : "";
+          }
+          getWrappedRangeForLine(e5) {
+            let t5 = e5, i6 = e5;
+            for (; t5 > 0 && this.lines.get(t5).isWrapped; )
+              t5--;
+            for (; i6 + 1 < this.lines.length && this.lines.get(i6 + 1).isWrapped; )
+              i6++;
+            return { first: t5, last: i6 };
+          }
+          setupTabStops(e5) {
+            for (null != e5 ? this.tabs[e5] || (e5 = this.prevStop(e5)) : (this.tabs = {}, e5 = 0); e5 < this._cols; e5 += this._optionsService.rawOptions.tabStopWidth)
+              this.tabs[e5] = true;
+          }
+          prevStop(e5) {
+            for (null == e5 && (e5 = this.x); !this.tabs[--e5] && e5 > 0; )
+              ;
+            return e5 >= this._cols ? this._cols - 1 : e5 < 0 ? 0 : e5;
+          }
+          nextStop(e5) {
+            for (null == e5 && (e5 = this.x); !this.tabs[++e5] && e5 < this._cols; )
+              ;
+            return e5 >= this._cols ? this._cols - 1 : e5 < 0 ? 0 : e5;
+          }
+          clearMarkers(e5) {
+            this._isClearing = true;
+            for (let t5 = 0; t5 < this.markers.length; t5++)
+              this.markers[t5].line === e5 && (this.markers[t5].dispose(), this.markers.splice(t5--, 1));
+            this._isClearing = false;
+          }
+          clearAllMarkers() {
+            this._isClearing = true;
+            for (let e5 = 0; e5 < this.markers.length; e5++)
+              this.markers[e5].dispose(), this.markers.splice(e5--, 1);
+            this._isClearing = false;
+          }
+          addMarker(e5) {
+            const t5 = new l3.Marker(e5);
+            return this.markers.push(t5), t5.register(this.lines.onTrim((e6) => {
+              t5.line -= e6, t5.line < 0 && t5.dispose();
+            })), t5.register(this.lines.onInsert((e6) => {
+              t5.line >= e6.index && (t5.line += e6.amount);
+            })), t5.register(this.lines.onDelete((e6) => {
+              t5.line >= e6.index && t5.line < e6.index + e6.amount && t5.dispose(), t5.line > e6.index && (t5.line -= e6.amount);
+            })), t5.register(t5.onDispose(() => this._removeMarker(t5))), t5;
+          }
+          _removeMarker(e5) {
+            this._isClearing || this.markers.splice(this.markers.indexOf(e5), 1);
+          }
+        };
+      }, 8437: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferLine = t4.DEFAULT_ATTR_DATA = void 0;
+        const s4 = i5(3734), r3 = i5(511), n2 = i5(643), o3 = i5(482);
+        t4.DEFAULT_ATTR_DATA = Object.freeze(new s4.AttributeData());
+        let a3 = 0;
+        class h3 {
+          constructor(e5, t5, i6 = false) {
+            this.isWrapped = i6, this._combined = {}, this._extendedAttrs = {}, this._data = new Uint32Array(3 * e5);
+            const s5 = t5 || r3.CellData.fromCharData([0, n2.NULL_CELL_CHAR, n2.NULL_CELL_WIDTH, n2.NULL_CELL_CODE]);
+            for (let t6 = 0; t6 < e5; ++t6)
+              this.setCell(t6, s5);
+            this.length = e5;
+          }
+          get(e5) {
+            const t5 = this._data[3 * e5 + 0], i6 = 2097151 & t5;
+            return [this._data[3 * e5 + 1], 2097152 & t5 ? this._combined[e5] : i6 ? (0, o3.stringFromCodePoint)(i6) : "", t5 >> 22, 2097152 & t5 ? this._combined[e5].charCodeAt(this._combined[e5].length - 1) : i6];
+          }
+          set(e5, t5) {
+            this._data[3 * e5 + 1] = t5[n2.CHAR_DATA_ATTR_INDEX], t5[n2.CHAR_DATA_CHAR_INDEX].length > 1 ? (this._combined[e5] = t5[1], this._data[3 * e5 + 0] = 2097152 | e5 | t5[n2.CHAR_DATA_WIDTH_INDEX] << 22) : this._data[3 * e5 + 0] = t5[n2.CHAR_DATA_CHAR_INDEX].charCodeAt(0) | t5[n2.CHAR_DATA_WIDTH_INDEX] << 22;
+          }
+          getWidth(e5) {
+            return this._data[3 * e5 + 0] >> 22;
+          }
+          hasWidth(e5) {
+            return 12582912 & this._data[3 * e5 + 0];
+          }
+          getFg(e5) {
+            return this._data[3 * e5 + 1];
+          }
+          getBg(e5) {
+            return this._data[3 * e5 + 2];
+          }
+          hasContent(e5) {
+            return 4194303 & this._data[3 * e5 + 0];
+          }
+          getCodePoint(e5) {
+            const t5 = this._data[3 * e5 + 0];
+            return 2097152 & t5 ? this._combined[e5].charCodeAt(this._combined[e5].length - 1) : 2097151 & t5;
+          }
+          isCombined(e5) {
+            return 2097152 & this._data[3 * e5 + 0];
+          }
+          getString(e5) {
+            const t5 = this._data[3 * e5 + 0];
+            return 2097152 & t5 ? this._combined[e5] : 2097151 & t5 ? (0, o3.stringFromCodePoint)(2097151 & t5) : "";
+          }
+          isProtected(e5) {
+            return 536870912 & this._data[3 * e5 + 2];
+          }
+          loadCell(e5, t5) {
+            return a3 = 3 * e5, t5.content = this._data[a3 + 0], t5.fg = this._data[a3 + 1], t5.bg = this._data[a3 + 2], 2097152 & t5.content && (t5.combinedData = this._combined[e5]), 268435456 & t5.bg && (t5.extended = this._extendedAttrs[e5]), t5;
+          }
+          setCell(e5, t5) {
+            2097152 & t5.content && (this._combined[e5] = t5.combinedData), 268435456 & t5.bg && (this._extendedAttrs[e5] = t5.extended), this._data[3 * e5 + 0] = t5.content, this._data[3 * e5 + 1] = t5.fg, this._data[3 * e5 + 2] = t5.bg;
+          }
+          setCellFromCodepoint(e5, t5, i6, s5) {
+            268435456 & s5.bg && (this._extendedAttrs[e5] = s5.extended), this._data[3 * e5 + 0] = t5 | i6 << 22, this._data[3 * e5 + 1] = s5.fg, this._data[3 * e5 + 2] = s5.bg;
+          }
+          addCodepointToCell(e5, t5, i6) {
+            let s5 = this._data[3 * e5 + 0];
+            2097152 & s5 ? this._combined[e5] += (0, o3.stringFromCodePoint)(t5) : 2097151 & s5 ? (this._combined[e5] = (0, o3.stringFromCodePoint)(2097151 & s5) + (0, o3.stringFromCodePoint)(t5), s5 &= -2097152, s5 |= 2097152) : s5 = t5 | 1 << 22, i6 && (s5 &= -12582913, s5 |= i6 << 22), this._data[3 * e5 + 0] = s5;
+          }
+          insertCells(e5, t5, i6) {
+            if ((e5 %= this.length) && 2 === this.getWidth(e5 - 1) && this.setCellFromCodepoint(e5 - 1, 0, 1, i6), t5 < this.length - e5) {
+              const s5 = new r3.CellData();
+              for (let i7 = this.length - e5 - t5 - 1; i7 >= 0; --i7)
+                this.setCell(e5 + t5 + i7, this.loadCell(e5 + i7, s5));
+              for (let s6 = 0; s6 < t5; ++s6)
+                this.setCell(e5 + s6, i6);
+            } else
+              for (let t6 = e5; t6 < this.length; ++t6)
+                this.setCell(t6, i6);
+            2 === this.getWidth(this.length - 1) && this.setCellFromCodepoint(this.length - 1, 0, 1, i6);
+          }
+          deleteCells(e5, t5, i6) {
+            if (e5 %= this.length, t5 < this.length - e5) {
+              const s5 = new r3.CellData();
+              for (let i7 = 0; i7 < this.length - e5 - t5; ++i7)
+                this.setCell(e5 + i7, this.loadCell(e5 + t5 + i7, s5));
+              for (let e6 = this.length - t5; e6 < this.length; ++e6)
+                this.setCell(e6, i6);
+            } else
+              for (let t6 = e5; t6 < this.length; ++t6)
+                this.setCell(t6, i6);
+            e5 && 2 === this.getWidth(e5 - 1) && this.setCellFromCodepoint(e5 - 1, 0, 1, i6), 0 !== this.getWidth(e5) || this.hasContent(e5) || this.setCellFromCodepoint(e5, 0, 1, i6);
+          }
+          replaceCells(e5, t5, i6, s5 = false) {
+            if (s5)
+              for (e5 && 2 === this.getWidth(e5 - 1) && !this.isProtected(e5 - 1) && this.setCellFromCodepoint(e5 - 1, 0, 1, i6), t5 < this.length && 2 === this.getWidth(t5 - 1) && !this.isProtected(t5) && this.setCellFromCodepoint(t5, 0, 1, i6); e5 < t5 && e5 < this.length; )
+                this.isProtected(e5) || this.setCell(e5, i6), e5++;
+            else
+              for (e5 && 2 === this.getWidth(e5 - 1) && this.setCellFromCodepoint(e5 - 1, 0, 1, i6), t5 < this.length && 2 === this.getWidth(t5 - 1) && this.setCellFromCodepoint(t5, 0, 1, i6); e5 < t5 && e5 < this.length; )
+                this.setCell(e5++, i6);
+          }
+          resize(e5, t5) {
+            if (e5 === this.length)
+              return 4 * this._data.length * 2 < this._data.buffer.byteLength;
+            const i6 = 3 * e5;
+            if (e5 > this.length) {
+              if (this._data.buffer.byteLength >= 4 * i6)
+                this._data = new Uint32Array(this._data.buffer, 0, i6);
+              else {
+                const e6 = new Uint32Array(i6);
+                e6.set(this._data), this._data = e6;
+              }
+              for (let i7 = this.length; i7 < e5; ++i7)
+                this.setCell(i7, t5);
+            } else {
+              this._data = this._data.subarray(0, i6);
+              const t6 = Object.keys(this._combined);
+              for (let i7 = 0; i7 < t6.length; i7++) {
+                const s6 = parseInt(t6[i7], 10);
+                s6 >= e5 && delete this._combined[s6];
+              }
+              const s5 = Object.keys(this._extendedAttrs);
+              for (let t7 = 0; t7 < s5.length; t7++) {
+                const i7 = parseInt(s5[t7], 10);
+                i7 >= e5 && delete this._extendedAttrs[i7];
+              }
+            }
+            return this.length = e5, 4 * i6 * 2 < this._data.buffer.byteLength;
+          }
+          cleanupMemory() {
+            if (4 * this._data.length * 2 < this._data.buffer.byteLength) {
+              const e5 = new Uint32Array(this._data.length);
+              return e5.set(this._data), this._data = e5, 1;
+            }
+            return 0;
+          }
+          fill(e5, t5 = false) {
+            if (t5)
+              for (let t6 = 0; t6 < this.length; ++t6)
+                this.isProtected(t6) || this.setCell(t6, e5);
+            else {
+              this._combined = {}, this._extendedAttrs = {};
+              for (let t6 = 0; t6 < this.length; ++t6)
+                this.setCell(t6, e5);
+            }
+          }
+          copyFrom(e5) {
+            this.length !== e5.length ? this._data = new Uint32Array(e5._data) : this._data.set(e5._data), this.length = e5.length, this._combined = {};
+            for (const t5 in e5._combined)
+              this._combined[t5] = e5._combined[t5];
+            this._extendedAttrs = {};
+            for (const t5 in e5._extendedAttrs)
+              this._extendedAttrs[t5] = e5._extendedAttrs[t5];
+            this.isWrapped = e5.isWrapped;
+          }
+          clone() {
+            const e5 = new h3(0);
+            e5._data = new Uint32Array(this._data), e5.length = this.length;
+            for (const t5 in this._combined)
+              e5._combined[t5] = this._combined[t5];
+            for (const t5 in this._extendedAttrs)
+              e5._extendedAttrs[t5] = this._extendedAttrs[t5];
+            return e5.isWrapped = this.isWrapped, e5;
+          }
+          getTrimmedLength() {
+            for (let e5 = this.length - 1; e5 >= 0; --e5)
+              if (4194303 & this._data[3 * e5 + 0])
+                return e5 + (this._data[3 * e5 + 0] >> 22);
+            return 0;
+          }
+          getNoBgTrimmedLength() {
+            for (let e5 = this.length - 1; e5 >= 0; --e5)
+              if (4194303 & this._data[3 * e5 + 0] || 50331648 & this._data[3 * e5 + 2])
+                return e5 + (this._data[3 * e5 + 0] >> 22);
+            return 0;
+          }
+          copyCellsFrom(e5, t5, i6, s5, r4) {
+            const n3 = e5._data;
+            if (r4)
+              for (let r5 = s5 - 1; r5 >= 0; r5--) {
+                for (let e6 = 0; e6 < 3; e6++)
+                  this._data[3 * (i6 + r5) + e6] = n3[3 * (t5 + r5) + e6];
+                268435456 & n3[3 * (t5 + r5) + 2] && (this._extendedAttrs[i6 + r5] = e5._extendedAttrs[t5 + r5]);
+              }
+            else
+              for (let r5 = 0; r5 < s5; r5++) {
+                for (let e6 = 0; e6 < 3; e6++)
+                  this._data[3 * (i6 + r5) + e6] = n3[3 * (t5 + r5) + e6];
+                268435456 & n3[3 * (t5 + r5) + 2] && (this._extendedAttrs[i6 + r5] = e5._extendedAttrs[t5 + r5]);
+              }
+            const o4 = Object.keys(e5._combined);
+            for (let s6 = 0; s6 < o4.length; s6++) {
+              const r5 = parseInt(o4[s6], 10);
+              r5 >= t5 && (this._combined[r5 - t5 + i6] = e5._combined[r5]);
+            }
+          }
+          translateToString(e5, t5, i6, s5) {
+            t5 = t5 ?? 0, i6 = i6 ?? this.length, e5 && (i6 = Math.min(i6, this.getTrimmedLength())), s5 && (s5.length = 0);
+            let r4 = "";
+            for (; t5 < i6; ) {
+              const e6 = this._data[3 * t5 + 0], i7 = 2097151 & e6, a4 = 2097152 & e6 ? this._combined[t5] : i7 ? (0, o3.stringFromCodePoint)(i7) : n2.WHITESPACE_CELL_CHAR;
+              if (r4 += a4, s5)
+                for (let e7 = 0; e7 < a4.length; ++e7)
+                  s5.push(t5);
+              t5 += e6 >> 22 || 1;
+            }
+            return s5 && s5.push(t5), r4;
+          }
+        }
+        t4.BufferLine = h3;
+      }, 4841: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.getRangeLength = void 0, t4.getRangeLength = function(e5, t5) {
+          if (e5.start.y > e5.end.y)
+            throw new Error(`Buffer range end (${e5.end.x}, ${e5.end.y}) cannot be before start (${e5.start.x}, ${e5.start.y})`);
+          return t5 * (e5.end.y - e5.start.y) + (e5.end.x - e5.start.x + 1);
+        };
+      }, 4634: (e4, t4) => {
+        function i5(e5, t5, i6) {
+          if (t5 === e5.length - 1)
+            return e5[t5].getTrimmedLength();
+          const s4 = !e5[t5].hasContent(i6 - 1) && 1 === e5[t5].getWidth(i6 - 1), r3 = 2 === e5[t5 + 1].getWidth(0);
+          return s4 && r3 ? i6 - 1 : i6;
+        }
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.getWrappedLineTrimmedLength = t4.reflowSmallerGetNewLineLengths = t4.reflowLargerApplyNewLayout = t4.reflowLargerCreateNewLayout = t4.reflowLargerGetLinesToRemove = void 0, t4.reflowLargerGetLinesToRemove = function(e5, t5, s4, r3, n2) {
+          const o3 = [];
+          for (let a3 = 0; a3 < e5.length - 1; a3++) {
+            let h3 = a3, c3 = e5.get(++h3);
+            if (!c3.isWrapped)
+              continue;
+            const l3 = [e5.get(a3)];
+            for (; h3 < e5.length && c3.isWrapped; )
+              l3.push(c3), c3 = e5.get(++h3);
+            if (r3 >= a3 && r3 < h3) {
+              a3 += l3.length - 1;
+              continue;
+            }
+            let d3 = 0, _2 = i5(l3, d3, t5), u4 = 1, f4 = 0;
+            for (; u4 < l3.length; ) {
+              const e6 = i5(l3, u4, t5), r4 = e6 - f4, o4 = s4 - _2, a4 = Math.min(r4, o4);
+              l3[d3].copyCellsFrom(l3[u4], f4, _2, a4, false), _2 += a4, _2 === s4 && (d3++, _2 = 0), f4 += a4, f4 === e6 && (u4++, f4 = 0), 0 === _2 && 0 !== d3 && 2 === l3[d3 - 1].getWidth(s4 - 1) && (l3[d3].copyCellsFrom(l3[d3 - 1], s4 - 1, _2++, 1, false), l3[d3 - 1].setCell(s4 - 1, n2));
+            }
+            l3[d3].replaceCells(_2, s4, n2);
+            let v3 = 0;
+            for (let e6 = l3.length - 1; e6 > 0 && (e6 > d3 || 0 === l3[e6].getTrimmedLength()); e6--)
+              v3++;
+            v3 > 0 && (o3.push(a3 + l3.length - v3), o3.push(v3)), a3 += l3.length - 1;
+          }
+          return o3;
+        }, t4.reflowLargerCreateNewLayout = function(e5, t5) {
+          const i6 = [];
+          let s4 = 0, r3 = t5[s4], n2 = 0;
+          for (let o3 = 0; o3 < e5.length; o3++)
+            if (r3 === o3) {
+              const i7 = t5[++s4];
+              e5.onDeleteEmitter.fire({ index: o3 - n2, amount: i7 }), o3 += i7 - 1, n2 += i7, r3 = t5[++s4];
+            } else
+              i6.push(o3);
+          return { layout: i6, countRemoved: n2 };
+        }, t4.reflowLargerApplyNewLayout = function(e5, t5) {
+          const i6 = [];
+          for (let s4 = 0; s4 < t5.length; s4++)
+            i6.push(e5.get(t5[s4]));
+          for (let t6 = 0; t6 < i6.length; t6++)
+            e5.set(t6, i6[t6]);
+          e5.length = t5.length;
+        }, t4.reflowSmallerGetNewLineLengths = function(e5, t5, s4) {
+          const r3 = [], n2 = e5.map((s5, r4) => i5(e5, r4, t5)).reduce((e6, t6) => e6 + t6);
+          let o3 = 0, a3 = 0, h3 = 0;
+          for (; h3 < n2; ) {
+            if (n2 - h3 < s4) {
+              r3.push(n2 - h3);
+              break;
+            }
+            o3 += s4;
+            const c3 = i5(e5, a3, t5);
+            o3 > c3 && (o3 -= c3, a3++);
+            const l3 = 2 === e5[a3].getWidth(o3 - 1);
+            l3 && o3--;
+            const d3 = l3 ? s4 - 1 : s4;
+            r3.push(d3), h3 += d3;
+          }
+          return r3;
+        }, t4.getWrappedLineTrimmedLength = i5;
+      }, 5295: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferSet = void 0;
+        const s4 = i5(8460), r3 = i5(844), n2 = i5(9092);
+        class o3 extends r3.Disposable {
+          constructor(e5, t5) {
+            super(), this._optionsService = e5, this._bufferService = t5, this._onBufferActivate = this.register(new s4.EventEmitter()), this.onBufferActivate = this._onBufferActivate.event, this.reset(), this.register(this._optionsService.onSpecificOptionChange("scrollback", () => this.resize(this._bufferService.cols, this._bufferService.rows))), this.register(this._optionsService.onSpecificOptionChange("tabStopWidth", () => this.setupTabStops()));
+          }
+          reset() {
+            this._normal = new n2.Buffer(true, this._optionsService, this._bufferService), this._normal.fillViewportRows(), this._alt = new n2.Buffer(false, this._optionsService, this._bufferService), this._activeBuffer = this._normal, this._onBufferActivate.fire({ activeBuffer: this._normal, inactiveBuffer: this._alt }), this.setupTabStops();
+          }
+          get alt() {
+            return this._alt;
+          }
+          get active() {
+            return this._activeBuffer;
+          }
+          get normal() {
+            return this._normal;
+          }
+          activateNormalBuffer() {
+            this._activeBuffer !== this._normal && (this._normal.x = this._alt.x, this._normal.y = this._alt.y, this._alt.clearAllMarkers(), this._alt.clear(), this._activeBuffer = this._normal, this._onBufferActivate.fire({ activeBuffer: this._normal, inactiveBuffer: this._alt }));
+          }
+          activateAltBuffer(e5) {
+            this._activeBuffer !== this._alt && (this._alt.fillViewportRows(e5), this._alt.x = this._normal.x, this._alt.y = this._normal.y, this._activeBuffer = this._alt, this._onBufferActivate.fire({ activeBuffer: this._alt, inactiveBuffer: this._normal }));
+          }
+          resize(e5, t5) {
+            this._normal.resize(e5, t5), this._alt.resize(e5, t5), this.setupTabStops(e5);
+          }
+          setupTabStops(e5) {
+            this._normal.setupTabStops(e5), this._alt.setupTabStops(e5);
+          }
+        }
+        t4.BufferSet = o3;
+      }, 511: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CellData = void 0;
+        const s4 = i5(482), r3 = i5(643), n2 = i5(3734);
+        class o3 extends n2.AttributeData {
+          constructor() {
+            super(...arguments), this.content = 0, this.fg = 0, this.bg = 0, this.extended = new n2.ExtendedAttrs(), this.combinedData = "";
+          }
+          static fromCharData(e5) {
+            const t5 = new o3();
+            return t5.setFromCharData(e5), t5;
+          }
+          isCombined() {
+            return 2097152 & this.content;
+          }
+          getWidth() {
+            return this.content >> 22;
+          }
+          getChars() {
+            return 2097152 & this.content ? this.combinedData : 2097151 & this.content ? (0, s4.stringFromCodePoint)(2097151 & this.content) : "";
+          }
+          getCode() {
+            return this.isCombined() ? this.combinedData.charCodeAt(this.combinedData.length - 1) : 2097151 & this.content;
+          }
+          setFromCharData(e5) {
+            this.fg = e5[r3.CHAR_DATA_ATTR_INDEX], this.bg = 0;
+            let t5 = false;
+            if (e5[r3.CHAR_DATA_CHAR_INDEX].length > 2)
+              t5 = true;
+            else if (2 === e5[r3.CHAR_DATA_CHAR_INDEX].length) {
+              const i6 = e5[r3.CHAR_DATA_CHAR_INDEX].charCodeAt(0);
+              if (55296 <= i6 && i6 <= 56319) {
+                const s5 = e5[r3.CHAR_DATA_CHAR_INDEX].charCodeAt(1);
+                56320 <= s5 && s5 <= 57343 ? this.content = 1024 * (i6 - 55296) + s5 - 56320 + 65536 | e5[r3.CHAR_DATA_WIDTH_INDEX] << 22 : t5 = true;
+              } else
+                t5 = true;
+            } else
+              this.content = e5[r3.CHAR_DATA_CHAR_INDEX].charCodeAt(0) | e5[r3.CHAR_DATA_WIDTH_INDEX] << 22;
+            t5 && (this.combinedData = e5[r3.CHAR_DATA_CHAR_INDEX], this.content = 2097152 | e5[r3.CHAR_DATA_WIDTH_INDEX] << 22);
+          }
+          getAsCharData() {
+            return [this.fg, this.getChars(), this.getWidth(), this.getCode()];
+          }
+        }
+        t4.CellData = o3;
+      }, 643: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.WHITESPACE_CELL_CODE = t4.WHITESPACE_CELL_WIDTH = t4.WHITESPACE_CELL_CHAR = t4.NULL_CELL_CODE = t4.NULL_CELL_WIDTH = t4.NULL_CELL_CHAR = t4.CHAR_DATA_CODE_INDEX = t4.CHAR_DATA_WIDTH_INDEX = t4.CHAR_DATA_CHAR_INDEX = t4.CHAR_DATA_ATTR_INDEX = t4.DEFAULT_EXT = t4.DEFAULT_ATTR = t4.DEFAULT_COLOR = void 0, t4.DEFAULT_COLOR = 0, t4.DEFAULT_ATTR = 256 | t4.DEFAULT_COLOR << 9, t4.DEFAULT_EXT = 0, t4.CHAR_DATA_ATTR_INDEX = 0, t4.CHAR_DATA_CHAR_INDEX = 1, t4.CHAR_DATA_WIDTH_INDEX = 2, t4.CHAR_DATA_CODE_INDEX = 3, t4.NULL_CELL_CHAR = "", t4.NULL_CELL_WIDTH = 1, t4.NULL_CELL_CODE = 0, t4.WHITESPACE_CELL_CHAR = " ", t4.WHITESPACE_CELL_WIDTH = 1, t4.WHITESPACE_CELL_CODE = 32;
+      }, 4863: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.Marker = void 0;
+        const s4 = i5(8460), r3 = i5(844);
+        class n2 {
+          get id() {
+            return this._id;
+          }
+          constructor(e5) {
+            this.line = e5, this.isDisposed = false, this._disposables = [], this._id = n2._nextId++, this._onDispose = this.register(new s4.EventEmitter()), this.onDispose = this._onDispose.event;
+          }
+          dispose() {
+            this.isDisposed || (this.isDisposed = true, this.line = -1, this._onDispose.fire(), (0, r3.disposeArray)(this._disposables), this._disposables.length = 0);
+          }
+          register(e5) {
+            return this._disposables.push(e5), e5;
+          }
+        }
+        t4.Marker = n2, n2._nextId = 1;
+      }, 7116: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.DEFAULT_CHARSET = t4.CHARSETS = void 0, t4.CHARSETS = {}, t4.DEFAULT_CHARSET = t4.CHARSETS.B, t4.CHARSETS[0] = { "`": "\u25C6", a: "\u2592", b: "\u2409", c: "\u240C", d: "\u240D", e: "\u240A", f: "\xB0", g: "\xB1", h: "\u2424", i: "\u240B", j: "\u2518", k: "\u2510", l: "\u250C", m: "\u2514", n: "\u253C", o: "\u23BA", p: "\u23BB", q: "\u2500", r: "\u23BC", s: "\u23BD", t: "\u251C", u: "\u2524", v: "\u2534", w: "\u252C", x: "\u2502", y: "\u2264", z: "\u2265", "{": "\u03C0", "|": "\u2260", "}": "\xA3", "~": "\xB7" }, t4.CHARSETS.A = { "#": "\xA3" }, t4.CHARSETS.B = void 0, t4.CHARSETS[4] = { "#": "\xA3", "@": "\xBE", "[": "ij", "\\": "\xBD", "]": "|", "{": "\xA8", "|": "f", "}": "\xBC", "~": "\xB4" }, t4.CHARSETS.C = t4.CHARSETS[5] = { "[": "\xC4", "\\": "\xD6", "]": "\xC5", "^": "\xDC", "`": "\xE9", "{": "\xE4", "|": "\xF6", "}": "\xE5", "~": "\xFC" }, t4.CHARSETS.R = { "#": "\xA3", "@": "\xE0", "[": "\xB0", "\\": "\xE7", "]": "\xA7", "{": "\xE9", "|": "\xF9", "}": "\xE8", "~": "\xA8" }, t4.CHARSETS.Q = { "@": "\xE0", "[": "\xE2", "\\": "\xE7", "]": "\xEA", "^": "\xEE", "`": "\xF4", "{": "\xE9", "|": "\xF9", "}": "\xE8", "~": "\xFB" }, t4.CHARSETS.K = { "@": "\xA7", "[": "\xC4", "\\": "\xD6", "]": "\xDC", "{": "\xE4", "|": "\xF6", "}": "\xFC", "~": "\xDF" }, t4.CHARSETS.Y = { "#": "\xA3", "@": "\xA7", "[": "\xB0", "\\": "\xE7", "]": "\xE9", "`": "\xF9", "{": "\xE0", "|": "\xF2", "}": "\xE8", "~": "\xEC" }, t4.CHARSETS.E = t4.CHARSETS[6] = { "@": "\xC4", "[": "\xC6", "\\": "\xD8", "]": "\xC5", "^": "\xDC", "`": "\xE4", "{": "\xE6", "|": "\xF8", "}": "\xE5", "~": "\xFC" }, t4.CHARSETS.Z = { "#": "\xA3", "@": "\xA7", "[": "\xA1", "\\": "\xD1", "]": "\xBF", "{": "\xB0", "|": "\xF1", "}": "\xE7" }, t4.CHARSETS.H = t4.CHARSETS[7] = { "@": "\xC9", "[": "\xC4", "\\": "\xD6", "]": "\xC5", "^": "\xDC", "`": "\xE9", "{": "\xE4", "|": "\xF6", "}": "\xE5", "~": "\xFC" }, t4.CHARSETS["="] = { "#": "\xF9", "@": "\xE0", "[": "\xE9", "\\": "\xE7", "]": "\xEA", "^": "\xEE", _: "\xE8", "`": "\xF4", "{": "\xE4", "|": "\xF6", "}": "\xFC", "~": "\xFB" };
+      }, 2584: (e4, t4) => {
+        var i5, s4, r3;
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.C1_ESCAPED = t4.C1 = t4.C0 = void 0, function(e5) {
+          e5.NUL = "\0", e5.SOH = "", e5.STX = "", e5.ETX = "", e5.EOT = "", e5.ENQ = "", e5.ACK = "", e5.BEL = "\x07", e5.BS = "\b", e5.HT = "	", e5.LF = "\n", e5.VT = "\v", e5.FF = "\f", e5.CR = "\r", e5.SO = "", e5.SI = "", e5.DLE = "", e5.DC1 = "", e5.DC2 = "", e5.DC3 = "", e5.DC4 = "", e5.NAK = "", e5.SYN = "", e5.ETB = "", e5.CAN = "", e5.EM = "", e5.SUB = "", e5.ESC = "\x1B", e5.FS = "", e5.GS = "", e5.RS = "", e5.US = "", e5.SP = " ", e5.DEL = "\x7F";
+        }(i5 || (t4.C0 = i5 = {})), function(e5) {
+          e5.PAD = "\x80", e5.HOP = "\x81", e5.BPH = "\x82", e5.NBH = "\x83", e5.IND = "\x84", e5.NEL = "\x85", e5.SSA = "\x86", e5.ESA = "\x87", e5.HTS = "\x88", e5.HTJ = "\x89", e5.VTS = "\x8A", e5.PLD = "\x8B", e5.PLU = "\x8C", e5.RI = "\x8D", e5.SS2 = "\x8E", e5.SS3 = "\x8F", e5.DCS = "\x90", e5.PU1 = "\x91", e5.PU2 = "\x92", e5.STS = "\x93", e5.CCH = "\x94", e5.MW = "\x95", e5.SPA = "\x96", e5.EPA = "\x97", e5.SOS = "\x98", e5.SGCI = "\x99", e5.SCI = "\x9A", e5.CSI = "\x9B", e5.ST = "\x9C", e5.OSC = "\x9D", e5.PM = "\x9E", e5.APC = "\x9F";
+        }(s4 || (t4.C1 = s4 = {})), function(e5) {
+          e5.ST = `${i5.ESC}\\`;
+        }(r3 || (t4.C1_ESCAPED = r3 = {}));
+      }, 7399: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.evaluateKeyboardEvent = void 0;
+        const s4 = i5(2584), r3 = { 48: ["0", ")"], 49: ["1", "!"], 50: ["2", "@"], 51: ["3", "#"], 52: ["4", "$"], 53: ["5", "%"], 54: ["6", "^"], 55: ["7", "&"], 56: ["8", "*"], 57: ["9", "("], 186: [";", ":"], 187: ["=", "+"], 188: [",", "<"], 189: ["-", "_"], 190: [".", ">"], 191: ["/", "?"], 192: ["`", "~"], 219: ["[", "{"], 220: ["\\", "|"], 221: ["]", "}"], 222: ["'", '"'] };
+        t4.evaluateKeyboardEvent = function(e5, t5, i6, n2) {
+          const o3 = { type: 0, cancel: false, key: void 0 }, a3 = (e5.shiftKey ? 1 : 0) | (e5.altKey ? 2 : 0) | (e5.ctrlKey ? 4 : 0) | (e5.metaKey ? 8 : 0);
+          switch (e5.keyCode) {
+            case 0:
+              "UIKeyInputUpArrow" === e5.key ? o3.key = t5 ? s4.C0.ESC + "OA" : s4.C0.ESC + "[A" : "UIKeyInputLeftArrow" === e5.key ? o3.key = t5 ? s4.C0.ESC + "OD" : s4.C0.ESC + "[D" : "UIKeyInputRightArrow" === e5.key ? o3.key = t5 ? s4.C0.ESC + "OC" : s4.C0.ESC + "[C" : "UIKeyInputDownArrow" === e5.key && (o3.key = t5 ? s4.C0.ESC + "OB" : s4.C0.ESC + "[B");
+              break;
+            case 8:
+              o3.key = e5.ctrlKey ? "\b" : s4.C0.DEL, e5.altKey && (o3.key = s4.C0.ESC + o3.key);
+              break;
+            case 9:
+              if (e5.shiftKey) {
+                o3.key = s4.C0.ESC + "[Z";
+                break;
+              }
+              o3.key = s4.C0.HT, o3.cancel = true;
+              break;
+            case 13:
+              o3.key = e5.altKey ? s4.C0.ESC + s4.C0.CR : s4.C0.CR, o3.cancel = true;
+              break;
+            case 27:
+              o3.key = s4.C0.ESC, e5.altKey && (o3.key = s4.C0.ESC + s4.C0.ESC), o3.cancel = true;
+              break;
+            case 37:
+              if (e5.metaKey)
+                break;
+              a3 ? (o3.key = s4.C0.ESC + "[1;" + (a3 + 1) + "D", o3.key === s4.C0.ESC + "[1;3D" && (o3.key = s4.C0.ESC + (i6 ? "b" : "[1;5D"))) : o3.key = t5 ? s4.C0.ESC + "OD" : s4.C0.ESC + "[D";
+              break;
+            case 39:
+              if (e5.metaKey)
+                break;
+              a3 ? (o3.key = s4.C0.ESC + "[1;" + (a3 + 1) + "C", o3.key === s4.C0.ESC + "[1;3C" && (o3.key = s4.C0.ESC + (i6 ? "f" : "[1;5C"))) : o3.key = t5 ? s4.C0.ESC + "OC" : s4.C0.ESC + "[C";
+              break;
+            case 38:
+              if (e5.metaKey)
+                break;
+              a3 ? (o3.key = s4.C0.ESC + "[1;" + (a3 + 1) + "A", i6 || o3.key !== s4.C0.ESC + "[1;3A" || (o3.key = s4.C0.ESC + "[1;5A")) : o3.key = t5 ? s4.C0.ESC + "OA" : s4.C0.ESC + "[A";
+              break;
+            case 40:
+              if (e5.metaKey)
+                break;
+              a3 ? (o3.key = s4.C0.ESC + "[1;" + (a3 + 1) + "B", i6 || o3.key !== s4.C0.ESC + "[1;3B" || (o3.key = s4.C0.ESC + "[1;5B")) : o3.key = t5 ? s4.C0.ESC + "OB" : s4.C0.ESC + "[B";
+              break;
+            case 45:
+              e5.shiftKey || e5.ctrlKey || (o3.key = s4.C0.ESC + "[2~");
+              break;
+            case 46:
+              o3.key = a3 ? s4.C0.ESC + "[3;" + (a3 + 1) + "~" : s4.C0.ESC + "[3~";
+              break;
+            case 36:
+              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "H" : t5 ? s4.C0.ESC + "OH" : s4.C0.ESC + "[H";
+              break;
+            case 35:
+              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "F" : t5 ? s4.C0.ESC + "OF" : s4.C0.ESC + "[F";
+              break;
+            case 33:
+              e5.shiftKey ? o3.type = 2 : e5.ctrlKey ? o3.key = s4.C0.ESC + "[5;" + (a3 + 1) + "~" : o3.key = s4.C0.ESC + "[5~";
+              break;
+            case 34:
+              e5.shiftKey ? o3.type = 3 : e5.ctrlKey ? o3.key = s4.C0.ESC + "[6;" + (a3 + 1) + "~" : o3.key = s4.C0.ESC + "[6~";
+              break;
+            case 112:
+              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "P" : s4.C0.ESC + "OP";
+              break;
+            case 113:
+              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "Q" : s4.C0.ESC + "OQ";
+              break;
+            case 114:
+              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "R" : s4.C0.ESC + "OR";
+              break;
+            case 115:
+              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "S" : s4.C0.ESC + "OS";
+              break;
+            case 116:
+              o3.key = a3 ? s4.C0.ESC + "[15;" + (a3 + 1) + "~" : s4.C0.ESC + "[15~";
+              break;
+            case 117:
+              o3.key = a3 ? s4.C0.ESC + "[17;" + (a3 + 1) + "~" : s4.C0.ESC + "[17~";
+              break;
+            case 118:
+              o3.key = a3 ? s4.C0.ESC + "[18;" + (a3 + 1) + "~" : s4.C0.ESC + "[18~";
+              break;
+            case 119:
+              o3.key = a3 ? s4.C0.ESC + "[19;" + (a3 + 1) + "~" : s4.C0.ESC + "[19~";
+              break;
+            case 120:
+              o3.key = a3 ? s4.C0.ESC + "[20;" + (a3 + 1) + "~" : s4.C0.ESC + "[20~";
+              break;
+            case 121:
+              o3.key = a3 ? s4.C0.ESC + "[21;" + (a3 + 1) + "~" : s4.C0.ESC + "[21~";
+              break;
+            case 122:
+              o3.key = a3 ? s4.C0.ESC + "[23;" + (a3 + 1) + "~" : s4.C0.ESC + "[23~";
+              break;
+            case 123:
+              o3.key = a3 ? s4.C0.ESC + "[24;" + (a3 + 1) + "~" : s4.C0.ESC + "[24~";
+              break;
+            default:
+              if (!e5.ctrlKey || e5.shiftKey || e5.altKey || e5.metaKey)
+                if (i6 && !n2 || !e5.altKey || e5.metaKey)
+                  !i6 || e5.altKey || e5.ctrlKey || e5.shiftKey || !e5.metaKey ? e5.key && !e5.ctrlKey && !e5.altKey && !e5.metaKey && e5.keyCode >= 48 && 1 === e5.key.length ? o3.key = e5.key : e5.key && e5.ctrlKey && ("_" === e5.key && (o3.key = s4.C0.US), "@" === e5.key && (o3.key = s4.C0.NUL)) : 65 === e5.keyCode && (o3.type = 1);
+                else {
+                  const t6 = r3[e5.keyCode], i7 = t6?.[e5.shiftKey ? 1 : 0];
+                  if (i7)
+                    o3.key = s4.C0.ESC + i7;
+                  else if (e5.keyCode >= 65 && e5.keyCode <= 90) {
+                    const t7 = e5.ctrlKey ? e5.keyCode - 64 : e5.keyCode + 32;
+                    let i8 = String.fromCharCode(t7);
+                    e5.shiftKey && (i8 = i8.toUpperCase()), o3.key = s4.C0.ESC + i8;
+                  } else if (32 === e5.keyCode)
+                    o3.key = s4.C0.ESC + (e5.ctrlKey ? s4.C0.NUL : " ");
+                  else if ("Dead" === e5.key && e5.code.startsWith("Key")) {
+                    let t7 = e5.code.slice(3, 4);
+                    e5.shiftKey || (t7 = t7.toLowerCase()), o3.key = s4.C0.ESC + t7, o3.cancel = true;
+                  }
+                }
+              else
+                e5.keyCode >= 65 && e5.keyCode <= 90 ? o3.key = String.fromCharCode(e5.keyCode - 64) : 32 === e5.keyCode ? o3.key = s4.C0.NUL : e5.keyCode >= 51 && e5.keyCode <= 55 ? o3.key = String.fromCharCode(e5.keyCode - 51 + 27) : 56 === e5.keyCode ? o3.key = s4.C0.DEL : 219 === e5.keyCode ? o3.key = s4.C0.ESC : 220 === e5.keyCode ? o3.key = s4.C0.FS : 221 === e5.keyCode && (o3.key = s4.C0.GS);
+          }
+          return o3;
+        };
+      }, 482: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.Utf8ToUtf32 = t4.StringToUtf32 = t4.utf32ToString = t4.stringFromCodePoint = void 0, t4.stringFromCodePoint = function(e5) {
+          return e5 > 65535 ? (e5 -= 65536, String.fromCharCode(55296 + (e5 >> 10)) + String.fromCharCode(e5 % 1024 + 56320)) : String.fromCharCode(e5);
+        }, t4.utf32ToString = function(e5, t5 = 0, i5 = e5.length) {
+          let s4 = "";
+          for (let r3 = t5; r3 < i5; ++r3) {
+            let t6 = e5[r3];
+            t6 > 65535 ? (t6 -= 65536, s4 += String.fromCharCode(55296 + (t6 >> 10)) + String.fromCharCode(t6 % 1024 + 56320)) : s4 += String.fromCharCode(t6);
+          }
+          return s4;
+        }, t4.StringToUtf32 = class {
+          constructor() {
+            this._interim = 0;
+          }
+          clear() {
+            this._interim = 0;
+          }
+          decode(e5, t5) {
+            const i5 = e5.length;
+            if (!i5)
+              return 0;
+            let s4 = 0, r3 = 0;
+            if (this._interim) {
+              const i6 = e5.charCodeAt(r3++);
+              56320 <= i6 && i6 <= 57343 ? t5[s4++] = 1024 * (this._interim - 55296) + i6 - 56320 + 65536 : (t5[s4++] = this._interim, t5[s4++] = i6), this._interim = 0;
+            }
+            for (let n2 = r3; n2 < i5; ++n2) {
+              const r4 = e5.charCodeAt(n2);
+              if (55296 <= r4 && r4 <= 56319) {
+                if (++n2 >= i5)
+                  return this._interim = r4, s4;
+                const o3 = e5.charCodeAt(n2);
+                56320 <= o3 && o3 <= 57343 ? t5[s4++] = 1024 * (r4 - 55296) + o3 - 56320 + 65536 : (t5[s4++] = r4, t5[s4++] = o3);
+              } else
+                65279 !== r4 && (t5[s4++] = r4);
+            }
+            return s4;
+          }
+        }, t4.Utf8ToUtf32 = class {
+          constructor() {
+            this.interim = new Uint8Array(3);
+          }
+          clear() {
+            this.interim.fill(0);
+          }
+          decode(e5, t5) {
+            const i5 = e5.length;
+            if (!i5)
+              return 0;
+            let s4, r3, n2, o3, a3 = 0, h3 = 0, c3 = 0;
+            if (this.interim[0]) {
+              let s5 = false, r4 = this.interim[0];
+              r4 &= 192 == (224 & r4) ? 31 : 224 == (240 & r4) ? 15 : 7;
+              let n3, o4 = 0;
+              for (; (n3 = 63 & this.interim[++o4]) && o4 < 4; )
+                r4 <<= 6, r4 |= n3;
+              const h4 = 192 == (224 & this.interim[0]) ? 2 : 224 == (240 & this.interim[0]) ? 3 : 4, l4 = h4 - o4;
+              for (; c3 < l4; ) {
+                if (c3 >= i5)
+                  return 0;
+                if (n3 = e5[c3++], 128 != (192 & n3)) {
+                  c3--, s5 = true;
+                  break;
+                }
+                this.interim[o4++] = n3, r4 <<= 6, r4 |= 63 & n3;
+              }
+              s5 || (2 === h4 ? r4 < 128 ? c3-- : t5[a3++] = r4 : 3 === h4 ? r4 < 2048 || r4 >= 55296 && r4 <= 57343 || 65279 === r4 || (t5[a3++] = r4) : r4 < 65536 || r4 > 1114111 || (t5[a3++] = r4)), this.interim.fill(0);
+            }
+            const l3 = i5 - 4;
+            let d3 = c3;
+            for (; d3 < i5; ) {
+              for (; !(!(d3 < l3) || 128 & (s4 = e5[d3]) || 128 & (r3 = e5[d3 + 1]) || 128 & (n2 = e5[d3 + 2]) || 128 & (o3 = e5[d3 + 3])); )
+                t5[a3++] = s4, t5[a3++] = r3, t5[a3++] = n2, t5[a3++] = o3, d3 += 4;
+              if (s4 = e5[d3++], s4 < 128)
+                t5[a3++] = s4;
+              else if (192 == (224 & s4)) {
+                if (d3 >= i5)
+                  return this.interim[0] = s4, a3;
+                if (r3 = e5[d3++], 128 != (192 & r3)) {
+                  d3--;
+                  continue;
+                }
+                if (h3 = (31 & s4) << 6 | 63 & r3, h3 < 128) {
+                  d3--;
+                  continue;
+                }
+                t5[a3++] = h3;
+              } else if (224 == (240 & s4)) {
+                if (d3 >= i5)
+                  return this.interim[0] = s4, a3;
+                if (r3 = e5[d3++], 128 != (192 & r3)) {
+                  d3--;
+                  continue;
+                }
+                if (d3 >= i5)
+                  return this.interim[0] = s4, this.interim[1] = r3, a3;
+                if (n2 = e5[d3++], 128 != (192 & n2)) {
+                  d3--;
+                  continue;
+                }
+                if (h3 = (15 & s4) << 12 | (63 & r3) << 6 | 63 & n2, h3 < 2048 || h3 >= 55296 && h3 <= 57343 || 65279 === h3)
+                  continue;
+                t5[a3++] = h3;
+              } else if (240 == (248 & s4)) {
+                if (d3 >= i5)
+                  return this.interim[0] = s4, a3;
+                if (r3 = e5[d3++], 128 != (192 & r3)) {
+                  d3--;
+                  continue;
+                }
+                if (d3 >= i5)
+                  return this.interim[0] = s4, this.interim[1] = r3, a3;
+                if (n2 = e5[d3++], 128 != (192 & n2)) {
+                  d3--;
+                  continue;
+                }
+                if (d3 >= i5)
+                  return this.interim[0] = s4, this.interim[1] = r3, this.interim[2] = n2, a3;
+                if (o3 = e5[d3++], 128 != (192 & o3)) {
+                  d3--;
+                  continue;
+                }
+                if (h3 = (7 & s4) << 18 | (63 & r3) << 12 | (63 & n2) << 6 | 63 & o3, h3 < 65536 || h3 > 1114111)
+                  continue;
+                t5[a3++] = h3;
+              }
+            }
+            return a3;
+          }
+        };
+      }, 225: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.UnicodeV6 = void 0;
+        const s4 = i5(1480), r3 = [[768, 879], [1155, 1158], [1160, 1161], [1425, 1469], [1471, 1471], [1473, 1474], [1476, 1477], [1479, 1479], [1536, 1539], [1552, 1557], [1611, 1630], [1648, 1648], [1750, 1764], [1767, 1768], [1770, 1773], [1807, 1807], [1809, 1809], [1840, 1866], [1958, 1968], [2027, 2035], [2305, 2306], [2364, 2364], [2369, 2376], [2381, 2381], [2385, 2388], [2402, 2403], [2433, 2433], [2492, 2492], [2497, 2500], [2509, 2509], [2530, 2531], [2561, 2562], [2620, 2620], [2625, 2626], [2631, 2632], [2635, 2637], [2672, 2673], [2689, 2690], [2748, 2748], [2753, 2757], [2759, 2760], [2765, 2765], [2786, 2787], [2817, 2817], [2876, 2876], [2879, 2879], [2881, 2883], [2893, 2893], [2902, 2902], [2946, 2946], [3008, 3008], [3021, 3021], [3134, 3136], [3142, 3144], [3146, 3149], [3157, 3158], [3260, 3260], [3263, 3263], [3270, 3270], [3276, 3277], [3298, 3299], [3393, 3395], [3405, 3405], [3530, 3530], [3538, 3540], [3542, 3542], [3633, 3633], [3636, 3642], [3655, 3662], [3761, 3761], [3764, 3769], [3771, 3772], [3784, 3789], [3864, 3865], [3893, 3893], [3895, 3895], [3897, 3897], [3953, 3966], [3968, 3972], [3974, 3975], [3984, 3991], [3993, 4028], [4038, 4038], [4141, 4144], [4146, 4146], [4150, 4151], [4153, 4153], [4184, 4185], [4448, 4607], [4959, 4959], [5906, 5908], [5938, 5940], [5970, 5971], [6002, 6003], [6068, 6069], [6071, 6077], [6086, 6086], [6089, 6099], [6109, 6109], [6155, 6157], [6313, 6313], [6432, 6434], [6439, 6440], [6450, 6450], [6457, 6459], [6679, 6680], [6912, 6915], [6964, 6964], [6966, 6970], [6972, 6972], [6978, 6978], [7019, 7027], [7616, 7626], [7678, 7679], [8203, 8207], [8234, 8238], [8288, 8291], [8298, 8303], [8400, 8431], [12330, 12335], [12441, 12442], [43014, 43014], [43019, 43019], [43045, 43046], [64286, 64286], [65024, 65039], [65056, 65059], [65279, 65279], [65529, 65531]], n2 = [[68097, 68099], [68101, 68102], [68108, 68111], [68152, 68154], [68159, 68159], [119143, 119145], [119155, 119170], [119173, 119179], [119210, 119213], [119362, 119364], [917505, 917505], [917536, 917631], [917760, 917999]];
+        let o3;
+        t4.UnicodeV6 = class {
+          constructor() {
+            if (this.version = "6", !o3) {
+              o3 = new Uint8Array(65536), o3.fill(1), o3[0] = 0, o3.fill(0, 1, 32), o3.fill(0, 127, 160), o3.fill(2, 4352, 4448), o3[9001] = 2, o3[9002] = 2, o3.fill(2, 11904, 42192), o3[12351] = 1, o3.fill(2, 44032, 55204), o3.fill(2, 63744, 64256), o3.fill(2, 65040, 65050), o3.fill(2, 65072, 65136), o3.fill(2, 65280, 65377), o3.fill(2, 65504, 65511);
+              for (let e5 = 0; e5 < r3.length; ++e5)
+                o3.fill(0, r3[e5][0], r3[e5][1] + 1);
+            }
+          }
+          wcwidth(e5) {
+            return e5 < 32 ? 0 : e5 < 127 ? 1 : e5 < 65536 ? o3[e5] : function(e6, t5) {
+              let i6, s5 = 0, r4 = t5.length - 1;
+              if (e6 < t5[0][0] || e6 > t5[r4][1])
+                return false;
+              for (; r4 >= s5; )
+                if (i6 = s5 + r4 >> 1, e6 > t5[i6][1])
+                  s5 = i6 + 1;
+                else {
+                  if (!(e6 < t5[i6][0]))
+                    return true;
+                  r4 = i6 - 1;
+                }
+              return false;
+            }(e5, n2) ? 0 : e5 >= 131072 && e5 <= 196605 || e5 >= 196608 && e5 <= 262141 ? 2 : 1;
+          }
+          charProperties(e5, t5) {
+            let i6 = this.wcwidth(e5), r4 = 0 === i6 && 0 !== t5;
+            if (r4) {
+              const e6 = s4.UnicodeService.extractWidth(t5);
+              0 === e6 ? r4 = false : e6 > i6 && (i6 = e6);
+            }
+            return s4.UnicodeService.createPropertyValue(0, i6, r4);
+          }
+        };
+      }, 5981: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.WriteBuffer = void 0;
+        const s4 = i5(8460), r3 = i5(844);
+        class n2 extends r3.Disposable {
+          constructor(e5) {
+            super(), this._action = e5, this._writeBuffer = [], this._callbacks = [], this._pendingData = 0, this._bufferOffset = 0, this._isSyncWriting = false, this._syncCalls = 0, this._didUserInput = false, this._onWriteParsed = this.register(new s4.EventEmitter()), this.onWriteParsed = this._onWriteParsed.event;
+          }
+          handleUserInput() {
+            this._didUserInput = true;
+          }
+          writeSync(e5, t5) {
+            if (void 0 !== t5 && this._syncCalls > t5)
+              return void (this._syncCalls = 0);
+            if (this._pendingData += e5.length, this._writeBuffer.push(e5), this._callbacks.push(void 0), this._syncCalls++, this._isSyncWriting)
+              return;
+            let i6;
+            for (this._isSyncWriting = true; i6 = this._writeBuffer.shift(); ) {
+              this._action(i6);
+              const e6 = this._callbacks.shift();
+              e6 && e6();
+            }
+            this._pendingData = 0, this._bufferOffset = 2147483647, this._isSyncWriting = false, this._syncCalls = 0;
+          }
+          write(e5, t5) {
+            if (this._pendingData > 5e7)
+              throw new Error("write data discarded, use flow control to avoid losing data");
+            if (!this._writeBuffer.length) {
+              if (this._bufferOffset = 0, this._didUserInput)
+                return this._didUserInput = false, this._pendingData += e5.length, this._writeBuffer.push(e5), this._callbacks.push(t5), void this._innerWrite();
+              setTimeout(() => this._innerWrite());
+            }
+            this._pendingData += e5.length, this._writeBuffer.push(e5), this._callbacks.push(t5);
+          }
+          _innerWrite(e5 = 0, t5 = true) {
+            const i6 = e5 || Date.now();
+            for (; this._writeBuffer.length > this._bufferOffset; ) {
+              const e6 = this._writeBuffer[this._bufferOffset], s5 = this._action(e6, t5);
+              if (s5) {
+                const e7 = (e8) => Date.now() - i6 >= 12 ? setTimeout(() => this._innerWrite(0, e8)) : this._innerWrite(i6, e8);
+                return void s5.catch((e8) => (queueMicrotask(() => {
+                  throw e8;
+                }), Promise.resolve(false))).then(e7);
+              }
+              const r4 = this._callbacks[this._bufferOffset];
+              if (r4 && r4(), this._bufferOffset++, this._pendingData -= e6.length, Date.now() - i6 >= 12)
+                break;
+            }
+            this._writeBuffer.length > this._bufferOffset ? (this._bufferOffset > 50 && (this._writeBuffer = this._writeBuffer.slice(this._bufferOffset), this._callbacks = this._callbacks.slice(this._bufferOffset), this._bufferOffset = 0), setTimeout(() => this._innerWrite())) : (this._writeBuffer.length = 0, this._callbacks.length = 0, this._pendingData = 0, this._bufferOffset = 0), this._onWriteParsed.fire();
+          }
+        }
+        t4.WriteBuffer = n2;
+      }, 5941: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.toRgbString = t4.parseColor = void 0;
+        const i5 = /^([\da-f])\/([\da-f])\/([\da-f])$|^([\da-f]{2})\/([\da-f]{2})\/([\da-f]{2})$|^([\da-f]{3})\/([\da-f]{3})\/([\da-f]{3})$|^([\da-f]{4})\/([\da-f]{4})\/([\da-f]{4})$/, s4 = /^[\da-f]+$/;
+        function r3(e5, t5) {
+          const i6 = e5.toString(16), s5 = i6.length < 2 ? "0" + i6 : i6;
+          switch (t5) {
+            case 4:
+              return i6[0];
+            case 8:
+              return s5;
+            case 12:
+              return (s5 + s5).slice(0, 3);
+            default:
+              return s5 + s5;
+          }
+        }
+        t4.parseColor = function(e5) {
+          if (!e5)
+            return;
+          let t5 = e5.toLowerCase();
+          if (0 === t5.indexOf("rgb:")) {
+            t5 = t5.slice(4);
+            const e6 = i5.exec(t5);
+            if (e6) {
+              const t6 = e6[1] ? 15 : e6[4] ? 255 : e6[7] ? 4095 : 65535;
+              return [Math.round(parseInt(e6[1] || e6[4] || e6[7] || e6[10], 16) / t6 * 255), Math.round(parseInt(e6[2] || e6[5] || e6[8] || e6[11], 16) / t6 * 255), Math.round(parseInt(e6[3] || e6[6] || e6[9] || e6[12], 16) / t6 * 255)];
+            }
+          } else if (0 === t5.indexOf("#") && (t5 = t5.slice(1), s4.exec(t5) && [3, 6, 9, 12].includes(t5.length))) {
+            const e6 = t5.length / 3, i6 = [0, 0, 0];
+            for (let s5 = 0; s5 < 3; ++s5) {
+              const r4 = parseInt(t5.slice(e6 * s5, e6 * s5 + e6), 16);
+              i6[s5] = 1 === e6 ? r4 << 4 : 2 === e6 ? r4 : 3 === e6 ? r4 >> 4 : r4 >> 8;
+            }
+            return i6;
+          }
+        }, t4.toRgbString = function(e5, t5 = 16) {
+          const [i6, s5, n2] = e5;
+          return `rgb:${r3(i6, t5)}/${r3(s5, t5)}/${r3(n2, t5)}`;
+        };
+      }, 5770: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.PAYLOAD_LIMIT = void 0, t4.PAYLOAD_LIMIT = 1e7;
+      }, 6351: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.DcsHandler = t4.DcsParser = void 0;
+        const s4 = i5(482), r3 = i5(8742), n2 = i5(5770), o3 = [];
+        t4.DcsParser = class {
+          constructor() {
+            this._handlers = /* @__PURE__ */ Object.create(null), this._active = o3, this._ident = 0, this._handlerFb = () => {
+            }, this._stack = { paused: false, loopPosition: 0, fallThrough: false };
+          }
+          dispose() {
+            this._handlers = /* @__PURE__ */ Object.create(null), this._handlerFb = () => {
+            }, this._active = o3;
+          }
+          registerHandler(e5, t5) {
+            void 0 === this._handlers[e5] && (this._handlers[e5] = []);
+            const i6 = this._handlers[e5];
+            return i6.push(t5), { dispose: () => {
+              const e6 = i6.indexOf(t5);
+              -1 !== e6 && i6.splice(e6, 1);
+            } };
+          }
+          clearHandler(e5) {
+            this._handlers[e5] && delete this._handlers[e5];
+          }
+          setHandlerFallback(e5) {
+            this._handlerFb = e5;
+          }
+          reset() {
+            if (this._active.length)
+              for (let e5 = this._stack.paused ? this._stack.loopPosition - 1 : this._active.length - 1; e5 >= 0; --e5)
+                this._active[e5].unhook(false);
+            this._stack.paused = false, this._active = o3, this._ident = 0;
+          }
+          hook(e5, t5) {
+            if (this.reset(), this._ident = e5, this._active = this._handlers[e5] || o3, this._active.length)
+              for (let e6 = this._active.length - 1; e6 >= 0; e6--)
+                this._active[e6].hook(t5);
+            else
+              this._handlerFb(this._ident, "HOOK", t5);
+          }
+          put(e5, t5, i6) {
+            if (this._active.length)
+              for (let s5 = this._active.length - 1; s5 >= 0; s5--)
+                this._active[s5].put(e5, t5, i6);
+            else
+              this._handlerFb(this._ident, "PUT", (0, s4.utf32ToString)(e5, t5, i6));
+          }
+          unhook(e5, t5 = true) {
+            if (this._active.length) {
+              let i6 = false, s5 = this._active.length - 1, r4 = false;
+              if (this._stack.paused && (s5 = this._stack.loopPosition - 1, i6 = t5, r4 = this._stack.fallThrough, this._stack.paused = false), !r4 && false === i6) {
+                for (; s5 >= 0 && (i6 = this._active[s5].unhook(e5), true !== i6); s5--)
+                  if (i6 instanceof Promise)
+                    return this._stack.paused = true, this._stack.loopPosition = s5, this._stack.fallThrough = false, i6;
+                s5--;
+              }
+              for (; s5 >= 0; s5--)
+                if (i6 = this._active[s5].unhook(false), i6 instanceof Promise)
+                  return this._stack.paused = true, this._stack.loopPosition = s5, this._stack.fallThrough = true, i6;
+            } else
+              this._handlerFb(this._ident, "UNHOOK", e5);
+            this._active = o3, this._ident = 0;
+          }
+        };
+        const a3 = new r3.Params();
+        a3.addParam(0), t4.DcsHandler = class {
+          constructor(e5) {
+            this._handler = e5, this._data = "", this._params = a3, this._hitLimit = false;
+          }
+          hook(e5) {
+            this._params = e5.length > 1 || e5.params[0] ? e5.clone() : a3, this._data = "", this._hitLimit = false;
+          }
+          put(e5, t5, i6) {
+            this._hitLimit || (this._data += (0, s4.utf32ToString)(e5, t5, i6), this._data.length > n2.PAYLOAD_LIMIT && (this._data = "", this._hitLimit = true));
+          }
+          unhook(e5) {
+            let t5 = false;
+            if (this._hitLimit)
+              t5 = false;
+            else if (e5 && (t5 = this._handler(this._data, this._params), t5 instanceof Promise))
+              return t5.then((e6) => (this._params = a3, this._data = "", this._hitLimit = false, e6));
+            return this._params = a3, this._data = "", this._hitLimit = false, t5;
+          }
+        };
+      }, 2015: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.EscapeSequenceParser = t4.VT500_TRANSITION_TABLE = t4.TransitionTable = void 0;
+        const s4 = i5(844), r3 = i5(8742), n2 = i5(6242), o3 = i5(6351);
+        class a3 {
+          constructor(e5) {
+            this.table = new Uint8Array(e5);
+          }
+          setDefault(e5, t5) {
+            this.table.fill(e5 << 4 | t5);
+          }
+          add(e5, t5, i6, s5) {
+            this.table[t5 << 8 | e5] = i6 << 4 | s5;
+          }
+          addMany(e5, t5, i6, s5) {
+            for (let r4 = 0; r4 < e5.length; r4++)
+              this.table[t5 << 8 | e5[r4]] = i6 << 4 | s5;
+          }
+        }
+        t4.TransitionTable = a3;
+        const h3 = 160;
+        t4.VT500_TRANSITION_TABLE = function() {
+          const e5 = new a3(4095), t5 = Array.apply(null, Array(256)).map((e6, t6) => t6), i6 = (e6, i7) => t5.slice(e6, i7), s5 = i6(32, 127), r4 = i6(0, 24);
+          r4.push(25), r4.push.apply(r4, i6(28, 32));
+          const n3 = i6(0, 14);
+          let o4;
+          for (o4 in e5.setDefault(1, 0), e5.addMany(s5, 0, 2, 0), n3)
+            e5.addMany([24, 26, 153, 154], o4, 3, 0), e5.addMany(i6(128, 144), o4, 3, 0), e5.addMany(i6(144, 152), o4, 3, 0), e5.add(156, o4, 0, 0), e5.add(27, o4, 11, 1), e5.add(157, o4, 4, 8), e5.addMany([152, 158, 159], o4, 0, 7), e5.add(155, o4, 11, 3), e5.add(144, o4, 11, 9);
+          return e5.addMany(r4, 0, 3, 0), e5.addMany(r4, 1, 3, 1), e5.add(127, 1, 0, 1), e5.addMany(r4, 8, 0, 8), e5.addMany(r4, 3, 3, 3), e5.add(127, 3, 0, 3), e5.addMany(r4, 4, 3, 4), e5.add(127, 4, 0, 4), e5.addMany(r4, 6, 3, 6), e5.addMany(r4, 5, 3, 5), e5.add(127, 5, 0, 5), e5.addMany(r4, 2, 3, 2), e5.add(127, 2, 0, 2), e5.add(93, 1, 4, 8), e5.addMany(s5, 8, 5, 8), e5.add(127, 8, 5, 8), e5.addMany([156, 27, 24, 26, 7], 8, 6, 0), e5.addMany(i6(28, 32), 8, 0, 8), e5.addMany([88, 94, 95], 1, 0, 7), e5.addMany(s5, 7, 0, 7), e5.addMany(r4, 7, 0, 7), e5.add(156, 7, 0, 0), e5.add(127, 7, 0, 7), e5.add(91, 1, 11, 3), e5.addMany(i6(64, 127), 3, 7, 0), e5.addMany(i6(48, 60), 3, 8, 4), e5.addMany([60, 61, 62, 63], 3, 9, 4), e5.addMany(i6(48, 60), 4, 8, 4), e5.addMany(i6(64, 127), 4, 7, 0), e5.addMany([60, 61, 62, 63], 4, 0, 6), e5.addMany(i6(32, 64), 6, 0, 6), e5.add(127, 6, 0, 6), e5.addMany(i6(64, 127), 6, 0, 0), e5.addMany(i6(32, 48), 3, 9, 5), e5.addMany(i6(32, 48), 5, 9, 5), e5.addMany(i6(48, 64), 5, 0, 6), e5.addMany(i6(64, 127), 5, 7, 0), e5.addMany(i6(32, 48), 4, 9, 5), e5.addMany(i6(32, 48), 1, 9, 2), e5.addMany(i6(32, 48), 2, 9, 2), e5.addMany(i6(48, 127), 2, 10, 0), e5.addMany(i6(48, 80), 1, 10, 0), e5.addMany(i6(81, 88), 1, 10, 0), e5.addMany([89, 90, 92], 1, 10, 0), e5.addMany(i6(96, 127), 1, 10, 0), e5.add(80, 1, 11, 9), e5.addMany(r4, 9, 0, 9), e5.add(127, 9, 0, 9), e5.addMany(i6(28, 32), 9, 0, 9), e5.addMany(i6(32, 48), 9, 9, 12), e5.addMany(i6(48, 60), 9, 8, 10), e5.addMany([60, 61, 62, 63], 9, 9, 10), e5.addMany(r4, 11, 0, 11), e5.addMany(i6(32, 128), 11, 0, 11), e5.addMany(i6(28, 32), 11, 0, 11), e5.addMany(r4, 10, 0, 10), e5.add(127, 10, 0, 10), e5.addMany(i6(28, 32), 10, 0, 10), e5.addMany(i6(48, 60), 10, 8, 10), e5.addMany([60, 61, 62, 63], 10, 0, 11), e5.addMany(i6(32, 48), 10, 9, 12), e5.addMany(r4, 12, 0, 12), e5.add(127, 12, 0, 12), e5.addMany(i6(28, 32), 12, 0, 12), e5.addMany(i6(32, 48), 12, 9, 12), e5.addMany(i6(48, 64), 12, 0, 11), e5.addMany(i6(64, 127), 12, 12, 13), e5.addMany(i6(64, 127), 10, 12, 13), e5.addMany(i6(64, 127), 9, 12, 13), e5.addMany(r4, 13, 13, 13), e5.addMany(s5, 13, 13, 13), e5.add(127, 13, 0, 13), e5.addMany([27, 156, 24, 26], 13, 14, 0), e5.add(h3, 0, 2, 0), e5.add(h3, 8, 5, 8), e5.add(h3, 6, 0, 6), e5.add(h3, 11, 0, 11), e5.add(h3, 13, 13, 13), e5;
+        }();
+        class c3 extends s4.Disposable {
+          constructor(e5 = t4.VT500_TRANSITION_TABLE) {
+            super(), this._transitions = e5, this._parseStack = { state: 0, handlers: [], handlerPos: 0, transition: 0, chunkPos: 0 }, this.initialState = 0, this.currentState = this.initialState, this._params = new r3.Params(), this._params.addParam(0), this._collect = 0, this.precedingJoinState = 0, this._printHandlerFb = (e6, t5, i6) => {
+            }, this._executeHandlerFb = (e6) => {
+            }, this._csiHandlerFb = (e6, t5) => {
+            }, this._escHandlerFb = (e6) => {
+            }, this._errorHandlerFb = (e6) => e6, this._printHandler = this._printHandlerFb, this._executeHandlers = /* @__PURE__ */ Object.create(null), this._csiHandlers = /* @__PURE__ */ Object.create(null), this._escHandlers = /* @__PURE__ */ Object.create(null), this.register((0, s4.toDisposable)(() => {
+              this._csiHandlers = /* @__PURE__ */ Object.create(null), this._executeHandlers = /* @__PURE__ */ Object.create(null), this._escHandlers = /* @__PURE__ */ Object.create(null);
+            })), this._oscParser = this.register(new n2.OscParser()), this._dcsParser = this.register(new o3.DcsParser()), this._errorHandler = this._errorHandlerFb, this.registerEscHandler({ final: "\\" }, () => true);
+          }
+          _identifier(e5, t5 = [64, 126]) {
+            let i6 = 0;
+            if (e5.prefix) {
+              if (e5.prefix.length > 1)
+                throw new Error("only one byte as prefix supported");
+              if (i6 = e5.prefix.charCodeAt(0), i6 && 60 > i6 || i6 > 63)
+                throw new Error("prefix must be in range 0x3c .. 0x3f");
+            }
+            if (e5.intermediates) {
+              if (e5.intermediates.length > 2)
+                throw new Error("only two bytes as intermediates are supported");
+              for (let t6 = 0; t6 < e5.intermediates.length; ++t6) {
+                const s6 = e5.intermediates.charCodeAt(t6);
+                if (32 > s6 || s6 > 47)
+                  throw new Error("intermediate must be in range 0x20 .. 0x2f");
+                i6 <<= 8, i6 |= s6;
+              }
+            }
+            if (1 !== e5.final.length)
+              throw new Error("final must be a single byte");
+            const s5 = e5.final.charCodeAt(0);
+            if (t5[0] > s5 || s5 > t5[1])
+              throw new Error(`final must be in range ${t5[0]} .. ${t5[1]}`);
+            return i6 <<= 8, i6 |= s5, i6;
+          }
+          identToString(e5) {
+            const t5 = [];
+            for (; e5; )
+              t5.push(String.fromCharCode(255 & e5)), e5 >>= 8;
+            return t5.reverse().join("");
+          }
+          setPrintHandler(e5) {
+            this._printHandler = e5;
+          }
+          clearPrintHandler() {
+            this._printHandler = this._printHandlerFb;
+          }
+          registerEscHandler(e5, t5) {
+            const i6 = this._identifier(e5, [48, 126]);
+            void 0 === this._escHandlers[i6] && (this._escHandlers[i6] = []);
+            const s5 = this._escHandlers[i6];
+            return s5.push(t5), { dispose: () => {
+              const e6 = s5.indexOf(t5);
+              -1 !== e6 && s5.splice(e6, 1);
+            } };
+          }
+          clearEscHandler(e5) {
+            this._escHandlers[this._identifier(e5, [48, 126])] && delete this._escHandlers[this._identifier(e5, [48, 126])];
+          }
+          setEscHandlerFallback(e5) {
+            this._escHandlerFb = e5;
+          }
+          setExecuteHandler(e5, t5) {
+            this._executeHandlers[e5.charCodeAt(0)] = t5;
+          }
+          clearExecuteHandler(e5) {
+            this._executeHandlers[e5.charCodeAt(0)] && delete this._executeHandlers[e5.charCodeAt(0)];
+          }
+          setExecuteHandlerFallback(e5) {
+            this._executeHandlerFb = e5;
+          }
+          registerCsiHandler(e5, t5) {
+            const i6 = this._identifier(e5);
+            void 0 === this._csiHandlers[i6] && (this._csiHandlers[i6] = []);
+            const s5 = this._csiHandlers[i6];
+            return s5.push(t5), { dispose: () => {
+              const e6 = s5.indexOf(t5);
+              -1 !== e6 && s5.splice(e6, 1);
+            } };
+          }
+          clearCsiHandler(e5) {
+            this._csiHandlers[this._identifier(e5)] && delete this._csiHandlers[this._identifier(e5)];
+          }
+          setCsiHandlerFallback(e5) {
+            this._csiHandlerFb = e5;
+          }
+          registerDcsHandler(e5, t5) {
+            return this._dcsParser.registerHandler(this._identifier(e5), t5);
+          }
+          clearDcsHandler(e5) {
+            this._dcsParser.clearHandler(this._identifier(e5));
+          }
+          setDcsHandlerFallback(e5) {
+            this._dcsParser.setHandlerFallback(e5);
+          }
+          registerOscHandler(e5, t5) {
+            return this._oscParser.registerHandler(e5, t5);
+          }
+          clearOscHandler(e5) {
+            this._oscParser.clearHandler(e5);
+          }
+          setOscHandlerFallback(e5) {
+            this._oscParser.setHandlerFallback(e5);
+          }
+          setErrorHandler(e5) {
+            this._errorHandler = e5;
+          }
+          clearErrorHandler() {
+            this._errorHandler = this._errorHandlerFb;
+          }
+          reset() {
+            this.currentState = this.initialState, this._oscParser.reset(), this._dcsParser.reset(), this._params.reset(), this._params.addParam(0), this._collect = 0, this.precedingJoinState = 0, 0 !== this._parseStack.state && (this._parseStack.state = 2, this._parseStack.handlers = []);
+          }
+          _preserveStack(e5, t5, i6, s5, r4) {
+            this._parseStack.state = e5, this._parseStack.handlers = t5, this._parseStack.handlerPos = i6, this._parseStack.transition = s5, this._parseStack.chunkPos = r4;
+          }
+          parse(e5, t5, i6) {
+            let s5, r4 = 0, n3 = 0, o4 = 0;
+            if (this._parseStack.state)
+              if (2 === this._parseStack.state)
+                this._parseStack.state = 0, o4 = this._parseStack.chunkPos + 1;
+              else {
+                if (void 0 === i6 || 1 === this._parseStack.state)
+                  throw this._parseStack.state = 1, new Error("improper continuation due to previous async handler, giving up parsing");
+                const t6 = this._parseStack.handlers;
+                let n4 = this._parseStack.handlerPos - 1;
+                switch (this._parseStack.state) {
+                  case 3:
+                    if (false === i6 && n4 > -1) {
+                      for (; n4 >= 0 && (s5 = t6[n4](this._params), true !== s5); n4--)
+                        if (s5 instanceof Promise)
+                          return this._parseStack.handlerPos = n4, s5;
+                    }
+                    this._parseStack.handlers = [];
+                    break;
+                  case 4:
+                    if (false === i6 && n4 > -1) {
+                      for (; n4 >= 0 && (s5 = t6[n4](), true !== s5); n4--)
+                        if (s5 instanceof Promise)
+                          return this._parseStack.handlerPos = n4, s5;
+                    }
+                    this._parseStack.handlers = [];
+                    break;
+                  case 6:
+                    if (r4 = e5[this._parseStack.chunkPos], s5 = this._dcsParser.unhook(24 !== r4 && 26 !== r4, i6), s5)
+                      return s5;
+                    27 === r4 && (this._parseStack.transition |= 1), this._params.reset(), this._params.addParam(0), this._collect = 0;
+                    break;
+                  case 5:
+                    if (r4 = e5[this._parseStack.chunkPos], s5 = this._oscParser.end(24 !== r4 && 26 !== r4, i6), s5)
+                      return s5;
+                    27 === r4 && (this._parseStack.transition |= 1), this._params.reset(), this._params.addParam(0), this._collect = 0;
+                }
+                this._parseStack.state = 0, o4 = this._parseStack.chunkPos + 1, this.precedingJoinState = 0, this.currentState = 15 & this._parseStack.transition;
+              }
+            for (let i7 = o4; i7 < t5; ++i7) {
+              switch (r4 = e5[i7], n3 = this._transitions.table[this.currentState << 8 | (r4 < 160 ? r4 : h3)], n3 >> 4) {
+                case 2:
+                  for (let s6 = i7 + 1; ; ++s6) {
+                    if (s6 >= t5 || (r4 = e5[s6]) < 32 || r4 > 126 && r4 < h3) {
+                      this._printHandler(e5, i7, s6), i7 = s6 - 1;
+                      break;
+                    }
+                    if (++s6 >= t5 || (r4 = e5[s6]) < 32 || r4 > 126 && r4 < h3) {
+                      this._printHandler(e5, i7, s6), i7 = s6 - 1;
+                      break;
+                    }
+                    if (++s6 >= t5 || (r4 = e5[s6]) < 32 || r4 > 126 && r4 < h3) {
+                      this._printHandler(e5, i7, s6), i7 = s6 - 1;
+                      break;
+                    }
+                    if (++s6 >= t5 || (r4 = e5[s6]) < 32 || r4 > 126 && r4 < h3) {
+                      this._printHandler(e5, i7, s6), i7 = s6 - 1;
+                      break;
+                    }
+                  }
+                  break;
+                case 3:
+                  this._executeHandlers[r4] ? this._executeHandlers[r4]() : this._executeHandlerFb(r4), this.precedingJoinState = 0;
+                  break;
+                case 0:
+                  break;
+                case 1:
+                  if (this._errorHandler({ position: i7, code: r4, currentState: this.currentState, collect: this._collect, params: this._params, abort: false }).abort)
+                    return;
+                  break;
+                case 7:
+                  const o5 = this._csiHandlers[this._collect << 8 | r4];
+                  let a4 = o5 ? o5.length - 1 : -1;
+                  for (; a4 >= 0 && (s5 = o5[a4](this._params), true !== s5); a4--)
+                    if (s5 instanceof Promise)
+                      return this._preserveStack(3, o5, a4, n3, i7), s5;
+                  a4 < 0 && this._csiHandlerFb(this._collect << 8 | r4, this._params), this.precedingJoinState = 0;
+                  break;
+                case 8:
+                  do {
+                    switch (r4) {
+                      case 59:
+                        this._params.addParam(0);
+                        break;
+                      case 58:
+                        this._params.addSubParam(-1);
+                        break;
+                      default:
+                        this._params.addDigit(r4 - 48);
+                    }
+                  } while (++i7 < t5 && (r4 = e5[i7]) > 47 && r4 < 60);
+                  i7--;
+                  break;
+                case 9:
+                  this._collect <<= 8, this._collect |= r4;
+                  break;
+                case 10:
+                  const c4 = this._escHandlers[this._collect << 8 | r4];
+                  let l3 = c4 ? c4.length - 1 : -1;
+                  for (; l3 >= 0 && (s5 = c4[l3](), true !== s5); l3--)
+                    if (s5 instanceof Promise)
+                      return this._preserveStack(4, c4, l3, n3, i7), s5;
+                  l3 < 0 && this._escHandlerFb(this._collect << 8 | r4), this.precedingJoinState = 0;
+                  break;
+                case 11:
+                  this._params.reset(), this._params.addParam(0), this._collect = 0;
+                  break;
+                case 12:
+                  this._dcsParser.hook(this._collect << 8 | r4, this._params);
+                  break;
+                case 13:
+                  for (let s6 = i7 + 1; ; ++s6)
+                    if (s6 >= t5 || 24 === (r4 = e5[s6]) || 26 === r4 || 27 === r4 || r4 > 127 && r4 < h3) {
+                      this._dcsParser.put(e5, i7, s6), i7 = s6 - 1;
+                      break;
+                    }
+                  break;
+                case 14:
+                  if (s5 = this._dcsParser.unhook(24 !== r4 && 26 !== r4), s5)
+                    return this._preserveStack(6, [], 0, n3, i7), s5;
+                  27 === r4 && (n3 |= 1), this._params.reset(), this._params.addParam(0), this._collect = 0, this.precedingJoinState = 0;
+                  break;
+                case 4:
+                  this._oscParser.start();
+                  break;
+                case 5:
+                  for (let s6 = i7 + 1; ; s6++)
+                    if (s6 >= t5 || (r4 = e5[s6]) < 32 || r4 > 127 && r4 < h3) {
+                      this._oscParser.put(e5, i7, s6), i7 = s6 - 1;
+                      break;
+                    }
+                  break;
+                case 6:
+                  if (s5 = this._oscParser.end(24 !== r4 && 26 !== r4), s5)
+                    return this._preserveStack(5, [], 0, n3, i7), s5;
+                  27 === r4 && (n3 |= 1), this._params.reset(), this._params.addParam(0), this._collect = 0, this.precedingJoinState = 0;
+              }
+              this.currentState = 15 & n3;
+            }
+          }
+        }
+        t4.EscapeSequenceParser = c3;
+      }, 6242: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.OscHandler = t4.OscParser = void 0;
+        const s4 = i5(5770), r3 = i5(482), n2 = [];
+        t4.OscParser = class {
+          constructor() {
+            this._state = 0, this._active = n2, this._id = -1, this._handlers = /* @__PURE__ */ Object.create(null), this._handlerFb = () => {
+            }, this._stack = { paused: false, loopPosition: 0, fallThrough: false };
+          }
+          registerHandler(e5, t5) {
+            void 0 === this._handlers[e5] && (this._handlers[e5] = []);
+            const i6 = this._handlers[e5];
+            return i6.push(t5), { dispose: () => {
+              const e6 = i6.indexOf(t5);
+              -1 !== e6 && i6.splice(e6, 1);
+            } };
+          }
+          clearHandler(e5) {
+            this._handlers[e5] && delete this._handlers[e5];
+          }
+          setHandlerFallback(e5) {
+            this._handlerFb = e5;
+          }
+          dispose() {
+            this._handlers = /* @__PURE__ */ Object.create(null), this._handlerFb = () => {
+            }, this._active = n2;
+          }
+          reset() {
+            if (2 === this._state)
+              for (let e5 = this._stack.paused ? this._stack.loopPosition - 1 : this._active.length - 1; e5 >= 0; --e5)
+                this._active[e5].end(false);
+            this._stack.paused = false, this._active = n2, this._id = -1, this._state = 0;
+          }
+          _start() {
+            if (this._active = this._handlers[this._id] || n2, this._active.length)
+              for (let e5 = this._active.length - 1; e5 >= 0; e5--)
+                this._active[e5].start();
+            else
+              this._handlerFb(this._id, "START");
+          }
+          _put(e5, t5, i6) {
+            if (this._active.length)
+              for (let s5 = this._active.length - 1; s5 >= 0; s5--)
+                this._active[s5].put(e5, t5, i6);
+            else
+              this._handlerFb(this._id, "PUT", (0, r3.utf32ToString)(e5, t5, i6));
+          }
+          start() {
+            this.reset(), this._state = 1;
+          }
+          put(e5, t5, i6) {
+            if (3 !== this._state) {
+              if (1 === this._state)
+                for (; t5 < i6; ) {
+                  const i7 = e5[t5++];
+                  if (59 === i7) {
+                    this._state = 2, this._start();
+                    break;
+                  }
+                  if (i7 < 48 || 57 < i7)
+                    return void (this._state = 3);
+                  -1 === this._id && (this._id = 0), this._id = 10 * this._id + i7 - 48;
+                }
+              2 === this._state && i6 - t5 > 0 && this._put(e5, t5, i6);
+            }
+          }
+          end(e5, t5 = true) {
+            if (0 !== this._state) {
+              if (3 !== this._state)
+                if (1 === this._state && this._start(), this._active.length) {
+                  let i6 = false, s5 = this._active.length - 1, r4 = false;
+                  if (this._stack.paused && (s5 = this._stack.loopPosition - 1, i6 = t5, r4 = this._stack.fallThrough, this._stack.paused = false), !r4 && false === i6) {
+                    for (; s5 >= 0 && (i6 = this._active[s5].end(e5), true !== i6); s5--)
+                      if (i6 instanceof Promise)
+                        return this._stack.paused = true, this._stack.loopPosition = s5, this._stack.fallThrough = false, i6;
+                    s5--;
+                  }
+                  for (; s5 >= 0; s5--)
+                    if (i6 = this._active[s5].end(false), i6 instanceof Promise)
+                      return this._stack.paused = true, this._stack.loopPosition = s5, this._stack.fallThrough = true, i6;
+                } else
+                  this._handlerFb(this._id, "END", e5);
+              this._active = n2, this._id = -1, this._state = 0;
+            }
+          }
+        }, t4.OscHandler = class {
+          constructor(e5) {
+            this._handler = e5, this._data = "", this._hitLimit = false;
+          }
+          start() {
+            this._data = "", this._hitLimit = false;
+          }
+          put(e5, t5, i6) {
+            this._hitLimit || (this._data += (0, r3.utf32ToString)(e5, t5, i6), this._data.length > s4.PAYLOAD_LIMIT && (this._data = "", this._hitLimit = true));
+          }
+          end(e5) {
+            let t5 = false;
+            if (this._hitLimit)
+              t5 = false;
+            else if (e5 && (t5 = this._handler(this._data), t5 instanceof Promise))
+              return t5.then((e6) => (this._data = "", this._hitLimit = false, e6));
+            return this._data = "", this._hitLimit = false, t5;
+          }
+        };
+      }, 8742: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.Params = void 0;
+        const i5 = 2147483647;
+        class s4 {
+          static fromArray(e5) {
+            const t5 = new s4();
+            if (!e5.length)
+              return t5;
+            for (let i6 = Array.isArray(e5[0]) ? 1 : 0; i6 < e5.length; ++i6) {
+              const s5 = e5[i6];
+              if (Array.isArray(s5))
+                for (let e6 = 0; e6 < s5.length; ++e6)
+                  t5.addSubParam(s5[e6]);
+              else
+                t5.addParam(s5);
+            }
+            return t5;
+          }
+          constructor(e5 = 32, t5 = 32) {
+            if (this.maxLength = e5, this.maxSubParamsLength = t5, t5 > 256)
+              throw new Error("maxSubParamsLength must not be greater than 256");
+            this.params = new Int32Array(e5), this.length = 0, this._subParams = new Int32Array(t5), this._subParamsLength = 0, this._subParamsIdx = new Uint16Array(e5), this._rejectDigits = false, this._rejectSubDigits = false, this._digitIsSub = false;
+          }
+          clone() {
+            const e5 = new s4(this.maxLength, this.maxSubParamsLength);
+            return e5.params.set(this.params), e5.length = this.length, e5._subParams.set(this._subParams), e5._subParamsLength = this._subParamsLength, e5._subParamsIdx.set(this._subParamsIdx), e5._rejectDigits = this._rejectDigits, e5._rejectSubDigits = this._rejectSubDigits, e5._digitIsSub = this._digitIsSub, e5;
+          }
+          toArray() {
+            const e5 = [];
+            for (let t5 = 0; t5 < this.length; ++t5) {
+              e5.push(this.params[t5]);
+              const i6 = this._subParamsIdx[t5] >> 8, s5 = 255 & this._subParamsIdx[t5];
+              s5 - i6 > 0 && e5.push(Array.prototype.slice.call(this._subParams, i6, s5));
+            }
+            return e5;
+          }
+          reset() {
+            this.length = 0, this._subParamsLength = 0, this._rejectDigits = false, this._rejectSubDigits = false, this._digitIsSub = false;
+          }
+          addParam(e5) {
+            if (this._digitIsSub = false, this.length >= this.maxLength)
+              this._rejectDigits = true;
+            else {
+              if (e5 < -1)
+                throw new Error("values lesser than -1 are not allowed");
+              this._subParamsIdx[this.length] = this._subParamsLength << 8 | this._subParamsLength, this.params[this.length++] = e5 > i5 ? i5 : e5;
+            }
+          }
+          addSubParam(e5) {
+            if (this._digitIsSub = true, this.length)
+              if (this._rejectDigits || this._subParamsLength >= this.maxSubParamsLength)
+                this._rejectSubDigits = true;
+              else {
+                if (e5 < -1)
+                  throw new Error("values lesser than -1 are not allowed");
+                this._subParams[this._subParamsLength++] = e5 > i5 ? i5 : e5, this._subParamsIdx[this.length - 1]++;
+              }
+          }
+          hasSubParams(e5) {
+            return (255 & this._subParamsIdx[e5]) - (this._subParamsIdx[e5] >> 8) > 0;
+          }
+          getSubParams(e5) {
+            const t5 = this._subParamsIdx[e5] >> 8, i6 = 255 & this._subParamsIdx[e5];
+            return i6 - t5 > 0 ? this._subParams.subarray(t5, i6) : null;
+          }
+          getSubParamsAll() {
+            const e5 = {};
+            for (let t5 = 0; t5 < this.length; ++t5) {
+              const i6 = this._subParamsIdx[t5] >> 8, s5 = 255 & this._subParamsIdx[t5];
+              s5 - i6 > 0 && (e5[t5] = this._subParams.slice(i6, s5));
+            }
+            return e5;
+          }
+          addDigit(e5) {
+            let t5;
+            if (this._rejectDigits || !(t5 = this._digitIsSub ? this._subParamsLength : this.length) || this._digitIsSub && this._rejectSubDigits)
+              return;
+            const s5 = this._digitIsSub ? this._subParams : this.params, r3 = s5[t5 - 1];
+            s5[t5 - 1] = ~r3 ? Math.min(10 * r3 + e5, i5) : e5;
+          }
+        }
+        t4.Params = s4;
+      }, 5741: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.AddonManager = void 0, t4.AddonManager = class {
+          constructor() {
+            this._addons = [];
+          }
+          dispose() {
+            for (let e5 = this._addons.length - 1; e5 >= 0; e5--)
+              this._addons[e5].instance.dispose();
+          }
+          loadAddon(e5, t5) {
+            const i5 = { instance: t5, dispose: t5.dispose, isDisposed: false };
+            this._addons.push(i5), t5.dispose = () => this._wrappedAddonDispose(i5), t5.activate(e5);
+          }
+          _wrappedAddonDispose(e5) {
+            if (e5.isDisposed)
+              return;
+            let t5 = -1;
+            for (let i5 = 0; i5 < this._addons.length; i5++)
+              if (this._addons[i5] === e5) {
+                t5 = i5;
+                break;
+              }
+            if (-1 === t5)
+              throw new Error("Could not dispose an addon that has not been loaded");
+            e5.isDisposed = true, e5.dispose.apply(e5.instance), this._addons.splice(t5, 1);
+          }
+        };
+      }, 8771: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferApiView = void 0;
+        const s4 = i5(3785), r3 = i5(511);
+        t4.BufferApiView = class {
+          constructor(e5, t5) {
+            this._buffer = e5, this.type = t5;
+          }
+          init(e5) {
+            return this._buffer = e5, this;
+          }
+          get cursorY() {
+            return this._buffer.y;
+          }
+          get cursorX() {
+            return this._buffer.x;
+          }
+          get viewportY() {
+            return this._buffer.ydisp;
+          }
+          get baseY() {
+            return this._buffer.ybase;
+          }
+          get length() {
+            return this._buffer.lines.length;
+          }
+          getLine(e5) {
+            const t5 = this._buffer.lines.get(e5);
+            if (t5)
+              return new s4.BufferLineApiView(t5);
+          }
+          getNullCell() {
+            return new r3.CellData();
+          }
+        };
+      }, 3785: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferLineApiView = void 0;
+        const s4 = i5(511);
+        t4.BufferLineApiView = class {
+          constructor(e5) {
+            this._line = e5;
+          }
+          get isWrapped() {
+            return this._line.isWrapped;
+          }
+          get length() {
+            return this._line.length;
+          }
+          getCell(e5, t5) {
+            if (!(e5 < 0 || e5 >= this._line.length))
+              return t5 ? (this._line.loadCell(e5, t5), t5) : this._line.loadCell(e5, new s4.CellData());
+          }
+          translateToString(e5, t5, i6) {
+            return this._line.translateToString(e5, t5, i6);
+          }
+        };
+      }, 8285: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferNamespaceApi = void 0;
+        const s4 = i5(8771), r3 = i5(8460), n2 = i5(844);
+        class o3 extends n2.Disposable {
+          constructor(e5) {
+            super(), this._core = e5, this._onBufferChange = this.register(new r3.EventEmitter()), this.onBufferChange = this._onBufferChange.event, this._normal = new s4.BufferApiView(this._core.buffers.normal, "normal"), this._alternate = new s4.BufferApiView(this._core.buffers.alt, "alternate"), this._core.buffers.onBufferActivate(() => this._onBufferChange.fire(this.active));
+          }
+          get active() {
+            if (this._core.buffers.active === this._core.buffers.normal)
+              return this.normal;
+            if (this._core.buffers.active === this._core.buffers.alt)
+              return this.alternate;
+            throw new Error("Active buffer is neither normal nor alternate");
+          }
+          get normal() {
+            return this._normal.init(this._core.buffers.normal);
+          }
+          get alternate() {
+            return this._alternate.init(this._core.buffers.alt);
+          }
+        }
+        t4.BufferNamespaceApi = o3;
+      }, 7975: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.ParserApi = void 0, t4.ParserApi = class {
+          constructor(e5) {
+            this._core = e5;
+          }
+          registerCsiHandler(e5, t5) {
+            return this._core.registerCsiHandler(e5, (e6) => t5(e6.toArray()));
+          }
+          addCsiHandler(e5, t5) {
+            return this.registerCsiHandler(e5, t5);
+          }
+          registerDcsHandler(e5, t5) {
+            return this._core.registerDcsHandler(e5, (e6, i5) => t5(e6, i5.toArray()));
+          }
+          addDcsHandler(e5, t5) {
+            return this.registerDcsHandler(e5, t5);
+          }
+          registerEscHandler(e5, t5) {
+            return this._core.registerEscHandler(e5, t5);
+          }
+          addEscHandler(e5, t5) {
+            return this.registerEscHandler(e5, t5);
+          }
+          registerOscHandler(e5, t5) {
+            return this._core.registerOscHandler(e5, t5);
+          }
+          addOscHandler(e5, t5) {
+            return this.registerOscHandler(e5, t5);
+          }
+        };
+      }, 7090: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.UnicodeApi = void 0, t4.UnicodeApi = class {
+          constructor(e5) {
+            this._core = e5;
+          }
+          register(e5) {
+            this._core.unicodeService.register(e5);
+          }
+          get versions() {
+            return this._core.unicodeService.versions;
+          }
+          get activeVersion() {
+            return this._core.unicodeService.activeVersion;
+          }
+          set activeVersion(e5) {
+            this._core.unicodeService.activeVersion = e5;
+          }
+        };
+      }, 744: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferService = t4.MINIMUM_ROWS = t4.MINIMUM_COLS = void 0;
+        const n2 = i5(8460), o3 = i5(844), a3 = i5(5295), h3 = i5(2585);
+        t4.MINIMUM_COLS = 2, t4.MINIMUM_ROWS = 1;
+        let c3 = t4.BufferService = class extends o3.Disposable {
+          get buffer() {
+            return this.buffers.active;
+          }
+          constructor(e5) {
+            super(), this.isUserScrolling = false, this._onResize = this.register(new n2.EventEmitter()), this.onResize = this._onResize.event, this._onScroll = this.register(new n2.EventEmitter()), this.onScroll = this._onScroll.event, this.cols = Math.max(e5.rawOptions.cols || 0, t4.MINIMUM_COLS), this.rows = Math.max(e5.rawOptions.rows || 0, t4.MINIMUM_ROWS), this.buffers = this.register(new a3.BufferSet(e5, this));
+          }
+          resize(e5, t5) {
+            this.cols = e5, this.rows = t5, this.buffers.resize(e5, t5), this._onResize.fire({ cols: e5, rows: t5 });
+          }
+          reset() {
+            this.buffers.reset(), this.isUserScrolling = false;
+          }
+          scroll(e5, t5 = false) {
+            const i6 = this.buffer;
+            let s5;
+            s5 = this._cachedBlankLine, s5 && s5.length === this.cols && s5.getFg(0) === e5.fg && s5.getBg(0) === e5.bg || (s5 = i6.getBlankLine(e5, t5), this._cachedBlankLine = s5), s5.isWrapped = t5;
+            const r4 = i6.ybase + i6.scrollTop, n3 = i6.ybase + i6.scrollBottom;
+            if (0 === i6.scrollTop) {
+              const e6 = i6.lines.isFull;
+              n3 === i6.lines.length - 1 ? e6 ? i6.lines.recycle().copyFrom(s5) : i6.lines.push(s5.clone()) : i6.lines.splice(n3 + 1, 0, s5.clone()), e6 ? this.isUserScrolling && (i6.ydisp = Math.max(i6.ydisp - 1, 0)) : (i6.ybase++, this.isUserScrolling || i6.ydisp++);
+            } else {
+              const e6 = n3 - r4 + 1;
+              i6.lines.shiftElements(r4 + 1, e6 - 1, -1), i6.lines.set(n3, s5.clone());
+            }
+            this.isUserScrolling || (i6.ydisp = i6.ybase), this._onScroll.fire(i6.ydisp);
+          }
+          scrollLines(e5, t5, i6) {
+            const s5 = this.buffer;
+            if (e5 < 0) {
+              if (0 === s5.ydisp)
+                return;
+              this.isUserScrolling = true;
+            } else
+              e5 + s5.ydisp >= s5.ybase && (this.isUserScrolling = false);
+            const r4 = s5.ydisp;
+            s5.ydisp = Math.max(Math.min(s5.ydisp + e5, s5.ybase), 0), r4 !== s5.ydisp && (t5 || this._onScroll.fire(s5.ydisp));
+          }
+        };
+        t4.BufferService = c3 = s4([r3(0, h3.IOptionsService)], c3);
+      }, 7994: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CharsetService = void 0, t4.CharsetService = class {
+          constructor() {
+            this.glevel = 0, this._charsets = [];
+          }
+          reset() {
+            this.charset = void 0, this._charsets = [], this.glevel = 0;
+          }
+          setgLevel(e5) {
+            this.glevel = e5, this.charset = this._charsets[e5];
+          }
+          setgCharset(e5, t5) {
+            this._charsets[e5] = t5, this.glevel === e5 && (this.charset = t5);
+          }
+        };
+      }, 1753: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CoreMouseService = void 0;
+        const n2 = i5(2585), o3 = i5(8460), a3 = i5(844), h3 = { NONE: { events: 0, restrict: () => false }, X10: { events: 1, restrict: (e5) => 4 !== e5.button && 1 === e5.action && (e5.ctrl = false, e5.alt = false, e5.shift = false, true) }, VT200: { events: 19, restrict: (e5) => 32 !== e5.action }, DRAG: { events: 23, restrict: (e5) => 32 !== e5.action || 3 !== e5.button }, ANY: { events: 31, restrict: (e5) => true } };
+        function c3(e5, t5) {
+          let i6 = (e5.ctrl ? 16 : 0) | (e5.shift ? 4 : 0) | (e5.alt ? 8 : 0);
+          return 4 === e5.button ? (i6 |= 64, i6 |= e5.action) : (i6 |= 3 & e5.button, 4 & e5.button && (i6 |= 64), 8 & e5.button && (i6 |= 128), 32 === e5.action ? i6 |= 32 : 0 !== e5.action || t5 || (i6 |= 3)), i6;
+        }
+        const l3 = String.fromCharCode, d3 = { DEFAULT: (e5) => {
+          const t5 = [c3(e5, false) + 32, e5.col + 32, e5.row + 32];
+          return t5[0] > 255 || t5[1] > 255 || t5[2] > 255 ? "" : `\x1B[M${l3(t5[0])}${l3(t5[1])}${l3(t5[2])}`;
+        }, SGR: (e5) => {
+          const t5 = 0 === e5.action && 4 !== e5.button ? "m" : "M";
+          return `\x1B[<${c3(e5, true)};${e5.col};${e5.row}${t5}`;
+        }, SGR_PIXELS: (e5) => {
+          const t5 = 0 === e5.action && 4 !== e5.button ? "m" : "M";
+          return `\x1B[<${c3(e5, true)};${e5.x};${e5.y}${t5}`;
+        } };
+        let _2 = t4.CoreMouseService = class extends a3.Disposable {
+          constructor(e5, t5) {
+            super(), this._bufferService = e5, this._coreService = t5, this._protocols = {}, this._encodings = {}, this._activeProtocol = "", this._activeEncoding = "", this._lastEvent = null, this._onProtocolChange = this.register(new o3.EventEmitter()), this.onProtocolChange = this._onProtocolChange.event;
+            for (const e6 of Object.keys(h3))
+              this.addProtocol(e6, h3[e6]);
+            for (const e6 of Object.keys(d3))
+              this.addEncoding(e6, d3[e6]);
+            this.reset();
+          }
+          addProtocol(e5, t5) {
+            this._protocols[e5] = t5;
+          }
+          addEncoding(e5, t5) {
+            this._encodings[e5] = t5;
+          }
+          get activeProtocol() {
+            return this._activeProtocol;
+          }
+          get areMouseEventsActive() {
+            return 0 !== this._protocols[this._activeProtocol].events;
+          }
+          set activeProtocol(e5) {
+            if (!this._protocols[e5])
+              throw new Error(`unknown protocol "${e5}"`);
+            this._activeProtocol = e5, this._onProtocolChange.fire(this._protocols[e5].events);
+          }
+          get activeEncoding() {
+            return this._activeEncoding;
+          }
+          set activeEncoding(e5) {
+            if (!this._encodings[e5])
+              throw new Error(`unknown encoding "${e5}"`);
+            this._activeEncoding = e5;
+          }
+          reset() {
+            this.activeProtocol = "NONE", this.activeEncoding = "DEFAULT", this._lastEvent = null;
+          }
+          triggerMouseEvent(e5) {
+            if (e5.col < 0 || e5.col >= this._bufferService.cols || e5.row < 0 || e5.row >= this._bufferService.rows)
+              return false;
+            if (4 === e5.button && 32 === e5.action)
+              return false;
+            if (3 === e5.button && 32 !== e5.action)
+              return false;
+            if (4 !== e5.button && (2 === e5.action || 3 === e5.action))
+              return false;
+            if (e5.col++, e5.row++, 32 === e5.action && this._lastEvent && this._equalEvents(this._lastEvent, e5, "SGR_PIXELS" === this._activeEncoding))
+              return false;
+            if (!this._protocols[this._activeProtocol].restrict(e5))
+              return false;
+            const t5 = this._encodings[this._activeEncoding](e5);
+            return t5 && ("DEFAULT" === this._activeEncoding ? this._coreService.triggerBinaryEvent(t5) : this._coreService.triggerDataEvent(t5, true)), this._lastEvent = e5, true;
+          }
+          explainEvents(e5) {
+            return { down: !!(1 & e5), up: !!(2 & e5), drag: !!(4 & e5), move: !!(8 & e5), wheel: !!(16 & e5) };
+          }
+          _equalEvents(e5, t5, i6) {
+            if (i6) {
+              if (e5.x !== t5.x)
+                return false;
+              if (e5.y !== t5.y)
+                return false;
+            } else {
+              if (e5.col !== t5.col)
+                return false;
+              if (e5.row !== t5.row)
+                return false;
+            }
+            return e5.button === t5.button && e5.action === t5.action && e5.ctrl === t5.ctrl && e5.alt === t5.alt && e5.shift === t5.shift;
+          }
+        };
+        t4.CoreMouseService = _2 = s4([r3(0, n2.IBufferService), r3(1, n2.ICoreService)], _2);
+      }, 6975: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.CoreService = void 0;
+        const n2 = i5(1439), o3 = i5(8460), a3 = i5(844), h3 = i5(2585), c3 = Object.freeze({ insertMode: false }), l3 = Object.freeze({ applicationCursorKeys: false, applicationKeypad: false, bracketedPasteMode: false, origin: false, reverseWraparound: false, sendFocus: false, wraparound: true });
+        let d3 = t4.CoreService = class extends a3.Disposable {
+          constructor(e5, t5, i6) {
+            super(), this._bufferService = e5, this._logService = t5, this._optionsService = i6, this.isCursorInitialized = false, this.isCursorHidden = false, this._onData = this.register(new o3.EventEmitter()), this.onData = this._onData.event, this._onUserInput = this.register(new o3.EventEmitter()), this.onUserInput = this._onUserInput.event, this._onBinary = this.register(new o3.EventEmitter()), this.onBinary = this._onBinary.event, this._onRequestScrollToBottom = this.register(new o3.EventEmitter()), this.onRequestScrollToBottom = this._onRequestScrollToBottom.event, this.modes = (0, n2.clone)(c3), this.decPrivateModes = (0, n2.clone)(l3);
+          }
+          reset() {
+            this.modes = (0, n2.clone)(c3), this.decPrivateModes = (0, n2.clone)(l3);
+          }
+          triggerDataEvent(e5, t5 = false) {
+            if (this._optionsService.rawOptions.disableStdin)
+              return;
+            const i6 = this._bufferService.buffer;
+            t5 && this._optionsService.rawOptions.scrollOnUserInput && i6.ybase !== i6.ydisp && this._onRequestScrollToBottom.fire(), t5 && this._onUserInput.fire(), this._logService.debug(`sending data "${e5}"`, () => e5.split("").map((e6) => e6.charCodeAt(0))), this._onData.fire(e5);
+          }
+          triggerBinaryEvent(e5) {
+            this._optionsService.rawOptions.disableStdin || (this._logService.debug(`sending binary "${e5}"`, () => e5.split("").map((e6) => e6.charCodeAt(0))), this._onBinary.fire(e5));
+          }
+        };
+        t4.CoreService = d3 = s4([r3(0, h3.IBufferService), r3(1, h3.ILogService), r3(2, h3.IOptionsService)], d3);
+      }, 9074: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.DecorationService = void 0;
+        const s4 = i5(8055), r3 = i5(8460), n2 = i5(844), o3 = i5(6106);
+        let a3 = 0, h3 = 0;
+        class c3 extends n2.Disposable {
+          get decorations() {
+            return this._decorations.values();
+          }
+          constructor() {
+            super(), this._decorations = new o3.SortedList((e5) => e5?.marker.line), this._onDecorationRegistered = this.register(new r3.EventEmitter()), this.onDecorationRegistered = this._onDecorationRegistered.event, this._onDecorationRemoved = this.register(new r3.EventEmitter()), this.onDecorationRemoved = this._onDecorationRemoved.event, this.register((0, n2.toDisposable)(() => this.reset()));
+          }
+          registerDecoration(e5) {
+            if (e5.marker.isDisposed)
+              return;
+            const t5 = new l3(e5);
+            if (t5) {
+              const e6 = t5.marker.onDispose(() => t5.dispose());
+              t5.onDispose(() => {
+                t5 && (this._decorations.delete(t5) && this._onDecorationRemoved.fire(t5), e6.dispose());
+              }), this._decorations.insert(t5), this._onDecorationRegistered.fire(t5);
+            }
+            return t5;
+          }
+          reset() {
+            for (const e5 of this._decorations.values())
+              e5.dispose();
+            this._decorations.clear();
+          }
+          *getDecorationsAtCell(e5, t5, i6) {
+            let s5 = 0, r4 = 0;
+            for (const n3 of this._decorations.getKeyIterator(t5))
+              s5 = n3.options.x ?? 0, r4 = s5 + (n3.options.width ?? 1), e5 >= s5 && e5 < r4 && (!i6 || (n3.options.layer ?? "bottom") === i6) && (yield n3);
+          }
+          forEachDecorationAtCell(e5, t5, i6, s5) {
+            this._decorations.forEachByKey(t5, (t6) => {
+              a3 = t6.options.x ?? 0, h3 = a3 + (t6.options.width ?? 1), e5 >= a3 && e5 < h3 && (!i6 || (t6.options.layer ?? "bottom") === i6) && s5(t6);
+            });
+          }
+        }
+        t4.DecorationService = c3;
+        class l3 extends n2.Disposable {
+          get isDisposed() {
+            return this._isDisposed;
+          }
+          get backgroundColorRGB() {
+            return null === this._cachedBg && (this.options.backgroundColor ? this._cachedBg = s4.css.toColor(this.options.backgroundColor) : this._cachedBg = void 0), this._cachedBg;
+          }
+          get foregroundColorRGB() {
+            return null === this._cachedFg && (this.options.foregroundColor ? this._cachedFg = s4.css.toColor(this.options.foregroundColor) : this._cachedFg = void 0), this._cachedFg;
+          }
+          constructor(e5) {
+            super(), this.options = e5, this.onRenderEmitter = this.register(new r3.EventEmitter()), this.onRender = this.onRenderEmitter.event, this._onDispose = this.register(new r3.EventEmitter()), this.onDispose = this._onDispose.event, this._cachedBg = null, this._cachedFg = null, this.marker = e5.marker, this.options.overviewRulerOptions && !this.options.overviewRulerOptions.position && (this.options.overviewRulerOptions.position = "full");
+          }
+          dispose() {
+            this._onDispose.fire(), super.dispose();
+          }
+        }
+      }, 4348: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.InstantiationService = t4.ServiceCollection = void 0;
+        const s4 = i5(2585), r3 = i5(8343);
+        class n2 {
+          constructor(...e5) {
+            this._entries = /* @__PURE__ */ new Map();
+            for (const [t5, i6] of e5)
+              this.set(t5, i6);
+          }
+          set(e5, t5) {
+            const i6 = this._entries.get(e5);
+            return this._entries.set(e5, t5), i6;
+          }
+          forEach(e5) {
+            for (const [t5, i6] of this._entries.entries())
+              e5(t5, i6);
+          }
+          has(e5) {
+            return this._entries.has(e5);
+          }
+          get(e5) {
+            return this._entries.get(e5);
+          }
+        }
+        t4.ServiceCollection = n2, t4.InstantiationService = class {
+          constructor() {
+            this._services = new n2(), this._services.set(s4.IInstantiationService, this);
+          }
+          setService(e5, t5) {
+            this._services.set(e5, t5);
+          }
+          getService(e5) {
+            return this._services.get(e5);
+          }
+          createInstance(e5, ...t5) {
+            const i6 = (0, r3.getServiceDependencies)(e5).sort((e6, t6) => e6.index - t6.index), s5 = [];
+            for (const t6 of i6) {
+              const i7 = this._services.get(t6.id);
+              if (!i7)
+                throw new Error(`[createInstance] ${e5.name} depends on UNKNOWN service ${t6.id}.`);
+              s5.push(i7);
+            }
+            const n3 = i6.length > 0 ? i6[0].index : t5.length;
+            if (t5.length !== n3)
+              throw new Error(`[createInstance] First service dependency of ${e5.name} at position ${n3 + 1} conflicts with ${t5.length} static arguments`);
+            return new e5(...[...t5, ...s5]);
+          }
+        };
+      }, 7866: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.traceCall = t4.setTraceLogger = t4.LogService = void 0;
+        const n2 = i5(844), o3 = i5(2585), a3 = { trace: o3.LogLevelEnum.TRACE, debug: o3.LogLevelEnum.DEBUG, info: o3.LogLevelEnum.INFO, warn: o3.LogLevelEnum.WARN, error: o3.LogLevelEnum.ERROR, off: o3.LogLevelEnum.OFF };
+        let h3, c3 = t4.LogService = class extends n2.Disposable {
+          get logLevel() {
+            return this._logLevel;
+          }
+          constructor(e5) {
+            super(), this._optionsService = e5, this._logLevel = o3.LogLevelEnum.OFF, this._updateLogLevel(), this.register(this._optionsService.onSpecificOptionChange("logLevel", () => this._updateLogLevel())), h3 = this;
+          }
+          _updateLogLevel() {
+            this._logLevel = a3[this._optionsService.rawOptions.logLevel];
+          }
+          _evalLazyOptionalParams(e5) {
+            for (let t5 = 0; t5 < e5.length; t5++)
+              "function" == typeof e5[t5] && (e5[t5] = e5[t5]());
+          }
+          _log(e5, t5, i6) {
+            this._evalLazyOptionalParams(i6), e5.call(console, (this._optionsService.options.logger ? "" : "xterm.js: ") + t5, ...i6);
+          }
+          trace(e5, ...t5) {
+            this._logLevel <= o3.LogLevelEnum.TRACE && this._log(this._optionsService.options.logger?.trace.bind(this._optionsService.options.logger) ?? console.log, e5, t5);
+          }
+          debug(e5, ...t5) {
+            this._logLevel <= o3.LogLevelEnum.DEBUG && this._log(this._optionsService.options.logger?.debug.bind(this._optionsService.options.logger) ?? console.log, e5, t5);
+          }
+          info(e5, ...t5) {
+            this._logLevel <= o3.LogLevelEnum.INFO && this._log(this._optionsService.options.logger?.info.bind(this._optionsService.options.logger) ?? console.info, e5, t5);
+          }
+          warn(e5, ...t5) {
+            this._logLevel <= o3.LogLevelEnum.WARN && this._log(this._optionsService.options.logger?.warn.bind(this._optionsService.options.logger) ?? console.warn, e5, t5);
+          }
+          error(e5, ...t5) {
+            this._logLevel <= o3.LogLevelEnum.ERROR && this._log(this._optionsService.options.logger?.error.bind(this._optionsService.options.logger) ?? console.error, e5, t5);
+          }
+        };
+        t4.LogService = c3 = s4([r3(0, o3.IOptionsService)], c3), t4.setTraceLogger = function(e5) {
+          h3 = e5;
+        }, t4.traceCall = function(e5, t5, i6) {
+          if ("function" != typeof i6.value)
+            throw new Error("not supported");
+          const s5 = i6.value;
+          i6.value = function(...e6) {
+            if (h3.logLevel !== o3.LogLevelEnum.TRACE)
+              return s5.apply(this, e6);
+            h3.trace(`GlyphRenderer#${s5.name}(${e6.map((e7) => JSON.stringify(e7)).join(", ")})`);
+            const t6 = s5.apply(this, e6);
+            return h3.trace(`GlyphRenderer#${s5.name} return`, t6), t6;
+          };
+        };
+      }, 7302: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.OptionsService = t4.DEFAULT_OPTIONS = void 0;
+        const s4 = i5(8460), r3 = i5(844), n2 = i5(6114);
+        t4.DEFAULT_OPTIONS = { cols: 80, rows: 24, cursorBlink: false, cursorStyle: "block", cursorWidth: 1, cursorInactiveStyle: "outline", customGlyphs: true, drawBoldTextInBrightColors: true, documentOverride: null, fastScrollModifier: "alt", fastScrollSensitivity: 5, fontFamily: "courier-new, courier, monospace", fontSize: 15, fontWeight: "normal", fontWeightBold: "bold", ignoreBracketedPasteMode: false, lineHeight: 1, letterSpacing: 0, linkHandler: null, logLevel: "info", logger: null, scrollback: 1e3, scrollOnUserInput: true, scrollSensitivity: 1, screenReaderMode: false, smoothScrollDuration: 0, macOptionIsMeta: false, macOptionClickForcesSelection: false, minimumContrastRatio: 1, disableStdin: false, allowProposedApi: false, allowTransparency: false, tabStopWidth: 8, theme: {}, rescaleOverlappingGlyphs: false, rightClickSelectsWord: n2.isMac, windowOptions: {}, windowsMode: false, windowsPty: {}, wordSeparator: " ()[]{}',\"`", altClickMovesCursor: true, convertEol: false, termName: "xterm", cancelEvents: false, overviewRulerWidth: 0 };
+        const o3 = ["normal", "bold", "100", "200", "300", "400", "500", "600", "700", "800", "900"];
+        class a3 extends r3.Disposable {
+          constructor(e5) {
+            super(), this._onOptionChange = this.register(new s4.EventEmitter()), this.onOptionChange = this._onOptionChange.event;
+            const i6 = { ...t4.DEFAULT_OPTIONS };
+            for (const t5 in e5)
+              if (t5 in i6)
+                try {
+                  const s5 = e5[t5];
+                  i6[t5] = this._sanitizeAndValidateOption(t5, s5);
+                } catch (e6) {
+                  console.error(e6);
+                }
+            this.rawOptions = i6, this.options = { ...i6 }, this._setupOptions(), this.register((0, r3.toDisposable)(() => {
+              this.rawOptions.linkHandler = null, this.rawOptions.documentOverride = null;
+            }));
+          }
+          onSpecificOptionChange(e5, t5) {
+            return this.onOptionChange((i6) => {
+              i6 === e5 && t5(this.rawOptions[e5]);
+            });
+          }
+          onMultipleOptionChange(e5, t5) {
+            return this.onOptionChange((i6) => {
+              -1 !== e5.indexOf(i6) && t5();
+            });
+          }
+          _setupOptions() {
+            const e5 = (e6) => {
+              if (!(e6 in t4.DEFAULT_OPTIONS))
+                throw new Error(`No option with key "${e6}"`);
+              return this.rawOptions[e6];
+            }, i6 = (e6, i7) => {
+              if (!(e6 in t4.DEFAULT_OPTIONS))
+                throw new Error(`No option with key "${e6}"`);
+              i7 = this._sanitizeAndValidateOption(e6, i7), this.rawOptions[e6] !== i7 && (this.rawOptions[e6] = i7, this._onOptionChange.fire(e6));
+            };
+            for (const t5 in this.rawOptions) {
+              const s5 = { get: e5.bind(this, t5), set: i6.bind(this, t5) };
+              Object.defineProperty(this.options, t5, s5);
+            }
+          }
+          _sanitizeAndValidateOption(e5, i6) {
+            switch (e5) {
+              case "cursorStyle":
+                if (i6 || (i6 = t4.DEFAULT_OPTIONS[e5]), !/* @__PURE__ */ function(e6) {
+                  return "block" === e6 || "underline" === e6 || "bar" === e6;
+                }(i6))
+                  throw new Error(`"${i6}" is not a valid value for ${e5}`);
+                break;
+              case "wordSeparator":
+                i6 || (i6 = t4.DEFAULT_OPTIONS[e5]);
+                break;
+              case "fontWeight":
+              case "fontWeightBold":
+                if ("number" == typeof i6 && 1 <= i6 && i6 <= 1e3)
+                  break;
+                i6 = o3.includes(i6) ? i6 : t4.DEFAULT_OPTIONS[e5];
+                break;
+              case "cursorWidth":
+                i6 = Math.floor(i6);
+              case "lineHeight":
+              case "tabStopWidth":
+                if (i6 < 1)
+                  throw new Error(`${e5} cannot be less than 1, value: ${i6}`);
+                break;
+              case "minimumContrastRatio":
+                i6 = Math.max(1, Math.min(21, Math.round(10 * i6) / 10));
+                break;
+              case "scrollback":
+                if ((i6 = Math.min(i6, 4294967295)) < 0)
+                  throw new Error(`${e5} cannot be less than 0, value: ${i6}`);
+                break;
+              case "fastScrollSensitivity":
+              case "scrollSensitivity":
+                if (i6 <= 0)
+                  throw new Error(`${e5} cannot be less than or equal to 0, value: ${i6}`);
+                break;
+              case "rows":
+              case "cols":
+                if (!i6 && 0 !== i6)
+                  throw new Error(`${e5} must be numeric, value: ${i6}`);
+                break;
+              case "windowsPty":
+                i6 = i6 ?? {};
+            }
+            return i6;
+          }
+        }
+        t4.OptionsService = a3;
+      }, 2660: function(e4, t4, i5) {
+        var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
+          var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
+          if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
+            o4 = Reflect.decorate(e5, t5, i6, s5);
+          else
+            for (var a3 = e5.length - 1; a3 >= 0; a3--)
+              (r4 = e5[a3]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+          return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
+        }, r3 = this && this.__param || function(e5, t5) {
+          return function(i6, s5) {
+            t5(i6, s5, e5);
+          };
+        };
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.OscLinkService = void 0;
+        const n2 = i5(2585);
+        let o3 = t4.OscLinkService = class {
+          constructor(e5) {
+            this._bufferService = e5, this._nextId = 1, this._entriesWithId = /* @__PURE__ */ new Map(), this._dataByLinkId = /* @__PURE__ */ new Map();
+          }
+          registerLink(e5) {
+            const t5 = this._bufferService.buffer;
+            if (void 0 === e5.id) {
+              const i7 = t5.addMarker(t5.ybase + t5.y), s6 = { data: e5, id: this._nextId++, lines: [i7] };
+              return i7.onDispose(() => this._removeMarkerFromLink(s6, i7)), this._dataByLinkId.set(s6.id, s6), s6.id;
+            }
+            const i6 = e5, s5 = this._getEntryIdKey(i6), r4 = this._entriesWithId.get(s5);
+            if (r4)
+              return this.addLineToLink(r4.id, t5.ybase + t5.y), r4.id;
+            const n3 = t5.addMarker(t5.ybase + t5.y), o4 = { id: this._nextId++, key: this._getEntryIdKey(i6), data: i6, lines: [n3] };
+            return n3.onDispose(() => this._removeMarkerFromLink(o4, n3)), this._entriesWithId.set(o4.key, o4), this._dataByLinkId.set(o4.id, o4), o4.id;
+          }
+          addLineToLink(e5, t5) {
+            const i6 = this._dataByLinkId.get(e5);
+            if (i6 && i6.lines.every((e6) => e6.line !== t5)) {
+              const e6 = this._bufferService.buffer.addMarker(t5);
+              i6.lines.push(e6), e6.onDispose(() => this._removeMarkerFromLink(i6, e6));
+            }
+          }
+          getLinkData(e5) {
+            return this._dataByLinkId.get(e5)?.data;
+          }
+          _getEntryIdKey(e5) {
+            return `${e5.id};;${e5.uri}`;
+          }
+          _removeMarkerFromLink(e5, t5) {
+            const i6 = e5.lines.indexOf(t5);
+            -1 !== i6 && (e5.lines.splice(i6, 1), 0 === e5.lines.length && (void 0 !== e5.data.id && this._entriesWithId.delete(e5.key), this._dataByLinkId.delete(e5.id)));
+          }
+        };
+        t4.OscLinkService = o3 = s4([r3(0, n2.IBufferService)], o3);
+      }, 8343: (e4, t4) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.createDecorator = t4.getServiceDependencies = t4.serviceRegistry = void 0;
+        const i5 = "di$target", s4 = "di$dependencies";
+        t4.serviceRegistry = /* @__PURE__ */ new Map(), t4.getServiceDependencies = function(e5) {
+          return e5[s4] || [];
+        }, t4.createDecorator = function(e5) {
+          if (t4.serviceRegistry.has(e5))
+            return t4.serviceRegistry.get(e5);
+          const r3 = function(e6, t5, n2) {
+            if (3 !== arguments.length)
+              throw new Error("@IServiceName-decorator can only be used to decorate a parameter");
+            !function(e7, t6, r4) {
+              t6[i5] === t6 ? t6[s4].push({ id: e7, index: r4 }) : (t6[s4] = [{ id: e7, index: r4 }], t6[i5] = t6);
+            }(r3, e6, n2);
+          };
+          return r3.toString = () => e5, t4.serviceRegistry.set(e5, r3), r3;
+        };
+      }, 2585: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.IDecorationService = t4.IUnicodeService = t4.IOscLinkService = t4.IOptionsService = t4.ILogService = t4.LogLevelEnum = t4.IInstantiationService = t4.ICharsetService = t4.ICoreService = t4.ICoreMouseService = t4.IBufferService = void 0;
+        const s4 = i5(8343);
+        var r3;
+        t4.IBufferService = (0, s4.createDecorator)("BufferService"), t4.ICoreMouseService = (0, s4.createDecorator)("CoreMouseService"), t4.ICoreService = (0, s4.createDecorator)("CoreService"), t4.ICharsetService = (0, s4.createDecorator)("CharsetService"), t4.IInstantiationService = (0, s4.createDecorator)("InstantiationService"), function(e5) {
+          e5[e5.TRACE = 0] = "TRACE", e5[e5.DEBUG = 1] = "DEBUG", e5[e5.INFO = 2] = "INFO", e5[e5.WARN = 3] = "WARN", e5[e5.ERROR = 4] = "ERROR", e5[e5.OFF = 5] = "OFF";
+        }(r3 || (t4.LogLevelEnum = r3 = {})), t4.ILogService = (0, s4.createDecorator)("LogService"), t4.IOptionsService = (0, s4.createDecorator)("OptionsService"), t4.IOscLinkService = (0, s4.createDecorator)("OscLinkService"), t4.IUnicodeService = (0, s4.createDecorator)("UnicodeService"), t4.IDecorationService = (0, s4.createDecorator)("DecorationService");
+      }, 1480: (e4, t4, i5) => {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.UnicodeService = void 0;
+        const s4 = i5(8460), r3 = i5(225);
+        class n2 {
+          static extractShouldJoin(e5) {
+            return 0 != (1 & e5);
+          }
+          static extractWidth(e5) {
+            return e5 >> 1 & 3;
+          }
+          static extractCharKind(e5) {
+            return e5 >> 3;
+          }
+          static createPropertyValue(e5, t5, i6 = false) {
+            return (16777215 & e5) << 3 | (3 & t5) << 1 | (i6 ? 1 : 0);
+          }
+          constructor() {
+            this._providers = /* @__PURE__ */ Object.create(null), this._active = "", this._onChange = new s4.EventEmitter(), this.onChange = this._onChange.event;
+            const e5 = new r3.UnicodeV6();
+            this.register(e5), this._active = e5.version, this._activeProvider = e5;
+          }
+          dispose() {
+            this._onChange.dispose();
+          }
+          get versions() {
+            return Object.keys(this._providers);
+          }
+          get activeVersion() {
+            return this._active;
+          }
+          set activeVersion(e5) {
+            if (!this._providers[e5])
+              throw new Error(`unknown Unicode version "${e5}"`);
+            this._active = e5, this._activeProvider = this._providers[e5], this._onChange.fire(e5);
+          }
+          register(e5) {
+            this._providers[e5.version] = e5;
+          }
+          wcwidth(e5) {
+            return this._activeProvider.wcwidth(e5);
+          }
+          getStringCellWidth(e5) {
+            let t5 = 0, i6 = 0;
+            const s5 = e5.length;
+            for (let r4 = 0; r4 < s5; ++r4) {
+              let o3 = e5.charCodeAt(r4);
+              if (55296 <= o3 && o3 <= 56319) {
+                if (++r4 >= s5)
+                  return t5 + this.wcwidth(o3);
+                const i7 = e5.charCodeAt(r4);
+                56320 <= i7 && i7 <= 57343 ? o3 = 1024 * (o3 - 55296) + i7 - 56320 + 65536 : t5 += this.wcwidth(i7);
+              }
+              const a3 = this.charProperties(o3, i6);
+              let h3 = n2.extractWidth(a3);
+              n2.extractShouldJoin(a3) && (h3 -= n2.extractWidth(i6)), t5 += h3, i6 = a3;
+            }
+            return t5;
+          }
+          charProperties(e5, t5) {
+            return this._activeProvider.charProperties(e5, t5);
+          }
+        }
+        t4.UnicodeService = n2;
+      } }, t3 = {};
+      function i4(s4) {
+        var r3 = t3[s4];
+        if (void 0 !== r3)
+          return r3.exports;
+        var n2 = t3[s4] = { exports: {} };
+        return e3[s4].call(n2.exports, n2, n2.exports, i4), n2.exports;
+      }
+      var s3 = {};
+      return (() => {
+        var e4 = s3;
+        Object.defineProperty(e4, "__esModule", { value: true }), e4.Terminal = void 0;
+        const t4 = i4(9042), r3 = i4(3236), n2 = i4(844), o3 = i4(5741), a3 = i4(8285), h3 = i4(7975), c3 = i4(7090), l3 = ["cols", "rows"];
+        class d3 extends n2.Disposable {
+          constructor(e5) {
+            super(), this._core = this.register(new r3.Terminal(e5)), this._addonManager = this.register(new o3.AddonManager()), this._publicOptions = { ...this._core.options };
+            const t5 = (e6) => this._core.options[e6], i5 = (e6, t6) => {
+              this._checkReadonlyOptions(e6), this._core.options[e6] = t6;
+            };
+            for (const e6 in this._core.options) {
+              const s4 = { get: t5.bind(this, e6), set: i5.bind(this, e6) };
+              Object.defineProperty(this._publicOptions, e6, s4);
+            }
+          }
+          _checkReadonlyOptions(e5) {
+            if (l3.includes(e5))
+              throw new Error(`Option "${e5}" can only be set in the constructor`);
+          }
+          _checkProposedApi() {
+            if (!this._core.optionsService.rawOptions.allowProposedApi)
+              throw new Error("You must set the allowProposedApi option to true to use proposed API");
+          }
+          get onBell() {
+            return this._core.onBell;
+          }
+          get onBinary() {
+            return this._core.onBinary;
+          }
+          get onCursorMove() {
+            return this._core.onCursorMove;
+          }
+          get onData() {
+            return this._core.onData;
+          }
+          get onKey() {
+            return this._core.onKey;
+          }
+          get onLineFeed() {
+            return this._core.onLineFeed;
+          }
+          get onRender() {
+            return this._core.onRender;
+          }
+          get onResize() {
+            return this._core.onResize;
+          }
+          get onScroll() {
+            return this._core.onScroll;
+          }
+          get onSelectionChange() {
+            return this._core.onSelectionChange;
+          }
+          get onTitleChange() {
+            return this._core.onTitleChange;
+          }
+          get onWriteParsed() {
+            return this._core.onWriteParsed;
+          }
+          get element() {
+            return this._core.element;
+          }
+          get parser() {
+            return this._parser || (this._parser = new h3.ParserApi(this._core)), this._parser;
+          }
+          get unicode() {
+            return this._checkProposedApi(), new c3.UnicodeApi(this._core);
+          }
+          get textarea() {
+            return this._core.textarea;
+          }
+          get rows() {
+            return this._core.rows;
+          }
+          get cols() {
+            return this._core.cols;
+          }
+          get buffer() {
+            return this._buffer || (this._buffer = this.register(new a3.BufferNamespaceApi(this._core))), this._buffer;
+          }
+          get markers() {
+            return this._checkProposedApi(), this._core.markers;
+          }
+          get modes() {
+            const e5 = this._core.coreService.decPrivateModes;
+            let t5 = "none";
+            switch (this._core.coreMouseService.activeProtocol) {
+              case "X10":
+                t5 = "x10";
+                break;
+              case "VT200":
+                t5 = "vt200";
+                break;
+              case "DRAG":
+                t5 = "drag";
+                break;
+              case "ANY":
+                t5 = "any";
+            }
+            return { applicationCursorKeysMode: e5.applicationCursorKeys, applicationKeypadMode: e5.applicationKeypad, bracketedPasteMode: e5.bracketedPasteMode, insertMode: this._core.coreService.modes.insertMode, mouseTrackingMode: t5, originMode: e5.origin, reverseWraparoundMode: e5.reverseWraparound, sendFocusMode: e5.sendFocus, wraparoundMode: e5.wraparound };
+          }
+          get options() {
+            return this._publicOptions;
+          }
+          set options(e5) {
+            for (const t5 in e5)
+              this._publicOptions[t5] = e5[t5];
+          }
+          blur() {
+            this._core.blur();
+          }
+          focus() {
+            this._core.focus();
+          }
+          input(e5, t5 = true) {
+            this._core.input(e5, t5);
+          }
+          resize(e5, t5) {
+            this._verifyIntegers(e5, t5), this._core.resize(e5, t5);
+          }
+          open(e5) {
+            this._core.open(e5);
+          }
+          attachCustomKeyEventHandler(e5) {
+            this._core.attachCustomKeyEventHandler(e5);
+          }
+          attachCustomWheelEventHandler(e5) {
+            this._core.attachCustomWheelEventHandler(e5);
+          }
+          registerLinkProvider(e5) {
+            return this._core.registerLinkProvider(e5);
+          }
+          registerCharacterJoiner(e5) {
+            return this._checkProposedApi(), this._core.registerCharacterJoiner(e5);
+          }
+          deregisterCharacterJoiner(e5) {
+            this._checkProposedApi(), this._core.deregisterCharacterJoiner(e5);
+          }
+          registerMarker(e5 = 0) {
+            return this._verifyIntegers(e5), this._core.registerMarker(e5);
+          }
+          registerDecoration(e5) {
+            return this._checkProposedApi(), this._verifyPositiveIntegers(e5.x ?? 0, e5.width ?? 0, e5.height ?? 0), this._core.registerDecoration(e5);
+          }
+          hasSelection() {
+            return this._core.hasSelection();
+          }
+          select(e5, t5, i5) {
+            this._verifyIntegers(e5, t5, i5), this._core.select(e5, t5, i5);
+          }
+          getSelection() {
+            return this._core.getSelection();
+          }
+          getSelectionPosition() {
+            return this._core.getSelectionPosition();
+          }
+          clearSelection() {
+            this._core.clearSelection();
+          }
+          selectAll() {
+            this._core.selectAll();
+          }
+          selectLines(e5, t5) {
+            this._verifyIntegers(e5, t5), this._core.selectLines(e5, t5);
+          }
+          dispose() {
+            super.dispose();
+          }
+          scrollLines(e5) {
+            this._verifyIntegers(e5), this._core.scrollLines(e5);
+          }
+          scrollPages(e5) {
+            this._verifyIntegers(e5), this._core.scrollPages(e5);
+          }
+          scrollToTop() {
+            this._core.scrollToTop();
+          }
+          scrollToBottom() {
+            this._core.scrollToBottom();
+          }
+          scrollToLine(e5) {
+            this._verifyIntegers(e5), this._core.scrollToLine(e5);
+          }
+          clear() {
+            this._core.clear();
+          }
+          write(e5, t5) {
+            this._core.write(e5, t5);
+          }
+          writeln(e5, t5) {
+            this._core.write(e5), this._core.write("\r\n", t5);
+          }
+          paste(e5) {
+            this._core.paste(e5);
+          }
+          refresh(e5, t5) {
+            this._verifyIntegers(e5, t5), this._core.refresh(e5, t5);
+          }
+          reset() {
+            this._core.reset();
+          }
+          clearTextureAtlas() {
+            this._core.clearTextureAtlas();
+          }
+          loadAddon(e5) {
+            this._addonManager.loadAddon(this, e5);
+          }
+          static get strings() {
+            return t4;
+          }
+          _verifyIntegers(...e5) {
+            for (const t5 of e5)
+              if (t5 === 1 / 0 || isNaN(t5) || t5 % 1 != 0)
+                throw new Error("This API only accepts integers");
+          }
+          _verifyPositiveIntegers(...e5) {
+            for (const t5 of e5)
+              if (t5 && (t5 === 1 / 0 || isNaN(t5) || t5 % 1 != 0 || t5 < 0))
+                throw new Error("This API only accepts positive integers");
+          }
+        }
+        e4.Terminal = d3;
+      })(), s3;
+    })());
+  }
+});
+
+// ../../node_modules/@xterm/addon-fit/lib/addon-fit.js
+var require_addon_fit = __commonJS({
+  "../../node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
+    !function(e3, t3) {
+      "object" == typeof exports && "object" == typeof module ? module.exports = t3() : "function" == typeof define && define.amd ? define([], t3) : "object" == typeof exports ? exports.FitAddon = t3() : e3.FitAddon = t3();
+    }(self, () => (() => {
+      "use strict";
+      var e3 = {};
+      return (() => {
+        var t3 = e3;
+        Object.defineProperty(t3, "__esModule", { value: true }), t3.FitAddon = void 0, t3.FitAddon = class {
+          activate(e4) {
+            this._terminal = e4;
+          }
+          dispose() {
+          }
+          fit() {
+            const e4 = this.proposeDimensions();
+            if (!e4 || !this._terminal || isNaN(e4.cols) || isNaN(e4.rows))
+              return;
+            const t4 = this._terminal._core;
+            this._terminal.rows === e4.rows && this._terminal.cols === e4.cols || (t4._renderService.clear(), this._terminal.resize(e4.cols, e4.rows));
+          }
+          proposeDimensions() {
+            if (!this._terminal)
+              return;
+            if (!this._terminal.element || !this._terminal.element.parentElement)
+              return;
+            const e4 = this._terminal._core, t4 = e4._renderService.dimensions;
+            if (0 === t4.css.cell.width || 0 === t4.css.cell.height)
+              return;
+            const r3 = 0 === this._terminal.options.scrollback ? 0 : e4.viewport.scrollBarWidth, i4 = window.getComputedStyle(this._terminal.element.parentElement), o3 = parseInt(i4.getPropertyValue("height")), s3 = Math.max(0, parseInt(i4.getPropertyValue("width"))), n2 = window.getComputedStyle(this._terminal.element), l3 = o3 - (parseInt(n2.getPropertyValue("padding-top")) + parseInt(n2.getPropertyValue("padding-bottom"))), a3 = s3 - (parseInt(n2.getPropertyValue("padding-right")) + parseInt(n2.getPropertyValue("padding-left"))) - r3;
+            return { cols: Math.max(2, Math.floor(a3 / t4.css.cell.width)), rows: Math.max(1, Math.floor(l3 / t4.css.cell.height)) };
+          }
+        };
+      })(), e3;
+    })());
+  }
+});
+
+// ../../node_modules/@profoundlogic/hogan/lib/compiler.js
+var require_compiler = __commonJS({
+  "../../node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
+    (function(Hogan4) {
+      var rIsWhitespace = /\S/, rQuot = /\"/g, rNewline = /\n/g, rCr = /\r/g, rSlash = /\\/g, rLineSep = /\u2028/, rParagraphSep = /\u2029/;
+      Hogan4.tags = {
+        "#": 1,
+        "^": 2,
+        "<": 3,
+        "$": 4,
+        "/": 5,
+        "!": 6,
+        ">": 7,
+        "=": 8,
+        "_v": 9,
+        "{": 10,
+        "&": 11,
+        "_t": 12
+      };
+      Hogan4.scan = function scan(text, delimiters) {
+        var len = text.length, IN_TEXT = 0, IN_TAG_TYPE = 1, IN_TAG = 2, state = IN_TEXT, tagType = null, tag2 = null, buf = "", tokens = [], seenTag = false, i4 = 0, lineStart = 0, otag = "{{", ctag = "}}";
+        function addBuf() {
+          if (buf.length > 0) {
+            tokens.push({ tag: "_t", text: new String(buf) });
+            buf = "";
+          }
+        }
+        function lineIsWhitespace() {
+          var isAllWhitespace = true;
+          for (var j3 = lineStart; j3 < tokens.length; j3++) {
+            isAllWhitespace = Hogan4.tags[tokens[j3].tag] < Hogan4.tags["_v"] || tokens[j3].tag == "_t" && tokens[j3].text.match(rIsWhitespace) === null;
+            if (!isAllWhitespace) {
+              return false;
+            }
+          }
+          return isAllWhitespace;
+        }
+        function filterLine(haveSeenTag, noNewLine) {
+          addBuf();
+          if (haveSeenTag && lineIsWhitespace()) {
+            for (var j3 = lineStart, next; j3 < tokens.length; j3++) {
+              if (tokens[j3].text) {
+                if ((next = tokens[j3 + 1]) && next.tag == ">") {
+                  next.indent = tokens[j3].text.toString();
+                }
+                tokens.splice(j3, 1);
+              }
+            }
+          } else if (!noNewLine) {
+            tokens.push({ tag: "\n" });
+          }
+          seenTag = false;
+          lineStart = tokens.length;
+        }
+        function changeDelimiters(text2, index) {
+          var close = "=" + ctag, closeIndex = text2.indexOf(close, index), delimiters2 = trim(
+            text2.substring(text2.indexOf("=", index) + 1, closeIndex)
+          ).split(" ");
+          otag = delimiters2[0];
+          ctag = delimiters2[delimiters2.length - 1];
+          return closeIndex + close.length - 1;
+        }
+        if (delimiters) {
+          delimiters = delimiters.split(" ");
+          otag = delimiters[0];
+          ctag = delimiters[1];
+        }
+        for (i4 = 0; i4 < len; i4++) {
+          if (state == IN_TEXT) {
+            if (tagChange(otag, text, i4)) {
+              --i4;
+              addBuf();
+              state = IN_TAG_TYPE;
+            } else {
+              if (text.charAt(i4) == "\n") {
+                filterLine(seenTag);
+              } else {
+                buf += text.charAt(i4);
+              }
+            }
+          } else if (state == IN_TAG_TYPE) {
+            i4 += otag.length - 1;
+            tag2 = Hogan4.tags[text.charAt(i4 + 1)];
+            tagType = tag2 ? text.charAt(i4 + 1) : "_v";
+            if (tagType == "=") {
+              i4 = changeDelimiters(text, i4);
+              state = IN_TEXT;
+            } else {
+              if (tag2) {
+                i4++;
+              }
+              state = IN_TAG;
+            }
+            seenTag = i4;
+          } else {
+            if (tagChange(ctag, text, i4)) {
+              tokens.push({
+                tag: tagType,
+                n: trim(buf),
+                otag,
+                ctag,
+                i: tagType == "/" ? seenTag - otag.length : i4 + ctag.length
+              });
+              buf = "";
+              i4 += ctag.length - 1;
+              state = IN_TEXT;
+              if (tagType == "{") {
+                if (ctag == "}}") {
+                  i4++;
+                } else {
+                  cleanTripleStache(tokens[tokens.length - 1]);
+                }
+              }
+            } else {
+              buf += text.charAt(i4);
+            }
+          }
+        }
+        filterLine(seenTag, true);
+        return tokens;
+      };
+      function cleanTripleStache(token) {
+        if (token.n.substr(token.n.length - 1) === "}") {
+          token.n = token.n.substring(0, token.n.length - 1);
+        }
+      }
+      function trim(s3) {
+        if (s3.trim) {
+          return s3.trim();
+        }
+        return s3.replace(/^\s*|\s*$/g, "");
+      }
+      function tagChange(tag2, text, index) {
+        if (text.charAt(index) != tag2.charAt(0)) {
+          return false;
+        }
+        for (var i4 = 1, l3 = tag2.length; i4 < l3; i4++) {
+          if (text.charAt(index + i4) != tag2.charAt(i4)) {
+            return false;
+          }
+        }
+        return true;
+      }
+      var allowedInSuper = { "_t": true, "\n": true, "$": true, "/": true };
+      function buildTree2(tokens, kind, stack, customTags) {
+        var instructions = [], opener = null, tail = null, token = null;
+        tail = stack[stack.length - 1];
+        while (tokens.length > 0) {
+          token = tokens.shift();
+          if (tail && tail.tag == "<" && !(token.tag in allowedInSuper)) {
+            throw new Error("Illegal content in < super tag.");
+          }
+          if (Hogan4.tags[token.tag] <= Hogan4.tags["$"] || isOpener(token, customTags)) {
+            stack.push(token);
+            token.nodes = buildTree2(tokens, token.tag, stack, customTags);
+          } else if (token.tag == "/") {
+            if (stack.length === 0) {
+              throw new Error("Closing tag without opener: /" + token.n);
+            }
+            opener = stack.pop();
+            if (token.n != opener.n && !isCloser(token.n, opener.n, customTags)) {
+              throw new Error("Nesting error: " + opener.n + " vs. " + token.n);
+            }
+            opener.end = token.i;
+            return instructions;
+          } else if (token.tag == "\n") {
+            token.last = tokens.length == 0 || tokens[0].tag == "\n";
+          }
+          instructions.push(token);
+        }
+        if (stack.length > 0) {
+          throw new Error("missing closing tag: " + stack.pop().n);
+        }
+        return instructions;
+      }
+      function isOpener(token, tags) {
+        for (var i4 = 0, l3 = tags.length; i4 < l3; i4++) {
+          if (tags[i4].o == token.n) {
+            token.tag = "#";
+            return true;
+          }
+        }
+      }
+      function isCloser(close, open, tags) {
+        for (var i4 = 0, l3 = tags.length; i4 < l3; i4++) {
+          if (tags[i4].c == close && tags[i4].o == open) {
+            return true;
+          }
+        }
+      }
+      function stringifySubstitutions(obj) {
+        var items = [];
+        for (var key2 in obj) {
+          items.push('"' + esc(key2) + '": function(c,p,t,i) {' + obj[key2] + "}");
+        }
+        return "{ " + items.join(",") + " }";
+      }
+      function stringifyPartials(codeObj) {
+        var partials = [];
+        for (var key2 in codeObj.partials) {
+          partials.push('"' + esc(key2) + '":{name:"' + esc(codeObj.partials[key2].name) + '", ' + stringifyPartials(codeObj.partials[key2]) + "}");
+        }
+        return "partials: {" + partials.join(",") + "}, subs: " + stringifySubstitutions(codeObj.subs);
+      }
+      Hogan4.stringify = function(codeObj, text, options2) {
+        return "{code: function (c,p,i) { " + Hogan4.wrapMain(codeObj.code) + " }," + stringifyPartials(codeObj) + "}";
+      };
+      var serialNo = 0;
+      Hogan4.generate = function(tree, text, options2) {
+        serialNo = 0;
+        var context = { code: "", subs: {}, partials: {} };
+        Hogan4.walk(tree, context);
+        if (options2.asString) {
+          return this.stringify(context, text, options2);
+        }
+        return this.makeTemplate(context, text, options2);
+      };
+      Hogan4.wrapMain = function(code) {
+        return 'var t=this;t.b(i=i||"");' + code + "return t.fl();";
+      };
+      Hogan4.template = Hogan4.Template;
+      Hogan4.makeTemplate = function(codeObj, text, options2) {
+        var template = this.makePartials(codeObj);
+        template.code = new Function("c", "p", "i", this.wrapMain(codeObj.code));
+        return new this.template(template, text, this, options2);
+      };
+      Hogan4.makePartials = function(codeObj) {
+        var key2, template = { subs: {}, partials: codeObj.partials, name: codeObj.name };
+        for (key2 in template.partials) {
+          template.partials[key2] = this.makePartials(template.partials[key2]);
+        }
+        for (key2 in codeObj.subs) {
+          template.subs[key2] = new Function("c", "p", "t", "i", codeObj.subs[key2]);
+        }
+        return template;
+      };
+      function esc(s3) {
+        return s3.replace(rSlash, "\\\\").replace(rQuot, '\\"').replace(rNewline, "\\n").replace(rCr, "\\r").replace(rLineSep, "\\u2028").replace(rParagraphSep, "\\u2029");
+      }
+      function chooseMethod(s3) {
+        return ~s3.indexOf(".") ? "d" : "f";
+      }
+      function createPartial(node, context) {
+        var prefix = "<" + (context.prefix || "");
+        var sym = prefix + node.n + serialNo++;
+        context.partials[sym] = { name: node.n, partials: {} };
+        context.code += 't.b(t.rp("' + esc(sym) + '",c,p,"' + (node.indent || "") + '"));';
+        return sym;
+      }
+      Hogan4.codegen = {
+        "#": function(node, context) {
+          context.code += "if(t.s(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,1),c,p,0,' + node.i + "," + node.end + ',"' + node.otag + " " + node.ctag + '")){t.rs(c,p,function(c,p,t){';
+          Hogan4.walk(node.nodes, context);
+          context.code += "});c.pop();}";
+        },
+        "^": function(node, context) {
+          context.code += "if(!t.s(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,1),c,p,1,0,0,"")){';
+          Hogan4.walk(node.nodes, context);
+          context.code += "};";
+        },
+        ">": createPartial,
+        "<": function(node, context) {
+          var ctx = { partials: {}, code: "", subs: {}, inPartial: true };
+          Hogan4.walk(node.nodes, ctx);
+          var template = context.partials[createPartial(node, context)];
+          template.subs = ctx.subs;
+          template.partials = ctx.partials;
+        },
+        "$": function(node, context) {
+          var ctx = { subs: {}, code: "", partials: context.partials, prefix: node.n };
+          Hogan4.walk(node.nodes, ctx);
+          context.subs[node.n] = ctx.code;
+          if (!context.inPartial) {
+            context.code += 't.sub("' + esc(node.n) + '",c,p,i);';
+          }
+        },
+        "\n": function(node, context) {
+          context.code += write('"\\n"' + (node.last ? "" : " + i"));
+        },
+        "_v": function(node, context) {
+          context.code += "t.b(t.v(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,0)));';
+        },
+        "_t": function(node, context) {
+          context.code += write('"' + esc(node.text) + '"');
+        },
+        "{": tripleStache,
+        "&": tripleStache
+      };
+      function tripleStache(node, context) {
+        context.code += "t.b(t.t(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,0)));';
+      }
+      function write(s3) {
+        return "t.b(" + s3 + ");";
+      }
+      Hogan4.walk = function(nodelist, context) {
+        var func;
+        for (var i4 = 0, l3 = nodelist.length; i4 < l3; i4++) {
+          func = Hogan4.codegen[nodelist[i4].tag];
+          func && func(nodelist[i4], context);
+        }
+        return context;
+      };
+      Hogan4.parse = function(tokens, text, options2) {
+        options2 = options2 || {};
+        return buildTree2(tokens, "", [], options2.sectionTags || []);
+      };
+      Hogan4.cache = {};
+      Hogan4.cacheKey = function(text, options2) {
+        return [text, !!options2.asString, !!options2.disableLambda, options2.delimiters, !!options2.modelGet].join("||");
+      };
+      Hogan4.compile = function(text, options2) {
+        options2 = options2 || {};
+        var key2 = Hogan4.cacheKey(text, options2);
+        var template = this.cache[key2];
+        if (template) {
+          var partials = template.partials;
+          for (var name in partials) {
+            delete partials[name].instance;
+          }
+          return template;
+        }
+        template = this.generate(this.parse(this.scan(text, options2.delimiters), text, options2), text, options2);
+        return this.cache[key2] = template;
+      };
+    })(typeof exports !== "undefined" ? exports : Hogan);
+  }
+});
+
+// ../../node_modules/@profoundlogic/hogan/lib/template.js
+var require_template = __commonJS({
+  "../../node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
+    var Hogan4 = {};
+    (function(Hogan5) {
+      Hogan5.Template = function(codeObj, text, compiler, options2) {
+        codeObj = codeObj || {};
+        this.r = codeObj.code || this.r;
+        this.c = compiler;
+        this.options = options2 || {};
+        this.text = text || "";
+        this.partials = codeObj.partials || {};
+        this.subs = codeObj.subs || {};
+        this.buf = "";
+      };
+      Hogan5.Template.prototype = {
+        // render: replaced by generated code.
+        r: function(context, partials, indent) {
+          return "";
+        },
+        // variable escaping
+        v: hoganEscape,
+        // triple stache
+        t: coerceToString,
+        render: function render(context, partials, indent) {
+          return this.ri([context], partials || {}, indent);
+        },
+        // render internal -- a hook for overrides that catches partials too
+        ri: function(context, partials, indent) {
+          return this.r(context, partials, indent);
+        },
+        // ensurePartial
+        ep: function(symbol, partials) {
+          var partial = this.partials[symbol];
+          var template = partials[partial.name];
+          if (partial.instance && partial.base == template) {
+            return partial.instance;
+          }
+          if (typeof template == "string") {
+            if (!this.c) {
+              throw new Error("No compiler available.");
+            }
+            template = this.c.compile(template, this.options);
+          }
+          if (!template) {
+            return null;
+          }
+          this.partials[symbol].base = template;
+          if (partial.subs) {
+            if (!partials.stackText)
+              partials.stackText = {};
+            for (key in partial.subs) {
+              if (!partials.stackText[key]) {
+                partials.stackText[key] = this.activeSub !== void 0 && partials.stackText[this.activeSub] ? partials.stackText[this.activeSub] : this.text;
+              }
+            }
+            template = createSpecializedPartial(
+              template,
+              partial.subs,
+              partial.partials,
+              this.stackSubs,
+              this.stackPartials,
+              partials.stackText
+            );
+          }
+          this.partials[symbol].instance = template;
+          return template;
+        },
+        // tries to find a partial in the current scope and render it
+        rp: function(symbol, context, partials, indent) {
+          var partial = this.ep(symbol, partials);
+          if (!partial) {
+            return "";
+          }
+          return partial.ri(context, partials, indent);
+        },
+        // render a section
+        rs: function(context, partials, section) {
+          var tail = context[context.length - 1];
+          if (!isArray(tail)) {
+            section(context, partials, this);
+            return;
+          }
+          for (var i4 = 0; i4 < tail.length; i4++) {
+            context.push(tail[i4]);
+            section(context, partials, this);
+            context.pop();
+          }
+        },
+        // maybe start a section
+        s: function(val, ctx, partials, inverted, start, end, tags) {
+          var pass;
+          if (isArray(val) && val.length === 0) {
+            return false;
+          }
+          if (typeof val == "function") {
+            val = this.ms(val, ctx, partials, inverted, start, end, tags);
+          }
+          pass = !!val;
+          if (!inverted && pass && ctx) {
+            ctx.push(typeof val == "object" ? val : ctx[ctx.length - 1]);
+          }
+          return pass;
+        },
+        // find values with dotted names
+        d: function(key2, ctx, partials, returnFound) {
+          var found, names = key2.split("."), val = this.f(names[0], ctx, partials, returnFound), doModelGet = this.options.modelGet, cx = null;
+          if (key2 === "." && isArray(ctx[ctx.length - 2])) {
+            val = ctx[ctx.length - 1];
+          } else {
+            for (var i4 = 1; i4 < names.length; i4++) {
+              found = findInScope(names[i4], val, doModelGet);
+              if (found !== void 0) {
+                cx = val;
+                val = found;
+              } else {
+                val = "";
+              }
+            }
+          }
+          if (returnFound && !val) {
+            return false;
+          }
+          if (!returnFound && typeof val == "function") {
+            ctx.push(cx);
+            val = this.mv(val, ctx, partials);
+            ctx.pop();
+          }
+          return val;
+        },
+        // find values with normal names
+        f: function(key2, ctx, partials, returnFound) {
+          var val = false, v3 = null, found = false, doModelGet = this.options.modelGet;
+          for (var i4 = ctx.length - 1; i4 >= 0; i4--) {
+            v3 = ctx[i4];
+            val = findInScope(key2, v3, doModelGet);
+            if (val !== void 0) {
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            return returnFound ? false : "";
+          }
+          if (!returnFound && typeof val == "function") {
+            val = this.mv(val, ctx, partials);
+          }
+          return val;
+        },
+        // higher order templates
+        ls: function(func, cx, ctx, partials, text, tags) {
+          var oldTags = this.options.delimiters;
+          this.options.delimiters = tags;
+          this.b(this.ct(coerceToString(func.call(cx, text, ctx)), cx, partials));
+          this.options.delimiters = oldTags;
+          return false;
+        },
+        // compile text
+        ct: function(text, cx, partials) {
+          if (this.options.disableLambda) {
+            throw new Error("Lambda features disabled.");
+          }
+          return this.c.compile(text, this.options).render(cx, partials);
+        },
+        // template result buffering
+        b: function(s3) {
+          this.buf += s3;
+        },
+        fl: function() {
+          var r3 = this.buf;
+          this.buf = "";
+          return r3;
+        },
+        // method replace section
+        ms: function(func, ctx, partials, inverted, start, end, tags) {
+          var textSource, cx = ctx[ctx.length - 1], result = func.call(cx);
+          if (typeof result == "function") {
+            if (inverted) {
+              return true;
+            } else {
+              textSource = this.activeSub && this.subsText && this.subsText[this.activeSub] ? this.subsText[this.activeSub] : this.text;
+              return this.ls(result, cx, ctx, partials, textSource.substring(start, end), tags);
+            }
+          }
+          return result;
+        },
+        // method replace variable
+        mv: function(func, ctx, partials) {
+          var cx = ctx[ctx.length - 1];
+          var result = func.call(cx);
+          if (typeof result == "function") {
+            return this.ct(coerceToString(result.call(cx)), cx, partials);
+          }
+          return result;
+        },
+        sub: function(name, context, partials, indent) {
+          var f4 = this.subs[name];
+          if (f4) {
+            this.activeSub = name;
+            f4(context, partials, this, indent);
+            this.activeSub = false;
+          }
+        }
+      };
+      function findInScope(key2, scope, doModelGet) {
+        var val;
+        if (scope && typeof scope == "object") {
+          if (scope[key2] !== void 0) {
+            val = scope[key2];
+          } else if (doModelGet && scope.get && typeof scope.get == "function") {
+            val = scope.get(key2);
+          }
+        }
+        return val;
+      }
+      function createSpecializedPartial(instance, subs, partials, stackSubs, stackPartials, stackText) {
+        function PartialTemplate() {
+        }
+        ;
+        PartialTemplate.prototype = instance;
+        function Substitutions() {
+        }
+        ;
+        Substitutions.prototype = instance.subs;
+        var key2;
+        var partial = new PartialTemplate();
+        partial.subs = new Substitutions();
+        partial.subsText = {};
+        partial.buf = "";
+        stackSubs = stackSubs || {};
+        partial.stackSubs = stackSubs;
+        partial.subsText = stackText;
+        for (key2 in subs) {
+          if (!stackSubs[key2])
+            stackSubs[key2] = subs[key2];
+        }
+        for (key2 in stackSubs) {
+          partial.subs[key2] = stackSubs[key2];
+        }
+        stackPartials = stackPartials || {};
+        partial.stackPartials = stackPartials;
+        for (key2 in partials) {
+          if (!stackPartials[key2])
+            stackPartials[key2] = partials[key2];
+        }
+        for (key2 in stackPartials) {
+          partial.partials[key2] = stackPartials[key2];
+        }
+        return partial;
+      }
+      var rAmp = /&/g, rLt = /</g, rGt = />/g, rApos = /\'/g, rQuot = /\"/g, hChars = /[&<>\"\']/;
+      function coerceToString(val) {
+        return String(val === null || val === void 0 ? "" : val);
+      }
+      function hoganEscape(str) {
+        str = coerceToString(str);
+        return hChars.test(str) ? str.replace(rAmp, "&amp;").replace(rLt, "&lt;").replace(rGt, "&gt;").replace(rApos, "&#39;").replace(rQuot, "&quot;") : str;
+      }
+      var isArray = Array.isArray || function(a3) {
+        return Object.prototype.toString.call(a3) === "[object Array]";
+      };
+    })(typeof exports !== "undefined" ? exports : Hogan4);
+  }
+});
+
+// ../../node_modules/@profoundlogic/hogan/lib/hogan.js
+var require_hogan = __commonJS({
+  "../../node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
+    var Hogan4 = require_compiler();
+    Hogan4.Template = require_template().Template;
+    Hogan4.template = Hogan4.Template;
+    module.exports = Hogan4;
+  }
+});
+
+// ../../node_modules/preact/dist/preact.module.js
+var n;
+var l;
+var u;
+var t;
+var i;
+var o;
+var r;
+var e;
+var f;
+var c;
+var s;
+var a;
+var h;
+var p = {};
+var v = [];
+var y = /acit|ex(?:s|g|n|p|$)|rph|grid|ows|mnc|ntw|ine[ch]|zoo|^ord|itera/i;
+var d = Array.isArray;
+function w(n2, l3) {
+  for (var u4 in l3)
+    n2[u4] = l3[u4];
+  return n2;
+}
+function g(n2) {
+  n2 && n2.parentNode && n2.parentNode.removeChild(n2);
+}
+function _(l3, u4, t3) {
+  var i4, o3, r3, e3 = {};
+  for (r3 in u4)
+    "key" == r3 ? i4 = u4[r3] : "ref" == r3 ? o3 = u4[r3] : e3[r3] = u4[r3];
+  if (arguments.length > 2 && (e3.children = arguments.length > 3 ? n.call(arguments, 2) : t3), "function" == typeof l3 && null != l3.defaultProps)
+    for (r3 in l3.defaultProps)
+      void 0 === e3[r3] && (e3[r3] = l3.defaultProps[r3]);
+  return m(l3, e3, i4, o3, null);
+}
+function m(n2, t3, i4, o3, r3) {
+  var e3 = { type: n2, props: t3, key: i4, ref: o3, __k: null, __: null, __b: 0, __e: null, __c: null, constructor: void 0, __v: null == r3 ? ++u : r3, __i: -1, __u: 0 };
+  return null == r3 && null != l.vnode && l.vnode(e3), e3;
+}
+function k(n2) {
+  return n2.children;
+}
+function x(n2, l3) {
+  this.props = n2, this.context = l3;
+}
+function S(n2, l3) {
+  if (null == l3)
+    return n2.__ ? S(n2.__, n2.__i + 1) : null;
+  for (var u4; l3 < n2.__k.length; l3++)
+    if (null != (u4 = n2.__k[l3]) && null != u4.__e)
+      return u4.__e;
+  return "function" == typeof n2.type ? S(n2) : null;
+}
+function C(n2) {
+  var l3, u4;
+  if (null != (n2 = n2.__) && null != n2.__c) {
+    for (n2.__e = n2.__c.base = null, l3 = 0; l3 < n2.__k.length; l3++)
+      if (null != (u4 = n2.__k[l3]) && null != u4.__e) {
+        n2.__e = n2.__c.base = u4.__e;
+        break;
+      }
+    return C(n2);
+  }
+}
+function M(n2) {
+  (!n2.__d && (n2.__d = true) && i.push(n2) && !$.__r++ || o != l.debounceRendering) && ((o = l.debounceRendering) || r)($);
+}
+function $() {
+  for (var n2, u4, t3, o3, r3, f4, c3, s3 = 1; i.length; )
+    i.length > s3 && i.sort(e), n2 = i.shift(), s3 = i.length, n2.__d && (t3 = void 0, o3 = void 0, r3 = (o3 = (u4 = n2).__v).__e, f4 = [], c3 = [], u4.__P && ((t3 = w({}, o3)).__v = o3.__v + 1, l.vnode && l.vnode(t3), O(u4.__P, t3, o3, u4.__n, u4.__P.namespaceURI, 32 & o3.__u ? [r3] : null, f4, null == r3 ? S(o3) : r3, !!(32 & o3.__u), c3), t3.__v = o3.__v, t3.__.__k[t3.__i] = t3, N(f4, t3, c3), o3.__e = o3.__ = null, t3.__e != r3 && C(t3)));
+  $.__r = 0;
+}
+function I(n2, l3, u4, t3, i4, o3, r3, e3, f4, c3, s3) {
+  var a3, h3, y3, d3, w3, g2, _2, m3 = t3 && t3.__k || v, b = l3.length;
+  for (f4 = P(u4, l3, m3, f4, b), a3 = 0; a3 < b; a3++)
+    null != (y3 = u4.__k[a3]) && (h3 = -1 == y3.__i ? p : m3[y3.__i] || p, y3.__i = a3, g2 = O(n2, y3, h3, i4, o3, r3, e3, f4, c3, s3), d3 = y3.__e, y3.ref && h3.ref != y3.ref && (h3.ref && B(h3.ref, null, y3), s3.push(y3.ref, y3.__c || d3, y3)), null == w3 && null != d3 && (w3 = d3), (_2 = !!(4 & y3.__u)) || h3.__k === y3.__k ? f4 = A(y3, f4, n2, _2) : "function" == typeof y3.type && void 0 !== g2 ? f4 = g2 : d3 && (f4 = d3.nextSibling), y3.__u &= -7);
+  return u4.__e = w3, f4;
+}
+function P(n2, l3, u4, t3, i4) {
+  var o3, r3, e3, f4, c3, s3 = u4.length, a3 = s3, h3 = 0;
+  for (n2.__k = new Array(i4), o3 = 0; o3 < i4; o3++)
+    null != (r3 = l3[o3]) && "boolean" != typeof r3 && "function" != typeof r3 ? ("string" == typeof r3 || "number" == typeof r3 || "bigint" == typeof r3 || r3.constructor == String ? r3 = n2.__k[o3] = m(null, r3, null, null, null) : d(r3) ? r3 = n2.__k[o3] = m(k, { children: r3 }, null, null, null) : void 0 === r3.constructor && r3.__b > 0 ? r3 = n2.__k[o3] = m(r3.type, r3.props, r3.key, r3.ref ? r3.ref : null, r3.__v) : n2.__k[o3] = r3, f4 = o3 + h3, r3.__ = n2, r3.__b = n2.__b + 1, e3 = null, -1 != (c3 = r3.__i = L(r3, u4, f4, a3)) && (a3--, (e3 = u4[c3]) && (e3.__u |= 2)), null == e3 || null == e3.__v ? (-1 == c3 && (i4 > s3 ? h3-- : i4 < s3 && h3++), "function" != typeof r3.type && (r3.__u |= 4)) : c3 != f4 && (c3 == f4 - 1 ? h3-- : c3 == f4 + 1 ? h3++ : (c3 > f4 ? h3-- : h3++, r3.__u |= 4))) : n2.__k[o3] = null;
+  if (a3)
+    for (o3 = 0; o3 < s3; o3++)
+      null != (e3 = u4[o3]) && 0 == (2 & e3.__u) && (e3.__e == t3 && (t3 = S(e3)), D(e3, e3));
+  return t3;
+}
+function A(n2, l3, u4, t3) {
+  var i4, o3;
+  if ("function" == typeof n2.type) {
+    for (i4 = n2.__k, o3 = 0; i4 && o3 < i4.length; o3++)
+      i4[o3] && (i4[o3].__ = n2, l3 = A(i4[o3], l3, u4, t3));
+    return l3;
+  }
+  n2.__e != l3 && (t3 && (l3 && n2.type && !l3.parentNode && (l3 = S(n2)), u4.insertBefore(n2.__e, l3 || null)), l3 = n2.__e);
+  do {
+    l3 = l3 && l3.nextSibling;
+  } while (null != l3 && 8 == l3.nodeType);
+  return l3;
+}
+function L(n2, l3, u4, t3) {
+  var i4, o3, r3, e3 = n2.key, f4 = n2.type, c3 = l3[u4], s3 = null != c3 && 0 == (2 & c3.__u);
+  if (null === c3 && null == e3 || s3 && e3 == c3.key && f4 == c3.type)
+    return u4;
+  if (t3 > (s3 ? 1 : 0)) {
+    for (i4 = u4 - 1, o3 = u4 + 1; i4 >= 0 || o3 < l3.length; )
+      if (null != (c3 = l3[r3 = i4 >= 0 ? i4-- : o3++]) && 0 == (2 & c3.__u) && e3 == c3.key && f4 == c3.type)
+        return r3;
+  }
+  return -1;
+}
+function T(n2, l3, u4) {
+  "-" == l3[0] ? n2.setProperty(l3, null == u4 ? "" : u4) : n2[l3] = null == u4 ? "" : "number" != typeof u4 || y.test(l3) ? u4 : u4 + "px";
+}
+function j(n2, l3, u4, t3, i4) {
+  var o3, r3;
+  n:
+    if ("style" == l3)
+      if ("string" == typeof u4)
+        n2.style.cssText = u4;
+      else {
+        if ("string" == typeof t3 && (n2.style.cssText = t3 = ""), t3)
+          for (l3 in t3)
+            u4 && l3 in u4 || T(n2.style, l3, "");
+        if (u4)
+          for (l3 in u4)
+            t3 && u4[l3] == t3[l3] || T(n2.style, l3, u4[l3]);
+      }
+    else if ("o" == l3[0] && "n" == l3[1])
+      o3 = l3 != (l3 = l3.replace(f, "$1")), r3 = l3.toLowerCase(), l3 = r3 in n2 || "onFocusOut" == l3 || "onFocusIn" == l3 ? r3.slice(2) : l3.slice(2), n2.l || (n2.l = {}), n2.l[l3 + o3] = u4, u4 ? t3 ? u4.u = t3.u : (u4.u = c, n2.addEventListener(l3, o3 ? a : s, o3)) : n2.removeEventListener(l3, o3 ? a : s, o3);
+    else {
+      if ("http://www.w3.org/2000/svg" == i4)
+        l3 = l3.replace(/xlink(H|:h)/, "h").replace(/sName$/, "s");
+      else if ("width" != l3 && "height" != l3 && "href" != l3 && "list" != l3 && "form" != l3 && "tabIndex" != l3 && "download" != l3 && "rowSpan" != l3 && "colSpan" != l3 && "role" != l3 && "popover" != l3 && l3 in n2)
+        try {
+          n2[l3] = null == u4 ? "" : u4;
+          break n;
+        } catch (n3) {
+        }
+      "function" == typeof u4 || (null == u4 || false === u4 && "-" != l3[4] ? n2.removeAttribute(l3) : n2.setAttribute(l3, "popover" == l3 && 1 == u4 ? "" : u4));
+    }
+}
+function F(n2) {
+  return function(u4) {
+    if (this.l) {
+      var t3 = this.l[u4.type + n2];
+      if (null == u4.t)
+        u4.t = c++;
+      else if (u4.t < t3.u)
+        return;
+      return t3(l.event ? l.event(u4) : u4);
+    }
+  };
+}
+function O(n2, u4, t3, i4, o3, r3, e3, f4, c3, s3) {
+  var a3, h3, p3, v3, y3, _2, m3, b, S2, C3, M2, $2, P2, A3, H, L2, T3, j3 = u4.type;
+  if (void 0 !== u4.constructor)
+    return null;
+  128 & t3.__u && (c3 = !!(32 & t3.__u), r3 = [f4 = u4.__e = t3.__e]), (a3 = l.__b) && a3(u4);
+  n:
+    if ("function" == typeof j3)
+      try {
+        if (b = u4.props, S2 = "prototype" in j3 && j3.prototype.render, C3 = (a3 = j3.contextType) && i4[a3.__c], M2 = a3 ? C3 ? C3.props.value : a3.__ : i4, t3.__c ? m3 = (h3 = u4.__c = t3.__c).__ = h3.__E : (S2 ? u4.__c = h3 = new j3(b, M2) : (u4.__c = h3 = new x(b, M2), h3.constructor = j3, h3.render = E), C3 && C3.sub(h3), h3.state || (h3.state = {}), h3.__n = i4, p3 = h3.__d = true, h3.__h = [], h3._sb = []), S2 && null == h3.__s && (h3.__s = h3.state), S2 && null != j3.getDerivedStateFromProps && (h3.__s == h3.state && (h3.__s = w({}, h3.__s)), w(h3.__s, j3.getDerivedStateFromProps(b, h3.__s))), v3 = h3.props, y3 = h3.state, h3.__v = u4, p3)
+          S2 && null == j3.getDerivedStateFromProps && null != h3.componentWillMount && h3.componentWillMount(), S2 && null != h3.componentDidMount && h3.__h.push(h3.componentDidMount);
+        else {
+          if (S2 && null == j3.getDerivedStateFromProps && b !== v3 && null != h3.componentWillReceiveProps && h3.componentWillReceiveProps(b, M2), u4.__v == t3.__v || !h3.__e && null != h3.shouldComponentUpdate && false === h3.shouldComponentUpdate(b, h3.__s, M2)) {
+            for (u4.__v != t3.__v && (h3.props = b, h3.state = h3.__s, h3.__d = false), u4.__e = t3.__e, u4.__k = t3.__k, u4.__k.some(function(n3) {
+              n3 && (n3.__ = u4);
+            }), $2 = 0; $2 < h3._sb.length; $2++)
+              h3.__h.push(h3._sb[$2]);
+            h3._sb = [], h3.__h.length && e3.push(h3);
+            break n;
+          }
+          null != h3.componentWillUpdate && h3.componentWillUpdate(b, h3.__s, M2), S2 && null != h3.componentDidUpdate && h3.__h.push(function() {
+            h3.componentDidUpdate(v3, y3, _2);
+          });
+        }
+        if (h3.context = M2, h3.props = b, h3.__P = n2, h3.__e = false, P2 = l.__r, A3 = 0, S2) {
+          for (h3.state = h3.__s, h3.__d = false, P2 && P2(u4), a3 = h3.render(h3.props, h3.state, h3.context), H = 0; H < h3._sb.length; H++)
+            h3.__h.push(h3._sb[H]);
+          h3._sb = [];
+        } else
+          do {
+            h3.__d = false, P2 && P2(u4), a3 = h3.render(h3.props, h3.state, h3.context), h3.state = h3.__s;
+          } while (h3.__d && ++A3 < 25);
+        h3.state = h3.__s, null != h3.getChildContext && (i4 = w(w({}, i4), h3.getChildContext())), S2 && !p3 && null != h3.getSnapshotBeforeUpdate && (_2 = h3.getSnapshotBeforeUpdate(v3, y3)), L2 = a3, null != a3 && a3.type === k && null == a3.key && (L2 = V(a3.props.children)), f4 = I(n2, d(L2) ? L2 : [L2], u4, t3, i4, o3, r3, e3, f4, c3, s3), h3.base = u4.__e, u4.__u &= -161, h3.__h.length && e3.push(h3), m3 && (h3.__E = h3.__ = null);
+      } catch (n3) {
+        if (u4.__v = null, c3 || null != r3)
+          if (n3.then) {
+            for (u4.__u |= c3 ? 160 : 128; f4 && 8 == f4.nodeType && f4.nextSibling; )
+              f4 = f4.nextSibling;
+            r3[r3.indexOf(f4)] = null, u4.__e = f4;
+          } else {
+            for (T3 = r3.length; T3--; )
+              g(r3[T3]);
+            z(u4);
+          }
+        else
+          u4.__e = t3.__e, u4.__k = t3.__k, n3.then || z(u4);
+        l.__e(n3, u4, t3);
+      }
+    else
+      null == r3 && u4.__v == t3.__v ? (u4.__k = t3.__k, u4.__e = t3.__e) : f4 = u4.__e = q(t3.__e, u4, t3, i4, o3, r3, e3, c3, s3);
+  return (a3 = l.diffed) && a3(u4), 128 & u4.__u ? void 0 : f4;
+}
+function z(n2) {
+  n2 && n2.__c && (n2.__c.__e = true), n2 && n2.__k && n2.__k.forEach(z);
+}
+function N(n2, u4, t3) {
+  for (var i4 = 0; i4 < t3.length; i4++)
+    B(t3[i4], t3[++i4], t3[++i4]);
+  l.__c && l.__c(u4, n2), n2.some(function(u5) {
+    try {
+      n2 = u5.__h, u5.__h = [], n2.some(function(n3) {
+        n3.call(u5);
+      });
+    } catch (n3) {
+      l.__e(n3, u5.__v);
+    }
+  });
+}
+function V(n2) {
+  return "object" != typeof n2 || null == n2 || n2.__b && n2.__b > 0 ? n2 : d(n2) ? n2.map(V) : w({}, n2);
+}
+function q(u4, t3, i4, o3, r3, e3, f4, c3, s3) {
+  var a3, h3, v3, y3, w3, _2, m3, b = i4.props || p, k3 = t3.props, x2 = t3.type;
+  if ("svg" == x2 ? r3 = "http://www.w3.org/2000/svg" : "math" == x2 ? r3 = "http://www.w3.org/1998/Math/MathML" : r3 || (r3 = "http://www.w3.org/1999/xhtml"), null != e3) {
+    for (a3 = 0; a3 < e3.length; a3++)
+      if ((w3 = e3[a3]) && "setAttribute" in w3 == !!x2 && (x2 ? w3.localName == x2 : 3 == w3.nodeType)) {
+        u4 = w3, e3[a3] = null;
+        break;
+      }
+  }
+  if (null == u4) {
+    if (null == x2)
+      return document.createTextNode(k3);
+    u4 = document.createElementNS(r3, x2, k3.is && k3), c3 && (l.__m && l.__m(t3, e3), c3 = false), e3 = null;
+  }
+  if (null == x2)
+    b === k3 || c3 && u4.data == k3 || (u4.data = k3);
+  else {
+    if (e3 = e3 && n.call(u4.childNodes), !c3 && null != e3)
+      for (b = {}, a3 = 0; a3 < u4.attributes.length; a3++)
+        b[(w3 = u4.attributes[a3]).name] = w3.value;
+    for (a3 in b)
+      if (w3 = b[a3], "children" == a3)
+        ;
+      else if ("dangerouslySetInnerHTML" == a3)
+        v3 = w3;
+      else if (!(a3 in k3)) {
+        if ("value" == a3 && "defaultValue" in k3 || "checked" == a3 && "defaultChecked" in k3)
+          continue;
+        j(u4, a3, null, w3, r3);
+      }
+    for (a3 in k3)
+      w3 = k3[a3], "children" == a3 ? y3 = w3 : "dangerouslySetInnerHTML" == a3 ? h3 = w3 : "value" == a3 ? _2 = w3 : "checked" == a3 ? m3 = w3 : c3 && "function" != typeof w3 || b[a3] === w3 || j(u4, a3, w3, b[a3], r3);
+    if (h3)
+      c3 || v3 && (h3.__html == v3.__html || h3.__html == u4.innerHTML) || (u4.innerHTML = h3.__html), t3.__k = [];
+    else if (v3 && (u4.innerHTML = ""), I("template" == t3.type ? u4.content : u4, d(y3) ? y3 : [y3], t3, i4, o3, "foreignObject" == x2 ? "http://www.w3.org/1999/xhtml" : r3, e3, f4, e3 ? e3[0] : i4.__k && S(i4, 0), c3, s3), null != e3)
+      for (a3 = e3.length; a3--; )
+        g(e3[a3]);
+    c3 || (a3 = "value", "progress" == x2 && null == _2 ? u4.removeAttribute("value") : null != _2 && (_2 !== u4[a3] || "progress" == x2 && !_2 || "option" == x2 && _2 != b[a3]) && j(u4, a3, _2, b[a3], r3), a3 = "checked", null != m3 && m3 != u4[a3] && j(u4, a3, m3, b[a3], r3));
+  }
+  return u4;
+}
+function B(n2, u4, t3) {
+  try {
+    if ("function" == typeof n2) {
+      var i4 = "function" == typeof n2.__u;
+      i4 && n2.__u(), i4 && null == u4 || (n2.__u = n2(u4));
+    } else
+      n2.current = u4;
+  } catch (n3) {
+    l.__e(n3, t3);
+  }
+}
+function D(n2, u4, t3) {
+  var i4, o3;
+  if (l.unmount && l.unmount(n2), (i4 = n2.ref) && (i4.current && i4.current != n2.__e || B(i4, null, u4)), null != (i4 = n2.__c)) {
+    if (i4.componentWillUnmount)
+      try {
+        i4.componentWillUnmount();
+      } catch (n3) {
+        l.__e(n3, u4);
+      }
+    i4.base = i4.__P = null;
+  }
+  if (i4 = n2.__k)
+    for (o3 = 0; o3 < i4.length; o3++)
+      i4[o3] && D(i4[o3], u4, t3 || "function" != typeof n2.type);
+  t3 || g(n2.__e), n2.__c = n2.__ = n2.__e = void 0;
+}
+function E(n2, l3, u4) {
+  return this.constructor(n2, u4);
+}
+function G(u4, t3, i4) {
+  var o3, r3, e3, f4;
+  t3 == document && (t3 = document.documentElement), l.__ && l.__(u4, t3), r3 = (o3 = "function" == typeof i4) ? null : i4 && i4.__k || t3.__k, e3 = [], f4 = [], O(t3, u4 = (!o3 && i4 || t3).__k = _(k, null, [u4]), r3 || p, p, t3.namespaceURI, !o3 && i4 ? [i4] : r3 ? null : t3.firstChild ? n.call(t3.childNodes) : null, e3, !o3 && i4 ? i4 : r3 ? r3.__e : t3.firstChild, o3, f4), N(e3, u4, f4);
+}
+n = v.slice, l = { __e: function(n2, l3, u4, t3) {
+  for (var i4, o3, r3; l3 = l3.__; )
+    if ((i4 = l3.__c) && !i4.__)
+      try {
+        if ((o3 = i4.constructor) && null != o3.getDerivedStateFromError && (i4.setState(o3.getDerivedStateFromError(n2)), r3 = i4.__d), null != i4.componentDidCatch && (i4.componentDidCatch(n2, t3 || {}), r3 = i4.__d), r3)
+          return i4.__E = i4;
+      } catch (l4) {
+        n2 = l4;
+      }
+  throw n2;
+} }, u = 0, t = function(n2) {
+  return null != n2 && void 0 === n2.constructor;
+}, x.prototype.setState = function(n2, l3) {
+  var u4;
+  u4 = null != this.__s && this.__s != this.state ? this.__s : this.__s = w({}, this.state), "function" == typeof n2 && (n2 = n2(w({}, u4), this.props)), n2 && w(u4, n2), null != n2 && this.__v && (l3 && this._sb.push(l3), M(this));
+}, x.prototype.forceUpdate = function(n2) {
+  this.__v && (this.__e = true, n2 && this.__h.push(n2), M(this));
+}, x.prototype.render = k, i = [], r = "function" == typeof Promise ? Promise.prototype.then.bind(Promise.resolve()) : setTimeout, e = function(n2, l3) {
+  return n2.__v.__b - l3.__v.__b;
+}, $.__r = 0, f = /(PointerCapture)$|Capture$/i, c = 0, s = F(false), a = F(true), h = 0;
+
+// ../../node_modules/preact/hooks/dist/hooks.module.js
+var t2;
+var r2;
+var u2;
+var i2;
+var o2 = 0;
+var f2 = [];
+var c2 = l;
+var e2 = c2.__b;
+var a2 = c2.__r;
+var v2 = c2.diffed;
+var l2 = c2.__c;
+var m2 = c2.unmount;
+var s2 = c2.__;
+function p2(n2, t3) {
+  c2.__h && c2.__h(r2, n2, o2 || t3), o2 = 0;
+  var u4 = r2.__H || (r2.__H = { __: [], __h: [] });
+  return n2 >= u4.__.length && u4.__.push({}), u4.__[n2];
+}
+function d2(n2) {
+  return o2 = 1, h2(D2, n2);
+}
+function h2(n2, u4, i4) {
+  var o3 = p2(t2++, 2);
+  if (o3.t = n2, !o3.__c && (o3.__ = [i4 ? i4(u4) : D2(void 0, u4), function(n3) {
+    var t3 = o3.__N ? o3.__N[0] : o3.__[0], r3 = o3.t(t3, n3);
+    t3 !== r3 && (o3.__N = [r3, o3.__[1]], o3.__c.setState({}));
+  }], o3.__c = r2, !r2.__f)) {
+    var f4 = function(n3, t3, r3) {
+      if (!o3.__c.__H)
+        return true;
+      var u5 = o3.__c.__H.__.filter(function(n4) {
+        return !!n4.__c;
+      });
+      if (u5.every(function(n4) {
+        return !n4.__N;
+      }))
+        return !c3 || c3.call(this, n3, t3, r3);
+      var i5 = o3.__c.props !== n3;
+      return u5.forEach(function(n4) {
+        if (n4.__N) {
+          var t4 = n4.__[0];
+          n4.__ = n4.__N, n4.__N = void 0, t4 !== n4.__[0] && (i5 = true);
+        }
+      }), c3 && c3.call(this, n3, t3, r3) || i5;
+    };
+    r2.__f = true;
+    var c3 = r2.shouldComponentUpdate, e3 = r2.componentWillUpdate;
+    r2.componentWillUpdate = function(n3, t3, r3) {
+      if (this.__e) {
+        var u5 = c3;
+        c3 = void 0, f4(n3, t3, r3), c3 = u5;
+      }
+      e3 && e3.call(this, n3, t3, r3);
+    }, r2.shouldComponentUpdate = f4;
+  }
+  return o3.__N || o3.__;
+}
+function y2(n2, u4) {
+  var i4 = p2(t2++, 3);
+  !c2.__s && C2(i4.__H, u4) && (i4.__ = n2, i4.u = u4, r2.__H.__h.push(i4));
+}
+function A2(n2) {
+  return o2 = 5, T2(function() {
+    return { current: n2 };
+  }, []);
+}
+function T2(n2, r3) {
+  var u4 = p2(t2++, 7);
+  return C2(u4.__H, r3) && (u4.__ = n2(), u4.__H = r3, u4.__h = n2), u4.__;
+}
+function q2(n2, t3) {
+  return o2 = 8, T2(function() {
+    return n2;
+  }, t3);
+}
+function j2() {
+  for (var n2; n2 = f2.shift(); )
+    if (n2.__P && n2.__H)
+      try {
+        n2.__H.__h.forEach(z2), n2.__H.__h.forEach(B2), n2.__H.__h = [];
+      } catch (t3) {
+        n2.__H.__h = [], c2.__e(t3, n2.__v);
+      }
+}
+c2.__b = function(n2) {
+  r2 = null, e2 && e2(n2);
+}, c2.__ = function(n2, t3) {
+  n2 && t3.__k && t3.__k.__m && (n2.__m = t3.__k.__m), s2 && s2(n2, t3);
+}, c2.__r = function(n2) {
+  a2 && a2(n2), t2 = 0;
+  var i4 = (r2 = n2.__c).__H;
+  i4 && (u2 === r2 ? (i4.__h = [], r2.__h = [], i4.__.forEach(function(n3) {
+    n3.__N && (n3.__ = n3.__N), n3.u = n3.__N = void 0;
+  })) : (i4.__h.forEach(z2), i4.__h.forEach(B2), i4.__h = [], t2 = 0)), u2 = r2;
+}, c2.diffed = function(n2) {
+  v2 && v2(n2);
+  var t3 = n2.__c;
+  t3 && t3.__H && (t3.__H.__h.length && (1 !== f2.push(t3) && i2 === c2.requestAnimationFrame || ((i2 = c2.requestAnimationFrame) || w2)(j2)), t3.__H.__.forEach(function(n3) {
+    n3.u && (n3.__H = n3.u), n3.u = void 0;
+  })), u2 = r2 = null;
+}, c2.__c = function(n2, t3) {
+  t3.some(function(n3) {
+    try {
+      n3.__h.forEach(z2), n3.__h = n3.__h.filter(function(n4) {
+        return !n4.__ || B2(n4);
+      });
+    } catch (r3) {
+      t3.some(function(n4) {
+        n4.__h && (n4.__h = []);
+      }), t3 = [], c2.__e(r3, n3.__v);
+    }
+  }), l2 && l2(n2, t3);
+}, c2.unmount = function(n2) {
+  m2 && m2(n2);
+  var t3, r3 = n2.__c;
+  r3 && r3.__H && (r3.__H.__.forEach(function(n3) {
+    try {
+      z2(n3);
+    } catch (n4) {
+      t3 = n4;
+    }
+  }), r3.__H = void 0, t3 && c2.__e(t3, r3.__v));
+};
+var k2 = "function" == typeof requestAnimationFrame;
+function w2(n2) {
+  var t3, r3 = function() {
+    clearTimeout(u4), k2 && cancelAnimationFrame(t3), setTimeout(n2);
+  }, u4 = setTimeout(r3, 35);
+  k2 && (t3 = requestAnimationFrame(r3));
+}
+function z2(n2) {
+  var t3 = r2, u4 = n2.__c;
+  "function" == typeof u4 && (n2.__c = void 0, u4()), r2 = t3;
+}
+function B2(n2) {
+  var t3 = r2;
+  n2.__c = n2.__(), r2 = t3;
+}
+function C2(n2, t3) {
+  return !n2 || n2.length !== t3.length || t3.some(function(t4, r3) {
+    return t4 !== n2[r3];
+  });
+}
+function D2(n2, t3) {
+  return "function" == typeof t3 ? t3(n2) : t3;
+}
+
+// ui/src/api.ts
+var DEFAULT_HEADERS = {
+  Accept: "application/json"
+};
+async function apiGet(path) {
+  const response = await fetch(path, { headers: DEFAULT_HEADERS });
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+async function apiPost(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : void 0
+  });
+  if (!response.ok) {
+    throw new Error(`POST ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+async function apiPatch(path, body) {
+  const response = await fetch(path, {
+    method: "PATCH",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : void 0
+  });
+  if (!response.ok) {
+    throw new Error(`PATCH ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+async function apiDelete(path) {
+  const response = await fetch(path, {
+    method: "DELETE",
+    headers: DEFAULT_HEADERS
+  });
+  if (!response.ok) {
+    throw new Error(`DELETE ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+function normalizeList(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  return payload.items || payload.sessions || payload.queue || payload.requests || payload.repos || payload.branches || [];
+}
+function buildQuery(params) {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key2, value]) => {
+    if (value === void 0) {
+      return;
+    }
+    searchParams.set(key2, String(value));
+  });
+  const query = searchParams.toString();
+  return query ? `?${query}` : "";
+}
+async function parseMaybeJson(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+  return response.text();
+}
+async function getSessions(query) {
+  const response = await apiGet(`/api/sessions${query || ""}`);
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function navigateSession(sessionId) {
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/navigate`;
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" }
+  });
+  if (!response.ok) {
+    let message = `POST ${path} failed: ${response.status}`;
+    try {
+      const body = await response.json();
+      if (body.message)
+        message = body.message;
+      else if (body.error)
+        message = body.error;
+    } catch {
+    }
+    throw new Error(message);
+  }
+}
+async function killSession(sessionId) {
+  await apiPost(`/api/sessions/${encodeURIComponent(sessionId)}/kill`);
+}
+async function patchSession(sessionId, body) {
+  const response = await apiPatch(`/api/sessions/${encodeURIComponent(sessionId)}`, body);
+  return parseMaybeJson(response);
+}
+async function getAuthQueue() {
+  const response = await apiGet("/api/auth/queue");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function getAuthHistory(limit) {
+  const query = limit != null ? `?limit=${limit}` : "";
+  const response = await apiGet(`/api/auth/history${query}`);
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function approveAuthRequest(requestId) {
+  const APPROVE_TIMEOUT_MS = 1e4;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), APPROVE_TIMEOUT_MS);
+  const path = `/api/auth/request/${encodeURIComponent(requestId)}/approve`;
+  let response;
+  try {
+    response = await fetch(path, {
+      method: "POST",
+      headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+      signal: controller.signal
+    });
+  } catch (e3) {
+    clearTimeout(timeoutId);
+    if (e3 instanceof Error && e3.name === "AbortError") {
+      throw new Error("Approve timed out \u2014 Mandible may be starting up. Try again in a moment.");
+    }
+    throw e3;
+  }
+  clearTimeout(timeoutId);
+  if (!response.ok) {
+    let message = `POST ${path} failed: ${response.status}`;
+    try {
+      const body = await response.json();
+      if (body.error)
+        message = body.error;
+      else if (body.message)
+        message = body.message;
+    } catch {
+    }
+    throw new Error(message);
+  }
+}
+async function rejectAuthRequest(requestId) {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/reject`);
+}
+async function retryAuthRequest(requestId) {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/retry`);
+}
+async function dismissAuthRequest(requestId) {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/dismiss`);
+}
+async function getWorkRepos() {
+  const response = await apiGet("/api/work/repos");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function getRepoBranches(repoId) {
+  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/branches`);
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function getReviewDiff(params) {
+  const response = await apiGet(`/api/review/diff${buildQuery(params)}`);
+  const payload = await parseMaybeJson(response);
+  if (typeof payload === "string") {
+    return payload;
+  }
+  if (payload && typeof payload === "object" && "html" in payload) {
+    return String(payload.html || "");
+  }
+  return "";
+}
+async function getReviewSpec(params) {
+  const response = await apiGet(`/api/review/spec${buildQuery(params)}`);
+  const payload = await parseMaybeJson(response);
+  if (typeof payload === "string") {
+    return { markdown: payload, commits: [] };
+  }
+  if (!payload || typeof payload !== "object") {
+    return { markdown: "", commits: [] };
+  }
+  const data = payload;
+  return {
+    markdown: data.markdown || data.spec || data.content || "",
+    commits: Array.isArray(data.commits) ? data.commits : [],
+    meta: data.meta
+  };
+}
+async function getIssueRepos() {
+  const response = await apiGet("/api/issues");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function getIssueDetail(repoId, issueId) {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}`
+  );
+  return parseMaybeJson(response);
+}
+async function issueAction(repoId, issueId, action, body) {
+  await apiPost(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/${action}`,
+    body
+  );
+}
+async function scanIssues() {
+  const response = await apiPost("/api/issues/scan");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function scanIssueRepo(repoId) {
+  await apiPost(`/api/issues/${encodeURIComponent(repoId)}/scan`);
+}
+async function triggerWorkScan() {
+  await apiPost("/api/work/scan");
+}
+async function openPath(targetPath) {
+  await apiPost("/api/system/open-path", { path: targetPath });
+}
+async function getSwitchboardPairings() {
+  const response = await apiGet("/api/switchboard/pairings");
+  const payload = await parseMaybeJson(response);
+  if (Array.isArray(payload))
+    return payload;
+  return payload.pairings ?? [];
+}
+async function addSwitchboardPairing(name, source, target, hooks) {
+  const response = await fetch("/api/switchboard/pairings", {
+    method: "POST",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, source, target, ...hooks })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(payload.error ?? `POST /api/switchboard/pairings failed: ${response.status}`);
+  }
+}
+async function deleteSwitchboardPairing(name) {
+  await apiDelete(`/api/switchboard/pairings/${encodeURIComponent(name)}`);
+}
+async function updateSwitchboardPairing(name, source, target, hooks) {
+  const response = await fetch(`/api/switchboard/pairings/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ source, target, ...hooks })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(payload.error ?? `PATCH /api/switchboard/pairings/${name} failed: ${response.status}`);
+  }
+}
+async function getSwitchboardItems(name) {
+  const response = await apiGet(`/api/switchboard/pairings/${encodeURIComponent(name)}/items`);
+  return await parseMaybeJson(response);
+}
+async function toggleSwitchboardItem(pairingName, item) {
+  const response = await fetch(`/api/switchboard/pairings/${encodeURIComponent(pairingName)}/toggle`, {
+    method: "POST",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ item })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(payload.error ?? `toggle failed: ${response.status}`);
+  }
+  return await response.json();
+}
+async function syncSwitchboard(pairingName) {
+  const response = await apiPost(`/api/switchboard/pairings/${encodeURIComponent(pairingName)}/sync`);
+  return await parseMaybeJson(response);
+}
+async function getSwitchboardTemplates() {
+  const response = await apiGet("/api/switchboard/templates");
+  return await parseMaybeJson(response);
+}
+async function createSwitchboardTemplate(name, hooks) {
+  const response = await fetch("/api/switchboard/templates", {
+    method: "POST",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, ...hooks })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(payload.error ?? `POST /api/switchboard/templates failed: ${response.status}`);
+  }
+  return await response.json();
+}
+async function getInboxGlobal() {
+  const res = await apiGet("/api/inbox/global");
+  return await parseMaybeJson(res);
+}
+async function acknowledgeInboxItem(type, id) {
+  await apiPost(`/api/inbox/${type}/${encodeURIComponent(id)}/ack`, {});
+}
+async function ackAllInbox() {
+  await apiPost("/api/inbox/ack-all");
+}
+async function getIssueSessions(repoId, issueId) {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/sessions`
+  );
+  const payload = await parseMaybeJson(response);
+  return Array.isArray(payload) ? payload : [];
+}
+async function getSettings() {
+  const response = await apiGet("/api/settings");
+  const payload = await parseMaybeJson(response);
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    return payload;
+  }
+  return {};
+}
+async function updateSetting(key2, value) {
+  const response = await fetch(`/api/settings/${encodeURIComponent(key2)}`, {
+    method: "PUT",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ value })
+  });
+  if (!response.ok) {
+    throw new Error(`PUT /api/settings/${key2} failed: ${response.status}`);
+  }
+}
+async function getConsoleSessions() {
+  const response = await apiGet("/api/console/sessions");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function restartConsoleSession(sessionId) {
+  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/restart`);
+}
+async function createConsoleSession(label, agentType) {
+  const body = { label, command: "", args: [] };
+  if (agentType === "operator") {
+    body.command = "claude";
+    body.args = ["--dangerously-skip-permissions", "--output-format", "stream-json"];
+    body.auto_restart = true;
+    body.is_operator = true;
+  } else if (agentType === "claude") {
+    body.command = "claude";
+    body.args = ["--dangerously-skip-permissions", "--output-format", "stream-json"];
+  } else if (agentType === "codex") {
+    body.command = "codex";
+    body.args = [];
+  } else {
+    body.command = "bash";
+    body.args = [];
+  }
+  const response = await apiPost("/api/console/sessions", body);
+  const json = await parseMaybeJson(response);
+  const data = json;
+  return { id: data.session?.id ?? data.id ?? "" };
+}
+async function closeConsoleSession(sessionId) {
+  await apiDelete(`/api/console/sessions/${encodeURIComponent(sessionId)}`);
+}
+async function getBackupStatus() {
+  const response = await apiGet("/api/backup/status");
+  return await parseMaybeJson(response);
+}
+async function runBackupNow() {
+  const response = await apiPost("/api/backup/run");
+  return await parseMaybeJson(response);
+}
+async function updateBackupSettings(settings) {
+  const response = await fetch("/api/backup/settings", {
+    method: "PUT",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(settings)
+  });
+  if (!response.ok) {
+    throw new Error(`PUT /api/backup/settings failed: ${response.status}`);
+  }
+}
+async function getConversations(params) {
+  const query = new URLSearchParams();
+  if (params?.source)
+    query.set("source", params.source);
+  if (params?.starred)
+    query.set("starred", "1");
+  if (params?.search)
+    query.set("search", params.search);
+  if (params?.offset)
+    query.set("offset", String(params.offset));
+  if (params?.limit)
+    query.set("limit", String(params.limit));
+  if (params?.sort)
+    query.set("sort", params.sort);
+  if (params?.group)
+    query.set("group", "true");
+  if (params?.exclude_subagents)
+    query.set("exclude_subagents", "true");
+  if (params?.parent_id)
+    query.set("parent_id", params.parent_id);
+  const qs = query.toString();
+  const resp = await apiGet(`/api/conversations${qs ? "?" + qs : ""}`);
+  return await parseMaybeJson(resp);
+}
+async function getConversation(id) {
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}`);
+  const payload = await parseMaybeJson(resp);
+  return {
+    ...payload.conversation ?? {},
+    blocks: payload.blocks ?? [],
+    children: payload.children ?? []
+  };
+}
+async function updateConversation(id, data) {
+  const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, data);
+  return await parseMaybeJson(resp);
+}
+async function exportConversationBlocks(id, data) {
+  const resp = await apiPost(`/api/conversations/${encodeURIComponent(id)}/export`, data);
+  return await parseMaybeJson(resp);
+}
+async function triggerIngestion(source) {
+  const resp = await apiPost("/api/conversations/ingest", source ? { source } : {});
+  return await parseMaybeJson(resp);
+}
+async function getLogs(params) {
+  const query = new URLSearchParams();
+  if (params?.level)
+    query.set("level", params.level);
+  if (params?.limit != null)
+    query.set("limit", String(params.limit));
+  if (params?.offset != null)
+    query.set("offset", String(params.offset));
+  const qs = query.toString();
+  const resp = await apiGet(`/api/system/logs${qs ? "?" + qs : ""}`);
+  return await parseMaybeJson(resp);
+}
+
+// ui/src/sse-client.ts
+var SSEClient = class {
+  constructor(options2 = {}) {
+    __publicField(this, "url");
+    __publicField(this, "EventSourceImpl");
+    __publicField(this, "backoffMs");
+    __publicField(this, "maxBackoffMs");
+    __publicField(this, "listeners", /* @__PURE__ */ new Map());
+    __publicField(this, "eventSource", null);
+    __publicField(this, "retryTimer", null);
+    __publicField(this, "currentBackoff");
+    __publicField(this, "closed", false);
+    __publicField(this, "pendingEvents", []);
+    this.url = options2.url || "/api/events";
+    this.EventSourceImpl = options2.EventSourceImpl || EventSource;
+    this.backoffMs = options2.backoffMs ?? 500;
+    this.maxBackoffMs = options2.maxBackoffMs ?? 15e3;
+    this.currentBackoff = this.backoffMs;
+  }
+  connect() {
+    if (this.eventSource || this.closed) {
+      return;
+    }
+    const source = new this.EventSourceImpl(this.url);
+    const messageHandler = (event) => {
+      this.handleMessage(event.data);
+    };
+    source.addEventListener("message", messageHandler);
+    source.onerror = () => {
+      if (source.readyState === 2) {
+        this.scheduleReconnect();
+      }
+    };
+    source.onopen = () => {
+      this.currentBackoff = this.backoffMs;
+    };
+    this.eventSource = source;
+  }
+  close() {
+    this.closed = true;
+    if (this.retryTimer) {
+      window.clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+  }
+  on(type, handler) {
+    const bucket = this.listeners.get(type) || /* @__PURE__ */ new Set();
+    bucket.add(handler);
+    this.listeners.set(type, bucket);
+    if (this.pendingEvents.length > 0) {
+      const remaining = [];
+      for (const event of this.pendingEvents) {
+        if (event.type === type || type === "*") {
+          handler(event);
+        } else {
+          remaining.push(event);
+        }
+      }
+      this.pendingEvents = remaining;
+    }
+    return () => this.off(type, handler);
+  }
+  off(type, handler) {
+    const bucket = this.listeners.get(type);
+    if (!bucket) {
+      return;
+    }
+    bucket.delete(handler);
+    if (!bucket.size) {
+      this.listeners.delete(type);
+    }
+  }
+  handleMessage(data) {
+    const payload = this.parsePayload(data);
+    if (!this.dispatch(payload.type, payload)) {
+      this.pendingEvents.push(payload);
+      if (this.pendingEvents.length > 100) {
+        this.pendingEvents = this.pendingEvents.slice(-50);
+      }
+    }
+  }
+  scheduleReconnect() {
+    if (this.retryTimer || this.closed) {
+      return;
+    }
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = null;
+      this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoffMs);
+      this.connect();
+    }, this.currentBackoff);
+  }
+  parsePayload(data) {
+    try {
+      const parsed = JSON.parse(data);
+      const type = parsed.type || parsed.event || "message";
+      return { type, ...parsed };
+    } catch {
+      return { type: "message", data };
+    }
+  }
+  /** Dispatch to registered handlers. Returns true if at least one handler ran. */
+  dispatch(type, payload) {
+    let handled = false;
+    const handlers = this.listeners.get(type);
+    if (handlers && handlers.size > 0) {
+      handlers.forEach((handler) => handler(payload));
+      handled = true;
+    }
+    const wildcards = this.listeners.get("*");
+    if (wildcards && wildcards.size > 0) {
+      wildcards.forEach((handler) => handler(payload));
+      handled = true;
+    }
+    return handled;
+  }
+};
+function createSSEClient(options2) {
+  return new SSEClient(options2);
+}
+
+// ../../node_modules/marked/lib/marked.esm.js
+function _getDefaults() {
+  return {
+    async: false,
+    breaks: false,
+    extensions: null,
+    gfm: true,
+    hooks: null,
+    pedantic: false,
+    renderer: null,
+    silent: false,
+    tokenizer: null,
+    walkTokens: null
+  };
+}
+var _defaults = _getDefaults();
+function changeDefaults(newDefaults) {
+  _defaults = newDefaults;
+}
+var escapeTest = /[&<>"']/;
+var escapeReplace = new RegExp(escapeTest.source, "g");
+var escapeTestNoEncode = /[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/;
+var escapeReplaceNoEncode = new RegExp(escapeTestNoEncode.source, "g");
+var escapeReplacements = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;"
+};
+var getEscapeReplacement = (ch) => escapeReplacements[ch];
+function escape$1(html3, encode) {
+  if (encode) {
+    if (escapeTest.test(html3)) {
+      return html3.replace(escapeReplace, getEscapeReplacement);
+    }
+  } else {
+    if (escapeTestNoEncode.test(html3)) {
+      return html3.replace(escapeReplaceNoEncode, getEscapeReplacement);
+    }
+  }
+  return html3;
+}
+var unescapeTest = /&(#(?:\d+)|(?:#x[0-9A-Fa-f]+)|(?:\w+));?/ig;
+function unescape(html3) {
+  return html3.replace(unescapeTest, (_2, n2) => {
+    n2 = n2.toLowerCase();
+    if (n2 === "colon")
+      return ":";
+    if (n2.charAt(0) === "#") {
+      return n2.charAt(1) === "x" ? String.fromCharCode(parseInt(n2.substring(2), 16)) : String.fromCharCode(+n2.substring(1));
+    }
+    return "";
+  });
+}
+var caret = /(^|[^\[])\^/g;
+function edit(regex2, opt) {
+  let source = typeof regex2 === "string" ? regex2 : regex2.source;
+  opt = opt || "";
+  const obj = {
+    replace: (name, val) => {
+      let valSource = typeof val === "string" ? val : val.source;
+      valSource = valSource.replace(caret, "$1");
+      source = source.replace(name, valSource);
+      return obj;
+    },
+    getRegex: () => {
+      return new RegExp(source, opt);
+    }
+  };
+  return obj;
+}
+function cleanUrl(href) {
+  try {
+    href = encodeURI(href).replace(/%25/g, "%");
+  } catch {
+    return null;
+  }
+  return href;
+}
+var noopTest = { exec: () => null };
+function splitCells(tableRow, count) {
+  const row = tableRow.replace(/\|/g, (match, offset, str) => {
+    let escaped = false;
+    let curr = offset;
+    while (--curr >= 0 && str[curr] === "\\")
+      escaped = !escaped;
+    if (escaped) {
+      return "|";
+    } else {
+      return " |";
+    }
+  }), cells = row.split(/ \|/);
+  let i4 = 0;
+  if (!cells[0].trim()) {
+    cells.shift();
+  }
+  if (cells.length > 0 && !cells[cells.length - 1].trim()) {
+    cells.pop();
+  }
+  if (count) {
+    if (cells.length > count) {
+      cells.splice(count);
+    } else {
+      while (cells.length < count)
+        cells.push("");
+    }
+  }
+  for (; i4 < cells.length; i4++) {
+    cells[i4] = cells[i4].trim().replace(/\\\|/g, "|");
+  }
+  return cells;
+}
+function rtrim(str, c3, invert) {
+  const l3 = str.length;
+  if (l3 === 0) {
+    return "";
+  }
+  let suffLen = 0;
+  while (suffLen < l3) {
+    const currChar = str.charAt(l3 - suffLen - 1);
+    if (currChar === c3 && !invert) {
+      suffLen++;
+    } else if (currChar !== c3 && invert) {
+      suffLen++;
+    } else {
+      break;
+    }
+  }
+  return str.slice(0, l3 - suffLen);
+}
+function findClosingBracket(str, b) {
+  if (str.indexOf(b[1]) === -1) {
+    return -1;
+  }
+  let level = 0;
+  for (let i4 = 0; i4 < str.length; i4++) {
+    if (str[i4] === "\\") {
+      i4++;
+    } else if (str[i4] === b[0]) {
+      level++;
+    } else if (str[i4] === b[1]) {
+      level--;
+      if (level < 0) {
+        return i4;
+      }
+    }
+  }
+  return -1;
+}
+function outputLink(cap, link2, raw, lexer2) {
+  const href = link2.href;
+  const title = link2.title ? escape$1(link2.title) : null;
+  const text = cap[1].replace(/\\([\[\]])/g, "$1");
+  if (cap[0].charAt(0) !== "!") {
+    lexer2.state.inLink = true;
+    const token = {
+      type: "link",
+      raw,
+      href,
+      title,
+      text,
+      tokens: lexer2.inlineTokens(text)
+    };
+    lexer2.state.inLink = false;
+    return token;
+  }
+  return {
+    type: "image",
+    raw,
+    href,
+    title,
+    text: escape$1(text)
+  };
+}
+function indentCodeCompensation(raw, text) {
+  const matchIndentToCode = raw.match(/^(\s+)(?:```)/);
+  if (matchIndentToCode === null) {
+    return text;
+  }
+  const indentToCode = matchIndentToCode[1];
+  return text.split("\n").map((node) => {
+    const matchIndentInNode = node.match(/^\s+/);
+    if (matchIndentInNode === null) {
+      return node;
+    }
+    const [indentInNode] = matchIndentInNode;
+    if (indentInNode.length >= indentToCode.length) {
+      return node.slice(indentToCode.length);
+    }
+    return node;
+  }).join("\n");
+}
+var _Tokenizer = class {
+  // set by the lexer
+  constructor(options2) {
+    __publicField(this, "options");
+    __publicField(this, "rules");
+    // set by the lexer
+    __publicField(this, "lexer");
+    this.options = options2 || _defaults;
+  }
+  space(src) {
+    const cap = this.rules.block.newline.exec(src);
+    if (cap && cap[0].length > 0) {
+      return {
+        type: "space",
+        raw: cap[0]
+      };
+    }
+  }
+  code(src) {
+    const cap = this.rules.block.code.exec(src);
+    if (cap) {
+      const text = cap[0].replace(/^ {1,4}/gm, "");
+      return {
+        type: "code",
+        raw: cap[0],
+        codeBlockStyle: "indented",
+        text: !this.options.pedantic ? rtrim(text, "\n") : text
+      };
+    }
+  }
+  fences(src) {
+    const cap = this.rules.block.fences.exec(src);
+    if (cap) {
+      const raw = cap[0];
+      const text = indentCodeCompensation(raw, cap[3] || "");
+      return {
+        type: "code",
+        raw,
+        lang: cap[2] ? cap[2].trim().replace(this.rules.inline.anyPunctuation, "$1") : cap[2],
+        text
+      };
+    }
+  }
+  heading(src) {
+    const cap = this.rules.block.heading.exec(src);
+    if (cap) {
+      let text = cap[2].trim();
+      if (/#$/.test(text)) {
+        const trimmed = rtrim(text, "#");
+        if (this.options.pedantic) {
+          text = trimmed.trim();
+        } else if (!trimmed || / $/.test(trimmed)) {
+          text = trimmed.trim();
+        }
+      }
+      return {
+        type: "heading",
+        raw: cap[0],
+        depth: cap[1].length,
+        text,
+        tokens: this.lexer.inline(text)
+      };
+    }
+  }
+  hr(src) {
+    const cap = this.rules.block.hr.exec(src);
+    if (cap) {
+      return {
+        type: "hr",
+        raw: rtrim(cap[0], "\n")
+      };
+    }
+  }
+  blockquote(src) {
+    const cap = this.rules.block.blockquote.exec(src);
+    if (cap) {
+      let lines = rtrim(cap[0], "\n").split("\n");
+      let raw = "";
+      let text = "";
+      const tokens = [];
+      while (lines.length > 0) {
+        let inBlockquote = false;
+        const currentLines = [];
+        let i4;
+        for (i4 = 0; i4 < lines.length; i4++) {
+          if (/^ {0,3}>/.test(lines[i4])) {
+            currentLines.push(lines[i4]);
+            inBlockquote = true;
+          } else if (!inBlockquote) {
+            currentLines.push(lines[i4]);
+          } else {
+            break;
+          }
+        }
+        lines = lines.slice(i4);
+        const currentRaw = currentLines.join("\n");
+        const currentText = currentRaw.replace(/\n {0,3}((?:=+|-+) *)(?=\n|$)/g, "\n    $1").replace(/^ {0,3}>[ \t]?/gm, "");
+        raw = raw ? `${raw}
+${currentRaw}` : currentRaw;
+        text = text ? `${text}
+${currentText}` : currentText;
+        const top = this.lexer.state.top;
+        this.lexer.state.top = true;
+        this.lexer.blockTokens(currentText, tokens, true);
+        this.lexer.state.top = top;
+        if (lines.length === 0) {
+          break;
+        }
+        const lastToken = tokens[tokens.length - 1];
+        if (lastToken?.type === "code") {
+          break;
+        } else if (lastToken?.type === "blockquote") {
+          const oldToken = lastToken;
+          const newText = oldToken.raw + "\n" + lines.join("\n");
+          const newToken = this.blockquote(newText);
+          tokens[tokens.length - 1] = newToken;
+          raw = raw.substring(0, raw.length - oldToken.raw.length) + newToken.raw;
+          text = text.substring(0, text.length - oldToken.text.length) + newToken.text;
+          break;
+        } else if (lastToken?.type === "list") {
+          const oldToken = lastToken;
+          const newText = oldToken.raw + "\n" + lines.join("\n");
+          const newToken = this.list(newText);
+          tokens[tokens.length - 1] = newToken;
+          raw = raw.substring(0, raw.length - lastToken.raw.length) + newToken.raw;
+          text = text.substring(0, text.length - oldToken.raw.length) + newToken.raw;
+          lines = newText.substring(tokens[tokens.length - 1].raw.length).split("\n");
+          continue;
+        }
+      }
+      return {
+        type: "blockquote",
+        raw,
+        tokens,
+        text
+      };
+    }
+  }
+  list(src) {
+    let cap = this.rules.block.list.exec(src);
+    if (cap) {
+      let bull = cap[1].trim();
+      const isordered = bull.length > 1;
+      const list2 = {
+        type: "list",
+        raw: "",
+        ordered: isordered,
+        start: isordered ? +bull.slice(0, -1) : "",
+        loose: false,
+        items: []
+      };
+      bull = isordered ? `\\d{1,9}\\${bull.slice(-1)}` : `\\${bull}`;
+      if (this.options.pedantic) {
+        bull = isordered ? bull : "[*+-]";
+      }
+      const itemRegex = new RegExp(`^( {0,3}${bull})((?:[	 ][^\\n]*)?(?:\\n|$))`);
+      let endsWithBlankLine = false;
+      while (src) {
+        let endEarly = false;
+        let raw = "";
+        let itemContents = "";
+        if (!(cap = itemRegex.exec(src))) {
+          break;
+        }
+        if (this.rules.block.hr.test(src)) {
+          break;
+        }
+        raw = cap[0];
+        src = src.substring(raw.length);
+        let line = cap[2].split("\n", 1)[0].replace(/^\t+/, (t3) => " ".repeat(3 * t3.length));
+        let nextLine = src.split("\n", 1)[0];
+        let blankLine = !line.trim();
+        let indent = 0;
+        if (this.options.pedantic) {
+          indent = 2;
+          itemContents = line.trimStart();
+        } else if (blankLine) {
+          indent = cap[1].length + 1;
+        } else {
+          indent = cap[2].search(/[^ ]/);
+          indent = indent > 4 ? 1 : indent;
+          itemContents = line.slice(indent);
+          indent += cap[1].length;
+        }
+        if (blankLine && /^ *$/.test(nextLine)) {
+          raw += nextLine + "\n";
+          src = src.substring(nextLine.length + 1);
+          endEarly = true;
+        }
+        if (!endEarly) {
+          const nextBulletRegex = new RegExp(`^ {0,${Math.min(3, indent - 1)}}(?:[*+-]|\\d{1,9}[.)])((?:[ 	][^\\n]*)?(?:\\n|$))`);
+          const hrRegex = new RegExp(`^ {0,${Math.min(3, indent - 1)}}((?:- *){3,}|(?:_ *){3,}|(?:\\* *){3,})(?:\\n+|$)`);
+          const fencesBeginRegex = new RegExp(`^ {0,${Math.min(3, indent - 1)}}(?:\`\`\`|~~~)`);
+          const headingBeginRegex = new RegExp(`^ {0,${Math.min(3, indent - 1)}}#`);
+          while (src) {
+            const rawLine = src.split("\n", 1)[0];
+            nextLine = rawLine;
+            if (this.options.pedantic) {
+              nextLine = nextLine.replace(/^ {1,4}(?=( {4})*[^ ])/g, "  ");
+            }
+            if (fencesBeginRegex.test(nextLine)) {
+              break;
+            }
+            if (headingBeginRegex.test(nextLine)) {
+              break;
+            }
+            if (nextBulletRegex.test(nextLine)) {
+              break;
+            }
+            if (hrRegex.test(src)) {
+              break;
+            }
+            if (nextLine.search(/[^ ]/) >= indent || !nextLine.trim()) {
+              itemContents += "\n" + nextLine.slice(indent);
+            } else {
+              if (blankLine) {
+                break;
+              }
+              if (line.search(/[^ ]/) >= 4) {
+                break;
+              }
+              if (fencesBeginRegex.test(line)) {
+                break;
+              }
+              if (headingBeginRegex.test(line)) {
+                break;
+              }
+              if (hrRegex.test(line)) {
+                break;
+              }
+              itemContents += "\n" + nextLine;
+            }
+            if (!blankLine && !nextLine.trim()) {
+              blankLine = true;
+            }
+            raw += rawLine + "\n";
+            src = src.substring(rawLine.length + 1);
+            line = nextLine.slice(indent);
+          }
+        }
+        if (!list2.loose) {
+          if (endsWithBlankLine) {
+            list2.loose = true;
+          } else if (/\n *\n *$/.test(raw)) {
+            endsWithBlankLine = true;
+          }
+        }
+        let istask = null;
+        let ischecked;
+        if (this.options.gfm) {
+          istask = /^\[[ xX]\] /.exec(itemContents);
+          if (istask) {
+            ischecked = istask[0] !== "[ ] ";
+            itemContents = itemContents.replace(/^\[[ xX]\] +/, "");
+          }
+        }
+        list2.items.push({
+          type: "list_item",
+          raw,
+          task: !!istask,
+          checked: ischecked,
+          loose: false,
+          text: itemContents,
+          tokens: []
+        });
+        list2.raw += raw;
+      }
+      list2.items[list2.items.length - 1].raw = list2.items[list2.items.length - 1].raw.trimEnd();
+      list2.items[list2.items.length - 1].text = list2.items[list2.items.length - 1].text.trimEnd();
+      list2.raw = list2.raw.trimEnd();
+      for (let i4 = 0; i4 < list2.items.length; i4++) {
+        this.lexer.state.top = false;
+        list2.items[i4].tokens = this.lexer.blockTokens(list2.items[i4].text, []);
+        if (!list2.loose) {
+          const spacers = list2.items[i4].tokens.filter((t3) => t3.type === "space");
+          const hasMultipleLineBreaks = spacers.length > 0 && spacers.some((t3) => /\n.*\n/.test(t3.raw));
+          list2.loose = hasMultipleLineBreaks;
+        }
+      }
+      if (list2.loose) {
+        for (let i4 = 0; i4 < list2.items.length; i4++) {
+          list2.items[i4].loose = true;
+        }
+      }
+      return list2;
+    }
+  }
+  html(src) {
+    const cap = this.rules.block.html.exec(src);
+    if (cap) {
+      const token = {
+        type: "html",
+        block: true,
+        raw: cap[0],
+        pre: cap[1] === "pre" || cap[1] === "script" || cap[1] === "style",
+        text: cap[0]
+      };
+      return token;
+    }
+  }
+  def(src) {
+    const cap = this.rules.block.def.exec(src);
+    if (cap) {
+      const tag2 = cap[1].toLowerCase().replace(/\s+/g, " ");
+      const href = cap[2] ? cap[2].replace(/^<(.*)>$/, "$1").replace(this.rules.inline.anyPunctuation, "$1") : "";
+      const title = cap[3] ? cap[3].substring(1, cap[3].length - 1).replace(this.rules.inline.anyPunctuation, "$1") : cap[3];
+      return {
+        type: "def",
+        tag: tag2,
+        raw: cap[0],
+        href,
+        title
+      };
+    }
+  }
+  table(src) {
+    const cap = this.rules.block.table.exec(src);
+    if (!cap) {
+      return;
+    }
+    if (!/[:|]/.test(cap[2])) {
+      return;
+    }
+    const headers = splitCells(cap[1]);
+    const aligns = cap[2].replace(/^\||\| *$/g, "").split("|");
+    const rows = cap[3] && cap[3].trim() ? cap[3].replace(/\n[ \t]*$/, "").split("\n") : [];
+    const item = {
+      type: "table",
+      raw: cap[0],
+      header: [],
+      align: [],
+      rows: []
+    };
+    if (headers.length !== aligns.length) {
+      return;
+    }
+    for (const align of aligns) {
+      if (/^ *-+: *$/.test(align)) {
+        item.align.push("right");
+      } else if (/^ *:-+: *$/.test(align)) {
+        item.align.push("center");
+      } else if (/^ *:-+ *$/.test(align)) {
+        item.align.push("left");
+      } else {
+        item.align.push(null);
+      }
+    }
+    for (let i4 = 0; i4 < headers.length; i4++) {
+      item.header.push({
+        text: headers[i4],
+        tokens: this.lexer.inline(headers[i4]),
+        header: true,
+        align: item.align[i4]
+      });
+    }
+    for (const row of rows) {
+      item.rows.push(splitCells(row, item.header.length).map((cell, i4) => {
+        return {
+          text: cell,
+          tokens: this.lexer.inline(cell),
+          header: false,
+          align: item.align[i4]
+        };
+      }));
+    }
+    return item;
+  }
+  lheading(src) {
+    const cap = this.rules.block.lheading.exec(src);
+    if (cap) {
+      return {
+        type: "heading",
+        raw: cap[0],
+        depth: cap[2].charAt(0) === "=" ? 1 : 2,
+        text: cap[1],
+        tokens: this.lexer.inline(cap[1])
+      };
+    }
+  }
+  paragraph(src) {
+    const cap = this.rules.block.paragraph.exec(src);
+    if (cap) {
+      const text = cap[1].charAt(cap[1].length - 1) === "\n" ? cap[1].slice(0, -1) : cap[1];
+      return {
+        type: "paragraph",
+        raw: cap[0],
+        text,
+        tokens: this.lexer.inline(text)
+      };
+    }
+  }
+  text(src) {
+    const cap = this.rules.block.text.exec(src);
+    if (cap) {
+      return {
+        type: "text",
+        raw: cap[0],
+        text: cap[0],
+        tokens: this.lexer.inline(cap[0])
+      };
+    }
+  }
+  escape(src) {
+    const cap = this.rules.inline.escape.exec(src);
+    if (cap) {
+      return {
+        type: "escape",
+        raw: cap[0],
+        text: escape$1(cap[1])
+      };
+    }
+  }
+  tag(src) {
+    const cap = this.rules.inline.tag.exec(src);
+    if (cap) {
+      if (!this.lexer.state.inLink && /^<a /i.test(cap[0])) {
+        this.lexer.state.inLink = true;
+      } else if (this.lexer.state.inLink && /^<\/a>/i.test(cap[0])) {
+        this.lexer.state.inLink = false;
+      }
+      if (!this.lexer.state.inRawBlock && /^<(pre|code|kbd|script)(\s|>)/i.test(cap[0])) {
+        this.lexer.state.inRawBlock = true;
+      } else if (this.lexer.state.inRawBlock && /^<\/(pre|code|kbd|script)(\s|>)/i.test(cap[0])) {
+        this.lexer.state.inRawBlock = false;
+      }
+      return {
+        type: "html",
+        raw: cap[0],
+        inLink: this.lexer.state.inLink,
+        inRawBlock: this.lexer.state.inRawBlock,
+        block: false,
+        text: cap[0]
+      };
+    }
+  }
+  link(src) {
+    const cap = this.rules.inline.link.exec(src);
+    if (cap) {
+      const trimmedUrl = cap[2].trim();
+      if (!this.options.pedantic && /^</.test(trimmedUrl)) {
+        if (!/>$/.test(trimmedUrl)) {
+          return;
+        }
+        const rtrimSlash = rtrim(trimmedUrl.slice(0, -1), "\\");
+        if ((trimmedUrl.length - rtrimSlash.length) % 2 === 0) {
+          return;
+        }
+      } else {
+        const lastParenIndex = findClosingBracket(cap[2], "()");
+        if (lastParenIndex > -1) {
+          const start = cap[0].indexOf("!") === 0 ? 5 : 4;
+          const linkLen = start + cap[1].length + lastParenIndex;
+          cap[2] = cap[2].substring(0, lastParenIndex);
+          cap[0] = cap[0].substring(0, linkLen).trim();
+          cap[3] = "";
+        }
+      }
+      let href = cap[2];
+      let title = "";
+      if (this.options.pedantic) {
+        const link2 = /^([^'"]*[^\s])\s+(['"])(.*)\2/.exec(href);
+        if (link2) {
+          href = link2[1];
+          title = link2[3];
+        }
+      } else {
+        title = cap[3] ? cap[3].slice(1, -1) : "";
+      }
+      href = href.trim();
+      if (/^</.test(href)) {
+        if (this.options.pedantic && !/>$/.test(trimmedUrl)) {
+          href = href.slice(1);
+        } else {
+          href = href.slice(1, -1);
+        }
+      }
+      return outputLink(cap, {
+        href: href ? href.replace(this.rules.inline.anyPunctuation, "$1") : href,
+        title: title ? title.replace(this.rules.inline.anyPunctuation, "$1") : title
+      }, cap[0], this.lexer);
+    }
+  }
+  reflink(src, links) {
+    let cap;
+    if ((cap = this.rules.inline.reflink.exec(src)) || (cap = this.rules.inline.nolink.exec(src))) {
+      const linkString = (cap[2] || cap[1]).replace(/\s+/g, " ");
+      const link2 = links[linkString.toLowerCase()];
+      if (!link2) {
+        const text = cap[0].charAt(0);
+        return {
+          type: "text",
+          raw: text,
+          text
+        };
+      }
+      return outputLink(cap, link2, cap[0], this.lexer);
+    }
+  }
+  emStrong(src, maskedSrc, prevChar = "") {
+    let match = this.rules.inline.emStrongLDelim.exec(src);
+    if (!match)
+      return;
+    if (match[3] && prevChar.match(/[\p{L}\p{N}]/u))
+      return;
+    const nextChar = match[1] || match[2] || "";
+    if (!nextChar || !prevChar || this.rules.inline.punctuation.exec(prevChar)) {
+      const lLength = [...match[0]].length - 1;
+      let rDelim, rLength, delimTotal = lLength, midDelimTotal = 0;
+      const endReg = match[0][0] === "*" ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
+      endReg.lastIndex = 0;
+      maskedSrc = maskedSrc.slice(-1 * src.length + lLength);
+      while ((match = endReg.exec(maskedSrc)) != null) {
+        rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
+        if (!rDelim)
+          continue;
+        rLength = [...rDelim].length;
+        if (match[3] || match[4]) {
+          delimTotal += rLength;
+          continue;
+        } else if (match[5] || match[6]) {
+          if (lLength % 3 && !((lLength + rLength) % 3)) {
+            midDelimTotal += rLength;
+            continue;
+          }
+        }
+        delimTotal -= rLength;
+        if (delimTotal > 0)
+          continue;
+        rLength = Math.min(rLength, rLength + delimTotal + midDelimTotal);
+        const lastCharLength = [...match[0]][0].length;
+        const raw = src.slice(0, lLength + match.index + lastCharLength + rLength);
+        if (Math.min(lLength, rLength) % 2) {
+          const text2 = raw.slice(1, -1);
+          return {
+            type: "em",
+            raw,
+            text: text2,
+            tokens: this.lexer.inlineTokens(text2)
+          };
+        }
+        const text = raw.slice(2, -2);
+        return {
+          type: "strong",
+          raw,
+          text,
+          tokens: this.lexer.inlineTokens(text)
+        };
+      }
+    }
+  }
+  codespan(src) {
+    const cap = this.rules.inline.code.exec(src);
+    if (cap) {
+      let text = cap[2].replace(/\n/g, " ");
+      const hasNonSpaceChars = /[^ ]/.test(text);
+      const hasSpaceCharsOnBothEnds = /^ /.test(text) && / $/.test(text);
+      if (hasNonSpaceChars && hasSpaceCharsOnBothEnds) {
+        text = text.substring(1, text.length - 1);
+      }
+      text = escape$1(text, true);
+      return {
+        type: "codespan",
+        raw: cap[0],
+        text
+      };
+    }
+  }
+  br(src) {
+    const cap = this.rules.inline.br.exec(src);
+    if (cap) {
+      return {
+        type: "br",
+        raw: cap[0]
+      };
+    }
+  }
+  del(src) {
+    const cap = this.rules.inline.del.exec(src);
+    if (cap) {
+      return {
+        type: "del",
+        raw: cap[0],
+        text: cap[2],
+        tokens: this.lexer.inlineTokens(cap[2])
+      };
+    }
+  }
+  autolink(src) {
+    const cap = this.rules.inline.autolink.exec(src);
+    if (cap) {
+      let text, href;
+      if (cap[2] === "@") {
+        text = escape$1(cap[1]);
+        href = "mailto:" + text;
+      } else {
+        text = escape$1(cap[1]);
+        href = text;
+      }
+      return {
+        type: "link",
+        raw: cap[0],
+        text,
+        href,
+        tokens: [
+          {
+            type: "text",
+            raw: text,
+            text
+          }
+        ]
+      };
+    }
+  }
+  url(src) {
+    let cap;
+    if (cap = this.rules.inline.url.exec(src)) {
+      let text, href;
+      if (cap[2] === "@") {
+        text = escape$1(cap[0]);
+        href = "mailto:" + text;
+      } else {
+        let prevCapZero;
+        do {
+          prevCapZero = cap[0];
+          cap[0] = this.rules.inline._backpedal.exec(cap[0])?.[0] ?? "";
+        } while (prevCapZero !== cap[0]);
+        text = escape$1(cap[0]);
+        if (cap[1] === "www.") {
+          href = "http://" + cap[0];
+        } else {
+          href = cap[0];
+        }
+      }
+      return {
+        type: "link",
+        raw: cap[0],
+        text,
+        href,
+        tokens: [
+          {
+            type: "text",
+            raw: text,
+            text
+          }
+        ]
+      };
+    }
+  }
+  inlineText(src) {
+    const cap = this.rules.inline.text.exec(src);
+    if (cap) {
+      let text;
+      if (this.lexer.state.inRawBlock) {
+        text = cap[0];
+      } else {
+        text = escape$1(cap[0]);
+      }
+      return {
+        type: "text",
+        raw: cap[0],
+        text
+      };
+    }
+  }
+};
+var newline = /^(?: *(?:\n|$))+/;
+var blockCode = /^( {4}[^\n]+(?:\n(?: *(?:\n|$))*)?)+/;
+var fences = /^ {0,3}(`{3,}(?=[^`\n]*(?:\n|$))|~{3,})([^\n]*)(?:\n|$)(?:|([\s\S]*?)(?:\n|$))(?: {0,3}\1[~`]* *(?=\n|$)|$)/;
+var hr = /^ {0,3}((?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|$)/;
+var heading = /^ {0,3}(#{1,6})(?=\s|$)(.*)(?:\n+|$)/;
+var bullet = /(?:[*+-]|\d{1,9}[.)])/;
+var lheading = edit(/^(?!bull |blockCode|fences|blockquote|heading|html)((?:.|\n(?!\s*?\n|bull |blockCode|fences|blockquote|heading|html))+?)\n {0,3}(=+|-+) *(?:\n+|$)/).replace(/bull/g, bullet).replace(/blockCode/g, / {4}/).replace(/fences/g, / {0,3}(?:`{3,}|~{3,})/).replace(/blockquote/g, / {0,3}>/).replace(/heading/g, / {0,3}#{1,6}/).replace(/html/g, / {0,3}<[^\n>]+>\n/).getRegex();
+var _paragraph = /^([^\n]+(?:\n(?!hr|heading|lheading|blockquote|fences|list|html|table| +\n)[^\n]+)*)/;
+var blockText = /^[^\n]+/;
+var _blockLabel = /(?!\s*\])(?:\\.|[^\[\]\\])+/;
+var def = edit(/^ {0,3}\[(label)\]: *(?:\n *)?([^<\s][^\s]*|<.*?>)(?:(?: +(?:\n *)?| *\n *)(title))? *(?:\n+|$)/).replace("label", _blockLabel).replace("title", /(?:"(?:\\"?|[^"\\])*"|'[^'\n]*(?:\n[^'\n]+)*\n?'|\([^()]*\))/).getRegex();
+var list = edit(/^( {0,3}bull)([ \t][^\n]+?)?(?:\n|$)/).replace(/bull/g, bullet).getRegex();
+var _tag = "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul";
+var _comment = /<!--(?:-?>|[\s\S]*?(?:-->|$))/;
+var html = edit("^ {0,3}(?:<(script|pre|style|textarea)[\\s>][\\s\\S]*?(?:</\\1>[^\\n]*\\n+|$)|comment[^\\n]*(\\n+|$)|<\\?[\\s\\S]*?(?:\\?>\\n*|$)|<![A-Z][\\s\\S]*?(?:>\\n*|$)|<!\\[CDATA\\[[\\s\\S]*?(?:\\]\\]>\\n*|$)|</?(tag)(?: +|\\n|/?>)[\\s\\S]*?(?:(?:\\n *)+\\n|$)|<(?!script|pre|style|textarea)([a-z][\\w-]*)(?:attribute)*? */?>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n *)+\\n|$)|</(?!script|pre|style|textarea)[a-z][\\w-]*\\s*>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n *)+\\n|$))", "i").replace("comment", _comment).replace("tag", _tag).replace("attribute", / +[a-zA-Z:_][\w.:-]*(?: *= *"[^"\n]*"| *= *'[^'\n]*'| *= *[^\s"'=<>`]+)?/).getRegex();
+var paragraph = edit(_paragraph).replace("hr", hr).replace("heading", " {0,3}#{1,6}(?:\\s|$)").replace("|lheading", "").replace("|table", "").replace("blockquote", " {0,3}>").replace("fences", " {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list", " {0,3}(?:[*+-]|1[.)]) ").replace("html", "</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag", _tag).getRegex();
+var blockquote = edit(/^( {0,3}> ?(paragraph|[^\n]*)(?:\n|$))+/).replace("paragraph", paragraph).getRegex();
+var blockNormal = {
+  blockquote,
+  code: blockCode,
+  def,
+  fences,
+  heading,
+  hr,
+  html,
+  lheading,
+  list,
+  newline,
+  paragraph,
+  table: noopTest,
+  text: blockText
+};
+var gfmTable = edit("^ *([^\\n ].*)\\n {0,3}((?:\\| *)?:?-+:? *(?:\\| *:?-+:? *)*(?:\\| *)?)(?:\\n((?:(?! *\\n|hr|heading|blockquote|code|fences|list|html).*(?:\\n|$))*)\\n*|$)").replace("hr", hr).replace("heading", " {0,3}#{1,6}(?:\\s|$)").replace("blockquote", " {0,3}>").replace("code", " {4}[^\\n]").replace("fences", " {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list", " {0,3}(?:[*+-]|1[.)]) ").replace("html", "</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag", _tag).getRegex();
+var blockGfm = {
+  ...blockNormal,
+  table: gfmTable,
+  paragraph: edit(_paragraph).replace("hr", hr).replace("heading", " {0,3}#{1,6}(?:\\s|$)").replace("|lheading", "").replace("table", gfmTable).replace("blockquote", " {0,3}>").replace("fences", " {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list", " {0,3}(?:[*+-]|1[.)]) ").replace("html", "</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag", _tag).getRegex()
+};
+var blockPedantic = {
+  ...blockNormal,
+  html: edit(`^ *(?:comment *(?:\\n|\\s*$)|<(tag)[\\s\\S]+?</\\1> *(?:\\n{2,}|\\s*$)|<tag(?:"[^"]*"|'[^']*'|\\s[^'"/>\\s]*)*?/?> *(?:\\n{2,}|\\s*$))`).replace("comment", _comment).replace(/tag/g, "(?!(?:a|em|strong|small|s|cite|q|dfn|abbr|data|time|code|var|samp|kbd|sub|sup|i|b|u|mark|ruby|rt|rp|bdi|bdo|span|br|wbr|ins|del|img)\\b)\\w+(?!:|[^\\w\\s@]*@)\\b").getRegex(),
+  def: /^ *\[([^\]]+)\]: *<?([^\s>]+)>?(?: +(["(][^\n]+[")]))? *(?:\n+|$)/,
+  heading: /^(#{1,6})(.*)(?:\n+|$)/,
+  fences: noopTest,
+  // fences not supported
+  lheading: /^(.+?)\n {0,3}(=+|-+) *(?:\n+|$)/,
+  paragraph: edit(_paragraph).replace("hr", hr).replace("heading", " *#{1,6} *[^\n]").replace("lheading", lheading).replace("|table", "").replace("blockquote", " {0,3}>").replace("|fences", "").replace("|list", "").replace("|html", "").replace("|tag", "").getRegex()
+};
+var escape = /^\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])/;
+var inlineCode = /^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/;
+var br = /^( {2,}|\\)\n(?!\s*$)/;
+var inlineText = /^(`+|[^`])(?:(?= {2,}\n)|[\s\S]*?(?:(?=[\\<!\[`*_]|\b_|$)|[^ ](?= {2,}\n)))/;
+var _punctuation = "\\p{P}\\p{S}";
+var punctuation = edit(/^((?![*_])[\spunctuation])/, "u").replace(/punctuation/g, _punctuation).getRegex();
+var blockSkip = /\[[^[\]]*?\]\([^\(\)]*?\)|`[^`]*?`|<[^<>]*?>/g;
+var emStrongLDelim = edit(/^(?:\*+(?:((?!\*)[punct])|[^\s*]))|^_+(?:((?!_)[punct])|([^\s_]))/, "u").replace(/punct/g, _punctuation).getRegex();
+var emStrongRDelimAst = edit("^[^_*]*?__[^_*]*?\\*[^_*]*?(?=__)|[^*]+(?=[^*])|(?!\\*)[punct](\\*+)(?=[\\s]|$)|[^punct\\s](\\*+)(?!\\*)(?=[punct\\s]|$)|(?!\\*)[punct\\s](\\*+)(?=[^punct\\s])|[\\s](\\*+)(?!\\*)(?=[punct])|(?!\\*)[punct](\\*+)(?!\\*)(?=[punct])|[^punct\\s](\\*+)(?=[^punct\\s])", "gu").replace(/punct/g, _punctuation).getRegex();
+var emStrongRDelimUnd = edit("^[^_*]*?\\*\\*[^_*]*?_[^_*]*?(?=\\*\\*)|[^_]+(?=[^_])|(?!_)[punct](_+)(?=[\\s]|$)|[^punct\\s](_+)(?!_)(?=[punct\\s]|$)|(?!_)[punct\\s](_+)(?=[^punct\\s])|[\\s](_+)(?!_)(?=[punct])|(?!_)[punct](_+)(?!_)(?=[punct])", "gu").replace(/punct/g, _punctuation).getRegex();
+var anyPunctuation = edit(/\\([punct])/, "gu").replace(/punct/g, _punctuation).getRegex();
+var autolink = edit(/^<(scheme:[^\s\x00-\x1f<>]*|email)>/).replace("scheme", /[a-zA-Z][a-zA-Z0-9+.-]{1,31}/).replace("email", /[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_])/).getRegex();
+var _inlineComment = edit(_comment).replace("(?:-->|$)", "-->").getRegex();
+var tag = edit("^comment|^</[a-zA-Z][\\w:-]*\\s*>|^<[a-zA-Z][\\w-]*(?:attribute)*?\\s*/?>|^<\\?[\\s\\S]*?\\?>|^<![a-zA-Z]+\\s[\\s\\S]*?>|^<!\\[CDATA\\[[\\s\\S]*?\\]\\]>").replace("comment", _inlineComment).replace("attribute", /\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*"[^"]*"|\s*=\s*'[^']*'|\s*=\s*[^\s"'=<>`]+)?/).getRegex();
+var _inlineLabel = /(?:\[(?:\\.|[^\[\]\\])*\]|\\.|`[^`]*`|[^\[\]\\`])*?/;
+var link = edit(/^!?\[(label)\]\(\s*(href)(?:\s+(title))?\s*\)/).replace("label", _inlineLabel).replace("href", /<(?:\\.|[^\n<>\\])+>|[^\s\x00-\x1f]*/).replace("title", /"(?:\\"?|[^"\\])*"|'(?:\\'?|[^'\\])*'|\((?:\\\)?|[^)\\])*\)/).getRegex();
+var reflink = edit(/^!?\[(label)\]\[(ref)\]/).replace("label", _inlineLabel).replace("ref", _blockLabel).getRegex();
+var nolink = edit(/^!?\[(ref)\](?:\[\])?/).replace("ref", _blockLabel).getRegex();
+var reflinkSearch = edit("reflink|nolink(?!\\()", "g").replace("reflink", reflink).replace("nolink", nolink).getRegex();
+var inlineNormal = {
+  _backpedal: noopTest,
+  // only used for GFM url
+  anyPunctuation,
+  autolink,
+  blockSkip,
+  br,
+  code: inlineCode,
+  del: noopTest,
+  emStrongLDelim,
+  emStrongRDelimAst,
+  emStrongRDelimUnd,
+  escape,
+  link,
+  nolink,
+  punctuation,
+  reflink,
+  reflinkSearch,
+  tag,
+  text: inlineText,
+  url: noopTest
+};
+var inlinePedantic = {
+  ...inlineNormal,
+  link: edit(/^!?\[(label)\]\((.*?)\)/).replace("label", _inlineLabel).getRegex(),
+  reflink: edit(/^!?\[(label)\]\s*\[([^\]]*)\]/).replace("label", _inlineLabel).getRegex()
+};
+var inlineGfm = {
+  ...inlineNormal,
+  escape: edit(escape).replace("])", "~|])").getRegex(),
+  url: edit(/^((?:ftp|https?):\/\/|www\.)(?:[a-zA-Z0-9\-]+\.?)+[^\s<]*|^email/, "i").replace("email", /[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])/).getRegex(),
+  _backpedal: /(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+/,
+  del: /^(~~?)(?=[^\s~])([\s\S]*?[^\s~])\1(?=[^~]|$)/,
+  text: /^([`~]+|[^`~])(?:(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)|[\s\S]*?(?:(?=[\\<!\[`*~_]|\b_|https?:\/\/|ftp:\/\/|www\.|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-](?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)))/
+};
+var inlineBreaks = {
+  ...inlineGfm,
+  br: edit(br).replace("{2,}", "*").getRegex(),
+  text: edit(inlineGfm.text).replace("\\b_", "\\b_| {2,}\\n").replace(/\{2,\}/g, "*").getRegex()
+};
+var block = {
+  normal: blockNormal,
+  gfm: blockGfm,
+  pedantic: blockPedantic
+};
+var inline = {
+  normal: inlineNormal,
+  gfm: inlineGfm,
+  breaks: inlineBreaks,
+  pedantic: inlinePedantic
+};
+var _Lexer = class __Lexer {
+  constructor(options2) {
+    __publicField(this, "tokens");
+    __publicField(this, "options");
+    __publicField(this, "state");
+    __publicField(this, "tokenizer");
+    __publicField(this, "inlineQueue");
+    this.tokens = [];
+    this.tokens.links = /* @__PURE__ */ Object.create(null);
+    this.options = options2 || _defaults;
+    this.options.tokenizer = this.options.tokenizer || new _Tokenizer();
+    this.tokenizer = this.options.tokenizer;
+    this.tokenizer.options = this.options;
+    this.tokenizer.lexer = this;
+    this.inlineQueue = [];
+    this.state = {
+      inLink: false,
+      inRawBlock: false,
+      top: true
+    };
+    const rules = {
+      block: block.normal,
+      inline: inline.normal
+    };
+    if (this.options.pedantic) {
+      rules.block = block.pedantic;
+      rules.inline = inline.pedantic;
+    } else if (this.options.gfm) {
+      rules.block = block.gfm;
+      if (this.options.breaks) {
+        rules.inline = inline.breaks;
+      } else {
+        rules.inline = inline.gfm;
+      }
+    }
+    this.tokenizer.rules = rules;
+  }
+  /**
+   * Expose Rules
+   */
+  static get rules() {
+    return {
+      block,
+      inline
+    };
+  }
+  /**
+   * Static Lex Method
+   */
+  static lex(src, options2) {
+    const lexer2 = new __Lexer(options2);
+    return lexer2.lex(src);
+  }
+  /**
+   * Static Lex Inline Method
+   */
+  static lexInline(src, options2) {
+    const lexer2 = new __Lexer(options2);
+    return lexer2.inlineTokens(src);
+  }
+  /**
+   * Preprocessing
+   */
+  lex(src) {
+    src = src.replace(/\r\n|\r/g, "\n");
+    this.blockTokens(src, this.tokens);
+    for (let i4 = 0; i4 < this.inlineQueue.length; i4++) {
+      const next = this.inlineQueue[i4];
+      this.inlineTokens(next.src, next.tokens);
+    }
+    this.inlineQueue = [];
+    return this.tokens;
+  }
+  blockTokens(src, tokens = [], lastParagraphClipped = false) {
+    if (this.options.pedantic) {
+      src = src.replace(/\t/g, "    ").replace(/^ +$/gm, "");
+    } else {
+      src = src.replace(/^( *)(\t+)/gm, (_2, leading, tabs) => {
+        return leading + "    ".repeat(tabs.length);
+      });
+    }
+    let token;
+    let lastToken;
+    let cutSrc;
+    while (src) {
+      if (this.options.extensions && this.options.extensions.block && this.options.extensions.block.some((extTokenizer) => {
+        if (token = extTokenizer.call({ lexer: this }, src, tokens)) {
+          src = src.substring(token.raw.length);
+          tokens.push(token);
+          return true;
+        }
+        return false;
+      })) {
+        continue;
+      }
+      if (token = this.tokenizer.space(src)) {
+        src = src.substring(token.raw.length);
+        if (token.raw.length === 1 && tokens.length > 0) {
+          tokens[tokens.length - 1].raw += "\n";
+        } else {
+          tokens.push(token);
+        }
+        continue;
+      }
+      if (token = this.tokenizer.code(src)) {
+        src = src.substring(token.raw.length);
+        lastToken = tokens[tokens.length - 1];
+        if (lastToken && (lastToken.type === "paragraph" || lastToken.type === "text")) {
+          lastToken.raw += "\n" + token.raw;
+          lastToken.text += "\n" + token.text;
+          this.inlineQueue[this.inlineQueue.length - 1].src = lastToken.text;
+        } else {
+          tokens.push(token);
+        }
+        continue;
+      }
+      if (token = this.tokenizer.fences(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.heading(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.hr(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.blockquote(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.list(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.html(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.def(src)) {
+        src = src.substring(token.raw.length);
+        lastToken = tokens[tokens.length - 1];
+        if (lastToken && (lastToken.type === "paragraph" || lastToken.type === "text")) {
+          lastToken.raw += "\n" + token.raw;
+          lastToken.text += "\n" + token.raw;
+          this.inlineQueue[this.inlineQueue.length - 1].src = lastToken.text;
+        } else if (!this.tokens.links[token.tag]) {
+          this.tokens.links[token.tag] = {
+            href: token.href,
+            title: token.title
+          };
+        }
+        continue;
+      }
+      if (token = this.tokenizer.table(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.lheading(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      cutSrc = src;
+      if (this.options.extensions && this.options.extensions.startBlock) {
+        let startIndex = Infinity;
+        const tempSrc = src.slice(1);
+        let tempStart;
+        this.options.extensions.startBlock.forEach((getStartIndex) => {
+          tempStart = getStartIndex.call({ lexer: this }, tempSrc);
+          if (typeof tempStart === "number" && tempStart >= 0) {
+            startIndex = Math.min(startIndex, tempStart);
+          }
+        });
+        if (startIndex < Infinity && startIndex >= 0) {
+          cutSrc = src.substring(0, startIndex + 1);
+        }
+      }
+      if (this.state.top && (token = this.tokenizer.paragraph(cutSrc))) {
+        lastToken = tokens[tokens.length - 1];
+        if (lastParagraphClipped && lastToken?.type === "paragraph") {
+          lastToken.raw += "\n" + token.raw;
+          lastToken.text += "\n" + token.text;
+          this.inlineQueue.pop();
+          this.inlineQueue[this.inlineQueue.length - 1].src = lastToken.text;
+        } else {
+          tokens.push(token);
+        }
+        lastParagraphClipped = cutSrc.length !== src.length;
+        src = src.substring(token.raw.length);
+        continue;
+      }
+      if (token = this.tokenizer.text(src)) {
+        src = src.substring(token.raw.length);
+        lastToken = tokens[tokens.length - 1];
+        if (lastToken && lastToken.type === "text") {
+          lastToken.raw += "\n" + token.raw;
+          lastToken.text += "\n" + token.text;
+          this.inlineQueue.pop();
+          this.inlineQueue[this.inlineQueue.length - 1].src = lastToken.text;
+        } else {
+          tokens.push(token);
+        }
+        continue;
+      }
+      if (src) {
+        const errMsg = "Infinite loop on byte: " + src.charCodeAt(0);
+        if (this.options.silent) {
+          console.error(errMsg);
+          break;
+        } else {
+          throw new Error(errMsg);
+        }
+      }
+    }
+    this.state.top = true;
+    return tokens;
+  }
+  inline(src, tokens = []) {
+    this.inlineQueue.push({ src, tokens });
+    return tokens;
+  }
+  /**
+   * Lexing/Compiling
+   */
+  inlineTokens(src, tokens = []) {
+    let token, lastToken, cutSrc;
+    let maskedSrc = src;
+    let match;
+    let keepPrevChar, prevChar;
+    if (this.tokens.links) {
+      const links = Object.keys(this.tokens.links);
+      if (links.length > 0) {
+        while ((match = this.tokenizer.rules.inline.reflinkSearch.exec(maskedSrc)) != null) {
+          if (links.includes(match[0].slice(match[0].lastIndexOf("[") + 1, -1))) {
+            maskedSrc = maskedSrc.slice(0, match.index) + "[" + "a".repeat(match[0].length - 2) + "]" + maskedSrc.slice(this.tokenizer.rules.inline.reflinkSearch.lastIndex);
+          }
+        }
+      }
+    }
+    while ((match = this.tokenizer.rules.inline.blockSkip.exec(maskedSrc)) != null) {
+      maskedSrc = maskedSrc.slice(0, match.index) + "[" + "a".repeat(match[0].length - 2) + "]" + maskedSrc.slice(this.tokenizer.rules.inline.blockSkip.lastIndex);
+    }
+    while ((match = this.tokenizer.rules.inline.anyPunctuation.exec(maskedSrc)) != null) {
+      maskedSrc = maskedSrc.slice(0, match.index) + "++" + maskedSrc.slice(this.tokenizer.rules.inline.anyPunctuation.lastIndex);
+    }
+    while (src) {
+      if (!keepPrevChar) {
+        prevChar = "";
+      }
+      keepPrevChar = false;
+      if (this.options.extensions && this.options.extensions.inline && this.options.extensions.inline.some((extTokenizer) => {
+        if (token = extTokenizer.call({ lexer: this }, src, tokens)) {
+          src = src.substring(token.raw.length);
+          tokens.push(token);
+          return true;
+        }
+        return false;
+      })) {
+        continue;
+      }
+      if (token = this.tokenizer.escape(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.tag(src)) {
+        src = src.substring(token.raw.length);
+        lastToken = tokens[tokens.length - 1];
+        if (lastToken && token.type === "text" && lastToken.type === "text") {
+          lastToken.raw += token.raw;
+          lastToken.text += token.text;
+        } else {
+          tokens.push(token);
+        }
+        continue;
+      }
+      if (token = this.tokenizer.link(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.reflink(src, this.tokens.links)) {
+        src = src.substring(token.raw.length);
+        lastToken = tokens[tokens.length - 1];
+        if (lastToken && token.type === "text" && lastToken.type === "text") {
+          lastToken.raw += token.raw;
+          lastToken.text += token.text;
+        } else {
+          tokens.push(token);
+        }
+        continue;
+      }
+      if (token = this.tokenizer.emStrong(src, maskedSrc, prevChar)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.codespan(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.br(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.del(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (token = this.tokenizer.autolink(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      if (!this.state.inLink && (token = this.tokenizer.url(src))) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+      cutSrc = src;
+      if (this.options.extensions && this.options.extensions.startInline) {
+        let startIndex = Infinity;
+        const tempSrc = src.slice(1);
+        let tempStart;
+        this.options.extensions.startInline.forEach((getStartIndex) => {
+          tempStart = getStartIndex.call({ lexer: this }, tempSrc);
+          if (typeof tempStart === "number" && tempStart >= 0) {
+            startIndex = Math.min(startIndex, tempStart);
+          }
+        });
+        if (startIndex < Infinity && startIndex >= 0) {
+          cutSrc = src.substring(0, startIndex + 1);
+        }
+      }
+      if (token = this.tokenizer.inlineText(cutSrc)) {
+        src = src.substring(token.raw.length);
+        if (token.raw.slice(-1) !== "_") {
+          prevChar = token.raw.slice(-1);
+        }
+        keepPrevChar = true;
+        lastToken = tokens[tokens.length - 1];
+        if (lastToken && lastToken.type === "text") {
+          lastToken.raw += token.raw;
+          lastToken.text += token.text;
+        } else {
+          tokens.push(token);
+        }
+        continue;
+      }
+      if (src) {
+        const errMsg = "Infinite loop on byte: " + src.charCodeAt(0);
+        if (this.options.silent) {
+          console.error(errMsg);
+          break;
+        } else {
+          throw new Error(errMsg);
+        }
+      }
+    }
+    return tokens;
+  }
+};
+var _Renderer = class {
+  // set by the parser
+  constructor(options2) {
+    __publicField(this, "options");
+    __publicField(this, "parser");
+    this.options = options2 || _defaults;
+  }
+  space(token) {
+    return "";
+  }
+  code({ text, lang, escaped }) {
+    const langString = (lang || "").match(/^\S*/)?.[0];
+    const code = text.replace(/\n$/, "") + "\n";
+    if (!langString) {
+      return "<pre><code>" + (escaped ? code : escape$1(code, true)) + "</code></pre>\n";
+    }
+    return '<pre><code class="language-' + escape$1(langString) + '">' + (escaped ? code : escape$1(code, true)) + "</code></pre>\n";
+  }
+  blockquote({ tokens }) {
+    const body = this.parser.parse(tokens);
+    return `<blockquote>
+${body}</blockquote>
+`;
+  }
+  html({ text }) {
+    return text;
+  }
+  heading({ tokens, depth }) {
+    return `<h${depth}>${this.parser.parseInline(tokens)}</h${depth}>
+`;
+  }
+  hr(token) {
+    return "<hr>\n";
+  }
+  list(token) {
+    const ordered = token.ordered;
+    const start = token.start;
+    let body = "";
+    for (let j3 = 0; j3 < token.items.length; j3++) {
+      const item = token.items[j3];
+      body += this.listitem(item);
+    }
+    const type = ordered ? "ol" : "ul";
+    const startAttr = ordered && start !== 1 ? ' start="' + start + '"' : "";
+    return "<" + type + startAttr + ">\n" + body + "</" + type + ">\n";
+  }
+  listitem(item) {
+    let itemBody = "";
+    if (item.task) {
+      const checkbox = this.checkbox({ checked: !!item.checked });
+      if (item.loose) {
+        if (item.tokens.length > 0 && item.tokens[0].type === "paragraph") {
+          item.tokens[0].text = checkbox + " " + item.tokens[0].text;
+          if (item.tokens[0].tokens && item.tokens[0].tokens.length > 0 && item.tokens[0].tokens[0].type === "text") {
+            item.tokens[0].tokens[0].text = checkbox + " " + item.tokens[0].tokens[0].text;
+          }
+        } else {
+          item.tokens.unshift({
+            type: "text",
+            raw: checkbox + " ",
+            text: checkbox + " "
+          });
+        }
+      } else {
+        itemBody += checkbox + " ";
+      }
+    }
+    itemBody += this.parser.parse(item.tokens, !!item.loose);
+    return `<li>${itemBody}</li>
+`;
+  }
+  checkbox({ checked }) {
+    return "<input " + (checked ? 'checked="" ' : "") + 'disabled="" type="checkbox">';
+  }
+  paragraph({ tokens }) {
+    return `<p>${this.parser.parseInline(tokens)}</p>
+`;
+  }
+  table(token) {
+    let header = "";
+    let cell = "";
+    for (let j3 = 0; j3 < token.header.length; j3++) {
+      cell += this.tablecell(token.header[j3]);
+    }
+    header += this.tablerow({ text: cell });
+    let body = "";
+    for (let j3 = 0; j3 < token.rows.length; j3++) {
+      const row = token.rows[j3];
+      cell = "";
+      for (let k3 = 0; k3 < row.length; k3++) {
+        cell += this.tablecell(row[k3]);
+      }
+      body += this.tablerow({ text: cell });
+    }
+    if (body)
+      body = `<tbody>${body}</tbody>`;
+    return "<table>\n<thead>\n" + header + "</thead>\n" + body + "</table>\n";
+  }
+  tablerow({ text }) {
+    return `<tr>
+${text}</tr>
+`;
+  }
+  tablecell(token) {
+    const content = this.parser.parseInline(token.tokens);
+    const type = token.header ? "th" : "td";
+    const tag2 = token.align ? `<${type} align="${token.align}">` : `<${type}>`;
+    return tag2 + content + `</${type}>
+`;
+  }
+  /**
+   * span level renderer
+   */
+  strong({ tokens }) {
+    return `<strong>${this.parser.parseInline(tokens)}</strong>`;
+  }
+  em({ tokens }) {
+    return `<em>${this.parser.parseInline(tokens)}</em>`;
+  }
+  codespan({ text }) {
+    return `<code>${text}</code>`;
+  }
+  br(token) {
+    return "<br>";
+  }
+  del({ tokens }) {
+    return `<del>${this.parser.parseInline(tokens)}</del>`;
+  }
+  link({ href, title, tokens }) {
+    const text = this.parser.parseInline(tokens);
+    const cleanHref = cleanUrl(href);
+    if (cleanHref === null) {
+      return text;
+    }
+    href = cleanHref;
+    let out = '<a href="' + href + '"';
+    if (title) {
+      out += ' title="' + title + '"';
+    }
+    out += ">" + text + "</a>";
+    return out;
+  }
+  image({ href, title, text }) {
+    const cleanHref = cleanUrl(href);
+    if (cleanHref === null) {
+      return text;
+    }
+    href = cleanHref;
+    let out = `<img src="${href}" alt="${text}"`;
+    if (title) {
+      out += ` title="${title}"`;
+    }
+    out += ">";
+    return out;
+  }
+  text(token) {
+    return "tokens" in token && token.tokens ? this.parser.parseInline(token.tokens) : token.text;
+  }
+};
+var _TextRenderer = class {
+  // no need for block level renderers
+  strong({ text }) {
+    return text;
+  }
+  em({ text }) {
+    return text;
+  }
+  codespan({ text }) {
+    return text;
+  }
+  del({ text }) {
+    return text;
+  }
+  html({ text }) {
+    return text;
+  }
+  text({ text }) {
+    return text;
+  }
+  link({ text }) {
+    return "" + text;
+  }
+  image({ text }) {
+    return "" + text;
+  }
+  br() {
+    return "";
+  }
+};
+var _Parser = class __Parser {
+  constructor(options2) {
+    __publicField(this, "options");
+    __publicField(this, "renderer");
+    __publicField(this, "textRenderer");
+    this.options = options2 || _defaults;
+    this.options.renderer = this.options.renderer || new _Renderer();
+    this.renderer = this.options.renderer;
+    this.renderer.options = this.options;
+    this.renderer.parser = this;
+    this.textRenderer = new _TextRenderer();
+  }
+  /**
+   * Static Parse Method
+   */
+  static parse(tokens, options2) {
+    const parser2 = new __Parser(options2);
+    return parser2.parse(tokens);
+  }
+  /**
+   * Static Parse Inline Method
+   */
+  static parseInline(tokens, options2) {
+    const parser2 = new __Parser(options2);
+    return parser2.parseInline(tokens);
+  }
+  /**
+   * Parse Loop
+   */
+  parse(tokens, top = true) {
+    let out = "";
+    for (let i4 = 0; i4 < tokens.length; i4++) {
+      const anyToken = tokens[i4];
+      if (this.options.extensions && this.options.extensions.renderers && this.options.extensions.renderers[anyToken.type]) {
+        const genericToken = anyToken;
+        const ret = this.options.extensions.renderers[genericToken.type].call({ parser: this }, genericToken);
+        if (ret !== false || !["space", "hr", "heading", "code", "table", "blockquote", "list", "html", "paragraph", "text"].includes(genericToken.type)) {
+          out += ret || "";
+          continue;
+        }
+      }
+      const token = anyToken;
+      switch (token.type) {
+        case "space": {
+          out += this.renderer.space(token);
+          continue;
+        }
+        case "hr": {
+          out += this.renderer.hr(token);
+          continue;
+        }
+        case "heading": {
+          out += this.renderer.heading(token);
+          continue;
+        }
+        case "code": {
+          out += this.renderer.code(token);
+          continue;
+        }
+        case "table": {
+          out += this.renderer.table(token);
+          continue;
+        }
+        case "blockquote": {
+          out += this.renderer.blockquote(token);
+          continue;
+        }
+        case "list": {
+          out += this.renderer.list(token);
+          continue;
+        }
+        case "html": {
+          out += this.renderer.html(token);
+          continue;
+        }
+        case "paragraph": {
+          out += this.renderer.paragraph(token);
+          continue;
+        }
+        case "text": {
+          let textToken = token;
+          let body = this.renderer.text(textToken);
+          while (i4 + 1 < tokens.length && tokens[i4 + 1].type === "text") {
+            textToken = tokens[++i4];
+            body += "\n" + this.renderer.text(textToken);
+          }
+          if (top) {
+            out += this.renderer.paragraph({
+              type: "paragraph",
+              raw: body,
+              text: body,
+              tokens: [{ type: "text", raw: body, text: body }]
+            });
+          } else {
+            out += body;
+          }
+          continue;
+        }
+        default: {
+          const errMsg = 'Token with "' + token.type + '" type was not found.';
+          if (this.options.silent) {
+            console.error(errMsg);
+            return "";
+          } else {
+            throw new Error(errMsg);
+          }
+        }
+      }
+    }
+    return out;
+  }
+  /**
+   * Parse Inline Tokens
+   */
+  parseInline(tokens, renderer) {
+    renderer = renderer || this.renderer;
+    let out = "";
+    for (let i4 = 0; i4 < tokens.length; i4++) {
+      const anyToken = tokens[i4];
+      if (this.options.extensions && this.options.extensions.renderers && this.options.extensions.renderers[anyToken.type]) {
+        const ret = this.options.extensions.renderers[anyToken.type].call({ parser: this }, anyToken);
+        if (ret !== false || !["escape", "html", "link", "image", "strong", "em", "codespan", "br", "del", "text"].includes(anyToken.type)) {
+          out += ret || "";
+          continue;
+        }
+      }
+      const token = anyToken;
+      switch (token.type) {
+        case "escape": {
+          out += renderer.text(token);
+          break;
+        }
+        case "html": {
+          out += renderer.html(token);
+          break;
+        }
+        case "link": {
+          out += renderer.link(token);
+          break;
+        }
+        case "image": {
+          out += renderer.image(token);
+          break;
+        }
+        case "strong": {
+          out += renderer.strong(token);
+          break;
+        }
+        case "em": {
+          out += renderer.em(token);
+          break;
+        }
+        case "codespan": {
+          out += renderer.codespan(token);
+          break;
+        }
+        case "br": {
+          out += renderer.br(token);
+          break;
+        }
+        case "del": {
+          out += renderer.del(token);
+          break;
+        }
+        case "text": {
+          out += renderer.text(token);
+          break;
+        }
+        default: {
+          const errMsg = 'Token with "' + token.type + '" type was not found.';
+          if (this.options.silent) {
+            console.error(errMsg);
+            return "";
+          } else {
+            throw new Error(errMsg);
+          }
+        }
+      }
+    }
+    return out;
+  }
+};
+var _Hooks = class {
+  constructor(options2) {
+    __publicField(this, "options");
+    this.options = options2 || _defaults;
+  }
+  /**
+   * Process markdown before marked
+   */
+  preprocess(markdown) {
+    return markdown;
+  }
+  /**
+   * Process HTML after marked is finished
+   */
+  postprocess(html3) {
+    return html3;
+  }
+  /**
+   * Process all tokens before walk tokens
+   */
+  processAllTokens(tokens) {
+    return tokens;
+  }
+};
+__publicField(_Hooks, "passThroughHooks", /* @__PURE__ */ new Set([
+  "preprocess",
+  "postprocess",
+  "processAllTokens"
+]));
+var _convertRendererFunction, convertRendererFunction_fn, _parseMarkdown, parseMarkdown_fn, _onError, onError_fn;
+var Marked = class {
+  constructor(...args) {
+    // TODO: Remove this in next major release
+    __privateAdd(this, _convertRendererFunction);
+    __privateAdd(this, _parseMarkdown);
+    __privateAdd(this, _onError);
+    __publicField(this, "defaults", _getDefaults());
+    __publicField(this, "options", this.setOptions);
+    __publicField(this, "parse", __privateMethod(this, _parseMarkdown, parseMarkdown_fn).call(this, _Lexer.lex, _Parser.parse));
+    __publicField(this, "parseInline", __privateMethod(this, _parseMarkdown, parseMarkdown_fn).call(this, _Lexer.lexInline, _Parser.parseInline));
+    __publicField(this, "Parser", _Parser);
+    __publicField(this, "Renderer", _Renderer);
+    __publicField(this, "TextRenderer", _TextRenderer);
+    __publicField(this, "Lexer", _Lexer);
+    __publicField(this, "Tokenizer", _Tokenizer);
+    __publicField(this, "Hooks", _Hooks);
+    this.use(...args);
+  }
+  /**
+   * Run callback for every token
+   */
+  walkTokens(tokens, callback) {
+    let values = [];
+    for (const token of tokens) {
+      values = values.concat(callback.call(this, token));
+      switch (token.type) {
+        case "table": {
+          const tableToken = token;
+          for (const cell of tableToken.header) {
+            values = values.concat(this.walkTokens(cell.tokens, callback));
+          }
+          for (const row of tableToken.rows) {
+            for (const cell of row) {
+              values = values.concat(this.walkTokens(cell.tokens, callback));
+            }
+          }
+          break;
+        }
+        case "list": {
+          const listToken = token;
+          values = values.concat(this.walkTokens(listToken.items, callback));
+          break;
+        }
+        default: {
+          const genericToken = token;
+          if (this.defaults.extensions?.childTokens?.[genericToken.type]) {
+            this.defaults.extensions.childTokens[genericToken.type].forEach((childTokens) => {
+              const tokens2 = genericToken[childTokens].flat(Infinity);
+              values = values.concat(this.walkTokens(tokens2, callback));
+            });
+          } else if (genericToken.tokens) {
+            values = values.concat(this.walkTokens(genericToken.tokens, callback));
+          }
+        }
+      }
+    }
+    return values;
+  }
+  use(...args) {
+    const extensions = this.defaults.extensions || { renderers: {}, childTokens: {} };
+    args.forEach((pack) => {
+      const opts = { ...pack };
+      opts.async = this.defaults.async || opts.async || false;
+      if (pack.extensions) {
+        pack.extensions.forEach((ext) => {
+          if (!ext.name) {
+            throw new Error("extension name required");
+          }
+          if ("renderer" in ext) {
+            const prevRenderer = extensions.renderers[ext.name];
+            if (prevRenderer) {
+              extensions.renderers[ext.name] = function(...args2) {
+                let ret = ext.renderer.apply(this, args2);
+                if (ret === false) {
+                  ret = prevRenderer.apply(this, args2);
+                }
+                return ret;
+              };
+            } else {
+              extensions.renderers[ext.name] = ext.renderer;
+            }
+          }
+          if ("tokenizer" in ext) {
+            if (!ext.level || ext.level !== "block" && ext.level !== "inline") {
+              throw new Error("extension level must be 'block' or 'inline'");
+            }
+            const extLevel = extensions[ext.level];
+            if (extLevel) {
+              extLevel.unshift(ext.tokenizer);
+            } else {
+              extensions[ext.level] = [ext.tokenizer];
+            }
+            if (ext.start) {
+              if (ext.level === "block") {
+                if (extensions.startBlock) {
+                  extensions.startBlock.push(ext.start);
+                } else {
+                  extensions.startBlock = [ext.start];
+                }
+              } else if (ext.level === "inline") {
+                if (extensions.startInline) {
+                  extensions.startInline.push(ext.start);
+                } else {
+                  extensions.startInline = [ext.start];
+                }
+              }
+            }
+          }
+          if ("childTokens" in ext && ext.childTokens) {
+            extensions.childTokens[ext.name] = ext.childTokens;
+          }
+        });
+        opts.extensions = extensions;
+      }
+      if (pack.renderer) {
+        const renderer = this.defaults.renderer || new _Renderer(this.defaults);
+        for (const prop in pack.renderer) {
+          if (!(prop in renderer)) {
+            throw new Error(`renderer '${prop}' does not exist`);
+          }
+          if (["options", "parser"].includes(prop)) {
+            continue;
+          }
+          const rendererProp = prop;
+          let rendererFunc = pack.renderer[rendererProp];
+          if (!pack.useNewRenderer) {
+            rendererFunc = __privateMethod(this, _convertRendererFunction, convertRendererFunction_fn).call(this, rendererFunc, rendererProp, renderer);
+          }
+          const prevRenderer = renderer[rendererProp];
+          renderer[rendererProp] = (...args2) => {
+            let ret = rendererFunc.apply(renderer, args2);
+            if (ret === false) {
+              ret = prevRenderer.apply(renderer, args2);
+            }
+            return ret || "";
+          };
+        }
+        opts.renderer = renderer;
+      }
+      if (pack.tokenizer) {
+        const tokenizer = this.defaults.tokenizer || new _Tokenizer(this.defaults);
+        for (const prop in pack.tokenizer) {
+          if (!(prop in tokenizer)) {
+            throw new Error(`tokenizer '${prop}' does not exist`);
+          }
+          if (["options", "rules", "lexer"].includes(prop)) {
+            continue;
+          }
+          const tokenizerProp = prop;
+          const tokenizerFunc = pack.tokenizer[tokenizerProp];
+          const prevTokenizer = tokenizer[tokenizerProp];
+          tokenizer[tokenizerProp] = (...args2) => {
+            let ret = tokenizerFunc.apply(tokenizer, args2);
+            if (ret === false) {
+              ret = prevTokenizer.apply(tokenizer, args2);
+            }
+            return ret;
+          };
+        }
+        opts.tokenizer = tokenizer;
+      }
+      if (pack.hooks) {
+        const hooks = this.defaults.hooks || new _Hooks();
+        for (const prop in pack.hooks) {
+          if (!(prop in hooks)) {
+            throw new Error(`hook '${prop}' does not exist`);
+          }
+          if (prop === "options") {
+            continue;
+          }
+          const hooksProp = prop;
+          const hooksFunc = pack.hooks[hooksProp];
+          const prevHook = hooks[hooksProp];
+          if (_Hooks.passThroughHooks.has(prop)) {
+            hooks[hooksProp] = (arg) => {
+              if (this.defaults.async) {
+                return Promise.resolve(hooksFunc.call(hooks, arg)).then((ret2) => {
+                  return prevHook.call(hooks, ret2);
+                });
+              }
+              const ret = hooksFunc.call(hooks, arg);
+              return prevHook.call(hooks, ret);
+            };
+          } else {
+            hooks[hooksProp] = (...args2) => {
+              let ret = hooksFunc.apply(hooks, args2);
+              if (ret === false) {
+                ret = prevHook.apply(hooks, args2);
+              }
+              return ret;
+            };
+          }
+        }
+        opts.hooks = hooks;
+      }
+      if (pack.walkTokens) {
+        const walkTokens2 = this.defaults.walkTokens;
+        const packWalktokens = pack.walkTokens;
+        opts.walkTokens = function(token) {
+          let values = [];
+          values.push(packWalktokens.call(this, token));
+          if (walkTokens2) {
+            values = values.concat(walkTokens2.call(this, token));
+          }
+          return values;
+        };
+      }
+      this.defaults = { ...this.defaults, ...opts };
+    });
+    return this;
+  }
+  setOptions(opt) {
+    this.defaults = { ...this.defaults, ...opt };
+    return this;
+  }
+  lexer(src, options2) {
+    return _Lexer.lex(src, options2 ?? this.defaults);
+  }
+  parser(tokens, options2) {
+    return _Parser.parse(tokens, options2 ?? this.defaults);
+  }
+};
+_convertRendererFunction = new WeakSet();
+convertRendererFunction_fn = function(func, prop, renderer) {
+  switch (prop) {
+    case "heading":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, renderer.parser.parseInline(token.tokens), token.depth, unescape(renderer.parser.parseInline(token.tokens, renderer.parser.textRenderer)));
+      };
+    case "code":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, token.text, token.lang, !!token.escaped);
+      };
+    case "table":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        let header = "";
+        let cell = "";
+        for (let j3 = 0; j3 < token.header.length; j3++) {
+          cell += this.tablecell({
+            text: token.header[j3].text,
+            tokens: token.header[j3].tokens,
+            header: true,
+            align: token.align[j3]
+          });
+        }
+        header += this.tablerow({ text: cell });
+        let body = "";
+        for (let j3 = 0; j3 < token.rows.length; j3++) {
+          const row = token.rows[j3];
+          cell = "";
+          for (let k3 = 0; k3 < row.length; k3++) {
+            cell += this.tablecell({
+              text: row[k3].text,
+              tokens: row[k3].tokens,
+              header: false,
+              align: token.align[k3]
+            });
+          }
+          body += this.tablerow({ text: cell });
+        }
+        return func.call(this, header, body);
+      };
+    case "blockquote":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        const body = this.parser.parse(token.tokens);
+        return func.call(this, body);
+      };
+    case "list":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        const ordered = token.ordered;
+        const start = token.start;
+        const loose = token.loose;
+        let body = "";
+        for (let j3 = 0; j3 < token.items.length; j3++) {
+          const item = token.items[j3];
+          const checked = item.checked;
+          const task = item.task;
+          let itemBody = "";
+          if (item.task) {
+            const checkbox = this.checkbox({ checked: !!checked });
+            if (loose) {
+              if (item.tokens.length > 0 && item.tokens[0].type === "paragraph") {
+                item.tokens[0].text = checkbox + " " + item.tokens[0].text;
+                if (item.tokens[0].tokens && item.tokens[0].tokens.length > 0 && item.tokens[0].tokens[0].type === "text") {
+                  item.tokens[0].tokens[0].text = checkbox + " " + item.tokens[0].tokens[0].text;
+                }
+              } else {
+                item.tokens.unshift({
+                  type: "text",
+                  text: checkbox + " "
+                });
+              }
+            } else {
+              itemBody += checkbox + " ";
+            }
+          }
+          itemBody += this.parser.parse(item.tokens, loose);
+          body += this.listitem({
+            type: "list_item",
+            raw: itemBody,
+            text: itemBody,
+            task,
+            checked: !!checked,
+            loose,
+            tokens: item.tokens
+          });
+        }
+        return func.call(this, body, ordered, start);
+      };
+    case "html":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, token.text, token.block);
+      };
+    case "paragraph":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, this.parser.parseInline(token.tokens));
+      };
+    case "escape":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, token.text);
+      };
+    case "link":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, token.href, token.title, this.parser.parseInline(token.tokens));
+      };
+    case "image":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, token.href, token.title, token.text);
+      };
+    case "strong":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, this.parser.parseInline(token.tokens));
+      };
+    case "em":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, this.parser.parseInline(token.tokens));
+      };
+    case "codespan":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, token.text);
+      };
+    case "del":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, this.parser.parseInline(token.tokens));
+      };
+    case "text":
+      return function(token) {
+        if (!token.type || token.type !== prop) {
+          return func.apply(this, arguments);
+        }
+        return func.call(this, token.text);
+      };
+  }
+  return func;
+};
+_parseMarkdown = new WeakSet();
+parseMarkdown_fn = function(lexer2, parser2) {
+  return (src, options2) => {
+    const origOpt = { ...options2 };
+    const opt = { ...this.defaults, ...origOpt };
+    if (this.defaults.async === true && origOpt.async === false) {
+      if (!opt.silent) {
+        console.warn("marked(): The async option was set to true by an extension. The async: false option sent to parse will be ignored.");
+      }
+      opt.async = true;
+    }
+    const throwError = __privateMethod(this, _onError, onError_fn).call(this, !!opt.silent, !!opt.async);
+    if (typeof src === "undefined" || src === null) {
+      return throwError(new Error("marked(): input parameter is undefined or null"));
+    }
+    if (typeof src !== "string") {
+      return throwError(new Error("marked(): input parameter is of type " + Object.prototype.toString.call(src) + ", string expected"));
+    }
+    if (opt.hooks) {
+      opt.hooks.options = opt;
+    }
+    if (opt.async) {
+      return Promise.resolve(opt.hooks ? opt.hooks.preprocess(src) : src).then((src2) => lexer2(src2, opt)).then((tokens) => opt.hooks ? opt.hooks.processAllTokens(tokens) : tokens).then((tokens) => opt.walkTokens ? Promise.all(this.walkTokens(tokens, opt.walkTokens)).then(() => tokens) : tokens).then((tokens) => parser2(tokens, opt)).then((html3) => opt.hooks ? opt.hooks.postprocess(html3) : html3).catch(throwError);
+    }
+    try {
+      if (opt.hooks) {
+        src = opt.hooks.preprocess(src);
+      }
+      let tokens = lexer2(src, opt);
+      if (opt.hooks) {
+        tokens = opt.hooks.processAllTokens(tokens);
+      }
+      if (opt.walkTokens) {
+        this.walkTokens(tokens, opt.walkTokens);
+      }
+      let html3 = parser2(tokens, opt);
+      if (opt.hooks) {
+        html3 = opt.hooks.postprocess(html3);
+      }
+      return html3;
+    } catch (e3) {
+      return throwError(e3);
+    }
+  };
+};
+_onError = new WeakSet();
+onError_fn = function(silent, async) {
+  return (e3) => {
+    e3.message += "\nPlease report this to https://github.com/markedjs/marked.";
+    if (silent) {
+      const msg = "<p>An error occurred:</p><pre>" + escape$1(e3.message + "", true) + "</pre>";
+      if (async) {
+        return Promise.resolve(msg);
+      }
+      return msg;
+    }
+    if (async) {
+      return Promise.reject(e3);
+    }
+    throw e3;
+  };
+};
+var markedInstance = new Marked();
+function marked(src, opt) {
+  return markedInstance.parse(src, opt);
+}
+marked.options = marked.setOptions = function(options2) {
+  markedInstance.setOptions(options2);
+  marked.defaults = markedInstance.defaults;
+  changeDefaults(marked.defaults);
+  return marked;
+};
+marked.getDefaults = _getDefaults;
+marked.defaults = _defaults;
+marked.use = function(...args) {
+  markedInstance.use(...args);
+  marked.defaults = markedInstance.defaults;
+  changeDefaults(marked.defaults);
+  return marked;
+};
+marked.walkTokens = function(tokens, callback) {
+  return markedInstance.walkTokens(tokens, callback);
+};
+marked.parseInline = markedInstance.parseInline;
+marked.Parser = _Parser;
+marked.parser = _Parser.parse;
+marked.Renderer = _Renderer;
+marked.TextRenderer = _TextRenderer;
+marked.Lexer = _Lexer;
+marked.lexer = _Lexer.lex;
+marked.Tokenizer = _Tokenizer;
+marked.Hooks = _Hooks;
+marked.parse = marked;
+var options = marked.options;
+var setOptions = marked.setOptions;
+var use = marked.use;
+var walkTokens = marked.walkTokens;
+var parseInline = marked.parseInline;
+var parser = _Parser.parse;
+var lexer = _Lexer.lex;
+
+// ../../node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
+var f3 = 0;
+var i3 = Array.isArray;
+function u3(e3, t3, n2, o3, i4, u4) {
+  t3 || (t3 = {});
+  var a3, c3, p3 = t3;
+  if ("ref" in p3)
+    for (c3 in p3 = {}, t3)
+      "ref" == c3 ? a3 = t3[c3] : p3[c3] = t3[c3];
+  var l3 = { type: e3, props: p3, key: n2, ref: a3, __k: null, __: null, __b: 0, __e: null, __c: null, constructor: void 0, __v: --f3, __i: -1, __u: 0, __source: i4, __self: u4 };
+  if ("function" == typeof e3 && (a3 = e3.defaultProps))
+    for (c3 in a3)
+      void 0 === p3[c3] && (p3[c3] = a3[c3]);
+  return l.vnode && l.vnode(l3), l3;
+}
+
+// ui/src/views/auth.tsx
+function getAuthId(request) {
+  return request.id || request.request_id || "";
+}
+function getAuthTitle(request) {
+  return request.title || request.summary || "Auth Request";
+}
+function getAuthStatus(request) {
+  return request.status || request.state || "pending";
+}
+function getStats(request) {
+  const files = request.stats?.files ?? request.files_changed ?? null;
+  const additions = request.stats?.additions ?? request.additions ?? null;
+  const deletions = request.stats?.deletions ?? request.deletions ?? null;
+  return { files, additions, deletions };
+}
+function formatNumber(value) {
+  return value.toLocaleString();
+}
+function extractBugRefs(message) {
+  if (!message)
+    return [];
+  const refs = [];
+  const regex2 = /^Bug:\s+(\S+)/gm;
+  let match;
+  while ((match = regex2.exec(message)) !== null) {
+    refs.push(match[1]);
+  }
+  return refs;
+}
+function parseBranchTag(message) {
+  const match = message.match(/^\[([^\]]+)\]\s*/);
+  if (match) {
+    return { branch: match[1], body: message.slice(match[0].length) };
+  }
+  return { branch: null, body: message };
+}
+var RESOLVED_LINGER_MS = 1500;
+function formatRelativeTime(timestampMs) {
+  const diffMs = Date.now() - timestampMs;
+  const seconds = Math.floor(diffMs / 1e3);
+  if (seconds < 5) {
+    return "just now";
+  }
+  if (seconds < 60) {
+    return `${seconds}s ago`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+function getTimestampMs(value) {
+  if (value == null)
+    return null;
+  if (typeof value === "number")
+    return value;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+function getCreatedAtMs(request) {
+  return getTimestampMs(request.created_at ?? null);
+}
+function getLastExecutedAtMs(request) {
+  return getTimestampMs(request.last_executed_at ?? null);
+}
+function getResolvedAtMs(request) {
+  const resolved = getTimestampMs(request.resolved_at ?? null);
+  if (resolved != null)
+    return resolved;
+  const created = getCreatedAtMs(request);
+  return created ?? Date.now();
+}
+function isFailedLikeStatus(status, exitCode) {
+  if (status === "expired")
+    return true;
+  if (status !== "completed")
+    return false;
+  return exitCode != null && exitCode !== 0;
+}
+function isHistoryStatus(status, exitCode) {
+  if (status === "rejected" || status === "dismissed" || status === "error") {
+    return true;
+  }
+  if (status !== "completed")
+    return false;
+  return exitCode == null || exitCode === 0;
+}
+function getStatusLabel(request) {
+  const status = getAuthStatus(request);
+  if (status === "approved")
+    return "Executing";
+  if (status === "completed") {
+    if (request.exit_code != null && request.exit_code !== 0)
+      return "Failed";
+    return "Completed";
+  }
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+function getStatusClass(request) {
+  const status = getAuthStatus(request);
+  if (status === "completed" && request.exit_code != null && request.exit_code !== 0) {
+    return "status-pill status-pill--failed";
+  }
+  return `status-pill status-pill--${status.toLowerCase()}`;
+}
+function truncateSummary(text, maxChars) {
+  if (text.length <= maxChars)
+    return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1)).trim()}\u2026`;
+}
+function buildFailureSummary(request, outputs) {
+  const id = getAuthId(request);
+  const errorText = typeof request.error === "string" ? request.error.trim() : "";
+  const outputText = outputs[id] || (typeof request.output === "string" ? request.output : "");
+  const source = errorText || outputText.trim();
+  if (!source) {
+    return null;
+  }
+  const lines = source.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return null;
+  }
+  return truncateSummary(lines.slice(-3).join(" / "), 240);
+}
+function stripAnsi(text) {
+  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+}
+function renderMarkdown(src) {
+  const result = marked.parse(src, { async: false });
+  return typeof result === "string" ? result : "";
+}
+function parseDiffSections(raw) {
+  const sections = [];
+  const parts = raw.split(/^(?=diff --git )/m);
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed)
+      continue;
+    const headerMatch = trimmed.match(/^diff --git a\/(.+?) b\/(.+)/m);
+    const filename = headerMatch ? headerMatch[2] : "unknown";
+    const lines = trimmed.split("\n").filter((line) => {
+      if (line.startsWith("diff --git "))
+        return false;
+      if (line.startsWith("index "))
+        return false;
+      if (line.startsWith("--- "))
+        return false;
+      if (line.startsWith("+++ "))
+        return false;
+      if (line.startsWith("new file mode"))
+        return false;
+      if (line.startsWith("deleted file mode"))
+        return false;
+      if (line.startsWith("old mode"))
+        return false;
+      if (line.startsWith("new mode"))
+        return false;
+      if (line.startsWith("similarity index"))
+        return false;
+      if (line.startsWith("rename from"))
+        return false;
+      if (line.startsWith("rename to"))
+        return false;
+      return true;
+    });
+    sections.push({ filename, hunks: lines.join("\n") });
+  }
+  return sections;
+}
+function renderHunksHtml(raw) {
+  const lines = raw.split("\n");
+  const escaped = lines.map((line) => {
+    const esc = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    if (line.startsWith("@@")) {
+      return `<span class="diff-hunk">${esc}</span>`;
+    }
+    if (line.startsWith("+")) {
+      return `<span class="diff-add">${esc}</span>`;
+    }
+    if (line.startsWith("-")) {
+      return `<span class="diff-del">${esc}</span>`;
+    }
+    return esc;
+  });
+  return `<pre class="diff-content">${escaped.join("\n")}</pre>`;
+}
+function isBranchMerged(request, branchesByRepo) {
+  if (!branchesByRepo)
+    return false;
+  const repo = request.repo ?? "";
+  const headBranch = request.head_branch ?? request.head ?? "";
+  if (!repo || !headBranch)
+    return false;
+  const branches = branchesByRepo[repo];
+  if (!branches || branches.length === 0)
+    return false;
+  return !branches.includes(headBranch);
+}
+function getRequestHash(request) {
+  const id = getAuthId(request);
+  return id ? id.slice(0, 8) : "";
+}
+function getStatusOrder(request) {
+  const status = getAuthStatus(request);
+  if (status === "pending")
+    return 0;
+  if (status === "approved")
+    return 1;
+  if (isFailedLikeStatus(status, request.exit_code ?? null))
+    return 2;
+  return 3;
+}
+function getSubmissionTimestampLabel(request) {
+  const createdAtMs = getCreatedAtMs(request);
+  const lastExecutedAtMs = getLastExecutedAtMs(request);
+  const showLastAttempt = lastExecutedAtMs != null && (createdAtMs == null || lastExecutedAtMs !== createdAtMs);
+  const submissionLabel = createdAtMs != null ? formatRelativeTime(createdAtMs) : "unknown";
+  const lastAttemptLabel = showLastAttempt && lastExecutedAtMs != null ? `last attempt: ${formatRelativeTime(lastExecutedAtMs)}` : null;
+  return lastAttemptLabel ? `${submissionLabel} \xB7 ${lastAttemptLabel}` : submissionLabel;
+}
+function getResolvedTimestampLabel(request) {
+  const resolvedAtMs = getResolvedAtMs(request);
+  return `resolved ${formatRelativeTime(resolvedAtMs)}`;
+}
+function AuthCard({
+  request,
+  expanded,
+  history,
+  resolved,
+  failureSummary,
+  attemptCount,
+  timestampLabel,
+  branchMerged,
+  onToggle,
+  actions,
+  executionOutput,
+  dragging,
+  draggable,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDrop
+}) {
+  const [showCommit, setShowCommit] = d2(true);
+  const [showSpec, setShowSpec] = d2(false);
+  const [showDiff, setShowDiff] = d2(true);
+  const [showConsole, setShowConsole] = d2(false);
+  const [selectedFile, setSelectedFile] = d2(-1);
+  const consoleEndRef = A2(null);
+  const commitMsg = typeof request.commit_message === "string" ? request.commit_message : "";
+  const specContent = typeof request.spec_content === "string" ? request.spec_content : "";
+  const diffRaw = typeof request.diff_summary === "string" ? request.diff_summary : "";
+  const { branch: commitBranch, body: commitBody } = T2(
+    () => parseBranchTag(commitMsg),
+    [commitMsg]
+  );
+  const commitHtml = T2(() => commitBody ? renderMarkdown(commitBody) : "", [commitBody]);
+  const specHtml = T2(() => specContent ? renderMarkdown(specContent) : "", [specContent]);
+  const diffSections = T2(() => parseDiffSections(diffRaw), [diffRaw]);
+  const rawConsoleOutput = executionOutput || (typeof request.output === "string" ? request.output : "");
+  const consoleText = T2(() => stripAnsi(rawConsoleOutput), [rawConsoleOutput]);
+  const hasConsoleOutput = consoleText.trim().length > 0;
+  const stats = getStats(request);
+  const status = getAuthStatus(request);
+  const statusLabel = getStatusLabel(request);
+  const statusClass2 = getStatusClass(request);
+  const cardClass = `auth-card auth-card--condensed${expanded ? " auth-card--expanded" : ""}${history ? " auth-card--history" : ""}${resolved ? " auth-card--resolved" : ""}${dragging ? " auth-card--dragging" : ""}`;
+  const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
+  const isApproved = status === "approved";
+  const showYubikeyWarning = expanded && isApproved;
+  const showConsoleToggle = expanded && (isApproved || hasConsoleOutput && (status === "completed" || failedLike));
+  const showFailure = expanded && failedLike;
+  const attemptLabel = attemptCount && attemptCount > 1 ? `Attempt ${attemptCount}` : null;
+  const requestHash = getRequestHash(request);
+  const fullId = getAuthId(request);
+  const baseBranch = request.base_branch ?? request.base;
+  const headBranch = request.head_branch ?? request.head;
+  const repoName = request.repo ?? "";
+  const hasTags = Boolean(commitBranch || attemptLabel || branchMerged || headBranch && baseBranch);
+  const sessionId = request.session_id;
+  const bugRefs = T2(() => extractBugRefs(commitMsg), [commitMsg]);
+  const hasLinks = Boolean(sessionId) || bugRefs.length > 0;
+  y2(() => {
+    if (isApproved) {
+      setShowConsole(true);
+    }
+  }, [isApproved]);
+  y2(() => {
+    if (showConsole && consoleEndRef.current) {
+      consoleEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [showConsole, consoleText]);
+  const effectiveTimestampLabel = timestampLabel ?? getSubmissionTimestampLabel(request);
+  const hasStats = stats.files != null || stats.additions != null || stats.deletions != null;
+  const statsLine = /* @__PURE__ */ u3("span", { className: "auth-card__stats", children: hasStats ? /* @__PURE__ */ u3(k, { children: [
+    /* @__PURE__ */ u3("span", { children: [
+      formatNumber(stats.files ?? 0),
+      " files"
+    ] }),
+    /* @__PURE__ */ u3("span", { className: "stats-plus", children: [
+      "+",
+      formatNumber(stats.additions ?? 0)
+    ] }),
+    /* @__PURE__ */ u3("span", { className: "stats-minus", children: [
+      "-",
+      formatNumber(stats.deletions ?? 0)
+    ] })
+  ] }) : /* @__PURE__ */ u3("span", { className: "stats-unavailable", children: "\u2014" }) });
+  const summaryContent = /* @__PURE__ */ u3("div", { className: "auth-card__summary", children: [
+    /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--primary", children: [
+      /* @__PURE__ */ u3("span", { className: statusClass2, children: statusLabel }),
+      /* @__PURE__ */ u3("span", { className: "auth-card__title", children: getAuthTitle(request) }),
+      repoName && /* @__PURE__ */ u3("span", { className: "auth-card__repo", children: repoName })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--stats", children: [
+      statsLine,
+      /* @__PURE__ */ u3("span", { className: "auth-card__divider", children: "|" }),
+      /* @__PURE__ */ u3(
+        "span",
+        {
+          className: "auth-card__request-id",
+          onClick: (event) => {
+            event.stopPropagation();
+            if (fullId) {
+              navigator.clipboard.writeText(fullId);
+            }
+          },
+          children: requestHash
+        }
+      ),
+      /* @__PURE__ */ u3("span", { className: "auth-card__divider", children: "|" }),
+      /* @__PURE__ */ u3("span", { className: "auth-card__timestamps", children: effectiveTimestampLabel })
+    ] }),
+    hasTags && /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--tags", children: [
+      commitBranch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: commitBranch }),
+      attemptLabel && /* @__PURE__ */ u3("span", { className: "attempt-tag", children: attemptLabel }),
+      branchMerged && /* @__PURE__ */ u3("span", { className: "branch-merged-tag", children: "Branch merged \u2014 safe to dismiss" }),
+      headBranch && baseBranch && /* @__PURE__ */ u3("span", { className: "branch-flow", children: [
+        /* @__PURE__ */ u3("span", { className: "branch-name", children: headBranch }),
+        " \u2192 ",
+        /* @__PURE__ */ u3("span", { className: "branch-name", children: baseBranch })
+      ] })
+    ] }),
+    hasLinks && /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--links", children: [
+      sessionId && /* @__PURE__ */ u3(
+        "a",
+        {
+          className: "auth-card__link",
+          href: `#/sessions?session=${encodeURIComponent(sessionId)}`,
+          onClick: (e3) => e3.stopPropagation(),
+          children: "Session"
+        }
+      ),
+      bugRefs.length > 0 && repoName && bugRefs.map((ref) => /* @__PURE__ */ u3(
+        "a",
+        {
+          className: "auth-card__link auth-card__link--issue",
+          href: `#/issues?repo=${encodeURIComponent(repoName)}&issue=${encodeURIComponent(ref)}`,
+          onClick: (e3) => e3.stopPropagation(),
+          children: [
+            "Issue ",
+            ref.slice(0, 8)
+          ]
+        },
+        ref
+      ))
+    ] })
+  ] });
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: cardClass,
+      draggable,
+      onDragStart,
+      onDragEnd,
+      onDragOver,
+      onDrop,
+      children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "auth-card__summary-button",
+            onClick: () => onToggle?.(getAuthId(request)),
+            children: summaryContent
+          }
+        ),
+        expanded && /* @__PURE__ */ u3("div", { className: "auth-card__expanded", children: [
+          showFailure && /* @__PURE__ */ u3("div", { className: `auth-failure${status === "expired" ? " auth-failure--expired" : ""}`, children: [
+            /* @__PURE__ */ u3("div", { className: "auth-failure__header", children: [
+              /* @__PURE__ */ u3("span", { className: "auth-failure__title", children: status === "expired" ? "Expired" : "Failed" }),
+              request.exit_code != null && request.exit_code !== 0 && /* @__PURE__ */ u3("span", { className: "auth-failure__code", children: [
+                "Exit ",
+                request.exit_code
+              ] })
+            ] }),
+            /* @__PURE__ */ u3("p", { className: "auth-failure__summary", children: failureSummary || (status === "expired" ? "Expired without a response." : "No output captured.") })
+          ] }),
+          showYubikeyWarning && /* @__PURE__ */ u3("div", { className: "auth-yubikey-warning", children: [
+            /* @__PURE__ */ u3("span", { className: "auth-yubikey-warning__spinner", "aria-hidden": "true" }),
+            /* @__PURE__ */ u3("span", { className: "auth-yubikey-warning__text", children: "Executing \u2014 touch your YubiKey when it lights up" })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "auth-card__panels", children: [
+            /* @__PURE__ */ u3("div", { className: "auth-card__left-col", children: [
+              /* @__PURE__ */ u3("div", { className: "panel", children: [
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "panel__toggle",
+                    onClick: () => setShowCommit((prev) => !prev),
+                    children: [
+                      /* @__PURE__ */ u3("span", { className: `panel__chevron${showCommit ? " panel__chevron--open" : ""}`, children: "\u25B8" }),
+                      "Commit Message"
+                    ]
+                  }
+                ),
+                showCommit && (commitHtml ? /* @__PURE__ */ u3(
+                  "div",
+                  {
+                    className: "panel__body spec-panel",
+                    dangerouslySetInnerHTML: { __html: commitHtml }
+                  }
+                ) : /* @__PURE__ */ u3("div", { className: "panel__body spec-panel spec-panel--empty", children: "No commit message." }))
+              ] }),
+              /* @__PURE__ */ u3("div", { className: "panel", children: [
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "panel__toggle",
+                    onClick: () => setShowSpec((prev) => !prev),
+                    children: [
+                      /* @__PURE__ */ u3("span", { className: `panel__chevron${showSpec ? " panel__chevron--open" : ""}`, children: "\u25B8" }),
+                      "Specification"
+                    ]
+                  }
+                ),
+                showSpec && (specHtml ? /* @__PURE__ */ u3(
+                  "div",
+                  {
+                    className: "panel__body spec-panel",
+                    dangerouslySetInnerHTML: { __html: specHtml }
+                  }
+                ) : /* @__PURE__ */ u3("div", { className: "panel__body spec-panel spec-panel--empty", children: "No specification attached." }))
+              ] })
+            ] }),
+            /* @__PURE__ */ u3("div", { className: "panel auth-card__right-col", children: [
+              /* @__PURE__ */ u3(
+                "button",
+                {
+                  type: "button",
+                  className: "panel__toggle",
+                  onClick: () => setShowDiff((prev) => !prev),
+                  children: [
+                    /* @__PURE__ */ u3("span", { className: `panel__chevron${showDiff ? " panel__chevron--open" : ""}`, children: "\u25B8" }),
+                    "Changes"
+                  ]
+                }
+              ),
+              showDiff && (diffSections.length > 0 ? /* @__PURE__ */ u3("div", { className: "panel__body diff-panel", children: [
+                diffSections.length > 1 && /* @__PURE__ */ u3("div", { className: "diff-file-tabs", children: [
+                  /* @__PURE__ */ u3(
+                    "button",
+                    {
+                      className: `diff-file-tab${selectedFile === -1 ? " diff-file-tab--active" : ""}`,
+                      onClick: () => setSelectedFile(-1),
+                      children: "All"
+                    }
+                  ),
+                  diffSections.map((section, i4) => /* @__PURE__ */ u3(
+                    "button",
+                    {
+                      className: `diff-file-tab${selectedFile === i4 ? " diff-file-tab--active" : ""}`,
+                      onClick: () => setSelectedFile(i4),
+                      title: section.filename,
+                      children: section.filename.split("/").pop()
+                    },
+                    i4
+                  ))
+                ] }),
+                /* @__PURE__ */ u3("div", { dangerouslySetInnerHTML: {
+                  __html: selectedFile === -1 ? renderHunksHtml(diffSections.map((s3) => s3.hunks).join("\n")) : renderHunksHtml(diffSections[selectedFile]?.hunks || "")
+                } })
+              ] }) : /* @__PURE__ */ u3("div", { className: "panel__body diff-panel spec-panel--empty", children: "No diff available." }))
+            ] })
+          ] }),
+          showConsoleToggle && /* @__PURE__ */ u3("div", { className: "console-output", children: [
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "console-output__toggle",
+                onClick: () => setShowConsole((prev) => !prev),
+                children: [
+                  /* @__PURE__ */ u3("span", { className: `panel__chevron${showConsole ? " panel__chevron--open" : ""}`, children: "\u25B8" }),
+                  showConsole ? "Hide output" : "Show output",
+                  isApproved && /* @__PURE__ */ u3("span", { className: "console-output__live-dot" })
+                ]
+              }
+            ),
+            showConsole && /* @__PURE__ */ u3("div", { className: "console-output__panel", children: hasConsoleOutput ? /* @__PURE__ */ u3("pre", { className: "console-output__pre", children: [
+              consoleText,
+              /* @__PURE__ */ u3("div", { ref: consoleEndRef })
+            ] }) : /* @__PURE__ */ u3("div", { className: "console-output__waiting", children: "Waiting for output\u2026" }) })
+          ] }),
+          actions
+        ] })
+      ]
+    }
+  );
+}
+function AuthSidebarItem({
+  request,
+  selected,
+  onSelect
+}) {
+  const id = getAuthId(request);
+  const status = getAuthStatus(request);
+  const exitCode = request.exit_code ?? null;
+  const failedLike = isFailedLikeStatus(status, exitCode);
+  let dotStatus;
+  if (failedLike) {
+    dotStatus = "failed";
+  } else if (status === "completed") {
+    dotStatus = "completed";
+  } else if (status === "approved") {
+    dotStatus = "approved";
+  } else if (status === "rejected" || status === "dismissed") {
+    dotStatus = "dismissed";
+  } else {
+    dotStatus = status;
+  }
+  const headBranch = request.head_branch ?? request.head ?? "";
+  const baseBranch = request.base_branch ?? request.base ?? "";
+  const branchInfo = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : headBranch;
+  const isHistory = isHistoryStatus(status, exitCode);
+  const timestampLabel = isHistory ? getResolvedTimestampLabel(request) : getSubmissionTimestampLabel(request);
+  const repo = request.repo && request.repo.trim() ? request.repo.trim() : null;
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: `auth-sidebar-item${selected ? " auth-sidebar-item--selected" : ""}`,
+      onClick: () => onSelect(id),
+      children: [
+        /* @__PURE__ */ u3("span", { className: `auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}` }),
+        /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__body", children: [
+          /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__title", children: getAuthTitle(request) }),
+          repo && /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__repo", children: repo }),
+          branchInfo && /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__branch", children: branchInfo }),
+          /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__time", children: timestampLabel })
+        ] })
+      ]
+    }
+  );
+}
+function AuthQueueView({
+  queue,
+  historyQueue,
+  outputs,
+  branchesByRepo,
+  selectedAuthId: externalSelectedId,
+  onSelectAuth,
+  onApprove,
+  onReject,
+  onRetry,
+  onDismiss
+}) {
+  const [filterMode, setFilterMode] = d2("active");
+  const [repoFilter, setRepoFilter] = d2(null);
+  const [localSelectedId, setLocalSelectedId] = d2(null);
+  const selectedId = externalSelectedId !== void 0 ? externalSelectedId : localSelectedId;
+  const handleSelect = q2((id) => {
+    setLocalSelectedId(id);
+    onSelectAuth?.(id);
+  }, [onSelectAuth]);
+  const [recentlyResolved, setRecentlyResolved] = d2(() => /* @__PURE__ */ new Map());
+  const timersRef = A2(/* @__PURE__ */ new Map());
+  y2(() => {
+    const timers = timersRef.current;
+    return () => {
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
+    };
+  }, []);
+  const prevQueueRef = A2(
+    /* @__PURE__ */ new Map()
+  );
+  const [retryCounts, setRetryCounts] = d2(() => /* @__PURE__ */ new Map());
+  y2(() => {
+    const prevStatuses = prevQueueRef.current;
+    const nextStatuses = /* @__PURE__ */ new Map();
+    for (const request of queue) {
+      const id = getAuthId(request);
+      const status = getAuthStatus(request);
+      const exitCode = request.exit_code ?? null;
+      nextStatuses.set(id, { status, exitCode });
+      const prevStatus = prevStatuses.get(id);
+      if (prevStatus && !isHistoryStatus(prevStatus.status, prevStatus.exitCode) && isHistoryStatus(status, exitCode)) {
+        setRecentlyResolved((prev) => {
+          const next = new Map(prev);
+          next.set(id, { status, resolvedAt: Date.now() });
+          return next;
+        });
+        const existingTimer = timersRef.current.get(id);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+        }
+        const timer = setTimeout(() => {
+          setRecentlyResolved((prev) => {
+            const next = new Map(prev);
+            next.delete(id);
+            return next;
+          });
+          timersRef.current.delete(id);
+        }, RESOLVED_LINGER_MS);
+        timersRef.current.set(id, timer);
+      }
+      if (prevStatus && isFailedLikeStatus(prevStatus.status, prevStatus.exitCode) && status === "pending") {
+        setRetryCounts((prev) => {
+          const next = new Map(prev);
+          next.set(id, (next.get(id) ?? 0) + 1);
+          return next;
+        });
+      }
+    }
+    prevQueueRef.current = nextStatuses;
+  }, [queue]);
+  const activeQueue = T2(
+    () => queue.filter((r3) => {
+      const status = getAuthStatus(r3);
+      return status === "pending" || status === "approved" || isFailedLikeStatus(status, r3.exit_code ?? null);
+    }),
+    [queue]
+  );
+  const lingeringQueue = T2(
+    () => queue.filter((r3) => {
+      const id = getAuthId(r3);
+      return recentlyResolved.has(id);
+    }),
+    [queue, recentlyResolved]
+  );
+  const activeIds = T2(
+    () => new Set(activeQueue.map((r3) => getAuthId(r3))),
+    [activeQueue]
+  );
+  const historyRequests = T2(() => {
+    const source = historyQueue && historyQueue.length > 0 ? historyQueue : queue.filter((r3) => {
+      const status = getAuthStatus(r3);
+      return isHistoryStatus(status, r3.exit_code ?? null);
+    });
+    const filtered = source.filter((r3) => {
+      const id = getAuthId(r3);
+      return !recentlyResolved.has(id) && !activeIds.has(id);
+    });
+    return filtered.slice().sort((a3, b) => getResolvedAtMs(b) - getResolvedAtMs(a3));
+  }, [queue, historyQueue, recentlyResolved, activeIds]);
+  const [sortMode, setSortMode] = d2("newest");
+  const [customOrder, setCustomOrder] = d2(null);
+  const sortedActiveQueue = T2(() => {
+    const sorted = [...activeQueue];
+    switch (sortMode) {
+      case "oldest":
+        return sorted.sort((a3, b) => (getCreatedAtMs(a3) ?? 0) - (getCreatedAtMs(b) ?? 0));
+      case "status":
+        return sorted.sort((a3, b) => getStatusOrder(a3) - getStatusOrder(b));
+      case "newest":
+      default:
+        return sorted.sort((a3, b) => (getCreatedAtMs(b) ?? 0) - (getCreatedAtMs(a3) ?? 0));
+    }
+  }, [activeQueue, sortMode]);
+  const orderedActiveQueue = T2(() => {
+    if (!customOrder)
+      return sortedActiveQueue;
+    const byId = new Map(sortedActiveQueue.map((request) => [getAuthId(request), request]));
+    const ordered = customOrder.map((id) => byId.get(id)).filter((request) => Boolean(request));
+    for (const request of sortedActiveQueue) {
+      const id = getAuthId(request);
+      if (!customOrder.includes(id)) {
+        ordered.push(request);
+      }
+    }
+    return ordered;
+  }, [customOrder, sortedActiveQueue]);
+  const handleSortChange = q2((nextMode) => {
+    setSortMode(nextMode);
+    setCustomOrder(null);
+  }, []);
+  const hasActiveList = orderedActiveQueue.length + lingeringQueue.length > 0;
+  const [, setTimeTick] = d2(0);
+  y2(() => {
+    if (!hasActiveList) {
+      return;
+    }
+    const interval = setInterval(() => setTimeTick((t3) => t3 + 1), 3e4);
+    return () => clearInterval(interval);
+  }, [hasActiveList]);
+  const [inFlight, setInFlight] = d2(() => /* @__PURE__ */ new Set());
+  const inFlightRef = A2(/* @__PURE__ */ new Set());
+  const setInFlightState = q2(
+    (updater) => {
+      setInFlight((prev) => {
+        const next = updater(prev);
+        inFlightRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+  const [toastMessage, setToastMessage] = d2(null);
+  const toastTimerRef = A2(null);
+  const showToast = q2((message) => {
+    setToastMessage(message);
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage(null);
+      toastTimerRef.current = null;
+    }, 4e3);
+  }, []);
+  y2(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+  const runAction = q2(
+    (id, action, onError) => {
+      if (!id || inFlightRef.current.has(id)) {
+        return;
+      }
+      setInFlightState((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+      Promise.resolve(action(id)).catch((err) => {
+        onError?.(err);
+      }).finally(() => {
+        setInFlightState((prev) => {
+          if (!prev.has(id)) {
+            return prev;
+          }
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+      });
+    },
+    [setInFlightState]
+  );
+  const handleApprove = q2(
+    (id) => runAction(id, onApprove, (err) => {
+      const message = err instanceof Error ? err.message : "Approval failed. Try again.";
+      showToast(message);
+    }),
+    [runAction, onApprove, showToast]
+  );
+  const handleReject = q2(
+    (id) => runAction(id, onReject),
+    [runAction, onReject]
+  );
+  const [retryingIds, setRetryingIds] = d2(() => /* @__PURE__ */ new Set());
+  const retryingIdsRef = A2(/* @__PURE__ */ new Set());
+  const setRetryingIdsState = q2(
+    (updater) => {
+      setRetryingIds((prev) => {
+        const next = updater(prev);
+        retryingIdsRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+  const handleRetry = q2(
+    (id) => {
+      setRetryingIdsState((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+      runAction(id, onRetry, void 0);
+      Promise.resolve().then(() => {
+      });
+    },
+    [runAction, onRetry, setRetryingIdsState]
+  );
+  y2(() => {
+    setRetryingIdsState((prev) => {
+      if (prev.size === 0)
+        return prev;
+      let changed = false;
+      const next = new Set(prev);
+      for (const id of prev) {
+        if (!inFlight.has(id)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [inFlight]);
+  const handleDismiss = q2(
+    (id) => runAction(id, onDismiss, () => showToast("Dismiss failed. Try again.")),
+    [runAction, onDismiss, showToast]
+  );
+  const [dismissConfirmId, setDismissConfirmId] = d2(null);
+  const dismissTimerRef = A2(null);
+  y2(() => {
+    return () => {
+      if (dismissTimerRef.current) {
+        clearTimeout(dismissTimerRef.current);
+      }
+    };
+  }, []);
+  const toggleDismissConfirm = q2(
+    (id) => {
+      if (dismissConfirmId === id) {
+        setDismissConfirmId(null);
+        if (dismissTimerRef.current) {
+          clearTimeout(dismissTimerRef.current);
+          dismissTimerRef.current = null;
+        }
+        handleDismiss(id);
+        return;
+      }
+      setDismissConfirmId(id);
+      if (dismissTimerRef.current) {
+        clearTimeout(dismissTimerRef.current);
+      }
+      dismissTimerRef.current = setTimeout(() => {
+        setDismissConfirmId(null);
+        dismissTimerRef.current = null;
+      }, 3e3);
+    },
+    [dismissConfirmId, handleDismiss]
+  );
+  const [rejectConfirmId, setRejectConfirmId] = d2(null);
+  const rejectTimerRef = A2(null);
+  y2(() => {
+    return () => {
+      if (rejectTimerRef.current) {
+        clearTimeout(rejectTimerRef.current);
+      }
+    };
+  }, []);
+  const toggleRejectConfirm = q2(
+    (id) => {
+      if (rejectConfirmId === id) {
+        setRejectConfirmId(null);
+        if (rejectTimerRef.current) {
+          clearTimeout(rejectTimerRef.current);
+          rejectTimerRef.current = null;
+        }
+        handleReject(id);
+        return;
+      }
+      setRejectConfirmId(id);
+      if (rejectTimerRef.current) {
+        clearTimeout(rejectTimerRef.current);
+      }
+      rejectTimerRef.current = setTimeout(() => {
+        setRejectConfirmId(null);
+        rejectTimerRef.current = null;
+      }, 3e3);
+    },
+    [rejectConfirmId, handleReject]
+  );
+  const sidebarItems = T2(() => {
+    if (filterMode === "active") {
+      const active = [...orderedActiveQueue, ...lingeringQueue];
+      const seen = /* @__PURE__ */ new Set();
+      return active.filter((r3) => {
+        const id = getAuthId(r3);
+        if (seen.has(id))
+          return false;
+        seen.add(id);
+        return true;
+      });
+    }
+    if (filterMode === "historical") {
+      return historyRequests;
+    }
+    const allActive = [...orderedActiveQueue, ...lingeringQueue];
+    const activeSet = new Set(allActive.map((r3) => getAuthId(r3)));
+    const allHistory = historyRequests.filter((r3) => !activeSet.has(getAuthId(r3)));
+    return [...allActive, ...allHistory];
+  }, [filterMode, orderedActiveQueue, lingeringQueue, historyRequests]);
+  const uniqueRepos = T2(() => {
+    const repos = /* @__PURE__ */ new Set();
+    for (const r3 of sidebarItems) {
+      const repo = r3.repo && r3.repo.trim() ? r3.repo.trim() : null;
+      if (repo)
+        repos.add(repo);
+    }
+    return Array.from(repos).sort();
+  }, [sidebarItems]);
+  y2(() => {
+    if (repoFilter && !uniqueRepos.includes(repoFilter)) {
+      setRepoFilter(null);
+    }
+  }, [uniqueRepos, repoFilter]);
+  const filteredSidebarItems = T2(() => {
+    if (!repoFilter)
+      return sidebarItems;
+    return sidebarItems.filter((r3) => {
+      const repo = r3.repo && r3.repo.trim() ? r3.repo.trim() : null;
+      return repo === repoFilter;
+    });
+  }, [sidebarItems, repoFilter]);
+  const selectedRequest = T2(() => {
+    if (!selectedId)
+      return null;
+    return queue.find((r3) => getAuthId(r3) === selectedId) ?? (historyQueue ?? []).find((r3) => getAuthId(r3) === selectedId) ?? null;
+  }, [selectedId, queue, historyQueue]);
+  y2(() => {
+    if (selectedId && filteredSidebarItems.length === 0) {
+      setLocalSelectedId(null);
+      onSelectAuth?.(null);
+      return;
+    }
+    if (selectedId && !filteredSidebarItems.some((item) => getAuthId(item) === selectedId)) {
+      const firstId = getAuthId(filteredSidebarItems[0]);
+      setLocalSelectedId(firstId);
+      onSelectAuth?.(firstId);
+      return;
+    }
+    if (!selectedId && filteredSidebarItems.length > 0) {
+      const firstId = getAuthId(filteredSidebarItems[0]);
+      setLocalSelectedId(firstId);
+      onSelectAuth?.(firstId);
+    }
+  }, [filterMode, repoFilter, filteredSidebarItems]);
+  const renderDetailActions = (request) => {
+    const id = getAuthId(request);
+    const status = getAuthStatus(request);
+    const exitCode = request.exit_code ?? null;
+    const isFailed = isFailedLikeStatus(status, exitCode);
+    const isHistory = isHistoryStatus(status, exitCode);
+    if (isHistory && !isFailed) {
+      return null;
+    }
+    const actionDisabled = inFlight.has(id);
+    const isExecuting = status === "approved";
+    const isSubmitting = actionDisabled && !isExecuting && !isFailed;
+    const showForceDismiss = !isHistory && !isFailed && !isExecuting && !isSubmitting;
+    if (isFailed) {
+      const isRetrying = retryingIds.has(id);
+      return /* @__PURE__ */ u3("div", { className: "auth-actions", children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--success",
+            onClick: () => handleRetry(id),
+            disabled: actionDisabled,
+            children: isRetrying ? "Retrying..." : "Retry"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `btn btn--danger${dismissConfirmId === id ? " btn--confirm" : ""}`,
+            onClick: () => toggleDismissConfirm(id),
+            disabled: actionDisabled,
+            children: actionDisabled && !isRetrying ? "Dismissing..." : dismissConfirmId === id ? "Confirm dismiss?" : "Dismiss"
+          }
+        )
+      ] });
+    }
+    if (isSubmitting) {
+      return /* @__PURE__ */ u3("div", { className: "auth-actions", children: /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--success btn--submitting",
+          disabled: true,
+          children: "Submitting\u2026"
+        }
+      ) });
+    }
+    if (isExecuting) {
+      return /* @__PURE__ */ u3("div", { className: "auth-actions", children: /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--ghost btn--submitting",
+          disabled: true,
+          children: "Executing\u2026"
+        }
+      ) });
+    }
+    return /* @__PURE__ */ u3("div", { className: "auth-actions", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--success",
+          onClick: () => handleApprove(id),
+          disabled: actionDisabled,
+          children: "Approve"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `btn btn--danger${rejectConfirmId === id ? " btn--confirm" : ""}`,
+          onClick: () => toggleRejectConfirm(id),
+          disabled: actionDisabled,
+          children: rejectConfirmId === id ? "Confirm reject?" : "Reject"
+        }
+      ),
+      showForceDismiss && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--danger",
+          onClick: () => handleDismiss(id),
+          disabled: actionDisabled,
+          children: "Force Dismiss"
+        }
+      )
+    ] });
+  };
+  return /* @__PURE__ */ u3("div", { className: "auth-sidebar-layout", children: [
+    toastMessage && /* @__PURE__ */ u3("div", { className: "auth-toast auth-toast--floating", role: "status", children: toastMessage }),
+    /* @__PURE__ */ u3("div", { className: "auth-sidebar", children: [
+      /* @__PURE__ */ u3("div", { className: "auth-sidebar__header", children: [
+        /* @__PURE__ */ u3("div", { className: "auth-sidebar__filters", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `auth-sidebar__filter-btn${filterMode === "active" ? " auth-sidebar__filter-btn--active" : ""}`,
+              onClick: () => setFilterMode("active"),
+              children: "Active"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `auth-sidebar__filter-btn${filterMode === "all" ? " auth-sidebar__filter-btn--active" : ""}`,
+              onClick: () => setFilterMode("all"),
+              children: "All"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `auth-sidebar__filter-btn${filterMode === "historical" ? " auth-sidebar__filter-btn--active" : ""}`,
+              onClick: () => setFilterMode("historical"),
+              children: "Historical"
+            }
+          )
+        ] }),
+        filterMode === "active" && /* @__PURE__ */ u3("div", { className: "auth-sidebar__sort", children: /* @__PURE__ */ u3(
+          "select",
+          {
+            value: sortMode,
+            onChange: (event) => handleSortChange(event.currentTarget.value),
+            children: [
+              /* @__PURE__ */ u3("option", { value: "newest", children: "Newest" }),
+              /* @__PURE__ */ u3("option", { value: "oldest", children: "Oldest" }),
+              /* @__PURE__ */ u3("option", { value: "status", children: "Status" })
+            ]
+          }
+        ) })
+      ] }),
+      uniqueRepos.length > 1 && /* @__PURE__ */ u3("div", { className: "auth-sidebar__repo-filter", children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `auth-sidebar__repo-btn${repoFilter === null ? " auth-sidebar__repo-btn--active" : ""}`,
+            onClick: () => setRepoFilter(null),
+            children: "All repos"
+          }
+        ),
+        uniqueRepos.map((repo) => /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `auth-sidebar__repo-btn${repoFilter === repo ? " auth-sidebar__repo-btn--active" : ""}`,
+            onClick: () => setRepoFilter(repoFilter === repo ? null : repo),
+            children: repo
+          },
+          repo
+        ))
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "auth-sidebar__list", children: filteredSidebarItems.length === 0 ? /* @__PURE__ */ u3("div", { className: "auth-sidebar__empty", children: repoFilter ? `No requests for ${repoFilter}.` : filterMode === "active" ? "No active requests." : filterMode === "historical" ? "No historical requests." : "No auth requests." }) : filteredSidebarItems.map((request) => /* @__PURE__ */ u3(
+        AuthSidebarItem,
+        {
+          request,
+          selected: getAuthId(request) === selectedId,
+          onSelect: handleSelect
+        },
+        getAuthId(request)
+      )) })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "auth-detail", children: !selectedRequest ? /* @__PURE__ */ u3("div", { className: "auth-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select a request to view details" }) }) : (() => {
+      const request = selectedRequest;
+      const id = getAuthId(request);
+      const status = getAuthStatus(request);
+      const exitCode = request.exit_code ?? null;
+      const isFailed = isFailedLikeStatus(status, exitCode);
+      const retryCount = retryCounts.get(id) ?? 0;
+      const attemptCount = isFailed && retryCount > 0 ? retryCount + 1 : null;
+      const failureSummary = isFailed ? buildFailureSummary(request, outputs) : null;
+      const isHistory = isHistoryStatus(status, exitCode);
+      return /* @__PURE__ */ u3(
+        AuthCard,
+        {
+          request,
+          expanded: true,
+          history: isHistory,
+          failureSummary,
+          attemptCount,
+          branchMerged: isHistory && !isFailed && isBranchMerged(request, branchesByRepo),
+          executionOutput: outputs[id],
+          actions: renderDetailActions(request)
+        }
+      );
+    })() })
+  ] });
+}
+
+// ui/src/views/inbox.tsx
+function formatRelativeTime2(value) {
+  if (value === null || value === void 0)
+    return "";
+  const parsed = typeof value === "number" ? value : Date.parse(value);
+  if (Number.isNaN(parsed))
+    return String(value);
+  const delta = Date.now() - parsed;
+  if (delta < 0)
+    return "just now";
+  const seconds = Math.floor(delta / 1e3);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 1)
+    return `${days}d ago`;
+  if (days === 1)
+    return "yesterday";
+  if (hours > 0)
+    return `${hours}h ago`;
+  if (minutes > 0)
+    return `${minutes}m ago`;
+  return `${seconds}s ago`;
+}
+function itemBorderColor(item) {
+  if (item.type === "continuation")
+    return "#60a5fa";
+  if (item.type === "issue")
+    return "#a78bfa";
+  const ar = item.raw;
+  if (ar.status === "completed")
+    return "#34d399";
+  if (ar.status === "rejected" || ar.status === "expired")
+    return "#f87171";
+  if (ar.status === "dismissed")
+    return "#9ca3af";
+  return "#9ca3af";
+}
+function itemTypeBadge(item) {
+  if (item.type === "continuation")
+    return "Continuation";
+  if (item.type === "issue")
+    return "Issue";
+  const ar = item.raw;
+  return ar.status.charAt(0).toUpperCase() + ar.status.slice(1);
+}
+function itemTypeBadgeColor(item) {
+  return itemBorderColor(item);
+}
+function buildUnifiedItems(data) {
+  const items = [];
+  for (const c3 of data.continuations) {
+    const t3 = c3.ended_at ? Date.parse(c3.ended_at) : null;
+    items.push({
+      id: `continuation:${c3.session_id}`,
+      type: "continuation",
+      title: c3.continuation.slice(0, 80).replace(/\n/g, " "),
+      repo: c3.repo ?? null,
+      branch: c3.branch ?? null,
+      time: t3,
+      raw: c3
+    });
+  }
+  for (const ar of data.auth_results) {
+    items.push({
+      id: `auth_result:${ar.id}`,
+      type: "auth_result",
+      title: ar.title || ar.head_branch || "Auth Request",
+      repo: ar.repo ?? null,
+      branch: ar.head_branch ?? null,
+      time: ar.resolved_at,
+      raw: ar
+    });
+  }
+  for (const issue of data.open_issues) {
+    items.push({
+      id: `issue:${issue.repo_id ?? ""}:${issue.id}`,
+      type: "issue",
+      title: issue.title,
+      repo: issue.repo_name ?? issue.repo_id ?? null,
+      branch: null,
+      time: null,
+      raw: issue
+    });
+  }
+  items.sort((a3, b) => {
+    if (a3.time === null && b.time === null)
+      return 0;
+    if (a3.time === null)
+      return 1;
+    if (b.time === null)
+      return -1;
+    return b.time - a3.time;
+  });
+  return items;
+}
+function ChipInput({
+  chips,
+  suggestions,
+  onAdd,
+  onRemove
+}) {
+  const [inputValue, setInputValue] = d2("");
+  const [showDropdown, setShowDropdown] = d2(false);
+  const inputRef = A2(null);
+  const filteredSuggestions = T2(() => {
+    const q3 = inputValue.toLowerCase().trim();
+    if (!q3)
+      return { repos: suggestions.repos.slice(0, 8), branches: [] };
+    const repos = suggestions.repos.filter((r3) => r3.toLowerCase().includes(q3));
+    const branches = suggestions.branches.filter((b) => b.toLowerCase().includes(q3));
+    return { repos: repos.slice(0, 5), branches: branches.slice(0, 5) };
+  }, [inputValue, suggestions]);
+  const hasMatches = filteredSuggestions.repos.length > 0 || filteredSuggestions.branches.length > 0;
+  const alreadyAdded = (type, value) => chips.some((c3) => c3.type === type && c3.value === value);
+  const handleSelect = (type, value) => {
+    if (!alreadyAdded(type, value)) {
+      onAdd({ type, value });
+    }
+    setInputValue("");
+    setShowDropdown(false);
+    inputRef.current?.focus();
+  };
+  return /* @__PURE__ */ u3("div", { className: "inbox-chip-input", children: [
+    /* @__PURE__ */ u3("div", { className: "inbox-chip-input__chips", children: [
+      chips.map((chip) => /* @__PURE__ */ u3(
+        "span",
+        {
+          className: `inbox-chip inbox-chip--${chip.type}`,
+          children: [
+            /* @__PURE__ */ u3("span", { className: "inbox-chip__label", children: chip.value }),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "inbox-chip__remove",
+                onClick: () => onRemove(chip),
+                "aria-label": `Remove filter ${chip.value}`,
+                children: "\xD7"
+              }
+            )
+          ]
+        },
+        `${chip.type}:${chip.value}`
+      )),
+      /* @__PURE__ */ u3(
+        "input",
+        {
+          ref: inputRef,
+          type: "text",
+          className: "inbox-chip-input__input",
+          placeholder: chips.length === 0 ? "Filter by repo or branch\u2026" : "",
+          value: inputValue,
+          onInput: (e3) => {
+            setInputValue(e3.target.value);
+            setShowDropdown(true);
+          },
+          onFocus: () => setShowDropdown(true),
+          onBlur: () => setTimeout(() => setShowDropdown(false), 150),
+          onKeyDown: (e3) => {
+            if (e3.key === "Escape") {
+              setInputValue("");
+              setShowDropdown(false);
+            }
+            if (e3.key === "Backspace" && inputValue === "" && chips.length > 0) {
+              onRemove(chips[chips.length - 1]);
+            }
+          }
+        }
+      )
+    ] }),
+    showDropdown && hasMatches && /* @__PURE__ */ u3("div", { className: "inbox-chip-input__dropdown", children: [
+      filteredSuggestions.repos.length > 0 && /* @__PURE__ */ u3(k, { children: [
+        /* @__PURE__ */ u3("div", { className: "inbox-chip-input__group-label", children: "Repos" }),
+        filteredSuggestions.repos.map((repo) => /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `inbox-chip-input__option${alreadyAdded("repo", repo) ? " inbox-chip-input__option--added" : ""}`,
+            onMouseDown: (e3) => {
+              e3.preventDefault();
+              handleSelect("repo", repo);
+            },
+            children: repo
+          },
+          repo
+        ))
+      ] }),
+      filteredSuggestions.branches.length > 0 && /* @__PURE__ */ u3(k, { children: [
+        /* @__PURE__ */ u3("div", { className: "inbox-chip-input__group-label", children: "Branches" }),
+        filteredSuggestions.branches.map((branch) => /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `inbox-chip-input__option${alreadyAdded("branch", branch) ? " inbox-chip-input__option--added" : ""}`,
+            onMouseDown: (e3) => {
+              e3.preventDefault();
+              handleSelect("branch", branch);
+            },
+            children: branch
+          },
+          branch
+        ))
+      ] })
+    ] })
+  ] });
+}
+function InboxSidebarItem({
+  item,
+  selected,
+  onSelect
+}) {
+  const borderColor = itemBorderColor(item);
+  const badge = itemTypeBadge(item);
+  const badgeColor = itemTypeBadgeColor(item);
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: `inbox-sidebar-item${selected ? " inbox-sidebar-item--selected" : ""}`,
+      style: { borderLeftColor: borderColor },
+      onClick: () => onSelect(item.id),
+      children: [
+        /* @__PURE__ */ u3("div", { className: "inbox-sidebar-item__row1", children: [
+          /* @__PURE__ */ u3(
+            "span",
+            {
+              className: "inbox-sidebar-item__badge",
+              style: { color: badgeColor, background: `${badgeColor}22` },
+              children: badge
+            }
+          ),
+          item.time !== null && /* @__PURE__ */ u3("span", { className: "inbox-sidebar-item__time", children: formatRelativeTime2(item.time) })
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "inbox-sidebar-item__title", children: item.title }),
+        /* @__PURE__ */ u3("div", { className: "inbox-sidebar-item__meta", children: [
+          item.repo && /* @__PURE__ */ u3("span", { className: "inbox-sidebar-item__repo", children: item.repo }),
+          item.branch && /* @__PURE__ */ u3("span", { className: "inbox-sidebar-item__branch", children: item.branch })
+        ] })
+      ]
+    }
+  );
+}
+function ContinuationDetail({
+  item,
+  onAck
+}) {
+  return /* @__PURE__ */ u3("div", { className: "inbox-detail__content", children: [
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__header", children: [
+      /* @__PURE__ */ u3(
+        "span",
+        {
+          className: "inbox-detail__type-badge",
+          style: { color: "#60a5fa", background: "#60a5fa22" },
+          children: "Continuation"
+        }
+      ),
+      /* @__PURE__ */ u3("h2", { className: "inbox-detail__title", children: "Session Handoff" })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__meta", children: [
+      item.branch && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Branch" }),
+        /* @__PURE__ */ u3("code", { className: "inbox-detail__meta-value", children: item.branch })
+      ] }),
+      item.repo && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Repo" }),
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-value", children: item.repo })
+      ] }),
+      item.ended_at && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Ended" }),
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-value", children: formatRelativeTime2(item.ended_at) })
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("pre", { className: "inbox-detail__pre", children: item.continuation }),
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__actions", children: /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "btn btn--ghost",
+        onClick: () => void onAck(item.session_id),
+        children: "Acknowledge"
+      }
+    ) })
+  ] });
+}
+function AuthResultDetail({
+  item,
+  onAck
+}) {
+  const statusColor = item.status === "completed" ? "#34d399" : item.status === "rejected" || item.status === "expired" ? "#f87171" : "#9ca3af";
+  return /* @__PURE__ */ u3("div", { className: "inbox-detail__content", children: [
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__header", children: [
+      /* @__PURE__ */ u3(
+        "span",
+        {
+          className: "inbox-detail__type-badge",
+          style: { color: statusColor, background: `${statusColor}22` },
+          children: item.status.charAt(0).toUpperCase() + item.status.slice(1)
+        }
+      ),
+      /* @__PURE__ */ u3("h2", { className: "inbox-detail__title", children: item.title || "Auth Request" })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__meta", children: [
+      item.repo && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Repo" }),
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-value", children: item.repo })
+      ] }),
+      item.head_branch && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Branch" }),
+        /* @__PURE__ */ u3("code", { className: "inbox-detail__meta-value", children: item.head_branch })
+      ] }),
+      item.base_branch && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Base" }),
+        /* @__PURE__ */ u3("code", { className: "inbox-detail__meta-value", children: item.base_branch })
+      ] }),
+      item.resolved_at !== null && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Resolved" }),
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-value", children: formatRelativeTime2(item.resolved_at) })
+      ] }),
+      item.exit_code !== null && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Exit code" }),
+        /* @__PURE__ */ u3("code", { className: "inbox-detail__meta-value", children: item.exit_code })
+      ] })
+    ] }),
+    item.error && /* @__PURE__ */ u3("div", { className: "inbox-detail__error", children: [
+      /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Error" }),
+      /* @__PURE__ */ u3("pre", { className: "inbox-detail__pre inbox-detail__pre--sm", children: item.error })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__actions", children: [
+      /* @__PURE__ */ u3(
+        "a",
+        {
+          href: "#/auth",
+          style: { fontSize: "13px", color: "var(--accent-blue)", textDecoration: "underline" },
+          children: "View in Auth"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--ghost",
+          onClick: () => void onAck(item.id),
+          children: "Acknowledge"
+        }
+      )
+    ] })
+  ] });
+}
+function IssueDetail({ item }) {
+  const href = item.repo_id ? `#/issues?repo=${encodeURIComponent(item.repo_id)}&issue=${encodeURIComponent(item.id)}` : "#/issues";
+  return /* @__PURE__ */ u3("div", { className: "inbox-detail__content", children: [
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__header", children: [
+      /* @__PURE__ */ u3(
+        "span",
+        {
+          className: "inbox-detail__type-badge",
+          style: { color: "#a78bfa", background: "#a78bfa22" },
+          children: "Issue"
+        }
+      ),
+      /* @__PURE__ */ u3("h2", { className: "inbox-detail__title", children: item.title })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__meta", children: [
+      (item.repo_name || item.repo_id) && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Repo" }),
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-value", children: item.repo_name || item.repo_id })
+      ] }),
+      item.id && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "ID" }),
+        /* @__PURE__ */ u3("code", { className: "inbox-detail__meta-value", children: item.id.slice(0, 7) })
+      ] })
+    ] }),
+    item.labels.length > 0 && /* @__PURE__ */ u3("div", { className: "inbox-detail__labels", children: item.labels.map((lbl) => /* @__PURE__ */ u3("span", { className: "inbox-detail__label-pill", children: lbl }, lbl)) }),
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__actions", children: /* @__PURE__ */ u3("a", { href, className: "btn btn--ghost", children: "View in Issues \u2192" }) })
+  ] });
+}
+function InboxView({
+  data,
+  loading,
+  selectedItemId,
+  onSelectItem,
+  onAckContinuation,
+  onAckAuthResult,
+  onAckAll,
+  onRefresh
+}) {
+  const [chips, setChips] = d2([]);
+  const allItems = T2(() => data ? buildUnifiedItems(data) : [], [data]);
+  const suggestions = T2(() => {
+    const repos = /* @__PURE__ */ new Set();
+    const branches = /* @__PURE__ */ new Set();
+    for (const item of allItems) {
+      if (item.repo)
+        repos.add(item.repo);
+      if (item.branch)
+        branches.add(item.branch);
+    }
+    return { repos: Array.from(repos).sort(), branches: Array.from(branches).sort() };
+  }, [allItems]);
+  const filteredItems = T2(() => {
+    const repoChips = chips.filter((c3) => c3.type === "repo").map((c3) => c3.value);
+    const branchChips = chips.filter((c3) => c3.type === "branch").map((c3) => c3.value);
+    return allItems.filter((item) => {
+      const repoMatch = repoChips.length === 0 || item.repo !== null && repoChips.includes(item.repo);
+      const branchMatch = branchChips.length === 0 || item.branch !== null && branchChips.includes(item.branch);
+      return repoMatch && branchMatch;
+    });
+  }, [allItems, chips]);
+  const selectedItem = T2(
+    () => allItems.find((i4) => i4.id === selectedItemId) ?? null,
+    [allItems, selectedItemId]
+  );
+  y2(() => {
+    if (!selectedItemId && filteredItems.length > 0 && onSelectItem) {
+      onSelectItem(filteredItems[0].id);
+    }
+  }, [filteredItems.length > 0, selectedItemId]);
+  const handleAddChip = (chip) => setChips((prev) => [...prev, chip]);
+  const handleRemoveChip = (chip) => setChips((prev) => prev.filter((c3) => !(c3.type === chip.type && c3.value === chip.value)));
+  const handleAckAll = async () => {
+    await onAckAll();
+  };
+  if (loading && !data) {
+    return /* @__PURE__ */ u3("div", { className: "inbox-sidebar-layout", children: [
+      /* @__PURE__ */ u3("div", { className: "inbox-sidebar", children: /* @__PURE__ */ u3("div", { className: "inbox-sidebar__header", children: /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "13px", padding: "14px" }, children: "Loading\u2026" }) }) }),
+      /* @__PURE__ */ u3("div", { className: "inbox-detail", children: /* @__PURE__ */ u3("div", { className: "inbox-detail__empty", children: /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading inbox\u2026" }) }) })
+    ] });
+  }
+  return /* @__PURE__ */ u3("div", { className: "inbox-sidebar-layout", children: [
+    /* @__PURE__ */ u3("div", { className: "inbox-sidebar", children: [
+      /* @__PURE__ */ u3("div", { className: "inbox-sidebar__chip-row", children: /* @__PURE__ */ u3(
+        ChipInput,
+        {
+          chips,
+          suggestions,
+          onAdd: handleAddChip,
+          onRemove: handleRemoveChip
+        }
+      ) }),
+      /* @__PURE__ */ u3("div", { className: "inbox-sidebar__actions-bar", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-sidebar__sort-label", children: "Sort: Date \u25BE" }),
+        /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "6px", alignItems: "center" }, children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "btn btn--ghost",
+              style: { fontSize: "11px", padding: "3px 10px" },
+              onClick: () => void handleAckAll(),
+              disabled: (data?.continuations.length ?? 0) + (data?.auth_results.length ?? 0) === 0,
+              children: "Ack All"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "btn btn--ghost",
+              style: { fontSize: "11px", padding: "3px 10px" },
+              onClick: onRefresh,
+              children: "\u21BB"
+            }
+          )
+        ] })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "inbox-sidebar__list", children: filteredItems.length === 0 ? /* @__PURE__ */ u3("div", { className: "inbox-sidebar__empty", children: allItems.length === 0 ? "Inbox is clear." : "No items match the current filters." }) : filteredItems.map((item) => /* @__PURE__ */ u3(
+        InboxSidebarItem,
+        {
+          item,
+          selected: selectedItemId === item.id,
+          onSelect: (id) => onSelectItem?.(id)
+        },
+        item.id
+      )) })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "inbox-detail", children: !selectedItem ? /* @__PURE__ */ u3("div", { className: "inbox-detail__empty", children: /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "14px" }, children: "Select an item to view details" }) }) : selectedItem.type === "continuation" ? /* @__PURE__ */ u3(
+      ContinuationDetail,
+      {
+        item: selectedItem.raw,
+        onAck: onAckContinuation
+      }
+    ) : selectedItem.type === "auth_result" ? /* @__PURE__ */ u3(
+      AuthResultDetail,
+      {
+        item: selectedItem.raw,
+        onAck: onAckAuthResult
+      }
+    ) : /* @__PURE__ */ u3(IssueDetail, { item: selectedItem.raw }) })
+  ] });
+}
+
+// ui/src/views/issues.tsx
+function getVisualState(issue) {
+  if (issue.status === "open")
+    return "open";
+  if (issue.labels.includes("merged"))
+    return "merged";
+  return "closed";
+}
+function renderMarkdown2(src) {
+  if (!src)
+    return "";
+  const result = marked.parse(src, { async: false });
+  return typeof result === "string" ? result : "";
+}
+function formatRelativeTime3(value) {
+  if (!value)
+    return "";
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed))
+    return value;
+  const delta = Date.now() - parsed;
+  if (delta < 0)
+    return "just now";
+  const seconds = Math.floor(delta / 1e3);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 1)
+    return `${days}d ago`;
+  if (days === 1)
+    return "yesterday";
+  if (hours > 0)
+    return `${hours}h ago`;
+  if (minutes > 0)
+    return `${minutes}m ago`;
+  return `${seconds}s ago`;
+}
+var LABEL_COLORS = [
+  { bg: "rgba(77, 163, 255, 0.2)", fg: "#4da3ff" },
+  { bg: "rgba(50, 210, 150, 0.2)", fg: "#32d296" },
+  { bg: "rgba(245, 194, 92, 0.2)", fg: "#f5c25c" },
+  { bg: "rgba(242, 107, 107, 0.2)", fg: "#f26b6b" },
+  { bg: "rgba(187, 134, 252, 0.2)", fg: "#bb86fc" },
+  { bg: "rgba(255, 167, 38, 0.2)", fg: "#ffa726" }
+];
+function labelColor(label) {
+  let hash = 0;
+  for (let i4 = 0; i4 < label.length; i4++) {
+    hash = hash * 31 + label.charCodeAt(i4) | 0;
+  }
+  return LABEL_COLORS[Math.abs(hash) % LABEL_COLORS.length];
+}
+function ScrollableIssueList({ children, totalCount }) {
+  const listRef = A2(null);
+  const [needsFade, setNeedsFade] = d2(true);
+  const checkFade = q2(() => {
+    const el = listRef.current;
+    if (!el)
+      return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 3;
+    const noOverflow = el.scrollHeight <= el.clientHeight;
+    setNeedsFade(!noOverflow && !atBottom);
+  }, []);
+  y2(() => {
+    checkFade();
+  }, [children, checkFade]);
+  y2(() => {
+    const el = listRef.current;
+    if (!el)
+      return;
+    const observer = new ResizeObserver(() => checkFade());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [checkFade]);
+  return /* @__PURE__ */ u3("div", { className: "issues-repo-list-wrapper", children: [
+    /* @__PURE__ */ u3(
+      "div",
+      {
+        ref: listRef,
+        className: `issues-repo-list${needsFade ? "" : " issues-repo-list--no-fade"}`,
+        onScroll: checkFade,
+        children
+      }
+    ),
+    needsFade && totalCount > 0 && /* @__PURE__ */ u3("div", { className: "issues-repo-list__count", children: [
+      totalCount,
+      " issues"
+    ] })
+  ] });
+}
+function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
+  const [selectedRepoId, setSelectedRepoId] = d2(null);
+  const [selectedIssueId, setSelectedIssueId] = d2(null);
+  const [filter, setFilter] = d2("");
+  const [statusFilter, setStatusFilter] = d2("open");
+  const [expandedRepos, setExpandedRepos] = d2(() => /* @__PURE__ */ new Set());
+  const [issueDetail, setIssueDetail] = d2(null);
+  const [detailLoading, setDetailLoading] = d2(false);
+  const [commentText, setCommentText] = d2("");
+  const [showCommentBox, setShowCommentBox] = d2(false);
+  const [actionInFlight, setActionInFlight] = d2(false);
+  const [linkedSessions, setLinkedSessions] = d2([]);
+  y2(() => {
+    if (expandedRepos.size === 0 && repos.length > 0) {
+      const initial = /* @__PURE__ */ new Set();
+      for (const repo of repos) {
+        if (repo.open_count > 0) {
+          initial.add(repo.repo_id);
+        }
+      }
+      if (initial.size > 0) {
+        setExpandedRepos(initial);
+      }
+    }
+  }, [repos]);
+  y2(() => {
+    if (initialRepoId && initialIssueId) {
+      setSelectedRepoId(initialRepoId);
+      setSelectedIssueId(initialIssueId);
+      setExpandedRepos((prev) => {
+        const next = new Set(prev);
+        next.add(initialRepoId);
+        return next;
+      });
+    }
+  }, [initialRepoId, initialIssueId]);
+  const normalizedFilter = T2(() => filter.trim().toLowerCase(), [filter]);
+  const filteredRepos = T2(() => {
+    return repos.map((repo) => {
+      let issues = repo.issues;
+      if (statusFilter !== "all") {
+        issues = issues.filter((issue) => getVisualState(issue) === statusFilter);
+      }
+      if (normalizedFilter) {
+        issues = issues.filter(
+          (issue) => issue.title.toLowerCase().includes(normalizedFilter) || issue.id.toLowerCase().includes(normalizedFilter)
+        );
+      }
+      return { ...repo, issues };
+    }).filter((repo) => repo.issues.length > 0);
+  }, [repos, statusFilter, normalizedFilter]);
+  const totalOpen = T2(
+    () => repos.reduce((acc, r3) => acc + r3.open_count, 0),
+    [repos]
+  );
+  y2(() => {
+    if (!selectedRepoId || !selectedIssueId) {
+      setIssueDetail(null);
+      return;
+    }
+    let cancelled = false;
+    setDetailLoading(true);
+    const fetchDetail = (repoId, issueId) => getIssueDetail(repoId, issueId).then((data) => {
+      if (!cancelled) {
+        setIssueDetail(data);
+        setDetailLoading(false);
+      }
+    });
+    fetchDetail(selectedRepoId, selectedIssueId).catch(() => {
+      scanIssueRepo(selectedRepoId).then(() => fetchDetail(selectedRepoId, selectedIssueId)).catch(() => {
+        if (!cancelled) {
+          setIssueDetail(null);
+          setDetailLoading(false);
+        }
+      });
+    });
+    getIssueSessions(selectedRepoId, selectedIssueId).then((data) => {
+      if (!cancelled) {
+        setLinkedSessions(data);
+      }
+    }).catch(() => {
+      if (!cancelled)
+        setLinkedSessions([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRepoId, selectedIssueId]);
+  const toggleRepo = q2((repoId) => {
+    setExpandedRepos((prev) => {
+      const next = new Set(prev);
+      if (next.has(repoId)) {
+        next.delete(repoId);
+      } else {
+        next.add(repoId);
+      }
+      return next;
+    });
+  }, []);
+  const selectIssue = q2((repoId, issueId) => {
+    setSelectedRepoId(repoId);
+    setSelectedIssueId(issueId);
+    setShowCommentBox(false);
+    setCommentText("");
+  }, []);
+  const handleCloseIssue = q2(async () => {
+    if (!selectedRepoId || !selectedIssueId || actionInFlight)
+      return;
+    setActionInFlight(true);
+    try {
+      await issueAction(selectedRepoId, selectedIssueId, "status", {
+        status: "closed"
+      });
+      const data = await getIssueDetail(selectedRepoId, selectedIssueId);
+      setIssueDetail(data);
+      onRescan();
+    } catch {
+    } finally {
+      setActionInFlight(false);
+    }
+  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan]);
+  const handleReopenIssue = q2(async () => {
+    if (!selectedRepoId || !selectedIssueId || actionInFlight)
+      return;
+    setActionInFlight(true);
+    try {
+      if (issueDetail && issueDetail.labels.includes("merged")) {
+        await issueAction(selectedRepoId, selectedIssueId, "label", {
+          action: "remove",
+          label: "merged"
+        });
+      }
+      await issueAction(selectedRepoId, selectedIssueId, "status", {
+        status: "open"
+      });
+      const data = await getIssueDetail(selectedRepoId, selectedIssueId);
+      setIssueDetail(data);
+      onRescan();
+    } catch {
+    } finally {
+      setActionInFlight(false);
+    }
+  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, issueDetail]);
+  const handleAddComment = q2(async () => {
+    if (!selectedRepoId || !selectedIssueId || !commentText.trim() || actionInFlight)
+      return;
+    setActionInFlight(true);
+    try {
+      await issueAction(selectedRepoId, selectedIssueId, "comment", {
+        message: commentText.trim()
+      });
+      setCommentText("");
+      setShowCommentBox(false);
+      const data = await getIssueDetail(selectedRepoId, selectedIssueId);
+      setIssueDetail(data);
+    } catch {
+    } finally {
+      setActionInFlight(false);
+    }
+  }, [selectedRepoId, selectedIssueId, commentText, actionInFlight]);
+  const descriptionHtml = T2(
+    () => issueDetail?.description ? renderMarkdown2(issueDetail.description) : "",
+    [issueDetail?.description]
+  );
+  const detailVisualState = T2(
+    () => issueDetail ? getVisualState(issueDetail) : null,
+    [issueDetail]
+  );
+  const displayLabels = T2(
+    () => issueDetail ? issueDetail.labels.filter((l3) => l3 !== "merged") : [],
+    [issueDetail]
+  );
+  return /* @__PURE__ */ u3("div", { className: "issues-view", children: [
+    /* @__PURE__ */ u3("div", { className: "issues-tree", children: [
+      /* @__PURE__ */ u3("div", { className: "issues-filter", children: /* @__PURE__ */ u3(
+        "input",
+        {
+          type: "search",
+          className: "issues-filter__input",
+          placeholder: "Filter issues...",
+          value: filter,
+          onInput: (e3) => setFilter(e3.currentTarget.value)
+        }
+      ) }),
+      /* @__PURE__ */ u3("div", { className: "issues-status-filters", children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `issues-status-pill${statusFilter === "all" ? " issues-status-pill--active" : ""}`,
+            onClick: () => setStatusFilter("all"),
+            children: "All"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `issues-status-pill${statusFilter === "open" ? " issues-status-pill--active" : ""}`,
+            onClick: () => setStatusFilter("open"),
+            children: "Open"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `issues-status-pill${statusFilter === "merged" ? " issues-status-pill--active issues-status-pill--merged" : ""}`,
+            onClick: () => setStatusFilter("merged"),
+            children: "Merged"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `issues-status-pill${statusFilter === "closed" ? " issues-status-pill--active" : ""}`,
+            onClick: () => setStatusFilter("closed"),
+            children: "Closed"
+          }
+        )
+      ] }),
+      filteredRepos.length === 0 ? /* @__PURE__ */ u3("div", { className: "issues-tree__empty", children: repos.length === 0 ? "No repos with git-bug issues found." : "No issues match the current filter." }) : filteredRepos.map((repo) => {
+        const isExpanded = expandedRepos.has(repo.repo_id);
+        const openCount = repo.issues.filter((i4) => i4.status === "open").length;
+        return /* @__PURE__ */ u3("div", { className: `issues-repo-group${isExpanded ? " issues-repo-group--expanded" : ""}`, children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "issues-repo-header",
+              onClick: () => toggleRepo(repo.repo_id),
+              children: [
+                /* @__PURE__ */ u3("span", { className: "issues-repo-header__chevron", children: isExpanded ? "\u25BE" : "\u25B8" }),
+                /* @__PURE__ */ u3("span", { className: "issues-repo-header__name", children: repo.repo_name }),
+                openCount > 0 && /* @__PURE__ */ u3("span", { className: "issues-repo-header__badge", children: openCount })
+              ]
+            }
+          ),
+          isExpanded && /* @__PURE__ */ u3(ScrollableIssueList, { totalCount: repo.issues.length, children: repo.issues.map((issue) => {
+            const isSelected = selectedRepoId === repo.repo_id && selectedIssueId === issue.id;
+            const vs = getVisualState(issue);
+            return /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: `issues-item${isSelected ? " issues-item--selected" : ""}`,
+                onClick: () => selectIssue(repo.repo_id, issue.id),
+                children: [
+                  /* @__PURE__ */ u3(
+                    "span",
+                    {
+                      className: `issue-status-dot issue-status-dot--${vs}`
+                    }
+                  ),
+                  /* @__PURE__ */ u3("span", { className: "issues-item__title", children: issue.title })
+                ]
+              },
+              issue.id
+            );
+          }) })
+        ] }, repo.repo_id);
+      })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : !issueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: [
+      /* @__PURE__ */ u3("h2", { className: "issues-detail__title", children: issueDetail.title }),
+      /* @__PURE__ */ u3("div", { className: "issues-detail__meta", children: [
+        /* @__PURE__ */ u3(
+          "span",
+          {
+            className: `status-pill ${detailVisualState === "open" ? "status-pill--success" : detailVisualState === "merged" ? "status-pill--merged" : "status-pill--dismissed"}`,
+            children: detailVisualState
+          }
+        ),
+        displayLabels.map((lbl) => {
+          const color = labelColor(lbl);
+          return /* @__PURE__ */ u3(
+            "span",
+            {
+              className: "issue-label-pill",
+              style: { background: color.bg, color: color.fg },
+              children: lbl
+            },
+            lbl
+          );
+        })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "issues-detail__info text-muted", children: [
+        /* @__PURE__ */ u3("span", { children: issueDetail.author }),
+        issueDetail.created_at && /* @__PURE__ */ u3("span", { children: [
+          " \xB7 ",
+          formatRelativeTime3(issueDetail.created_at)
+        ] }),
+        /* @__PURE__ */ u3("span", { className: "issues-detail__id", children: [
+          " \xB7 ",
+          issueDetail.id.slice(0, 8)
+        ] })
+      ] }),
+      descriptionHtml ? /* @__PURE__ */ u3(
+        "div",
+        {
+          className: "issues-detail__body spec-panel",
+          dangerouslySetInnerHTML: { __html: descriptionHtml }
+        }
+      ) : /* @__PURE__ */ u3("div", { className: "issues-detail__body spec-panel spec-panel--empty", children: "No description." }),
+      issueDetail.comments.length > 0 && /* @__PURE__ */ u3(k, { children: [
+        /* @__PURE__ */ u3("hr", { className: "issues-detail__divider" }),
+        /* @__PURE__ */ u3("h3", { className: "issues-detail__section-title", children: [
+          "Comments (",
+          issueDetail.comments.length,
+          ")"
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "issue-comments", children: issueDetail.comments.map((comment) => /* @__PURE__ */ u3("div", { className: "issue-comment", children: [
+          /* @__PURE__ */ u3("div", { className: "issue-comment__header", children: [
+            /* @__PURE__ */ u3("span", { className: "issue-comment__author", children: comment.author }),
+            comment.date && /* @__PURE__ */ u3("span", { className: "issue-comment__date text-muted", children: formatRelativeTime3(comment.date) })
+          ] }),
+          /* @__PURE__ */ u3(
+            "div",
+            {
+              className: "issue-comment__body spec-panel",
+              dangerouslySetInnerHTML: {
+                __html: renderMarkdown2(comment.body)
+              }
+            }
+          )
+        ] }, comment.id)) })
+      ] }),
+      linkedSessions.length > 0 && /* @__PURE__ */ u3(k, { children: [
+        /* @__PURE__ */ u3("hr", { className: "issues-detail__divider" }),
+        /* @__PURE__ */ u3("h3", { className: "issues-detail__section-title", children: [
+          "Linked Sessions (",
+          linkedSessions.length,
+          ")"
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "linked-chips", children: linkedSessions.map((link2) => /* @__PURE__ */ u3(
+          "a",
+          {
+            className: "linked-session-chip",
+            href: `#/sessions?session=${encodeURIComponent(link2.session_id)}`,
+            children: link2.session_id.slice(0, 8)
+          },
+          link2.session_id
+        )) })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "issue-actions", children: [
+        detailVisualState === "open" ? /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--danger",
+            disabled: actionInFlight,
+            onClick: handleCloseIssue,
+            children: "Close Issue"
+          }
+        ) : detailVisualState === "merged" ? /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--success",
+            disabled: actionInFlight,
+            onClick: handleReopenIssue,
+            children: "Reopen Issue"
+          }
+        ) : /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--success",
+            disabled: actionInFlight,
+            onClick: handleReopenIssue,
+            children: "Reopen Issue"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--ghost",
+            onClick: () => setShowCommentBox((prev) => !prev),
+            children: showCommentBox ? "Cancel" : "Add Comment"
+          }
+        )
+      ] }),
+      showCommentBox && /* @__PURE__ */ u3("div", { className: "issue-comment-form", children: [
+        /* @__PURE__ */ u3(
+          "textarea",
+          {
+            className: "issue-comment-form__input",
+            placeholder: "Write a comment...",
+            value: commentText,
+            onInput: (e3) => setCommentText(e3.currentTarget.value),
+            rows: 4
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--active",
+            disabled: actionInFlight || !commentText.trim(),
+            onClick: handleAddComment,
+            children: "Submit Comment"
+          }
+        )
+      ] })
+    ] }) })
+  ] });
+}
+
+// ui/src/views/review.tsx
+var EMPTY_SPEC = { markdown: "", commits: [] };
+function getRepoId(repo) {
+  return repo.id || repo.name || "";
+}
+function getRepoLabel(repo) {
+  const root = repo.root || repo.path || "";
+  const base = root ? root.split(/[\\/]/).filter(Boolean).pop() : "";
+  const title = repo.name || base || repo.id || "Unknown repo";
+  if (root && root !== title) {
+    return `${title} \u2014 ${root}`;
+  }
+  return title;
+}
+function getBranchName(branch) {
+  return branch.name || branch.branch || "";
+}
+function buildReviewHash(params) {
+  const searchParams = new URLSearchParams();
+  if (params.repo) {
+    searchParams.set("repo", params.repo);
+  }
+  if (params.base) {
+    searchParams.set("base", params.base);
+  }
+  if (params.head) {
+    searchParams.set("head", params.head);
+  }
+  const query = searchParams.toString();
+  return `#/review${query ? `?${query}` : ""}`;
+}
+function ReviewView({ params, loaders }) {
+  const [diffHtml, setDiffHtml] = d2("");
+  const [spec, setSpec] = d2(EMPTY_SPEC);
+  const [viewMode, setViewMode] = d2("side-by-side");
+  const [repos, setRepos] = d2([]);
+  const [branches, setBranches] = d2([]);
+  const [selectedRepo, setSelectedRepo] = d2(params.repo || "");
+  const [selectedBase, setSelectedBase] = d2(params.base || "");
+  const [selectedHead, setSelectedHead] = d2(params.head || "");
+  const [loadingRepos, setLoadingRepos] = d2(false);
+  const [loadingBranches, setLoadingBranches] = d2(false);
+  const hasRange = Boolean(params.repo && params.base && params.head);
+  y2(() => {
+    setSelectedRepo(params.repo || "");
+    setSelectedBase(params.base || "");
+    setSelectedHead(params.head || "");
+  }, [params.repo, params.base, params.head]);
+  y2(() => {
+    let cancelled = false;
+    setLoadingRepos(true);
+    getWorkRepos().then((data) => {
+      if (!cancelled) {
+        setRepos(data);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setRepos([]);
+      }
+    }).finally(() => {
+      if (!cancelled) {
+        setLoadingRepos(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  y2(() => {
+    let cancelled = false;
+    if (!selectedRepo) {
+      setBranches([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+    setLoadingBranches(true);
+    getRepoBranches(selectedRepo).then((data) => {
+      if (!cancelled) {
+        setBranches(data);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setBranches([]);
+      }
+    }).finally(() => {
+      if (!cancelled) {
+        setLoadingBranches(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRepo]);
+  const repoOptions = T2(() => {
+    return repos.map((repo) => {
+      const id = getRepoId(repo);
+      if (!id) {
+        return null;
+      }
+      return { id, label: getRepoLabel(repo) };
+    }).filter((item) => Boolean(item)).sort((a3, b) => a3.label.localeCompare(b.label));
+  }, [repos]);
+  const branchOptions = T2(() => {
+    const names = branches.map(getBranchName).filter((name) => Boolean(name));
+    return Array.from(new Set(names)).sort((a3, b) => a3.localeCompare(b));
+  }, [branches]);
+  const repoPlaceholder = loadingRepos ? "Loading repositories..." : repoOptions.length === 0 ? "No repositories found" : "Select a repository";
+  const branchPlaceholder = selectedRepo ? loadingBranches ? "Loading branches..." : "Choose a branch or commit" : "Select a repository first";
+  const updateHash = (nextParams) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const nextHash = buildReviewHash(nextParams);
+    if (window.location.hash !== nextHash) {
+      window.location.hash = nextHash;
+    }
+  };
+  const handleRepoChange = (value) => {
+    setSelectedRepo(value);
+    setSelectedBase("");
+    setSelectedHead("");
+    updateHash({ repo: value || void 0 });
+  };
+  const handleBaseChange = (value) => {
+    setSelectedBase(value);
+    updateHash({
+      repo: selectedRepo || void 0,
+      base: value || void 0,
+      head: selectedHead || void 0
+    });
+  };
+  const handleHeadChange = (value) => {
+    setSelectedHead(value);
+    updateHash({
+      repo: selectedRepo || void 0,
+      base: selectedBase || void 0,
+      head: value || void 0
+    });
+  };
+  y2(() => {
+    let cancelled = false;
+    const loadDiff = loaders?.diff || getReviewDiff;
+    const loadSpec = loaders?.spec || getReviewSpec;
+    if (!hasRange) {
+      setDiffHtml("");
+      setSpec(EMPTY_SPEC);
+      return () => {
+        cancelled = true;
+      };
+    }
+    loadDiff({ ...params, view: viewMode }).then((html3) => {
+      if (!cancelled) {
+        setDiffHtml(html3);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setDiffHtml("");
+      }
+    });
+    loadSpec(params).then((payload) => {
+      if (!cancelled) {
+        setSpec(payload);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setSpec(EMPTY_SPEC);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [params.repo, params.base, params.head, viewMode, hasRange, loaders?.diff, loaders?.spec]);
+  const subtitle = hasRange ? "Diff and commit spec for the selected range." : "Select a repository and branch range to view diffs.";
+  return /* @__PURE__ */ u3("div", { className: "view review-view", children: [
+    /* @__PURE__ */ u3("div", { className: "view-header", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("h2", { children: "Review Surface" }),
+        /* @__PURE__ */ u3("p", { className: "text-muted", children: subtitle })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "toggle-group", children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `btn ${viewMode === "side-by-side" ? "btn--active" : ""}`,
+            onClick: () => setViewMode("side-by-side"),
+            children: "Side-by-side"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `btn ${viewMode === "unified" ? "btn--active" : ""}`,
+            onClick: () => setViewMode("unified"),
+            children: "Unified"
+          }
+        )
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "review-controls", children: [
+      /* @__PURE__ */ u3("div", { className: "review-control", children: [
+        /* @__PURE__ */ u3("label", { htmlFor: "review-repo", children: "Repository" }),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            id: "review-repo",
+            value: selectedRepo,
+            onChange: (event) => handleRepoChange(event.currentTarget.value),
+            children: [
+              /* @__PURE__ */ u3("option", { value: "", children: repoPlaceholder }),
+              repoOptions.map((repo) => /* @__PURE__ */ u3("option", { value: repo.id, children: repo.label }, repo.id))
+            ]
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "review-control", children: [
+        /* @__PURE__ */ u3("label", { htmlFor: "review-base", children: "Base" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            id: "review-base",
+            list: "review-branches",
+            value: selectedBase,
+            placeholder: branchPlaceholder,
+            disabled: !selectedRepo,
+            onInput: (event) => handleBaseChange(event.currentTarget.value)
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "review-control", children: [
+        /* @__PURE__ */ u3("label", { htmlFor: "review-head", children: "Head" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            id: "review-head",
+            list: "review-branches",
+            value: selectedHead,
+            placeholder: branchPlaceholder,
+            disabled: !selectedRepo,
+            onInput: (event) => handleHeadChange(event.currentTarget.value)
+          }
+        )
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("datalist", { id: "review-branches", children: branchOptions.map((name) => /* @__PURE__ */ u3("option", { value: name }, name)) }),
+    /* @__PURE__ */ u3("div", { className: "review-panels", children: [
+      /* @__PURE__ */ u3("div", { className: "panel", children: [
+        /* @__PURE__ */ u3("h3", { children: "Commits" }),
+        /* @__PURE__ */ u3("ul", { className: "commit-list", children: !hasRange ? /* @__PURE__ */ u3("li", { className: "text-muted", children: "Select a repository and branch range to load commits." }) : spec.commits.length === 0 ? /* @__PURE__ */ u3("li", { className: "text-muted", children: "No commit log available. Try a different range." }) : spec.commits.map((commit) => /* @__PURE__ */ u3("li", { children: commit }, commit)) })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "panel", children: [
+        /* @__PURE__ */ u3("h3", { children: "Commit Spec" }),
+        /* @__PURE__ */ u3("pre", { className: "spec-panel", children: hasRange ? spec.markdown || "No spec loaded. Try a different range." : subtitle })
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "review-diff", children: [
+      /* @__PURE__ */ u3("h3", { children: "Diff" }),
+      diffHtml ? /* @__PURE__ */ u3("div", { className: "diff-panel", dangerouslySetInnerHTML: { __html: diffHtml } }) : /* @__PURE__ */ u3("div", { className: "empty-state", children: hasRange ? "No diff loaded. Try a different range." : subtitle })
+    ] })
+  ] });
+}
+
+// ui/src/views/sessions.tsx
+var TEN_MINUTES = 10 * 60 * 1e3;
+var REAP_THRESHOLD_MINUTES = 30;
+var COL_COUNT = 8;
+function getSessionId(session) {
+  return session.id || session.session_id || String(session.id ?? session.session_id ?? "");
+}
+function getSessionParentId(session) {
+  return session.parent_id || session.parentId || null;
+}
+function getSessionStatus(session) {
+  return session.status || session.state || "unknown";
+}
+function getSessionTask(session) {
+  return session.task || session.intent || "\u2014";
+}
+function getSessionBranch(session) {
+  return session.branch || "\u2014";
+}
+function getSessionCwd(session) {
+  return session.cwd || session.worktree || session.worktree_path || "";
+}
+function getSessionApp(session) {
+  return session.app || session.agent || "Agent";
+}
+function getNavMetadataStatus(session) {
+  return session.nav_metadata_status || "not_applicable";
+}
+function parseTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+function formatDuration(start, end = null) {
+  if (!start) {
+    return "\u2014";
+  }
+  const now = end ?? Date.now();
+  const delta = Math.max(now - start, 0);
+  const totalMinutes = Math.floor(delta / 6e4);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const m3 = totalMinutes % 60;
+  if (totalMinutes < 1) {
+    return "< 1m";
+  }
+  if (totalHours > 0) {
+    return `${totalHours}h ${m3}m`;
+  }
+  return `${m3}m`;
+}
+function shouldHideSession(session) {
+  const status = getSessionStatus(session).toLowerCase();
+  if (status !== "dead" && status !== "reaped") {
+    return false;
+  }
+  const endTimestamp = parseTimestamp(session.ended_at) || parseTimestamp(session.end_time) || parseTimestamp(session.updated_at);
+  if (!endTimestamp) {
+    return false;
+  }
+  return Date.now() - endTimestamp > TEN_MINUTES;
+}
+function isDeadSession(session) {
+  const status = getSessionStatus(session).toLowerCase();
+  return status === "dead" || status === "ended" || status === "closed" || status === "reaped";
+}
+function isReapedSession(session) {
+  const status = getSessionStatus(session).toLowerCase();
+  return status === "reaped";
+}
+function getInactiveMinutes(session) {
+  const status = getSessionStatus(session).toLowerCase();
+  if (status !== "active" && status !== "idle") {
+    return null;
+  }
+  const lastActive = parseTimestamp(session.last_active);
+  const updatedAt = parseTimestamp(session.updated_at);
+  const reference = lastActive ?? updatedAt;
+  if (!reference) {
+    return null;
+  }
+  return Math.floor((Date.now() - reference) / 6e4);
+}
+function formatInactive(minutes) {
+  if (minutes === null) {
+    return "\u2014";
+  }
+  if (minutes < 1) {
+    return "<1m";
+  }
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const h3 = Math.floor(minutes / 60);
+  const m3 = minutes % 60;
+  return m3 > 0 ? `${h3}h ${m3}m` : `${h3}h`;
+}
+function statusClass(status) {
+  const normalized = status.toLowerCase();
+  if (normalized.includes("active")) {
+    return "status-dot status-dot--green";
+  }
+  if (normalized.includes("idle")) {
+    return "status-dot status-dot--yellow";
+  }
+  if (normalized.includes("reaped")) {
+    return "status-dot status-dot--reaped";
+  }
+  if (normalized.includes("dead") || normalized.includes("closed") || normalized.includes("ended")) {
+    return "status-dot status-dot--red";
+  }
+  return "status-dot";
+}
+function appBadge(app) {
+  const normalized = app.toLowerCase();
+  if (normalized.includes("claude")) {
+    return "app-badge app-badge--claude";
+  }
+  if (normalized.includes("codex")) {
+    return "app-badge app-badge--codex";
+  }
+  return "app-badge";
+}
+function buildTree(sessions) {
+  const byId = /* @__PURE__ */ new Map();
+  sessions.forEach((session) => {
+    const id = getSessionId(session);
+    if (id) {
+      byId.set(id, session);
+    }
+  });
+  const childrenMap = /* @__PURE__ */ new Map();
+  const roots = [];
+  sessions.forEach((session) => {
+    const parentId = getSessionParentId(session);
+    if (parentId && byId.has(parentId)) {
+      const bucket = childrenMap.get(parentId) || [];
+      bucket.push(session);
+      childrenMap.set(parentId, bucket);
+    } else {
+      roots.push(session);
+    }
+  });
+  return { roots, childrenMap };
+}
+function countDescendants(sessionId, childrenMap) {
+  const children = childrenMap.get(sessionId) || [];
+  let count = children.length;
+  for (const child of children) {
+    const childId = getSessionId(child);
+    if (childId) {
+      count += countDescendants(childId, childrenMap);
+    }
+  }
+  return count;
+}
+function isTreeDead(session, childrenMap) {
+  if (!isDeadSession(session)) {
+    return false;
+  }
+  const sessionId = getSessionId(session);
+  const children = sessionId ? childrenMap.get(sessionId) || [] : [];
+  return children.every((child) => isTreeDead(child, childrenMap));
+}
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).catch(() => {
+  });
+}
+function ContextMenu({
+  items
+}) {
+  const [open, setOpen] = d2(false);
+  const [confirming, setConfirming] = d2(null);
+  const ref = A2(null);
+  y2(() => {
+    if (!open) {
+      return;
+    }
+    const handler = (e3) => {
+      if (ref.current && !ref.current.contains(e3.target)) {
+        setOpen(false);
+        setConfirming(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+  return /* @__PURE__ */ u3("div", { className: "session-ctx-menu", ref, children: [
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: `session-ctx-menu__trigger${open ? " session-ctx-menu__trigger--active" : ""}`,
+        onClick: () => {
+          setOpen((prev) => !prev);
+          setConfirming(null);
+        },
+        "aria-label": "Actions",
+        children: "\u22EF"
+      }
+    ),
+    open && /* @__PURE__ */ u3("div", { className: "session-ctx-menu__dropdown", children: items.map((item) => {
+      const isConfirming = confirming === item.label;
+      return /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `session-ctx-menu__item${item.danger ? " session-ctx-menu__item--danger" : ""}${isConfirming ? " session-ctx-menu__item--confirm" : ""}`,
+          onClick: () => {
+            if (item.confirm && !isConfirming) {
+              setConfirming(item.label);
+              return;
+            }
+            item.onClick();
+            setOpen(false);
+            setConfirming(null);
+          },
+          children: isConfirming ? item.confirm : item.label
+        },
+        item.label
+      );
+    }) })
+  ] });
+}
+function IssuePills({
+  issues
+}) {
+  const [showClosed, setShowClosed] = d2(false);
+  if (!issues || issues.length === 0) {
+    return null;
+  }
+  const openIssues = issues.filter((i4) => {
+    const st = (i4.status || "open").toLowerCase();
+    return st === "open";
+  });
+  const closedIssues = issues.filter((i4) => {
+    const st = (i4.status || "open").toLowerCase();
+    return st !== "open";
+  });
+  const displayed = showClosed ? issues : openIssues;
+  const closedCount = closedIssues.length;
+  return /* @__PURE__ */ u3("div", { className: "linked-chips", children: [
+    displayed.map((link2) => /* @__PURE__ */ u3(
+      "a",
+      {
+        className: "linked-issue-chip",
+        href: `#/issues?repo=${encodeURIComponent(link2.repo_id)}&issue=${encodeURIComponent(link2.issue_id)}`,
+        children: link2.issue_id.slice(0, 8)
+      },
+      `${link2.repo_id}-${link2.issue_id}`
+    )),
+    closedCount > 0 && !showClosed && /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "session-closed-toggle",
+        onClick: () => setShowClosed(true),
+        children: [
+          "+",
+          closedCount,
+          " closed"
+        ]
+      }
+    ),
+    closedCount > 0 && showClosed && /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "session-closed-toggle",
+        onClick: () => setShowClosed(false),
+        children: "hide closed"
+      }
+    )
+  ] });
+}
+function SessionsView({
+  sessions,
+  newSessionIds,
+  onNavigate,
+  onKill,
+  onPinToggle,
+  highlightSessionId
+}) {
+  const [expandedIds, setExpandedIds] = d2(/* @__PURE__ */ new Set());
+  const [endedOpen, setEndedOpen] = d2(false);
+  const [, setTick] = d2(0);
+  const { roots, childrenMap } = T2(() => buildTree(sessions), [sessions]);
+  y2(() => {
+    const id = setInterval(() => setTick((n2) => n2 + 1), 3e4);
+    return () => clearInterval(id);
+  }, []);
+  y2(() => {
+    if (highlightSessionId) {
+      const el = document.querySelector(`[data-session-id="${highlightSessionId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("session-row--highlight");
+        const timer = setTimeout(() => el.classList.remove("session-row--highlight"), 3e3);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [highlightSessionId]);
+  const { activeRoots, endedRoots } = T2(() => {
+    const active = [];
+    const ended = [];
+    for (const root of roots) {
+      if (isTreeDead(root, childrenMap)) {
+        ended.push(root);
+      } else {
+        active.push(root);
+      }
+    }
+    active.sort((a3, b) => (b.pinned || 0) - (a3.pinned || 0));
+    return { activeRoots: active, endedRoots: ended };
+  }, [roots, childrenMap]);
+  const toggleExpand = (sessionId) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) {
+        next.delete(sessionId);
+      } else {
+        next.add(sessionId);
+      }
+      return next;
+    });
+  };
+  const collectRows = (session, depth, isLastChild) => {
+    if (shouldHideSession(session)) {
+      return [];
+    }
+    const sessionId = getSessionId(session);
+    const children = sessionId ? childrenMap.get(sessionId) || [] : [];
+    const visibleChildren = children.filter((c3) => !shouldHideSession(c3));
+    const isExpanded = sessionId ? expandedIds.has(sessionId) : false;
+    const result = [{ session, depth, isLastChild }];
+    if (isExpanded) {
+      visibleChildren.forEach((child, idx) => {
+        const isLast = idx === visibleChildren.length - 1;
+        result.push(...collectRows(child, depth + 1, isLast));
+      });
+    }
+    return result;
+  };
+  const renderRow = ({ session, depth, isLastChild }) => {
+    const sessionId = getSessionId(session);
+    const children = sessionId ? childrenMap.get(sessionId) || [] : [];
+    const visibleChildren = children.filter((c3) => !shouldHideSession(c3));
+    const hasChildren = visibleChildren.length > 0;
+    const isExpanded = sessionId ? expandedIds.has(sessionId) : false;
+    const status = getSessionStatus(session);
+    const startTimestamp = parseTimestamp(session.created_at) || parseTimestamp(session.started_at) || parseTimestamp(session.start_time);
+    const endTimestamp = parseTimestamp(session.ended_at) || parseTimestamp(session.end_time);
+    const isDead = isDeadSession(session);
+    const reaped = isReapedSession(session);
+    const inactiveMinutes = getInactiveMinutes(session);
+    const pastReapThreshold = inactiveMinutes !== null && inactiveMinutes >= REAP_THRESHOLD_MINUTES;
+    const navMetadataStatus = getNavMetadataStatus(session).toLowerCase();
+    const navMetadataAttempts = Number(session.nav_metadata_attempts || 0);
+    const navMetadataError = String(session.nav_metadata_last_error || "");
+    const showMetadataWarning = navMetadataStatus === "degraded" || navMetadataStatus === "failed";
+    const newTimestamp = sessionId ? newSessionIds[sessionId] : void 0;
+    const isNew = newTimestamp ? Date.now() - newTimestamp < 1e4 : false;
+    const isPinned = Boolean(session.pinned);
+    const isChild = depth > 0;
+    const descendantCount = sessionId ? countDescendants(sessionId, childrenMap) : 0;
+    const isParent = !isChild;
+    const cwd = getSessionCwd(session);
+    const branch = getSessionBranch(session);
+    const rawProjects = session.projects || [];
+    const issues = session.issues || [];
+    const projects = rawProjects.map((p3) => {
+      if (p3.repo_name && p3.repo_name.includes("/")) {
+        const cwdBasename = cwd ? cwd.replace(/\/+$/, "").split("/").pop() || p3.repo_name : p3.repo_name;
+        const cwdParts = cwd ? cwd.replace(/\/+$/, "").split("/") : [];
+        const worktreeIdx = cwdParts.indexOf("worktrees");
+        const repoName = worktreeIdx > 0 ? cwdParts[worktreeIdx - 1] : cwdBasename;
+        return { ...p3, repo_name: repoName };
+      }
+      return p3;
+    });
+    const rowClasses = [
+      "session-row",
+      isDead ? "row-dead" : "",
+      reaped ? "row-reaped" : "",
+      pastReapThreshold ? "row-reap-warning" : "",
+      isNew ? "row-new" : "",
+      isPinned ? "row-pinned" : "",
+      isChild ? "session-row--child" : "",
+      isChild && isLastChild ? "session-row--last-child" : ""
+    ].filter(Boolean).join(" ");
+    const depthStyle = isChild ? { "--depth": String(depth) } : void 0;
+    const actionItems = [
+      // Bug: 568eca7 — pin/unpin toggle
+      {
+        label: isPinned ? "Unpin" : "Pin",
+        onClick: () => {
+          if (!sessionId)
+            return;
+          const newPinned = isPinned ? 0 : 1;
+          if (onPinToggle) {
+            onPinToggle(sessionId, !isPinned);
+          }
+          patchSession(sessionId, { pinned: newPinned }).catch(() => {
+            if (onPinToggle) {
+              onPinToggle(sessionId, isPinned);
+            }
+          });
+        }
+      },
+      {
+        label: "Go to",
+        onClick: () => sessionId && onNavigate(sessionId)
+      },
+      {
+        label: "Copy CWD",
+        onClick: () => cwd && copyToClipboard(cwd)
+      },
+      {
+        label: "Open in Finder",
+        onClick: () => cwd && openPath(cwd)
+      },
+      {
+        label: "Copy branch",
+        onClick: () => branch !== "\u2014" && copyToClipboard(branch)
+      },
+      {
+        label: "Kill",
+        onClick: () => sessionId && onKill(sessionId),
+        danger: true,
+        confirm: "Confirm kill?"
+      }
+    ];
+    return /* @__PURE__ */ u3(
+      "tr",
+      {
+        className: rowClasses,
+        "data-depth": depth,
+        "data-session-id": sessionId,
+        style: depthStyle,
+        children: [
+          /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-flex", children: [
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: `tree-toggle ${hasChildren ? "" : "tree-toggle--empty"}`,
+                onClick: () => sessionId && toggleExpand(sessionId),
+                "aria-label": hasChildren ? "Toggle subagents" : void 0,
+                children: hasChildren ? isExpanded ? "\u25BE" : "\u25B8" : ""
+              }
+            ),
+            /* @__PURE__ */ u3("span", { className: statusClass(status) }),
+            isPinned && /* @__PURE__ */ u3("span", { className: "pin-badge", title: "Pinned" })
+          ] }) }),
+          /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-flex", children: /* @__PURE__ */ u3("span", { className: appBadge(getSessionApp(session)), children: getSessionApp(session).slice(0, 2).toUpperCase() }) }) }),
+          /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-stack", children: [
+            projects.length > 0 ? /* @__PURE__ */ u3("div", { className: "session-project-pills", children: projects.map((p3) => /* @__PURE__ */ u3("span", { className: "session-project-pill", children: p3.repo_name }, p3.repo_id)) }) : /* @__PURE__ */ u3("span", { className: "text-muted", children: "\u2014" }),
+            branch !== "\u2014" && /* @__PURE__ */ u3("span", { className: "session-branch-detail", children: branch })
+          ] }) }),
+          /* @__PURE__ */ u3("td", { className: "session-col-children", children: isParent && descendantCount > 0 ? descendantCount : "" }),
+          /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("span", { className: "session-duration", children: formatDuration(startTimestamp, endTimestamp) }) }),
+          /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("span", { className: `session-inactive${pastReapThreshold ? " session-inactive--warning" : ""}`, children: reaped ? /* @__PURE__ */ u3("span", { className: "session-reaped-badge", children: "reaped" }) : formatInactive(inactiveMinutes) }) }),
+          /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-stack", children: [
+            (() => {
+              const task = getSessionTask(session);
+              const hasIssues = issues && issues.length > 0;
+              const showTask = task !== "\u2014";
+              if (showTask) {
+                return /* @__PURE__ */ u3("span", { children: task });
+              }
+              if (!hasIssues) {
+                return /* @__PURE__ */ u3("span", { className: "text-muted", children: "\u2014" });
+              }
+              return null;
+            })(),
+            showMetadataWarning && /* @__PURE__ */ u3("span", { className: "text-warning", title: navMetadataError || void 0, children: [
+              "metadata ",
+              navMetadataStatus,
+              " (",
+              navMetadataAttempts,
+              " attempts)"
+            ] }),
+            /* @__PURE__ */ u3(IssuePills, { issues })
+          ] }) }),
+          /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3(ContextMenu, { items: actionItems }) })
+        ]
+      },
+      sessionId || Math.random()
+    );
+  };
+  const activeRows = activeRoots.flatMap((session) => collectRows(session, 0, false));
+  const endedRows = endedRoots.flatMap((session) => collectRows(session, 0, false));
+  const chevronClass = `ended-section__chevron${endedOpen ? " ended-section__chevron--open" : ""}`;
+  return /* @__PURE__ */ u3("div", { className: "view sessions-view", children: [
+    /* @__PURE__ */ u3("div", { className: "view-header", children: [
+      /* @__PURE__ */ u3("h2", { children: "Agent Registry" }),
+      /* @__PURE__ */ u3("p", { className: "text-muted", children: "Active and recent Mandible sessions." })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "table-card", children: [
+      /* @__PURE__ */ u3("table", { children: [
+        /* @__PURE__ */ u3("thead", { children: /* @__PURE__ */ u3("tr", { children: [
+          /* @__PURE__ */ u3("th", { children: "Status" }),
+          /* @__PURE__ */ u3("th", { children: "App" }),
+          /* @__PURE__ */ u3("th", { children: "Project" }),
+          /* @__PURE__ */ u3("th", { className: "session-col-children", children: "Children" }),
+          /* @__PURE__ */ u3("th", { children: "Duration" }),
+          /* @__PURE__ */ u3("th", { children: "Inactive" }),
+          /* @__PURE__ */ u3("th", { children: "Task" }),
+          /* @__PURE__ */ u3("th", {})
+        ] }) }),
+        /* @__PURE__ */ u3("tbody", { children: activeRows.length === 0 && endedRows.length === 0 ? /* @__PURE__ */ u3("tr", { children: /* @__PURE__ */ u3("td", { colSpan: COL_COUNT, className: "empty-state", children: "No sessions yet." }) }) : activeRows.length === 0 ? /* @__PURE__ */ u3("tr", { children: /* @__PURE__ */ u3("td", { colSpan: COL_COUNT, className: "empty-state", children: "No active sessions." }) }) : activeRows.map(renderRow) })
+      ] }),
+      endedRows.length > 0 && /* @__PURE__ */ u3("div", { className: "ended-section", children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "ended-section__header",
+            onClick: () => setEndedOpen((prev) => !prev),
+            children: [
+              /* @__PURE__ */ u3("span", { className: chevronClass, children: "\u25B8" }),
+              "Ended (",
+              endedRoots.length,
+              ")"
+            ]
+          }
+        ),
+        endedOpen && /* @__PURE__ */ u3("table", { children: /* @__PURE__ */ u3("tbody", { children: endedRows.map(renderRow) }) })
+      ] })
+    ] })
+  ] });
+}
+
+// ui/src/views/conversations.tsx
+marked.setOptions({ async: false, gfm: true, breaks: false });
+var ALL_BLOCK_TYPES = [
+  "user_message",
+  "assistant_message",
+  "thinking",
+  "tool_use",
+  "tool_result",
+  "system",
+  "event"
+];
+var BLOCK_TYPE_LABELS = {
+  user_message: "User",
+  assistant_message: "Assistant",
+  thinking: "Thinking",
+  tool_use: "Tool Use",
+  tool_result: "Tool Result",
+  system: "System",
+  event: "Event"
+};
+var SOURCE_LABELS = {
+  claude_code: "Claude",
+  codex: "Codex",
+  gemini: "Gemini"
+};
+var SOURCE_CLASSES = {
+  claude_code: "source-badge--claude",
+  codex: "source-badge--codex",
+  gemini: "source-badge--gemini"
+};
+var PAGE_SIZE = 50;
+var VIRTUAL_BUFFER = 10;
+var ESTIMATED_BLOCK_HEIGHT = 120;
+function formatRelativeTime4(dateStr) {
+  if (!dateStr)
+    return "\u2014";
+  const ts = Date.parse(dateStr);
+  if (Number.isNaN(ts))
+    return "\u2014";
+  const diffMs = Date.now() - ts;
+  const seconds = Math.floor(diffMs / 1e3);
+  if (seconds < 5)
+    return "just now";
+  if (seconds < 60)
+    return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60)
+    return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24)
+    return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30)
+    return `${days}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+function formatAbsoluteTime(dateStr) {
+  if (!dateStr)
+    return "";
+  const ts = Date.parse(dateStr);
+  if (Number.isNaN(ts))
+    return "";
+  return new Date(ts).toLocaleString();
+}
+function truncate(text, maxLen) {
+  if (text.length <= maxLen)
+    return text;
+  return text.slice(0, maxLen) + "\u2026";
+}
+function parseMetadata(json) {
+  try {
+    return JSON.parse(json || "{}");
+  } catch {
+    return {};
+  }
+}
+function MarkdownContent({ content }) {
+  const html3 = marked.parse(content);
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "block-markdown",
+      dangerouslySetInnerHTML: { __html: html3 }
+    }
+  );
+}
+function CopyButton({ content }) {
+  const [copied, setCopied] = d2(false);
+  const handleCopy = async (e3) => {
+    e3.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+    }
+  };
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: "block-copy-btn",
+      onClick: handleCopy,
+      title: "Copy raw markdown",
+      children: copied ? "Copied" : "Copy"
+    }
+  );
+}
+function primaryToolArg(toolName, toolInput) {
+  if (!toolInput || typeof toolInput !== "object")
+    return "";
+  const inp = toolInput;
+  const priority = (() => {
+    switch (toolName) {
+      case "Read":
+      case "Write":
+      case "Edit":
+        return ["file_path"];
+      case "Bash":
+        return ["description", "command"];
+      case "Grep":
+        return ["pattern", "path"];
+      case "Glob":
+        return ["pattern", "path"];
+      case "WebFetch":
+        return ["url"];
+      case "WebSearch":
+        return ["query"];
+      default:
+        return ["path", "file_path", "pattern", "query", "url", "command"];
+    }
+  })();
+  for (const key2 of priority) {
+    if (typeof inp[key2] === "string" && inp[key2]) {
+      const val = inp[key2];
+      return val.length > 80 ? val.slice(0, 80) + "\u2026" : val;
+    }
+  }
+  for (const v3 of Object.values(inp)) {
+    if (typeof v3 === "string" && v3)
+      return v3.length > 80 ? v3.slice(0, 80) + "\u2026" : v3;
+  }
+  return "";
+}
+function ToolUseCard({
+  toolName,
+  toolInput,
+  fullContent
+}) {
+  const [expanded, setExpanded] = d2(false);
+  const primary = primaryToolArg(toolName, toolInput);
+  return /* @__PURE__ */ u3("div", { className: "tool-use-card", children: [
+    /* @__PURE__ */ u3("div", { className: "tool-use-card__header", children: [
+      /* @__PURE__ */ u3("span", { className: "tool-use-card__name", children: toolName ?? "Tool" }),
+      primary && /* @__PURE__ */ u3("span", { className: "tool-use-card__arg", children: primary }),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "tool-use-card__expand",
+          onClick: (e3) => {
+            e3.stopPropagation();
+            setExpanded((p3) => !p3);
+          },
+          children: expanded ? "less" : "more"
+        }
+      )
+    ] }),
+    expanded && /* @__PURE__ */ u3("pre", { className: "block-pre tool-use-card__full", children: fullContent })
+  ] });
+}
+function BlockRenderer({
+  block: block2,
+  isSelected,
+  selectMode,
+  onToggleSelect,
+  onShiftSelect,
+  onToggleCollapse,
+  collapsed
+}) {
+  const metadata = parseMetadata(block2.metadata_json);
+  const isCollapsible = block2.type === "thinking" || block2.type === "tool_use" || block2.type === "tool_result" || block2.type === "system" || block2.type === "event";
+  const showHeader = block2.type !== "user_message";
+  const isErrorEvent = block2.type === "event" && (metadata.is_error === true || metadata.level === "error");
+  const typeClass = [
+    "block",
+    `block-${block2.type.replace("_", "-")}`,
+    isSelected ? "block-selected" : "",
+    collapsed ? "block-collapsed" : "",
+    isErrorEvent ? "block-event--error" : "",
+    selectMode ? "block--selectable" : ""
+  ].filter(Boolean).join(" ");
+  const handleClick = (e3) => {
+    if (selectMode) {
+      if (e3.shiftKey) {
+        onShiftSelect();
+      } else {
+        onToggleSelect();
+      }
+    }
+  };
+  const headerLabel = (() => {
+    switch (block2.type) {
+      case "user_message":
+        return null;
+      case "assistant_message": {
+        const model = metadata.model;
+        return model ? `Assistant (${model})` : "Assistant";
+      }
+      case "thinking": {
+        const duration = metadata.duration_ms;
+        return duration ? `Thinking (${(duration / 1e3).toFixed(1)}s)` : "Thinking";
+      }
+      case "tool_use": {
+        const toolName = metadata.tool_name;
+        return toolName ? `Tool: ${toolName}` : "Tool Use";
+      }
+      case "tool_result":
+        return "Tool Result";
+      case "system":
+        return "System";
+      case "event": {
+        const eventType = metadata.event_type;
+        const isError = metadata.is_error === true || metadata.level === "error";
+        const prefix = isError ? "Error" : "Event";
+        return eventType ? `${prefix}: ${eventType}` : prefix;
+      }
+      default:
+        return block2.type;
+    }
+  })();
+  const renderContent = () => {
+    if (collapsed)
+      return null;
+    if (block2.type === "assistant_message" || block2.type === "user_message") {
+      return /* @__PURE__ */ u3("div", { className: "block-content", children: /* @__PURE__ */ u3(MarkdownContent, { content: block2.content }) });
+    }
+    if (block2.type === "tool_use") {
+      const toolName = metadata.tool_name;
+      const toolInput = metadata.tool_input ?? null;
+      return /* @__PURE__ */ u3("div", { className: "block-content block-content--mono", children: /* @__PURE__ */ u3(ToolUseCard, { toolName, toolInput, fullContent: block2.content }) });
+    }
+    const showExpandButton = isCollapsible && block2.content.length > 200;
+    return /* @__PURE__ */ u3("div", { className: `block-content${block2.type === "tool_result" ? " block-content--mono" : ""}`, children: showExpandButton ? /* @__PURE__ */ u3(ContentWithExpand, { content: block2.content }) : /* @__PURE__ */ u3("pre", { className: "block-pre", children: block2.content }) });
+  };
+  return /* @__PURE__ */ u3("div", { className: typeClass, onClick: handleClick, "data-block-id": block2.id, children: [
+    showHeader && /* @__PURE__ */ u3("div", { className: "block-header", children: [
+      /* @__PURE__ */ u3("div", { className: "block-header__left", children: [
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "checkbox",
+            checked: isSelected,
+            onChange: onToggleSelect,
+            onClick: (e3) => e3.stopPropagation(),
+            className: `block-checkbox${selectMode || isSelected ? " block-checkbox--visible" : ""}`
+          }
+        ),
+        isCollapsible && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "block-collapse-toggle",
+            onClick: (e3) => {
+              e3.stopPropagation();
+              onToggleCollapse();
+            },
+            children: collapsed ? "\u25B8" : "\u25BE"
+          }
+        ),
+        headerLabel && /* @__PURE__ */ u3("span", { className: "block-label", children: headerLabel })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "block-header__right", children: [
+        /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
+        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
+      ] })
+    ] }),
+    !showHeader && /* @__PURE__ */ u3("div", { className: "block-header block-header--user", children: [
+      /* @__PURE__ */ u3("div", { className: "block-header__left", children: /* @__PURE__ */ u3(
+        "input",
+        {
+          type: "checkbox",
+          checked: isSelected,
+          onChange: onToggleSelect,
+          onClick: (e3) => e3.stopPropagation(),
+          className: `block-checkbox${selectMode || isSelected ? " block-checkbox--visible" : ""}`
+        }
+      ) }),
+      /* @__PURE__ */ u3("div", { className: "block-header__right", children: [
+        /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
+        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
+      ] })
+    ] }),
+    renderContent()
+  ] });
+}
+function ContentWithExpand({ content }) {
+  const [expanded, setExpanded] = d2(false);
+  const displayContent = expanded ? content : truncate(content, 500);
+  return /* @__PURE__ */ u3("div", { children: [
+    /* @__PURE__ */ u3("pre", { className: "block-pre", children: displayContent }),
+    content.length > 500 && /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "btn btn--ghost btn--sm block-expand-btn",
+        onClick: (e3) => {
+          e3.stopPropagation();
+          setExpanded((prev) => !prev);
+        },
+        children: expanded ? "Show less" : `Show more (${content.length.toLocaleString()} chars)`
+      }
+    )
+  ] });
+}
+function ExportPanel({
+  conversationId,
+  exportableCount,
+  totalSelectedCount,
+  hiddenSelectedCount,
+  selectedIds,
+  onClose
+}) {
+  const [format, setFormat] = d2("markdown");
+  const [status, setStatus] = d2("idle");
+  const [result, setResult] = d2(null);
+  const handleExport = async () => {
+    setStatus("exporting");
+    try {
+      const res = await exportConversationBlocks(conversationId, {
+        block_ids: selectedIds,
+        format
+      });
+      setResult(res);
+      setStatus("done");
+    } catch {
+      setStatus("error");
+    }
+  };
+  const handleCopy = async () => {
+    if (result?.content) {
+      await navigator.clipboard.writeText(result.content);
+    }
+  };
+  const handleDownload = () => {
+    if (!result)
+      return;
+    const blob = new Blob([result.content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a3 = document.createElement("a");
+    a3.href = url;
+    a3.download = result.filename;
+    a3.click();
+    URL.revokeObjectURL(url);
+  };
+  return /* @__PURE__ */ u3("div", { className: "export-panel", children: [
+    /* @__PURE__ */ u3("div", { className: "export-panel__header", children: [
+      /* @__PURE__ */ u3("h3", { className: "export-panel__title", children: "Export Blocks" }),
+      /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", onClick: onClose, children: "Close" })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "export-panel__info", children: [
+      /* @__PURE__ */ u3("span", { children: [
+        exportableCount,
+        " visible selected block",
+        exportableCount !== 1 ? "s" : ""
+      ] }),
+      hiddenSelectedCount > 0 && /* @__PURE__ */ u3("span", { className: "text-muted", children: [
+        " + ",
+        hiddenSelectedCount,
+        " hidden (excluded)"
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "export-panel__format", children: [
+      /* @__PURE__ */ u3("label", { className: "export-panel__label", children: "Format" }),
+      /* @__PURE__ */ u3("div", { className: "toggle-group", children: ["markdown", "mdx", "json"].map((f4) => /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `btn btn--sm${format === f4 ? " btn--active" : " btn--ghost"}`,
+          onClick: () => setFormat(f4),
+          children: f4.toUpperCase()
+        },
+        f4
+      )) })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "export-panel__actions", children: [
+      status === "idle" && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--success",
+          onClick: handleExport,
+          disabled: exportableCount === 0,
+          children: "Export"
+        }
+      ),
+      status === "exporting" && /* @__PURE__ */ u3("span", { className: "text-muted", children: "Exporting..." }),
+      status === "done" && result && /* @__PURE__ */ u3("div", { className: "export-panel__result", children: [
+        /* @__PURE__ */ u3("div", { className: "export-panel__result-actions", children: [
+          /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", onClick: handleCopy, children: "Copy to clipboard" }),
+          /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", onClick: handleDownload, children: [
+            "Download (",
+            result.filename,
+            ")"
+          ] })
+        ] }),
+        /* @__PURE__ */ u3("pre", { className: "export-panel__preview", children: truncate(result.content, 2e3) })
+      ] }),
+      status === "error" && /* @__PURE__ */ u3("div", { className: "export-panel__error", children: [
+        /* @__PURE__ */ u3("span", { className: "text-muted", children: "Export failed." }),
+        /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", onClick: () => setStatus("idle"), children: "Retry" })
+      ] })
+    ] })
+  ] });
+}
+function SubAgentsList({
+  children,
+  onNavigate
+}) {
+  const [expanded, setExpanded] = d2(true);
+  if (children.length === 0)
+    return /* @__PURE__ */ u3(k, {});
+  return /* @__PURE__ */ u3("div", { className: "conv-subagents", children: [
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "conv-subagents__header",
+        onClick: () => setExpanded((prev) => !prev),
+        children: [
+          /* @__PURE__ */ u3("span", { className: "conv-subagents__toggle", children: expanded ? "\u25BE" : "\u25B8" }),
+          /* @__PURE__ */ u3("span", { className: "conv-subagents__title", children: [
+            "Sub-agents (",
+            children.length,
+            ")"
+          ] })
+        ]
+      }
+    ),
+    expanded && /* @__PURE__ */ u3("div", { className: "conv-subagents__list", children: children.map((child) => {
+      const durationStr = child.duration_seconds != null ? child.duration_seconds < 60 ? `${child.duration_seconds}s` : `${Math.floor(child.duration_seconds / 60)}m ${child.duration_seconds % 60}s` : null;
+      return /* @__PURE__ */ u3(
+        "div",
+        {
+          className: "conv-subagent-card",
+          onClick: () => onNavigate(child.id),
+          children: [
+            /* @__PURE__ */ u3("div", { className: "conv-subagent-card__title", children: truncate(child.title || "Untitled", 60) }),
+            /* @__PURE__ */ u3("div", { className: "conv-subagent-card__meta", children: [
+              /* @__PURE__ */ u3("span", { children: [
+                child.block_count,
+                " blocks"
+              ] }),
+              durationStr && /* @__PURE__ */ u3("span", { children: durationStr }),
+              child.model && /* @__PURE__ */ u3("span", { className: "conv-subagent-card__model", children: child.model })
+            ] })
+          ]
+        },
+        child.id
+      );
+    }) })
+  ] });
+}
+function ConversationDetail({
+  conversationId,
+  onNavigate
+}) {
+  const [conversation, setConversation] = d2(null);
+  const [loading, setLoading] = d2(true);
+  const [error, setError] = d2(null);
+  const [selectMode, setSelectMode] = d2(false);
+  const [selected, setSelected] = d2(/* @__PURE__ */ new Set());
+  const [lastSelectedId, setLastSelectedId] = d2(null);
+  const [visibleTypes, setVisibleTypes] = d2(new Set(ALL_BLOCK_TYPES));
+  const [collapsedBlocks, setCollapsedBlocks] = d2(/* @__PURE__ */ new Set());
+  const [showExport, setShowExport] = d2(false);
+  const scrollContainerRef = A2(null);
+  const [scrollTop, setScrollTop] = d2(0);
+  const [containerHeight, setContainerHeight] = d2(800);
+  y2(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
+    getConversation(conversationId).then((conv) => {
+      if (active) {
+        setConversation(conv);
+        const defaultCollapsed = /* @__PURE__ */ new Set();
+        for (const block2 of conv.blocks) {
+          if (block2.type === "thinking" || block2.type === "system") {
+            defaultCollapsed.add(block2.id);
+          }
+        }
+        setCollapsedBlocks(defaultCollapsed);
+        setLoading(false);
+      }
+    }).catch((err) => {
+      if (active) {
+        setError(String(err));
+        setLoading(false);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [conversationId]);
+  y2(() => {
+    const el = scrollContainerRef.current;
+    if (!el)
+      return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  const blocks = conversation?.blocks || [];
+  const visibleBlocks = T2(
+    () => blocks.filter((b) => visibleTypes.has(b.type)),
+    [blocks, visibleTypes]
+  );
+  const exportableBlocks = T2(
+    () => visibleBlocks.filter((b) => selected.has(b.id)),
+    [visibleBlocks, selected]
+  );
+  const selectedHiddenCount = T2(() => {
+    let count = 0;
+    for (const id of selected) {
+      const block2 = blocks.find((b) => b.id === id);
+      if (block2 && !visibleTypes.has(block2.type)) {
+        count++;
+      }
+    }
+    return count;
+  }, [selected, blocks, visibleTypes]);
+  const typeCounts = T2(() => {
+    const counts = {};
+    for (const block2 of blocks) {
+      counts[block2.type] = (counts[block2.type] || 0) + 1;
+    }
+    return counts;
+  }, [blocks]);
+  const presentTypes = T2(
+    () => ALL_BLOCK_TYPES.filter((t3) => (typeCounts[t3] || 0) > 0),
+    [typeCounts]
+  );
+  const handleScroll = q2(() => {
+    const el = scrollContainerRef.current;
+    if (el)
+      setScrollTop(el.scrollTop);
+  }, []);
+  const totalHeight = visibleBlocks.length * ESTIMATED_BLOCK_HEIGHT;
+  const startIndex = Math.max(0, Math.floor(scrollTop / ESTIMATED_BLOCK_HEIGHT) - VIRTUAL_BUFFER);
+  const endIndex = Math.min(
+    visibleBlocks.length,
+    Math.ceil((scrollTop + containerHeight) / ESTIMATED_BLOCK_HEIGHT) + VIRTUAL_BUFFER
+  );
+  const shouldVirtualize = visibleBlocks.length > 200;
+  const renderedBlocks = shouldVirtualize ? visibleBlocks.slice(startIndex, endIndex) : visibleBlocks;
+  const toggleSelect = (blockId) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(blockId)) {
+        next.delete(blockId);
+      } else {
+        next.add(blockId);
+      }
+      return next;
+    });
+    setLastSelectedId(blockId);
+  };
+  const handleShiftSelect = (blockId) => {
+    if (!lastSelectedId) {
+      toggleSelect(blockId);
+      return;
+    }
+    const startIdx = visibleBlocks.findIndex((b) => b.id === lastSelectedId);
+    const endIdx = visibleBlocks.findIndex((b) => b.id === blockId);
+    if (startIdx === -1 || endIdx === -1) {
+      toggleSelect(blockId);
+      return;
+    }
+    const low = Math.min(startIdx, endIdx);
+    const high = Math.max(startIdx, endIdx);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (let i4 = low; i4 <= high; i4++) {
+        next.add(visibleBlocks[i4].id);
+      }
+      return next;
+    });
+    setLastSelectedId(blockId);
+  };
+  const selectAllVisible = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const block2 of visibleBlocks) {
+        next.add(block2.id);
+      }
+      return next;
+    });
+  };
+  const clearSelection = () => {
+    setSelected(/* @__PURE__ */ new Set());
+    setLastSelectedId(null);
+  };
+  const toggleType = (type) => {
+    setVisibleTypes((prev) => {
+      const next = new Set(prev);
+      if (next.has(type)) {
+        next.delete(type);
+      } else {
+        next.add(type);
+      }
+      return next;
+    });
+  };
+  const toggleCollapse = (blockId) => {
+    setCollapsedBlocks((prev) => {
+      const next = new Set(prev);
+      if (next.has(blockId)) {
+        next.delete(blockId);
+      } else {
+        next.add(blockId);
+      }
+      return next;
+    });
+  };
+  const handleStarToggle = async () => {
+    if (!conversation)
+      return;
+    const newStarred = conversation.starred ? 0 : 1;
+    try {
+      await updateConversation(conversationId, { starred: newStarred });
+      setConversation((prev) => prev ? { ...prev, starred: newStarred } : prev);
+    } catch {
+    }
+  };
+  if (loading) {
+    return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: "Loading conversation..." }) });
+  }
+  if (error || !conversation) {
+    return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: error || "Conversation not found." }) });
+  }
+  return /* @__PURE__ */ u3("div", { className: "conv-detail", children: [
+    conversation.parent_conversation_id && /* @__PURE__ */ u3("div", { className: "conv-parent-link", children: /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "btn btn--ghost btn--sm",
+        onClick: () => onNavigate(conversation.parent_conversation_id),
+        children: "\u2191 Parent conversation"
+      }
+    ) }),
+    /* @__PURE__ */ u3("div", { className: "conv-detail__header", children: [
+      /* @__PURE__ */ u3("div", { className: "conv-detail__header-left", children: [
+        /* @__PURE__ */ u3("h2", { className: "conv-detail__title", children: [
+          conversation.parent_conversation_id && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent conversation", children: "\u2937 " }),
+          conversation.title || "Untitled"
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "conv-detail__meta", children: [
+          /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
+          /* @__PURE__ */ u3("span", { className: "text-muted", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime4(conversation.started_at) }),
+          conversation.branch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: conversation.branch }),
+          conversation.model && /* @__PURE__ */ u3("span", { className: "text-muted", children: conversation.model })
+        ] })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "conv-detail__header-right", children: /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `btn btn--ghost btn--sm conv-star-btn${conversation.starred ? " conv-star-btn--active" : ""}`,
+          onClick: handleStarToggle,
+          title: conversation.starred ? "Unstar" : "Star",
+          children: conversation.starred ? "\u2605" : "\u2606"
+        }
+      ) })
+    ] }),
+    conversation.children && conversation.children.length > 0 && /* @__PURE__ */ u3(SubAgentsList, { children: conversation.children, onNavigate }),
+    /* @__PURE__ */ u3("div", { className: "conv-filter-bar", children: [
+      /* @__PURE__ */ u3("div", { className: "conv-filter-bar__types", children: presentTypes.map((type) => /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `conv-filter-btn${visibleTypes.has(type) ? " conv-filter-btn--active" : ""}`,
+          onClick: () => toggleType(type),
+          children: [
+            BLOCK_TYPE_LABELS[type],
+            /* @__PURE__ */ u3("span", { className: "conv-filter-btn__count", children: typeCounts[type] || 0 })
+          ]
+        },
+        type
+      )) }),
+      /* @__PURE__ */ u3("div", { className: "conv-filter-bar__actions", children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--ghost btn--sm",
+            onClick: () => setVisibleTypes(new Set(ALL_BLOCK_TYPES)),
+            children: "Show all"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--ghost btn--sm",
+            onClick: () => setVisibleTypes(/* @__PURE__ */ new Set()),
+            children: "Hide all"
+          }
+        )
+      ] })
+    ] }),
+    (selectMode || selected.size > 0) && /* @__PURE__ */ u3("div", { className: "conv-selection-toolbar", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `btn btn--sm${selectMode ? " btn--active" : " btn--ghost"}`,
+          onClick: () => setSelectMode((prev) => !prev),
+          children: "Select mode"
+        }
+      ),
+      /* @__PURE__ */ u3("span", { className: "conv-selection-toolbar__count", children: [
+        selected.size,
+        " selected",
+        selectedHiddenCount > 0 && /* @__PURE__ */ u3("span", { className: "text-muted", children: [
+          " + ",
+          selectedHiddenCount,
+          " hidden"
+        ] })
+      ] }),
+      /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", onClick: selectAllVisible, children: "Select all visible" }),
+      /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", onClick: clearSelection, children: "Clear" }),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--success btn--sm",
+          onClick: () => setShowExport(true),
+          disabled: exportableBlocks.length === 0,
+          children: [
+            "Export (",
+            exportableBlocks.length,
+            ")"
+          ]
+        }
+      )
+    ] }),
+    !selectMode && selected.size === 0 && /* @__PURE__ */ u3("div", { className: "conv-selection-toolbar conv-selection-toolbar--minimal", children: /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "btn btn--ghost btn--sm",
+        onClick: () => setSelectMode(true),
+        children: "Select mode"
+      }
+    ) }),
+    showExport && /* @__PURE__ */ u3(
+      ExportPanel,
+      {
+        conversationId,
+        exportableCount: exportableBlocks.length,
+        totalSelectedCount: selected.size,
+        hiddenSelectedCount: selectedHiddenCount,
+        selectedIds: exportableBlocks.map((b) => b.id),
+        onClose: () => setShowExport(false)
+      }
+    ),
+    /* @__PURE__ */ u3(
+      "div",
+      {
+        className: "conv-blocks",
+        ref: scrollContainerRef,
+        onScroll: handleScroll,
+        children: [
+          shouldVirtualize ? /* @__PURE__ */ u3("div", { style: { height: `${totalHeight}px`, position: "relative" }, children: /* @__PURE__ */ u3("div", { style: { position: "absolute", top: `${startIndex * ESTIMATED_BLOCK_HEIGHT}px`, left: 0, right: 0 }, children: renderedBlocks.map((block2) => /* @__PURE__ */ u3(
+            BlockRenderer,
+            {
+              block: block2,
+              isSelected: selected.has(block2.id),
+              selectMode,
+              onToggleSelect: () => toggleSelect(block2.id),
+              onShiftSelect: () => handleShiftSelect(block2.id),
+              onToggleCollapse: () => toggleCollapse(block2.id),
+              collapsed: collapsedBlocks.has(block2.id)
+            },
+            block2.id
+          )) }) }) : renderedBlocks.map((block2) => /* @__PURE__ */ u3(
+            BlockRenderer,
+            {
+              block: block2,
+              isSelected: selected.has(block2.id),
+              selectMode,
+              onToggleSelect: () => toggleSelect(block2.id),
+              onShiftSelect: () => handleShiftSelect(block2.id),
+              onToggleCollapse: () => toggleCollapse(block2.id),
+              collapsed: collapsedBlocks.has(block2.id)
+            },
+            block2.id
+          )),
+          visibleBlocks.length === 0 && /* @__PURE__ */ u3("div", { className: "empty-state", children: "No blocks match the current filters." })
+        ]
+      }
+    )
+  ] });
+}
+function ChatHistoryItem({
+  conversation,
+  isSelected,
+  onClick
+}) {
+  const isSubAgent = !!conversation.parent_conversation_id;
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: `chat-history-item${isSelected ? " chat-history-item--selected" : ""}${isSubAgent ? " chat-history-item--subagent" : ""}`,
+      onClick,
+      role: "button",
+      tabIndex: 0,
+      onKeyDown: (e3) => {
+        if (e3.key === "Enter" || e3.key === " ")
+          onClick();
+      },
+      children: [
+        /* @__PURE__ */ u3("div", { className: "chat-history-item__header", children: [
+          /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
+          /* @__PURE__ */ u3("span", { className: "chat-history-item__date", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime4(conversation.started_at) })
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "chat-history-item__title", children: [
+          conversation.starred ? "\u2605 " : "",
+          isSubAgent && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent", children: "\u2937 " }),
+          truncate(conversation.title || "Untitled", 55)
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "chat-history-item__meta", children: [
+          /* @__PURE__ */ u3("span", { className: "chat-history-item__blocks", children: [
+            conversation.block_count,
+            " blocks"
+          ] }),
+          conversation.branch && /* @__PURE__ */ u3("span", { className: "chat-history-item__branch", children: truncate(conversation.branch, 20) })
+        ] })
+      ]
+    }
+  );
+}
+function ConversationsView({ conversations: initialConversations }) {
+  const [selectedId, setSelectedId] = d2(null);
+  const [search, setSearch] = d2("");
+  const [searchMode, setSearchMode] = d2("title");
+  const [sourceFilter, setSourceFilter] = d2("all");
+  const [starredOnly, setStarredOnly] = d2(false);
+  const [hideEmpty, setHideEmpty] = d2(true);
+  const [groupSubAgents, setGroupSubAgents] = d2(true);
+  const [sort, setSort] = d2("date");
+  const [conversations, setConversations] = d2(initialConversations);
+  const [total, setTotal] = d2(0);
+  const [loading, setLoading] = d2(false);
+  const [ingesting, setIngesting] = d2(false);
+  const searchTimer = A2(null);
+  const conversationsRef = A2(conversations);
+  conversationsRef.current = conversations;
+  const fetchConversations = q2(async (reset = true) => {
+    setLoading(true);
+    try {
+      const params = {
+        limit: PAGE_SIZE,
+        offset: reset ? 0 : conversationsRef.current.length,
+        sort: sort === "blocks" ? "block_count" : "started_at"
+      };
+      if (sourceFilter !== "all")
+        params.source = sourceFilter;
+      if (starredOnly)
+        params.starred = true;
+      if (search.trim())
+        params.search = search.trim();
+      if (groupSubAgents)
+        params.group = true;
+      const result = await getConversations(params);
+      if (reset) {
+        setConversations(result.conversations);
+      } else {
+        setConversations((prev) => [...prev, ...result.conversations]);
+      }
+      setTotal(result.total);
+    } catch {
+    } finally {
+      setLoading(false);
+    }
+  }, [sourceFilter, starredOnly, sort, search, groupSubAgents]);
+  const initialConversationsRef = A2(initialConversations);
+  y2(() => {
+    if (initialConversationsRef.current === initialConversations)
+      return;
+    initialConversationsRef.current = initialConversations;
+    fetchConversations(true);
+  }, [initialConversations, fetchConversations]);
+  y2(() => {
+    if (searchTimer.current)
+      clearTimeout(searchTimer.current);
+    searchTimer.current = window.setTimeout(() => {
+      fetchConversations(true);
+    }, 300);
+    return () => {
+      if (searchTimer.current)
+        clearTimeout(searchTimer.current);
+    };
+  }, [fetchConversations]);
+  const handleIngest = async () => {
+    setIngesting(true);
+    try {
+      await triggerIngestion();
+      await fetchConversations(true);
+    } catch {
+    } finally {
+      setIngesting(false);
+    }
+  };
+  const loadMore = () => {
+    fetchConversations(false);
+  };
+  const hasMore = conversations.length < total;
+  const displayedConversations = T2(() => {
+    const base = conversations.filter((conv) => !hideEmpty || conv.block_count > 0);
+    if (!search.trim() || searchMode === "full")
+      return base;
+    const needle = search.trim().toLowerCase();
+    return base.filter(
+      (conv) => (conv.title || "").toLowerCase().includes(needle)
+    );
+  }, [conversations, hideEmpty, search, searchMode]);
+  return /* @__PURE__ */ u3("div", { className: "chat-history-view", children: [
+    /* @__PURE__ */ u3("div", { className: "chat-history-sidebar", children: [
+      /* @__PURE__ */ u3("div", { className: "chat-history-search-row", children: [
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "text",
+            className: "conv-search",
+            placeholder: "Search\u2026",
+            value: search,
+            onInput: (e3) => setSearch(e3.target.value)
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `btn btn--sm chat-history-search-mode${searchMode === "full" ? " btn--active" : " btn--ghost"}`,
+            title: searchMode === "title" ? "Title-only search (click for full text)" : "Full-text search (click for title only)",
+            onClick: () => setSearchMode((prev) => prev === "title" ? "full" : "title"),
+            children: searchMode === "full" ? "Full" : "Title"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "chat-history-filters", children: [
+        /* @__PURE__ */ u3("div", { className: "conv-filters__sources", children: ["all", "claude_code", "codex", "gemini"].map((src) => /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `conv-filter-btn${sourceFilter === src ? " conv-filter-btn--active" : ""}`,
+            onClick: () => setSourceFilter(src),
+            children: src === "all" ? "All" : SOURCE_LABELS[src]
+          },
+          src
+        )) }),
+        /* @__PURE__ */ u3("div", { className: "chat-history-filter-controls", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `btn btn--sm${starredOnly ? " btn--active" : " btn--ghost"}`,
+              onClick: () => setStarredOnly((prev) => !prev),
+              children: "Starred"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `btn btn--sm${groupSubAgents ? " btn--active" : " btn--ghost"}`,
+              onClick: () => setGroupSubAgents((prev) => !prev),
+              title: "When on, sub-agent conversations are hidden from the main list and shown under their parent",
+              children: "Group subs"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `btn btn--sm${hideEmpty ? " btn--active" : " btn--ghost"}`,
+              onClick: () => setHideEmpty((prev) => !prev),
+              children: "Hide empty"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "select",
+            {
+              className: "conv-sort",
+              value: sort,
+              onChange: (e3) => setSort(e3.target.value),
+              children: [
+                /* @__PURE__ */ u3("option", { value: "date", children: "Date" }),
+                /* @__PURE__ */ u3("option", { value: "blocks", children: "Blocks" })
+              ]
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "btn btn--ghost btn--sm",
+              onClick: handleIngest,
+              disabled: ingesting,
+              title: "Refresh conversation logs",
+              children: ingesting ? "\u2026" : "Refresh"
+            }
+          )
+        ] })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "chat-history-list", children: [
+        displayedConversations.map((conv) => /* @__PURE__ */ u3(
+          ChatHistoryItem,
+          {
+            conversation: conv,
+            isSelected: selectedId === conv.id,
+            onClick: () => setSelectedId(conv.id)
+          },
+          conv.id
+        )),
+        displayedConversations.length === 0 && !loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "No conversations found." }),
+        loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "Loading\u2026" }),
+        hasMore && !loading && /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost chat-history-load-more", onClick: loadMore, children: [
+          "Load more (",
+          total - conversations.length,
+          " remaining)"
+        ] })
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "chat-history-detail", children: selectedId ? /* @__PURE__ */ u3(
+      ConversationDetail,
+      {
+        conversationId: selectedId,
+        onNavigate: (id) => setSelectedId(id)
+      }
+    ) : /* @__PURE__ */ u3("div", { className: "chat-history-detail__empty", children: "Select a conversation to view it" }) })
+  ] });
+}
+
+// ui/src/views/settings.tsx
+var SOUNDS = ["Blow", "Glass", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"];
+var THEMES = [
+  "catppuccin-mocha",
+  "catppuccin-macchiato",
+  "catppuccin-frappe",
+  "catppuccin-latte",
+  "tokyo-night",
+  "gruvbox",
+  "nord"
+];
+var PROMPTS = ["powerlevel10k", "starship"];
+var MULTIPLEXERS = ["zellij", "tmux", "both", "none"];
+function Toggle(props) {
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: "settings-view__toggle" + (props.enabled ? " settings-view__toggle--on" : ""),
+      onClick: props.onToggle,
+      disabled: props.disabled,
+      role: "switch",
+      "aria-checked": props.enabled,
+      "aria-label": props.label,
+      children: /* @__PURE__ */ u3("span", { className: "settings-view__toggle-knob" })
+    }
+  );
+}
+function ToggleRow(props) {
+  const [toggling, setToggling] = d2(false);
+  const enabled = props.settings[props.settingKey] === "true";
+  const handleToggle = q2(async () => {
+    setToggling(true);
+    try {
+      await props.onSave(props.settingKey, enabled ? "false" : "true");
+    } catch {
+    } finally {
+      setToggling(false);
+    }
+  }, [enabled, props.onSave, props.settingKey]);
+  return /* @__PURE__ */ u3("div", { className: "settings-view__toggle-row", children: [
+    /* @__PURE__ */ u3("div", { className: "settings-view__toggle-info", children: [
+      /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: props.title }),
+      /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: props.desc }),
+      props.warning && !enabled && /* @__PURE__ */ u3("p", { className: "settings-view__warning", children: props.warning })
+    ] }),
+    /* @__PURE__ */ u3(Toggle, { enabled, onToggle: handleToggle, disabled: toggling, label: `Toggle ${props.title}` })
+  ] });
+}
+function NumberInput(props) {
+  const [value, setValue] = d2("");
+  const [saving, setSaving] = d2(false);
+  const [feedback, setFeedback] = d2(null);
+  const feedbackTimer = A2(null);
+  const initialized = A2(false);
+  y2(() => {
+    const incoming = props.settings[props.settingKey];
+    if (typeof incoming === "string" && !initialized.current) {
+      setValue(incoming);
+      initialized.current = true;
+    }
+  }, [props.settings[props.settingKey]]);
+  const showFeedback = q2((state) => {
+    if (feedbackTimer.current != null)
+      window.clearTimeout(feedbackTimer.current);
+    setFeedback(state);
+    if (state) {
+      feedbackTimer.current = window.setTimeout(() => {
+        setFeedback(null);
+        feedbackTimer.current = null;
+      }, 3e3);
+    }
+  }, []);
+  const handleSave = q2(async () => {
+    setSaving(true);
+    try {
+      await props.onSave(props.settingKey, value);
+      showFeedback({ type: "success", message: "Saved" });
+    } catch (err) {
+      showFeedback({ type: "error", message: err instanceof Error ? err.message : "Failed" });
+    } finally {
+      setSaving(false);
+    }
+  }, [value, props.onSave, props.settingKey, showFeedback]);
+  const handleKeyDown = q2((e3) => {
+    if (e3.key === "Enter" && (e3.metaKey || e3.ctrlKey))
+      void handleSave();
+  }, [handleSave]);
+  return /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+    /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: [
+      /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: props.label }),
+      props.desc && /* @__PURE__ */ u3("span", { className: "settings-view__number-desc", children: props.desc })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: [
+      /* @__PURE__ */ u3(
+        "input",
+        {
+          type: "number",
+          className: "settings-view__number-input",
+          value,
+          onInput: (e3) => setValue(e3.target.value),
+          onKeyDown: handleKeyDown,
+          min: props.min,
+          max: props.max,
+          disabled: saving
+        }
+      ),
+      props.suffix && /* @__PURE__ */ u3("span", { className: "settings-view__number-suffix", children: props.suffix }),
+      /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--active btn--sm", onClick: handleSave, disabled: saving, children: saving ? "..." : "Save" }),
+      feedback && /* @__PURE__ */ u3("span", { className: feedback.type === "success" ? "settings-view__feedback settings-view__feedback--success" : "settings-view__feedback settings-view__feedback--error", children: feedback.message })
+    ] })
+  ] });
+}
+function SelectInput(props) {
+  const [saving, setSaving] = d2(false);
+  const current = props.settings[props.settingKey] ?? props.options[0];
+  const handleChange = q2(async (e3) => {
+    const newValue = e3.target.value;
+    setSaving(true);
+    try {
+      await props.onSave(props.settingKey, newValue);
+    } catch {
+    } finally {
+      setSaving(false);
+    }
+  }, [props.onSave, props.settingKey]);
+  return /* @__PURE__ */ u3("div", { className: "settings-view__select-row", children: [
+    /* @__PURE__ */ u3("div", { className: "settings-view__select-info", children: [
+      /* @__PURE__ */ u3("span", { className: "settings-view__select-label", children: props.label }),
+      props.desc && /* @__PURE__ */ u3("span", { className: "settings-view__select-desc", children: props.desc }),
+      props.requiresRestart && /* @__PURE__ */ u3("span", { className: "settings-view__badge--restart", children: "shell restart" })
+    ] }),
+    /* @__PURE__ */ u3(
+      "select",
+      {
+        className: "settings-view__select",
+        value: current,
+        onChange: handleChange,
+        disabled: saving,
+        children: props.options.map((opt) => /* @__PURE__ */ u3("option", { value: opt, children: opt }, opt))
+      }
+    )
+  ] });
+}
+function formatRelativeTime5(ts) {
+  const diffMs = Date.now() - ts;
+  const diffSec = Math.floor(diffMs / 1e3);
+  if (diffSec < 60)
+    return "just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60)
+    return `${diffMin} minute${diffMin === 1 ? "" : "s"} ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24)
+    return `${diffHr} hour${diffHr === 1 ? "" : "s"} ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  return `${diffDay} day${diffDay === 1 ? "" : "s"} ago`;
+}
+function formatBytes(bytes) {
+  if (bytes < 1024)
+    return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024)
+    return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(1)} MB`;
+}
+function BackupSection() {
+  const [status, setStatus] = d2(null);
+  const [running, setRunning] = d2(false);
+  const [runError, setRunError] = d2(null);
+  const [toggling, setToggling] = d2(false);
+  y2(() => {
+    getBackupStatus().then(setStatus).catch(() => {
+    });
+  }, []);
+  const handleToggle = q2(async () => {
+    if (!status)
+      return;
+    setToggling(true);
+    try {
+      const newEnabled = !status.enabled;
+      await updateBackupSettings({ enabled: newEnabled });
+      setStatus((prev) => prev ? { ...prev, enabled: newEnabled } : prev);
+    } catch {
+    } finally {
+      setToggling(false);
+    }
+  }, [status]);
+  const handleIntervalChange = q2(async (e3) => {
+    const hours = parseInt(e3.target.value, 10);
+    if (!Number.isFinite(hours))
+      return;
+    try {
+      await updateBackupSettings({ interval_hours: hours });
+      setStatus((prev) => prev ? { ...prev, interval_hours: hours } : prev);
+    } catch {
+    }
+  }, []);
+  const handleRunNow = q2(async () => {
+    setRunning(true);
+    setRunError(null);
+    try {
+      const result = await runBackupNow();
+      if (result.ok) {
+        const updated = await getBackupStatus();
+        setStatus(updated);
+      } else {
+        setRunError(result.error ?? "Backup failed");
+      }
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : "Backup failed");
+    } finally {
+      setRunning(false);
+    }
+  }, []);
+  const enabled = status?.enabled ?? true;
+  return /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+    /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+      /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Backup" }),
+      /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Automatic metadata dump to private/backups/." })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__toggle-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__toggle-info", children: [
+          /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Automatic backup" }),
+          /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Run mandible-backup on a schedule." })
+        ] }),
+        /* @__PURE__ */ u3(
+          Toggle,
+          {
+            enabled,
+            onToggle: handleToggle,
+            disabled: toggling || status === null,
+            label: "Toggle automatic backup"
+          }
+        )
+      ] }),
+      enabled && /* @__PURE__ */ u3("div", { className: "settings-view__select-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__select-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__select-label", children: "Interval" }) }),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            className: "settings-view__select",
+            value: status?.interval_hours ?? 6,
+            onChange: handleIntervalChange,
+            children: [
+              /* @__PURE__ */ u3("option", { value: 6, children: "6h" }),
+              /* @__PURE__ */ u3("option", { value: 12, children: "12h" }),
+              /* @__PURE__ */ u3("option", { value: 24, children: "24h" })
+            ]
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: "Last backup" }) }),
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: [
+          status === null ? /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading..." }) : status.last_run_at ? /* @__PURE__ */ u3("span", { children: [
+            formatRelativeTime5(status.last_run_at),
+            status.last_size_bytes != null && /* @__PURE__ */ u3("span", { className: "text-muted", children: [
+              " \u2014 ",
+              formatBytes(status.last_size_bytes)
+            ] })
+          ] }) : /* @__PURE__ */ u3("span", { className: "text-muted", children: "Never" }),
+          status?.last_error && /* @__PURE__ */ u3("span", { style: { color: "var(--color-error, #f38ba8)", marginLeft: "0.5rem" }, children: status.last_error })
+        ] })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: "Manual run" }) }),
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "btn btn--active btn--sm",
+              onClick: handleRunNow,
+              disabled: running || status === null,
+              children: running ? "..." : "Run Now"
+            }
+          ),
+          runError && /* @__PURE__ */ u3("span", { className: "settings-view__feedback settings-view__feedback--error", children: runError })
+        ] })
+      ] })
+    ] })
+  ] });
+}
+function SettingsView(props) {
+  const { settings, onSave } = props;
+  const [protectedBranches, setProtectedBranches] = d2("");
+  const [quietHours, setQuietHours] = d2("");
+  const [saving, setSaving] = d2(null);
+  const [feedback, setFeedback] = d2(null);
+  const feedbackTimer = A2(null);
+  const initialized = A2(false);
+  const quietInitialized = A2(false);
+  y2(() => {
+    if (typeof settings.protected_branches === "string" && !initialized.current) {
+      setProtectedBranches(settings.protected_branches);
+      initialized.current = true;
+    }
+  }, [settings.protected_branches]);
+  y2(() => {
+    if (typeof settings.quiet_hours === "string" && !quietInitialized.current) {
+      setQuietHours(settings.quiet_hours);
+      quietInitialized.current = true;
+    }
+  }, [settings.quiet_hours]);
+  const showFeedback = q2((state) => {
+    if (feedbackTimer.current != null)
+      window.clearTimeout(feedbackTimer.current);
+    setFeedback(state);
+    if (state) {
+      feedbackTimer.current = window.setTimeout(() => {
+        setFeedback(null);
+        feedbackTimer.current = null;
+      }, 3e3);
+    }
+  }, []);
+  const handleSaveField = q2(async (key2, value) => {
+    setSaving(key2);
+    try {
+      await onSave(key2, value);
+      showFeedback({ type: "success", message: "Saved" });
+    } catch (err) {
+      showFeedback({ type: "error", message: err instanceof Error ? err.message : "Failed" });
+    } finally {
+      setSaving(null);
+    }
+  }, [onSave, showFeedback]);
+  const handleKeyDown = q2(
+    (key2, value) => (e3) => {
+      if (e3.key === "Enter" && (e3.metaKey || e3.ctrlKey))
+        void handleSaveField(key2, value);
+    },
+    [handleSaveField]
+  );
+  return /* @__PURE__ */ u3("div", { className: "settings-view", children: [
+    /* @__PURE__ */ u3("div", { className: "view-header", children: /* @__PURE__ */ u3("div", { children: [
+      /* @__PURE__ */ u3("h2", { children: "Settings" }),
+      /* @__PURE__ */ u3("div", { className: "text-muted", children: "Mandible configuration." })
+    ] }) }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+        /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Notifications" }),
+        /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Desktop alerts when AI tools finish and are waiting for input." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: [
+        /* @__PURE__ */ u3(
+          ToggleRow,
+          {
+            title: "Claude notifications",
+            desc: "Show desktop notification when Claude Code stops.",
+            settingKey: "claude_notifications_enabled",
+            settings,
+            onSave
+          }
+        ),
+        /* @__PURE__ */ u3(
+          ToggleRow,
+          {
+            title: "Codex notifications",
+            desc: "Show desktop notification when Codex CLI stops.",
+            settingKey: "codex_notifications_enabled",
+            settings,
+            onSave
+          }
+        ),
+        /* @__PURE__ */ u3(
+          SelectInput,
+          {
+            label: "Sound",
+            desc: "macOS notification sound",
+            settingKey: "notification_sound",
+            settings,
+            onSave,
+            options: SOUNDS
+          }
+        ),
+        /* @__PURE__ */ u3("div", { className: "settings-view__text-row", children: [
+          /* @__PURE__ */ u3("div", { className: "settings-view__text-info", children: [
+            /* @__PURE__ */ u3("span", { className: "settings-view__text-label", children: "Quiet hours" }),
+            /* @__PURE__ */ u3("span", { className: "settings-view__text-desc", children: "Suppress notifications during this window (HH:MM-HH:MM)" })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "settings-view__text-controls", children: [
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "text",
+                className: "settings-view__input settings-view__input--narrow",
+                value: quietHours,
+                onInput: (e3) => setQuietHours(e3.target.value),
+                onKeyDown: handleKeyDown("quiet_hours", quietHours),
+                placeholder: "22:00-08:00",
+                disabled: saving === "quiet_hours"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "btn btn--active btn--sm",
+                onClick: () => void handleSaveField("quiet_hours", quietHours),
+                disabled: saving === "quiet_hours",
+                children: saving === "quiet_hours" ? "..." : "Save"
+              }
+            )
+          ] })
+        ] })
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+        /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Process Management" }),
+        /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Automatic cleanup of idle AI processes in multiplexer panes." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: [
+        /* @__PURE__ */ u3(
+          ToggleRow,
+          {
+            title: "Reaper",
+            desc: "Automatically terminate idle Claude/Codex processes.",
+            settingKey: "reaper_enabled",
+            settings,
+            onSave
+          }
+        ),
+        /* @__PURE__ */ u3(
+          NumberInput,
+          {
+            label: "Claude idle threshold",
+            desc: "",
+            settingKey: "reaper_claude_idle_minutes",
+            settings,
+            onSave,
+            min: 5,
+            max: 480,
+            suffix: "min"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          NumberInput,
+          {
+            label: "Codex idle threshold",
+            desc: "",
+            settingKey: "reaper_codex_idle_minutes",
+            settings,
+            onSave,
+            min: 5,
+            max: 480,
+            suffix: "min"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          ToggleRow,
+          {
+            title: "Dry run",
+            desc: "Log what would be reaped without actually terminating.",
+            settingKey: "reaper_dry_run",
+            settings,
+            onSave
+          }
+        ),
+        /* @__PURE__ */ u3(
+          ToggleRow,
+          {
+            title: "Cleanup orphan MCPs",
+            desc: "Terminate MCP server processes whose parent has exited.",
+            settingKey: "reaper_cleanup_orphan_mcps",
+            settings,
+            onSave
+          }
+        )
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+        /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Agent Hooks" }),
+        /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "PreToolUse safety hooks and subagent behavior." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: [
+        /* @__PURE__ */ u3(
+          ToggleRow,
+          {
+            title: "PreToolUse hooks",
+            desc: "Safety hooks that block dangerous git operations (merge into protected branch, raw commit, etc).",
+            settingKey: "pretool_hooks_enabled",
+            settings,
+            onSave,
+            warning: "Disabling hooks removes safety guards. Agents may execute dangerous operations unchecked."
+          }
+        ),
+        /* @__PURE__ */ u3(
+          ToggleRow,
+          {
+            title: "Subagent panes",
+            desc: "Spawn Zellij panes for subagent output streams. Requires Zellij and a working zj-control plugin.",
+            settingKey: "subagent_panes_enabled",
+            settings,
+            onSave
+          }
+        )
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+        /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Appearance" }),
+        /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Shell theme, prompt, and multiplexer. Changes take effect in new shell sessions." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: [
+        /* @__PURE__ */ u3(
+          SelectInput,
+          {
+            label: "Theme",
+            desc: "Color theme for Neovim, Zellij, and tmux",
+            settingKey: "theme",
+            settings,
+            onSave,
+            options: THEMES,
+            requiresRestart: true
+          }
+        ),
+        /* @__PURE__ */ u3(
+          SelectInput,
+          {
+            label: "Prompt",
+            desc: "Shell prompt engine",
+            settingKey: "prompt",
+            settings,
+            onSave,
+            options: PROMPTS,
+            requiresRestart: true
+          }
+        ),
+        /* @__PURE__ */ u3(
+          SelectInput,
+          {
+            label: "Multiplexer",
+            desc: "Terminal multiplexer preference",
+            settingKey: "multiplexer",
+            settings,
+            onSave,
+            options: MULTIPLEXERS,
+            requiresRestart: true
+          }
+        )
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+        /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Version Control" }),
+        /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Comma-separated branch names that are pinned in the Work tab and used as the baseline for ahead/behind counts." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__field", children: [
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "text",
+            className: "settings-view__input",
+            value: protectedBranches,
+            onInput: (e3) => setProtectedBranches(e3.target.value),
+            onKeyDown: handleKeyDown("protected_branches", protectedBranches),
+            placeholder: "main, develop",
+            disabled: saving === "protected_branches"
+          }
+        ),
+        /* @__PURE__ */ u3("div", { className: "settings-view__field-actions", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "btn btn--active",
+              onClick: () => void handleSaveField("protected_branches", protectedBranches),
+              disabled: saving === "protected_branches",
+              children: saving === "protected_branches" ? "Saving..." : "Save"
+            }
+          ),
+          feedback && /* @__PURE__ */ u3(
+            "span",
+            {
+              className: feedback.type === "success" ? "settings-view__feedback settings-view__feedback--success" : "settings-view__feedback settings-view__feedback--error",
+              children: feedback.message
+            }
+          )
+        ] })
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+        /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Maintenance" }),
+        /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Log retention and housekeeping." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: /* @__PURE__ */ u3(
+        NumberInput,
+        {
+          label: "Log retention",
+          desc: "Days to keep Mandible logs",
+          settingKey: "log_retention_days",
+          settings,
+          onSave,
+          min: 1,
+          max: 365,
+          suffix: "days"
+        }
+      ) })
+    ] }),
+    /* @__PURE__ */ u3(BackupSection, {})
+  ] });
+}
+
+// ui/src/views/switchboard.tsx
+function abbreviatePath(p3) {
+  const parts = p3.split("/");
+  if (parts.length > 4) {
+    return "\u2026/" + parts.slice(-3).join("/");
+  }
+  return p3;
+}
+function stateIcon(state) {
+  switch (state) {
+    case "linked":
+      return "\u26A1";
+    case "unlinked":
+      return "\u25CB";
+    case "broken":
+      return "\u26A0";
+    case "conflict":
+      return "\u2715";
+  }
+}
+function stateColor(state) {
+  switch (state) {
+    case "linked":
+      return "var(--accent-green)";
+    case "unlinked":
+      return "var(--text-muted)";
+    case "broken":
+      return "var(--accent-red)";
+    case "conflict":
+      return "var(--accent-yellow)";
+  }
+}
+function stateFontWeight(state) {
+  return state === "linked" ? "600" : "400";
+}
+var inputStyle = {
+  background: "rgba(255,255,255,0.04)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: "6px",
+  padding: "6px 10px",
+  color: "var(--text-primary)",
+  fontSize: "13px",
+  width: "100%"
+};
+function SwitchboardView({
+  pairings,
+  selectedPairing,
+  items,
+  itemsLoading,
+  consistencyErrors,
+  templates,
+  onSelectPairing,
+  onAddPairing,
+  onUpdatePairing,
+  onDeletePairing,
+  onToggleItem,
+  onSync,
+  onSaveTemplate
+}) {
+  const [formName, setFormName] = d2("");
+  const [formSource, setFormSource] = d2("");
+  const [formTarget, setFormTarget] = d2("");
+  const [formHookSetup, setFormHookSetup] = d2("");
+  const [formHookTeardown, setFormHookTeardown] = d2("");
+  const [advancedOpen, setAdvancedOpen] = d2(false);
+  const [formError, setFormError] = d2(null);
+  const [formInFlight, setFormInFlight] = d2(false);
+  const DEFAULT_TEMPLATE_ID = "mll-bio-draft";
+  const [selectedTemplateId, setSelectedTemplateId] = d2(DEFAULT_TEMPLATE_ID);
+  const [syncInFlight, setSyncInFlight] = d2(false);
+  const [syncErrors, setSyncErrors] = d2([]);
+  const [toggleError, setToggleError] = d2(null);
+  const [pendingItems, setPendingItems] = d2(/* @__PURE__ */ new Set());
+  const [openDropdown, setOpenDropdown] = d2(null);
+  const dropdownRef = A2(null);
+  const selected = pairings.find((p3) => p3.name === selectedPairing) ?? null;
+  const isEditMode = selectedPairing !== null;
+  y2(() => {
+    if (selected) {
+      setFormName(selected.name);
+      setFormSource(selected.source);
+      setFormTarget(selected.target);
+      setFormHookSetup(selected.hook_setup ?? "");
+      setFormHookTeardown(selected.hook_teardown ?? "");
+      if (!selected.hook_setup && !selected.hook_teardown) {
+        setSelectedTemplateId(DEFAULT_TEMPLATE_ID);
+      } else {
+        setSelectedTemplateId("");
+      }
+    } else {
+      setFormName("");
+      setFormSource("");
+      setFormTarget("");
+      setFormHookSetup("");
+      setFormHookTeardown("");
+      setSelectedTemplateId(DEFAULT_TEMPLATE_ID);
+    }
+    setFormError(null);
+    setAdvancedOpen(false);
+  }, [selectedPairing]);
+  y2(() => {
+    if (!openDropdown)
+      return;
+    const handleClickOutside = (e3) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e3.target)) {
+        setOpenDropdown(null);
+      }
+    };
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, [openDropdown]);
+  const handleApplyTemplate = () => {
+    if (!selectedTemplateId)
+      return;
+    const tpl = templates.find((t3) => t3.id === selectedTemplateId);
+    if (!tpl)
+      return;
+    setFormHookSetup(tpl.hook_setup ?? "");
+    setFormHookTeardown(tpl.hook_teardown ?? "");
+  };
+  const handleSaveAsTemplate = async () => {
+    const name = window.prompt("Template name:");
+    if (!name || !name.trim())
+      return;
+    try {
+      await onSaveTemplate(name.trim(), formHookSetup, formHookTeardown);
+    } catch (err) {
+      window.alert(`Failed to save template: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const handleFormSubmit = async () => {
+    if (!formSource.trim() || !formTarget.trim()) {
+      setFormError("Source and target are required");
+      return;
+    }
+    setFormInFlight(true);
+    setFormError(null);
+    const hooks = {};
+    if (formHookSetup.trim())
+      hooks.hook_setup = formHookSetup.trim();
+    if (formHookTeardown.trim())
+      hooks.hook_teardown = formHookTeardown.trim();
+    try {
+      if (isEditMode && selectedPairing) {
+        await onUpdatePairing(selectedPairing, formSource.trim(), formTarget.trim(), hooks);
+      } else {
+        if (!formName.trim()) {
+          setFormError("Name is required");
+          setFormInFlight(false);
+          return;
+        }
+        await onAddPairing(formName.trim(), formSource.trim(), formTarget.trim(), hooks);
+        setFormName("");
+        setFormSource("");
+        setFormTarget("");
+        setFormHookSetup("");
+        setFormHookTeardown("");
+        setAdvancedOpen(false);
+      }
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFormInFlight(false);
+    }
+  };
+  const handleDeleteWithConfirm = async (name) => {
+    setOpenDropdown(null);
+    if (!window.confirm(`Delete pairing "${name}"?`))
+      return;
+    await onDeletePairing(name);
+  };
+  const handleToggle = async (itemName, state) => {
+    if (state === "conflict") {
+      setToggleError(`Cannot toggle "${itemName}": a real file exists at the target path. Resolve manually.`);
+      return;
+    }
+    if (!selectedPairing)
+      return;
+    if (pendingItems.has(itemName))
+      return;
+    setToggleError(null);
+    setPendingItems((prev) => new Set(prev).add(itemName));
+    try {
+      await onToggleItem(selectedPairing, itemName);
+    } catch (err) {
+      setToggleError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingItems((prev) => {
+        const next = new Set(prev);
+        next.delete(itemName);
+        return next;
+      });
+    }
+  };
+  const handleSync = async () => {
+    if (!selectedPairing)
+      return;
+    setSyncInFlight(true);
+    setSyncErrors([]);
+    try {
+      await onSync(selectedPairing);
+    } catch (err) {
+      setSyncErrors([err instanceof Error ? err.message : String(err)]);
+    } finally {
+      setSyncInFlight(false);
+    }
+  };
+  const stateCounts = items.reduce((acc, item) => {
+    acc[item.state] = (acc[item.state] ?? 0) + 1;
+    return acc;
+  }, {});
+  return /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "24px", height: "calc(100vh - 140px)" }, children: [
+    /* @__PURE__ */ u3("div", { style: {
+      width: "280px",
+      flexShrink: 0,
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px"
+    }, children: [
+      /* @__PURE__ */ u3("div", { className: "view-header", style: { marginBottom: "8px" }, children: /* @__PURE__ */ u3("h2", { style: { margin: 0, fontSize: "18px" }, children: "Switchboard" }) }),
+      /* @__PURE__ */ u3("div", { style: {
+        flex: 1,
+        overflowY: "auto",
+        display: "flex",
+        flexDirection: "column",
+        gap: "4px"
+      }, children: pairings.length === 0 ? /* @__PURE__ */ u3("div", { className: "text-muted", style: { padding: "12px 0", fontSize: "13px" }, children: "No pairings yet. Add one below." }) : pairings.map((pairing) => {
+        const isSelected = pairing.name === selectedPairing;
+        const isDropdownOpen = openDropdown === pairing.name;
+        return /* @__PURE__ */ u3(
+          "div",
+          {
+            style: { position: "relative" },
+            className: "pairing-item-wrapper",
+            children: [
+              /* @__PURE__ */ u3(
+                "button",
+                {
+                  type: "button",
+                  onClick: () => onSelectPairing(isSelected ? null : pairing.name),
+                  style: {
+                    display: "flex",
+                    alignItems: "flex-start",
+                    justifyContent: "space-between",
+                    padding: "10px 12px",
+                    paddingRight: "36px",
+                    background: isSelected ? "var(--bg-card)" : "rgba(255,255,255,0.03)",
+                    border: "1px solid",
+                    borderColor: isSelected ? "rgba(77,163,255,0.3)" : "rgba(255,255,255,0.05)",
+                    borderRadius: "10px",
+                    cursor: "pointer",
+                    color: "var(--text-primary)",
+                    textAlign: "left",
+                    width: "100%",
+                    gap: "8px"
+                  },
+                  children: /* @__PURE__ */ u3("div", { style: { flex: 1, minWidth: 0 }, children: [
+                    /* @__PURE__ */ u3("div", { style: {
+                      fontWeight: 500,
+                      fontSize: "14px",
+                      color: isSelected ? "var(--accent-blue)" : "var(--text-primary)",
+                      marginBottom: "4px",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap"
+                    }, children: pairing.name }),
+                    /* @__PURE__ */ u3("div", { style: {
+                      fontSize: "11px",
+                      color: "var(--text-muted)",
+                      fontFamily: "var(--font-mono)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap"
+                    }, children: [
+                      abbreviatePath(pairing.source),
+                      " \u2192 ",
+                      abbreviatePath(pairing.target)
+                    ] })
+                  ] })
+                }
+              ),
+              /* @__PURE__ */ u3(
+                "div",
+                {
+                  ref: isDropdownOpen ? dropdownRef : void 0,
+                  style: { position: "absolute", right: "6px", top: "50%", transform: "translateY(-50%)" },
+                  children: [
+                    /* @__PURE__ */ u3(
+                      "button",
+                      {
+                        type: "button",
+                        className: "pairing-ellipsis-btn",
+                        title: "More options",
+                        onClick: (e3) => {
+                          e3.stopPropagation();
+                          setOpenDropdown(isDropdownOpen ? null : pairing.name);
+                        },
+                        style: {
+                          background: "none",
+                          border: "none",
+                          color: "var(--text-muted)",
+                          cursor: "pointer",
+                          padding: "4px 6px",
+                          fontSize: "16px",
+                          lineHeight: 1,
+                          borderRadius: "4px",
+                          opacity: isDropdownOpen ? 1 : void 0
+                        },
+                        children: "\u22EF"
+                      }
+                    ),
+                    isDropdownOpen && /* @__PURE__ */ u3("div", { style: {
+                      position: "absolute",
+                      right: 0,
+                      top: "100%",
+                      marginTop: "4px",
+                      background: "var(--bg-card)",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: "8px",
+                      padding: "4px",
+                      zIndex: 100,
+                      minWidth: "140px",
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.4)"
+                    }, children: /* @__PURE__ */ u3(
+                      "button",
+                      {
+                        type: "button",
+                        onClick: () => handleDeleteWithConfirm(pairing.name),
+                        style: {
+                          display: "block",
+                          width: "100%",
+                          textAlign: "left",
+                          background: "none",
+                          border: "none",
+                          color: "var(--accent-red)",
+                          cursor: "pointer",
+                          padding: "6px 10px",
+                          fontSize: "13px",
+                          borderRadius: "5px"
+                        },
+                        onMouseEnter: (e3) => {
+                          e3.currentTarget.style.background = "rgba(242,107,107,0.1)";
+                        },
+                        onMouseLeave: (e3) => {
+                          e3.currentTarget.style.background = "none";
+                        },
+                        children: "Delete pairing"
+                      }
+                    ) })
+                  ]
+                }
+              )
+            ]
+          },
+          pairing.name
+        );
+      }) }),
+      /* @__PURE__ */ u3("div", { style: {
+        background: "var(--bg-card)",
+        borderRadius: "12px",
+        padding: "14px",
+        border: "1px solid rgba(255,255,255,0.05)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "8px"
+      }, children: [
+        /* @__PURE__ */ u3("div", { style: { fontSize: "12px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }, children: isEditMode ? "Edit Pairing" : "Add Pairing" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "text",
+            placeholder: "Name",
+            value: formName,
+            disabled: isEditMode,
+            onInput: (e3) => setFormName(e3.currentTarget.value),
+            style: {
+              ...inputStyle,
+              opacity: isEditMode ? 0.5 : 1,
+              cursor: isEditMode ? "default" : void 0
+            }
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "text",
+            placeholder: "Source directory",
+            value: formSource,
+            onInput: (e3) => setFormSource(e3.currentTarget.value),
+            style: { ...inputStyle, fontFamily: "var(--font-mono)" }
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "text",
+            placeholder: "Target directory",
+            value: formTarget,
+            onInput: (e3) => setFormTarget(e3.currentTarget.value),
+            style: { ...inputStyle, fontFamily: "var(--font-mono)" }
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            onClick: () => setAdvancedOpen((v3) => !v3),
+            style: {
+              background: "none",
+              border: "none",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: "11px",
+              padding: "2px 0",
+              textAlign: "left",
+              letterSpacing: "0.03em"
+            },
+            children: [
+              advancedOpen ? "\u25BE" : "\u25B8",
+              " Advanced"
+            ]
+          }
+        ),
+        advancedOpen && /* @__PURE__ */ u3("div", { style: { display: "flex", flexDirection: "column", gap: "6px" }, children: [
+          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }, children: [
+            /* @__PURE__ */ u3("div", { style: { fontSize: "11px", color: "var(--text-muted)", flexShrink: 0 }, children: "Template:" }),
+            /* @__PURE__ */ u3(
+              "select",
+              {
+                value: selectedTemplateId,
+                onChange: (e3) => setSelectedTemplateId(e3.currentTarget.value),
+                style: {
+                  flex: 1,
+                  minWidth: 0,
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: "6px",
+                  padding: "4px 8px",
+                  color: "var(--text-primary)",
+                  fontSize: "12px"
+                },
+                children: [
+                  /* @__PURE__ */ u3("option", { value: "", children: "\u2014 select a template \u2014" }),
+                  templates.map((tpl) => /* @__PURE__ */ u3("option", { value: tpl.id, children: [
+                    tpl.name,
+                    tpl.builtin ? " (built-in)" : ""
+                  ] }, tpl.id))
+                ]
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                onClick: handleApplyTemplate,
+                disabled: !selectedTemplateId,
+                style: {
+                  background: "rgba(77,163,255,0.15)",
+                  border: "1px solid rgba(77,163,255,0.3)",
+                  borderRadius: "5px",
+                  color: "var(--accent-blue)",
+                  cursor: selectedTemplateId ? "pointer" : "not-allowed",
+                  fontSize: "11px",
+                  padding: "4px 8px",
+                  flexShrink: 0,
+                  opacity: selectedTemplateId ? 1 : 0.5
+                },
+                children: "Apply"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                onClick: handleSaveAsTemplate,
+                style: {
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "5px",
+                  color: "var(--text-muted)",
+                  cursor: "pointer",
+                  fontSize: "11px",
+                  padding: "4px 8px",
+                  flexShrink: 0
+                },
+                children: "Save as template\u2026"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ u3("div", { style: { fontSize: "11px", color: "var(--text-muted)" }, children: "On link (setup hook)" }),
+          /* @__PURE__ */ u3(
+            "textarea",
+            {
+              placeholder: "Shell command run after linking an item",
+              value: formHookSetup,
+              onInput: (e3) => setFormHookSetup(e3.currentTarget.value),
+              rows: 3,
+              style: {
+                ...inputStyle,
+                fontFamily: "monospace",
+                resize: "vertical",
+                minHeight: "56px"
+              }
+            }
+          ),
+          /* @__PURE__ */ u3("div", { style: { fontSize: "11px", color: "var(--text-muted)" }, children: "On unlink (teardown hook)" }),
+          /* @__PURE__ */ u3(
+            "textarea",
+            {
+              placeholder: "Shell command run after unlinking an item",
+              value: formHookTeardown,
+              onInput: (e3) => setFormHookTeardown(e3.currentTarget.value),
+              rows: 3,
+              style: {
+                ...inputStyle,
+                fontFamily: "monospace",
+                resize: "vertical",
+                minHeight: "56px"
+              }
+            }
+          )
+        ] }),
+        formError && /* @__PURE__ */ u3("div", { style: { fontSize: "12px", color: "var(--accent-red)" }, children: formError }),
+        /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "8px", alignItems: "center" }, children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "btn",
+              disabled: formInFlight,
+              onClick: handleFormSubmit,
+              style: { flex: 1, justifyContent: "center" },
+              children: formInFlight ? isEditMode ? "Updating\u2026" : "Adding\u2026" : isEditMode ? "Update Pairing" : "Add"
+            }
+          ),
+          isEditMode && /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              onClick: () => onSelectPairing(null),
+              style: {
+                background: "none",
+                border: "none",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+                fontSize: "13px",
+                padding: "6px 4px",
+                textDecoration: "underline",
+                flexShrink: 0
+              },
+              children: "Cancel"
+            }
+          )
+        ] })
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "12px" }, children: !selectedPairing ? /* @__PURE__ */ u3("div", { style: {
+      flex: 1,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }, children: /* @__PURE__ */ u3("div", { className: "text-muted", style: { textAlign: "center" }, children: "Select a pairing to view and manage its items" }) }) : /* @__PURE__ */ u3(k, { children: [
+      /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "16px" }, children: [
+        /* @__PURE__ */ u3("div", { children: [
+          /* @__PURE__ */ u3("h2", { style: { margin: "0 0 4px", fontSize: "18px" }, children: selected?.name ?? selectedPairing }),
+          selected && /* @__PURE__ */ u3("div", { style: { fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }, children: [
+            selected.source,
+            " \u2192 ",
+            selected.target
+          ] })
+        ] }),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn",
+            disabled: syncInFlight,
+            onClick: handleSync,
+            style: { flexShrink: 0 },
+            children: syncInFlight ? "Syncing\u2026" : "Sync"
+          }
+        )
+      ] }),
+      syncErrors.length > 0 && /* @__PURE__ */ u3("div", { style: {
+        background: "rgba(242,107,107,0.1)",
+        border: "1px solid rgba(242,107,107,0.2)",
+        borderRadius: "8px",
+        padding: "10px 14px",
+        fontSize: "13px",
+        color: "var(--accent-red)"
+      }, children: [
+        /* @__PURE__ */ u3("strong", { children: "Sync errors:" }),
+        /* @__PURE__ */ u3("ul", { style: { margin: "4px 0 0", padding: "0 0 0 16px" }, children: syncErrors.map((e3, i4) => /* @__PURE__ */ u3("li", { children: e3 }, i4)) })
+      ] }),
+      toggleError && /* @__PURE__ */ u3("div", { style: {
+        background: "rgba(245,194,92,0.1)",
+        border: "1px solid rgba(245,194,92,0.2)",
+        borderRadius: "8px",
+        padding: "10px 14px",
+        fontSize: "13px",
+        color: "var(--accent-yellow)"
+      }, children: toggleError }),
+      /* @__PURE__ */ u3("div", { style: {
+        flex: 1,
+        overflowY: "auto",
+        background: "var(--bg-card)",
+        borderRadius: "14px",
+        border: "1px solid rgba(255,255,255,0.04)",
+        display: "flex",
+        flexDirection: "column"
+      }, children: itemsLoading ? /* @__PURE__ */ u3("div", { style: { padding: "32px", textAlign: "center" }, className: "text-muted", children: "Loading\u2026" }) : items.length === 0 ? /* @__PURE__ */ u3("div", { style: { padding: "32px", textAlign: "center" }, className: "text-muted", children: "No items in source directory" }) : items.map((item) => {
+        const isPending = pendingItems.has(item.name);
+        return /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            onClick: () => handleToggle(item.name, item.state),
+            disabled: isPending,
+            title: isPending ? "Working\u2026" : item.state === "conflict" ? "Conflict: real file exists at target. Cannot toggle." : `Click to ${item.state === "linked" ? "unlink" : "link"}`,
+            style: {
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
+              padding: "10px 16px",
+              background: "none",
+              border: "none",
+              borderBottom: "1px solid rgba(255,255,255,0.04)",
+              cursor: isPending || item.state === "conflict" ? "not-allowed" : "pointer",
+              textAlign: "left",
+              width: "100%",
+              color: isPending ? "var(--text-muted)" : stateColor(item.state),
+              fontWeight: stateFontWeight(item.state),
+              fontSize: "14px",
+              fontFamily: "var(--font-mono)",
+              transition: "background 0.15s ease",
+              opacity: isPending ? 0.6 : 1
+            },
+            onMouseEnter: (e3) => {
+              if (!isPending && item.state !== "conflict") {
+                e3.currentTarget.style.background = "rgba(255,255,255,0.04)";
+              }
+            },
+            onMouseLeave: (e3) => {
+              e3.currentTarget.style.background = "none";
+            },
+            children: [
+              /* @__PURE__ */ u3("span", { style: { width: "18px", textAlign: "center", flexShrink: 0 }, children: isPending ? "\u2026" : stateIcon(item.state) }),
+              /* @__PURE__ */ u3("span", { style: { flex: 1 }, children: [
+                item.name,
+                item.is_dir ? "/" : ""
+              ] }),
+              /* @__PURE__ */ u3("span", { style: { fontSize: "11px", color: "var(--text-muted)", fontFamily: "var(--font-sans)" }, children: isPending ? "working\u2026" : item.state })
+            ]
+          },
+          item.name
+        );
+      }) }),
+      !itemsLoading && items.length > 0 && /* @__PURE__ */ u3("div", { style: { fontSize: "12px", color: "var(--text-muted)", display: "flex", gap: "16px" }, children: ["linked", "unlinked", "broken", "conflict"].filter((s3) => (stateCounts[s3] ?? 0) > 0).map((s3) => /* @__PURE__ */ u3("span", { style: { color: stateColor(s3) }, children: [
+        stateCounts[s3],
+        " ",
+        s3
+      ] }, s3)) }),
+      consistencyErrors && consistencyErrors.length > 0 && /* @__PURE__ */ u3("div", { style: { fontSize: "12px", color: "var(--accent-yellow)" }, children: [
+        "Hook errors on load:",
+        " ",
+        consistencyErrors.map((e3, i4) => /* @__PURE__ */ u3("span", { children: [
+          i4 > 0 && ", ",
+          /* @__PURE__ */ u3("strong", { children: e3.item }),
+          ": ",
+          e3.error
+        ] }, i4))
+      ] })
+    ] }) }),
+    /* @__PURE__ */ u3("style", { children: `
+        .pairing-item-wrapper .pairing-ellipsis-btn {
+          opacity: 0;
+          transition: opacity 0.15s ease;
+        }
+        .pairing-item-wrapper:hover .pairing-ellipsis-btn {
+          opacity: 1;
+        }
+      ` })
+  ] });
+}
+
+// ui/src/views/work.tsx
+var PROTECTED_BRANCHES = /* @__PURE__ */ new Set(["main", "develop"]);
+function getRepoId2(repo) {
+  return repo.id || repo.name || "";
+}
+function getRepoTitle(repo, repoId) {
+  const root = repo.root || repo.path || "";
+  const base = root ? root.split(/[\\/]/).filter(Boolean).pop() : "";
+  return repo.name || base || repoId || "Unknown repo";
+}
+function getRepoPath(repo) {
+  return repo.root || repo.path || null;
+}
+function getBranchName2(branch) {
+  return branch.name || branch.branch || "\u2014";
+}
+function getWorktreePath(branch) {
+  const p3 = branch.worktree || branch.worktree_path;
+  return p3 || null;
+}
+function isDirty(branch) {
+  if (typeof branch.dirty === "boolean") {
+    return branch.dirty;
+  }
+  return branch.status ? branch.status.toLowerCase() === "dirty" : false;
+}
+function isProtectedBranch(branch) {
+  return PROTECTED_BRANCHES.has(getBranchName2(branch));
+}
+function getLastCommitDate(branch) {
+  return branch.last_commit?.date || branch.last_commit?.time || branch.last_commit_date || branch.last_commit_time || void 0;
+}
+function getBranchTimestamp(branch) {
+  const value = getLastCommitDate(branch);
+  if (!value) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+function formatRelativeTime6(value) {
+  if (!value) {
+    return "\u2014";
+  }
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return value;
+  }
+  const delta = Date.now() - parsed;
+  if (delta < 0) {
+    return "just now";
+  }
+  const seconds = Math.floor(delta / 1e3);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 1) {
+    return `${days}d ago`;
+  }
+  if (days === 1) {
+    return "yesterday";
+  }
+  if (hours > 0) {
+    return `${hours}h ago`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ago`;
+  }
+  return `${seconds}s ago`;
+}
+function sortBranches(branches, sortKey) {
+  const pinned = [];
+  const rest = [];
+  for (const branch of branches) {
+    if (isProtectedBranch(branch)) {
+      pinned.push(branch);
+    } else {
+      rest.push(branch);
+    }
+  }
+  pinned.sort((a3, b) => getBranchName2(a3).localeCompare(getBranchName2(b)));
+  rest.sort((a3, b) => {
+    if (sortKey === "name") {
+      return getBranchName2(a3).localeCompare(getBranchName2(b));
+    }
+    if (sortKey === "ahead") {
+      const aScore = (a3.ahead_default ?? a3.ahead ?? 0) + (a3.behind_default ?? a3.behind ?? 0);
+      const bScore = (b.ahead_default ?? b.ahead ?? 0) + (b.behind_default ?? b.behind ?? 0);
+      if (aScore !== bScore) {
+        return bScore - aScore;
+      }
+    }
+    const recencyDelta = getBranchTimestamp(b) - getBranchTimestamp(a3);
+    if (recencyDelta !== 0) {
+      return recencyDelta;
+    }
+    return getBranchName2(a3).localeCompare(getBranchName2(b));
+  });
+  return [...pinned, ...rest];
+}
+function useDebounce(value, delayMs) {
+  const [debounced, setDebounced] = d2(value);
+  y2(() => {
+    const handle = setTimeout(() => setDebounced(value.trim()), delayMs);
+    return () => clearTimeout(handle);
+  }, [value, delayMs]);
+  return debounced;
+}
+function copyToClipboard2(text) {
+  void navigator.clipboard.writeText(text);
+}
+function BranchContextMenu({
+  branch,
+  anchorRef
+}) {
+  const [open, setOpen] = d2(false);
+  const menuRef = A2(null);
+  y2(() => {
+    if (!open)
+      return;
+    const handler = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+  const branchName = getBranchName2(branch);
+  const wtPath = getWorktreePath(branch);
+  const actions = [
+    {
+      label: "Copy branch name",
+      onClick: () => {
+        copyToClipboard2(branchName);
+        setOpen(false);
+      }
+    },
+    {
+      label: "Copy path",
+      show: wtPath !== null,
+      onClick: () => {
+        if (wtPath)
+          copyToClipboard2(wtPath);
+        setOpen(false);
+      }
+    },
+    {
+      label: "Open in Finder",
+      show: wtPath !== null,
+      onClick: () => {
+        if (wtPath)
+          void openPath(wtPath);
+        setOpen(false);
+      }
+    }
+  ];
+  const visibleActions = actions.filter((a3) => a3.show !== false);
+  return /* @__PURE__ */ u3("span", { className: "work-actions", ref: anchorRef, children: [
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "work-actions__trigger",
+        onClick: (e3) => {
+          e3.stopPropagation();
+          setOpen(!open);
+        },
+        title: "Actions",
+        children: "\u2026"
+      }
+    ),
+    open ? /* @__PURE__ */ u3("div", { ref: menuRef, className: "work-actions__menu", children: visibleActions.map((action) => /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "work-actions__item",
+        onClick: (e3) => {
+          e3.stopPropagation();
+          action.onClick();
+        },
+        children: action.label
+      },
+      action.label
+    )) }) : null
+  ] });
+}
+function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, onToggle }) {
+  const anchorRef = A2(null);
+  const branchName = getBranchName2(branch);
+  const dirty = isDirty(branch);
+  const ahead = branch.ahead ?? 0;
+  const behind = branch.behind ?? 0;
+  const aheadDefault = branch.ahead_default ?? 0;
+  const behindDefault = branch.behind_default ?? 0;
+  const hasUpstream = typeof branch.has_upstream === "boolean" ? branch.has_upstream : Boolean(branch.upstream);
+  const upstreamName = branch.upstream ?? "";
+  const upstreamTitle = upstreamName ? `Upstream: ${upstreamName}` : void 0;
+  const lastMessage = branch.last_commit?.message || branch.last_commit_message || "\u2014";
+  const lastTime = getLastCommitDate(branch);
+  const expandKey = `${repoId}:${branchName}`;
+  const isExpanded = expanded.has(expandKey);
+  const diffStat = branch.diff_stat;
+  const isPinned = isProtectedBranch(branch);
+  return /* @__PURE__ */ u3(k, { children: [
+    /* @__PURE__ */ u3("tr", { className: isPinned ? "work-row--pinned" : "", children: [
+      /* @__PURE__ */ u3("td", { children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `tree-toggle ${diffStat ? "" : "tree-toggle--empty"}`,
+            onClick: () => diffStat && onToggle(repoId, branchName),
+            children: diffStat ? isExpanded ? "\u25BE" : "\u25B8" : ""
+          }
+        ),
+        /* @__PURE__ */ u3("span", { className: "branch-name", children: branchName }),
+        isPinned ? /* @__PURE__ */ u3("span", { className: "work-badge-default", title: "Protected branch", children: "default" }) : null
+      ] }),
+      /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3(
+        "span",
+        {
+          className: `status-pill ${dirty ? "status-pill--dirty" : "status-pill--clean"}`,
+          children: dirty ? "Dirty" : "Clean"
+        }
+      ) }),
+      /* @__PURE__ */ u3("td", { children: isPinned ? /* @__PURE__ */ u3("span", { className: "text-muted", children: "\u2014" }) : aheadDefault === 0 && behindDefault === 0 ? /* @__PURE__ */ u3("span", { className: "text-muted", children: "even" }) : /* @__PURE__ */ u3("span", { className: "ahead-behind", children: [
+        /* @__PURE__ */ u3("span", { className: "ahead", children: [
+          "\u2191",
+          aheadDefault
+        ] }),
+        /* @__PURE__ */ u3("span", { className: "behind", children: [
+          "\u2193",
+          behindDefault
+        ] })
+      ] }) }),
+      /* @__PURE__ */ u3("td", { children: hasUpstream ? /* @__PURE__ */ u3("span", { className: "ahead-behind", title: upstreamTitle, children: [
+        /* @__PURE__ */ u3("span", { className: "ahead", children: [
+          "\u2191",
+          ahead
+        ] }),
+        /* @__PURE__ */ u3("span", { className: "behind", children: [
+          "\u2193",
+          behind
+        ] })
+      ] }) : /* @__PURE__ */ u3("span", { className: "no-upstream", children: "no upstream" }) }),
+      /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-stack", children: [
+        /* @__PURE__ */ u3("span", { children: lastMessage }),
+        /* @__PURE__ */ u3("span", { className: "branch-timestamp", children: formatRelativeTime6(lastTime) })
+      ] }) }),
+      /* @__PURE__ */ u3("td", { className: "work-col-actions", children: /* @__PURE__ */ u3(BranchContextMenu, { branch, anchorRef }) })
+    ] }, expandKey),
+    diffStat && isExpanded ? /* @__PURE__ */ u3("tr", { className: "diff-row", children: /* @__PURE__ */ u3("td", { colSpan: 6, children: /* @__PURE__ */ u3("pre", { className: "diff-stat", children: diffStat }) }) }, `${expandKey}:details`) : null
+  ] });
+}
+function BranchTableScroller({
+  branches,
+  repoId,
+  defaultBranch,
+  hasActiveFilters,
+  perRepoFilter,
+  expanded,
+  onToggle
+}) {
+  const scrollRef = A2(null);
+  const [atBottom, setAtBottom] = d2(false);
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el)
+      return;
+    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 4);
+  };
+  y2(() => {
+    handleScroll();
+  }, [branches]);
+  return /* @__PURE__ */ u3("div", { className: "branch-scroll-wrap", children: [
+    /* @__PURE__ */ u3(
+      "div",
+      {
+        ref: scrollRef,
+        className: "branch-scroll-region",
+        onScroll: handleScroll,
+        children: /* @__PURE__ */ u3("table", { children: [
+          /* @__PURE__ */ u3("thead", { children: /* @__PURE__ */ u3("tr", { children: [
+            /* @__PURE__ */ u3("th", { children: "Branch" }),
+            /* @__PURE__ */ u3("th", { children: "Status" }),
+            /* @__PURE__ */ u3("th", { children: [
+              "vs ",
+              defaultBranch
+            ] }),
+            /* @__PURE__ */ u3("th", { children: "vs upstream" }),
+            /* @__PURE__ */ u3("th", { children: "Last Commit" }),
+            /* @__PURE__ */ u3("th", { className: "work-col-actions" })
+          ] }) }),
+          /* @__PURE__ */ u3("tbody", { children: branches.length === 0 ? /* @__PURE__ */ u3("tr", { children: /* @__PURE__ */ u3("td", { colSpan: 6, className: "empty-state", children: hasActiveFilters || perRepoFilter ? "No branches match this filter." : "No branches reported yet. Rescan or open a session in this repo." }) }) : branches.map((branch) => /* @__PURE__ */ u3(
+            BranchRow,
+            {
+              branch,
+              repoId,
+              defaultBranch,
+              expanded,
+              onToggle
+            },
+            `${repoId}:${getBranchName2(branch)}`
+          )) })
+        ] })
+      }
+    ),
+    !atBottom && branches.length > 0 ? /* @__PURE__ */ u3("div", { className: "branch-scroll-fade", "aria-hidden": "true" }) : null
+  ] });
+}
+function WorkOverviewView({
+  repos,
+  branchesByRepo,
+  onRescan
+}) {
+  const [expanded, setExpanded] = d2(/* @__PURE__ */ new Set());
+  const [repoToggles, setRepoToggles] = d2({});
+  const [repoFilterInput, setRepoFilterInput] = d2("");
+  const [globalBranchFilterInput, setGlobalBranchFilterInput] = d2("");
+  const repoFilter = useDebounce(repoFilterInput, 300).toLowerCase();
+  const globalBranchFilter = useDebounce(globalBranchFilterInput, 300).toLowerCase();
+  const [perRepoFilters, setPerRepoFilters] = d2({});
+  const [perRepoSorts, setPerRepoSorts] = d2({});
+  const repoRows = T2(() => {
+    return repos.map((repo) => {
+      const repoId = getRepoId2(repo);
+      const repoTitle = getRepoTitle(repo, repoId);
+      return { repo, repoId, repoTitle };
+    }).filter(({ repoTitle }) => {
+      if (!repoFilter)
+        return true;
+      return repoTitle.toLowerCase().includes(repoFilter);
+    }).map(({ repo, repoId, repoTitle }) => {
+      const branches = branchesByRepo[repoId] || [];
+      const localFilter = (perRepoFilters[repoId] ?? "").trim().toLowerCase();
+      const sortKey = perRepoSorts[repoId] ?? "recency";
+      const filtered = branches.filter((branch) => {
+        const name = getBranchName2(branch).toLowerCase();
+        if (globalBranchFilter && !name.includes(globalBranchFilter))
+          return false;
+        if (localFilter && !name.includes(localFilter))
+          return false;
+        return true;
+      });
+      const sorted = sortBranches(filtered, sortKey);
+      return { repo, repoId, repoTitle, branches: sorted, sortKey };
+    });
+  }, [repos, branchesByRepo, repoFilter, globalBranchFilter, perRepoFilters, perRepoSorts]);
+  const repoTitleCounts = T2(() => {
+    const counts = /* @__PURE__ */ new Map();
+    for (const { repoTitle } of repoRows) {
+      counts.set(repoTitle, (counts.get(repoTitle) ?? 0) + 1);
+    }
+    return counts;
+  }, [repoRows]);
+  const toggleBranch = (repoId, branchName) => {
+    const key2 = `${repoId}:${branchName}`;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key2)) {
+        next.delete(key2);
+      } else {
+        next.add(key2);
+      }
+      return next;
+    });
+  };
+  const hasActiveFilters = Boolean(globalBranchFilter || repoFilter);
+  return /* @__PURE__ */ u3("div", { className: "view work-view", children: [
+    /* @__PURE__ */ u3("div", { className: "view-header", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("h2", { children: "Work Overview" }),
+        /* @__PURE__ */ u3("p", { className: "text-muted", children: "Branch and worktree status across repos." })
+      ] }),
+      /* @__PURE__ */ u3("button", { type: "button", className: "btn", onClick: onRescan, children: "Rescan" })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "work-toolbar", children: [
+      /* @__PURE__ */ u3(
+        "input",
+        {
+          type: "search",
+          className: "work-search",
+          placeholder: "Filter repos...",
+          value: repoFilterInput,
+          onInput: (event) => setRepoFilterInput(event.currentTarget.value)
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "input",
+        {
+          type: "search",
+          className: "work-search",
+          placeholder: "Filter branches (all repos)...",
+          value: globalBranchFilterInput,
+          onInput: (event) => setGlobalBranchFilterInput(event.currentTarget.value)
+        }
+      )
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "work-table", children: repoRows.length === 0 ? /* @__PURE__ */ u3("div", { className: "empty-state", children: hasActiveFilters ? "No repositories match these filters." : "No repositories found. Register a session or hit Rescan to discover worktrees." }) : repoRows.map(({ repo, repoId, repoTitle, branches, sortKey }) => {
+      const repoPath = getRepoPath(repo);
+      const showPath = repoPath && (repoTitleCounts.get(repoTitle) ?? 0) > 1;
+      const isOpen = repoToggles[repoId] ?? branches.length > 0;
+      const branchCount = branches.length;
+      const defaultBranch = repo.default_branch || branches.find((b) => b.default_branch && b.default_branch !== "\u2014")?.default_branch || "main";
+      return /* @__PURE__ */ u3(
+        "details",
+        {
+          className: "repo-card repo-card--collapsible",
+          open: isOpen,
+          onToggle: (event) => {
+            const nextOpen = event.currentTarget.open;
+            setRepoToggles((prev) => ({ ...prev, [repoId]: nextOpen }));
+          },
+          children: [
+            /* @__PURE__ */ u3("summary", { className: "repo-card__summary", children: /* @__PURE__ */ u3("div", { className: "repo-card__title", children: [
+              /* @__PURE__ */ u3("h3", { children: [
+                repoTitle,
+                /* @__PURE__ */ u3("span", { className: "branch-count", children: [
+                  "(",
+                  branchCount,
+                  " ",
+                  branchCount === 1 ? "branch" : "branches",
+                  ")"
+                ] })
+              ] }),
+              showPath ? /* @__PURE__ */ u3("span", { className: "text-muted", children: repoPath }) : null
+            ] }) }),
+            /* @__PURE__ */ u3("div", { className: "repo-card__body", children: [
+              /* @__PURE__ */ u3("div", { className: "repo-card__controls", children: [
+                /* @__PURE__ */ u3(
+                  "input",
+                  {
+                    type: "search",
+                    className: "repo-card__filter",
+                    placeholder: "Filter branches...",
+                    value: perRepoFilters[repoId] ?? "",
+                    onInput: (event) => setPerRepoFilters((prev) => ({
+                      ...prev,
+                      [repoId]: event.currentTarget.value
+                    }))
+                  }
+                ),
+                /* @__PURE__ */ u3(
+                  "select",
+                  {
+                    className: "repo-card__sort",
+                    value: sortKey,
+                    onChange: (event) => setPerRepoSorts((prev) => ({
+                      ...prev,
+                      [repoId]: event.currentTarget.value
+                    })),
+                    children: [
+                      /* @__PURE__ */ u3("option", { value: "recency", children: "Recent activity" }),
+                      /* @__PURE__ */ u3("option", { value: "name", children: "Branch name" }),
+                      /* @__PURE__ */ u3("option", { value: "ahead", children: "Ahead/behind" })
+                    ]
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ u3(
+                BranchTableScroller,
+                {
+                  branches,
+                  repoId,
+                  defaultBranch,
+                  hasActiveFilters,
+                  perRepoFilter: perRepoFilters[repoId],
+                  expanded,
+                  onToggle: toggleBranch
+                }
+              )
+            ] })
+          ]
+        },
+        repoId
+      );
+    }) })
+  ] });
+}
+
+// ui/src/components/console/ConsoleSubTabBar.tsx
+var AGENT_ABBREV = {
+  operator: "OP",
+  claude: "CL",
+  codex: "CX",
+  shell: "SH"
+};
+var AGENT_COLOR = {
+  operator: "var(--accent-yellow)",
+  claude: "var(--accent-yellow)",
+  codex: "var(--accent-green)",
+  shell: "var(--text-muted)"
+};
+function getAgentAbbrev(agentType) {
+  return AGENT_ABBREV[agentType] ?? agentType.slice(0, 2).toUpperCase();
+}
+function getAgentColor(agentType) {
+  return AGENT_COLOR[agentType] ?? "var(--text-muted)";
+}
+function ConsoleSubTabBar({
+  sessions,
+  activeSessionId,
+  onSelect,
+  onClose,
+  onNewSession,
+  isConsoleActive
+}) {
+  const sortedSessions = T2(() => {
+    return [...sessions].sort((a3, b) => {
+      if (a3.pinned && !b.pinned)
+        return -1;
+      if (!a3.pinned && b.pinned)
+        return 1;
+      return a3.created_at - b.created_at;
+    });
+  }, [sessions]);
+  y2(() => {
+    if (!isConsoleActive)
+      return;
+    const handleKeyDown = (e3) => {
+      if (!e3.ctrlKey)
+        return;
+      const currentIndex = sortedSessions.findIndex((s3) => s3.id === activeSessionId);
+      if (e3.key === "Tab" && !e3.shiftKey) {
+        e3.preventDefault();
+        if (sortedSessions.length === 0)
+          return;
+        const nextIndex = (currentIndex + 1) % sortedSessions.length;
+        onSelect(sortedSessions[nextIndex].id);
+      } else if (e3.key === "Tab" && e3.shiftKey) {
+        e3.preventDefault();
+        if (sortedSessions.length === 0)
+          return;
+        const prevIndex = (currentIndex - 1 + sortedSessions.length) % sortedSessions.length;
+        onSelect(sortedSessions[prevIndex].id);
+      } else if (e3.key === "w" || e3.key === "W") {
+        e3.preventDefault();
+        const active = sortedSessions.find((s3) => s3.id === activeSessionId);
+        if (active && !active.pinned) {
+          onClose(active.id);
+        }
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isConsoleActive, sortedSessions, activeSessionId, onSelect, onClose]);
+  return /* @__PURE__ */ u3("div", { className: "console-sub-tab-bar", children: [
+    sortedSessions.map((session) => {
+      const isActive = session.id === activeSessionId;
+      let tabClass = "console-tab";
+      if (isActive)
+        tabClass += " console-tab--active";
+      if (session.pinned)
+        tabClass += " console-tab--pinned";
+      return /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: tabClass,
+          onClick: () => onSelect(session.id),
+          title: session.label,
+          children: [
+            /* @__PURE__ */ u3(
+              "span",
+              {
+                style: {
+                  fontSize: "10px",
+                  fontWeight: 600,
+                  color: getAgentColor(session.agent_type),
+                  fontFamily: "var(--font-mono)",
+                  flexShrink: 0
+                },
+                children: getAgentAbbrev(session.agent_type)
+              }
+            ),
+            /* @__PURE__ */ u3("span", { className: "console-tab__name", children: session.label }),
+            (session.status === "crashed" || session.status === "stopped") && /* @__PURE__ */ u3(
+              "span",
+              {
+                style: {
+                  width: "6px",
+                  height: "6px",
+                  borderRadius: "50%",
+                  background: session.status === "crashed" ? "var(--accent-red, #f85149)" : "var(--text-muted)",
+                  flexShrink: 0,
+                  display: "inline-block"
+                },
+                title: `Session ${session.status}`
+              }
+            ),
+            session.unread_count > 0 && /* @__PURE__ */ u3(
+              "span",
+              {
+                style: {
+                  background: "rgba(77,163,255,0.2)",
+                  color: "var(--accent-blue)",
+                  padding: "1px 6px",
+                  borderRadius: "999px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  flexShrink: 0
+                },
+                children: session.unread_count
+              }
+            ),
+            session.pinned ? /* @__PURE__ */ u3(
+              "span",
+              {
+                style: {
+                  fontSize: "12px",
+                  flexShrink: 0,
+                  color: "var(--accent-yellow)",
+                  opacity: 0.7
+                },
+                title: "Pinned \u2014 cannot be closed",
+                children: "\u{1F512}"
+              }
+            ) : /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "console-tab__close",
+                onClick: (e3) => {
+                  e3.stopPropagation();
+                  onClose(session.id);
+                },
+                title: "Close session",
+                children: "\xD7"
+              }
+            )
+          ]
+        },
+        session.id
+      );
+    }),
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "console-tab__new-btn",
+        onClick: onNewSession,
+        title: "New session",
+        children: "+"
+      }
+    )
+  ] });
+}
+
+// ui/src/components/console/TerminalPane.tsx
+var import_xterm = __toESM(require_xterm(), 1);
+var import_addon_fit = __toESM(require_addon_fit(), 1);
+
+// ui/src/components/stream-renderer/TextBlock.tsx
+marked.setOptions({ async: false });
+function TextBlock({ text }) {
+  const html3 = T2(() => {
+    try {
+      const result = marked.parse(text);
+      if (typeof result === "string") {
+        return result;
+      }
+      return text;
+    } catch {
+      return text;
+    }
+  }, [text]);
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "stream-text-block",
+      dangerouslySetInnerHTML: { __html: html3 }
+    }
+  );
+}
+
+// ui/src/components/stream-renderer/ThinkingBlock.tsx
+function ThinkingBlock({ thinking, defaultExpanded = false }) {
+  const [expanded, setExpanded] = d2(defaultExpanded);
+  return /* @__PURE__ */ u3("div", { className: "thinking-block", children: [
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "thinking-block__header",
+        onClick: () => setExpanded((prev) => !prev),
+        "aria-expanded": expanded,
+        children: [
+          /* @__PURE__ */ u3("span", { className: "thinking-block__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+          /* @__PURE__ */ u3("span", { children: "Thinking" })
+        ]
+      }
+    ),
+    expanded && /* @__PURE__ */ u3("div", { className: "thinking-block__body", children: /* @__PURE__ */ u3("pre", { children: thinking }) })
+  ] });
+}
+
+// ../../node_modules/diff2html/lib-esm/types.js
+var LineType;
+(function(LineType2) {
+  LineType2["INSERT"] = "insert";
+  LineType2["DELETE"] = "delete";
+  LineType2["CONTEXT"] = "context";
+})(LineType || (LineType = {}));
+var OutputFormatType = {
+  LINE_BY_LINE: "line-by-line",
+  SIDE_BY_SIDE: "side-by-side"
+};
+var LineMatchingType = {
+  LINES: "lines",
+  WORDS: "words",
+  NONE: "none"
+};
+var DiffStyleType = {
+  WORD: "word",
+  CHAR: "char"
+};
+var ColorSchemeType;
+(function(ColorSchemeType2) {
+  ColorSchemeType2["AUTO"] = "auto";
+  ColorSchemeType2["DARK"] = "dark";
+  ColorSchemeType2["LIGHT"] = "light";
+})(ColorSchemeType || (ColorSchemeType = {}));
+
+// ../../node_modules/diff2html/lib-esm/utils.js
+var specials = [
+  "-",
+  "[",
+  "]",
+  "/",
+  "{",
+  "}",
+  "(",
+  ")",
+  "*",
+  "+",
+  "?",
+  ".",
+  "\\",
+  "^",
+  "$",
+  "|"
+];
+var regex = RegExp("[" + specials.join("\\") + "]", "g");
+function escapeForRegExp(str) {
+  return str.replace(regex, "\\$&");
+}
+function unifyPath(path) {
+  return path ? path.replace(/\\/g, "/") : path;
+}
+function hashCode(text) {
+  let i4, chr, len;
+  let hash = 0;
+  for (i4 = 0, len = text.length; i4 < len; i4++) {
+    chr = text.charCodeAt(i4);
+    hash = (hash << 5) - hash + chr;
+    hash |= 0;
+  }
+  return hash;
+}
+function max(arr) {
+  const length = arr.length;
+  let max2 = -Infinity;
+  for (let i4 = 0; i4 < length; i4++) {
+    max2 = Math.max(max2, arr[i4]);
+  }
+  return max2;
+}
+
+// ../../node_modules/diff2html/lib-esm/diff-parser.js
+function getExtension(filename, language) {
+  const filenameParts = filename.split(".");
+  return filenameParts.length > 1 ? filenameParts[filenameParts.length - 1] : language;
+}
+function startsWithAny(str, prefixes) {
+  return prefixes.reduce((startsWith, prefix) => startsWith || str.startsWith(prefix), false);
+}
+var baseDiffFilenamePrefixes = ["a/", "b/", "i/", "w/", "c/", "o/"];
+function getFilename(line, linePrefix, extraPrefix) {
+  const prefixes = extraPrefix !== void 0 ? [...baseDiffFilenamePrefixes, extraPrefix] : baseDiffFilenamePrefixes;
+  const FilenameRegExp = linePrefix ? new RegExp(`^${escapeForRegExp(linePrefix)} "?(.+?)"?$`) : new RegExp('^"?(.+?)"?$');
+  const [, filename = ""] = FilenameRegExp.exec(line) || [];
+  const matchingPrefix = prefixes.find((p3) => filename.indexOf(p3) === 0);
+  const fnameWithoutPrefix = matchingPrefix ? filename.slice(matchingPrefix.length) : filename;
+  return fnameWithoutPrefix.replace(/\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)? [+-]\d{4}.*$/, "");
+}
+function getSrcFilename(line, srcPrefix) {
+  return getFilename(line, "---", srcPrefix);
+}
+function getDstFilename(line, dstPrefix) {
+  return getFilename(line, "+++", dstPrefix);
+}
+function parse(diffInput, config = {}) {
+  const files = [];
+  let currentFile = null;
+  let currentBlock = null;
+  let oldLine = null;
+  let oldLine2 = null;
+  let newLine = null;
+  let possibleOldName = null;
+  let possibleNewName = null;
+  const oldFileNameHeader = "--- ";
+  const newFileNameHeader = "+++ ";
+  const hunkHeaderPrefix = "@@";
+  const oldMode = /^old mode (\d{6})/;
+  const newMode = /^new mode (\d{6})/;
+  const deletedFileMode = /^deleted file mode (\d{6})/;
+  const newFileMode = /^new file mode (\d{6})/;
+  const copyFrom = /^copy from "?(.+)"?/;
+  const copyTo = /^copy to "?(.+)"?/;
+  const renameFrom = /^rename from "?(.+)"?/;
+  const renameTo = /^rename to "?(.+)"?/;
+  const similarityIndex = /^similarity index (\d+)%/;
+  const dissimilarityIndex = /^dissimilarity index (\d+)%/;
+  const index = /^index ([\da-z]+)\.\.([\da-z]+)\s*(\d{6})?/;
+  const binaryFiles = /^Binary files (.*) and (.*) differ/;
+  const binaryDiff = /^GIT binary patch/;
+  const combinedIndex = /^index ([\da-z]+),([\da-z]+)\.\.([\da-z]+)/;
+  const combinedMode = /^mode (\d{6}),(\d{6})\.\.(\d{6})/;
+  const combinedNewFile = /^new file mode (\d{6})/;
+  const combinedDeletedFile = /^deleted file mode (\d{6}),(\d{6})/;
+  const diffLines = diffInput.replace(/\\ No newline at end of file/g, "").replace(/\r\n?/g, "\n").split("\n");
+  function saveBlock() {
+    if (currentBlock !== null && currentFile !== null) {
+      currentFile.blocks.push(currentBlock);
+      currentBlock = null;
+    }
+  }
+  function saveFile() {
+    if (currentFile !== null) {
+      if (!currentFile.oldName && possibleOldName !== null) {
+        currentFile.oldName = possibleOldName;
+      }
+      if (!currentFile.newName && possibleNewName !== null) {
+        currentFile.newName = possibleNewName;
+      }
+      if (currentFile.newName) {
+        files.push(currentFile);
+        currentFile = null;
+      }
+    }
+    possibleOldName = null;
+    possibleNewName = null;
+  }
+  function startFile() {
+    saveBlock();
+    saveFile();
+    currentFile = {
+      blocks: [],
+      deletedLines: 0,
+      addedLines: 0
+    };
+  }
+  function startBlock(line) {
+    saveBlock();
+    let values;
+    if (currentFile !== null) {
+      if (values = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@.*/.exec(line)) {
+        currentFile.isCombined = false;
+        oldLine = parseInt(values[1], 10);
+        newLine = parseInt(values[2], 10);
+      } else if (values = /^@@@ -(\d+)(?:,\d+)? -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@@.*/.exec(line)) {
+        currentFile.isCombined = true;
+        oldLine = parseInt(values[1], 10);
+        oldLine2 = parseInt(values[2], 10);
+        newLine = parseInt(values[3], 10);
+      } else {
+        if (line.startsWith(hunkHeaderPrefix)) {
+          console.error("Failed to parse lines, starting in 0!");
+        }
+        oldLine = 0;
+        newLine = 0;
+        currentFile.isCombined = false;
+      }
+    }
+    currentBlock = {
+      lines: [],
+      oldStartLine: oldLine,
+      oldStartLine2: oldLine2,
+      newStartLine: newLine,
+      header: line
+    };
+  }
+  function createLine(line) {
+    if (currentFile === null || currentBlock === null || oldLine === null || newLine === null)
+      return;
+    const currentLine = {
+      content: line
+    };
+    const addedPrefixes = currentFile.isCombined ? ["+ ", " +", "++"] : ["+"];
+    const deletedPrefixes = currentFile.isCombined ? ["- ", " -", "--"] : ["-"];
+    if (startsWithAny(line, addedPrefixes)) {
+      currentFile.addedLines++;
+      currentLine.type = LineType.INSERT;
+      currentLine.oldNumber = void 0;
+      currentLine.newNumber = newLine++;
+    } else if (startsWithAny(line, deletedPrefixes)) {
+      currentFile.deletedLines++;
+      currentLine.type = LineType.DELETE;
+      currentLine.oldNumber = oldLine++;
+      currentLine.newNumber = void 0;
+    } else {
+      currentLine.type = LineType.CONTEXT;
+      currentLine.oldNumber = oldLine++;
+      currentLine.newNumber = newLine++;
+    }
+    currentBlock.lines.push(currentLine);
+  }
+  function existHunkHeader(line, lineIdx) {
+    let idx = lineIdx;
+    while (idx < diffLines.length - 3) {
+      if (line.startsWith("diff")) {
+        return false;
+      }
+      if (diffLines[idx].startsWith(oldFileNameHeader) && diffLines[idx + 1].startsWith(newFileNameHeader) && diffLines[idx + 2].startsWith(hunkHeaderPrefix)) {
+        return true;
+      }
+      idx++;
+    }
+    return false;
+  }
+  diffLines.forEach((line, lineIndex) => {
+    if (!line || line.startsWith("*")) {
+      return;
+    }
+    let values;
+    const prevLine = diffLines[lineIndex - 1];
+    const nxtLine = diffLines[lineIndex + 1];
+    const afterNxtLine = diffLines[lineIndex + 2];
+    if (line.startsWith("diff --git") || line.startsWith("diff --combined")) {
+      startFile();
+      const gitDiffStart = /^diff --git "?([a-ciow]\/.+)"? "?([a-ciow]\/.+)"?/;
+      if (values = gitDiffStart.exec(line)) {
+        possibleOldName = getFilename(values[1], void 0, config.dstPrefix);
+        possibleNewName = getFilename(values[2], void 0, config.srcPrefix);
+      }
+      if (currentFile === null) {
+        throw new Error("Where is my file !!!");
+      }
+      currentFile.isGitDiff = true;
+      return;
+    }
+    if (line.startsWith("Binary files") && !(currentFile === null || currentFile === void 0 ? void 0 : currentFile.isGitDiff)) {
+      startFile();
+      const unixDiffBinaryStart = /^Binary files "?([a-ciow]\/.+)"? and "?([a-ciow]\/.+)"? differ/;
+      if (values = unixDiffBinaryStart.exec(line)) {
+        possibleOldName = getFilename(values[1], void 0, config.dstPrefix);
+        possibleNewName = getFilename(values[2], void 0, config.srcPrefix);
+      }
+      if (currentFile === null) {
+        throw new Error("Where is my file !!!");
+      }
+      currentFile.isBinary = true;
+      return;
+    }
+    if (!currentFile || !currentFile.isGitDiff && currentFile && line.startsWith(oldFileNameHeader) && nxtLine.startsWith(newFileNameHeader) && afterNxtLine.startsWith(hunkHeaderPrefix)) {
+      startFile();
+    }
+    if (currentFile === null || currentFile === void 0 ? void 0 : currentFile.isTooBig) {
+      return;
+    }
+    if (currentFile && (typeof config.diffMaxChanges === "number" && currentFile.addedLines + currentFile.deletedLines > config.diffMaxChanges || typeof config.diffMaxLineLength === "number" && line.length > config.diffMaxLineLength)) {
+      currentFile.isTooBig = true;
+      currentFile.addedLines = 0;
+      currentFile.deletedLines = 0;
+      currentFile.blocks = [];
+      currentBlock = null;
+      const message = typeof config.diffTooBigMessage === "function" ? config.diffTooBigMessage(files.length) : "Diff too big to be displayed";
+      startBlock(message);
+      return;
+    }
+    if (line.startsWith(oldFileNameHeader) && nxtLine.startsWith(newFileNameHeader) || line.startsWith(newFileNameHeader) && prevLine.startsWith(oldFileNameHeader)) {
+      if (currentFile && !currentFile.oldName && line.startsWith("--- ") && (values = getSrcFilename(line, config.srcPrefix))) {
+        currentFile.oldName = values;
+        currentFile.language = getExtension(currentFile.oldName, currentFile.language);
+        return;
+      }
+      if (currentFile && !currentFile.newName && line.startsWith("+++ ") && (values = getDstFilename(line, config.dstPrefix))) {
+        currentFile.newName = values;
+        currentFile.language = getExtension(currentFile.newName, currentFile.language);
+        return;
+      }
+    }
+    if (currentFile && (line.startsWith(hunkHeaderPrefix) || currentFile.isGitDiff && currentFile.oldName && currentFile.newName && !currentBlock)) {
+      startBlock(line);
+      return;
+    }
+    if (currentBlock && (line.startsWith("+") || line.startsWith("-") || line.startsWith(" "))) {
+      createLine(line);
+      return;
+    }
+    const doesNotExistHunkHeader = !existHunkHeader(line, lineIndex);
+    if (currentFile === null) {
+      throw new Error("Where is my file !!!");
+    }
+    if (values = oldMode.exec(line)) {
+      currentFile.oldMode = values[1];
+    } else if (values = newMode.exec(line)) {
+      currentFile.newMode = values[1];
+    } else if (values = deletedFileMode.exec(line)) {
+      currentFile.deletedFileMode = values[1];
+      currentFile.isDeleted = true;
+    } else if (values = newFileMode.exec(line)) {
+      currentFile.newFileMode = values[1];
+      currentFile.isNew = true;
+    } else if (values = copyFrom.exec(line)) {
+      if (doesNotExistHunkHeader) {
+        currentFile.oldName = values[1];
+      }
+      currentFile.isCopy = true;
+    } else if (values = copyTo.exec(line)) {
+      if (doesNotExistHunkHeader) {
+        currentFile.newName = values[1];
+      }
+      currentFile.isCopy = true;
+    } else if (values = renameFrom.exec(line)) {
+      if (doesNotExistHunkHeader) {
+        currentFile.oldName = values[1];
+      }
+      currentFile.isRename = true;
+    } else if (values = renameTo.exec(line)) {
+      if (doesNotExistHunkHeader) {
+        currentFile.newName = values[1];
+      }
+      currentFile.isRename = true;
+    } else if (values = binaryFiles.exec(line)) {
+      currentFile.isBinary = true;
+      currentFile.oldName = getFilename(values[1], void 0, config.srcPrefix);
+      currentFile.newName = getFilename(values[2], void 0, config.dstPrefix);
+      startBlock("Binary file");
+    } else if (binaryDiff.test(line)) {
+      currentFile.isBinary = true;
+      startBlock(line);
+    } else if (values = similarityIndex.exec(line)) {
+      currentFile.unchangedPercentage = parseInt(values[1], 10);
+    } else if (values = dissimilarityIndex.exec(line)) {
+      currentFile.changedPercentage = parseInt(values[1], 10);
+    } else if (values = index.exec(line)) {
+      currentFile.checksumBefore = values[1];
+      currentFile.checksumAfter = values[2];
+      if (values[3])
+        currentFile.mode = values[3];
+    } else if (values = combinedIndex.exec(line)) {
+      currentFile.checksumBefore = [values[2], values[3]];
+      currentFile.checksumAfter = values[1];
+    } else if (values = combinedMode.exec(line)) {
+      currentFile.oldMode = [values[2], values[3]];
+      currentFile.newMode = values[1];
+    } else if (values = combinedNewFile.exec(line)) {
+      currentFile.newFileMode = values[1];
+      currentFile.isNew = true;
+    } else if (values = combinedDeletedFile.exec(line)) {
+      currentFile.deletedFileMode = values[1];
+      currentFile.isDeleted = true;
+    }
+  });
+  saveBlock();
+  saveFile();
+  return files;
+}
+
+// ../../node_modules/diff/libesm/diff/base.js
+var Diff = class {
+  diff(oldStr, newStr, options2 = {}) {
+    let callback;
+    if (typeof options2 === "function") {
+      callback = options2;
+      options2 = {};
+    } else if ("callback" in options2) {
+      callback = options2.callback;
+    }
+    const oldString = this.castInput(oldStr, options2);
+    const newString = this.castInput(newStr, options2);
+    const oldTokens = this.removeEmpty(this.tokenize(oldString, options2));
+    const newTokens = this.removeEmpty(this.tokenize(newString, options2));
+    return this.diffWithOptionsObj(oldTokens, newTokens, options2, callback);
+  }
+  diffWithOptionsObj(oldTokens, newTokens, options2, callback) {
+    var _a;
+    const done = (value) => {
+      value = this.postProcess(value, options2);
+      if (callback) {
+        setTimeout(function() {
+          callback(value);
+        }, 0);
+        return void 0;
+      } else {
+        return value;
+      }
+    };
+    const newLen = newTokens.length, oldLen = oldTokens.length;
+    let editLength = 1;
+    let maxEditLength = newLen + oldLen;
+    if (options2.maxEditLength != null) {
+      maxEditLength = Math.min(maxEditLength, options2.maxEditLength);
+    }
+    const maxExecutionTime = (_a = options2.timeout) !== null && _a !== void 0 ? _a : Infinity;
+    const abortAfterTimestamp = Date.now() + maxExecutionTime;
+    const bestPath = [{ oldPos: -1, lastComponent: void 0 }];
+    let newPos = this.extractCommon(bestPath[0], newTokens, oldTokens, 0, options2);
+    if (bestPath[0].oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+      return done(this.buildValues(bestPath[0].lastComponent, newTokens, oldTokens));
+    }
+    let minDiagonalToConsider = -Infinity, maxDiagonalToConsider = Infinity;
+    const execEditLength = () => {
+      for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
+        let basePath;
+        const removePath = bestPath[diagonalPath - 1], addPath = bestPath[diagonalPath + 1];
+        if (removePath) {
+          bestPath[diagonalPath - 1] = void 0;
+        }
+        let canAdd = false;
+        if (addPath) {
+          const addPathNewPos = addPath.oldPos - diagonalPath;
+          canAdd = addPath && 0 <= addPathNewPos && addPathNewPos < newLen;
+        }
+        const canRemove = removePath && removePath.oldPos + 1 < oldLen;
+        if (!canAdd && !canRemove) {
+          bestPath[diagonalPath] = void 0;
+          continue;
+        }
+        if (!canRemove || canAdd && removePath.oldPos < addPath.oldPos) {
+          basePath = this.addToPath(addPath, true, false, 0, options2);
+        } else {
+          basePath = this.addToPath(removePath, false, true, 1, options2);
+        }
+        newPos = this.extractCommon(basePath, newTokens, oldTokens, diagonalPath, options2);
+        if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen) {
+          return done(this.buildValues(basePath.lastComponent, newTokens, oldTokens)) || true;
+        } else {
+          bestPath[diagonalPath] = basePath;
+          if (basePath.oldPos + 1 >= oldLen) {
+            maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
+          }
+          if (newPos + 1 >= newLen) {
+            minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
+          }
+        }
+      }
+      editLength++;
+    };
+    if (callback) {
+      (function exec() {
+        setTimeout(function() {
+          if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
+            return callback(void 0);
+          }
+          if (!execEditLength()) {
+            exec();
+          }
+        }, 0);
+      })();
+    } else {
+      while (editLength <= maxEditLength && Date.now() <= abortAfterTimestamp) {
+        const ret = execEditLength();
+        if (ret) {
+          return ret;
+        }
+      }
+    }
+  }
+  addToPath(path, added, removed, oldPosInc, options2) {
+    const last = path.lastComponent;
+    if (last && !options2.oneChangePerToken && last.added === added && last.removed === removed) {
+      return {
+        oldPos: path.oldPos + oldPosInc,
+        lastComponent: { count: last.count + 1, added, removed, previousComponent: last.previousComponent }
+      };
+    } else {
+      return {
+        oldPos: path.oldPos + oldPosInc,
+        lastComponent: { count: 1, added, removed, previousComponent: last }
+      };
+    }
+  }
+  extractCommon(basePath, newTokens, oldTokens, diagonalPath, options2) {
+    const newLen = newTokens.length, oldLen = oldTokens.length;
+    let oldPos = basePath.oldPos, newPos = oldPos - diagonalPath, commonCount = 0;
+    while (newPos + 1 < newLen && oldPos + 1 < oldLen && this.equals(oldTokens[oldPos + 1], newTokens[newPos + 1], options2)) {
+      newPos++;
+      oldPos++;
+      commonCount++;
+      if (options2.oneChangePerToken) {
+        basePath.lastComponent = { count: 1, previousComponent: basePath.lastComponent, added: false, removed: false };
+      }
+    }
+    if (commonCount && !options2.oneChangePerToken) {
+      basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
+    }
+    basePath.oldPos = oldPos;
+    return newPos;
+  }
+  equals(left, right, options2) {
+    if (options2.comparator) {
+      return options2.comparator(left, right);
+    } else {
+      return left === right || !!options2.ignoreCase && left.toLowerCase() === right.toLowerCase();
+    }
+  }
+  removeEmpty(array) {
+    const ret = [];
+    for (let i4 = 0; i4 < array.length; i4++) {
+      if (array[i4]) {
+        ret.push(array[i4]);
+      }
+    }
+    return ret;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  castInput(value, options2) {
+    return value;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  tokenize(value, options2) {
+    return Array.from(value);
+  }
+  join(chars) {
+    return chars.join("");
+  }
+  postProcess(changeObjects, options2) {
+    return changeObjects;
+  }
+  get useLongestToken() {
+    return false;
+  }
+  buildValues(lastComponent, newTokens, oldTokens) {
+    const components = [];
+    let nextComponent;
+    while (lastComponent) {
+      components.push(lastComponent);
+      nextComponent = lastComponent.previousComponent;
+      delete lastComponent.previousComponent;
+      lastComponent = nextComponent;
+    }
+    components.reverse();
+    const componentLen = components.length;
+    let componentPos = 0, newPos = 0, oldPos = 0;
+    for (; componentPos < componentLen; componentPos++) {
+      const component = components[componentPos];
+      if (!component.removed) {
+        if (!component.added && this.useLongestToken) {
+          let value = newTokens.slice(newPos, newPos + component.count);
+          value = value.map(function(value2, i4) {
+            const oldValue = oldTokens[oldPos + i4];
+            return oldValue.length > value2.length ? oldValue : value2;
+          });
+          component.value = this.join(value);
+        } else {
+          component.value = this.join(newTokens.slice(newPos, newPos + component.count));
+        }
+        newPos += component.count;
+        if (!component.added) {
+          oldPos += component.count;
+        }
+      } else {
+        component.value = this.join(oldTokens.slice(oldPos, oldPos + component.count));
+        oldPos += component.count;
+      }
+    }
+    return components;
+  }
+};
+
+// ../../node_modules/diff/libesm/diff/character.js
+var CharacterDiff = class extends Diff {
+};
+var characterDiff = new CharacterDiff();
+function diffChars(oldStr, newStr, options2) {
+  return characterDiff.diff(oldStr, newStr, options2);
+}
+
+// ../../node_modules/diff/libesm/util/string.js
+function longestCommonPrefix(str1, str2) {
+  let i4;
+  for (i4 = 0; i4 < str1.length && i4 < str2.length; i4++) {
+    if (str1[i4] != str2[i4]) {
+      return str1.slice(0, i4);
+    }
+  }
+  return str1.slice(0, i4);
+}
+function longestCommonSuffix(str1, str2) {
+  let i4;
+  if (!str1 || !str2 || str1[str1.length - 1] != str2[str2.length - 1]) {
+    return "";
+  }
+  for (i4 = 0; i4 < str1.length && i4 < str2.length; i4++) {
+    if (str1[str1.length - (i4 + 1)] != str2[str2.length - (i4 + 1)]) {
+      return str1.slice(-i4);
+    }
+  }
+  return str1.slice(-i4);
+}
+function replacePrefix(string, oldPrefix, newPrefix) {
+  if (string.slice(0, oldPrefix.length) != oldPrefix) {
+    throw Error(`string ${JSON.stringify(string)} doesn't start with prefix ${JSON.stringify(oldPrefix)}; this is a bug`);
+  }
+  return newPrefix + string.slice(oldPrefix.length);
+}
+function replaceSuffix(string, oldSuffix, newSuffix) {
+  if (!oldSuffix) {
+    return string + newSuffix;
+  }
+  if (string.slice(-oldSuffix.length) != oldSuffix) {
+    throw Error(`string ${JSON.stringify(string)} doesn't end with suffix ${JSON.stringify(oldSuffix)}; this is a bug`);
+  }
+  return string.slice(0, -oldSuffix.length) + newSuffix;
+}
+function removePrefix(string, oldPrefix) {
+  return replacePrefix(string, oldPrefix, "");
+}
+function removeSuffix(string, oldSuffix) {
+  return replaceSuffix(string, oldSuffix, "");
+}
+function maximumOverlap(string1, string2) {
+  return string2.slice(0, overlapCount(string1, string2));
+}
+function overlapCount(a3, b) {
+  let startA = 0;
+  if (a3.length > b.length) {
+    startA = a3.length - b.length;
+  }
+  let endB = b.length;
+  if (a3.length < b.length) {
+    endB = a3.length;
+  }
+  const map = Array(endB);
+  let k3 = 0;
+  map[0] = 0;
+  for (let j3 = 1; j3 < endB; j3++) {
+    if (b[j3] == b[k3]) {
+      map[j3] = map[k3];
+    } else {
+      map[j3] = k3;
+    }
+    while (k3 > 0 && b[j3] != b[k3]) {
+      k3 = map[k3];
+    }
+    if (b[j3] == b[k3]) {
+      k3++;
+    }
+  }
+  k3 = 0;
+  for (let i4 = startA; i4 < a3.length; i4++) {
+    while (k3 > 0 && a3[i4] != b[k3]) {
+      k3 = map[k3];
+    }
+    if (a3[i4] == b[k3]) {
+      k3++;
+    }
+  }
+  return k3;
+}
+function trailingWs(string) {
+  let i4;
+  for (i4 = string.length - 1; i4 >= 0; i4--) {
+    if (!string[i4].match(/\s/)) {
+      break;
+    }
+  }
+  return string.substring(i4 + 1);
+}
+function leadingWs(string) {
+  const match = string.match(/^\s*/);
+  return match ? match[0] : "";
+}
+
+// ../../node_modules/diff/libesm/diff/word.js
+var extendedWordChars = "a-zA-Z0-9_\\u{AD}\\u{C0}-\\u{D6}\\u{D8}-\\u{F6}\\u{F8}-\\u{2C6}\\u{2C8}-\\u{2D7}\\u{2DE}-\\u{2FF}\\u{1E00}-\\u{1EFF}";
+var tokenizeIncludingWhitespace = new RegExp(`[${extendedWordChars}]+|\\s+|[^${extendedWordChars}]`, "ug");
+var WordDiff = class extends Diff {
+  equals(left, right, options2) {
+    if (options2.ignoreCase) {
+      left = left.toLowerCase();
+      right = right.toLowerCase();
+    }
+    return left.trim() === right.trim();
+  }
+  tokenize(value, options2 = {}) {
+    let parts;
+    if (options2.intlSegmenter) {
+      const segmenter = options2.intlSegmenter;
+      if (segmenter.resolvedOptions().granularity != "word") {
+        throw new Error('The segmenter passed must have a granularity of "word"');
+      }
+      parts = [];
+      for (const segmentObj of Array.from(segmenter.segment(value))) {
+        const segment = segmentObj.segment;
+        if (parts.length && /\s/.test(parts[parts.length - 1]) && /\s/.test(segment)) {
+          parts[parts.length - 1] += segment;
+        } else {
+          parts.push(segment);
+        }
+      }
+    } else {
+      parts = value.match(tokenizeIncludingWhitespace) || [];
+    }
+    const tokens = [];
+    let prevPart = null;
+    parts.forEach((part) => {
+      if (/\s/.test(part)) {
+        if (prevPart == null) {
+          tokens.push(part);
+        } else {
+          tokens.push(tokens.pop() + part);
+        }
+      } else if (prevPart != null && /\s/.test(prevPart)) {
+        if (tokens[tokens.length - 1] == prevPart) {
+          tokens.push(tokens.pop() + part);
+        } else {
+          tokens.push(prevPart + part);
+        }
+      } else {
+        tokens.push(part);
+      }
+      prevPart = part;
+    });
+    return tokens;
+  }
+  join(tokens) {
+    return tokens.map((token, i4) => {
+      if (i4 == 0) {
+        return token;
+      } else {
+        return token.replace(/^\s+/, "");
+      }
+    }).join("");
+  }
+  postProcess(changes, options2) {
+    if (!changes || options2.oneChangePerToken) {
+      return changes;
+    }
+    let lastKeep = null;
+    let insertion = null;
+    let deletion = null;
+    changes.forEach((change) => {
+      if (change.added) {
+        insertion = change;
+      } else if (change.removed) {
+        deletion = change;
+      } else {
+        if (insertion || deletion) {
+          dedupeWhitespaceInChangeObjects(lastKeep, deletion, insertion, change);
+        }
+        lastKeep = change;
+        insertion = null;
+        deletion = null;
+      }
+    });
+    if (insertion || deletion) {
+      dedupeWhitespaceInChangeObjects(lastKeep, deletion, insertion, null);
+    }
+    return changes;
+  }
+};
+var wordDiff = new WordDiff();
+function dedupeWhitespaceInChangeObjects(startKeep, deletion, insertion, endKeep) {
+  if (deletion && insertion) {
+    const oldWsPrefix = leadingWs(deletion.value);
+    const oldWsSuffix = trailingWs(deletion.value);
+    const newWsPrefix = leadingWs(insertion.value);
+    const newWsSuffix = trailingWs(insertion.value);
+    if (startKeep) {
+      const commonWsPrefix = longestCommonPrefix(oldWsPrefix, newWsPrefix);
+      startKeep.value = replaceSuffix(startKeep.value, newWsPrefix, commonWsPrefix);
+      deletion.value = removePrefix(deletion.value, commonWsPrefix);
+      insertion.value = removePrefix(insertion.value, commonWsPrefix);
+    }
+    if (endKeep) {
+      const commonWsSuffix = longestCommonSuffix(oldWsSuffix, newWsSuffix);
+      endKeep.value = replacePrefix(endKeep.value, newWsSuffix, commonWsSuffix);
+      deletion.value = removeSuffix(deletion.value, commonWsSuffix);
+      insertion.value = removeSuffix(insertion.value, commonWsSuffix);
+    }
+  } else if (insertion) {
+    if (startKeep) {
+      const ws = leadingWs(insertion.value);
+      insertion.value = insertion.value.substring(ws.length);
+    }
+    if (endKeep) {
+      const ws = leadingWs(endKeep.value);
+      endKeep.value = endKeep.value.substring(ws.length);
+    }
+  } else if (startKeep && endKeep) {
+    const newWsFull = leadingWs(endKeep.value), delWsStart = leadingWs(deletion.value), delWsEnd = trailingWs(deletion.value);
+    const newWsStart = longestCommonPrefix(newWsFull, delWsStart);
+    deletion.value = removePrefix(deletion.value, newWsStart);
+    const newWsEnd = longestCommonSuffix(removePrefix(newWsFull, newWsStart), delWsEnd);
+    deletion.value = removeSuffix(deletion.value, newWsEnd);
+    endKeep.value = replacePrefix(endKeep.value, newWsFull, newWsEnd);
+    startKeep.value = replaceSuffix(startKeep.value, newWsFull, newWsFull.slice(0, newWsFull.length - newWsEnd.length));
+  } else if (endKeep) {
+    const endKeepWsPrefix = leadingWs(endKeep.value);
+    const deletionWsSuffix = trailingWs(deletion.value);
+    const overlap = maximumOverlap(deletionWsSuffix, endKeepWsPrefix);
+    deletion.value = removeSuffix(deletion.value, overlap);
+  } else if (startKeep) {
+    const startKeepWsSuffix = trailingWs(startKeep.value);
+    const deletionWsPrefix = leadingWs(deletion.value);
+    const overlap = maximumOverlap(startKeepWsSuffix, deletionWsPrefix);
+    deletion.value = removePrefix(deletion.value, overlap);
+  }
+}
+var WordsWithSpaceDiff = class extends Diff {
+  tokenize(value) {
+    const regex2 = new RegExp(`(\\r?\\n)|[${extendedWordChars}]+|[^\\S\\n\\r]+|[^${extendedWordChars}]`, "ug");
+    return value.match(regex2) || [];
+  }
+};
+var wordsWithSpaceDiff = new WordsWithSpaceDiff();
+function diffWordsWithSpace(oldStr, newStr, options2) {
+  return wordsWithSpaceDiff.diff(oldStr, newStr, options2);
+}
+
+// ../../node_modules/diff2html/lib-esm/rematch.js
+function levenshtein(a3, b) {
+  if (a3.length === 0) {
+    return b.length;
+  }
+  if (b.length === 0) {
+    return a3.length;
+  }
+  const matrix = [];
+  let i4;
+  for (i4 = 0; i4 <= b.length; i4++) {
+    matrix[i4] = [i4];
+  }
+  let j3;
+  for (j3 = 0; j3 <= a3.length; j3++) {
+    matrix[0][j3] = j3;
+  }
+  for (i4 = 1; i4 <= b.length; i4++) {
+    for (j3 = 1; j3 <= a3.length; j3++) {
+      if (b.charAt(i4 - 1) === a3.charAt(j3 - 1)) {
+        matrix[i4][j3] = matrix[i4 - 1][j3 - 1];
+      } else {
+        matrix[i4][j3] = Math.min(matrix[i4 - 1][j3 - 1] + 1, Math.min(matrix[i4][j3 - 1] + 1, matrix[i4 - 1][j3] + 1));
+      }
+    }
+  }
+  return matrix[b.length][a3.length];
+}
+function newDistanceFn(str) {
+  return (x2, y3) => {
+    const xValue = str(x2).trim();
+    const yValue = str(y3).trim();
+    const lev = levenshtein(xValue, yValue);
+    return lev / (xValue.length + yValue.length);
+  };
+}
+function newMatcherFn(distance2) {
+  function findBestMatch(a3, b, cache = /* @__PURE__ */ new Map()) {
+    let bestMatchDist = Infinity;
+    let bestMatch;
+    for (let i4 = 0; i4 < a3.length; ++i4) {
+      for (let j3 = 0; j3 < b.length; ++j3) {
+        const cacheKey = JSON.stringify([a3[i4], b[j3]]);
+        let md;
+        if (!(cache.has(cacheKey) && (md = cache.get(cacheKey)))) {
+          md = distance2(a3[i4], b[j3]);
+          cache.set(cacheKey, md);
+        }
+        if (md < bestMatchDist) {
+          bestMatchDist = md;
+          bestMatch = { indexA: i4, indexB: j3, score: bestMatchDist };
+        }
+      }
+    }
+    return bestMatch;
+  }
+  function group(a3, b, level = 0, cache = /* @__PURE__ */ new Map()) {
+    const bm = findBestMatch(a3, b, cache);
+    if (!bm || a3.length + b.length < 3) {
+      return [[a3, b]];
+    }
+    const a1 = a3.slice(0, bm.indexA);
+    const b1 = b.slice(0, bm.indexB);
+    const aMatch = [a3[bm.indexA]];
+    const bMatch = [b[bm.indexB]];
+    const tailA = bm.indexA + 1;
+    const tailB = bm.indexB + 1;
+    const a22 = a3.slice(tailA);
+    const b2 = b.slice(tailB);
+    const group1 = group(a1, b1, level + 1, cache);
+    const groupMatch = group(aMatch, bMatch, level + 1, cache);
+    const group2 = group(a22, b2, level + 1, cache);
+    let result = groupMatch;
+    if (bm.indexA > 0 || bm.indexB > 0) {
+      result = group1.concat(result);
+    }
+    if (a3.length > tailA || b.length > tailB) {
+      result = result.concat(group2);
+    }
+    return result;
+  }
+  return group;
+}
+
+// ../../node_modules/diff2html/lib-esm/render-utils.js
+var CSSLineClass = {
+  INSERTS: "d2h-ins",
+  DELETES: "d2h-del",
+  CONTEXT: "d2h-cntx",
+  INFO: "d2h-info",
+  INSERT_CHANGES: "d2h-ins d2h-change",
+  DELETE_CHANGES: "d2h-del d2h-change"
+};
+var defaultRenderConfig = {
+  matching: LineMatchingType.NONE,
+  matchWordsThreshold: 0.25,
+  maxLineLengthHighlight: 1e4,
+  diffStyle: DiffStyleType.WORD,
+  colorScheme: ColorSchemeType.LIGHT
+};
+var separator = "/";
+var distance = newDistanceFn((change) => change.value);
+var matcher = newMatcherFn(distance);
+function isDevNullName(name) {
+  return name.indexOf("dev/null") !== -1;
+}
+function removeInsElements(line) {
+  return line.replace(/(<ins[^>]*>((.|\n)*?)<\/ins>)/g, "");
+}
+function removeDelElements(line) {
+  return line.replace(/(<del[^>]*>((.|\n)*?)<\/del>)/g, "");
+}
+function toCSSClass(lineType) {
+  switch (lineType) {
+    case LineType.CONTEXT:
+      return CSSLineClass.CONTEXT;
+    case LineType.INSERT:
+      return CSSLineClass.INSERTS;
+    case LineType.DELETE:
+      return CSSLineClass.DELETES;
+  }
+}
+function colorSchemeToCss(colorScheme) {
+  switch (colorScheme) {
+    case ColorSchemeType.DARK:
+      return "d2h-dark-color-scheme";
+    case ColorSchemeType.AUTO:
+      return "d2h-auto-color-scheme";
+    case ColorSchemeType.LIGHT:
+    default:
+      return "d2h-light-color-scheme";
+  }
+}
+function prefixLength(isCombined) {
+  return isCombined ? 2 : 1;
+}
+function escapeForHtml(str) {
+  return str.slice(0).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;").replace(/\//g, "&#x2F;");
+}
+function deconstructLine(line, isCombined, escape2 = true) {
+  const indexToSplit = prefixLength(isCombined);
+  return {
+    prefix: line.substring(0, indexToSplit),
+    content: escape2 ? escapeForHtml(line.substring(indexToSplit)) : line.substring(indexToSplit)
+  };
+}
+function filenameDiff(file) {
+  const oldFilename = unifyPath(file.oldName);
+  const newFilename = unifyPath(file.newName);
+  if (oldFilename !== newFilename && !isDevNullName(oldFilename) && !isDevNullName(newFilename)) {
+    const prefixPaths = [];
+    const suffixPaths = [];
+    const oldFilenameParts = oldFilename.split(separator);
+    const newFilenameParts = newFilename.split(separator);
+    const oldFilenamePartsSize = oldFilenameParts.length;
+    const newFilenamePartsSize = newFilenameParts.length;
+    let i4 = 0;
+    let j3 = oldFilenamePartsSize - 1;
+    let k3 = newFilenamePartsSize - 1;
+    while (i4 < j3 && i4 < k3) {
+      if (oldFilenameParts[i4] === newFilenameParts[i4]) {
+        prefixPaths.push(newFilenameParts[i4]);
+        i4 += 1;
+      } else {
+        break;
+      }
+    }
+    while (j3 > i4 && k3 > i4) {
+      if (oldFilenameParts[j3] === newFilenameParts[k3]) {
+        suffixPaths.unshift(newFilenameParts[k3]);
+        j3 -= 1;
+        k3 -= 1;
+      } else {
+        break;
+      }
+    }
+    const finalPrefix = prefixPaths.join(separator);
+    const finalSuffix = suffixPaths.join(separator);
+    const oldRemainingPath = oldFilenameParts.slice(i4, j3 + 1).join(separator);
+    const newRemainingPath = newFilenameParts.slice(i4, k3 + 1).join(separator);
+    if (finalPrefix.length && finalSuffix.length) {
+      return finalPrefix + separator + "{" + oldRemainingPath + " \u2192 " + newRemainingPath + "}" + separator + finalSuffix;
+    } else if (finalPrefix.length) {
+      return finalPrefix + separator + "{" + oldRemainingPath + " \u2192 " + newRemainingPath + "}";
+    } else if (finalSuffix.length) {
+      return "{" + oldRemainingPath + " \u2192 " + newRemainingPath + "}" + separator + finalSuffix;
+    }
+    return oldFilename + " \u2192 " + newFilename;
+  } else if (!isDevNullName(newFilename)) {
+    return newFilename;
+  } else {
+    return oldFilename;
+  }
+}
+function getHtmlId(file) {
+  return `d2h-${hashCode(filenameDiff(file)).toString().slice(-6)}`;
+}
+function getFileIcon(file) {
+  let templateName = "file-changed";
+  if (file.isRename) {
+    templateName = "file-renamed";
+  } else if (file.isCopy) {
+    templateName = "file-renamed";
+  } else if (file.isNew) {
+    templateName = "file-added";
+  } else if (file.isDeleted) {
+    templateName = "file-deleted";
+  } else if (file.newName !== file.oldName) {
+    templateName = "file-renamed";
+  }
+  return templateName;
+}
+function diffHighlight(diffLine1, diffLine2, isCombined, config = {}) {
+  const { matching, maxLineLengthHighlight, matchWordsThreshold, diffStyle } = Object.assign(Object.assign({}, defaultRenderConfig), config);
+  const line1 = deconstructLine(diffLine1, isCombined, false);
+  const line2 = deconstructLine(diffLine2, isCombined, false);
+  if (line1.content.length > maxLineLengthHighlight || line2.content.length > maxLineLengthHighlight) {
+    return {
+      oldLine: {
+        prefix: line1.prefix,
+        content: escapeForHtml(line1.content)
+      },
+      newLine: {
+        prefix: line2.prefix,
+        content: escapeForHtml(line2.content)
+      }
+    };
+  }
+  const diff = diffStyle === "char" ? diffChars(line1.content, line2.content) : diffWordsWithSpace(line1.content, line2.content);
+  const changedWords = [];
+  if (diffStyle === "word" && matching === "words") {
+    const removed = diff.filter((element) => element.removed);
+    const added = diff.filter((element) => element.added);
+    const chunks = matcher(added, removed);
+    chunks.forEach((chunk) => {
+      if (chunk[0].length === 1 && chunk[1].length === 1) {
+        const dist = distance(chunk[0][0], chunk[1][0]);
+        if (dist < matchWordsThreshold) {
+          changedWords.push(chunk[0][0]);
+          changedWords.push(chunk[1][0]);
+        }
+      }
+    });
+  }
+  const highlightedLine = diff.reduce((highlightedLine2, part) => {
+    const elemType = part.added ? "ins" : part.removed ? "del" : null;
+    const addClass = changedWords.indexOf(part) > -1 ? ' class="d2h-change"' : "";
+    const escapedValue = escapeForHtml(part.value);
+    return elemType !== null ? `${highlightedLine2}<${elemType}${addClass}>${escapedValue}</${elemType}>` : `${highlightedLine2}${escapedValue}`;
+  }, "");
+  return {
+    oldLine: {
+      prefix: line1.prefix,
+      content: removeInsElements(highlightedLine)
+    },
+    newLine: {
+      prefix: line2.prefix,
+      content: removeDelElements(highlightedLine)
+    }
+  };
+}
+
+// ../../node_modules/diff2html/lib-esm/file-list-renderer.js
+var baseTemplatesPath = "file-summary";
+var iconsBaseTemplatesPath = "icon";
+var defaultFileListRendererConfig = {
+  colorScheme: defaultRenderConfig.colorScheme
+};
+var FileListRenderer = class {
+  constructor(hoganUtils, config = {}) {
+    this.hoganUtils = hoganUtils;
+    this.config = Object.assign(Object.assign({}, defaultFileListRendererConfig), config);
+  }
+  render(diffFiles) {
+    const files = diffFiles.map((file) => this.hoganUtils.render(baseTemplatesPath, "line", {
+      fileHtmlId: getHtmlId(file),
+      oldName: file.oldName,
+      newName: file.newName,
+      fileName: filenameDiff(file),
+      deletedLines: "-" + file.deletedLines,
+      addedLines: "+" + file.addedLines
+    }, {
+      fileIcon: this.hoganUtils.template(iconsBaseTemplatesPath, getFileIcon(file))
+    })).join("\n");
+    return this.hoganUtils.render(baseTemplatesPath, "wrapper", {
+      colorScheme: colorSchemeToCss(this.config.colorScheme),
+      filesNumber: diffFiles.length,
+      files
+    });
+  }
+};
+
+// ../../node_modules/diff2html/lib-esm/line-by-line-renderer.js
+var defaultLineByLineRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
+var genericTemplatesPath = "generic";
+var baseTemplatesPath2 = "line-by-line";
+var iconsBaseTemplatesPath2 = "icon";
+var tagsBaseTemplatesPath = "tag";
+var LineByLineRenderer = class {
+  constructor(hoganUtils, config = {}) {
+    this.hoganUtils = hoganUtils;
+    this.config = Object.assign(Object.assign({}, defaultLineByLineRendererConfig), config);
+  }
+  render(diffFiles) {
+    const diffsHtml = diffFiles.map((file) => {
+      let diffs;
+      if (file.blocks.length) {
+        diffs = this.generateFileHtml(file);
+      } else {
+        diffs = this.generateEmptyDiff();
+      }
+      return this.makeFileDiffHtml(file, diffs);
+    }).join("\n");
+    return this.hoganUtils.render(genericTemplatesPath, "wrapper", {
+      colorScheme: colorSchemeToCss(this.config.colorScheme),
+      content: diffsHtml
+    });
+  }
+  makeFileDiffHtml(file, diffs) {
+    if (this.config.renderNothingWhenEmpty && Array.isArray(file.blocks) && file.blocks.length === 0)
+      return "";
+    const fileDiffTemplate = this.hoganUtils.template(baseTemplatesPath2, "file-diff");
+    const filePathTemplate = this.hoganUtils.template(genericTemplatesPath, "file-path");
+    const fileIconTemplate = this.hoganUtils.template(iconsBaseTemplatesPath2, "file");
+    const fileTagTemplate = this.hoganUtils.template(tagsBaseTemplatesPath, getFileIcon(file));
+    return fileDiffTemplate.render({
+      file,
+      fileHtmlId: getHtmlId(file),
+      diffs,
+      filePath: filePathTemplate.render({
+        fileDiffName: filenameDiff(file)
+      }, {
+        fileIcon: fileIconTemplate,
+        fileTag: fileTagTemplate
+      })
+    });
+  }
+  generateEmptyDiff() {
+    return this.hoganUtils.render(genericTemplatesPath, "empty-diff", {
+      contentClass: "d2h-code-line",
+      CSSLineClass
+    });
+  }
+  generateFileHtml(file) {
+    const matcher2 = newMatcherFn(newDistanceFn((e3) => deconstructLine(e3.content, file.isCombined).content));
+    return file.blocks.map((block2) => {
+      let lines = this.hoganUtils.render(genericTemplatesPath, "block-header", {
+        CSSLineClass,
+        blockHeader: file.isTooBig ? block2.header : escapeForHtml(block2.header),
+        lineClass: "d2h-code-linenumber",
+        contentClass: "d2h-code-line"
+      });
+      this.applyLineGroupping(block2).forEach(([contextLines, oldLines, newLines]) => {
+        if (oldLines.length && newLines.length && !contextLines.length) {
+          this.applyRematchMatching(oldLines, newLines, matcher2).map(([oldLines2, newLines2]) => {
+            const { left, right } = this.processChangedLines(file, file.isCombined, oldLines2, newLines2);
+            lines += left;
+            lines += right;
+          });
+        } else if (contextLines.length) {
+          contextLines.forEach((line) => {
+            const { prefix, content } = deconstructLine(line.content, file.isCombined);
+            lines += this.generateSingleLineHtml(file, {
+              type: CSSLineClass.CONTEXT,
+              prefix,
+              content,
+              oldNumber: line.oldNumber,
+              newNumber: line.newNumber
+            });
+          });
+        } else if (oldLines.length || newLines.length) {
+          const { left, right } = this.processChangedLines(file, file.isCombined, oldLines, newLines);
+          lines += left;
+          lines += right;
+        } else {
+          console.error("Unknown state reached while processing groups of lines", contextLines, oldLines, newLines);
+        }
+      });
+      return lines;
+    }).join("\n");
+  }
+  applyLineGroupping(block2) {
+    const blockLinesGroups = [];
+    let oldLines = [];
+    let newLines = [];
+    for (let i4 = 0; i4 < block2.lines.length; i4++) {
+      const diffLine = block2.lines[i4];
+      if (diffLine.type !== LineType.INSERT && newLines.length || diffLine.type === LineType.CONTEXT && oldLines.length > 0) {
+        blockLinesGroups.push([[], oldLines, newLines]);
+        oldLines = [];
+        newLines = [];
+      }
+      if (diffLine.type === LineType.CONTEXT) {
+        blockLinesGroups.push([[diffLine], [], []]);
+      } else if (diffLine.type === LineType.INSERT && oldLines.length === 0) {
+        blockLinesGroups.push([[], [], [diffLine]]);
+      } else if (diffLine.type === LineType.INSERT && oldLines.length > 0) {
+        newLines.push(diffLine);
+      } else if (diffLine.type === LineType.DELETE) {
+        oldLines.push(diffLine);
+      }
+    }
+    if (oldLines.length || newLines.length) {
+      blockLinesGroups.push([[], oldLines, newLines]);
+      oldLines = [];
+      newLines = [];
+    }
+    return blockLinesGroups;
+  }
+  applyRematchMatching(oldLines, newLines, matcher2) {
+    const comparisons = oldLines.length * newLines.length;
+    const maxLineSizeInBlock = max(oldLines.concat(newLines).map((elem) => elem.content.length));
+    const doMatching = comparisons < this.config.matchingMaxComparisons && maxLineSizeInBlock < this.config.maxLineSizeInBlockForComparison && (this.config.matching === "lines" || this.config.matching === "words");
+    return doMatching ? matcher2(oldLines, newLines) : [[oldLines, newLines]];
+  }
+  processChangedLines(file, isCombined, oldLines, newLines) {
+    const fileHtml = {
+      right: "",
+      left: ""
+    };
+    const maxLinesNumber = Math.max(oldLines.length, newLines.length);
+    for (let i4 = 0; i4 < maxLinesNumber; i4++) {
+      const oldLine = oldLines[i4];
+      const newLine = newLines[i4];
+      const diff = oldLine !== void 0 && newLine !== void 0 ? diffHighlight(oldLine.content, newLine.content, isCombined, this.config) : void 0;
+      const preparedOldLine = oldLine !== void 0 && oldLine.oldNumber !== void 0 ? Object.assign(Object.assign({}, diff !== void 0 ? {
+        prefix: diff.oldLine.prefix,
+        content: diff.oldLine.content,
+        type: CSSLineClass.DELETE_CHANGES
+      } : Object.assign(Object.assign({}, deconstructLine(oldLine.content, isCombined)), { type: toCSSClass(oldLine.type) })), { oldNumber: oldLine.oldNumber, newNumber: oldLine.newNumber }) : void 0;
+      const preparedNewLine = newLine !== void 0 && newLine.newNumber !== void 0 ? Object.assign(Object.assign({}, diff !== void 0 ? {
+        prefix: diff.newLine.prefix,
+        content: diff.newLine.content,
+        type: CSSLineClass.INSERT_CHANGES
+      } : Object.assign(Object.assign({}, deconstructLine(newLine.content, isCombined)), { type: toCSSClass(newLine.type) })), { oldNumber: newLine.oldNumber, newNumber: newLine.newNumber }) : void 0;
+      const { left, right } = this.generateLineHtml(file, preparedOldLine, preparedNewLine);
+      fileHtml.left += left;
+      fileHtml.right += right;
+    }
+    return fileHtml;
+  }
+  generateLineHtml(file, oldLine, newLine) {
+    return {
+      left: this.generateSingleLineHtml(file, oldLine),
+      right: this.generateSingleLineHtml(file, newLine)
+    };
+  }
+  generateSingleLineHtml(file, line) {
+    if (line === void 0)
+      return "";
+    const lineNumberHtml = this.hoganUtils.render(baseTemplatesPath2, "numbers", {
+      oldNumber: line.oldNumber || "",
+      newNumber: line.newNumber || ""
+    });
+    return this.hoganUtils.render(genericTemplatesPath, "line", {
+      type: line.type,
+      lineClass: "d2h-code-linenumber",
+      contentClass: "d2h-code-line",
+      prefix: line.prefix === " " ? "&nbsp;" : line.prefix,
+      content: line.content,
+      lineNumber: lineNumberHtml,
+      line,
+      file
+    });
+  }
+};
+
+// ../../node_modules/diff2html/lib-esm/side-by-side-renderer.js
+var defaultSideBySideRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
+var genericTemplatesPath2 = "generic";
+var baseTemplatesPath3 = "side-by-side";
+var iconsBaseTemplatesPath3 = "icon";
+var tagsBaseTemplatesPath2 = "tag";
+var SideBySideRenderer = class {
+  constructor(hoganUtils, config = {}) {
+    this.hoganUtils = hoganUtils;
+    this.config = Object.assign(Object.assign({}, defaultSideBySideRendererConfig), config);
+  }
+  render(diffFiles) {
+    const diffsHtml = diffFiles.map((file) => {
+      let diffs;
+      if (file.blocks.length) {
+        diffs = this.generateFileHtml(file);
+      } else {
+        diffs = this.generateEmptyDiff();
+      }
+      return this.makeFileDiffHtml(file, diffs);
+    }).join("\n");
+    return this.hoganUtils.render(genericTemplatesPath2, "wrapper", {
+      colorScheme: colorSchemeToCss(this.config.colorScheme),
+      content: diffsHtml
+    });
+  }
+  makeFileDiffHtml(file, diffs) {
+    if (this.config.renderNothingWhenEmpty && Array.isArray(file.blocks) && file.blocks.length === 0)
+      return "";
+    const fileDiffTemplate = this.hoganUtils.template(baseTemplatesPath3, "file-diff");
+    const filePathTemplate = this.hoganUtils.template(genericTemplatesPath2, "file-path");
+    const fileIconTemplate = this.hoganUtils.template(iconsBaseTemplatesPath3, "file");
+    const fileTagTemplate = this.hoganUtils.template(tagsBaseTemplatesPath2, getFileIcon(file));
+    return fileDiffTemplate.render({
+      file,
+      fileHtmlId: getHtmlId(file),
+      diffs,
+      filePath: filePathTemplate.render({
+        fileDiffName: filenameDiff(file)
+      }, {
+        fileIcon: fileIconTemplate,
+        fileTag: fileTagTemplate
+      })
+    });
+  }
+  generateEmptyDiff() {
+    return {
+      right: "",
+      left: this.hoganUtils.render(genericTemplatesPath2, "empty-diff", {
+        contentClass: "d2h-code-side-line",
+        CSSLineClass
+      })
+    };
+  }
+  generateFileHtml(file) {
+    const matcher2 = newMatcherFn(newDistanceFn((e3) => deconstructLine(e3.content, file.isCombined).content));
+    return file.blocks.map((block2) => {
+      const fileHtml = {
+        left: this.makeHeaderHtml(block2.header, file),
+        right: this.makeHeaderHtml("")
+      };
+      this.applyLineGroupping(block2).forEach(([contextLines, oldLines, newLines]) => {
+        if (oldLines.length && newLines.length && !contextLines.length) {
+          this.applyRematchMatching(oldLines, newLines, matcher2).map(([oldLines2, newLines2]) => {
+            const { left, right } = this.processChangedLines(file.isCombined, oldLines2, newLines2);
+            fileHtml.left += left;
+            fileHtml.right += right;
+          });
+        } else if (contextLines.length) {
+          contextLines.forEach((line) => {
+            const { prefix, content } = deconstructLine(line.content, file.isCombined);
+            const { left, right } = this.generateLineHtml({
+              type: CSSLineClass.CONTEXT,
+              prefix,
+              content,
+              number: line.oldNumber
+            }, {
+              type: CSSLineClass.CONTEXT,
+              prefix,
+              content,
+              number: line.newNumber
+            });
+            fileHtml.left += left;
+            fileHtml.right += right;
+          });
+        } else if (oldLines.length || newLines.length) {
+          const { left, right } = this.processChangedLines(file.isCombined, oldLines, newLines);
+          fileHtml.left += left;
+          fileHtml.right += right;
+        } else {
+          console.error("Unknown state reached while processing groups of lines", contextLines, oldLines, newLines);
+        }
+      });
+      return fileHtml;
+    }).reduce((accomulated, html3) => {
+      return { left: accomulated.left + html3.left, right: accomulated.right + html3.right };
+    }, { left: "", right: "" });
+  }
+  applyLineGroupping(block2) {
+    const blockLinesGroups = [];
+    let oldLines = [];
+    let newLines = [];
+    for (let i4 = 0; i4 < block2.lines.length; i4++) {
+      const diffLine = block2.lines[i4];
+      if (diffLine.type !== LineType.INSERT && newLines.length || diffLine.type === LineType.CONTEXT && oldLines.length > 0) {
+        blockLinesGroups.push([[], oldLines, newLines]);
+        oldLines = [];
+        newLines = [];
+      }
+      if (diffLine.type === LineType.CONTEXT) {
+        blockLinesGroups.push([[diffLine], [], []]);
+      } else if (diffLine.type === LineType.INSERT && oldLines.length === 0) {
+        blockLinesGroups.push([[], [], [diffLine]]);
+      } else if (diffLine.type === LineType.INSERT && oldLines.length > 0) {
+        newLines.push(diffLine);
+      } else if (diffLine.type === LineType.DELETE) {
+        oldLines.push(diffLine);
+      }
+    }
+    if (oldLines.length || newLines.length) {
+      blockLinesGroups.push([[], oldLines, newLines]);
+      oldLines = [];
+      newLines = [];
+    }
+    return blockLinesGroups;
+  }
+  applyRematchMatching(oldLines, newLines, matcher2) {
+    const comparisons = oldLines.length * newLines.length;
+    const maxLineSizeInBlock = max(oldLines.concat(newLines).map((elem) => elem.content.length));
+    const doMatching = comparisons < this.config.matchingMaxComparisons && maxLineSizeInBlock < this.config.maxLineSizeInBlockForComparison && (this.config.matching === "lines" || this.config.matching === "words");
+    return doMatching ? matcher2(oldLines, newLines) : [[oldLines, newLines]];
+  }
+  makeHeaderHtml(blockHeader, file) {
+    return this.hoganUtils.render(genericTemplatesPath2, "block-header", {
+      CSSLineClass,
+      blockHeader: (file === null || file === void 0 ? void 0 : file.isTooBig) ? blockHeader : escapeForHtml(blockHeader),
+      lineClass: "d2h-code-side-linenumber",
+      contentClass: "d2h-code-side-line"
+    });
+  }
+  processChangedLines(isCombined, oldLines, newLines) {
+    const fileHtml = {
+      right: "",
+      left: ""
+    };
+    const maxLinesNumber = Math.max(oldLines.length, newLines.length);
+    for (let i4 = 0; i4 < maxLinesNumber; i4++) {
+      const oldLine = oldLines[i4];
+      const newLine = newLines[i4];
+      const diff = oldLine !== void 0 && newLine !== void 0 ? diffHighlight(oldLine.content, newLine.content, isCombined, this.config) : void 0;
+      const preparedOldLine = oldLine !== void 0 && oldLine.oldNumber !== void 0 ? Object.assign(Object.assign({}, diff !== void 0 ? {
+        prefix: diff.oldLine.prefix,
+        content: diff.oldLine.content,
+        type: CSSLineClass.DELETE_CHANGES
+      } : Object.assign(Object.assign({}, deconstructLine(oldLine.content, isCombined)), { type: toCSSClass(oldLine.type) })), { number: oldLine.oldNumber }) : void 0;
+      const preparedNewLine = newLine !== void 0 && newLine.newNumber !== void 0 ? Object.assign(Object.assign({}, diff !== void 0 ? {
+        prefix: diff.newLine.prefix,
+        content: diff.newLine.content,
+        type: CSSLineClass.INSERT_CHANGES
+      } : Object.assign(Object.assign({}, deconstructLine(newLine.content, isCombined)), { type: toCSSClass(newLine.type) })), { number: newLine.newNumber }) : void 0;
+      const { left, right } = this.generateLineHtml(preparedOldLine, preparedNewLine);
+      fileHtml.left += left;
+      fileHtml.right += right;
+    }
+    return fileHtml;
+  }
+  generateLineHtml(oldLine, newLine) {
+    return {
+      left: this.generateSingleHtml(oldLine),
+      right: this.generateSingleHtml(newLine)
+    };
+  }
+  generateSingleHtml(line) {
+    const lineClass = "d2h-code-side-linenumber";
+    const contentClass = "d2h-code-side-line";
+    return this.hoganUtils.render(genericTemplatesPath2, "line", {
+      type: (line === null || line === void 0 ? void 0 : line.type) || `${CSSLineClass.CONTEXT} d2h-emptyplaceholder`,
+      lineClass: line !== void 0 ? lineClass : `${lineClass} d2h-code-side-emptyplaceholder`,
+      contentClass: line !== void 0 ? contentClass : `${contentClass} d2h-code-side-emptyplaceholder`,
+      prefix: (line === null || line === void 0 ? void 0 : line.prefix) === " " ? "&nbsp;" : line === null || line === void 0 ? void 0 : line.prefix,
+      content: line === null || line === void 0 ? void 0 : line.content,
+      lineNumber: line === null || line === void 0 ? void 0 : line.number
+    });
+  }
+};
+
+// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
+var Hogan3 = __toESM(require_hogan());
+
+// ../../node_modules/diff2html/lib-esm/diff2html-templates.js
+var Hogan2 = __toESM(require_hogan());
+var defaultTemplates = {};
+defaultTemplates["file-summary-line"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<li class="d2h-file-list-line">');
+  t3.b("\n" + i4);
+  t3.b('    <span class="d2h-file-name-wrapper">');
+  t3.b("\n" + i4);
+  t3.b(t3.rp("<fileIcon0", c3, p3, "      "));
+  t3.b('      <a href="#');
+  t3.b(t3.v(t3.f("fileHtmlId", c3, p3, 0)));
+  t3.b('" class="d2h-file-name">');
+  t3.b(t3.v(t3.f("fileName", c3, p3, 0)));
+  t3.b("</a>");
+  t3.b("\n" + i4);
+  t3.b('      <span class="d2h-file-stats">');
+  t3.b("\n" + i4);
+  t3.b('          <span class="d2h-lines-added">');
+  t3.b(t3.v(t3.f("addedLines", c3, p3, 0)));
+  t3.b("</span>");
+  t3.b("\n" + i4);
+  t3.b('          <span class="d2h-lines-deleted">');
+  t3.b(t3.v(t3.f("deletedLines", c3, p3, 0)));
+  t3.b("</span>");
+  t3.b("\n" + i4);
+  t3.b("      </span>");
+  t3.b("\n" + i4);
+  t3.b("    </span>");
+  t3.b("\n" + i4);
+  t3.b("</li>");
+  return t3.fl();
+}, partials: { "<fileIcon0": { name: "fileIcon", partials: {}, subs: {} } }, subs: {} });
+defaultTemplates["file-summary-wrapper"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<div class="d2h-file-list-wrapper ');
+  t3.b(t3.v(t3.f("colorScheme", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  t3.b('    <div class="d2h-file-list-header">');
+  t3.b("\n" + i4);
+  t3.b('        <span class="d2h-file-list-title">Files changed (');
+  t3.b(t3.v(t3.f("filesNumber", c3, p3, 0)));
+  t3.b(")</span>");
+  t3.b("\n" + i4);
+  t3.b('        <a class="d2h-file-switch d2h-hide">hide</a>');
+  t3.b("\n" + i4);
+  t3.b('        <a class="d2h-file-switch d2h-show">show</a>');
+  t3.b("\n" + i4);
+  t3.b("    </div>");
+  t3.b("\n" + i4);
+  t3.b('    <ol class="d2h-file-list">');
+  t3.b("\n" + i4);
+  t3.b("    ");
+  t3.b(t3.t(t3.f("files", c3, p3, 0)));
+  t3.b("\n" + i4);
+  t3.b("    </ol>");
+  t3.b("\n" + i4);
+  t3.b("</div>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["generic-block-header"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b("<tr>");
+  t3.b("\n" + i4);
+  t3.b('    <td class="');
+  t3.b(t3.v(t3.f("lineClass", c3, p3, 0)));
+  t3.b(" ");
+  t3.b(t3.v(t3.d("CSSLineClass.INFO", c3, p3, 0)));
+  t3.b('"></td>');
+  t3.b("\n" + i4);
+  t3.b('    <td class="');
+  t3.b(t3.v(t3.d("CSSLineClass.INFO", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  t3.b('        <div class="');
+  t3.b(t3.v(t3.f("contentClass", c3, p3, 0)));
+  t3.b('">');
+  if (t3.s(t3.f("blockHeader", c3, p3, 1), c3, p3, 0, 156, 173, "{{ }}")) {
+    t3.rs(c3, p3, function(c4, p4, t4) {
+      t4.b(t4.t(t4.f("blockHeader", c4, p4, 0)));
+    });
+    c3.pop();
+  }
+  if (!t3.s(t3.f("blockHeader", c3, p3, 1), c3, p3, 1, 0, 0, "")) {
+    t3.b("&nbsp;");
+  }
+  ;
+  t3.b("</div>");
+  t3.b("\n" + i4);
+  t3.b("    </td>");
+  t3.b("\n" + i4);
+  t3.b("</tr>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["generic-empty-diff"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b("<tr>");
+  t3.b("\n" + i4);
+  t3.b('    <td class="');
+  t3.b(t3.v(t3.d("CSSLineClass.INFO", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  t3.b('        <div class="');
+  t3.b(t3.v(t3.f("contentClass", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  t3.b("            File without changes");
+  t3.b("\n" + i4);
+  t3.b("        </div>");
+  t3.b("\n" + i4);
+  t3.b("    </td>");
+  t3.b("\n" + i4);
+  t3.b("</tr>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["generic-file-path"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<span class="d2h-file-name-wrapper">');
+  t3.b("\n" + i4);
+  t3.b(t3.rp("<fileIcon0", c3, p3, "    "));
+  t3.b('    <span class="d2h-file-name">');
+  t3.b(t3.v(t3.f("fileDiffName", c3, p3, 0)));
+  t3.b("</span>");
+  t3.b("\n" + i4);
+  t3.b(t3.rp("<fileTag1", c3, p3, "    "));
+  t3.b("</span>");
+  t3.b("\n" + i4);
+  t3.b('<label class="d2h-file-collapse">');
+  t3.b("\n" + i4);
+  t3.b('    <input class="d2h-file-collapse-input" type="checkbox" name="viewed" value="viewed">');
+  t3.b("\n" + i4);
+  t3.b("    Viewed");
+  t3.b("\n" + i4);
+  t3.b("</label>");
+  return t3.fl();
+}, partials: { "<fileIcon0": { name: "fileIcon", partials: {}, subs: {} }, "<fileTag1": { name: "fileTag", partials: {}, subs: {} } }, subs: {} });
+defaultTemplates["generic-line"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b("<tr>");
+  t3.b("\n" + i4);
+  t3.b('    <td class="');
+  t3.b(t3.v(t3.f("lineClass", c3, p3, 0)));
+  t3.b(" ");
+  t3.b(t3.v(t3.f("type", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  t3.b("      ");
+  t3.b(t3.t(t3.f("lineNumber", c3, p3, 0)));
+  t3.b("\n" + i4);
+  t3.b("    </td>");
+  t3.b("\n" + i4);
+  t3.b('    <td class="');
+  t3.b(t3.v(t3.f("type", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  t3.b('        <div class="');
+  t3.b(t3.v(t3.f("contentClass", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  if (t3.s(t3.f("prefix", c3, p3, 1), c3, p3, 0, 162, 238, "{{ }}")) {
+    t3.rs(c3, p3, function(c4, p4, t4) {
+      t4.b('            <span class="d2h-code-line-prefix">');
+      t4.b(t4.t(t4.f("prefix", c4, p4, 0)));
+      t4.b("</span>");
+      t4.b("\n" + i4);
+    });
+    c3.pop();
+  }
+  if (!t3.s(t3.f("prefix", c3, p3, 1), c3, p3, 1, 0, 0, "")) {
+    t3.b('            <span class="d2h-code-line-prefix">&nbsp;</span>');
+    t3.b("\n" + i4);
+  }
+  ;
+  if (t3.s(t3.f("content", c3, p3, 1), c3, p3, 0, 371, 445, "{{ }}")) {
+    t3.rs(c3, p3, function(c4, p4, t4) {
+      t4.b('            <span class="d2h-code-line-ctn">');
+      t4.b(t4.t(t4.f("content", c4, p4, 0)));
+      t4.b("</span>");
+      t4.b("\n" + i4);
+    });
+    c3.pop();
+  }
+  if (!t3.s(t3.f("content", c3, p3, 1), c3, p3, 1, 0, 0, "")) {
+    t3.b('            <span class="d2h-code-line-ctn"><br></span>');
+    t3.b("\n" + i4);
+  }
+  ;
+  t3.b("        </div>");
+  t3.b("\n" + i4);
+  t3.b("    </td>");
+  t3.b("\n" + i4);
+  t3.b("</tr>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["generic-wrapper"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<div class="d2h-wrapper ');
+  t3.b(t3.v(t3.f("colorScheme", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  t3.b("    ");
+  t3.b(t3.t(t3.f("content", c3, p3, 0)));
+  t3.b("\n" + i4);
+  t3.b("</div>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["icon-file-added"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<svg aria-hidden="true" class="d2h-icon d2h-added" height="16" title="added" version="1.1" viewBox="0 0 14 16"');
+  t3.b("\n" + i4);
+  t3.b('     width="14">');
+  t3.b("\n" + i4);
+  t3.b('    <path d="M13 1H1C0.45 1 0 1.45 0 2v12c0 0.55 0.45 1 1 1h12c0.55 0 1-0.45 1-1V2c0-0.55-0.45-1-1-1z m0 13H1V2h12v12zM6 9H3V7h3V4h2v3h3v2H8v3H6V9z"></path>');
+  t3.b("\n" + i4);
+  t3.b("</svg>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["icon-file-changed"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<svg aria-hidden="true" class="d2h-icon d2h-changed" height="16" title="modified" version="1.1"');
+  t3.b("\n" + i4);
+  t3.b('     viewBox="0 0 14 16" width="14">');
+  t3.b("\n" + i4);
+  t3.b('    <path d="M13 1H1C0.45 1 0 1.45 0 2v12c0 0.55 0.45 1 1 1h12c0.55 0 1-0.45 1-1V2c0-0.55-0.45-1-1-1z m0 13H1V2h12v12zM4 8c0-1.66 1.34-3 3-3s3 1.34 3 3-1.34 3-3 3-3-1.34-3-3z"></path>');
+  t3.b("\n" + i4);
+  t3.b("</svg>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["icon-file-deleted"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<svg aria-hidden="true" class="d2h-icon d2h-deleted" height="16" title="removed" version="1.1"');
+  t3.b("\n" + i4);
+  t3.b('     viewBox="0 0 14 16" width="14">');
+  t3.b("\n" + i4);
+  t3.b('    <path d="M13 1H1C0.45 1 0 1.45 0 2v12c0 0.55 0.45 1 1 1h12c0.55 0 1-0.45 1-1V2c0-0.55-0.45-1-1-1z m0 13H1V2h12v12zM11 9H3V7h8v2z"></path>');
+  t3.b("\n" + i4);
+  t3.b("</svg>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["icon-file-renamed"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<svg aria-hidden="true" class="d2h-icon d2h-moved" height="16" title="renamed" version="1.1"');
+  t3.b("\n" + i4);
+  t3.b('     viewBox="0 0 14 16" width="14">');
+  t3.b("\n" + i4);
+  t3.b('    <path d="M6 9H3V7h3V4l5 4-5 4V9z m8-7v12c0 0.55-0.45 1-1 1H1c-0.55 0-1-0.45-1-1V2c0-0.55 0.45-1 1-1h12c0.55 0 1 0.45 1 1z m-1 0H1v12h12V2z"></path>');
+  t3.b("\n" + i4);
+  t3.b("</svg>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["icon-file"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<svg aria-hidden="true" class="d2h-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12">');
+  t3.b("\n" + i4);
+  t3.b('    <path d="M6 5H2v-1h4v1zM2 8h7v-1H2v1z m0 2h7v-1H2v1z m0 2h7v-1H2v1z m10-7.5v9.5c0 0.55-0.45 1-1 1H1c-0.55 0-1-0.45-1-1V2c0-0.55 0.45-1 1-1h7.5l3.5 3.5z m-1 0.5L8 2H1v12h10V5z"></path>');
+  t3.b("\n" + i4);
+  t3.b("</svg>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["line-by-line-file-diff"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<div id="');
+  t3.b(t3.v(t3.f("fileHtmlId", c3, p3, 0)));
+  t3.b('" class="d2h-file-wrapper" data-lang="');
+  t3.b(t3.v(t3.d("file.language", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  t3.b('    <div class="d2h-file-header">');
+  t3.b("\n" + i4);
+  t3.b("    ");
+  t3.b(t3.t(t3.f("filePath", c3, p3, 0)));
+  t3.b("\n" + i4);
+  t3.b("    </div>");
+  t3.b("\n" + i4);
+  t3.b('    <div class="d2h-file-diff">');
+  t3.b("\n" + i4);
+  t3.b('        <div class="d2h-code-wrapper">');
+  t3.b("\n" + i4);
+  t3.b('            <table class="d2h-diff-table">');
+  t3.b("\n" + i4);
+  t3.b('                <tbody class="d2h-diff-tbody">');
+  t3.b("\n" + i4);
+  t3.b("                ");
+  t3.b(t3.t(t3.f("diffs", c3, p3, 0)));
+  t3.b("\n" + i4);
+  t3.b("                </tbody>");
+  t3.b("\n" + i4);
+  t3.b("            </table>");
+  t3.b("\n" + i4);
+  t3.b("        </div>");
+  t3.b("\n" + i4);
+  t3.b("    </div>");
+  t3.b("\n" + i4);
+  t3.b("</div>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["line-by-line-numbers"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<div class="line-num1">');
+  t3.b(t3.v(t3.f("oldNumber", c3, p3, 0)));
+  t3.b("</div>");
+  t3.b("\n" + i4);
+  t3.b('<div class="line-num2">');
+  t3.b(t3.v(t3.f("newNumber", c3, p3, 0)));
+  t3.b("</div>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["side-by-side-file-diff"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<div id="');
+  t3.b(t3.v(t3.f("fileHtmlId", c3, p3, 0)));
+  t3.b('" class="d2h-file-wrapper" data-lang="');
+  t3.b(t3.v(t3.d("file.language", c3, p3, 0)));
+  t3.b('">');
+  t3.b("\n" + i4);
+  t3.b('    <div class="d2h-file-header">');
+  t3.b("\n" + i4);
+  t3.b("      ");
+  t3.b(t3.t(t3.f("filePath", c3, p3, 0)));
+  t3.b("\n" + i4);
+  t3.b("    </div>");
+  t3.b("\n" + i4);
+  t3.b('    <div class="d2h-files-diff">');
+  t3.b("\n" + i4);
+  t3.b('        <div class="d2h-file-side-diff">');
+  t3.b("\n" + i4);
+  t3.b('            <div class="d2h-code-wrapper">');
+  t3.b("\n" + i4);
+  t3.b('                <table class="d2h-diff-table">');
+  t3.b("\n" + i4);
+  t3.b('                    <tbody class="d2h-diff-tbody">');
+  t3.b("\n" + i4);
+  t3.b("                    ");
+  t3.b(t3.t(t3.d("diffs.left", c3, p3, 0)));
+  t3.b("\n" + i4);
+  t3.b("                    </tbody>");
+  t3.b("\n" + i4);
+  t3.b("                </table>");
+  t3.b("\n" + i4);
+  t3.b("            </div>");
+  t3.b("\n" + i4);
+  t3.b("        </div>");
+  t3.b("\n" + i4);
+  t3.b('        <div class="d2h-file-side-diff">');
+  t3.b("\n" + i4);
+  t3.b('            <div class="d2h-code-wrapper">');
+  t3.b("\n" + i4);
+  t3.b('                <table class="d2h-diff-table">');
+  t3.b("\n" + i4);
+  t3.b('                    <tbody class="d2h-diff-tbody">');
+  t3.b("\n" + i4);
+  t3.b("                    ");
+  t3.b(t3.t(t3.d("diffs.right", c3, p3, 0)));
+  t3.b("\n" + i4);
+  t3.b("                    </tbody>");
+  t3.b("\n" + i4);
+  t3.b("                </table>");
+  t3.b("\n" + i4);
+  t3.b("            </div>");
+  t3.b("\n" + i4);
+  t3.b("        </div>");
+  t3.b("\n" + i4);
+  t3.b("    </div>");
+  t3.b("\n" + i4);
+  t3.b("</div>");
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["tag-file-added"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<span class="d2h-tag d2h-added d2h-added-tag">ADDED</span>');
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["tag-file-changed"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<span class="d2h-tag d2h-changed d2h-changed-tag">CHANGED</span>');
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["tag-file-deleted"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<span class="d2h-tag d2h-deleted d2h-deleted-tag">DELETED</span>');
+  return t3.fl();
+}, partials: {}, subs: {} });
+defaultTemplates["tag-file-renamed"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+  var t3 = this;
+  t3.b(i4 = i4 || "");
+  t3.b('<span class="d2h-tag d2h-moved d2h-moved-tag">RENAMED</span>');
+  return t3.fl();
+}, partials: {}, subs: {} });
+
+// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
+var HoganJsUtils = class {
+  constructor({ compiledTemplates = {}, rawTemplates = {} }) {
+    const compiledRawTemplates = Object.entries(rawTemplates).reduce((previousTemplates, [name, templateString]) => {
+      const compiledTemplate = Hogan3.compile(templateString, { asString: false });
+      return Object.assign(Object.assign({}, previousTemplates), { [name]: compiledTemplate });
+    }, {});
+    this.preCompiledTemplates = Object.assign(Object.assign(Object.assign({}, defaultTemplates), compiledTemplates), compiledRawTemplates);
+  }
+  static compile(templateString) {
+    return Hogan3.compile(templateString, { asString: false });
+  }
+  render(namespace, view, params, partials, indent) {
+    const templateKey = this.templateKey(namespace, view);
+    try {
+      const template = this.preCompiledTemplates[templateKey];
+      return template.render(params, partials, indent);
+    } catch (_e) {
+      throw new Error(`Could not find template to render '${templateKey}'`);
+    }
+  }
+  template(namespace, view) {
+    return this.preCompiledTemplates[this.templateKey(namespace, view)];
+  }
+  templateKey(namespace, view) {
+    return `${namespace}-${view}`;
+  }
+};
+
+// ../../node_modules/diff2html/lib-esm/diff2html.js
+var defaultDiff2HtmlConfig = Object.assign(Object.assign(Object.assign({}, defaultLineByLineRendererConfig), defaultSideBySideRendererConfig), { outputFormat: OutputFormatType.LINE_BY_LINE, drawFileList: true });
+function html2(diffInput, configuration = {}) {
+  const config = Object.assign(Object.assign({}, defaultDiff2HtmlConfig), configuration);
+  const diffJson = typeof diffInput === "string" ? parse(diffInput, config) : diffInput;
+  const hoganUtils = new HoganJsUtils(config);
+  const { colorScheme } = config;
+  const fileListRendererConfig = { colorScheme };
+  const fileList = config.drawFileList ? new FileListRenderer(hoganUtils, fileListRendererConfig).render(diffJson) : "";
+  const diffOutput = config.outputFormat === "side-by-side" ? new SideBySideRenderer(hoganUtils, config).render(diffJson) : new LineByLineRenderer(hoganUtils, config).render(diffJson);
+  return fileList + diffOutput;
+}
+
+// ui/src/components/stream-renderer/FileEditBlock.tsx
+function generateUnifiedDiff(filePath, oldStr, newStr) {
+  const oldLines = oldStr.split("\n");
+  const newLines = newStr.split("\n");
+  const header = [
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    `@@ -1,${oldLines.length} +1,${newLines.length} @@`
+  ].join("\n");
+  const removals = oldLines.map((l3) => `-${l3}`).join("\n");
+  const additions = newLines.map((l3) => `+${l3}`).join("\n");
+  return `${header}
+${removals}
+${additions}
+`;
+}
+function FileEditBlock({ filePath, oldString, newString }) {
+  const diffHtml = T2(() => {
+    try {
+      const diffStr = generateUnifiedDiff(filePath, oldString, newString);
+      return html2(diffStr, {
+        inputFormat: "diff",
+        outputFormat: "line-by-line",
+        drawFileList: false,
+        matching: "lines"
+      });
+    } catch {
+      return null;
+    }
+  }, [filePath, oldString, newString]);
+  if (!diffHtml) {
+    return /* @__PURE__ */ u3("div", { className: "file-edit-block", children: /* @__PURE__ */ u3("div", { className: "tool-use-block__input", children: /* @__PURE__ */ u3("pre", { children: /* @__PURE__ */ u3("code", { children: [
+      `--- ${filePath} (old)
+`,
+      oldString,
+      `
++++ ${filePath} (new)
+`,
+      newString
+    ] }) }) }) });
+  }
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "file-edit-block",
+      dangerouslySetInnerHTML: { __html: diffHtml }
+    }
+  );
+}
+
+// ui/src/components/stream-renderer/ToolUseBlock.tsx
+function highlightJson(json) {
+  const escaped = json.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return escaped.replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    (match) => {
+      let cls = "json-number";
+      if (/^"/.test(match)) {
+        cls = /:$/.test(match) ? "json-key" : "json-string";
+      } else if (/true|false/.test(match)) {
+        cls = "json-boolean";
+      } else if (/null/.test(match)) {
+        cls = "json-null";
+      }
+      return `<span class="${cls}">${match}</span>`;
+    }
+  );
+}
+function extractResultText(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    const textItems = content.filter(
+      (item) => item.type === "text"
+    );
+    if (textItems.length > 0) {
+      return textItems.map((item) => item.text ?? "").join("\n");
+    }
+  }
+  return "";
+}
+function hasImages(content) {
+  if (!Array.isArray(content)) {
+    return false;
+  }
+  return content.some((item) => item.type === "image");
+}
+function extractImages(content) {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content.filter((item) => item.type === "image" && item.source).map((item) => item.source);
+}
+function getToolDescription(toolName, input) {
+  switch (toolName) {
+    case "Read": {
+      const p3 = input.file_path ?? input.path;
+      return typeof p3 === "string" ? p3 : JSON.stringify(input).slice(0, 80);
+    }
+    case "Edit":
+    case "MultiEdit": {
+      const p3 = input.file_path ?? input.path;
+      return typeof p3 === "string" ? p3 : JSON.stringify(input).slice(0, 80);
+    }
+    case "Write": {
+      const p3 = input.file_path ?? input.path;
+      return typeof p3 === "string" ? p3 : JSON.stringify(input).slice(0, 80);
+    }
+    case "Bash": {
+      const cmd = input.command;
+      if (typeof cmd === "string") {
+        return cmd.slice(0, 60) + (cmd.length > 60 ? "\u2026" : "");
+      }
+      return JSON.stringify(input).slice(0, 80);
+    }
+    case "Grep": {
+      const pat = input.pattern;
+      const path = input.path ?? input.directory;
+      if (typeof pat === "string") {
+        return typeof path === "string" ? `${pat} in ${path}` : pat;
+      }
+      return JSON.stringify(input).slice(0, 80);
+    }
+    case "Glob": {
+      const pat = input.pattern;
+      return typeof pat === "string" ? pat : JSON.stringify(input).slice(0, 80);
+    }
+    case "WebSearch": {
+      const q3 = input.query;
+      return typeof q3 === "string" ? q3.slice(0, 60) : JSON.stringify(input).slice(0, 80);
+    }
+    case "WebFetch": {
+      const url = input.url;
+      return typeof url === "string" ? url.slice(0, 60) : JSON.stringify(input).slice(0, 80);
+    }
+    default:
+      return JSON.stringify(input).slice(0, 80);
+  }
+}
+function StatusIndicator({ pending, isError }) {
+  if (pending) {
+    return /* @__PURE__ */ u3("span", { className: "tool-use-block__status tool-use-block__status--pending", "aria-label": "Pending", children: "\u23F3" });
+  }
+  if (isError) {
+    return /* @__PURE__ */ u3("span", { className: "tool-use-block__status tool-use-block__status--error", "aria-label": "Error", children: "\u2717" });
+  }
+  return /* @__PURE__ */ u3("span", { className: "tool-use-block__status tool-use-block__status--ok", "aria-label": "Done", children: "\u2713" });
+}
+function ToolResult({ result }) {
+  if (result.is_error) {
+    const text2 = extractResultText(result.content);
+    return /* @__PURE__ */ u3("div", { className: "tool-use-block__result tool-result--error", children: /* @__PURE__ */ u3("pre", { children: text2 || "(error \u2014 no message)" }) });
+  }
+  const images = hasImages(result.content) ? extractImages(result.content) : [];
+  const text = extractResultText(result.content);
+  return /* @__PURE__ */ u3("div", { className: "tool-use-block__result", children: [
+    text && /* @__PURE__ */ u3("pre", { children: text }),
+    images.map((src, i4) => /* @__PURE__ */ u3(
+      "img",
+      {
+        src: `data:${src.media_type};base64,${src.data}`,
+        alt: "Tool output",
+        style: { maxWidth: "100%", borderRadius: "8px", marginTop: "8px" }
+      },
+      i4
+    ))
+  ] });
+}
+function BashInputPanel({ input }) {
+  const command = typeof input.command === "string" ? input.command : JSON.stringify(input);
+  return /* @__PURE__ */ u3("div", { className: "tool-use-block__input", children: /* @__PURE__ */ u3("pre", { children: /* @__PURE__ */ u3("code", { children: command }) }) });
+}
+function WriteInputPanel({ input }) {
+  const content = typeof input.content === "string" ? input.content : JSON.stringify(input, null, 2);
+  return /* @__PURE__ */ u3("div", { className: "tool-use-block__input", children: /* @__PURE__ */ u3("pre", { children: /* @__PURE__ */ u3("code", { children: content }) }) });
+}
+function JsonInputPanel({ input }) {
+  const jsonStr = JSON.stringify(input, null, 2);
+  const highlighted = highlightJson(jsonStr);
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "tool-use-block__input",
+      dangerouslySetInnerHTML: { __html: `<pre>${highlighted}</pre>` }
+    }
+  );
+}
+function ToolUseBlock({
+  toolName,
+  toolUseId,
+  input,
+  result,
+  defaultExpanded
+}) {
+  const hasResult = result != null;
+  const isError = hasResult && result.is_error === true;
+  const isPending = !hasResult;
+  const initialExpanded = defaultExpanded !== void 0 ? defaultExpanded : isPending;
+  const [expanded, setExpanded] = d2(initialExpanded);
+  const prevHasResult = T2(() => hasResult, [hasResult]);
+  if (hasResult && !prevHasResult && expanded && defaultExpanded === void 0) {
+  }
+  const description = T2(() => getToolDescription(toolName, input), [toolName, input]);
+  function renderInputPanel() {
+    if ((toolName === "Edit" || toolName === "MultiEdit") && typeof input.file_path === "string") {
+      const filePath = input.file_path;
+      const oldString = typeof input.old_string === "string" ? input.old_string : "";
+      const newString = typeof input.new_string === "string" ? input.new_string : "";
+      return /* @__PURE__ */ u3(
+        FileEditBlock,
+        {
+          filePath,
+          oldString,
+          newString
+        }
+      );
+    }
+    if (toolName === "Bash") {
+      return /* @__PURE__ */ u3(BashInputPanel, { input });
+    }
+    if (toolName === "Write") {
+      return /* @__PURE__ */ u3(WriteInputPanel, { input });
+    }
+    return /* @__PURE__ */ u3(JsonInputPanel, { input });
+  }
+  return /* @__PURE__ */ u3("div", { className: "tool-use-block", "data-tool": toolName, "data-id": toolUseId, children: [
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "tool-use-block__header",
+        onClick: () => setExpanded((prev) => !prev),
+        "aria-expanded": expanded,
+        children: [
+          /* @__PURE__ */ u3("span", { className: "tool-use-block__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+          /* @__PURE__ */ u3("span", { className: "tool-use-block__name", children: toolName }),
+          /* @__PURE__ */ u3("span", { className: "tool-use-block__desc", children: description }),
+          /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError })
+        ]
+      }
+    ),
+    expanded && /* @__PURE__ */ u3("div", { className: "tool-use-block__body", children: [
+      renderInputPanel(),
+      hasResult && /* @__PURE__ */ u3(k, { children: [
+        /* @__PURE__ */ u3("div", { className: "tool-use-block__divider" }),
+        /* @__PURE__ */ u3(ToolResult, { result })
+      ] })
+    ] })
+  ] });
+}
+
+// ui/src/components/stream-renderer/MessageGroup.tsx
+function MessageGroup({ turn, isStreaming }) {
+  const { assistantEvent, toolResults } = turn;
+  const blocks = assistantEvent.message.content;
+  function renderBlock(block2, index) {
+    switch (block2.type) {
+      case "text":
+        return block2.text.trim() ? /* @__PURE__ */ u3(TextBlock, { text: block2.text }, `text-${index}`) : null;
+      case "thinking":
+        return /* @__PURE__ */ u3(
+          ThinkingBlock,
+          {
+            thinking: block2.thinking,
+            defaultExpanded: false
+          },
+          `thinking-${index}`
+        );
+      case "tool_use": {
+        const result = toolResults.get(block2.id) ?? null;
+        const isPendingStreaming = isStreaming && result === null;
+        return /* @__PURE__ */ u3(
+          ToolUseBlock,
+          {
+            toolName: block2.name,
+            toolUseId: block2.id,
+            input: block2.input,
+            result,
+            defaultExpanded: isPendingStreaming || result === null
+          },
+          `tool-${block2.id}`
+        );
+      }
+      default:
+        return null;
+    }
+  }
+  return /* @__PURE__ */ u3("div", { className: "message-group", children: [
+    /* @__PURE__ */ u3("div", { className: "message-group__role", "aria-label": "Role", children: "Assistant" }),
+    /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) })
+  ] });
+}
+
+// ui/src/components/stream-renderer/StatusBar.tsx
+function formatCost(usd) {
+  if (usd < 1e-3) {
+    return "<$0.001";
+  }
+  return `$${usd.toFixed(4)}`;
+}
+function formatDuration2(ms) {
+  if (ms < 1e3) {
+    return `${ms}ms`;
+  }
+  return `${(ms / 1e3).toFixed(1)}s`;
+}
+function StatusBar({
+  streaming,
+  model,
+  totalCostUsd,
+  numTurns,
+  durationMs,
+  error
+}) {
+  const dotClass = error ? "status-bar__dot status-bar__dot--error" : streaming ? "status-bar__dot status-bar__dot--streaming" : "status-bar__dot status-bar__dot--done";
+  const parts = [];
+  if (numTurns !== void 0) {
+    parts.push(`${numTurns} turn${numTurns === 1 ? "" : "s"}`);
+  }
+  if (totalCostUsd !== void 0) {
+    parts.push(formatCost(totalCostUsd));
+  }
+  if (model) {
+    parts.push(model);
+  }
+  const centerText = parts.join(" \xB7 ");
+  const rightText = !streaming && durationMs !== void 0 ? formatDuration2(durationMs) : "";
+  return /* @__PURE__ */ u3("div", { className: "status-bar", children: [
+    /* @__PURE__ */ u3("span", { className: dotClass, "aria-hidden": "true" }),
+    error ? /* @__PURE__ */ u3("span", { className: "status-bar__error", children: error }) : streaming ? /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Streaming\u2026" }) : /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Complete" }),
+    centerText && /* @__PURE__ */ u3("span", { className: "status-bar__center", children: centerText }),
+    rightText && /* @__PURE__ */ u3("span", { className: "status-bar__right", children: rightText })
+  ] });
+}
+
+// ui/src/components/stream-renderer/StreamRenderer.tsx
+function buildTurn(assistant, results) {
+  return {
+    id: assistant.uuid ?? `turn-${Math.random().toString(36).slice(2)}`,
+    assistantEvent: assistant,
+    toolResults: new Map(results)
+  };
+}
+function useStreamState(events) {
+  return T2(() => {
+    const turns = [];
+    let initEvent = null;
+    let resultEvent = null;
+    let pendingAssistant = null;
+    const pendingResults = /* @__PURE__ */ new Map();
+    for (const event of events) {
+      if (event.type === "system" && event.subtype === "init") {
+        initEvent = event;
+      } else if (event.type === "assistant") {
+        if (pendingAssistant) {
+          turns.push(buildTurn(pendingAssistant, pendingResults));
+          pendingResults.clear();
+        }
+        pendingAssistant = event;
+      } else if (event.type === "user") {
+        const userEvent = event;
+        for (const block2 of userEvent.message.content) {
+          if (block2.type === "tool_result") {
+            pendingResults.set(block2.tool_use_id, block2);
+          }
+        }
+      } else if (event.type === "result") {
+        resultEvent = event;
+      }
+    }
+    if (pendingAssistant) {
+      turns.push(buildTurn(pendingAssistant, pendingResults));
+    }
+    return { turns, initEvent, resultEvent };
+  }, [events]);
+}
+function deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo) {
+  const model = sessionInfo?.model ?? initEvent?.model;
+  if (!resultEvent) {
+    return { model };
+  }
+  if (resultEvent.is_error) {
+    return {
+      model,
+      totalCostUsd: resultEvent.total_cost_usd,
+      numTurns: resultEvent.num_turns,
+      durationMs: resultEvent.duration_ms,
+      error: resultEvent.errors?.join("; ")
+    };
+  }
+  return {
+    model,
+    totalCostUsd: resultEvent.total_cost_usd,
+    numTurns: resultEvent.num_turns,
+    durationMs: resultEvent.duration_ms
+  };
+}
+function StreamRenderer({
+  events,
+  streaming,
+  sessionInfo
+}) {
+  const { turns, initEvent, resultEvent } = useStreamState(events);
+  const scrollRef = A2(null);
+  const [userScrolled, setUserScrolled] = d2(false);
+  y2(() => {
+    if (!streaming || userScrolled) {
+      return;
+    }
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [events.length, streaming, userScrolled]);
+  function handleScroll() {
+    const el = scrollRef.current;
+    if (!el) {
+      return;
+    }
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
+    setUserScrolled(!atBottom);
+  }
+  function handleJumpToBottom() {
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+    setUserScrolled(false);
+  }
+  const statusBarProps = deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo);
+  if (events.length === 0) {
+    return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
+      /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: streaming ? "Waiting for events\u2026" : "No events" }),
+      /* @__PURE__ */ u3(StatusBar, { streaming, ...statusBarProps })
+    ] });
+  }
+  return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
+    /* @__PURE__ */ u3(
+      "div",
+      {
+        ref: scrollRef,
+        className: "stream-renderer__scroll",
+        onScroll: handleScroll,
+        children: turns.map((turn, i4) => /* @__PURE__ */ u3(
+          MessageGroup,
+          {
+            turn,
+            isStreaming: streaming && i4 === turns.length - 1
+          },
+          turn.id
+        ))
+      }
+    ),
+    userScrolled && streaming && /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "stream-renderer__scroll-btn",
+        onClick: handleJumpToBottom,
+        children: "Jump to bottom \u2193"
+      }
+    ),
+    /* @__PURE__ */ u3(StatusBar, { streaming, ...statusBarProps })
+  ] });
+}
+
+// ui/src/components/console/ViewToggle.tsx
+function ViewToggle({ current, onChange }) {
+  return /* @__PURE__ */ u3("div", { className: "view-toggle", children: [
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: `view-toggle__btn${current === "terminal" ? " view-toggle__btn--active" : ""}`,
+        onClick: () => onChange("terminal"),
+        children: "Terminal"
+      }
+    ),
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: `view-toggle__btn${current === "rich" ? " view-toggle__btn--active" : ""}`,
+        onClick: () => onChange("rich"),
+        children: "Rich"
+      }
+    )
+  ] });
+}
+
+// ui/src/components/console/TerminalPane.tsx
+function TerminalPane({
+  sessionId,
+  interactionMode,
+  isVisible,
+  viewMode,
+  onViewModeChange
+}) {
+  const containerRef = A2(null);
+  const termRef = A2(null);
+  const fitAddonRef = A2(null);
+  const wsRef = A2(null);
+  const resizeObserverRef = A2(null);
+  const pendingWritesRef = A2([]);
+  const isVisibleRef = A2(isVisible);
+  const viewModeRef = A2(viewMode);
+  const [wsStatus, setWsStatus] = d2("connecting");
+  const [reconnectNonce, setReconnectNonce] = d2(0);
+  const [streamEvents, setStreamEvents] = d2([]);
+  const [streaming, setStreaming] = d2(false);
+  y2(() => {
+    isVisibleRef.current = isVisible;
+  }, [isVisible]);
+  y2(() => {
+    viewModeRef.current = viewMode;
+  }, [viewMode]);
+  y2(() => {
+    if (!containerRef.current)
+      return;
+    const term = new import_xterm.Terminal({
+      fontFamily: "var(--font-mono)",
+      fontSize: 13,
+      lineHeight: 1.2,
+      theme: {
+        background: "#0b0f14",
+        foreground: "#e6edf3",
+        cursor: "#4da3ff"
+      },
+      cursorBlink: true,
+      scrollback: 5e3,
+      allowProposedApi: false
+    });
+    const fitAddon = new import_addon_fit.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(containerRef.current);
+    fitAddon.fit();
+    termRef.current = term;
+    fitAddonRef.current = fitAddon;
+    const observer = new ResizeObserver(() => {
+      if (!isVisibleRef.current || viewModeRef.current !== "terminal")
+        return;
+      try {
+        fitAddon.fit();
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+      } catch {
+      }
+    });
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+    resizeObserverRef.current = observer;
+    return () => {
+      observer.disconnect();
+      term.dispose();
+      termRef.current = null;
+      fitAddonRef.current = null;
+    };
+  }, [sessionId]);
+  y2(() => {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/terminal/${encodeURIComponent(sessionId)}`;
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
+    wsRef.current = ws;
+    setWsStatus("connecting");
+    ws.onopen = () => {
+      setWsStatus("open");
+      const fitAddon = fitAddonRef.current;
+      const term = termRef.current;
+      const container = containerRef.current;
+      if (fitAddon && term && container && container.offsetWidth > 0) {
+        try {
+          fitAddon.fit();
+        } catch {
+        }
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        if (pendingWritesRef.current.length > 0) {
+          for (const bytes of pendingWritesRef.current) {
+            term.write(bytes);
+          }
+          pendingWritesRef.current = [];
+        }
+      }
+    };
+    ws.onmessage = (event) => {
+      const term = termRef.current;
+      if (!term)
+        return;
+      if (event.data instanceof ArrayBuffer) {
+        const bytes = new Uint8Array(event.data);
+        if (term.cols > 0) {
+          term.write(bytes);
+        } else {
+          pendingWritesRef.current.push(bytes);
+        }
+      } else if (typeof event.data === "string") {
+        try {
+          JSON.parse(event.data);
+        } catch {
+          term.write(event.data);
+        }
+      }
+    };
+    ws.onclose = () => {
+      setWsStatus("closed");
+      termRef.current?.blur();
+    };
+    ws.onerror = () => {
+      setWsStatus("error");
+    };
+    return () => {
+      ws.close();
+    };
+  }, [sessionId, reconnectNonce]);
+  y2(() => {
+    const term = termRef.current;
+    if (!term)
+      return;
+    const disposable = term.onData((data) => {
+      if (interactionMode === "inbox_only")
+        return;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode(data));
+      }
+    });
+    return () => {
+      disposable.dispose();
+    };
+  }, [sessionId, interactionMode]);
+  y2(() => {
+    if (isVisible && viewMode === "terminal") {
+      const rafId = requestAnimationFrame(() => {
+        const fitAddon = fitAddonRef.current;
+        const term = termRef.current;
+        if (fitAddon && term) {
+          try {
+            fitAddon.fit();
+            term.focus();
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+            }
+          } catch {
+          }
+          if (pendingWritesRef.current.length > 0) {
+            for (const bytes of pendingWritesRef.current) {
+              term.write(bytes);
+            }
+            pendingWritesRef.current = [];
+          } else {
+            const sessionId_ = sessionId;
+            fetch(`/api/console/sessions/${sessionId_}/buffer`).then((r3) => r3.ok ? r3.json() : null).then((resp) => {
+              if (resp?.data && termRef.current) {
+                const bytes = Uint8Array.from(atob(resp.data), (c3) => c3.charCodeAt(0));
+                termRef.current.write(bytes);
+              }
+            }).catch(() => {
+            });
+          }
+        }
+      });
+      return () => cancelAnimationFrame(rafId);
+    }
+  }, [isVisible, viewMode, sessionId]);
+  y2(() => {
+    const handleStreamEvent = (e3) => {
+      const detail = e3.detail;
+      if (!detail || detail.console_session_id !== sessionId)
+        return;
+      const streamEvent = detail.event;
+      if (!streamEvent)
+        return;
+      setStreamEvents((prev) => [...prev, streamEvent]);
+      if (streamEvent.type === "result") {
+        setStreaming(false);
+      } else {
+        setStreaming(true);
+      }
+    };
+    window.addEventListener("console:stream_event", handleStreamEvent);
+    return () => {
+      window.removeEventListener("console:stream_event", handleStreamEvent);
+      setStreamEvents([]);
+      setStreaming(false);
+    };
+  }, [sessionId]);
+  const handleReconnect = async () => {
+    setWsStatus("connecting");
+    try {
+      await restartConsoleSession(sessionId);
+      setReconnectNonce((n2) => n2 + 1);
+    } catch {
+      setWsStatus("error");
+    }
+  };
+  const showReconnectOverlay = wsStatus === "closed" || wsStatus === "error";
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "terminal-pane",
+      style: { display: isVisible ? "flex" : "none" },
+      children: [
+        /* @__PURE__ */ u3("div", { className: "terminal-pane__header", children: /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: [
+          interactionMode === "both" && /* @__PURE__ */ u3(
+            "span",
+            {
+              style: {
+                background: "rgba(77,163,255,0.12)",
+                color: "var(--accent-blue)",
+                padding: "2px 8px",
+                borderRadius: "999px",
+                fontSize: "11px",
+                cursor: "pointer"
+              },
+              onClick: () => {
+                window.location.hash = "#/inbox";
+              },
+              title: "View inbox",
+              children: "Inbox"
+            }
+          ),
+          /* @__PURE__ */ u3(ViewToggle, { current: viewMode, onChange: onViewModeChange })
+        ] }) }),
+        interactionMode === "inbox_only" && /* @__PURE__ */ u3("div", { className: "terminal-pane__inbox-banner", children: "Operator receives inbox items. Direct input is disabled." }),
+        /* @__PURE__ */ u3("div", { className: "terminal-pane__body", children: [
+          /* @__PURE__ */ u3(
+            "div",
+            {
+              className: "terminal-pane__container",
+              ref: containerRef,
+              style: { display: viewMode === "terminal" ? "flex" : "none", flex: 1 }
+            }
+          ),
+          showReconnectOverlay && viewMode === "terminal" && /* @__PURE__ */ u3("div", { className: "terminal-pane__reconnect-overlay", children: [
+            /* @__PURE__ */ u3("span", { children: wsStatus === "error" ? "Connection error" : "Disconnected" }),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                onClick: () => {
+                  void handleReconnect();
+                },
+                style: {
+                  padding: "8px 20px",
+                  borderRadius: "8px",
+                  background: "var(--accent-blue)",
+                  border: "none",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                  fontFamily: "var(--font-sans)"
+                },
+                children: "Reconnect"
+              }
+            )
+          ] }),
+          viewMode === "rich" && /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto" }, children: /* @__PURE__ */ u3(
+            StreamRenderer,
+            {
+              events: streamEvents,
+              streaming,
+              sessionInfo: { sessionId }
+            }
+          ) }),
+          viewMode === "rich" && showReconnectOverlay && /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-disconnected", children: [
+            "Session disconnected \u2014",
+            " ",
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                onClick: () => {
+                  void handleReconnect();
+                },
+                style: {
+                  background: "none",
+                  border: "none",
+                  color: "var(--accent-blue)",
+                  cursor: "pointer",
+                  padding: 0,
+                  fontSize: "inherit",
+                  fontFamily: "inherit",
+                  textDecoration: "underline"
+                },
+                children: "Restart"
+              }
+            )
+          ] })
+        ] })
+      ]
+    }
+  );
+}
+
+// ui/src/components/console/NewSessionDialog.tsx
+var AGENT_TYPE_OPTIONS = [
+  { value: "operator", label: "Operator (Claude agent, auto-restart)" },
+  { value: "claude", label: "Claude (Claude agent)" },
+  { value: "codex", label: "Codex" },
+  { value: "shell", label: "Shell (bash)" }
+];
+function NewSessionDialog({ open, onClose, onSubmit }) {
+  const [label, setLabel] = d2("");
+  const [agentType, setAgentType] = d2("shell");
+  if (!open)
+    return null;
+  const handleSubmit = (e3) => {
+    e3.preventDefault();
+    if (!label.trim())
+      return;
+    onSubmit(label.trim(), agentType);
+    setLabel("");
+    setAgentType("shell");
+    onClose();
+  };
+  const handleOverlayClick = (e3) => {
+    if (e3.target === e3.currentTarget) {
+      onClose();
+    }
+  };
+  return /* @__PURE__ */ u3("div", { className: "new-session-dialog-overlay", onClick: handleOverlayClick, children: /* @__PURE__ */ u3("div", { className: "new-session-dialog", children: [
+    /* @__PURE__ */ u3("h3", { children: "New Console Session" }),
+    /* @__PURE__ */ u3("form", { onSubmit: handleSubmit, style: { display: "flex", flexDirection: "column", gap: "12px" }, children: [
+      /* @__PURE__ */ u3("div", { style: { display: "flex", flexDirection: "column", gap: "6px" }, children: [
+        /* @__PURE__ */ u3(
+          "label",
+          {
+            htmlFor: "console-session-label",
+            style: { fontSize: "13px", color: "var(--text-muted)" },
+            children: "Name"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            id: "console-session-label",
+            type: "text",
+            value: label,
+            onInput: (e3) => setLabel(e3.target.value),
+            placeholder: "e.g. Operator, My Shell",
+            required: true,
+            autoFocus: true,
+            style: {
+              background: "var(--bg-secondary)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+              padding: "8px 12px",
+              color: "var(--text-primary)",
+              fontSize: "14px",
+              fontFamily: "var(--font-sans)",
+              outline: "none"
+            }
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { style: { display: "flex", flexDirection: "column", gap: "6px" }, children: [
+        /* @__PURE__ */ u3(
+          "label",
+          {
+            htmlFor: "console-agent-type",
+            style: { fontSize: "13px", color: "var(--text-muted)" },
+            children: "Agent Type"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            id: "console-agent-type",
+            value: agentType,
+            onChange: (e3) => setAgentType(e3.target.value),
+            style: {
+              background: "var(--bg-secondary)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: "8px",
+              padding: "8px 12px",
+              color: "var(--text-primary)",
+              fontSize: "14px",
+              fontFamily: "var(--font-sans)",
+              outline: "none",
+              cursor: "pointer"
+            },
+            children: AGENT_TYPE_OPTIONS.map((opt) => /* @__PURE__ */ u3("option", { value: opt.value, children: opt.label }, opt.value))
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end", marginTop: "4px" }, children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            onClick: onClose,
+            style: {
+              padding: "8px 16px",
+              borderRadius: "8px",
+              background: "transparent",
+              border: "1px solid rgba(255,255,255,0.1)",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: "14px",
+              fontFamily: "var(--font-sans)"
+            },
+            children: "Cancel"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "submit",
+            style: {
+              padding: "8px 16px",
+              borderRadius: "8px",
+              background: "var(--accent-blue)",
+              border: "none",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: "14px",
+              fontFamily: "var(--font-sans)",
+              fontWeight: 600
+            },
+            children: "Start"
+          }
+        )
+      ] })
+    ] })
+  ] }) });
+}
+
+// ui/src/views/console.tsx
+function ConsoleView({
+  sessions,
+  activeSessionId,
+  onSelectSession,
+  onCloseSession,
+  onNewSession,
+  isActive
+}) {
+  const [dialogOpen, setDialogOpen] = d2(false);
+  const [viewModes, setViewModes] = d2({});
+  y2(() => {
+    if (activeSessionId === null && sessions.length > 0) {
+      const operatorSession = sessions.find(
+        (s3) => s3.agent_type === "operator" && s3.pinned
+      );
+      const pinnedSession = sessions.find((s3) => s3.pinned);
+      const firstSession = [...sessions].sort((a3, b) => a3.created_at - b.created_at)[0];
+      const target = operatorSession ?? pinnedSession ?? firstSession;
+      if (target) {
+        onSelectSession(target.id);
+      }
+    }
+  }, [activeSessionId, sessions, onSelectSession]);
+  const activeSession = sessions.find((s3) => s3.id === activeSessionId) ?? null;
+  const getViewMode = (sessionId) => {
+    if (sessionId in viewModes)
+      return viewModes[sessionId];
+    const session = sessions.find((s3) => s3.id === sessionId);
+    if (session && session.agent_type !== "shell") {
+      return "rich";
+    }
+    return "terminal";
+  };
+  const handleViewModeChange = (sessionId, mode) => {
+    setViewModes((prev) => ({ ...prev, [sessionId]: mode }));
+  };
+  return /* @__PURE__ */ u3("div", { className: "console-view", children: [
+    /* @__PURE__ */ u3(
+      ConsoleSubTabBar,
+      {
+        sessions,
+        activeSessionId,
+        onSelect: onSelectSession,
+        onClose: onCloseSession,
+        onNewSession: () => setDialogOpen(true),
+        isConsoleActive: isActive
+      }
+    ),
+    /* @__PURE__ */ u3("div", { style: { flex: 1, position: "relative", overflow: "hidden" }, children: sessions.length === 0 ? /* @__PURE__ */ u3(
+      "div",
+      {
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100%",
+          gap: "12px",
+          color: "var(--text-muted)",
+          fontSize: "14px"
+        },
+        children: [
+          /* @__PURE__ */ u3("div", { children: "No console sessions" }),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              onClick: () => setDialogOpen(true),
+              style: {
+                padding: "8px 20px",
+                borderRadius: "8px",
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid rgba(255,255,255,0.1)",
+                color: "var(--text-primary)",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontFamily: "var(--font-sans)"
+              },
+              children: "+ New Session"
+            }
+          )
+        ]
+      }
+    ) : sessions.map((session) => /* @__PURE__ */ u3(
+      TerminalPane,
+      {
+        sessionId: session.id,
+        interactionMode: session.interaction_mode,
+        isVisible: session.id === activeSessionId,
+        viewMode: getViewMode(session.id),
+        onViewModeChange: (mode) => handleViewModeChange(session.id, mode)
+      },
+      session.id
+    )) }),
+    /* @__PURE__ */ u3(
+      NewSessionDialog,
+      {
+        open: dialogOpen,
+        onClose: () => setDialogOpen(false),
+        onSubmit: onNewSession
+      }
+    )
+  ] });
+}
+
+// ui/src/views/logs.tsx
+var LEVEL_ORDER = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3
+};
+var LEVEL_LABELS = ["debug", "info", "warn", "error"];
+function levelClass(level) {
+  switch (level) {
+    case "error":
+      return "log-badge log-badge--error";
+    case "warn":
+      return "log-badge log-badge--warn";
+    case "info":
+      return "log-badge log-badge--info";
+    case "debug":
+      return "log-badge log-badge--debug";
+    default:
+      return "log-badge";
+  }
+}
+function formatTime(iso) {
+  if (!iso)
+    return "\u2014";
+  const d3 = new Date(iso);
+  if (isNaN(d3.getTime()))
+    return iso;
+  return d3.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+}
+function LogRow({ entry }) {
+  const [expanded, setExpanded] = d2(false);
+  const extraKeys = Object.keys(entry).filter(
+    (k3) => k3 !== "level" && k3 !== "message" && k3 !== "time"
+  );
+  const hasExtra = extraKeys.length > 0;
+  const extra = {};
+  for (const k3 of extraKeys) {
+    extra[k3] = entry[k3];
+  }
+  return /* @__PURE__ */ u3("div", { className: `log-row log-row--${entry.level ?? "info"}`, children: [
+    /* @__PURE__ */ u3("div", { className: "log-row__main", onClick: () => hasExtra && setExpanded((v3) => !v3), children: [
+      /* @__PURE__ */ u3("span", { className: "log-row__time", children: formatTime(entry.time) }),
+      /* @__PURE__ */ u3("span", { className: levelClass(entry.level ?? "info"), children: (entry.level ?? "info").toUpperCase() }),
+      /* @__PURE__ */ u3("span", { className: "log-row__message", children: entry.message }),
+      hasExtra && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "log-row__expand",
+          "aria-label": expanded ? "Collapse details" : "Expand details",
+          children: expanded ? "\u25BE" : "\u25B8"
+        }
+      )
+    ] }),
+    expanded && hasExtra && /* @__PURE__ */ u3("pre", { className: "log-row__detail", children: JSON.stringify(extra, null, 2) })
+  ] });
+}
+function LogsView() {
+  const [entries, setEntries] = d2([]);
+  const [minLevel, setMinLevel] = d2("info");
+  const [loading, setLoading] = d2(false);
+  const [error, setError] = d2(null);
+  const [logFileExists, setLogFileExists] = d2(null);
+  const [autoScroll, setAutoScroll] = d2(true);
+  const bottomRef = A2(null);
+  const scrollRef = A2(null);
+  const fetchLogs = q2(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await getLogs({ level: minLevel, limit: 500 });
+      setEntries(result.entries);
+      setLogFileExists(result.exists ?? true);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [minLevel]);
+  y2(() => {
+    fetchLogs();
+  }, [fetchLogs]);
+  y2(() => {
+    const timer = window.setInterval(() => {
+      fetchLogs();
+    }, 5e3);
+    return () => window.clearInterval(timer);
+  }, [fetchLogs]);
+  y2(() => {
+    if (autoScroll && bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [entries, autoScroll]);
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el)
+      return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 20;
+    setAutoScroll(atBottom);
+  };
+  const filteredByLevel = entries.filter(
+    (e3) => (LEVEL_ORDER[e3.level] ?? 1) >= (LEVEL_ORDER[minLevel] ?? 1)
+  );
+  return /* @__PURE__ */ u3("div", { className: "view logs-view", children: [
+    /* @__PURE__ */ u3("div", { className: "view-header", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("h2", { children: "Logs" }),
+        /* @__PURE__ */ u3("p", { className: "text-muted", children: "Daemon structured log output." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "logs-toolbar", children: [
+        /* @__PURE__ */ u3("div", { className: "logs-level-filters", children: LEVEL_LABELS.map((level) => /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `logs-level-chip logs-level-chip--${level}${minLevel === level ? " logs-level-chip--active" : ""}`,
+            onClick: () => setMinLevel(level),
+            children: level.toUpperCase()
+          },
+          level
+        )) }),
+        /* @__PURE__ */ u3("button", { type: "button", className: "btn", onClick: fetchLogs, disabled: loading, children: loading ? "Loading\u2026" : "Refresh" }),
+        /* @__PURE__ */ u3("label", { className: "logs-autoscroll-label", children: [
+          /* @__PURE__ */ u3(
+            "input",
+            {
+              type: "checkbox",
+              checked: autoScroll,
+              onChange: (e3) => setAutoScroll(e3.currentTarget.checked)
+            }
+          ),
+          " ",
+          "Auto-scroll"
+        ] })
+      ] })
+    ] }),
+    error && /* @__PURE__ */ u3("div", { className: "logs-error", children: [
+      "Failed to load logs: ",
+      error
+    ] }),
+    logFileExists === false && /* @__PURE__ */ u3("div", { className: "empty-state", children: "Log file not found. Mandible may not have written any structured logs yet." }),
+    logFileExists !== false && /* @__PURE__ */ u3(
+      "div",
+      {
+        ref: scrollRef,
+        className: "logs-scroll-region",
+        onScroll: handleScroll,
+        children: [
+          filteredByLevel.length === 0 && !loading && /* @__PURE__ */ u3("div", { className: "empty-state", children: "No log entries match the current filter." }),
+          filteredByLevel.map((entry, i4) => (
+            // eslint-disable-next-line react/no-array-index-key
+            /* @__PURE__ */ u3(LogRow, { entry }, `${entry.time ?? ""}-${i4}`)
+          )),
+          /* @__PURE__ */ u3("div", { ref: bottomRef })
+        ]
+      }
+    )
+  ] });
+}
+
+// ui/src/state.ts
+var initialState = {
+  sessions: [],
+  authQueue: [],
+  authHistory: [],
+  selectedAuthId: null,
+  workRepos: [],
+  workBranches: {},
+  authOutputs: {},
+  newSessionIds: {},
+  issueRepos: [],
+  daemonReload: null,
+  settings: {},
+  conversations: [],
+  switchboardPairings: [],
+  switchboardSelected: null,
+  switchboardItems: [],
+  switchboardItemsLoading: false,
+  switchboardConsistencyErrors: [],
+  switchboardTemplates: [],
+  inboxData: null,
+  inboxLoading: false,
+  consoleSessions: [],
+  consoleActiveSessionId: null,
+  consoleUnreadBadge: 0,
+  selectedInboxItemId: null
+};
+function getSessionId2(session) {
+  return session.id || session.session_id || "";
+}
+function getAuthId2(request) {
+  return request.id || request.request_id || "";
+}
+function getBranchName3(branch) {
+  return branch.name || branch.branch || "";
+}
+function unwrapSseData(payload) {
+  if (!payload.data || typeof payload.data !== "object") {
+    return null;
+  }
+  const data = payload.data;
+  if (data.data && typeof data.data === "object" && (typeof data.type === "string" || typeof data.event === "string")) {
+    return data.data;
+  }
+  return data;
+}
+function upsertById(items, getId, nextItem) {
+  const id = getId(nextItem);
+  const index = items.findIndex((item) => getId(item) === id);
+  if (index === -1) {
+    return [nextItem, ...items];
+  }
+  const updated = items.slice();
+  updated[index] = { ...updated[index], ...nextItem };
+  return updated;
+}
+function appReducer(state, action) {
+  switch (action.type) {
+    case "sse":
+      return applySSEEvent(state, action.payload);
+    case "setSessions":
+      return { ...state, sessions: action.sessions };
+    case "upsertSession": {
+      const updatedSessions = upsertById(state.sessions, getSessionId2, action.session);
+      const sessionId = getSessionId2(action.session);
+      const newSessionIds = { ...state.newSessionIds };
+      if (action.markNew && sessionId) {
+        newSessionIds[sessionId] = Date.now();
+      }
+      return { ...state, sessions: updatedSessions, newSessionIds };
+    }
+    case "setAuthQueue":
+      return { ...state, authQueue: action.queue };
+    case "setAuthHistory":
+      return { ...state, authHistory: action.history };
+    case "setSelectedAuthId":
+      return { ...state, selectedAuthId: action.id };
+    case "upsertAuth": {
+      const updated = upsertById(state.authQueue, getAuthId2, action.request);
+      return { ...state, authQueue: updated };
+    }
+    case "authOutput": {
+      const existing = state.authOutputs[action.requestId] || "";
+      return {
+        ...state,
+        authOutputs: {
+          ...state.authOutputs,
+          [action.requestId]: `${existing}${action.chunk}`
+        }
+      };
+    }
+    case "authResolved": {
+      const updated = state.authQueue.map((request) => {
+        const id = getAuthId2(request);
+        if (id !== action.requestId) {
+          return request;
+        }
+        return {
+          ...request,
+          status: action.status,
+          ...action.resolved_at != null ? { resolved_at: action.resolved_at } : {},
+          ...action.exit_code !== void 0 ? { exit_code: action.exit_code } : {},
+          ...action.error !== void 0 ? { error: action.error } : {}
+        };
+      });
+      return { ...state, authQueue: updated };
+    }
+    case "setWorkRepos":
+      return { ...state, workRepos: action.repos };
+    case "setRepoBranches":
+      return {
+        ...state,
+        workBranches: {
+          ...state.workBranches,
+          [action.repoId]: action.branches
+        }
+      };
+    case "updateBranch": {
+      const repoBranches = state.workBranches[action.repoId] || [];
+      const updated = upsertById(repoBranches, getBranchName3, action.branch);
+      return {
+        ...state,
+        workBranches: {
+          ...state.workBranches,
+          [action.repoId]: updated
+        }
+      };
+    }
+    case "setIssueRepos":
+      return { ...state, issueRepos: action.repos };
+    case "setDaemonReload":
+      return { ...state, daemonReload: action.reload };
+    case "setSettings":
+      return { ...state, settings: action.settings };
+    case "updateSetting":
+      return { ...state, settings: { ...state.settings, [action.key]: action.value } };
+    case "setConversations":
+      return { ...state, conversations: action.conversations };
+    case "upsertConversation": {
+      const getId = (c3) => c3.id;
+      const updated = upsertById(state.conversations, getId, action.conversation);
+      return { ...state, conversations: updated };
+    }
+    case "setSwitchboardPairings":
+      return { ...state, switchboardPairings: action.pairings };
+    case "setSwitchboardSelected":
+      return { ...state, switchboardSelected: action.name };
+    case "setSwitchboardItems":
+      return { ...state, switchboardItems: action.items };
+    case "setSwitchboardItemsLoading":
+      return { ...state, switchboardItemsLoading: action.loading };
+    case "setSwitchboardConsistencyErrors":
+      return { ...state, switchboardConsistencyErrors: action.errors };
+    case "upsertSwitchboardPairing": {
+      const getName = (p3) => p3.name;
+      const updated = upsertById(state.switchboardPairings, getName, action.pairing);
+      return { ...state, switchboardPairings: updated };
+    }
+    case "removeSwitchboardPairing":
+      return {
+        ...state,
+        switchboardPairings: state.switchboardPairings.filter((p3) => p3.name !== action.name),
+        switchboardSelected: state.switchboardSelected === action.name ? null : state.switchboardSelected,
+        switchboardItems: state.switchboardSelected === action.name ? [] : state.switchboardItems,
+        switchboardConsistencyErrors: state.switchboardSelected === action.name ? [] : state.switchboardConsistencyErrors
+      };
+    case "updateSwitchboardItem": {
+      const updated = state.switchboardItems.map(
+        (item) => item.name === action.item.name ? action.item : item
+      );
+      return { ...state, switchboardItems: updated };
+    }
+    case "setSwitchboardTemplates":
+      return { ...state, switchboardTemplates: action.templates };
+    case "upsertSwitchboardTemplate": {
+      const getId = (t3) => t3.id;
+      const updated = upsertById(state.switchboardTemplates, getId, action.template);
+      return { ...state, switchboardTemplates: updated };
+    }
+    case "setInboxData":
+      return { ...state, inboxData: action.data, inboxLoading: false };
+    case "setInboxLoading":
+      return { ...state, inboxLoading: action.loading };
+    case "ackInboxContinuation": {
+      if (!state.inboxData)
+        return state;
+      const continuations = state.inboxData.continuations.filter(
+        (c3) => c3.session_id !== action.sessionId
+      );
+      const inboxData = {
+        ...state.inboxData,
+        continuations,
+        total: continuations.length + state.inboxData.auth_results.length + state.inboxData.open_issues.length
+      };
+      return { ...state, inboxData };
+    }
+    case "ackInboxAuthResult": {
+      if (!state.inboxData)
+        return state;
+      const auth_results = state.inboxData.auth_results.filter(
+        (r3) => r3.id !== action.requestId
+      );
+      const inboxData = {
+        ...state.inboxData,
+        auth_results,
+        total: state.inboxData.continuations.length + auth_results.length + state.inboxData.open_issues.length
+      };
+      return { ...state, inboxData };
+    }
+    case "ackAllInboxItems": {
+      if (!state.inboxData)
+        return state;
+      const inboxData = {
+        ...state.inboxData,
+        continuations: [],
+        auth_results: [],
+        total: state.inboxData.open_issues.length
+      };
+      return { ...state, inboxData, selectedInboxItemId: null };
+    }
+    case "setSelectedInboxItemId":
+      return { ...state, selectedInboxItemId: action.id };
+    case "setConsoleSessions":
+      return { ...state, consoleSessions: action.sessions };
+    case "upsertConsoleSession": {
+      const getConsoleId = (s3) => s3.id;
+      const updated = upsertById(state.consoleSessions, getConsoleId, action.session);
+      return { ...state, consoleSessions: updated };
+    }
+    case "removeConsoleSession": {
+      const consoleSessions = state.consoleSessions.filter(
+        (s3) => s3.id !== action.sessionId
+      );
+      return { ...state, consoleSessions };
+    }
+    case "setConsoleActiveSessionId":
+      return { ...state, consoleActiveSessionId: action.sessionId };
+    case "setConsoleUnreadBadge":
+      return { ...state, consoleUnreadBadge: action.count };
+    case "incrementConsoleUnread": {
+      const consoleSessions = state.consoleSessions.map(
+        (s3) => s3.id === action.sessionId ? { ...s3, unread_count: s3.unread_count + 1 } : s3
+      );
+      return {
+        ...state,
+        consoleSessions,
+        consoleUnreadBadge: state.consoleUnreadBadge + 1
+      };
+    }
+    case "clearConsoleUnread": {
+      const consoleSessions = state.consoleSessions.map(
+        (s3) => s3.id === action.sessionId ? { ...s3, unread_count: 0 } : s3
+      );
+      const consoleUnreadBadge = consoleSessions.reduce(
+        (total, s3) => total + s3.unread_count,
+        0
+      );
+      return { ...state, consoleSessions, consoleUnreadBadge };
+    }
+    default:
+      return state;
+  }
+}
+function selectBadgeCounts(state) {
+  const sessions = state.sessions.filter((session) => {
+    const status = (session.status || session.state || "").toLowerCase();
+    if (!status || status === "ended" || status === "dead" || status === "closed" || status === "reaped") {
+      return false;
+    }
+    return !session.ended_at;
+  }).length;
+  const auth = state.authQueue.filter((request) => {
+    const status = (request.status || request.state || "").toLowerCase();
+    return !status || status === "pending";
+  }).length;
+  const work = Object.values(state.workBranches).reduce((total, branches) => {
+    const dirtyBranches = branches.filter((branch) => {
+      if (typeof branch.dirty === "boolean") {
+        return branch.dirty;
+      }
+      return branch.status ? branch.status.toLowerCase() === "dirty" : false;
+    });
+    return total + dirtyBranches.length;
+  }, 0);
+  const inbox = (state.inboxData?.continuations.length ?? 0) + (state.inboxData?.auth_results.length ?? 0);
+  const console2 = state.consoleUnreadBadge;
+  return { sessions, auth, work, inbox, console: console2 };
+}
+function applySSEEvent(state, payload) {
+  switch (payload.type) {
+    case "session:registered":
+      if (payload.session && typeof payload.session === "object") {
+        return appReducer(state, {
+          type: "upsertSession",
+          session: payload.session,
+          markNew: true
+        });
+      }
+      if (payload.data && typeof payload.data === "object") {
+        return appReducer(state, {
+          type: "upsertSession",
+          session: payload.data,
+          markNew: true
+        });
+      }
+      return state;
+    case "session:updated":
+    case "session:ended":
+      if (payload.session && typeof payload.session === "object") {
+        return appReducer(state, {
+          type: "upsertSession",
+          session: payload.session
+        });
+      }
+      if (payload.data && typeof payload.data === "object") {
+        return appReducer(state, {
+          type: "upsertSession",
+          session: payload.data
+        });
+      }
+      return state;
+    case "auth:new":
+    case "auth:updated":
+      if (payload.request && typeof payload.request === "object") {
+        return appReducer(state, { type: "upsertAuth", request: payload.request });
+      }
+      if (payload.auth && typeof payload.auth === "object") {
+        return appReducer(state, { type: "upsertAuth", request: payload.auth });
+      }
+      if (payload.data && typeof payload.data === "object") {
+        const nested = payload.data;
+        const req = nested.request ?? nested;
+        if (req && typeof req === "object") {
+          return appReducer(state, { type: "upsertAuth", request: req });
+        }
+      }
+      return state;
+    case "auth:output": {
+      const outputData = payload.data && typeof payload.data === "object" ? payload.data : null;
+      const outputId = String(
+        outputData?.request_id ?? payload.request_id ?? ""
+      );
+      const outputText = String(
+        outputData?.text ?? payload.output ?? payload.chunk ?? ""
+      );
+      if (outputId && outputText) {
+        return appReducer(state, {
+          type: "authOutput",
+          requestId: outputId,
+          chunk: outputText
+        });
+      }
+      return state;
+    }
+    case "auth:resolved": {
+      const rd = payload.data && typeof payload.data === "object" ? payload.data : payload;
+      const rId = rd.request_id ?? payload.request_id;
+      const rStatus = rd.status ?? rd.decision ?? payload.status ?? payload.decision;
+      if (rId && rStatus) {
+        const resolvedAt = typeof rd.resolved_at === "number" ? rd.resolved_at : void 0;
+        const exitCode = typeof rd.exit_code === "number" ? rd.exit_code : void 0;
+        const error = rd.error == null ? void 0 : typeof rd.error === "string" ? rd.error : String(rd.error);
+        return appReducer(state, {
+          type: "authResolved",
+          requestId: String(rId),
+          status: String(rStatus),
+          resolved_at: resolvedAt,
+          exit_code: exitCode,
+          error
+        });
+      }
+      return state;
+    }
+    case "conversation:new":
+    case "conversation:updated":
+      if (payload.data && typeof payload.data === "object") {
+        const conv = payload.data;
+        if (conv.id) {
+          return appReducer(state, { type: "upsertConversation", conversation: conv });
+        }
+      }
+      return state;
+    case "work:branch:updated":
+      {
+        const unwrapped = unwrapSseData(payload);
+        const record = unwrapped && typeof unwrapped === "object" ? unwrapped : null;
+        const branchPayload = record && record.branch && typeof record.branch === "object" ? record.branch : record ? record : null;
+        const repoId = record?.repo_id ?? record?.repo ?? payload.repo_id ?? payload.repo;
+        const branch = branchPayload || (payload.branch && typeof payload.branch === "object" ? payload.branch : void 0);
+        if (repoId && branch) {
+          return appReducer(state, {
+            type: "updateBranch",
+            repoId: String(repoId),
+            branch
+          });
+        }
+      }
+      return state;
+    case "console:session:created": {
+      const data = unwrapSseData(payload);
+      const record = data;
+      const session = record?.session ?? record;
+      if (session?.id) {
+        return appReducer(state, { type: "upsertConsoleSession", session });
+      }
+      return state;
+    }
+    case "console:session:updated": {
+      const data = unwrapSseData(payload);
+      const record = data;
+      const session = record?.session ?? record;
+      if (session?.id) {
+        return appReducer(state, { type: "upsertConsoleSession", session });
+      }
+      return state;
+    }
+    case "console:session:ended": {
+      const data = unwrapSseData(payload);
+      const record = data;
+      const sessionData = record?.session ?? record;
+      const sessionId = typeof sessionData?.id === "string" ? sessionData.id : null;
+      if (sessionId) {
+        const existing = state.consoleSessions.find((s3) => s3.id === sessionId);
+        if (existing) {
+          return appReducer(state, {
+            type: "upsertConsoleSession",
+            session: { ...existing, status: "stopped" }
+          });
+        }
+      }
+      return state;
+    }
+    case "console:session:exit": {
+      const data = unwrapSseData(payload);
+      const record = data;
+      const sessionId = typeof record?.id === "string" ? record.id : null;
+      const exitStatus = typeof record?.status === "string" ? record.status : "crashed";
+      if (sessionId) {
+        const existing = state.consoleSessions.find((s3) => s3.id === sessionId);
+        if (existing) {
+          return appReducer(state, {
+            type: "upsertConsoleSession",
+            session: { ...existing, status: exitStatus }
+          });
+        }
+      }
+      return state;
+    }
+    case "console:session:started": {
+      const data = unwrapSseData(payload);
+      const record = data;
+      const sessionId = typeof record?.id === "string" ? record.id : null;
+      if (sessionId) {
+        const existing = state.consoleSessions.find((s3) => s3.id === sessionId);
+        if (existing) {
+          return appReducer(state, {
+            type: "upsertConsoleSession",
+            session: { ...existing, status: "running" }
+          });
+        }
+      }
+      return state;
+    }
+    case "console:session:stopped": {
+      const data = unwrapSseData(payload);
+      const record = data;
+      const sessionId = typeof record?.id === "string" ? record.id : null;
+      if (sessionId) {
+        const existing = state.consoleSessions.find((s3) => s3.id === sessionId);
+        if (existing) {
+          return appReducer(state, {
+            type: "upsertConsoleSession",
+            session: { ...existing, status: "stopped" }
+          });
+        }
+      }
+      return state;
+    }
+    case "console:session:deleted": {
+      const data = unwrapSseData(payload);
+      const record = data;
+      const sessionId = typeof record?.id === "string" ? record.id : null;
+      if (sessionId) {
+        return appReducer(state, { type: "removeConsoleSession", sessionId });
+      }
+      return state;
+    }
+    case "console:inbox:badge": {
+      const data = unwrapSseData(payload);
+      const count = typeof data?.count === "number" ? data.count : 0;
+      return appReducer(state, { type: "setConsoleUnreadBadge", count });
+    }
+    default:
+      return state;
+  }
+}
+var CACHE_KEY = "mandible_state_cache";
+var CACHE_VERSION = 1;
+var RECENT_RESOLVED_MS = 36e5;
+var RECENT_HISTORY_MS = 864e5;
+function loadCachedState() {
+  try {
+    if (typeof window === "undefined")
+      return {};
+    const raw = window.localStorage.getItem(CACHE_KEY);
+    if (!raw)
+      return {};
+    const parsed = JSON.parse(raw);
+    if (parsed.v !== CACHE_VERSION)
+      return {};
+    const cached = parsed.state;
+    const now = Date.now();
+    if (Array.isArray(cached.authQueue)) {
+      cached.authQueue = cached.authQueue.filter((item) => {
+        const status = (item.status || item.state || "").toLowerCase();
+        const isResolved = status === "dismissed" || status === "rejected" || status === "expired";
+        if (!isResolved)
+          return true;
+        const resolvedAt = typeof item.resolved_at === "number" ? item.resolved_at : typeof item.resolved_at === "string" ? Number(item.resolved_at) : null;
+        return resolvedAt !== null && resolvedAt >= now - RECENT_RESOLVED_MS;
+      });
+    }
+    if (Array.isArray(cached.authHistory)) {
+      cached.authHistory = cached.authHistory.filter((item) => {
+        const resolvedAt = typeof item.resolved_at === "number" ? item.resolved_at : typeof item.resolved_at === "string" ? Number(item.resolved_at) : null;
+        if (resolvedAt === null) {
+          const createdAt = typeof item.created_at === "number" ? item.created_at : typeof item.created_at === "string" ? Number(item.created_at) : null;
+          return createdAt !== null && createdAt >= now - RECENT_HISTORY_MS;
+        }
+        return resolvedAt >= now - RECENT_HISTORY_MS;
+      });
+    }
+    return cached;
+  } catch {
+    return {};
+  }
+}
+function saveCachedState(state) {
+  try {
+    if (typeof window === "undefined")
+      return;
+    const toCache = {
+      sessions: state.sessions,
+      authQueue: state.authQueue,
+      authHistory: state.authHistory,
+      workRepos: state.workRepos,
+      workBranches: state.workBranches,
+      issueRepos: state.issueRepos,
+      conversations: state.conversations
+    };
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, state: toCache }));
+  } catch {
+  }
+}
+
+// ui/src/app.tsx
+var LAST_SEEN_COMMIT_KEY = "mandible-last-seen-commit";
+function getRepoId3(repo) {
+  return repo.id || repo.name || "";
+}
+function getLastSeenCommit() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    return window.localStorage.getItem(LAST_SEEN_COMMIT_KEY);
+  } catch {
+    return null;
+  }
+}
+function setLastSeenCommit(hash) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(LAST_SEEN_COMMIT_KEY, hash);
+  } catch {
+    return;
+  }
+}
+function parseHashRoute() {
+  if (typeof window === "undefined") {
+    return { tab: "sessions", params: {} };
+  }
+  const hash = window.location.hash || "#/sessions";
+  const [pathPart, queryPart] = hash.replace("#", "").split("?");
+  const path = pathPart.replace(/^\//, "") || "sessions";
+  const params = {};
+  if (queryPart) {
+    const search = new URLSearchParams(queryPart);
+    search.forEach((value, key2) => {
+      params[key2] = value;
+    });
+  }
+  const normalizedPath = path === "conversations" || path === "chats" ? "chat-history" : path;
+  const tab = ["sessions", "auth", "chat-history", "work", "review", "issues", "settings", "switchboard", "inbox", "console", "logs"].includes(normalizedPath) ? normalizedPath : "sessions";
+  return { tab, params };
+}
+function RebuildingSplash() {
+  return /* @__PURE__ */ u3("div", { className: "rebuilding-splash", children: /* @__PURE__ */ u3("div", { className: "rebuilding-splash__content", children: [
+    /* @__PURE__ */ u3("div", { className: "rebuilding-splash__spinner", "aria-hidden": "true" }),
+    /* @__PURE__ */ u3("div", { className: "rebuilding-splash__title", children: "Rebuilding & restarting\u2026" }),
+    /* @__PURE__ */ u3("div", { className: "rebuilding-splash__subtitle", children: "Mandible is restarting after a self-merge. This page will reload automatically." })
+  ] }) });
+}
+function App() {
+  const [state, dispatch] = h2(appReducer, void 0, () => ({
+    ...initialState,
+    ...loadCachedState()
+  }));
+  const [route, setRoute] = d2(() => parseHashRoute());
+  const [showOverflow, setShowOverflow] = d2(false);
+  const overflowRef = A2(null);
+  const [errorToast, setErrorToast] = d2(null);
+  const errorToastTimerRef = A2(null);
+  const [rebuilding, setRebuilding] = d2(false);
+  y2(() => {
+    const handleChange = () => setRoute(parseHashRoute());
+    window.addEventListener("hashchange", handleChange);
+    return () => window.removeEventListener("hashchange", handleChange);
+  }, []);
+  y2(() => {
+    if (!showOverflow)
+      return;
+    const handleClickOutside = (e3) => {
+      if (overflowRef.current && !overflowRef.current.contains(e3.target)) {
+        setShowOverflow(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showOverflow]);
+  y2(() => {
+    const tabRoutes = {
+      "1": "console",
+      "2": "chat-history",
+      "3": "inbox",
+      "4": "issues",
+      "5": "sessions",
+      "6": "auth",
+      "7": "settings",
+      "8": "work",
+      "9": "review",
+      "0": "logs"
+    };
+    const handleKeyDown = (e3) => {
+      if (e3.ctrlKey && !e3.metaKey && !e3.altKey && tabRoutes[e3.key]) {
+        e3.preventDefault();
+        window.location.hash = `#/${tabRoutes[e3.key]}`;
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+  y2(() => {
+    let active = true;
+    getSessions("?include=issues").then((sessions) => {
+      if (active) {
+        dispatch({ type: "setSessions", sessions });
+      }
+    }).catch(() => void 0);
+    getAuthQueue().then((queue) => {
+      if (active) {
+        dispatch({ type: "setAuthQueue", queue });
+      }
+    }).catch(() => void 0);
+    getAuthHistory(200).then((history) => {
+      if (active) {
+        dispatch({ type: "setAuthHistory", history });
+      }
+    }).catch(() => void 0);
+    const loadWork = async () => {
+      try {
+        const repos = await getWorkRepos();
+        if (!active) {
+          return;
+        }
+        dispatch({ type: "setWorkRepos", repos });
+        await Promise.all(
+          repos.map(async (repo) => {
+            const repoId = getRepoId3(repo);
+            if (!repoId) {
+              return;
+            }
+            const branches = await getRepoBranches(repoId);
+            if (active) {
+              dispatch({ type: "setRepoBranches", repoId, branches });
+            }
+          })
+        );
+      } catch {
+        return;
+      }
+    };
+    loadWork();
+    getIssueRepos().then((repos) => {
+      if (active) {
+        dispatch({ type: "setIssueRepos", repos });
+      }
+    }).catch(() => void 0);
+    getConversations({ limit: 50 }).then((result) => {
+      if (active) {
+        dispatch({ type: "setConversations", conversations: result.conversations });
+      }
+    }).catch(() => void 0);
+    getSettings().then((settings) => {
+      if (active) {
+        dispatch({ type: "setSettings", settings });
+      }
+    }).catch(() => void 0);
+    getSwitchboardPairings().then((pairings) => {
+      if (active) {
+        dispatch({ type: "setSwitchboardPairings", pairings });
+      }
+    }).catch(() => void 0);
+    getSwitchboardTemplates().then(({ templates }) => {
+      if (active) {
+        dispatch({ type: "setSwitchboardTemplates", templates });
+      }
+    }).catch(() => void 0);
+    dispatch({ type: "setInboxLoading", loading: true });
+    getInboxGlobal().then((data) => {
+      if (active) {
+        dispatch({ type: "setInboxData", data });
+      }
+    }).catch(() => {
+      if (active) {
+        dispatch({ type: "setInboxLoading", loading: false });
+      }
+    });
+    getConsoleSessions().then((sessions) => {
+      if (active)
+        dispatch({ type: "setConsoleSessions", sessions });
+    }).catch(() => void 0);
+    return () => {
+      active = false;
+    };
+  }, []);
+  y2(() => {
+    const client = createSSEClient();
+    const handler = (payload) => {
+      dispatch({ type: "sse", payload });
+    };
+    const daemonHandler = (payload) => {
+      const data = payload.data && typeof payload.data === "object" ? payload.data : null;
+      const record = data;
+      const commitHash = typeof record?.commit_hash === "string" ? record.commit_hash : "";
+      if (!commitHash) {
+        return;
+      }
+      if (getLastSeenCommit() === commitHash) {
+        return;
+      }
+      setLastSeenCommit(commitHash);
+      const commitSummary = typeof record?.commit_summary === "string" ? record.commit_summary : "";
+      const commitDate = typeof record?.commit_date === "string" ? record.commit_date : "";
+      const recentRequests = Array.isArray(record?.recent_requests) ? record.recent_requests : [];
+      const rawBugRefs = Array.isArray(record?.bug_refs) ? record.bug_refs : [];
+      const bugRefs = rawBugRefs.map((ref) => {
+        if (ref && typeof ref === "object" && "repo_id" in ref && "issue_id" in ref) {
+          return ref;
+        }
+        return null;
+      }).filter((ref) => ref !== null);
+      dispatch({
+        type: "setDaemonReload",
+        reload: {
+          hash: commitHash,
+          summary: commitSummary,
+          date: commitDate,
+          recentRequests,
+          bugRefs
+        }
+      });
+    };
+    const consoleStreamHandler = (payload) => {
+      const data = payload.data && typeof payload.data === "object" ? payload.data : null;
+      if (!data)
+        return;
+      window.dispatchEvent(
+        new CustomEvent("console:stream_event", { detail: { ...data } })
+      );
+    };
+    const rebuildingHandler = () => {
+      setRebuilding(true);
+    };
+    const unsubscribes = [
+      client.on("session:registered", handler),
+      client.on("session:updated", handler),
+      client.on("session:ended", handler),
+      client.on("auth:new", handler),
+      client.on("auth:updated", handler),
+      client.on("auth:output", handler),
+      client.on("auth:resolved", handler),
+      client.on("work:branch:updated", handler),
+      client.on("conversation:new", handler),
+      client.on("conversation:updated", handler),
+      client.on("daemon:reloaded", daemonHandler),
+      client.on("console:session:created", handler),
+      client.on("console:session:updated", handler),
+      client.on("console:session:ended", handler),
+      client.on("console:session:exit", handler),
+      client.on("console:session:started", handler),
+      client.on("console:session:stopped", handler),
+      client.on("console:session:deleted", handler),
+      client.on("console:inbox:badge", handler),
+      client.on("console:stream_event", consoleStreamHandler),
+      client.on("mandible:rebuilding", rebuildingHandler)
+    ];
+    client.connect();
+    return () => {
+      unsubscribes.forEach((unsubscribe) => unsubscribe());
+      client.close();
+    };
+  }, []);
+  y2(() => {
+    const POLL_INTERVAL = 1e4;
+    const timer = window.setInterval(() => {
+      getSessions("?include=issues").then((sessions) => dispatch({ type: "setSessions", sessions })).catch(() => void 0);
+      getAuthQueue().then((queue) => dispatch({ type: "setAuthQueue", queue })).catch(() => void 0);
+      getAuthHistory(200).then((history) => dispatch({ type: "setAuthHistory", history })).catch(() => void 0);
+    }, POLL_INTERVAL);
+    return () => window.clearInterval(timer);
+  }, []);
+  y2(() => {
+    if (!rebuilding)
+      return;
+    const POLL_MS = 2e3;
+    const startTimer = window.setTimeout(() => {
+      const interval = window.setInterval(async () => {
+        try {
+          const res = await fetch("/api/health");
+          if (res.ok) {
+            window.location.reload();
+          }
+        } catch {
+        }
+      }, POLL_MS);
+      return () => window.clearInterval(interval);
+    }, 1e3);
+    return () => window.clearTimeout(startTimer);
+  }, [rebuilding]);
+  y2(() => {
+    const timer = window.setTimeout(() => {
+      saveCachedState(state);
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [
+    state.sessions,
+    state.authQueue,
+    state.authHistory,
+    state.workRepos,
+    state.workBranches,
+    state.issueRepos,
+    state.conversations
+  ]);
+  const badges = T2(() => selectBadgeCounts(state), [state]);
+  const authBranchesByRepo = T2(() => {
+    const result = {};
+    for (const [repoId, branches] of Object.entries(state.workBranches)) {
+      result[repoId] = branches.map((b) => b.name || b.branch || "").filter(Boolean);
+    }
+    return result;
+  }, [state.workBranches]);
+  const handleToastDismiss = () => dispatch({ type: "setDaemonReload", reload: null });
+  const handleSelectAuth = (id) => dispatch({ type: "setSelectedAuthId", id });
+  y2(() => {
+    if (!state.daemonReload) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      dispatch({ type: "setDaemonReload", reload: null });
+    }, 1e4);
+    return () => window.clearTimeout(timer);
+  }, [state.daemonReload?.hash]);
+  const showErrorToast = (message) => {
+    setErrorToast(message);
+    if (errorToastTimerRef.current !== null) {
+      clearTimeout(errorToastTimerRef.current);
+    }
+    errorToastTimerRef.current = window.setTimeout(() => {
+      setErrorToast(null);
+      errorToastTimerRef.current = null;
+    }, 6e3);
+  };
+  const handleNavigate = async (sessionId) => {
+    try {
+      await navigateSession(sessionId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Navigation failed";
+      showErrorToast(`Go to failed: ${message}`);
+    }
+  };
+  const handleKill = async (sessionId) => {
+    try {
+      await killSession(sessionId);
+    } catch {
+      return;
+    }
+  };
+  const handleApprove = async (requestId) => {
+    try {
+      await approveAuthRequest(requestId);
+      dispatch({ type: "authResolved", requestId, status: "approved" });
+    } catch (err) {
+      throw err;
+    }
+  };
+  const handleReject = async (requestId) => {
+    try {
+      await rejectAuthRequest(requestId);
+      dispatch({ type: "authResolved", requestId, status: "rejected" });
+    } catch {
+    }
+  };
+  const handleRetry = async (requestId) => {
+    try {
+      await retryAuthRequest(requestId);
+      dispatch({ type: "authResolved", requestId, status: "pending" });
+    } catch {
+      return;
+    }
+  };
+  const handleDismiss = async (requestId) => {
+    try {
+      await dismissAuthRequest(requestId);
+      dispatch({ type: "authResolved", requestId, status: "dismissed" });
+    } catch {
+      return;
+    }
+  };
+  const handleRescan = async () => {
+    try {
+      await triggerWorkScan();
+      const repos = await getWorkRepos();
+      dispatch({ type: "setWorkRepos", repos });
+      await Promise.all(
+        repos.map(async (repo) => {
+          const repoId = getRepoId3(repo);
+          if (!repoId) {
+            return;
+          }
+          const branches = await getRepoBranches(repoId);
+          dispatch({ type: "setRepoBranches", repoId, branches });
+        })
+      );
+    } catch {
+      return;
+    }
+  };
+  const handleIssueRescan = async () => {
+    try {
+      const repos = await scanIssues();
+      dispatch({ type: "setIssueRepos", repos });
+    } catch {
+      return;
+    }
+  };
+  const handlePinToggle = (sessionId, pinned) => {
+    const session = state.sessions.find(
+      (s3) => (s3.id || s3.session_id) === sessionId
+    );
+    if (session) {
+      dispatch({
+        type: "upsertSession",
+        session: { ...session, pinned: pinned ? 1 : 0 }
+      });
+    }
+  };
+  const handleSettingsSave = async (key2, value) => {
+    await updateSetting(key2, value);
+    dispatch({ type: "updateSetting", key: key2, value });
+  };
+  const handleSelectPairing = async (name) => {
+    if (name === null) {
+      dispatch({ type: "setSwitchboardSelected", name: null });
+      dispatch({ type: "setSwitchboardItems", items: [] });
+      dispatch({ type: "setSwitchboardConsistencyErrors", errors: [] });
+      return;
+    }
+    dispatch({ type: "setSwitchboardSelected", name });
+    dispatch({ type: "setSwitchboardItemsLoading", loading: true });
+    try {
+      const result = await getSwitchboardItems(name);
+      dispatch({ type: "setSwitchboardItems", items: result.items });
+      dispatch({ type: "setSwitchboardConsistencyErrors", errors: result.consistencyErrors ?? [] });
+    } catch {
+      dispatch({ type: "setSwitchboardItems", items: [] });
+      dispatch({ type: "setSwitchboardConsistencyErrors", errors: [] });
+    } finally {
+      dispatch({ type: "setSwitchboardItemsLoading", loading: false });
+    }
+  };
+  const handleAddPairing = async (name, source, target, hooks) => {
+    await addSwitchboardPairing(name, source, target, hooks);
+    const pairings = await getSwitchboardPairings();
+    dispatch({ type: "setSwitchboardPairings", pairings });
+  };
+  const handleDeletePairing = async (name) => {
+    await deleteSwitchboardPairing(name);
+    dispatch({ type: "removeSwitchboardPairing", name });
+  };
+  const handleUpdatePairing = async (name, source, target, hooks) => {
+    await updateSwitchboardPairing(name, source, target, hooks);
+    const pairings = await getSwitchboardPairings();
+    dispatch({ type: "setSwitchboardPairings", pairings });
+  };
+  const handleToggleItem = async (pairingName, item) => {
+    const result = await toggleSwitchboardItem(pairingName, item);
+    try {
+      const fetched = await getSwitchboardItems(pairingName);
+      dispatch({ type: "setSwitchboardItems", items: fetched.items });
+      dispatch({ type: "setSwitchboardConsistencyErrors", errors: fetched.consistencyErrors ?? [] });
+    } catch {
+      const newState = result.state;
+      const existing = state.switchboardItems.find((i4) => i4.name === item);
+      if (existing) {
+        dispatch({ type: "updateSwitchboardItem", item: { ...existing, state: newState } });
+      }
+    }
+  };
+  const handleSyncPairing = async (pairingName) => {
+    await syncSwitchboard(pairingName);
+    try {
+      const result = await getSwitchboardItems(pairingName);
+      dispatch({ type: "setSwitchboardItems", items: result.items });
+      dispatch({ type: "setSwitchboardConsistencyErrors", errors: result.consistencyErrors ?? [] });
+    } catch {
+    }
+  };
+  const handleSaveTemplate = async (name, hookSetup, hookTeardown) => {
+    const template = await createSwitchboardTemplate(name, {
+      hook_setup: hookSetup || void 0,
+      hook_teardown: hookTeardown || void 0
+    });
+    dispatch({ type: "upsertSwitchboardTemplate", template });
+    getSwitchboardTemplates().then(({ templates }) => dispatch({ type: "setSwitchboardTemplates", templates })).catch(() => void 0);
+  };
+  const handleAckContinuation = async (sessionId) => {
+    try {
+      await acknowledgeInboxItem("continuation", sessionId);
+      dispatch({ type: "ackInboxContinuation", sessionId });
+    } catch {
+      return;
+    }
+  };
+  const handleAckAuthResult = async (requestId) => {
+    try {
+      await acknowledgeInboxItem("auth_result", requestId);
+      dispatch({ type: "ackInboxAuthResult", requestId });
+    } catch {
+      return;
+    }
+  };
+  const handleInboxRefresh = () => {
+    dispatch({ type: "setInboxLoading", loading: true });
+    getInboxGlobal().then((data) => dispatch({ type: "setInboxData", data })).catch(() => dispatch({ type: "setInboxLoading", loading: false }));
+  };
+  const handleConsoleSelectSession = (sessionId) => {
+    dispatch({ type: "setConsoleActiveSessionId", sessionId });
+  };
+  const handleConsoleCloseSession = async (sessionId) => {
+    try {
+      await closeConsoleSession(sessionId);
+      dispatch({ type: "removeConsoleSession", sessionId });
+      if (state.consoleActiveSessionId === sessionId) {
+        const next = state.consoleSessions.find((s3) => s3.id !== sessionId && !s3.pinned) ?? state.consoleSessions.find((s3) => s3.id !== sessionId);
+        dispatch({ type: "setConsoleActiveSessionId", sessionId: next?.id ?? null });
+      }
+    } catch {
+      return;
+    }
+  };
+  const handleConsoleNewSession = async (label, agentType) => {
+    try {
+      const result = await createConsoleSession(label, agentType);
+      const rawResult = result;
+      const id = rawResult.id ?? rawResult.session?.id ?? "";
+      if (!id)
+        return;
+      dispatch({
+        type: "upsertConsoleSession",
+        session: {
+          id,
+          label,
+          agent_type: agentType,
+          interaction_mode: "both",
+          pinned: false,
+          status: "running",
+          is_operator: agentType === "operator",
+          unread_count: 0,
+          created_at: Date.now(),
+          started_at: Date.now(),
+          stopped_at: null
+        }
+      });
+      dispatch({ type: "setConsoleActiveSessionId", sessionId: id });
+    } catch {
+      return;
+    }
+  };
+  const handleAckAll = async () => {
+    try {
+      await ackAllInbox();
+      dispatch({ type: "ackAllInboxItems" });
+    } catch {
+      return;
+    }
+  };
+  const handleSelectInboxItem = (id) => {
+    dispatch({ type: "setSelectedInboxItemId", id });
+  };
+  if (rebuilding) {
+    return /* @__PURE__ */ u3(RebuildingSplash, {});
+  }
+  return /* @__PURE__ */ u3("div", { className: "app-shell", children: [
+    errorToast && /* @__PURE__ */ u3("div", { className: "error-toast", role: "alert", "aria-live": "assertive", children: [
+      /* @__PURE__ */ u3("span", { children: errorToast }),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "daemon-toast__dismiss",
+          onClick: () => setErrorToast(null),
+          "aria-label": "Dismiss error",
+          children: "\xD7"
+        }
+      )
+    ] }),
+    state.daemonReload && /* @__PURE__ */ u3("div", { className: "daemon-toast", role: "status", "aria-live": "polite", children: [
+      /* @__PURE__ */ u3("span", { children: "Daemon reloaded" }),
+      state.daemonReload.bugRefs && state.daemonReload.bugRefs.length > 0 ? /* @__PURE__ */ u3(
+        "a",
+        {
+          href: state.daemonReload.bugRefs.length === 1 ? `#/issues?repo=${encodeURIComponent(state.daemonReload.bugRefs[0].repo_id)}&issue=${encodeURIComponent(state.daemonReload.bugRefs[0].issue_id)}` : "#/issues",
+          className: "daemon-toast__link",
+          children: state.daemonReload.bugRefs.length === 1 ? "See issue" : `See ${state.daemonReload.bugRefs.length} issues`
+        }
+      ) : /* @__PURE__ */ u3("span", { className: "daemon-toast__hash", children: state.daemonReload.hash.slice(0, 8) }),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "daemon-toast__dismiss",
+          onClick: handleToastDismiss,
+          "aria-label": "Dismiss daemon reload notification",
+          children: "\xD7"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ u3("header", { className: "app-header", children: [
+      /* @__PURE__ */ u3("div", { className: "brand", children: "Mandible" }),
+      /* @__PURE__ */ u3("nav", { className: "tabs", children: [
+        /* @__PURE__ */ u3("div", { className: "tab-twin", children: [
+          /* @__PURE__ */ u3(
+            "a",
+            {
+              href: "#/console",
+              className: `tab-twin__btn${route.tab === "console" ? " tab-twin__btn--active" : ""}`,
+              children: [
+                "Chat",
+                badges.console > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.console })
+              ]
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "a",
+            {
+              href: "#/chat-history",
+              className: `tab-twin__btn${route.tab === "chat-history" ? " tab-twin__btn--active" : ""}`,
+              children: "History"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "a",
+            {
+              href: "#/sessions",
+              className: `tab-twin__btn${route.tab === "sessions" ? " tab-twin__btn--active" : ""}`,
+              children: [
+                "Monitor",
+                badges.sessions > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.sessions })
+              ]
+            }
+          )
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "tab-twin", children: [
+          /* @__PURE__ */ u3(
+            "a",
+            {
+              href: "#/issues",
+              className: `tab-twin__btn${route.tab === "issues" ? " tab-twin__btn--active" : ""}`,
+              children: "Issues"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "a",
+            {
+              href: "#/inbox",
+              className: `tab-twin__btn${route.tab === "inbox" ? " tab-twin__btn--active" : ""}`,
+              children: [
+                "Inbox",
+                badges.inbox > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.inbox })
+              ]
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "a",
+            {
+              href: "#/auth",
+              className: `tab-twin__btn${route.tab === "auth" ? " tab-twin__btn--active" : ""}`,
+              children: [
+                "Auth",
+                badges.auth > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge tab-badge--auth", children: badges.auth })
+              ]
+            }
+          )
+        ] }),
+        /* @__PURE__ */ u3("a", { href: "#/settings", className: route.tab === "settings" ? "active" : "", "aria-label": "Settings", title: "Settings", children: /* @__PURE__ */ u3("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": "true", style: { verticalAlign: "middle", display: "inline-block" }, children: [
+          /* @__PURE__ */ u3("path", { d: "M6.5 1.5l-.5 1.5A4.5 4.5 0 0 0 4.5 4l-1.5-.5L1.5 6l1.2.9A4.5 4.5 0 0 0 2.5 8a4.5 4.5 0 0 0 .2 1.1L1.5 10l1.5 2.5 1.5-.5a4.5 4.5 0 0 0 1.5 1l.5 1.5h3l.5-1.5a4.5 4.5 0 0 0 1.5-1l1.5.5 1.5-2.5-1.2-.9A4.5 4.5 0 0 0 13.5 8a4.5 4.5 0 0 0-.2-1.1L14.5 6 13 3.5l-1.5.5A4.5 4.5 0 0 0 10 3L9.5 1.5h-3Z", stroke: "currentColor", strokeWidth: "1.3", strokeLinejoin: "round" }),
+          /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "2", stroke: "currentColor", strokeWidth: "1.3" })
+        ] }) }),
+        /* @__PURE__ */ u3("div", { className: "tab-overflow", ref: overflowRef, children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `tab-overflow__btn${["work", "review", "logs", "switchboard"].includes(route.tab) ? " tab-overflow__btn--active" : ""}`,
+              onClick: () => setShowOverflow((v3) => !v3),
+              "aria-label": "More tabs",
+              children: "\xB7\xB7\xB7"
+            }
+          ),
+          showOverflow && /* @__PURE__ */ u3("div", { className: "tab-overflow__menu", children: [
+            /* @__PURE__ */ u3(
+              "a",
+              {
+                href: "#/work",
+                className: route.tab === "work" ? "active" : "",
+                onClick: () => setShowOverflow(false),
+                children: [
+                  "Branches",
+                  badges.work > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.work })
+                ]
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "a",
+              {
+                href: "#/review",
+                className: route.tab === "review" ? "active" : "",
+                onClick: () => setShowOverflow(false),
+                children: "Diff"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "a",
+              {
+                href: "#/logs",
+                className: route.tab === "logs" ? "active" : "",
+                onClick: () => setShowOverflow(false),
+                children: "Logs"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "a",
+              {
+                href: "#/switchboard",
+                className: route.tab === "switchboard" ? "active" : "",
+                onClick: () => setShowOverflow(false),
+                children: "Switchboard"
+              }
+            )
+          ] })
+        ] })
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("main", { className: "app-content", children: [
+      route.tab === "sessions" && /* @__PURE__ */ u3(
+        SessionsView,
+        {
+          sessions: state.sessions,
+          newSessionIds: state.newSessionIds,
+          onNavigate: handleNavigate,
+          onKill: handleKill,
+          onPinToggle: handlePinToggle,
+          highlightSessionId: route.params.session
+        }
+      ),
+      route.tab === "auth" && /* @__PURE__ */ u3(
+        AuthQueueView,
+        {
+          queue: state.authQueue,
+          historyQueue: state.authHistory,
+          outputs: state.authOutputs,
+          branchesByRepo: authBranchesByRepo,
+          selectedAuthId: state.selectedAuthId,
+          onSelectAuth: handleSelectAuth,
+          onApprove: handleApprove,
+          onReject: handleReject,
+          onRetry: handleRetry,
+          onDismiss: handleDismiss
+        }
+      ),
+      route.tab === "chat-history" && /* @__PURE__ */ u3(
+        ConversationsView,
+        {
+          conversations: state.conversations
+        }
+      ),
+      route.tab === "work" && /* @__PURE__ */ u3(
+        WorkOverviewView,
+        {
+          repos: state.workRepos,
+          branchesByRepo: state.workBranches,
+          onRescan: handleRescan
+        }
+      ),
+      route.tab === "switchboard" && /* @__PURE__ */ u3(
+        SwitchboardView,
+        {
+          pairings: state.switchboardPairings,
+          selectedPairing: state.switchboardSelected,
+          items: state.switchboardItems,
+          itemsLoading: state.switchboardItemsLoading,
+          consistencyErrors: state.switchboardConsistencyErrors,
+          templates: state.switchboardTemplates,
+          onSelectPairing: handleSelectPairing,
+          onAddPairing: handleAddPairing,
+          onUpdatePairing: handleUpdatePairing,
+          onDeletePairing: handleDeletePairing,
+          onToggleItem: handleToggleItem,
+          onSync: handleSyncPairing,
+          onSaveTemplate: handleSaveTemplate
+        }
+      ),
+      route.tab === "issues" && /* @__PURE__ */ u3(
+        IssuesView,
+        {
+          repos: state.issueRepos,
+          onRescan: handleIssueRescan,
+          initialRepoId: route.params.repo,
+          initialIssueId: route.params.issue
+        }
+      ),
+      route.tab === "review" && /* @__PURE__ */ u3(
+        ReviewView,
+        {
+          params: {
+            repo: route.params.repo,
+            base: route.params.base,
+            head: route.params.head
+          }
+        }
+      ),
+      route.tab === "inbox" && /* @__PURE__ */ u3(
+        InboxView,
+        {
+          data: state.inboxData,
+          loading: state.inboxLoading,
+          selectedItemId: state.selectedInboxItemId,
+          onSelectItem: handleSelectInboxItem,
+          onAckContinuation: handleAckContinuation,
+          onAckAuthResult: handleAckAuthResult,
+          onAckAll: handleAckAll,
+          onRefresh: handleInboxRefresh
+        }
+      ),
+      route.tab === "console" && /* @__PURE__ */ u3(
+        ConsoleView,
+        {
+          sessions: state.consoleSessions,
+          activeSessionId: state.consoleActiveSessionId,
+          onSelectSession: handleConsoleSelectSession,
+          onCloseSession: handleConsoleCloseSession,
+          onNewSession: handleConsoleNewSession,
+          isActive: route.tab === "console"
+        }
+      ),
+      route.tab === "settings" && /* @__PURE__ */ u3(
+        SettingsView,
+        {
+          settings: state.settings,
+          onSave: handleSettingsSave
+        }
+      ),
+      route.tab === "logs" && /* @__PURE__ */ u3(LogsView, {})
+    ] })
+  ] });
+}
+var mountNode = typeof document !== "undefined" ? document.getElementById("app") : null;
+if (mountNode) {
+  G(/* @__PURE__ */ u3(App, {}), mountNode);
+}
+export {
+  App
+};
+//# sourceMappingURL=app.js.map
