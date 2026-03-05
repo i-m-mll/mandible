@@ -842,7 +842,7 @@ function App(): JSX.Element {
               href="#/sessions"
               className={`tab-twin__btn${route.tab === 'sessions' ? ' tab-twin__btn--active' : ''}`}
             >
-              Sessions
+              Monitor
               {badges.sessions > 0 && (
                 <span className="tab-badge">{badges.sessions}</span>
               )}
