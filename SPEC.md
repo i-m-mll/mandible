@@ -117,19 +117,22 @@ by event type prefix on the server side via query param.
 ## Project Structure
 
 ```
-.config/mcp-servers/mandible/
+mandible/
 ├── package.json
 ├── tsconfig.json
-├── src/
+├── src/           -- TypeScript source (daemon)
 │   ├── index.ts          -- entry point, starts server
 │   ├── server.ts         -- HTTP server, route registration
 │   ├── db.ts             -- SQLite connection, migrations
 │   ├── sse.ts            -- SSE connection manager, broadcast
 │   ├── lifecycle.ts      -- PID file, health check, auto-start
 │   └── types.ts          -- shared type definitions
-├── dist/                 -- compiled JS
-└── test/
-    └── core.test.ts
+├── dist/          -- compiled JS (gitignored except in integration branches)
+├── ui/
+│   ├── src/       -- Preact frontend source
+│   └── dist/      -- built frontend (gitignored except in integration branches)
+├── cli/           -- auth-merge.sh, auth-request.sh, etc.
+└── SPEC.md
 ```
 
 ## Tests

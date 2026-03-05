@@ -400,9 +400,10 @@ auto_close_issues() {
 
 restart_mandible_if_dist_changed() {
   local base_commit="$1"
-  local changed
-  changed=$(git diff --name-only "${base_commit}" HEAD -- .config/mcp-servers/mandible/dist/)
-  if [[ -z "$changed" ]]; then
+  local server_changed ui_changed
+  server_changed=$(git diff --name-only "${base_commit}" HEAD -- dist/)
+  ui_changed=$(git diff --name-only "${base_commit}" HEAD -- ui/dist/)
+  if [[ -z "$server_changed" && -z "$ui_changed" ]]; then
     return 0
   fi
 
@@ -412,12 +413,18 @@ restart_mandible_if_dist_changed() {
     err "${DIM_WHITE}[post-merge] notified UI of impending restart${RESET}"
   fi
 
-  local uid
-  uid=$(id -u)
-  if launchctl kickstart -k "gui/${uid}/com.mll.mandible" >/dev/null 2>&1; then
-    err "${GREEN}[post-merge] restarted com.mll.mandible (dist changed)${RESET}"
+  # Only kick launchd when the server dist changed — ui/dist/ is served
+  # from disk so the browser picks it up without a full process restart.
+  if [[ -n "$server_changed" ]]; then
+    local uid
+    uid=$(id -u)
+    if launchctl kickstart -k "gui/${uid}/com.mll.mandible" >/dev/null 2>&1; then
+      err "${GREEN}[post-merge] restarted com.mll.mandible (dist/ changed)${RESET}"
+    else
+      err "${BOLD_YELLOW}[post-merge] failed to restart com.mll.mandible${RESET}"
+    fi
   else
-    err "${BOLD_YELLOW}[post-merge] failed to restart com.mll.mandible${RESET}"
+    err "${DIM_WHITE}[post-merge] ui/dist/ changed only — no restart needed, browser will reload${RESET}"
   fi
 }
 

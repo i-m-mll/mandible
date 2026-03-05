@@ -303,10 +303,22 @@ function resolveDotfilesRoot(): string {
   return path.resolve(currentDir, "../../../..");
 }
 
+function resolveMandibleRoot(): string {
+  // Walk up from dist/index.js (compiled output) to reach the repo root.
+  // __dirname in the compiled file is <repo>/dist/, so two levels up is the repo.
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(currentDir, "..");
+}
+
+const MANDIBLE_ROOT = resolveMandibleRoot();
+
 function readStartupCommit(logger: Logger): StartupCommitInfo {
   try {
-    const raw = execSync("git log -1 --format='%H|%s|%ci' -- .config/mcp-servers/mandible/", {
-      cwd: DOTFILES_ROOT,
+    // Run against the mandible repo root with no path filter — every commit
+    // here is a mandible commit. The old path (.config/mcp-servers/mandible/)
+    // was the pre-migration dotfiles location and no longer exists.
+    const raw = execSync("git log -1 --format='%H|%s|%ci'", {
+      cwd: MANDIBLE_ROOT,
       encoding: "utf8"
     }).trim();
     const parts = raw.split("|");
