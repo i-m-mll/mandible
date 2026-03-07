@@ -77,10 +77,10 @@ export class AuthQueue {
   private recoverStuckRequests(): void {
     const now = this.now();
 
-    // Case 1: approved with output — check for merge evidence
+    // Case 1: approved/executing with output — check for merge evidence
     const withOutput = this.db
       .prepare(
-        "SELECT * FROM auth_requests WHERE status = 'approved' AND output IS NOT NULL AND output != '' AND exit_code IS NULL"
+        "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') AND output IS NOT NULL AND output != '' AND exit_code IS NULL"
       )
       .all() as Record<string, unknown>[];
 
@@ -113,7 +113,7 @@ export class AuthQueue {
 
     const emptyApproved = this.db
       .prepare(
-        "SELECT * FROM auth_requests WHERE status = 'approved' AND (output IS NULL OR output = '') AND exit_code IS NULL AND approved_at < ?"
+        "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') AND (output IS NULL OR output = '') AND exit_code IS NULL AND approved_at < ?"
       )
       .all(cutoff) as Record<string, unknown>[];
 
@@ -152,7 +152,7 @@ export class AuthQueue {
       const byBranch = this.db
         .prepare(
           "SELECT * FROM auth_requests WHERE head_branch = ? AND base_branch = ? " +
-            "AND status IN ('pending', 'approved') LIMIT 1"
+            "AND status IN ('pending', 'approved', 'executing') LIMIT 1"
         )
         .get(payload.head_branch, payload.base_branch) as Record<string, unknown> | undefined;
       if (byBranch) {
@@ -307,9 +307,9 @@ export class AuthQueue {
     }
 
     const isFailed = this.isFailedLike(request);
-    // Bug: 68aa754 — also allow modifications from "approved" status
-    // (stuck execution recovery: approved -> pending or approved -> dismissed)
-    const isApproved = request.status === "approved";
+    // Bug: 68aa754 — also allow modifications from "approved"/"executing" status
+    // (stuck execution recovery: approved/executing -> pending or -> dismissed)
+    const isApproved = request.status === "approved" || request.status === "executing";
     if (request.status !== "pending" && !isFailed && !isApproved) {
       throw {
         status: 409,
@@ -409,7 +409,7 @@ export class AuthQueue {
     const rows = this.db
       .prepare(
         "SELECT * FROM auth_requests WHERE " +
-          "status IN ('pending', 'approved', 'expired') " +
+          "status IN ('pending', 'approved', 'executing', 'expired') " +
           "OR (status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0) " +
           "OR (status IN ('completed', 'rejected', 'dismissed') AND resolved_at >= ?) " +
           "ORDER BY created_at ASC"
@@ -492,7 +492,7 @@ export class AuthQueue {
     const request = this.requireRequest(id);
     // Bug: 68aa754 — allow dismissing approved requests (stuck execution recovery)
     // Also allow dismissing pending requests (force-dismiss from the UI).
-    if (!this.isFailedLike(request) && request.status !== "approved" && request.status !== "pending") {
+    if (!this.isFailedLike(request) && request.status !== "approved" && request.status !== "executing" && request.status !== "pending") {
       throw new AuthQueueError(
         "invalid_status",
         `Request is ${request.status}, cannot dismiss.`,
@@ -548,13 +548,13 @@ export class AuthQueue {
     const now = this.now();
     this.db
       .prepare(
-        "UPDATE auth_requests SET status = 'approved', approved_at = ?, updated_at = ? WHERE id = ?"
+        "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ? WHERE id = ?"
       )
       .run(now, now, id);
 
-    const approved = this.requireRequest(id);
-    this.executeInBackground(approved);
-    return approved;
+    const executing = this.requireRequest(id);
+    this.executeInBackground(executing);
+    return executing;
   }
 
   reject(id: string, reason = "Rejected by user."): AuthRequest {

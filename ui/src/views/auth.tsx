@@ -162,7 +162,7 @@ function isHistoryStatus(status: string, exitCode?: number | null): boolean {
 
 function getStatusLabel(request: AuthRequest): string {
   const status = getAuthStatus(request);
-  if (status === 'approved') return 'Executing';
+  if (status === 'approved' || status === 'executing') return 'Executing';
   if (status === 'completed') {
     if (request.exit_code != null && request.exit_code !== 0) return 'Failed';
     return 'Completed';
@@ -287,7 +287,7 @@ function getRequestHash(request: AuthRequest): string {
 function getStatusOrder(request: AuthRequest): number {
   const status = getAuthStatus(request);
   if (status === 'pending') return 0;
-  if (status === 'approved') return 1;
+  if (status === 'approved' || status === 'executing') return 1;
   if (isFailedLikeStatus(status, request.exit_code ?? null)) return 2;
   return 3;
 }
@@ -396,7 +396,7 @@ function AuthCard({
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
 
   // Bug: 816476e — show YubiKey warning and auto-open output for approved/executing state
-  const isApproved = status === 'approved';
+  const isApproved = status === 'approved' || status === 'executing';
   const showYubikeyWarning = expanded && isApproved;
 
   // Show console toggle for executing, completed, or failed statuses — also show
@@ -838,8 +838,8 @@ function AuthSidebarItem({
     dotStatus = 'failed';
   } else if (status === 'completed') {
     dotStatus = 'completed';
-  } else if (status === 'approved') {
-    dotStatus = 'approved';
+  } else if (status === 'approved' || status === 'executing') {
+    dotStatus = 'approved';  // Keep CSS class as 'approved' for now
   } else if (status === 'rejected' || status === 'dismissed') {
     dotStatus = 'dismissed';
   } else {
@@ -988,7 +988,7 @@ export function AuthQueueView({
     () =>
       queue.filter((r) => {
         const status = getAuthStatus(r);
-        return status === 'pending' || status === 'approved' ||
+        return status === 'pending' || status === 'approved' || status === 'executing' ||
           isFailedLikeStatus(status, r.exit_code ?? null);
       }),
     [queue],
@@ -1383,7 +1383,7 @@ export function AuthQueueView({
     // the inFlight window before the API returns (where status is still 'pending'
     // but a click is in progress). Both cases should hide Approve/Reject and show
     // an in-progress label.
-    const isExecuting = status === 'approved';
+    const isExecuting = status === 'approved' || status === 'executing';
     const isSubmitting = actionDisabled && !isExecuting && !isFailed;
     const showForceDismiss = !isHistory && !isFailed && !isExecuting && !isSubmitting;
 
