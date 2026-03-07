@@ -1,4 +1,5 @@
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
+import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthRequestInput } from "../types.js";
 import { execSync } from "node:child_process";
@@ -43,6 +44,14 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
   app.get("/api/auth/request/:id", (req, res) => {
     const request = queue.getRequest(req.params.id);
     if (!request) {
+      // Bug: caa157e — distinguish ambiguous prefix from not-found
+      const resolved = resolvePrefix(getDb(), "auth_requests", "id", req.params.id);
+      if (!resolved.ok && resolved.error === "ambiguous") {
+        res.status(409).json({
+          error: `Ambiguous prefix '${req.params.id}' — matches ${resolved.count} requests. Use a longer prefix.`
+        });
+        return;
+      }
       res.status(404).json({ error: "Auth request not found." });
       return;
     }

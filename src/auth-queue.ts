@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
-import { getDb } from "./db.js";
+import { getDb, resolvePrefix } from "./db.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import type {
   AuthOutputChunk,
@@ -285,9 +285,14 @@ export class AuthQueue {
 
   getRequest(id: string): AuthRequest | null {
     this.expireStale();
+    // Bug: caa157e — support UUID prefix matching
+    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    if (!resolved.ok) {
+      return null;
+    }
     const row = this.db
       .prepare("SELECT * FROM auth_requests WHERE id = ?")
-      .get(id) as Record<string, unknown> | undefined;
+      .get(resolved.id) as Record<string, unknown> | undefined;
     return row ? mapRow(row) : null;
   }
 
@@ -821,7 +826,15 @@ export class AuthQueue {
   }
 
   private requireRequest(id: string): AuthRequest {
-    const request = this.getRequest(id);
+    // Bug: caa157e — surface ambiguous prefix errors before falling through to getRequest
+    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    if (!resolved.ok && resolved.error === "ambiguous") {
+      throw new AuthQueueError(
+        "not_found",
+        `Ambiguous prefix '${id}' — matches ${resolved.count} requests. Use a longer prefix.`
+      );
+    }
+    const request = this.getRequest(resolved.ok ? resolved.id : id);
     if (!request) {
       throw new AuthQueueError("not_found", "Request not found.");
     }

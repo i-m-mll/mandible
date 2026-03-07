@@ -542,3 +542,61 @@ function ensureDir(dir: string): void {
     fs.mkdirSync(dir, { recursive: true });
   }
 }
+
+// Bug: caa157e — UUID prefix matching for CLI operations
+export type PrefixResult =
+  | { ok: true; id: string }
+  | { ok: false; error: "not_found" }
+  | { ok: false; error: "ambiguous"; count: number };
+
+/**
+ * Resolve a UUID prefix to a full ID. If the prefix is already a full UUID
+ * (36 chars), does an exact match. Otherwise, does a prefix match with LIKE.
+ *
+ * Returns the resolved full ID, or an error indicating not_found / ambiguous.
+ */
+export function resolvePrefix(
+  db: Db,
+  table: string,
+  idColumn: string,
+  prefix: string,
+): PrefixResult {
+  // Full UUID: exact match (current behavior)
+  if (prefix.length >= 36) {
+    const row = db
+      .prepare(`SELECT ${idColumn} FROM ${table} WHERE ${idColumn} = ?`)
+      .get(prefix) as Record<string, unknown> | undefined;
+    return row ? { ok: true, id: String(row[idColumn]) } : { ok: false, error: "not_found" };
+  }
+
+  // Prefix match: require at least 4 characters to avoid overly broad matches
+  if (prefix.length < 4) {
+    // Still try exact match for very short strings (unlikely to be a UUID but harmless)
+    const row = db
+      .prepare(`SELECT ${idColumn} FROM ${table} WHERE ${idColumn} = ?`)
+      .get(prefix) as Record<string, unknown> | undefined;
+    return row ? { ok: true, id: String(row[idColumn]) } : { ok: false, error: "not_found" };
+  }
+
+  // Escape any LIKE wildcards in the prefix
+  const escaped = prefix.replace(/%/g, "\\%").replace(/_/g, "\\_");
+  const rows = db
+    .prepare(
+      `SELECT ${idColumn} FROM ${table} WHERE ${idColumn} LIKE ? ESCAPE '\\' LIMIT 2`
+    )
+    .all(`${escaped}%`) as Record<string, unknown>[];
+
+  if (rows.length === 0) {
+    return { ok: false, error: "not_found" };
+  }
+  if (rows.length > 1) {
+    // Count the actual number of matches for the error message
+    const countRow = db
+      .prepare(
+        `SELECT COUNT(*) as cnt FROM ${table} WHERE ${idColumn} LIKE ? ESCAPE '\\'`
+      )
+      .get(`${escaped}%`) as { cnt: number };
+    return { ok: false, error: "ambiguous", count: countRow.cnt };
+  }
+  return { ok: true, id: String(rows[0][idColumn]) };
+}
