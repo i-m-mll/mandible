@@ -1,4 +1,4 @@
-import { getDb } from "../db.js";
+import { getDb, resolvePrefix } from "../db.js";
 import { navigateToSession } from "../navigate.js";
 import {
   SessionRegistry,
@@ -28,6 +28,22 @@ function parseStatus(value: string | undefined): SessionStatus | undefined {
   return undefined;
 }
 
+// Bug: caa157e — resolve session ID prefix, returning resolved ID or sending error response
+function resolveSessionId(id: string, res: ResponseLike): string | null {
+  const resolved = resolvePrefix(getDb(), "sessions", "id", id);
+  if (resolved.ok) {
+    return resolved.id;
+  }
+  if (resolved.error === "ambiguous") {
+    sendJson(res, 409, {
+      error: `Ambiguous prefix '${id}' — matches ${resolved.count} sessions. Use a longer prefix.`
+    });
+  } else {
+    sendJson(res, 404, { error: "Session not found" });
+  }
+  return null;
+}
+
 export function registerSessionRoutes(
   server: RouteRegistrar,
   registry: SessionRegistry = new SessionRegistry(getDb()),
@@ -54,11 +70,13 @@ export function registerSessionRoutes(
   });
 
   server.patch("/api/sessions/:id", (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const rawId = req.params.id;
+    if (!rawId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
+    const id = resolveSessionId(rawId, res);
+    if (!id) return;
     const payload = readBody<SessionUpdate & { pinned?: number }>(req);
     const updated = registry.updateSession(id, payload);
     if (!updated) {
@@ -73,11 +91,13 @@ export function registerSessionRoutes(
   });
 
   server.patch("/api/sessions/:id/end", (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const rawId = req.params.id;
+    if (!rawId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
+    const id = resolveSessionId(rawId, res);
+    if (!id) return;
     const payload = readBody<{ status?: SessionStatus }>(req);
     const status = payload.status ?? "ended";
     const ended = registry.endSession(id, status);
@@ -201,11 +221,13 @@ export function registerSessionRoutes(
   });
 
   server.get("/api/sessions/:id", (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const rawId = req.params.id;
+    if (!rawId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
+    const id = resolveSessionId(rawId, res);
+    if (!id) return;
     const session = registry.getSession(id);
     if (!session) {
       sendJson(res, 404, { error: "Session not found" });
@@ -215,11 +237,13 @@ export function registerSessionRoutes(
   });
 
   server.get("/api/sessions/:id/tree", (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const rawId = req.params.id;
+    if (!rawId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
+    const id = resolveSessionId(rawId, res);
+    if (!id) return;
     const tree = registry.getSessionTree(id);
     if (!tree) {
       sendJson(res, 404, { error: "Session not found" });
@@ -229,11 +253,13 @@ export function registerSessionRoutes(
   });
 
   server.post("/api/sessions/:id/navigate", (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const rawId = req.params.id;
+    if (!rawId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
+    const id = resolveSessionId(rawId, res);
+    if (!id) return;
     const session = registry.getSession(id);
     if (!session) {
       sendJson(res, 404, { error: "Session not found" });
@@ -245,11 +271,13 @@ export function registerSessionRoutes(
 
   // Bug: 14e1e63 — write Reaper Notice before killing so it appears before pane-loop restarts
   server.post("/api/sessions/:id/kill", (req, res) => {
-    const id = req.params.id;
-    if (!id) {
+    const rawId = req.params.id;
+    if (!rawId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
+    const id = resolveSessionId(rawId, res);
+    if (!id) return;
     const session = registry.getSession(id);
     if (!session || !session.pid) {
       sendJson(res, 404, { error: "Session not found or missing pid" });
@@ -290,11 +318,13 @@ export function registerSessionRoutes(
 
   // POST /api/sessions/:id/issues — link a session to an issue
   server.post("/api/sessions/:id/issues", (req, res) => {
-    const sessionId = req.params.id;
-    if (!sessionId) {
+    const rawSessionId = req.params.id;
+    if (!rawSessionId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
+    const sessionId = resolveSessionId(rawSessionId, res);
+    if (!sessionId) return;
     const body = readBody<{ issue_id?: string; repo_id?: string; repo_name?: string }>(req);
     if (!body.issue_id || !body.repo_id) {
       sendJson(res, 400, { error: "Missing issue_id or repo_id" });
@@ -326,11 +356,13 @@ export function registerSessionRoutes(
 
   // GET /api/sessions/:id/issues — get linked issues for a session
   server.get("/api/sessions/:id/issues", (req, res) => {
-    const sessionId = req.params.id;
-    if (!sessionId) {
+    const rawSessionId = req.params.id;
+    if (!rawSessionId) {
       sendJson(res, 400, { error: "Missing session id" });
       return;
     }
+    const sessionId = resolveSessionId(rawSessionId, res);
+    if (!sessionId) return;
     const db = getDb();
     const links = db.prepare(
       `SELECT session_id, issue_id, repo_id, created_at

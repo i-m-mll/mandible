@@ -1,5 +1,5 @@
 import path from "node:path";
-import { getDb } from "../db.js";
+import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionRegistry } from "../registry.js";
 import type { AuthRequestStatus } from "../types.js";
@@ -271,22 +271,46 @@ export function registerInboxRoutes(
     const sessionId = typeof body?.session_id === "string" ? body.session_id : null;
 
     if (type === "continuation") {
+      // Bug: caa157e — resolve UUID prefix for session IDs
+      const resolved = resolvePrefix(db, "sessions", "id", id);
+      if (!resolved.ok) {
+        if (resolved.error === "ambiguous") {
+          sendJson(res, 409, {
+            error: `ambiguous prefix '${id}' — matches ${resolved.count} sessions. Use a longer prefix.`
+          });
+        } else {
+          sendJson(res, 404, { error: "continuation not found or already acknowledged" });
+        }
+        return;
+      }
       const result = db
         .prepare(
           "UPDATE sessions SET continuation_acked_by = ? WHERE id = ? AND continuation_acked_by IS NULL"
         )
-        .run(sessionId ?? "manual", id);
+        .run(sessionId ?? "manual", resolved.id);
       if (result.changes === 0) {
         sendJson(res, 404, { error: "continuation not found or already acknowledged" });
         return;
       }
       sendJson(res, 200, { ok: true });
     } else if (type === "auth_result") {
+      // Bug: caa157e — resolve UUID prefix for auth request IDs
+      const resolved = resolvePrefix(db, "auth_requests", "id", id);
+      if (!resolved.ok) {
+        if (resolved.error === "ambiguous") {
+          sendJson(res, 409, {
+            error: `ambiguous prefix '${id}' — matches ${resolved.count} auth requests. Use a longer prefix.`
+          });
+        } else {
+          sendJson(res, 404, { error: "auth request not found or already acknowledged" });
+        }
+        return;
+      }
       const result = db
         .prepare(
           "UPDATE auth_requests SET acknowledged_by = ? WHERE id = ? AND acknowledged_by IS NULL"
         )
-        .run(sessionId ?? "manual", id);
+        .run(sessionId ?? "manual", resolved.id);
       if (result.changes === 0) {
         sendJson(res, 404, { error: "auth request not found or already acknowledged" });
         return;
