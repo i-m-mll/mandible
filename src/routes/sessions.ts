@@ -40,7 +40,12 @@ function looksLikeBranchName(value: string): boolean {
   if (value === "main" || value === "master" || value === "develop") {
     return true;
   }
-  return /^(feature|fix|bugfix|hotfix|chore|release)\//.test(value);
+  // Slash-separated branch prefixes (e.g. feature/foo)
+  if (/^(feature|fix|bugfix|hotfix|chore|release)\//.test(value)) return true;
+  // Double-underscore sub-branch separator used in Mandible worktrees (e.g. feature__foo)
+  // Bug: 003179f — agent-commit sends worktree dir name as repo_id
+  if (/^(feature|fix|bugfix|hotfix|chore|release)__/.test(value)) return true;
+  return false;
 }
 
 function normalizeRepoDisplayName(repoId: string, repoName?: string | null): string {
