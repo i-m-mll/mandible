@@ -80,7 +80,8 @@ export interface StarredChat {
 
 export type AuthRequestStatus =
   | "pending"
-  | "approved"
+  | "executing"
+  | "approved"   // legacy — kept for DB backward compat, recovery converts to executing
   | "rejected"
   | "expired"
   | "completed"
