@@ -93,6 +93,14 @@ function parseBranchTag(message: string): { branch: string | null; body: string 
   return { branch: null, body: message };
 }
 
+function looksLikeBranchName(value: string): boolean {
+  if (!value) return false;
+  if (value === 'main' || value === 'master' || value === 'develop') {
+    return true;
+  }
+  return /^(feature|fix|bugfix|hotfix|chore|release)\//.test(value);
+}
+
 const RESOLVED_LINGER_MS = 1500;
 
 function formatRelativeTime(timestampMs: number): string {
@@ -395,13 +403,17 @@ function AuthCard({
 
   const baseBranch = request.base_branch ?? request.base;
   const headBranch = request.head_branch ?? request.head;
-  const repoName = request.repo ?? '';
+  const repoId = request.repo ?? '';
+  const repoName = repoId.includes('/') && !looksLikeBranchName(repoId) && repoId.split('/').length === 2
+    ? repoId.split('/')[1]
+    : repoId;
   const hasTags = Boolean(commitBranch || attemptLabel || branchMerged || (headBranch && baseBranch));
 
   // Session & issue links
   const sessionId = request.session_id;
   const bugRefs = useMemo(() => extractBugRefs(commitMsg), [commitMsg]);
-  const hasLinks = Boolean(sessionId) || bugRefs.length > 0;
+  const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
+  const hasLinks = Boolean(sessionId) || (bugRefs.length > 0 && canIssueLink);
 
   // Bug: 816476e — auto-open console output when status transitions to approved
   // so live output is visible without requiring a manual click.
@@ -492,12 +504,12 @@ function AuthCard({
               Session
             </a>
           )}
-          {bugRefs.length > 0 && repoName && (
+          {bugRefs.length > 0 && canIssueLink && (
             bugRefs.map((ref) => (
               <a
                 key={ref}
                 className="auth-card__link auth-card__link--issue"
-                href={`#/issues?repo=${encodeURIComponent(repoName)}&issue=${encodeURIComponent(ref)}`}
+                href={`#/issues?repo=${encodeURIComponent(repoId)}&issue=${encodeURIComponent(ref)}`}
                 onClick={(e) => e.stopPropagation()}
               >
                 Issue {ref.slice(0, 8)}

@@ -527,20 +527,13 @@ export function SessionsView({
     const rawProjects = (session.projects || []) as ProjectLink[];
     const issues = (session.issues || []) as IssueLink[];
 
-    // Fix project display: if repo_name looks like a branch (contains '/'),
-    // extract the actual repo name from cwd instead
-    const projects = rawProjects.map((p) => {
-      if (p.repo_name && p.repo_name.includes('/')) {
-        // repo_name is probably a branch name — derive repo from cwd
-        const cwdBasename = cwd ? cwd.replace(/\/+$/, '').split('/').pop() || p.repo_name : p.repo_name;
-        // If cwd is a worktree path like /repo/worktrees/branch-name, go up
-        const cwdParts = cwd ? cwd.replace(/\/+$/, '').split('/') : [];
-        const worktreeIdx = cwdParts.indexOf('worktrees');
-        const repoName = worktreeIdx > 0 ? cwdParts[worktreeIdx - 1] : cwdBasename;
-        return { ...p, repo_name: repoName };
-      }
-      return p;
-    });
+    // Backend normalizes repo names; UI only fills empty values and deduplicates.
+    const projects = rawProjects
+      .map((p) => ({
+        ...p,
+        repo_name: p.repo_name || p.repo_id.split('/').pop() || p.repo_id,
+      }))
+      .filter((p, idx, arr) => arr.findIndex((x) => x.repo_id === p.repo_id) === idx);
 
     const rowClasses = [
       'session-row',

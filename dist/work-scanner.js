@@ -253,8 +253,11 @@ export class WorkScanner {
         const row = this.db.prepare("SELECT 1 FROM branches LIMIT 1").get();
         return Boolean(row);
     }
-    getRepoById(id) {
-        return this.getRepos().find((repo) => repo.id === id);
+    getRepoById(idOrPath) {
+        const resolvedPath = path.resolve(resolveHome(idOrPath));
+        return this.getRepos().find((repo) => repo.id === idOrPath ||
+            repo.root === idOrPath ||
+            path.resolve(repo.root) === resolvedPath);
     }
     getBranches(repoRoot) {
         const rows = this.db

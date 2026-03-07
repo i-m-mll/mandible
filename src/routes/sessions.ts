@@ -28,6 +28,65 @@ function parseStatus(value: string | undefined): SessionStatus | undefined {
   return undefined;
 }
 
+function deriveRepoNameFromRepoId(repoId: string): string {
+  const cleaned = repoId.trim().replace(/\/+$/, "");
+  if (!cleaned) return repoId;
+  const parts = cleaned.split("/");
+  return parts[parts.length - 1] || cleaned;
+}
+
+function looksLikeBranchName(value: string): boolean {
+  if (!value) return false;
+  if (value === "main" || value === "master" || value === "develop") {
+    return true;
+  }
+  return /^(feature|fix|bugfix|hotfix|chore|release)\//.test(value);
+}
+
+function normalizeRepoDisplayName(repoId: string, repoName?: string | null): string {
+  const fallback = deriveRepoNameFromRepoId(repoId);
+  if (!repoName) return fallback;
+  const trimmed = repoName.trim();
+  if (!trimmed || looksLikeBranchName(trimmed)) return fallback;
+  // Normalize owner/repo to repo for compact UI display.
+  if (trimmed.includes("/")) {
+    const parts = trimmed.split("/");
+    if (parts.length !== 2) return fallback;
+    return parts[1] || fallback;
+  }
+  return trimmed;
+}
+
+function resolveCanonicalRepoId(
+  issueScanner: IssueScanner | undefined,
+  repoId: string,
+  repoName?: string | null,
+  issueId?: string,
+): string {
+  if (!issueScanner) return repoId;
+  const direct = issueScanner.workScanner.getRepoById(repoId);
+  if (direct?.exists) return direct.id;
+
+  const summaries = issueScanner.getRepoSummaries();
+  const byIdentifier = summaries.find((summary) =>
+    summary.repo_id === repoId ||
+    summary.repo_name === repoId ||
+    summary.repo_root === repoId ||
+    (repoName != null && (summary.repo_name === repoName || summary.repo_root === repoName))
+  );
+  if (byIdentifier) return byIdentifier.repo_id;
+
+  if (issueId) {
+    const byIssue = summaries.filter((summary) =>
+      summary.issues.some((issue) => issue.id === issueId || issue.id.startsWith(issueId))
+    );
+    if (byIssue.length === 1) {
+      return byIssue[0].repo_id;
+    }
+  }
+  return repoId;
+}
+
 // Bug: caa157e — resolve session ID prefix, returning resolved ID or sending error response
 function resolveSessionId(id: string, res: ResponseLike): string | null {
   const resolved = resolvePrefix(getDb(), "sessions", "id", id);
@@ -183,7 +242,10 @@ export function registerSessionRoutes(
       const projectMap = new Map<string, Array<{ repo_id: string; repo_name: string }>>();
       for (const proj of allProjects) {
         const existing = projectMap.get(proj.session_id) ?? [];
-        existing.push({ repo_id: proj.repo_id, repo_name: proj.repo_name });
+        const normalizedName = normalizeRepoDisplayName(proj.repo_id, proj.repo_name);
+        if (!existing.some((p) => p.repo_id === proj.repo_id)) {
+          existing.push({ repo_id: proj.repo_id, repo_name: normalizedName });
+        }
         projectMap.set(proj.session_id, existing);
       }
 
@@ -330,26 +392,34 @@ export function registerSessionRoutes(
       sendJson(res, 400, { error: "Missing issue_id or repo_id" });
       return;
     }
+    const canonicalRepoId = resolveCanonicalRepoId(issueScanner, body.repo_id, body.repo_name, body.issue_id);
     const db = getDb();
     const now = Date.now();
     db.prepare(
       `INSERT INTO session_issues (session_id, issue_id, repo_id, created_at)
        VALUES (?, ?, ?, ?)
        ON CONFLICT DO NOTHING`
-    ).run(sessionId, body.issue_id, body.repo_id, now);
+    ).run(sessionId, body.issue_id, canonicalRepoId, now);
 
     // Persist project association (sticky — survives issue closure)
-    const repoName = body.repo_name || body.repo_id.split("/").pop() || body.repo_id;
+    let repoName = body.repo_name;
+    if (!repoName || repoName.includes("/") || looksLikeBranchName(repoName)) {
+      const repo = issueScanner?.workScanner.getRepoById(canonicalRepoId);
+      if (repo) {
+        repoName = repo.name;
+      }
+    }
+    repoName = normalizeRepoDisplayName(canonicalRepoId, repoName);
     db.prepare(
       `INSERT INTO session_projects (session_id, repo_id, repo_name, created_at)
        VALUES (?, ?, ?, ?)
        ON CONFLICT DO NOTHING`
-    ).run(sessionId, body.repo_id, repoName, now);
+    ).run(sessionId, canonicalRepoId, repoName, now);
 
     sendJson(res, 200, {
       session_id: sessionId,
       issue_id: body.issue_id,
-      repo_id: body.repo_id,
+      repo_id: canonicalRepoId,
       created_at: now,
     });
   });

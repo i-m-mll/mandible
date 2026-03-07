@@ -352,8 +352,14 @@ export class WorkScanner {
     return Boolean(row);
   }
 
-  getRepoById(id: string): RepoInfo | undefined {
-    return this.getRepos().find((repo) => repo.id === id);
+  getRepoById(idOrPath: string): RepoInfo | undefined {
+    const resolvedPath = path.resolve(resolveHome(idOrPath));
+    return this.getRepos().find(
+      (repo) =>
+        repo.id === idOrPath ||
+        repo.root === idOrPath ||
+        path.resolve(repo.root) === resolvedPath,
+    );
   }
 
   getBranches(repoRoot: string): BranchData[] {

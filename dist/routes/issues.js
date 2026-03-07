@@ -104,13 +104,23 @@ export function registerIssueRoutes(server, workScanner) {
     });
     // GET /api/issues/:repoId/:issueId — issue detail with comments
     server.get("/api/issues/:repoId/:issueId", (req, res) => {
-        const repoId = getParam(req, "repoId");
+        const repoIdParam = getParam(req, "repoId");
         const issueId = getParam(req, "issueId");
-        if (!repoId || !issueId) {
+        if (!repoIdParam || !issueId) {
             sendJson(res, 400, { error: "missing repoId or issueId" });
             return;
         }
-        const detail = issueScanner.getIssueDetail(repoId, issueId);
+        let repoId = repoIdParam;
+        let detail = issueScanner.getIssueDetail(repoId, issueId);
+        if (!detail) {
+            const byName = issueScanner
+                .getRepoSummaries()
+                .find((summary) => summary.repo_name === repoIdParam || summary.repo_root === repoIdParam);
+            if (byName) {
+                repoId = byName.repo_id;
+                detail = issueScanner.getIssueDetail(repoId, issueId);
+            }
+        }
         if (!detail) {
             sendJson(res, 404, { error: "issue not found" });
             return;
@@ -213,11 +223,18 @@ export function registerIssueRoutes(server, workScanner) {
     });
     // GET /api/issues/:repoId/:issueId/sessions — get linked sessions for an issue
     server.get("/api/issues/:repoId/:issueId/sessions", (req, res) => {
-        const repoId = getParam(req, "repoId");
+        const repoIdParam = getParam(req, "repoId");
         const issueId = getParam(req, "issueId");
-        if (!repoId || !issueId) {
+        if (!repoIdParam || !issueId) {
             sendJson(res, 400, { error: "missing repoId or issueId" });
             return;
+        }
+        let repoId = repoIdParam;
+        const byName = issueScanner
+            .getRepoSummaries()
+            .find((summary) => summary.repo_name === repoIdParam || summary.repo_root === repoIdParam);
+        if (byName) {
+            repoId = byName.repo_id;
         }
         const db = getDb();
         const links = db.prepare(`SELECT session_id, issue_id, repo_id, created_at

@@ -3,6 +3,7 @@ import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthRequestInput } from "../types.js";
 import { execSync } from "node:child_process";
+import path from "node:path";
 
 function readBody<T>(req: RequestLike): T {
   return (req.body ?? {}) as T;
@@ -14,6 +15,16 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
     if (!payload) {
       res.status(400).json({ error: "Invalid auth request payload." });
       return;
+    }
+
+    // Bug: 76ea6c6 — fallback for repo name from cwd if missing
+    // Bug: b011e5b — if repo looks like a branch name (contains / but not owner/repo), derive from cwd
+    const repo = payload.repo;
+    const looksLikeBranch = repo && (repo.includes("/") && !repo.match(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/));
+    if (!repo || looksLikeBranch) {
+      if (payload.cwd) {
+        payload.repo = path.basename(payload.cwd);
+      }
     }
 
     // Auth merge gate: verify Bug: references in non-merge commits

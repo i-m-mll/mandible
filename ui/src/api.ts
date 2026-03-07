@@ -575,6 +575,18 @@ export async function closeConsoleSession(sessionId: string): Promise<void> {
   await apiDelete(`/api/console/sessions/${encodeURIComponent(sessionId)}`);
 }
 
+export async function getConsoleStreamEvents<T = unknown>(
+  sessionId: string,
+  limit = 500,
+): Promise<T[]> {
+  const response = await apiGet(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/events?limit=${encodeURIComponent(String(limit))}`
+  );
+  const payload = await parseMaybeJson(response) as { events?: T[] } | T[];
+  if (Array.isArray(payload)) return payload;
+  return payload.events ?? [];
+}
+
 // ── Backup API ──
 
 export type BackupStatus = {

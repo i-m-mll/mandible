@@ -159,6 +159,29 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   const [actionInFlight, setActionInFlight] = useState(false);
   const [linkedSessions, setLinkedSessions] = useState<Array<{session_id: string; created_at: number}>>([]);
 
+  const resolveRepoId = useCallback((rawRepoId: string | null | undefined): string | null => {
+    if (!rawRepoId) return null;
+    const trimmed = rawRepoId.trim();
+    if (!trimmed) return null;
+    const exact = repos.find((repo) => repo.repo_id === trimmed);
+    if (exact) return exact.repo_id;
+    const byName = repos.find((repo) => repo.repo_name === trimmed);
+    if (byName) return byName.repo_id;
+    const byNameInsensitive = repos.find((repo) => repo.repo_name.toLowerCase() === trimmed.toLowerCase());
+    if (byNameInsensitive) return byNameInsensitive.repo_id;
+    return trimmed;
+  }, [repos]);
+
+  const resolveIssueId = useCallback((repoId: string, rawIssueId: string): string => {
+    const repo = repos.find((r) => r.repo_id === repoId);
+    if (!repo) return rawIssueId;
+    const exact = repo.issues.find((issue) => issue.id === rawIssueId);
+    if (exact) return exact.id;
+    const byPrefix = repo.issues.filter((issue) => issue.id.startsWith(rawIssueId));
+    if (byPrefix.length === 1) return byPrefix[0].id;
+    return rawIssueId;
+  }, [repos]);
+
   // Auto-expand repos that have issues
   useEffect(() => {
     if (expandedRepos.size === 0 && repos.length > 0) {
@@ -177,15 +200,17 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   // Deep-link: auto-select issue from URL params
   useEffect(() => {
     if (initialRepoId && initialIssueId) {
-      setSelectedRepoId(initialRepoId);
-      setSelectedIssueId(initialIssueId);
+      const canonicalRepoId = resolveRepoId(initialRepoId) ?? initialRepoId;
+      const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
+      setSelectedRepoId(canonicalRepoId);
+      setSelectedIssueId(canonicalIssueId);
       setExpandedRepos((prev) => {
         const next = new Set(prev);
-        next.add(initialRepoId);
+        next.add(canonicalRepoId);
         return next;
       });
     }
-  }, [initialRepoId, initialIssueId]);
+  }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
 
   const normalizedFilter = useMemo(() => filter.trim().toLowerCase(), [filter]);
 
@@ -221,7 +246,16 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) {
       setIssueDetail(null);
+      setLinkedSessions([]);
       return;
+    }
+    const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
+    if (repoId !== selectedRepoId) {
+      setSelectedRepoId(repoId);
+    }
+    const issueId = resolveIssueId(repoId, selectedIssueId);
+    if (issueId !== selectedIssueId) {
+      setSelectedIssueId(issueId);
     }
     let cancelled = false;
     setDetailLoading(true);
@@ -232,10 +266,10 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           setDetailLoading(false);
         }
       });
-    fetchDetail(selectedRepoId, selectedIssueId).catch(() => {
+    fetchDetail(repoId, issueId).catch(() => {
       // First attempt failed — trigger a targeted repo scan and retry once.
-      scanIssueRepo(selectedRepoId)
-        .then(() => fetchDetail(selectedRepoId, selectedIssueId))
+      scanIssueRepo(repoId)
+        .then(() => fetchDetail(repoId, issueId))
         .catch(() => {
           if (!cancelled) {
             setIssueDetail(null);
@@ -243,7 +277,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           }
         });
     });
-    getIssueSessions(selectedRepoId, selectedIssueId)
+    getIssueSessions(repoId, issueId)
       .then((data) => {
         if (!cancelled) {
           setLinkedSessions(data as Array<{session_id: string; created_at: number}>);
@@ -255,7 +289,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     return () => {
       cancelled = true;
     };
-  }, [selectedRepoId, selectedIssueId]);
+  }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
 
   const toggleRepo = useCallback((repoId: string) => {
     setExpandedRepos((prev) => {

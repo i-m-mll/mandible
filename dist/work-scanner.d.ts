@@ -66,7 +66,7 @@ export declare class WorkScanner {
     constructor(options?: WorkScannerOptions);
     getRepos(): RepoInfo[];
     hasCachedData(): boolean;
-    getRepoById(id: string): RepoInfo | undefined;
+    getRepoById(idOrPath: string): RepoInfo | undefined;
     getBranches(repoRoot: string): BranchData[];
     getBranch(repoRoot: string, branch: string): BranchData | null;
     getWorktrees(repoRoot: string): Array<{

@@ -156,8 +156,8 @@ function isPidAlive(pid) {
         process.kill(pid, 0);
         return true;
     }
-    catch {
-        return false;
+    catch (err) {
+        return err.code === "EPERM";
     }
 }
 export function checkLiveness(session) {

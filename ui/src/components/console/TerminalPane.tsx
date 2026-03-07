@@ -9,7 +9,7 @@ import type { ConsoleSession } from '../../state';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
 import type { StreamEvent } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
-import { restartConsoleSession } from '../../api';
+import { getConsoleStreamEvents, restartConsoleSession } from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
 
@@ -253,6 +253,26 @@ export function TerminalPane({
     }
   }, [isVisible, viewMode, sessionId]);
 
+  // Hydrate rich view with recent stream-json history on mount/session change.
+  useEffect(() => {
+    let cancelled = false;
+    getConsoleStreamEvents<StreamEvent>(sessionId, 500)
+      .then((events) => {
+        if (cancelled) return;
+        setStreamEvents(events);
+        const last = events[events.length - 1];
+        setStreaming(Boolean(last && last.type !== 'result'));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setStreamEvents([]);
+        setStreaming(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
   // SSE: subscribe to console:stream_event for the rich view.
   // The server broadcasts: { console_session_id, event: StreamEvent }
   // app.tsx spreads payload.data into the CustomEvent detail, so:
@@ -264,7 +284,13 @@ export function TerminalPane({
       if (!detail || detail.console_session_id !== sessionId) return;
       const streamEvent = detail.event;
       if (!streamEvent) return;
-      setStreamEvents((prev) => [...prev, streamEvent]);
+      setStreamEvents((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && JSON.stringify(last) === JSON.stringify(streamEvent)) {
+          return prev;
+        }
+        return [...prev, streamEvent];
+      });
       // Mark streaming active when first event arrives; clear on result/stop
       if (streamEvent.type === 'result') {
         setStreaming(false);
@@ -292,6 +318,19 @@ export function TerminalPane({
       setReconnectNonce((n) => n + 1);
     } catch {
       setWsStatus('error');
+    }
+  };
+
+  const [prompt, setPrompt] = useState('');
+
+  const handlePromptSubmit = (e: JSX.TargetedEvent<HTMLFormElement, Event>) => {
+    e.preventDefault();
+    if (!prompt.trim()) return;
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Send as binary (Uint8Array) so the server's isBinary check routes it to the PTY.
+      ws.send(new TextEncoder().encode(prompt + '\n'));
+      setPrompt('');
     }
   };
 
@@ -371,12 +410,62 @@ export function TerminalPane({
 
         {/* Rich view: StreamRenderer */}
         {viewMode === 'rich' && (
-          <div style={{ flex: 1, overflow: 'auto' }}>
-            <StreamRenderer
-              events={streamEvents}
-              streaming={streaming}
-              sessionInfo={{ sessionId }}
-            />
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ flex: 1, overflow: 'auto' }}>
+              <StreamRenderer
+                events={streamEvents}
+                streaming={streaming}
+                sessionInfo={{ sessionId }}
+              />
+            </div>
+            {/* Bug: aea2c67 — prompt input bar in rich view */}
+            <form
+              onSubmit={handlePromptSubmit}
+              style={{
+                padding: '12px 16px',
+                borderTop: '1px solid var(--border-subtle)',
+                background: 'var(--bg-inset)',
+                display: 'flex',
+                gap: '12px',
+                alignItems: 'center',
+              }}
+            >
+              <input
+                type="text"
+                value={prompt}
+                onInput={(e) => setPrompt(e.currentTarget.value)}
+                placeholder="Send a message to the agent..."
+                disabled={wsStatus !== 'open' || interactionMode === 'inbox_only'}
+                style={{
+                  flex: 1,
+                  background: 'var(--bg-page)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: '8px',
+                  padding: '10px 14px',
+                  color: 'var(--fg-default)',
+                  fontSize: '14px',
+                  fontFamily: 'var(--font-sans)',
+                  outline: 'none',
+                }}
+              />
+              <button
+                type="submit"
+                disabled={!prompt.trim() || wsStatus !== 'open' || interactionMode === 'inbox_only'}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  background: prompt.trim() ? 'var(--accent-blue)' : 'var(--bg-muted)',
+                  color: '#fff',
+                  border: 'none',
+                  cursor: prompt.trim() ? 'pointer' : 'default',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  transition: 'background 0.2s ease',
+                }}
+              >
+                Send
+              </button>
+            </form>
           </div>
         )}
 
