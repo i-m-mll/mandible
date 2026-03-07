@@ -44,6 +44,21 @@ async function apiPatch(path: string, body?: unknown): Promise<Response> {
   return response;
 }
 
+async function apiPut(path: string, body?: unknown): Promise<Response> {
+  const response = await fetch(path, {
+    method: 'PUT',
+    headers: {
+      ...DEFAULT_HEADERS,
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    throw new Error(`PUT ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+
 async function apiDelete(path: string): Promise<Response> {
   const response = await fetch(path, {
     method: 'DELETE',
@@ -186,6 +201,15 @@ export async function retryAuthRequest(requestId: string): Promise<void> {
 
 export async function dismissAuthRequest(requestId: string): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/dismiss`);
+}
+
+// Bug: 2c826ca — allow editing auth request fields (commit_message, title, etc.)
+// from the dashboard so stale content can be corrected before approval.
+export async function updateAuthRequestField(
+  requestId: string,
+  fields: Record<string, unknown>,
+): Promise<void> {
+  await apiPut(`/api/auth/request/${encodeURIComponent(requestId)}`, fields);
 }
 
 export async function getWorkRepos<T>(): Promise<T[]> {

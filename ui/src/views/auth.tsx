@@ -46,6 +46,7 @@ export type AuthQueueViewProps = {
   onReject: (requestId: string) => void | Promise<void>;
   onRetry: (requestId: string) => void | Promise<void>;
   onDismiss: (requestId: string) => void | Promise<void>;
+  onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
 };
 
 function getAuthId(request: AuthRequest): string {
@@ -340,12 +341,15 @@ function AuthCard({
   onDragEnd?: () => void;
   onDragOver?: (event: DragEvent) => void;
   onDrop?: (event: DragEvent) => void;
+  onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
   const [showSpec, setShowSpec] = useState(false);
   const [showDiff, setShowDiff] = useState(true);
   const [showConsole, setShowConsole] = useState(false);
   const [selectedFile, setSelectedFile] = useState<number>(-1);
+  const [editingCommitMsg, setEditingCommitMsg] = useState(false);
+  const [editCommitValue, setEditCommitValue] = useState('');
   const consoleEndRef = useRef<HTMLDivElement>(null);
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
@@ -563,16 +567,60 @@ function AuthCard({
                     {'\u25B8'}
                   </span>
                   Commit Message
+                  {/* Bug: 2c826ca — editable commit message for pending/failed requests */}
+                  {onUpdateField && (status === 'pending' || failedLike) && !editingCommitMsg && (
+                    <span
+                      className="panel__edit-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditCommitValue(commitMsg);
+                        setEditingCommitMsg(true);
+                      }}
+                    >
+                      edit
+                    </span>
+                  )}
                 </button>
                 {showCommit && (
-                  commitHtml ? (
+                  editingCommitMsg ? (
+                    <div className="panel__body spec-panel">
+                      <textarea
+                        className="panel__edit-textarea"
+                        value={editCommitValue}
+                        onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
+                        rows={8}
+                      />
+                      <div className="panel__edit-actions">
+                        <button
+                          type="button"
+                          className="panel__edit-save"
+                          onClick={() => {
+                            const id = getAuthId(request);
+                            if (id && onUpdateField) {
+                              void onUpdateField(id, 'commit_message', editCommitValue);
+                            }
+                            setEditingCommitMsg(false);
+                          }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="panel__edit-cancel"
+                          onClick={() => setEditingCommitMsg(false)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : commitHtml ? (
                     <div
                       className="panel__body spec-panel"
                       dangerouslySetInnerHTML={{ __html: commitHtml }}
                     />
                   ) : (
                     <div className="panel__body spec-panel spec-panel--empty">
-                      No commit message.
+                      No commit message provided. Merge will use git's default message.
                     </div>
                   )
                 )}
@@ -699,6 +747,7 @@ function AuthCardItem({
   onToggle,
   actions,
   executionOutput,
+  onUpdateField,
   dragging,
   draggable,
   onDragStart,
@@ -718,6 +767,7 @@ function AuthCardItem({
   onToggle?: (id: string) => void;
   actions?: JSX.Element | null;
   executionOutput?: string;
+  onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
   dragging?: boolean;
   draggable?: boolean;
   onDragStart?: () => void;
@@ -740,6 +790,7 @@ function AuthCardItem({
         onToggle={onToggle}
         actions={actions}
         executionOutput={executionOutput}
+        onUpdateField={onUpdateField}
         dragging={dragging}
         draggable={draggable}
         onDragStart={onDragStart}
@@ -825,6 +876,7 @@ export function AuthQueueView({
   onReject,
   onRetry,
   onDismiss,
+  onUpdateField,
 }: AuthQueueViewProps): JSX.Element {
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
@@ -1531,6 +1583,7 @@ export function AuthQueueView({
               branchMerged={isHistory && !isFailed && isBranchMerged(request, branchesByRepo)}
               executionOutput={outputs[id]}
               actions={renderDetailActions(request)}
+              onUpdateField={onUpdateField}
             />
           );
         })()}
