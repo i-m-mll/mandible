@@ -350,6 +350,15 @@ function ContextMenu({
   );
 }
 
+/** Returns true if `name` looks like a branch or worktree dir name rather than a real repo name.
+ * Bug: a2b777a — project column shows branch pills, issue chips navigate to wrong repo */
+function looksLikeWorktreeOrBranchName(name: string): boolean {
+  if (!name) return false;
+  if (name === 'main' || name === 'master' || name === 'develop') return true;
+  // Slash-separated or double-underscore branch prefixes (e.g. feature/foo, feature__foo)
+  return /^(feature|fix|bugfix|hotfix|chore|release)(\/|__)/.test(name);
+}
+
 /** Issue pills with open/closed filtering */
 function IssuePills({
   issues,
@@ -378,13 +387,25 @@ function IssuePills({
   return (
     <div className="linked-chips">
       {displayed.map((link) => (
-        <a
-          key={`${link.repo_id}-${link.issue_id}`}
-          className="linked-issue-chip"
-          href={`#/issues?repo=${encodeURIComponent(link.repo_id)}&issue=${encodeURIComponent(link.issue_id)}`}
-        >
-          {link.issue_id.slice(0, 8)}
-        </a>
+        // Bug: a2b777a — if repo_id is a branch/worktree name (unresolvable), render a
+        // non-clickable span instead of a broken link to #/issues?repo=feature__...
+        looksLikeWorktreeOrBranchName(link.repo_id) ? (
+          <span
+            key={`${link.repo_id}-${link.issue_id}`}
+            className="linked-issue-chip linked-issue-chip--unresolved"
+            title={`Issue ${link.issue_id.slice(0, 8)} (repo not tracked)`}
+          >
+            {link.issue_id.slice(0, 8)}
+          </span>
+        ) : (
+          <a
+            key={`${link.repo_id}-${link.issue_id}`}
+            className="linked-issue-chip"
+            href={`#/issues?repo=${encodeURIComponent(link.repo_id)}&issue=${encodeURIComponent(link.issue_id)}`}
+          >
+            {link.issue_id.slice(0, 8)}
+          </a>
+        )
       ))}
       {closedCount > 0 && !showClosed && (
         <button
@@ -527,13 +548,17 @@ export function SessionsView({
     const rawProjects = (session.projects || []) as ProjectLink[];
     const issues = (session.issues || []) as IssueLink[];
 
-    // Backend normalizes repo names; UI only fills empty values and deduplicates.
+    // Backend normalizes repo names; UI only fills empty values, deduplicates, and filters
+    // out entries whose repo_id or repo_name looks like a branch/worktree dir name.
+    // Bug: a2b777a — project column was showing branch-name pills when agent-commit sent
+    // repo_id=feature__audit-fixes (worktree dir name) instead of the canonical repo id.
     const projects = rawProjects
       .map((p) => ({
         ...p,
         repo_name: p.repo_name || p.repo_id.split('/').pop() || p.repo_id,
       }))
-      .filter((p, idx, arr) => arr.findIndex((x) => x.repo_id === p.repo_id) === idx);
+      .filter((p, idx, arr) => arr.findIndex((x) => x.repo_id === p.repo_id) === idx)
+      .filter((p) => !looksLikeWorktreeOrBranchName(p.repo_name) && !looksLikeWorktreeOrBranchName(p.repo_id));
 
     const rowClasses = [
       'session-row',
