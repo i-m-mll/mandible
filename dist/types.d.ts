@@ -61,7 +61,7 @@ export interface StarredChat {
     branch: string | null;
     created_at: string;
 }
-export type AuthRequestStatus = "pending" | "approved" | "rejected" | "expired" | "completed" | "dismissed";
+export type AuthRequestStatus = "pending" | "executing" | "approved" | "rejected" | "expired" | "completed" | "dismissed";
 export type AuthExecutionMode = "daemon" | "remote";
 export interface AuthRequest {
     id: string;

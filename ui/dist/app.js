@@ -10745,7 +10745,7 @@ function isHistoryStatus(status, exitCode) {
 }
 function getStatusLabel(request) {
   const status = getAuthStatus(request);
-  if (status === "approved")
+  if (status === "approved" || status === "executing")
     return "Executing";
   if (status === "completed") {
     if (request.exit_code != null && request.exit_code !== 0)
@@ -10862,7 +10862,7 @@ function getStatusOrder(request) {
   const status = getAuthStatus(request);
   if (status === "pending")
     return 0;
-  if (status === "approved")
+  if (status === "approved" || status === "executing")
     return 1;
   if (isFailedLikeStatus(status, request.exit_code ?? null))
     return 2;
@@ -10933,7 +10933,7 @@ function AuthCard({
   const statusClass2 = getStatusClass(request);
   const cardClass = `auth-card auth-card--condensed${expanded ? " auth-card--expanded" : ""}${history ? " auth-card--history" : ""}${resolved ? " auth-card--resolved" : ""}${dragging ? " auth-card--dragging" : ""}`;
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
-  const isApproved = status === "approved";
+  const isApproved = status === "approved" || status === "executing";
   const showYubikeyWarning = expanded && isApproved;
   const showConsoleToggle = expanded && (isApproved || hasConsoleOutput && (status === "completed" || failedLike));
   const showFailure = expanded && failedLike;
@@ -11239,7 +11239,7 @@ function AuthSidebarItem({
     dotStatus = "failed";
   } else if (status === "completed") {
     dotStatus = "completed";
-  } else if (status === "approved") {
+  } else if (status === "approved" || status === "executing") {
     dotStatus = "approved";
   } else if (status === "rejected" || status === "dismissed") {
     dotStatus = "dismissed";
@@ -11346,7 +11346,7 @@ function AuthQueueView({
   const activeQueue = T2(
     () => queue.filter((r3) => {
       const status = getAuthStatus(r3);
-      return status === "pending" || status === "approved" || isFailedLikeStatus(status, r3.exit_code ?? null);
+      return status === "pending" || status === "approved" || status === "executing" || isFailedLikeStatus(status, r3.exit_code ?? null);
     }),
     [queue]
   );
@@ -11660,7 +11660,7 @@ function AuthQueueView({
       return null;
     }
     const actionDisabled = inFlight.has(id);
-    const isExecuting = status === "approved";
+    const isExecuting = status === "approved" || status === "executing";
     const isSubmitting = actionDisabled && !isExecuting && !isFailed;
     const showForceDismiss = !isHistory && !isFailed && !isExecuting && !isSubmitting;
     if (isFailed) {
