@@ -398,6 +398,63 @@ auto_close_issues() {
   fi
 }
 
+# Bug: b1308c6 — auto-build dist after merge when src/ or ui/src/ changed.
+# If the merged branch contained source changes but no pre-built dist (agents
+# sometimes omit dist from feature branches), run npm run build now so the
+# daemon is restarted with current code. Commits the result with the agent key.
+build_dist_if_src_changed() {
+  local base_commit="$1"
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel)
+
+  local src_changed
+  src_changed=$(git diff --name-only "${base_commit}" HEAD -- src/ ui/src/)
+  if [[ -z "$src_changed" ]]; then
+    return 0
+  fi
+
+  # Also skip if dist is already up-to-date (was built and committed in the branch)
+  local dist_changed
+  dist_changed=$(git diff --name-only "${base_commit}" HEAD -- dist/ ui/dist/)
+  if [[ -n "$dist_changed" ]]; then
+    err "${DIM_WHITE}[post-merge] dist already built in merged branch — skipping rebuild${RESET}"
+    return 0
+  fi
+
+  err "${DIM_WHITE}[post-merge] src/ changed but no dist commit — rebuilding...${RESET}"
+
+  if ! (cd "$repo_root" && npm run build 2>&1 | while IFS= read -r line; do err "${DIM_WHITE}  ${line}${RESET}"; done); then
+    err "${BOLD_YELLOW}[post-merge] npm run build failed — dist not updated${RESET}"
+    return 1
+  fi
+
+  # Stage tracked dist files (gitignored but tracked via force-add)
+  (cd "$repo_root" && git add -u dist/ ui/dist/) 2>/dev/null || true
+
+  if (cd "$repo_root" && git diff --cached --quiet); then
+    err "${DIM_WHITE}[post-merge] build produced no staged changes${RESET}"
+    return 0
+  fi
+
+  # Commit with agent signing key — this is a build artifact, not a protected merge.
+  # main() already unset GIT_CONFIG_* for the YubiKey merge; re-inject agent key here.
+  local agent_key="${HOME}/.ssh/id_ed25519_agents"
+  local merged_branch
+  merged_branch=$(git log --merges -1 --pretty=format:"%s" | sed 's/Merge branch .//;s/.//')
+  local commit_msg="build dist for ${merged_branch}"
+
+  if [[ -f "$agent_key" ]]; then
+    (cd "$repo_root" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.signingkey \
+      GIT_CONFIG_VALUE_0="${agent_key}" git commit -S -m "${commit_msg}") \
+      && err "${GREEN}[post-merge] dist built and committed (agent-signed)${RESET}" \
+      || err "${BOLD_YELLOW}[post-merge] dist built but commit failed${RESET}"
+  else
+    (cd "$repo_root" && git commit --no-gpg-sign -m "${commit_msg}") \
+      && err "${GREEN}[post-merge] dist built and committed (unsigned — agent key not found)${RESET}" \
+      || err "${BOLD_YELLOW}[post-merge] dist built but commit failed${RESET}"
+  fi
+}
+
 restart_mandible_if_dist_changed() {
   local base_commit="$1"
   local server_changed ui_changed
@@ -534,6 +591,7 @@ main() {
         auto_close_issues "$target" "$pre_merge_head"
         cleanup_merged_worktrees "${sources[0]}"
       fi
+      build_dist_if_src_changed "$pre_merge_head"
       restart_mandible_if_dist_changed "$pre_merge_head"
       exit 0
     else
@@ -660,6 +718,7 @@ main() {
       verify_merge_not_empty
       auto_close_issues "$target" "$pre_merge_head"
       cleanup_merged_worktrees "$source"
+      build_dist_if_src_changed "$pre_merge_head"
       restart_mandible_if_dist_changed "$pre_merge_head"
       exit 0
     fi
@@ -673,6 +732,7 @@ main() {
           verify_merge_not_empty
           auto_close_issues "$target" "$pre_merge_head"
           cleanup_merged_worktrees "$source"
+          build_dist_if_src_changed "$pre_merge_head"
           restart_mandible_if_dist_changed "$pre_merge_head"
           exit 0
         else
@@ -724,6 +784,7 @@ main() {
   for source in "${succeeded[@]}"; do
     cleanup_merged_worktrees "$source"
   done
+  build_dist_if_src_changed "$pre_merge_head"
   restart_mandible_if_dist_changed "$pre_merge_head"
 }
 
