@@ -616,24 +616,24 @@ function AuthCard({
               {showDiff && (
                 diffSections.length > 0 ? (
                   <div className="panel__body diff-panel">
-                    {diffSections.length > 1 && (
-                      <div className="diff-file-tabs">
+                    <div className="diff-file-tabs">
+                      {diffSections.length > 1 && (
                         <button
                           className={`diff-file-tab${selectedFile === -1 ? ' diff-file-tab--active' : ''}`}
                           onClick={() => setSelectedFile(-1)}
                         >All</button>
-                        {diffSections.map((section, i) => (
-                          <button
-                            key={i}
-                            className={`diff-file-tab${selectedFile === i ? ' diff-file-tab--active' : ''}`}
-                            onClick={() => setSelectedFile(i)}
-                            title={section.filename}
-                          >
-                            {section.filename.split('/').pop()}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                      )}
+                      {diffSections.map((section, i) => (
+                        <button
+                          key={i}
+                          className={`diff-file-tab${selectedFile === i ? ' diff-file-tab--active' : ''}`}
+                          onClick={() => setSelectedFile(i)}
+                          title={section.filename}
+                        >
+                          {section.filename.split('/').pop()}
+                        </button>
+                      ))}
+                    </div>
                     <div dangerouslySetInnerHTML={{
                       __html: selectedFile === -1
                         ? renderHunksHtml(diffSections.map((s) => s.hunks).join('\n'))
