@@ -13365,6 +13365,13 @@ function ContextMenu({
     }) })
   ] });
 }
+function looksLikeWorktreeOrBranchName(name) {
+  if (!name)
+    return false;
+  if (name === "main" || name === "master" || name === "develop")
+    return true;
+  return /^(feature|fix|bugfix|hotfix|chore|release)(\/|__)/.test(name);
+}
 function IssuePills({
   issues
 }) {
@@ -13383,14 +13390,26 @@ function IssuePills({
   const displayed = showClosed ? issues : openIssues;
   const closedCount = closedIssues.length;
   return /* @__PURE__ */ u3("div", { className: "linked-chips", children: [
-    displayed.map((link2) => /* @__PURE__ */ u3(
-      "a",
-      {
-        className: "linked-issue-chip",
-        href: `#/issues?repo=${encodeURIComponent(link2.repo_id)}&issue=${encodeURIComponent(link2.issue_id)}`,
-        children: link2.issue_id.slice(0, 8)
-      },
-      `${link2.repo_id}-${link2.issue_id}`
+    displayed.map((link2) => (
+      // Bug: a2b777a — if repo_id is a branch/worktree name (unresolvable), render a
+      // non-clickable span instead of a broken link to #/issues?repo=feature__...
+      looksLikeWorktreeOrBranchName(link2.repo_id) ? /* @__PURE__ */ u3(
+        "span",
+        {
+          className: "linked-issue-chip linked-issue-chip--unresolved",
+          title: `Issue ${link2.issue_id.slice(0, 8)} (repo not tracked)`,
+          children: link2.issue_id.slice(0, 8)
+        },
+        `${link2.repo_id}-${link2.issue_id}`
+      ) : /* @__PURE__ */ u3(
+        "a",
+        {
+          className: "linked-issue-chip",
+          href: `#/issues?repo=${encodeURIComponent(link2.repo_id)}&issue=${encodeURIComponent(link2.issue_id)}`,
+          children: link2.issue_id.slice(0, 8)
+        },
+        `${link2.repo_id}-${link2.issue_id}`
+      )
     )),
     closedCount > 0 && !showClosed && /* @__PURE__ */ u3(
       "button",
@@ -13514,7 +13533,7 @@ function SessionsView({
     const projects = rawProjects.map((p3) => ({
       ...p3,
       repo_name: p3.repo_name || p3.repo_id.split("/").pop() || p3.repo_id
-    })).filter((p3, idx, arr) => arr.findIndex((x2) => x2.repo_id === p3.repo_id) === idx);
+    })).filter((p3, idx, arr) => arr.findIndex((x2) => x2.repo_id === p3.repo_id) === idx).filter((p3) => !looksLikeWorktreeOrBranchName(p3.repo_name) && !looksLikeWorktreeOrBranchName(p3.repo_id));
     const rowClasses = [
       "session-row",
       isDead ? "row-dead" : "",
