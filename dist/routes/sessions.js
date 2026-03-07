@@ -18,7 +18,9 @@ function deriveRepoNameFromRepoId(repoId) {
     if (!cleaned)
         return repoId;
     const parts = cleaned.split("/");
-    return parts[parts.length - 1] || cleaned;
+    const last = parts[parts.length - 1] || cleaned;
+    // Strip leading dots (e.g. '.dotfiles' → 'dotfiles')
+    return last.replace(/^\.+/, "") || last;
 }
 function looksLikeBranchName(value) {
     if (!value)

@@ -404,6 +404,11 @@ const MIGRATIONS = [
         // uses cwd to derive the repo name for rows whose repo_id still looks like a
         // branch name. All logic runs in the post-DDL Node.js step below.
         statements: []
+    },
+    {
+        version: 26,
+        name: "fix_session_projects_dotfile_names",
+        statements: [],
     }
 ];
 export function getDbPath() {
@@ -467,6 +472,17 @@ export function migrate(db) {
     // Bug: 59492fd — v24 used wrong join condition; v25 corrects remaining rows
     if (pending.some((m) => m.version === 25)) {
         backfillProjectRepoNamesV2(db);
+    }
+    // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
+    if (pending.some((m) => m.version === 26)) {
+        const rows = db.prepare("SELECT session_id, repo_id, repo_name FROM session_projects WHERE repo_name LIKE '.%' OR repo_id LIKE '.%'").all();
+        const update = db.prepare("UPDATE session_projects SET repo_name = ? WHERE session_id = ? AND repo_id = ?");
+        for (const row of rows) {
+            const fixedName = row.repo_name.replace(/^\.+/, "") || row.repo_name;
+            if (fixedName !== row.repo_name) {
+                update.run(fixedName, row.session_id, row.repo_id);
+            }
+        }
     }
 }
 // --- Singleton accessor for partition code ---

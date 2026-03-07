@@ -12510,6 +12510,19 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           });
         }
       }).catch(() => {
+        onRescan?.().then(() => findIssue(initialIssueId)).then((retried) => {
+          const r3 = retried;
+          if (r3?.repo_id && r3?.id) {
+            setSelectedRepoId(r3.repo_id);
+            setSelectedIssueId(r3.id);
+            setExpandedRepos((prev) => {
+              const next = new Set(prev);
+              next.add(r3.repo_id);
+              return next;
+            });
+          }
+        }).catch(() => {
+        });
       });
     }
   }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
@@ -13544,7 +13557,10 @@ function SessionsView({
     const projects = rawProjects.map((p3) => ({
       ...p3,
       repo_name: p3.repo_name || p3.repo_id.split("/").pop() || p3.repo_id
-    })).filter((p3, idx, arr) => arr.findIndex((x2) => x2.repo_id === p3.repo_id) === idx).filter((p3) => !looksLikeWorktreeOrBranchName(p3.repo_name) && !looksLikeWorktreeOrBranchName(p3.repo_id));
+    })).map((p3) => ({
+      ...p3,
+      repo_name: p3.repo_name.replace(/^\.+/, "") || p3.repo_name
+    })).filter((p3, idx, arr) => arr.findIndex((x2) => x2.repo_name === p3.repo_name) === idx).filter((p3) => !looksLikeWorktreeOrBranchName(p3.repo_name) && !looksLikeWorktreeOrBranchName(p3.repo_id));
     const rowClasses = [
       "session-row",
       isDead ? "row-dead" : "",
@@ -13622,7 +13638,7 @@ function SessionsView({
           /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-flex", children: /* @__PURE__ */ u3("span", { className: appBadge(getSessionApp(session)), children: getSessionApp(session).slice(0, 2).toUpperCase() }) }) }),
           /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-stack", children: [
             projects.length > 0 ? /* @__PURE__ */ u3("div", { className: "session-project-pills", children: projects.map((p3) => /* @__PURE__ */ u3("span", { className: "session-project-pill", children: p3.repo_name }, p3.repo_id)) }) : /* @__PURE__ */ u3("span", { className: "text-muted", children: "\u2014" }),
-            branch !== "\u2014" && /* @__PURE__ */ u3("span", { className: "session-branch-detail", children: branch })
+            branch !== "\u2014" && !looksLikeWorktreeOrBranchName(branch) && /* @__PURE__ */ u3("span", { className: "session-branch-detail", children: branch })
           ] }) }),
           /* @__PURE__ */ u3("td", { className: "session-col-children", children: isParent && descendantCount > 0 ? descendantCount : "" }),
           /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("span", { className: "session-duration", children: formatDuration(startTimestamp, endTimestamp) }) }),
