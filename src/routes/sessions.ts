@@ -32,7 +32,9 @@ function deriveRepoNameFromRepoId(repoId: string): string {
   const cleaned = repoId.trim().replace(/\/+$/, "");
   if (!cleaned) return repoId;
   const parts = cleaned.split("/");
-  return parts[parts.length - 1] || cleaned;
+  const last = parts[parts.length - 1] || cleaned;
+  // Strip leading dots (e.g. '.dotfiles' → 'dotfiles')
+  return last.replace(/^\.+/, "") || last;
 }
 
 function looksLikeBranchName(value: string): boolean {

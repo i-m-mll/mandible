@@ -229,7 +229,23 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           });
         }
       }).catch(() => {
-        // Issue not found in any scanned repo — leave selection unchanged
+        // Bug: aee671a — cold scanner cache: trigger global scan and retry once
+        onRescan?.().then(() => findIssue(initialIssueId))
+          .then((retried) => {
+            const r = retried as { repo_id?: string; id?: string } | null;
+            if (r?.repo_id && r?.id) {
+              setSelectedRepoId(r.repo_id);
+              setSelectedIssueId(r.id);
+              setExpandedRepos((prev) => {
+                const next = new Set(prev);
+                next.add(r.repo_id!);
+                return next;
+              });
+            }
+          })
+          .catch(() => {
+            // Issue genuinely not found after scan — leave selection unchanged
+          });
       });
     }
   }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);

@@ -546,7 +546,11 @@ export function SessionsView({
         ...p,
         repo_name: p.repo_name || p.repo_id.split('/').pop() || p.repo_id,
       }))
-      .filter((p, idx, arr) => arr.findIndex((x) => x.repo_id === p.repo_id) === idx)
+      .map((p) => ({
+        ...p,
+        repo_name: p.repo_name.replace(/^\.+/, '') || p.repo_name,
+      }))
+      .filter((p, idx, arr) => arr.findIndex((x) => x.repo_name === p.repo_name) === idx)
       .filter((p) => !looksLikeWorktreeOrBranchName(p.repo_name) && !looksLikeWorktreeOrBranchName(p.repo_id));
 
     const rowClasses = [
@@ -657,7 +661,7 @@ export function SessionsView({
             ) : (
               <span className="text-muted">{'\u2014'}</span>
             )}
-            {branch !== '\u2014' && (
+            {branch !== '\u2014' && !looksLikeWorktreeOrBranchName(branch) && (
               <span className="session-branch-detail">{branch}</span>
             )}
           </div>
