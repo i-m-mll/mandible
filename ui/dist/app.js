@@ -10893,7 +10893,8 @@ function AuthCard({
   onDragStart,
   onDragEnd,
   onDragOver,
-  onDrop
+  onDrop,
+  onUpdateField
 }) {
   const [showCommit, setShowCommit] = d2(true);
   const [showSpec, setShowSpec] = d2(false);
@@ -10913,6 +10914,12 @@ function AuthCard({
   const commitHtml = T2(() => commitBody ? renderMarkdown(commitBody) : "", [commitBody]);
   const specHtml = T2(() => specContent ? renderMarkdown(specContent) : "", [specContent]);
   const diffSections = T2(() => parseDiffSections(diffRaw), [diffRaw]);
+  const diffHtml = T2(() => {
+    if (selectedFile === -1) {
+      return renderHunksHtml(diffSections.map((s3) => s3.hunks).join("\n"));
+    }
+    return renderHunksHtml(diffSections[selectedFile]?.hunks || "");
+  }, [diffSections, selectedFile]);
   const rawConsoleOutput = executionOutput || (typeof request.output === "string" ? request.output : "");
   const consoleText = T2(() => stripAnsi(rawConsoleOutput), [rawConsoleOutput]);
   const hasConsoleOutput = consoleText.trim().length > 0;
@@ -11185,9 +11192,7 @@ function AuthCard({
                     i4
                   ))
                 ] }),
-                /* @__PURE__ */ u3("div", { dangerouslySetInnerHTML: {
-                  __html: selectedFile === -1 ? renderHunksHtml(diffSections.map((s3) => s3.hunks).join("\n")) : renderHunksHtml(diffSections[selectedFile]?.hunks || "")
-                } })
+                /* @__PURE__ */ u3("div", { dangerouslySetInnerHTML: { __html: diffHtml } })
               ] }) : /* @__PURE__ */ u3("div", { className: "panel__body diff-panel spec-panel--empty", children: "No diff available." }))
             ] })
           ] }),
@@ -11272,7 +11277,7 @@ function AuthQueueView({
   onReject,
   onRetry,
   onDismiss,
-  onUpdateField: onUpdateField2
+  onUpdateField
 }) {
   const [filterMode, setFilterMode] = d2("active");
   const [repoFilter, setRepoFilter] = d2(null);
@@ -11832,7 +11837,7 @@ function AuthQueueView({
           branchMerged: isHistory && !isFailed && isBranchMerged(request, branchesByRepo),
           executionOutput: outputs[id],
           actions: renderDetailActions(request),
-          onUpdateField: onUpdateField2
+          onUpdateField
         }
       );
     })() })
