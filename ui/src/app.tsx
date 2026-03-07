@@ -33,6 +33,7 @@ import {
   rejectAuthRequest,
   retryAuthRequest,
   scanIssues,
+  updateAuthRequestField,
   updateSetting,
 } from './api';
 import { createSSEClient } from './sse-client';
@@ -552,6 +553,18 @@ function App(): JSX.Element {
     }
   };
 
+  // Bug: 2c826ca — allow editing auth request fields from the dashboard
+  const handleUpdateAuthField = async (requestId: string, field: string, value: string) => {
+    try {
+      await updateAuthRequestField(requestId, { [field]: value });
+      // Refresh the queue to pick up the updated field
+      const queue = await getAuthQueue<AuthRequest>();
+      dispatch({ type: 'setAuthQueue', queue });
+    } catch {
+      return;
+    }
+  };
+
   const handleRescan = async () => {
     try {
       // Trigger a full scan on the server before fetching results
@@ -954,6 +967,7 @@ function App(): JSX.Element {
             onReject={handleReject}
             onRetry={handleRetry}
             onDismiss={handleDismiss}
+            onUpdateField={handleUpdateAuthField}
           />
         )}
         {route.tab === 'chat-history' && (

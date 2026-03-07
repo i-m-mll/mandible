@@ -9,7 +9,7 @@
 #   --title <text>          Dashboard title
 #
 # Options:
-#   --commit-message <text> Commit message (auto-read from COMMIT_MSG.txt if omitted)
+#   --commit-message <text> Commit message (auto-generated from git log if omitted)
 #   --diff-summary <text>   Unified diff (auto-generated from git diff if omitted; truncated at 100KB)
 #   --spec <text>           Spec/notes content
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
@@ -212,18 +212,13 @@ if [[ -z "$diff_summary" ]]; then
 fi
 
 # --- Auto-detect commit message ---
+# Bug: 8b0b5e2 — COMMIT_MSG.txt removed; auto-generate from git log instead.
 
 if [[ -z "$commit_message" ]]; then
-  # Try COMMIT_MSG.txt in the current directory, then in the branch worktree root,
-  # then in the protected branch worktree
-  wt_root=$(git rev-parse --show-toplevel 2>/dev/null) || wt_root=""
-  for candidate in "./COMMIT_MSG.txt" "${wt_root:+${wt_root}/COMMIT_MSG.txt}" "${target_cwd}/COMMIT_MSG.txt"; do
-    [[ -z "$candidate" ]] && continue
-    if [[ -f "$candidate" ]]; then
-      commit_message=$(cat "$candidate")
-      break
-    fi
-  done
+  commit_message=$(git log --format="%s" "${base_branch}..${branch}" 2>/dev/null | head -20)
+  if [[ -z "$commit_message" ]]; then
+    commit_message="Merge ${branch}"
+  fi
 fi
 
 # --- Build command and metadata ---
