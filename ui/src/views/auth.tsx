@@ -331,6 +331,7 @@ function AuthCard({
   onDragEnd,
   onDragOver,
   onDrop,
+  onUpdateField,
 }: {
   request: AuthRequest;
   expanded: boolean;
@@ -371,6 +372,12 @@ function AuthCard({
   const commitHtml = useMemo(() => commitBody ? renderMarkdown(commitBody) : '', [commitBody]);
   const specHtml = useMemo(() => specContent ? renderMarkdown(specContent) : '', [specContent]);
   const diffSections = useMemo(() => parseDiffSections(diffRaw), [diffRaw]);
+  const diffHtml = useMemo(() => {
+    if (selectedFile === -1) {
+      return renderHunksHtml(diffSections.map((s) => s.hunks).join('\n'));
+    }
+    return renderHunksHtml(diffSections[selectedFile]?.hunks || '');
+  }, [diffSections, selectedFile]);
 
   // Determine console output: prefer streaming outputs, fall back to request.output
   const rawConsoleOutput = executionOutput ||
@@ -694,11 +701,7 @@ function AuthCard({
                         </button>
                       ))}
                     </div>
-                    <div dangerouslySetInnerHTML={{
-                      __html: selectedFile === -1
-                        ? renderHunksHtml(diffSections.map((s) => s.hunks).join('\n'))
-                        : renderHunksHtml(diffSections[selectedFile]?.hunks || ''),
-                    }} />
+                    <div dangerouslySetInnerHTML={{ __html: diffHtml }} />
                   </div>
                 ) : (
                   <div className="panel__body diff-panel spec-panel--empty">
