@@ -1751,6 +1751,65 @@ tr:last-child td {
   color: var(--text-muted);
   font-style: italic;
 }
+.panel__edit-btn {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-transform: lowercase;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+.panel__edit-btn:hover {
+  color: var(--text-primary);
+}
+.panel__edit-textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 8px;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--bg-secondary, #1a1a1a);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 4px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.panel__edit-textarea:focus {
+  outline: none;
+  border-color: var(--accent, #4a9eff);
+}
+.panel__edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.panel__edit-save,
+.panel__edit-cancel {
+  padding: 4px 12px;
+  font-size: 12px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+}
+.panel__edit-save {
+  background: var(--accent, #4a9eff);
+  color: #fff;
+  border-color: var(--accent, #4a9eff);
+}
+.panel__edit-save:hover {
+  opacity: 0.9;
+}
+.panel__edit-cancel {
+  background: transparent;
+  color: var(--text-muted);
+}
+.panel__edit-cancel:hover {
+  color: var(--text-primary);
+}
 .spec-panel h1,
 .spec-panel h2,
 .spec-panel h3,

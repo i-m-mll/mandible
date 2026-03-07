@@ -7814,6 +7814,20 @@ async function apiPatch(path, body) {
   }
   return response;
 }
+async function apiPut(path, body) {
+  const response = await fetch(path, {
+    method: "PUT",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : void 0
+  });
+  if (!response.ok) {
+    throw new Error(`PUT ${path} failed: ${response.status}`);
+  }
+  return response;
+}
 async function apiDelete(path) {
   const response = await fetch(path, {
     method: "DELETE",
@@ -7931,6 +7945,9 @@ async function retryAuthRequest(requestId) {
 }
 async function dismissAuthRequest(requestId) {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/dismiss`);
+}
+async function updateAuthRequestField(requestId, fields) {
+  await apiPut(`/api/auth/request/${encodeURIComponent(requestId)}`, fields);
 }
 async function getWorkRepos() {
   const response = await apiGet("/api/work/repos");
@@ -10866,6 +10883,8 @@ function AuthCard({
   const [showDiff, setShowDiff] = d2(true);
   const [showConsole, setShowConsole] = d2(false);
   const [selectedFile, setSelectedFile] = d2(-1);
+  const [editingCommitMsg, setEditingCommitMsg] = d2(false);
+  const [editCommitValue, setEditCommitValue] = d2("");
   const consoleEndRef = A2(null);
   const commitMsg = typeof request.commit_message === "string" ? request.commit_message : "";
   const specContent = typeof request.spec_content === "string" ? request.spec_content : "";
@@ -11031,17 +11050,65 @@ function AuthCard({
                     onClick: () => setShowCommit((prev) => !prev),
                     children: [
                       /* @__PURE__ */ u3("span", { className: `panel__chevron${showCommit ? " panel__chevron--open" : ""}`, children: "\u25B8" }),
-                      "Commit Message"
+                      "Commit Message",
+                      onUpdateField && (status === "pending" || failedLike) && !editingCommitMsg && /* @__PURE__ */ u3(
+                        "span",
+                        {
+                          className: "panel__edit-btn",
+                          onClick: (e3) => {
+                            e3.stopPropagation();
+                            setEditCommitValue(commitMsg);
+                            setEditingCommitMsg(true);
+                          },
+                          children: "edit"
+                        }
+                      )
                     ]
                   }
                 ),
-                showCommit && (commitHtml ? /* @__PURE__ */ u3(
+                showCommit && (editingCommitMsg ? /* @__PURE__ */ u3("div", { className: "panel__body spec-panel", children: [
+                  /* @__PURE__ */ u3(
+                    "textarea",
+                    {
+                      className: "panel__edit-textarea",
+                      value: editCommitValue,
+                      onInput: (e3) => setEditCommitValue(e3.target.value),
+                      rows: 8
+                    }
+                  ),
+                  /* @__PURE__ */ u3("div", { className: "panel__edit-actions", children: [
+                    /* @__PURE__ */ u3(
+                      "button",
+                      {
+                        type: "button",
+                        className: "panel__edit-save",
+                        onClick: () => {
+                          const id = getAuthId(request);
+                          if (id && onUpdateField) {
+                            void onUpdateField(id, "commit_message", editCommitValue);
+                          }
+                          setEditingCommitMsg(false);
+                        },
+                        children: "Save"
+                      }
+                    ),
+                    /* @__PURE__ */ u3(
+                      "button",
+                      {
+                        type: "button",
+                        className: "panel__edit-cancel",
+                        onClick: () => setEditingCommitMsg(false),
+                        children: "Cancel"
+                      }
+                    )
+                  ] })
+                ] }) : commitHtml ? /* @__PURE__ */ u3(
                   "div",
                   {
                     className: "panel__body spec-panel",
                     dangerouslySetInnerHTML: { __html: commitHtml }
                   }
-                ) : /* @__PURE__ */ u3("div", { className: "panel__body spec-panel spec-panel--empty", children: "No commit message." }))
+                ) : /* @__PURE__ */ u3("div", { className: "panel__body spec-panel spec-panel--empty", children: "No commit message provided. Merge will use git's default message." }))
               ] }),
               /* @__PURE__ */ u3("div", { className: "panel", children: [
                 /* @__PURE__ */ u3(
@@ -11079,8 +11146,8 @@ function AuthCard({
                 }
               ),
               showDiff && (diffSections.length > 0 ? /* @__PURE__ */ u3("div", { className: "panel__body diff-panel", children: [
-                diffSections.length > 1 && /* @__PURE__ */ u3("div", { className: "diff-file-tabs", children: [
-                  /* @__PURE__ */ u3(
+                /* @__PURE__ */ u3("div", { className: "diff-file-tabs", children: [
+                  diffSections.length > 1 && /* @__PURE__ */ u3(
                     "button",
                     {
                       className: `diff-file-tab${selectedFile === -1 ? " diff-file-tab--active" : ""}`,
@@ -11185,7 +11252,8 @@ function AuthQueueView({
   onApprove,
   onReject,
   onRetry,
-  onDismiss
+  onDismiss,
+  onUpdateField: onUpdateField2
 }) {
   const [filterMode, setFilterMode] = d2("active");
   const [repoFilter, setRepoFilter] = d2(null);
@@ -11744,7 +11812,8 @@ function AuthQueueView({
           attemptCount,
           branchMerged: isHistory && !isFailed && isBranchMerged(request, branchesByRepo),
           executionOutput: outputs[id],
-          actions: renderDetailActions(request)
+          actions: renderDetailActions(request),
+          onUpdateField: onUpdateField2
         }
       );
     })() })
@@ -20639,6 +20708,15 @@ function App() {
       return;
     }
   };
+  const handleUpdateAuthField = async (requestId, field, value) => {
+    try {
+      await updateAuthRequestField(requestId, { [field]: value });
+      const queue = await getAuthQueue();
+      dispatch({ type: "setAuthQueue", queue });
+    } catch {
+      return;
+    }
+  };
   const handleRescan = async () => {
     try {
       await triggerWorkScan();
@@ -21008,7 +21086,8 @@ function App() {
           onApprove: handleApprove,
           onReject: handleReject,
           onRetry: handleRetry,
-          onDismiss: handleDismiss
+          onDismiss: handleDismiss,
+          onUpdateField: handleUpdateAuthField
         }
       ),
       route.tab === "chat-history" && /* @__PURE__ */ u3(

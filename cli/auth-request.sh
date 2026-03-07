@@ -212,28 +212,12 @@ if [[ -z "$diff_summary" ]]; then
 fi
 
 # --- Auto-detect commit message ---
-# Bug: 2c826ca — COMMIT_MSG.txt is being removed (stale content caused misleading
-# dashboard display). Fall back to git log summaries when no explicit message is
-# provided and no COMMIT_MSG.txt exists.
+# Bug: 8b0b5e2 — COMMIT_MSG.txt removed; auto-generate from git log instead.
 
 if [[ -z "$commit_message" ]]; then
-  # Auto-generate from unique commits on this branch
   commit_message=$(git log --format="%s" "${base_branch}..${branch}" 2>/dev/null | head -20)
   if [[ -z "$commit_message" ]]; then
     commit_message="Merge ${branch}"
-  fi
-fi
-
-# If still empty, generate from git log of the branch
-if [[ -z "$commit_message" ]]; then
-  log_summary=$(git log --oneline --no-decorate "${base_branch}..${branch}" 2>/dev/null | head -20) || log_summary=""
-  if [[ -n "$log_summary" ]]; then
-    commit_message="Commits on ${branch}:
-${log_summary}"
-    if [[ "$unique_commits" -gt 20 ]]; then
-      commit_message="${commit_message}
-... and $((unique_commits - 20)) more"
-    fi
   fi
 fi
 
