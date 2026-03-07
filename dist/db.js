@@ -395,6 +395,15 @@ const MIGRATIONS = [
         // Bug: 003179f — agent-commit stored worktree dir names as repo_id.
         // Data fixup handled in post-DDL Node.js step below (backfillProjectRepoNames).
         statements: []
+    },
+    {
+        version: 25,
+        name: "backfill_session_projects_repo_name_v2",
+        // Bug: 59492fd — v24 backfill used wrong join (s.worktree LIKE '%/worktrees/%')
+        // but sessions store the repo root as cwd, not the worktree path. This v2
+        // uses cwd to derive the repo name for rows whose repo_id still looks like a
+        // branch name. All logic runs in the post-DDL Node.js step below.
+        statements: []
     }
 ];
 export function getDbPath() {
@@ -454,6 +463,10 @@ export function migrate(db) {
     // Bug: 003179f — backfill correct repo names in session_projects
     if (pending.some((m) => m.version === 24)) {
         backfillProjectRepoNames(db);
+    }
+    // Bug: 59492fd — v24 used wrong join condition; v25 corrects remaining rows
+    if (pending.some((m) => m.version === 25)) {
+        backfillProjectRepoNamesV2(db);
     }
 }
 // --- Singleton accessor for partition code ---
@@ -530,6 +543,44 @@ function backfillProjectRepoNames(db) {
     });
     run();
     console.error(`[db] Backfilled repo names for ${rows.length} session_projects rows`);
+}
+/**
+ * Corrected backfill for session_projects rows where repo_id is still a
+ * branch/worktree name. v24 joined on s.worktree but sessions store the repo
+ * root in s.cwd (not the worktree path), so v24 matched zero rows.
+ * This version joins on s.cwd and derives the repo name via path.basename,
+ * stripping leading dots (e.g. ".dotfiles" → "dotfiles").
+ * Bug: 59492fd
+ */
+function backfillProjectRepoNamesV2(db) {
+    const rows = db.prepare(`SELECT sp.session_id, sp.repo_id, s.cwd
+     FROM session_projects sp
+     JOIN sessions s ON sp.session_id = s.id
+     WHERE (
+       sp.repo_id LIKE 'feature__%'
+       OR sp.repo_id LIKE 'fix__%'
+       OR sp.repo_id LIKE 'bugfix__%'
+       OR sp.repo_id LIKE 'hotfix__%'
+       OR sp.repo_id LIKE 'chore__%'
+       OR sp.repo_id LIKE 'release__%'
+       OR sp.repo_id LIKE 'feature/%'
+       OR sp.repo_id IN ('main', 'master', 'develop')
+     )
+     AND s.cwd IS NOT NULL AND s.cwd != ''`).all();
+    if (rows.length === 0)
+        return;
+    const update = db.prepare(`UPDATE session_projects SET repo_id = ?, repo_name = ? WHERE session_id = ? AND repo_id = ?`);
+    const run = db.transaction(() => {
+        for (const row of rows) {
+            const baseName = path.basename(row.cwd);
+            const repoName = baseName.replace(/^\.+/, '');
+            if (!repoName || repoName === row.repo_id)
+                continue;
+            update.run(repoName, repoName, row.session_id, row.repo_id);
+        }
+    });
+    run();
+    console.error(`[db] v25: backfilled repo names for ${rows.length} session_projects rows`);
 }
 function getSchemaVersion(db) {
     const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(SCHEMA_VERSION_KEY);

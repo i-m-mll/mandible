@@ -1,6 +1,6 @@
 @import "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600&display=swap";
 
-/* ../../node_modules/@xterm/xterm/css/xterm.css */
+/* node_modules/@xterm/xterm/css/xterm.css */
 .xterm {
   cursor: text;
   position: relative;
@@ -165,7 +165,7 @@
   position: relative;
 }
 
-/* ../../node_modules/diff2html/bundles/css/diff2html.min.css */
+/* node_modules/diff2html/bundles/css/diff2html.min.css */
 :host,
 :root {
   --d2h-bg-color:#fff;
