@@ -3,7 +3,7 @@
  * Bug: e980dd8
  */
 import type { WebSocket } from "ws";
-import type { Logger, ConsoleSession, ConsoleSessionInput } from "./types.js";
+import type { Logger, ConsoleSession, ConsoleSessionInput, ClaudeStreamLine } from "./types.js";
 export declare class RingBuffer {
     private buf;
     private head;
@@ -26,6 +26,7 @@ export declare class PtySession {
     meta: ConsoleSession;
     private ptyProc;
     private ringBuffer;
+    private streamEvents;
     private wsClients;
     private lineBuffer;
     private onDataDisposable;
@@ -40,6 +41,8 @@ export declare class PtySession {
     resize(cols: number, rows: number): void;
     /** Write raw input to the PTY. */
     write(data: string): void;
+    /** Clear ring buffer and stream events history. */
+    clear(): void;
     /**
      * Add a WebSocket client. Replays ring buffer immediately, then sends
      * init metadata. Removes client on 'close'.
@@ -54,6 +57,8 @@ export declare class PtySession {
     removeWsClient(ws: WebSocket): void;
     /** Return a snapshot of the ring buffer for HTTP-based replay. */
     getBufferSnapshot(): Buffer;
+    /** Return the history of structured stream events for the rich view. */
+    getStreamEvents(): ClaudeStreamLine[];
     private handleData;
     private feedLineParser;
     private parseStreamJsonLine;

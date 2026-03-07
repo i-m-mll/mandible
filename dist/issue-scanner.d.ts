@@ -2,7 +2,7 @@ import type { WorkScanner } from "./work-scanner.js";
 import type { GitBugIssueDetail, IssueRepoSummary } from "./types.js";
 export declare class IssueScanner {
     private cache;
-    private workScanner;
+    readonly workScanner: WorkScanner;
     private scanPromise;
     constructor(workScanner: WorkScanner);
     getRepoSummaries(): IssueRepoSummary[];

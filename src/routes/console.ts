@@ -142,11 +142,30 @@ export function registerConsoleRoutes(
     if (ptySession.meta.status === "running") {
       manager.stop(id, "SIGHUP");
     }
-    // Clear ring buffer for fresh start
-    const snapshot = ptySession.getBufferSnapshot();
-    void snapshot; // consumed; ring buffer will be cleared on next start (no explicit clear here — buffer naturally overwrites)
+    // Clear ring buffer and stream events for fresh start
+    ptySession.clear();
     manager.start(id);
     res.status(200).json({ session: ptySession.meta });
+  });
+
+  // ------------------------------------------------------------------
+  // GET /api/console/sessions/:id/events — historical stream events
+  // ------------------------------------------------------------------
+  server.get("/api/console/sessions/:id/events", (req, res) => {
+    const id = req.params.id;
+    const ptySession = manager.get(id);
+    if (!ptySession) {
+      sendJson(res, 404, { error: "not_found" });
+      return;
+    }
+    const query = req.query ?? {};
+    const limitRaw = typeof query.limit === "string" ? Number.parseInt(query.limit, 10) : 500;
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(limitRaw, 2000)) : 500;
+    const events = ptySession.getStreamEvents();
+    const sliced = events.length > limit ? events.slice(events.length - limit) : events;
+    res.status(200).json({
+      events: sliced,
+    });
   });
 
   // ------------------------------------------------------------------

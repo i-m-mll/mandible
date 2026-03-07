@@ -198,7 +198,7 @@ function parseIssueDetailJson(
 
 export class IssueScanner {
   private cache = new Map<string, RepoCache>();
-  private workScanner: WorkScanner;
+  public readonly workScanner: WorkScanner;
   private scanPromise: Promise<IssueRepoSummary[]> | null = null;
 
   constructor(workScanner: WorkScanner) {

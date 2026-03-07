@@ -23,6 +23,7 @@ import type {
 // -----------------------------------------------------------------------
 
 const RING_BUFFER_BYTES = 512 * 1024; // 512 KB per session
+const STREAM_EVENTS_LIMIT = 2000;
 
 // Strip common ANSI/VT100 sequences so we can attempt JSON.parse on raw PTY lines.
 const ANSI_STRIP_RE =
@@ -189,6 +190,7 @@ export class PtySession {
 
   private ptyProc: IPty | null = null;
   private ringBuffer: RingBuffer;
+  private streamEvents: ClaudeStreamLine[] = [];
   private wsClients: Set<WebSocket> = new Set();
   private lineBuffer = "";
   private onDataDisposable: IDisposable | null = null;
@@ -312,6 +314,13 @@ export class PtySession {
     }
   }
 
+  /** Clear ring buffer and stream events history. */
+  clear(): void {
+    this.ringBuffer.clear();
+    this.streamEvents = [];
+    this.lineBuffer = "";
+  }
+
   /**
    * Add a WebSocket client. Replays ring buffer immediately, then sends
    * init metadata. Removes client on 'close'.
@@ -391,6 +400,11 @@ export class PtySession {
     return this.ringBuffer.snapshot();
   }
 
+  /** Return the history of structured stream events for the rich view. */
+  getStreamEvents(): ClaudeStreamLine[] {
+    return [...this.streamEvents];
+  }
+
   // ----------------------------------------------------------------
   // Private
   // ----------------------------------------------------------------
@@ -449,6 +463,10 @@ export class PtySession {
     }
 
     const event = parsed as ClaudeStreamLine;
+    this.streamEvents.push(event);
+    if (this.streamEvents.length > STREAM_EVENTS_LIMIT) {
+      this.streamEvents = this.streamEvents.slice(this.streamEvents.length - STREAM_EVENTS_LIMIT);
+    }
 
     broadcast("console:stream_event", {
       console_session_id: this.id,

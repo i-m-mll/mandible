@@ -10,6 +10,7 @@ import { broadcast } from "./sse.js";
 // Constants
 // -----------------------------------------------------------------------
 const RING_BUFFER_BYTES = 512 * 1024; // 512 KB per session
+const STREAM_EVENTS_LIMIT = 2000;
 // Strip common ANSI/VT100 sequences so we can attempt JSON.parse on raw PTY lines.
 const ANSI_STRIP_RE = /\x1b\[[0-9;]*[mGKHFABCDJu]|\x1b\][^\x07]*\x07|\x0f|\x1b[()][AB012]/g;
 // Env keys that must NOT be inherited by PTY children (they wire agent signing keys).
@@ -135,6 +136,7 @@ export class PtySession {
     meta;
     ptyProc = null;
     ringBuffer;
+    streamEvents = [];
     wsClients = new Set();
     lineBuffer = "";
     onDataDisposable = null;
@@ -245,6 +247,12 @@ export class PtySession {
             this.logger("warn", "pty_write_failed", { id: this.id, error: String(err) });
         }
     }
+    /** Clear ring buffer and stream events history. */
+    clear() {
+        this.ringBuffer.clear();
+        this.streamEvents = [];
+        this.lineBuffer = "";
+    }
     /**
      * Add a WebSocket client. Replays ring buffer immediately, then sends
      * init metadata. Removes client on 'close'.
@@ -316,6 +324,10 @@ export class PtySession {
     getBufferSnapshot() {
         return this.ringBuffer.snapshot();
     }
+    /** Return the history of structured stream events for the rich view. */
+    getStreamEvents() {
+        return [...this.streamEvents];
+    }
     // ----------------------------------------------------------------
     // Private
     // ----------------------------------------------------------------
@@ -367,6 +379,10 @@ export class PtySession {
             return;
         }
         const event = parsed;
+        this.streamEvents.push(event);
+        if (this.streamEvents.length > STREAM_EVENTS_LIMIT) {
+            this.streamEvents = this.streamEvents.slice(this.streamEvents.length - STREAM_EVENTS_LIMIT);
+        }
         broadcast("console:stream_event", {
             console_session_id: this.id,
             event,

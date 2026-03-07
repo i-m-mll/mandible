@@ -42,9 +42,9 @@ var __privateMethod = (obj, member, method) => {
   return method;
 };
 
-// ../../node_modules/@xterm/xterm/lib/xterm.js
+// node_modules/@xterm/xterm/lib/xterm.js
 var require_xterm = __commonJS({
-  "../../node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
+  "node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
     !function(e3, t3) {
       if ("object" == typeof exports && "object" == typeof module)
         module.exports = t3();
@@ -6664,9 +6664,9 @@ WARNING: This link could potentially be dangerous`)) {
   }
 });
 
-// ../../node_modules/@xterm/addon-fit/lib/addon-fit.js
+// node_modules/@xterm/addon-fit/lib/addon-fit.js
 var require_addon_fit = __commonJS({
-  "../../node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
+  "node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
     !function(e3, t3) {
       "object" == typeof exports && "object" == typeof module ? module.exports = t3() : "function" == typeof define && define.amd ? define([], t3) : "object" == typeof exports ? exports.FitAddon = t3() : e3.FitAddon = t3();
     }(self, () => (() => {
@@ -6704,9 +6704,9 @@ var require_addon_fit = __commonJS({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/compiler.js
+// node_modules/@profoundlogic/hogan/lib/compiler.js
 var require_compiler = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
+  "node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
     (function(Hogan4) {
       var rIsWhitespace = /\S/, rQuot = /\"/g, rNewline = /\n/g, rCr = /\r/g, rSlash = /\\/g, rLineSep = /\u2028/, rParagraphSep = /\u2029/;
       Hogan4.tags = {
@@ -7032,9 +7032,9 @@ var require_compiler = __commonJS({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/template.js
+// node_modules/@profoundlogic/hogan/lib/template.js
 var require_template = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
+  "node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
     var Hogan4 = {};
     (function(Hogan5) {
       Hogan5.Template = function(codeObj, text, compiler, options2) {
@@ -7297,9 +7297,9 @@ var require_template = __commonJS({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/hogan.js
+// node_modules/@profoundlogic/hogan/lib/hogan.js
 var require_hogan = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
+  "node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
     var Hogan4 = require_compiler();
     Hogan4.Template = require_template().Template;
     Hogan4.template = Hogan4.Template;
@@ -7307,7 +7307,7 @@ var require_hogan = __commonJS({
   }
 });
 
-// ../../node_modules/preact/dist/preact.module.js
+// node_modules/preact/dist/preact.module.js
 var n;
 var l;
 var u;
@@ -7627,7 +7627,7 @@ n = v.slice, l = { __e: function(n2, l3, u4, t3) {
   return n2.__v.__b - l3.__v.__b;
 }, $.__r = 0, f = /(PointerCapture)$|Capture$/i, c = 0, s = F(false), a = F(true), h = 0;
 
-// ../../node_modules/preact/hooks/dist/hooks.module.js
+// node_modules/preact/hooks/dist/hooks.module.js
 var t2;
 var r2;
 var u2;
@@ -8156,6 +8156,15 @@ async function createConsoleSession(label, agentType) {
 async function closeConsoleSession(sessionId) {
   await apiDelete(`/api/console/sessions/${encodeURIComponent(sessionId)}`);
 }
+async function getConsoleStreamEvents(sessionId, limit = 500) {
+  const response = await apiGet(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/events?limit=${encodeURIComponent(String(limit))}`
+  );
+  const payload = await parseMaybeJson(response);
+  if (Array.isArray(payload))
+    return payload;
+  return payload.events ?? [];
+}
 async function getBackupStatus() {
   const response = await apiGet("/api/backup/status");
   return await parseMaybeJson(response);
@@ -8363,7 +8372,7 @@ function createSSEClient(options2) {
   return new SSEClient(options2);
 }
 
-// ../../node_modules/marked/lib/marked.esm.js
+// node_modules/marked/lib/marked.esm.js
 function _getDefaults() {
   return {
     async: false,
@@ -10612,7 +10621,7 @@ var parseInline = marked.parseInline;
 var parser = _Parser.parse;
 var lexer = _Lexer.lex;
 
-// ../../node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
+// node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 var f3 = 0;
 var i3 = Array.isArray;
 function u3(e3, t3, n2, o3, i4, u4) {
@@ -10664,6 +10673,14 @@ function parseBranchTag(message) {
     return { branch: match[1], body: message.slice(match[0].length) };
   }
   return { branch: null, body: message };
+}
+function looksLikeBranchName(value) {
+  if (!value)
+    return false;
+  if (value === "main" || value === "master" || value === "develop") {
+    return true;
+  }
+  return /^(feature|fix|bugfix|hotfix|chore|release)\//.test(value);
 }
 var RESOLVED_LINGER_MS = 1500;
 function formatRelativeTime(timestampMs) {
@@ -10914,11 +10931,13 @@ function AuthCard({
   const fullId = getAuthId(request);
   const baseBranch = request.base_branch ?? request.base;
   const headBranch = request.head_branch ?? request.head;
-  const repoName = request.repo ?? "";
+  const repoId = request.repo ?? "";
+  const repoName = repoId.includes("/") && !looksLikeBranchName(repoId) && repoId.split("/").length === 2 ? repoId.split("/")[1] : repoId;
   const hasTags = Boolean(commitBranch || attemptLabel || branchMerged || headBranch && baseBranch);
   const sessionId = request.session_id;
   const bugRefs = T2(() => extractBugRefs(commitMsg), [commitMsg]);
-  const hasLinks = Boolean(sessionId) || bugRefs.length > 0;
+  const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
+  const hasLinks = Boolean(sessionId) || bugRefs.length > 0 && canIssueLink;
   y2(() => {
     if (isApproved) {
       setShowConsole(true);
@@ -10990,11 +11009,11 @@ function AuthCard({
           children: "Session"
         }
       ),
-      bugRefs.length > 0 && repoName && bugRefs.map((ref) => /* @__PURE__ */ u3(
+      bugRefs.length > 0 && canIssueLink && bugRefs.map((ref) => /* @__PURE__ */ u3(
         "a",
         {
           className: "auth-card__link auth-card__link--issue",
-          href: `#/issues?repo=${encodeURIComponent(repoName)}&issue=${encodeURIComponent(ref)}`,
+          href: `#/issues?repo=${encodeURIComponent(repoId)}&issue=${encodeURIComponent(ref)}`,
           onClick: (e3) => e3.stopPropagation(),
           children: [
             "Issue ",
@@ -12414,6 +12433,35 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [showCommentBox, setShowCommentBox] = d2(false);
   const [actionInFlight, setActionInFlight] = d2(false);
   const [linkedSessions, setLinkedSessions] = d2([]);
+  const resolveRepoId = q2((rawRepoId) => {
+    if (!rawRepoId)
+      return null;
+    const trimmed = rawRepoId.trim();
+    if (!trimmed)
+      return null;
+    const exact = repos.find((repo) => repo.repo_id === trimmed);
+    if (exact)
+      return exact.repo_id;
+    const byName = repos.find((repo) => repo.repo_name === trimmed);
+    if (byName)
+      return byName.repo_id;
+    const byNameInsensitive = repos.find((repo) => repo.repo_name.toLowerCase() === trimmed.toLowerCase());
+    if (byNameInsensitive)
+      return byNameInsensitive.repo_id;
+    return trimmed;
+  }, [repos]);
+  const resolveIssueId = q2((repoId, rawIssueId) => {
+    const repo = repos.find((r3) => r3.repo_id === repoId);
+    if (!repo)
+      return rawIssueId;
+    const exact = repo.issues.find((issue) => issue.id === rawIssueId);
+    if (exact)
+      return exact.id;
+    const byPrefix = repo.issues.filter((issue) => issue.id.startsWith(rawIssueId));
+    if (byPrefix.length === 1)
+      return byPrefix[0].id;
+    return rawIssueId;
+  }, [repos]);
   y2(() => {
     if (expandedRepos.size === 0 && repos.length > 0) {
       const initial = /* @__PURE__ */ new Set();
@@ -12429,15 +12477,17 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   }, [repos]);
   y2(() => {
     if (initialRepoId && initialIssueId) {
-      setSelectedRepoId(initialRepoId);
-      setSelectedIssueId(initialIssueId);
+      const canonicalRepoId = resolveRepoId(initialRepoId) ?? initialRepoId;
+      const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
+      setSelectedRepoId(canonicalRepoId);
+      setSelectedIssueId(canonicalIssueId);
       setExpandedRepos((prev) => {
         const next = new Set(prev);
-        next.add(initialRepoId);
+        next.add(canonicalRepoId);
         return next;
       });
     }
-  }, [initialRepoId, initialIssueId]);
+  }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
   const normalizedFilter = T2(() => filter.trim().toLowerCase(), [filter]);
   const filteredRepos = T2(() => {
     return repos.map((repo) => {
@@ -12460,25 +12510,34 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   y2(() => {
     if (!selectedRepoId || !selectedIssueId) {
       setIssueDetail(null);
+      setLinkedSessions([]);
       return;
+    }
+    const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
+    if (repoId !== selectedRepoId) {
+      setSelectedRepoId(repoId);
+    }
+    const issueId = resolveIssueId(repoId, selectedIssueId);
+    if (issueId !== selectedIssueId) {
+      setSelectedIssueId(issueId);
     }
     let cancelled = false;
     setDetailLoading(true);
-    const fetchDetail = (repoId, issueId) => getIssueDetail(repoId, issueId).then((data) => {
+    const fetchDetail = (repoId2, issueId2) => getIssueDetail(repoId2, issueId2).then((data) => {
       if (!cancelled) {
         setIssueDetail(data);
         setDetailLoading(false);
       }
     });
-    fetchDetail(selectedRepoId, selectedIssueId).catch(() => {
-      scanIssueRepo(selectedRepoId).then(() => fetchDetail(selectedRepoId, selectedIssueId)).catch(() => {
+    fetchDetail(repoId, issueId).catch(() => {
+      scanIssueRepo(repoId).then(() => fetchDetail(repoId, issueId)).catch(() => {
         if (!cancelled) {
           setIssueDetail(null);
           setDetailLoading(false);
         }
       });
     });
-    getIssueSessions(selectedRepoId, selectedIssueId).then((data) => {
+    getIssueSessions(repoId, issueId).then((data) => {
       if (!cancelled) {
         setLinkedSessions(data);
       }
@@ -12489,7 +12548,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     return () => {
       cancelled = true;
     };
-  }, [selectedRepoId, selectedIssueId]);
+  }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
   const toggleRepo = q2((repoId) => {
     setExpandedRepos((prev) => {
       const next = new Set(prev);
@@ -13447,16 +13506,10 @@ function SessionsView({
     const branch = getSessionBranch(session);
     const rawProjects = session.projects || [];
     const issues = session.issues || [];
-    const projects = rawProjects.map((p3) => {
-      if (p3.repo_name && p3.repo_name.includes("/")) {
-        const cwdBasename = cwd ? cwd.replace(/\/+$/, "").split("/").pop() || p3.repo_name : p3.repo_name;
-        const cwdParts = cwd ? cwd.replace(/\/+$/, "").split("/") : [];
-        const worktreeIdx = cwdParts.indexOf("worktrees");
-        const repoName = worktreeIdx > 0 ? cwdParts[worktreeIdx - 1] : cwdBasename;
-        return { ...p3, repo_name: repoName };
-      }
-      return p3;
-    });
+    const projects = rawProjects.map((p3) => ({
+      ...p3,
+      repo_name: p3.repo_name || p3.repo_id.split("/").pop() || p3.repo_id
+    })).filter((p3, idx, arr) => arr.findIndex((x2) => x2.repo_id === p3.repo_id) === idx);
     const rowClasses = [
       "session-row",
       isDead ? "row-dead" : "",
@@ -16651,7 +16704,7 @@ function ThinkingBlock({ thinking, defaultExpanded = false }) {
   ] });
 }
 
-// ../../node_modules/diff2html/lib-esm/types.js
+// node_modules/diff2html/lib-esm/types.js
 var LineType;
 (function(LineType2) {
   LineType2["INSERT"] = "insert";
@@ -16678,7 +16731,7 @@ var ColorSchemeType;
   ColorSchemeType2["LIGHT"] = "light";
 })(ColorSchemeType || (ColorSchemeType = {}));
 
-// ../../node_modules/diff2html/lib-esm/utils.js
+// node_modules/diff2html/lib-esm/utils.js
 var specials = [
   "-",
   "[",
@@ -16723,7 +16776,7 @@ function max(arr) {
   return max2;
 }
 
-// ../../node_modules/diff2html/lib-esm/diff-parser.js
+// node_modules/diff2html/lib-esm/diff-parser.js
 function getExtension(filename, language) {
   const filenameParts = filename.split(".");
   return filenameParts.length > 1 ? filenameParts[filenameParts.length - 1] : language;
@@ -17015,7 +17068,7 @@ function parse(diffInput, config = {}) {
   return files;
 }
 
-// ../../node_modules/diff/libesm/diff/base.js
+// node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options2 = {}) {
     let callback;
@@ -17217,7 +17270,7 @@ var Diff = class {
   }
 };
 
-// ../../node_modules/diff/libesm/diff/character.js
+// node_modules/diff/libesm/diff/character.js
 var CharacterDiff = class extends Diff {
 };
 var characterDiff = new CharacterDiff();
@@ -17225,7 +17278,7 @@ function diffChars(oldStr, newStr, options2) {
   return characterDiff.diff(oldStr, newStr, options2);
 }
 
-// ../../node_modules/diff/libesm/util/string.js
+// node_modules/diff/libesm/util/string.js
 function longestCommonPrefix(str1, str2) {
   let i4;
   for (i4 = 0; i4 < str1.length && i4 < str2.length; i4++) {
@@ -17321,7 +17374,7 @@ function leadingWs(string) {
   return match ? match[0] : "";
 }
 
-// ../../node_modules/diff/libesm/diff/word.js
+// node_modules/diff/libesm/diff/word.js
 var extendedWordChars = "a-zA-Z0-9_\\u{AD}\\u{C0}-\\u{D6}\\u{D8}-\\u{F6}\\u{F8}-\\u{2C6}\\u{2C8}-\\u{2D7}\\u{2DE}-\\u{2FF}\\u{1E00}-\\u{1EFF}";
 var tokenizeIncludingWhitespace = new RegExp(`[${extendedWordChars}]+|\\s+|[^${extendedWordChars}]`, "ug");
 var WordDiff = class extends Diff {
@@ -17468,7 +17521,7 @@ function diffWordsWithSpace(oldStr, newStr, options2) {
   return wordsWithSpaceDiff.diff(oldStr, newStr, options2);
 }
 
-// ../../node_modules/diff2html/lib-esm/rematch.js
+// node_modules/diff2html/lib-esm/rematch.js
 function levenshtein(a3, b) {
   if (a3.length === 0) {
     return b.length;
@@ -17552,7 +17605,7 @@ function newMatcherFn(distance2) {
   return group;
 }
 
-// ../../node_modules/diff2html/lib-esm/render-utils.js
+// node_modules/diff2html/lib-esm/render-utils.js
 var CSSLineClass = {
   INSERTS: "d2h-ins",
   DELETES: "d2h-del",
@@ -17730,7 +17783,7 @@ function diffHighlight(diffLine1, diffLine2, isCombined, config = {}) {
   };
 }
 
-// ../../node_modules/diff2html/lib-esm/file-list-renderer.js
+// node_modules/diff2html/lib-esm/file-list-renderer.js
 var baseTemplatesPath = "file-summary";
 var iconsBaseTemplatesPath = "icon";
 var defaultFileListRendererConfig = {
@@ -17760,7 +17813,7 @@ var FileListRenderer = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/line-by-line-renderer.js
+// node_modules/diff2html/lib-esm/line-by-line-renderer.js
 var defaultLineByLineRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath = "generic";
 var baseTemplatesPath2 = "line-by-line";
@@ -17935,7 +17988,7 @@ var LineByLineRenderer = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/side-by-side-renderer.js
+// node_modules/diff2html/lib-esm/side-by-side-renderer.js
 var defaultSideBySideRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath2 = "generic";
 var baseTemplatesPath3 = "side-by-side";
@@ -18121,10 +18174,10 @@ var SideBySideRenderer = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
+// node_modules/diff2html/lib-esm/hoganjs-utils.js
 var Hogan3 = __toESM(require_hogan());
 
-// ../../node_modules/diff2html/lib-esm/diff2html-templates.js
+// node_modules/diff2html/lib-esm/diff2html-templates.js
 var Hogan2 = __toESM(require_hogan());
 var defaultTemplates = {};
 defaultTemplates["file-summary-line"] = new Hogan2.Template({ code: function(c3, p3, i4) {
@@ -18532,7 +18585,7 @@ defaultTemplates["tag-file-renamed"] = new Hogan2.Template({ code: function(c3, 
   return t3.fl();
 }, partials: {}, subs: {} });
 
-// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
+// node_modules/diff2html/lib-esm/hoganjs-utils.js
 var HoganJsUtils = class {
   constructor({ compiledTemplates = {}, rawTemplates = {} }) {
     const compiledRawTemplates = Object.entries(rawTemplates).reduce((previousTemplates, [name, templateString]) => {
@@ -18561,7 +18614,7 @@ var HoganJsUtils = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/diff2html.js
+// node_modules/diff2html/lib-esm/diff2html.js
 var defaultDiff2HtmlConfig = Object.assign(Object.assign(Object.assign({}, defaultLineByLineRendererConfig), defaultSideBySideRendererConfig), { outputFormat: OutputFormatType.LINE_BY_LINE, drawFileList: true });
 function html2(diffInput, configuration = {}) {
   const config = Object.assign(Object.assign({}, defaultDiff2HtmlConfig), configuration);
@@ -19244,6 +19297,24 @@ function TerminalPane({
     }
   }, [isVisible, viewMode, sessionId]);
   y2(() => {
+    let cancelled = false;
+    getConsoleStreamEvents(sessionId, 500).then((events) => {
+      if (cancelled)
+        return;
+      setStreamEvents(events);
+      const last = events[events.length - 1];
+      setStreaming(Boolean(last && last.type !== "result"));
+    }).catch(() => {
+      if (cancelled)
+        return;
+      setStreamEvents([]);
+      setStreaming(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+  y2(() => {
     const handleStreamEvent = (e3) => {
       const detail = e3.detail;
       if (!detail || detail.console_session_id !== sessionId)
@@ -19251,7 +19322,13 @@ function TerminalPane({
       const streamEvent = detail.event;
       if (!streamEvent)
         return;
-      setStreamEvents((prev) => [...prev, streamEvent]);
+      setStreamEvents((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && JSON.stringify(last) === JSON.stringify(streamEvent)) {
+          return prev;
+        }
+        return [...prev, streamEvent];
+      });
       if (streamEvent.type === "result") {
         setStreaming(false);
       } else {
@@ -19272,6 +19349,17 @@ function TerminalPane({
       setReconnectNonce((n2) => n2 + 1);
     } catch {
       setWsStatus("error");
+    }
+  };
+  const [prompt, setPrompt] = d2("");
+  const handlePromptSubmit = (e3) => {
+    e3.preventDefault();
+    if (!prompt.trim())
+      return;
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(new TextEncoder().encode(prompt + "\n"));
+      setPrompt("");
     }
   };
   const showReconnectOverlay = wsStatus === "closed" || wsStatus === "error";
@@ -19335,14 +19423,72 @@ function TerminalPane({
               }
             )
           ] }),
-          viewMode === "rich" && /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto" }, children: /* @__PURE__ */ u3(
-            StreamRenderer,
-            {
-              events: streamEvents,
-              streaming,
-              sessionInfo: { sessionId }
-            }
-          ) }),
+          viewMode === "rich" && /* @__PURE__ */ u3("div", { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }, children: [
+            /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto" }, children: /* @__PURE__ */ u3(
+              StreamRenderer,
+              {
+                events: streamEvents,
+                streaming,
+                sessionInfo: { sessionId }
+              }
+            ) }),
+            /* @__PURE__ */ u3(
+              "form",
+              {
+                onSubmit: handlePromptSubmit,
+                style: {
+                  padding: "12px 16px",
+                  borderTop: "1px solid var(--border-subtle)",
+                  background: "var(--bg-inset)",
+                  display: "flex",
+                  gap: "12px",
+                  alignItems: "center"
+                },
+                children: [
+                  /* @__PURE__ */ u3(
+                    "input",
+                    {
+                      type: "text",
+                      value: prompt,
+                      onInput: (e3) => setPrompt(e3.currentTarget.value),
+                      placeholder: "Send a message to the agent...",
+                      disabled: wsStatus !== "open" || interactionMode === "inbox_only",
+                      style: {
+                        flex: 1,
+                        background: "var(--bg-page)",
+                        border: "1px solid var(--border-subtle)",
+                        borderRadius: "8px",
+                        padding: "10px 14px",
+                        color: "var(--fg-default)",
+                        fontSize: "14px",
+                        fontFamily: "var(--font-sans)",
+                        outline: "none"
+                      }
+                    }
+                  ),
+                  /* @__PURE__ */ u3(
+                    "button",
+                    {
+                      type: "submit",
+                      disabled: !prompt.trim() || wsStatus !== "open" || interactionMode === "inbox_only",
+                      style: {
+                        padding: "8px 16px",
+                        borderRadius: "6px",
+                        background: prompt.trim() ? "var(--accent-blue)" : "var(--bg-muted)",
+                        color: "#fff",
+                        border: "none",
+                        cursor: prompt.trim() ? "pointer" : "default",
+                        fontSize: "13px",
+                        fontWeight: 600,
+                        transition: "background 0.2s ease"
+                      },
+                      children: "Send"
+                    }
+                  )
+                ]
+              }
+            )
+          ] }),
           viewMode === "rich" && showReconnectOverlay && /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-disconnected", children: [
             "Session disconnected \u2014",
             " ",
