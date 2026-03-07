@@ -387,25 +387,14 @@ function IssuePills({
   return (
     <div className="linked-chips">
       {displayed.map((link) => (
-        // Bug: a2b777a — if repo_id is a branch/worktree name (unresolvable), render a
-        // non-clickable span instead of a broken link to #/issues?repo=feature__...
-        looksLikeWorktreeOrBranchName(link.repo_id) ? (
-          <span
-            key={`${link.repo_id}-${link.issue_id}`}
-            className="linked-issue-chip linked-issue-chip--unresolved"
-            title={`Issue ${link.issue_id.slice(0, 8)} (repo not tracked)`}
-          >
-            {link.issue_id.slice(0, 8)}
-          </span>
-        ) : (
-          <a
-            key={`${link.repo_id}-${link.issue_id}`}
-            className="linked-issue-chip"
-            href={`#/issues?repo=${encodeURIComponent(link.repo_id)}&issue=${encodeURIComponent(link.issue_id)}`}
-          >
-            {link.issue_id.slice(0, 8)}
-          </a>
-        )
+        // Bug: a2b777a — use /api/issues/find/:id for cross-repo lookup; no repo needed.
+        <a
+          key={`${link.repo_id}-${link.issue_id}`}
+          className="linked-issue-chip"
+          href={`#/issues?issue=${encodeURIComponent(link.issue_id)}`}
+        >
+          {link.issue_id.slice(0, 8)}
+        </a>
       ))}
       {closedCount > 0 && !showClosed && (
         <button

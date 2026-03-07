@@ -42,9 +42,9 @@ var __privateMethod = (obj, member, method) => {
   return method;
 };
 
-// node_modules/@xterm/xterm/lib/xterm.js
+// ../../node_modules/@xterm/xterm/lib/xterm.js
 var require_xterm = __commonJS({
-  "node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
+  "../../node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
     !function(e3, t3) {
       if ("object" == typeof exports && "object" == typeof module)
         module.exports = t3();
@@ -6664,9 +6664,9 @@ WARNING: This link could potentially be dangerous`)) {
   }
 });
 
-// node_modules/@xterm/addon-fit/lib/addon-fit.js
+// ../../node_modules/@xterm/addon-fit/lib/addon-fit.js
 var require_addon_fit = __commonJS({
-  "node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
+  "../../node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
     !function(e3, t3) {
       "object" == typeof exports && "object" == typeof module ? module.exports = t3() : "function" == typeof define && define.amd ? define([], t3) : "object" == typeof exports ? exports.FitAddon = t3() : e3.FitAddon = t3();
     }(self, () => (() => {
@@ -6704,9 +6704,9 @@ var require_addon_fit = __commonJS({
   }
 });
 
-// node_modules/@profoundlogic/hogan/lib/compiler.js
+// ../../node_modules/@profoundlogic/hogan/lib/compiler.js
 var require_compiler = __commonJS({
-  "node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
+  "../../node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
     (function(Hogan4) {
       var rIsWhitespace = /\S/, rQuot = /\"/g, rNewline = /\n/g, rCr = /\r/g, rSlash = /\\/g, rLineSep = /\u2028/, rParagraphSep = /\u2029/;
       Hogan4.tags = {
@@ -7032,9 +7032,9 @@ var require_compiler = __commonJS({
   }
 });
 
-// node_modules/@profoundlogic/hogan/lib/template.js
+// ../../node_modules/@profoundlogic/hogan/lib/template.js
 var require_template = __commonJS({
-  "node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
+  "../../node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
     var Hogan4 = {};
     (function(Hogan5) {
       Hogan5.Template = function(codeObj, text, compiler, options2) {
@@ -7297,9 +7297,9 @@ var require_template = __commonJS({
   }
 });
 
-// node_modules/@profoundlogic/hogan/lib/hogan.js
+// ../../node_modules/@profoundlogic/hogan/lib/hogan.js
 var require_hogan = __commonJS({
-  "node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
+  "../../node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
     var Hogan4 = require_compiler();
     Hogan4.Template = require_template().Template;
     Hogan4.template = Hogan4.Template;
@@ -7307,7 +7307,7 @@ var require_hogan = __commonJS({
   }
 });
 
-// node_modules/preact/dist/preact.module.js
+// ../../node_modules/preact/dist/preact.module.js
 var n;
 var l;
 var u;
@@ -7627,7 +7627,7 @@ n = v.slice, l = { __e: function(n2, l3, u4, t3) {
   return n2.__v.__b - l3.__v.__b;
 }, $.__r = 0, f = /(PointerCapture)$|Capture$/i, c = 0, s = F(false), a = F(true), h = 0;
 
-// node_modules/preact/hooks/dist/hooks.module.js
+// ../../node_modules/preact/hooks/dist/hooks.module.js
 var t2;
 var r2;
 var u2;
@@ -7995,6 +7995,10 @@ async function getIssueDetail(repoId, issueId) {
   const response = await apiGet(
     `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}`
   );
+  return parseMaybeJson(response);
+}
+async function findIssue(issueId) {
+  const response = await apiGet(`/api/issues/find/${encodeURIComponent(issueId)}`);
   return parseMaybeJson(response);
 }
 async function issueAction(repoId, issueId, action, body) {
@@ -8372,7 +8376,7 @@ function createSSEClient(options2) {
   return new SSEClient(options2);
 }
 
-// node_modules/marked/lib/marked.esm.js
+// ../../node_modules/marked/lib/marked.esm.js
 function _getDefaults() {
   return {
     async: false,
@@ -10621,7 +10625,7 @@ var parseInline = marked.parseInline;
 var parser = _Parser.parse;
 var lexer = _Lexer.lex;
 
-// node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
+// ../../node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 var f3 = 0;
 var i3 = Array.isArray;
 function u3(e3, t3, n2, o3, i4, u4) {
@@ -12481,7 +12485,9 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     }
   }, [repos]);
   y2(() => {
-    if (initialRepoId && initialIssueId) {
+    if (!initialIssueId)
+      return;
+    if (initialRepoId) {
       const canonicalRepoId = resolveRepoId(initialRepoId) ?? initialRepoId;
       const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
       setSelectedRepoId(canonicalRepoId);
@@ -12490,6 +12496,20 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
         const next = new Set(prev);
         next.add(canonicalRepoId);
         return next;
+      });
+    } else {
+      findIssue(initialIssueId).then((detail) => {
+        const d3 = detail;
+        if (d3?.repo_id && d3?.id) {
+          setSelectedRepoId(d3.repo_id);
+          setSelectedIssueId(d3.id);
+          setExpandedRepos((prev) => {
+            const next = new Set(prev);
+            next.add(d3.repo_id);
+            return next;
+          });
+        }
+      }).catch(() => {
       });
     }
   }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
@@ -13391,21 +13411,12 @@ function IssuePills({
   const closedCount = closedIssues.length;
   return /* @__PURE__ */ u3("div", { className: "linked-chips", children: [
     displayed.map((link2) => (
-      // Bug: a2b777a — if repo_id is a branch/worktree name (unresolvable), render a
-      // non-clickable span instead of a broken link to #/issues?repo=feature__...
-      looksLikeWorktreeOrBranchName(link2.repo_id) ? /* @__PURE__ */ u3(
-        "span",
-        {
-          className: "linked-issue-chip linked-issue-chip--unresolved",
-          title: `Issue ${link2.issue_id.slice(0, 8)} (repo not tracked)`,
-          children: link2.issue_id.slice(0, 8)
-        },
-        `${link2.repo_id}-${link2.issue_id}`
-      ) : /* @__PURE__ */ u3(
+      // Bug: a2b777a — use /api/issues/find/:id for cross-repo lookup; no repo needed.
+      /* @__PURE__ */ u3(
         "a",
         {
           className: "linked-issue-chip",
-          href: `#/issues?repo=${encodeURIComponent(link2.repo_id)}&issue=${encodeURIComponent(link2.issue_id)}`,
+          href: `#/issues?issue=${encodeURIComponent(link2.issue_id)}`,
           children: link2.issue_id.slice(0, 8)
         },
         `${link2.repo_id}-${link2.issue_id}`
@@ -16728,7 +16739,7 @@ function ThinkingBlock({ thinking, defaultExpanded = false }) {
   ] });
 }
 
-// node_modules/diff2html/lib-esm/types.js
+// ../../node_modules/diff2html/lib-esm/types.js
 var LineType;
 (function(LineType2) {
   LineType2["INSERT"] = "insert";
@@ -16755,7 +16766,7 @@ var ColorSchemeType;
   ColorSchemeType2["LIGHT"] = "light";
 })(ColorSchemeType || (ColorSchemeType = {}));
 
-// node_modules/diff2html/lib-esm/utils.js
+// ../../node_modules/diff2html/lib-esm/utils.js
 var specials = [
   "-",
   "[",
@@ -16800,7 +16811,7 @@ function max(arr) {
   return max2;
 }
 
-// node_modules/diff2html/lib-esm/diff-parser.js
+// ../../node_modules/diff2html/lib-esm/diff-parser.js
 function getExtension(filename, language) {
   const filenameParts = filename.split(".");
   return filenameParts.length > 1 ? filenameParts[filenameParts.length - 1] : language;
@@ -17092,7 +17103,7 @@ function parse(diffInput, config = {}) {
   return files;
 }
 
-// node_modules/diff/libesm/diff/base.js
+// ../../node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options2 = {}) {
     let callback;
@@ -17294,7 +17305,7 @@ var Diff = class {
   }
 };
 
-// node_modules/diff/libesm/diff/character.js
+// ../../node_modules/diff/libesm/diff/character.js
 var CharacterDiff = class extends Diff {
 };
 var characterDiff = new CharacterDiff();
@@ -17302,7 +17313,7 @@ function diffChars(oldStr, newStr, options2) {
   return characterDiff.diff(oldStr, newStr, options2);
 }
 
-// node_modules/diff/libesm/util/string.js
+// ../../node_modules/diff/libesm/util/string.js
 function longestCommonPrefix(str1, str2) {
   let i4;
   for (i4 = 0; i4 < str1.length && i4 < str2.length; i4++) {
@@ -17398,7 +17409,7 @@ function leadingWs(string) {
   return match ? match[0] : "";
 }
 
-// node_modules/diff/libesm/diff/word.js
+// ../../node_modules/diff/libesm/diff/word.js
 var extendedWordChars = "a-zA-Z0-9_\\u{AD}\\u{C0}-\\u{D6}\\u{D8}-\\u{F6}\\u{F8}-\\u{2C6}\\u{2C8}-\\u{2D7}\\u{2DE}-\\u{2FF}\\u{1E00}-\\u{1EFF}";
 var tokenizeIncludingWhitespace = new RegExp(`[${extendedWordChars}]+|\\s+|[^${extendedWordChars}]`, "ug");
 var WordDiff = class extends Diff {
@@ -17545,7 +17556,7 @@ function diffWordsWithSpace(oldStr, newStr, options2) {
   return wordsWithSpaceDiff.diff(oldStr, newStr, options2);
 }
 
-// node_modules/diff2html/lib-esm/rematch.js
+// ../../node_modules/diff2html/lib-esm/rematch.js
 function levenshtein(a3, b) {
   if (a3.length === 0) {
     return b.length;
@@ -17629,7 +17640,7 @@ function newMatcherFn(distance2) {
   return group;
 }
 
-// node_modules/diff2html/lib-esm/render-utils.js
+// ../../node_modules/diff2html/lib-esm/render-utils.js
 var CSSLineClass = {
   INSERTS: "d2h-ins",
   DELETES: "d2h-del",
@@ -17807,7 +17818,7 @@ function diffHighlight(diffLine1, diffLine2, isCombined, config = {}) {
   };
 }
 
-// node_modules/diff2html/lib-esm/file-list-renderer.js
+// ../../node_modules/diff2html/lib-esm/file-list-renderer.js
 var baseTemplatesPath = "file-summary";
 var iconsBaseTemplatesPath = "icon";
 var defaultFileListRendererConfig = {
@@ -17837,7 +17848,7 @@ var FileListRenderer = class {
   }
 };
 
-// node_modules/diff2html/lib-esm/line-by-line-renderer.js
+// ../../node_modules/diff2html/lib-esm/line-by-line-renderer.js
 var defaultLineByLineRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath = "generic";
 var baseTemplatesPath2 = "line-by-line";
@@ -18012,7 +18023,7 @@ var LineByLineRenderer = class {
   }
 };
 
-// node_modules/diff2html/lib-esm/side-by-side-renderer.js
+// ../../node_modules/diff2html/lib-esm/side-by-side-renderer.js
 var defaultSideBySideRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath2 = "generic";
 var baseTemplatesPath3 = "side-by-side";
@@ -18198,10 +18209,10 @@ var SideBySideRenderer = class {
   }
 };
 
-// node_modules/diff2html/lib-esm/hoganjs-utils.js
+// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
 var Hogan3 = __toESM(require_hogan());
 
-// node_modules/diff2html/lib-esm/diff2html-templates.js
+// ../../node_modules/diff2html/lib-esm/diff2html-templates.js
 var Hogan2 = __toESM(require_hogan());
 var defaultTemplates = {};
 defaultTemplates["file-summary-line"] = new Hogan2.Template({ code: function(c3, p3, i4) {
@@ -18609,7 +18620,7 @@ defaultTemplates["tag-file-renamed"] = new Hogan2.Template({ code: function(c3, 
   return t3.fl();
 }, partials: {}, subs: {} });
 
-// node_modules/diff2html/lib-esm/hoganjs-utils.js
+// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
 var HoganJsUtils = class {
   constructor({ compiledTemplates = {}, rawTemplates = {} }) {
     const compiledRawTemplates = Object.entries(rawTemplates).reduce((previousTemplates, [name, templateString]) => {
@@ -18638,7 +18649,7 @@ var HoganJsUtils = class {
   }
 };
 
-// node_modules/diff2html/lib-esm/diff2html.js
+// ../../node_modules/diff2html/lib-esm/diff2html.js
 var defaultDiff2HtmlConfig = Object.assign(Object.assign(Object.assign({}, defaultLineByLineRendererConfig), defaultSideBySideRendererConfig), { outputFormat: OutputFormatType.LINE_BY_LINE, drawFileList: true });
 function html2(diffInput, configuration = {}) {
   const config = Object.assign(Object.assign({}, defaultDiff2HtmlConfig), configuration);

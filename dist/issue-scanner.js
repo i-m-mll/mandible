@@ -176,6 +176,23 @@ export class IssueScanner {
         const issue = cached.summary.issues.find((i) => i.id === issueId);
         return issue ? issue.status : null;
     }
+    /** Search all scanned repos for an issue matching the given ID prefix. */
+    findIssueAcrossRepos(issueId) {
+        this.ensureScan();
+        for (const summary of this.getRepoSummaries()) {
+            // Check cache first to avoid shelling out for every repo
+            const cached = this.cache.get(summary.repo_id);
+            if (cached) {
+                const match = cached.summary.issues.find((i) => i.id === issueId || i.id.startsWith(issueId));
+                if (!match)
+                    continue;
+            }
+            const detail = this.getIssueDetail(summary.repo_id, issueId);
+            if (detail)
+                return detail;
+        }
+        return null;
+    }
     scanAll() {
         // Ensure WorkScanner has refreshed its repo list before we iterate it
         const repos = this.workScanner.getRepos();

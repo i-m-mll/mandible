@@ -388,6 +388,13 @@ const MIGRATIONS = [
         statements: [
             `ALTER TABLE sessions ADD COLUMN last_active TEXT`
         ]
+    },
+    {
+        version: 24,
+        name: "backfill_session_projects_repo_name",
+        // Bug: 003179f — agent-commit stored worktree dir names as repo_id.
+        // Data fixup handled in post-DDL Node.js step below (backfillProjectRepoNames).
+        statements: []
     }
 ];
 export function getDbPath() {
@@ -444,6 +451,10 @@ export function migrate(db) {
     if (pending.some((m) => m.version === 19)) {
         compressExistingBlocks(db);
     }
+    // Bug: 003179f — backfill correct repo names in session_projects
+    if (pending.some((m) => m.version === 24)) {
+        backfillProjectRepoNames(db);
+    }
 }
 // --- Singleton accessor for partition code ---
 let _db = null;
@@ -485,6 +496,40 @@ function compressExistingBlocks(db) {
         // Log to stderr so daemon startup shows the migration result
         console.error(`[db] Compressed ${totalCompressed} conversation blocks`);
     }
+}
+/**
+ * Backfill session_projects rows where repo_id is a branch/worktree name
+ * (e.g. feature__audit-fixes) with the real repo name derived from the
+ * session's worktree path (e.g. .../mandible/worktrees/feature__foo -> "mandible").
+ * Bug: 003179f
+ */
+function backfillProjectRepoNames(db) {
+    const rows = db.prepare(`SELECT sp.rowid, sp.repo_id, s.worktree
+     FROM session_projects sp
+     JOIN sessions s ON sp.session_id = s.id
+     WHERE s.worktree IS NOT NULL
+       AND s.worktree LIKE '%/worktrees/%'
+       AND (
+         sp.repo_id LIKE 'feature__%' OR sp.repo_id LIKE 'feature/%'
+         OR sp.repo_id LIKE 'fix__%'    OR sp.repo_id LIKE 'fix/%'
+         OR sp.repo_id LIKE 'bugfix__%' OR sp.repo_id LIKE 'bugfix/%'
+         OR sp.repo_id LIKE 'chore__%'  OR sp.repo_id LIKE 'chore/%'
+         OR sp.repo_id LIKE 'integrate__%' OR sp.repo_id LIKE 'integrate/%'
+       )`).all();
+    if (rows.length === 0)
+        return;
+    const update = db.prepare(`UPDATE session_projects SET repo_id = ?, repo_name = ? WHERE rowid = ?`);
+    const run = db.transaction(() => {
+        for (const row of rows) {
+            const beforeWorktrees = row.worktree.split("/worktrees/")[0];
+            const repoName = path.basename(beforeWorktrees);
+            if (repoName && repoName !== row.repo_id) {
+                update.run(repoName, repoName, row.rowid);
+            }
+        }
+    });
+    run();
+    console.error(`[db] Backfilled repo names for ${rows.length} session_projects rows`);
 }
 function getSchemaVersion(db) {
     const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(SCHEMA_VERSION_KEY);
