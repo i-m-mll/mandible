@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
-import { getIssueDetail, getIssueSessions, issueAction, scanIssueRepo } from '../api';
+import { findIssue, getIssueDetail, getIssueSessions, issueAction, scanIssueRepo } from '../api';
 
 // --- Types ---
 
@@ -197,9 +197,15 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     }
   }, [repos]);
 
-  // Deep-link: auto-select issue from URL params
+  // Deep-link: auto-select issue from URL params.
+  // Supports two forms:
+  //   #/issues?repo=<repoId>&issue=<issueId>  — legacy, requires known repo
+  //   #/issues?issue=<issueId>                — cross-repo find via /api/issues/find/:id
   useEffect(() => {
-    if (initialRepoId && initialIssueId) {
+    if (!initialIssueId) return;
+
+    if (initialRepoId) {
+      // Legacy path: repo provided, resolve directly
       const canonicalRepoId = resolveRepoId(initialRepoId) ?? initialRepoId;
       const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
       setSelectedRepoId(canonicalRepoId);
@@ -208,6 +214,22 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
         const next = new Set(prev);
         next.add(canonicalRepoId);
         return next;
+      });
+    } else {
+      // No repo: search all scanned repos for this issue ID
+      findIssue(initialIssueId).then((detail) => {
+        const d = detail as { repo_id?: string; id?: string } | null;
+        if (d?.repo_id && d?.id) {
+          setSelectedRepoId(d.repo_id);
+          setSelectedIssueId(d.id);
+          setExpandedRepos((prev) => {
+            const next = new Set(prev);
+            next.add(d.repo_id!);
+            return next;
+          });
+        }
+      }).catch(() => {
+        // Issue not found in any scanned repo — leave selection unchanged
       });
     }
   }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);

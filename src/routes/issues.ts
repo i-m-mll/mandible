@@ -135,6 +135,22 @@ export function registerIssueRoutes(
     sendJson(res, 200, summaries);
   });
 
+  // GET /api/issues/find/:issueId — search all scanned repos for an issue by ID prefix.
+  // Registered before /:repoId/:issueId to avoid the literal "find" being treated as repoId.
+  server.get("/api/issues/find/:issueId", (req, res) => {
+    const issueId = getParam(req, "issueId");
+    if (!issueId) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const detail = issueScanner.findIssueAcrossRepos(issueId);
+    if (!detail) {
+      sendJson(res, 404, { error: "issue not found in any scanned repo" });
+      return;
+    }
+    sendJson(res, 200, detail);
+  });
+
   // GET /api/issues/:repoId/:issueId — issue detail with comments
   server.get("/api/issues/:repoId/:issueId", (req, res) => {
     const repoIdParam = getParam(req, "repoId");

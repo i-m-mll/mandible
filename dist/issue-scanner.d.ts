@@ -9,6 +9,8 @@ export declare class IssueScanner {
     getIssueDetail(repoId: string, issueId: string): GitBugIssueDetail | null;
     /** Look up an issue's status from the cache. Returns null if unknown. */
     getIssueStatus(repoId: string, issueId: string): "open" | "closed" | null;
+    /** Search all scanned repos for an issue matching the given ID prefix. */
+    findIssueAcrossRepos(issueId: string): GitBugIssueDetail | null;
     scanAll(): IssueRepoSummary[];
     scanAllAsync(): Promise<IssueRepoSummary[]>;
     /**
