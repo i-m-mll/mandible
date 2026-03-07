@@ -413,6 +413,13 @@ function App(): JSX.Element {
       getAuthHistory<AuthRequest>(200)
         .then((history) => dispatch({ type: 'setAuthHistory', history }))
         .catch(() => undefined);
+      // Bug: a2c8d43 — poll issueRepos so the Issues tab refreshes once the
+      // background IssueScanner finishes after a daemon restart. Guard: only
+      // dispatch if the result is non-empty so we never overwrite valid cached
+      // data with an empty list from a cold cache response.
+      getIssueRepos<IssueRepoSummary>()
+        .then((repos) => { if (repos.length > 0) dispatch({ type: 'setIssueRepos', repos }); })
+        .catch(() => undefined);
     }, POLL_INTERVAL);
 
     return () => window.clearInterval(timer);

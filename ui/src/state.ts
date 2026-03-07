@@ -255,6 +255,11 @@ function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
     case 'setIssueRepos':
+      // Bug: a2c8d43 — guard against cold-cache API response overwriting valid
+      // localStorage-restored data. If the incoming list is empty but state
+      // already has repos (from loadCachedState), keep the cached data so the
+      // Issues tab stays populated while the background scan finishes.
+      if (action.repos.length === 0 && state.issueRepos.length > 0) return state;
       return { ...state, issueRepos: action.repos };
     case 'setDaemonReload':
       return { ...state, daemonReload: action.reload };
