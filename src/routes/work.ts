@@ -7,6 +7,8 @@ export interface RouteHandler<Request = any, Response = any> {
 export interface WorkServer {
   get(path: string, handler: RouteHandler): void;
   post(path: string, handler: RouteHandler): void;
+  put(path: string, handler: RouteHandler): void;
+  delete(path: string, handler: RouteHandler): void;
 }
 
 function getParam(req: any, key: string): string | undefined {
@@ -126,9 +128,40 @@ export function registerWorkRoutes(server: WorkServer, scanner?: WorkScanner): W
     }
   };
 
-  server.get("/api/work/repos", (_req, res) => {
+  server.get("/api/work/repos", (req, res) => {
     ensureScan();
-    sendJson(res, 200, workScanner.getRepos());
+    const includeExcluded = getQueryParam(req, "include_excluded") === "true";
+    const repos = workScanner.getRepos();
+    const filtered = includeExcluded ? repos : repos.filter((r) => !r.excluded);
+    sendJson(res, 200, filtered);
+  });
+
+  server.put("/api/work/repos/:id", (req, res) => {
+    const id = getParam(req, "id");
+    if (!id) { sendJson(res, 400, { error: "missing repo id" }); return; }
+    const body = req.body as { name?: string; excluded?: boolean } | undefined;
+    const updated = workScanner.updateRepo(id, body ?? {});
+    if (!updated) { sendJson(res, 404, { error: "repo not found" }); return; }
+    sendJson(res, 200, updated);
+  });
+
+  server.post("/api/work/repos/add", async (req, res) => {
+    const body = req.body as { root?: string; name?: string } | undefined;
+    if (!body?.root) { sendJson(res, 400, { error: "root required" }); return; }
+    try {
+      const repo = await workScanner.addRepo(body.root, { name: body.name });
+      if (!repo) { sendJson(res, 409, { error: "already tracked" }); return; }
+      sendJson(res, 201, repo);
+    } catch (e) {
+      sendJson(res, 400, { error: (e as Error).message });
+    }
+  });
+
+  server.delete("/api/work/repos/:id", (req, res) => {
+    const id = getParam(req, "id");
+    const ok = workScanner.removeRepo(id ?? "");
+    if (!ok) { sendJson(res, 404, { error: "repo not found" }); return; }
+    sendJson(res, 200, { ok: true });
   });
 
   server.get("/api/work/repos/:id/branches", (req, res) => {
