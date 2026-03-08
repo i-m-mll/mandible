@@ -72,6 +72,14 @@ function resolveCanonicalRepoId(issueScanner, repoId, repoName, issueId) {
             return byIssue[0].repo_id;
         }
     }
+    // Stripped-dot basename fallback: handles ".dotfiles" → "dotfiles"
+    const stripped = repoId.replace(/^\.+/, '');
+    if (stripped !== repoId) {
+        const db = getDb();
+        const row = db.prepare("SELECT id FROM work_repos WHERE id = ? OR name = ? LIMIT 1").get(stripped, stripped);
+        if (row)
+            return row.id;
+    }
     return repoId;
 }
 // Bug: caa157e — resolve session ID prefix, returning resolved ID or sending error response

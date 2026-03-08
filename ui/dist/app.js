@@ -42,9 +42,9 @@ var __privateMethod = (obj, member, method) => {
   return method;
 };
 
-// node_modules/@xterm/xterm/lib/xterm.js
+// ../../node_modules/@xterm/xterm/lib/xterm.js
 var require_xterm = __commonJS({
-  "node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
+  "../../node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
     !function(e3, t3) {
       if ("object" == typeof exports && "object" == typeof module)
         module.exports = t3();
@@ -6664,9 +6664,9 @@ WARNING: This link could potentially be dangerous`)) {
   }
 });
 
-// node_modules/@xterm/addon-fit/lib/addon-fit.js
+// ../../node_modules/@xterm/addon-fit/lib/addon-fit.js
 var require_addon_fit = __commonJS({
-  "node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
+  "../../node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
     !function(e3, t3) {
       "object" == typeof exports && "object" == typeof module ? module.exports = t3() : "function" == typeof define && define.amd ? define([], t3) : "object" == typeof exports ? exports.FitAddon = t3() : e3.FitAddon = t3();
     }(self, () => (() => {
@@ -6704,9 +6704,9 @@ var require_addon_fit = __commonJS({
   }
 });
 
-// node_modules/@profoundlogic/hogan/lib/compiler.js
+// ../../node_modules/@profoundlogic/hogan/lib/compiler.js
 var require_compiler = __commonJS({
-  "node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
+  "../../node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
     (function(Hogan4) {
       var rIsWhitespace = /\S/, rQuot = /\"/g, rNewline = /\n/g, rCr = /\r/g, rSlash = /\\/g, rLineSep = /\u2028/, rParagraphSep = /\u2029/;
       Hogan4.tags = {
@@ -7032,9 +7032,9 @@ var require_compiler = __commonJS({
   }
 });
 
-// node_modules/@profoundlogic/hogan/lib/template.js
+// ../../node_modules/@profoundlogic/hogan/lib/template.js
 var require_template = __commonJS({
-  "node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
+  "../../node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
     var Hogan4 = {};
     (function(Hogan5) {
       Hogan5.Template = function(codeObj, text, compiler, options2) {
@@ -7297,9 +7297,9 @@ var require_template = __commonJS({
   }
 });
 
-// node_modules/@profoundlogic/hogan/lib/hogan.js
+// ../../node_modules/@profoundlogic/hogan/lib/hogan.js
 var require_hogan = __commonJS({
-  "node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
+  "../../node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
     var Hogan4 = require_compiler();
     Hogan4.Template = require_template().Template;
     Hogan4.template = Hogan4.Template;
@@ -7307,7 +7307,7 @@ var require_hogan = __commonJS({
   }
 });
 
-// node_modules/preact/dist/preact.module.js
+// ../../node_modules/preact/dist/preact.module.js
 var n;
 var l;
 var u;
@@ -7627,7 +7627,7 @@ n = v.slice, l = { __e: function(n2, l3, u4, t3) {
   return n2.__v.__b - l3.__v.__b;
 }, $.__r = 0, f = /(PointerCapture)$|Capture$/i, c = 0, s = F(false), a = F(true), h = 0;
 
-// node_modules/preact/hooks/dist/hooks.module.js
+// ../../node_modules/preact/hooks/dist/hooks.module.js
 var t2;
 var r2;
 var u2;
@@ -8376,7 +8376,7 @@ function createSSEClient(options2) {
   return new SSEClient(options2);
 }
 
-// node_modules/marked/lib/marked.esm.js
+// ../../node_modules/marked/lib/marked.esm.js
 function _getDefaults() {
   return {
     async: false,
@@ -10625,7 +10625,7 @@ var parseInline = marked.parseInline;
 var parser = _Parser.parse;
 var lexer = _Lexer.lex;
 
-// node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
+// ../../node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 var f3 = 0;
 var i3 = Array.isArray;
 function u3(e3, t3, n2, o3, i4, u4) {
@@ -16370,10 +16370,11 @@ function BranchTableScroller({
   ] });
 }
 function WorkOverviewView({
-  repos,
+  repos: initialRepos,
   branchesByRepo,
   onRescan
 }) {
+  const [repos, setRepos] = d2(initialRepos);
   const [expanded, setExpanded] = d2(/* @__PURE__ */ new Set());
   const [repoToggles, setRepoToggles] = d2({});
   const [repoFilterInput, setRepoFilterInput] = d2("");
@@ -16382,6 +16383,30 @@ function WorkOverviewView({
   const globalBranchFilter = useDebounce(globalBranchFilterInput, 300).toLowerCase();
   const [perRepoFilters, setPerRepoFilters] = d2({});
   const [perRepoSorts, setPerRepoSorts] = d2({});
+  const [settingsOpenFor, setSettingsOpenFor] = d2(null);
+  const [addingRepo, setAddingRepo] = d2(false);
+  const [addPath, setAddPath] = d2("");
+  const [addError, setAddError] = d2(null);
+  const [showExcluded, setShowExcluded] = d2(false);
+  const [confirmRemove, setConfirmRemove] = d2(null);
+  const [editName, setEditName] = d2({});
+  y2(() => {
+    setRepos(initialRepos);
+  }, [initialRepos]);
+  const fetchRepos = async (withExcluded) => {
+    try {
+      const url = withExcluded ? "/api/work/repos?include_excluded=true" : "/api/work/repos";
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        setRepos(Array.isArray(data) ? data : []);
+      }
+    } catch {
+    }
+  };
+  y2(() => {
+    void fetchRepos(showExcluded);
+  }, [showExcluded]);
   const repoRows = T2(() => {
     return repos.map((repo) => {
       const repoId = getRepoId2(repo);
@@ -16426,6 +16451,53 @@ function WorkOverviewView({
       return next;
     });
   };
+  const handleUpdateRepo = async (id, patch) => {
+    try {
+      const res = await fetch(`/api/work/repos/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setRepos((prev) => prev.map((r3) => getRepoId2(r3) === id ? updated : r3));
+      }
+    } catch {
+    }
+  };
+  const handleRemoveRepo = async (id) => {
+    try {
+      const res = await fetch(`/api/work/repos/${encodeURIComponent(id)}`, {
+        method: "DELETE"
+      });
+      if (res.ok) {
+        setRepos((prev) => prev.filter((r3) => getRepoId2(r3) !== id));
+        setConfirmRemove(null);
+      }
+    } catch {
+    }
+  };
+  const handleAddRepo = async () => {
+    setAddError(null);
+    try {
+      const res = await fetch("/api/work/repos/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ root: addPath })
+      });
+      if (res.ok) {
+        const newRepo = await res.json();
+        setRepos((prev) => [...prev, newRepo]);
+        setAddingRepo(false);
+        setAddPath("");
+      } else {
+        const body = await res.json();
+        setAddError(body.error ?? `Error ${res.status}`);
+      }
+    } catch (e3) {
+      setAddError(String(e3));
+    }
+  };
   const hasActiveFilters = Boolean(globalBranchFilter || repoFilter);
   return /* @__PURE__ */ u3("div", { className: "view work-view", children: [
     /* @__PURE__ */ u3("div", { className: "view-header", children: [
@@ -16433,7 +16505,60 @@ function WorkOverviewView({
         /* @__PURE__ */ u3("h2", { children: "Work Overview" }),
         /* @__PURE__ */ u3("p", { className: "text-muted", children: "Branch and worktree status across repos." })
       ] }),
-      /* @__PURE__ */ u3("button", { type: "button", className: "btn", onClick: onRescan, children: "Rescan" })
+      /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "8px", alignItems: "center" }, children: [
+        /* @__PURE__ */ u3("label", { style: { fontSize: "0.85em", color: "var(--text-muted, #888)", cursor: "pointer" }, children: [
+          /* @__PURE__ */ u3(
+            "input",
+            {
+              type: "checkbox",
+              checked: showExcluded,
+              onChange: (e3) => setShowExcluded(e3.currentTarget.checked),
+              style: { marginRight: "4px" }
+            }
+          ),
+          "Show excluded"
+        ] }),
+        /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--sm", onClick: () => {
+          setAddingRepo((v3) => !v3);
+          setAddError(null);
+        }, children: "+ Add repo" }),
+        /* @__PURE__ */ u3("button", { type: "button", className: "btn", onClick: onRescan, children: "Rescan" })
+      ] })
+    ] }),
+    addingRepo && /* @__PURE__ */ u3("div", { className: "repo-add-form", children: [
+      /* @__PURE__ */ u3(
+        "input",
+        {
+          type: "text",
+          className: "repo-add-form__input",
+          placeholder: "Absolute path to git repo...",
+          value: addPath,
+          onInput: (e3) => setAddPath(e3.currentTarget.value)
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--sm",
+          onClick: () => void handleAddRepo(),
+          children: "Add"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--sm btn--ghost",
+          onClick: () => {
+            setAddingRepo(false);
+            setAddPath("");
+            setAddError(null);
+          },
+          children: "Cancel"
+        }
+      ),
+      addError && /* @__PURE__ */ u3("span", { className: "repo-add-form__error", children: addError })
     ] }),
     /* @__PURE__ */ u3("div", { className: "work-toolbar", children: [
       /* @__PURE__ */ u3(
@@ -16463,29 +16588,151 @@ function WorkOverviewView({
       const isOpen = repoToggles[repoId] ?? branches.length > 0;
       const branchCount = branches.length;
       const defaultBranch = repo.default_branch || branches.find((b) => b.default_branch && b.default_branch !== "\u2014")?.default_branch || "main";
+      const isExcluded = Boolean(repo.excluded);
+      const isSettingsOpen = settingsOpenFor === repoId;
+      const currentEditName = editName[repoId] ?? repo.name ?? repoTitle;
       return /* @__PURE__ */ u3(
         "details",
         {
-          className: "repo-card repo-card--collapsible",
+          className: `repo-card repo-card--collapsible${isExcluded ? " repo-card--excluded" : ""}`,
           open: isOpen,
           onToggle: (event) => {
             const nextOpen = event.currentTarget.open;
             setRepoToggles((prev) => ({ ...prev, [repoId]: nextOpen }));
           },
           children: [
-            /* @__PURE__ */ u3("summary", { className: "repo-card__summary", children: /* @__PURE__ */ u3("div", { className: "repo-card__title", children: [
-              /* @__PURE__ */ u3("h3", { children: [
-                repoTitle,
-                /* @__PURE__ */ u3("span", { className: "branch-count", children: [
-                  "(",
-                  branchCount,
-                  " ",
-                  branchCount === 1 ? "branch" : "branches",
-                  ")"
-                ] })
+            /* @__PURE__ */ u3("summary", { className: "repo-card__summary", children: [
+              /* @__PURE__ */ u3("div", { className: "repo-card__title", children: [
+                /* @__PURE__ */ u3("h3", { children: [
+                  repoTitle,
+                  isExcluded && /* @__PURE__ */ u3("span", { className: "work-badge-excluded", title: "Excluded from scans", children: "excluded" }),
+                  /* @__PURE__ */ u3("span", { className: "branch-count", children: [
+                    "(",
+                    branchCount,
+                    " ",
+                    branchCount === 1 ? "branch" : "branches",
+                    ")"
+                  ] })
+                ] }),
+                showPath ? /* @__PURE__ */ u3("span", { className: "text-muted", children: repoPath }) : null
               ] }),
-              showPath ? /* @__PURE__ */ u3("span", { className: "text-muted", children: repoPath }) : null
-            ] }) }),
+              /* @__PURE__ */ u3("div", { className: "repo-card__header-actions", children: [
+                isExcluded && /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn--xs",
+                    onClick: (e3) => {
+                      e3.preventDefault();
+                      e3.stopPropagation();
+                      void handleUpdateRepo(repoId, { excluded: false });
+                    },
+                    title: "Include this repo in scans",
+                    children: "Include"
+                  }
+                ),
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: `repo-card__gear${isSettingsOpen ? " repo-card__gear--active" : ""}`,
+                    title: "Repo settings",
+                    onClick: (e3) => {
+                      e3.preventDefault();
+                      e3.stopPropagation();
+                      setSettingsOpenFor((prev) => prev === repoId ? null : repoId);
+                    },
+                    children: "\u2699"
+                  }
+                )
+              ] })
+            ] }),
+            isSettingsOpen && /* @__PURE__ */ u3("div", { className: "repo-settings-strip", children: [
+              /* @__PURE__ */ u3("div", { className: "repo-settings-strip__row", children: [
+                /* @__PURE__ */ u3("label", { className: "repo-settings-strip__label", children: "Name" }),
+                /* @__PURE__ */ u3(
+                  "input",
+                  {
+                    type: "text",
+                    className: "repo-settings-strip__input",
+                    value: currentEditName,
+                    onInput: (e3) => setEditName((prev) => ({ ...prev, [repoId]: e3.currentTarget.value }))
+                  }
+                ),
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn--xs",
+                    onClick: () => void handleUpdateRepo(repoId, { name: currentEditName }).then(
+                      () => setEditName((prev) => {
+                        const next = { ...prev };
+                        delete next[repoId];
+                        return next;
+                      })
+                    ),
+                    children: "Save"
+                  }
+                ),
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn--xs btn--ghost",
+                    onClick: () => void handleUpdateRepo(repoId, { name: "" }).then(
+                      () => setEditName((prev) => {
+                        const next = { ...prev };
+                        delete next[repoId];
+                        return next;
+                      })
+                    ),
+                    title: "Reset to derived name",
+                    children: "Reset"
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ u3("div", { className: "repo-settings-strip__row", children: /* @__PURE__ */ u3("label", { className: "repo-settings-strip__label", children: [
+                /* @__PURE__ */ u3(
+                  "input",
+                  {
+                    type: "checkbox",
+                    checked: isExcluded,
+                    onChange: (e3) => void handleUpdateRepo(repoId, { excluded: e3.currentTarget.checked }),
+                    style: { marginRight: "4px" }
+                  }
+                ),
+                "Exclude from scans"
+              ] }) }),
+              /* @__PURE__ */ u3("div", { className: "repo-settings-strip__row", children: confirmRemove === repoId ? /* @__PURE__ */ u3(k, { children: [
+                /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "0.85em" }, children: "Remove this repo from Mandible?" }),
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn--xs btn--danger",
+                    onClick: () => void handleRemoveRepo(repoId),
+                    children: "Confirm remove"
+                  }
+                ),
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "btn btn--xs btn--ghost",
+                    onClick: () => setConfirmRemove(null),
+                    children: "Cancel"
+                  }
+                )
+              ] }) : /* @__PURE__ */ u3(
+                "button",
+                {
+                  type: "button",
+                  className: "btn btn--xs btn--danger-outline",
+                  onClick: () => setConfirmRemove(repoId),
+                  children: "Remove repo"
+                }
+              ) })
+            ] }),
             /* @__PURE__ */ u3("div", { className: "repo-card__body", children: [
               /* @__PURE__ */ u3("div", { className: "repo-card__controls", children: [
                 /* @__PURE__ */ u3(
@@ -16755,7 +17002,7 @@ function ThinkingBlock({ thinking, defaultExpanded = false }) {
   ] });
 }
 
-// node_modules/diff2html/lib-esm/types.js
+// ../../node_modules/diff2html/lib-esm/types.js
 var LineType;
 (function(LineType2) {
   LineType2["INSERT"] = "insert";
@@ -16782,7 +17029,7 @@ var ColorSchemeType;
   ColorSchemeType2["LIGHT"] = "light";
 })(ColorSchemeType || (ColorSchemeType = {}));
 
-// node_modules/diff2html/lib-esm/utils.js
+// ../../node_modules/diff2html/lib-esm/utils.js
 var specials = [
   "-",
   "[",
@@ -16827,7 +17074,7 @@ function max(arr) {
   return max2;
 }
 
-// node_modules/diff2html/lib-esm/diff-parser.js
+// ../../node_modules/diff2html/lib-esm/diff-parser.js
 function getExtension(filename, language) {
   const filenameParts = filename.split(".");
   return filenameParts.length > 1 ? filenameParts[filenameParts.length - 1] : language;
@@ -17119,7 +17366,7 @@ function parse(diffInput, config = {}) {
   return files;
 }
 
-// node_modules/diff/libesm/diff/base.js
+// ../../node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options2 = {}) {
     let callback;
@@ -17321,7 +17568,7 @@ var Diff = class {
   }
 };
 
-// node_modules/diff/libesm/diff/character.js
+// ../../node_modules/diff/libesm/diff/character.js
 var CharacterDiff = class extends Diff {
 };
 var characterDiff = new CharacterDiff();
@@ -17329,7 +17576,7 @@ function diffChars(oldStr, newStr, options2) {
   return characterDiff.diff(oldStr, newStr, options2);
 }
 
-// node_modules/diff/libesm/util/string.js
+// ../../node_modules/diff/libesm/util/string.js
 function longestCommonPrefix(str1, str2) {
   let i4;
   for (i4 = 0; i4 < str1.length && i4 < str2.length; i4++) {
@@ -17425,7 +17672,7 @@ function leadingWs(string) {
   return match ? match[0] : "";
 }
 
-// node_modules/diff/libesm/diff/word.js
+// ../../node_modules/diff/libesm/diff/word.js
 var extendedWordChars = "a-zA-Z0-9_\\u{AD}\\u{C0}-\\u{D6}\\u{D8}-\\u{F6}\\u{F8}-\\u{2C6}\\u{2C8}-\\u{2D7}\\u{2DE}-\\u{2FF}\\u{1E00}-\\u{1EFF}";
 var tokenizeIncludingWhitespace = new RegExp(`[${extendedWordChars}]+|\\s+|[^${extendedWordChars}]`, "ug");
 var WordDiff = class extends Diff {
@@ -17572,7 +17819,7 @@ function diffWordsWithSpace(oldStr, newStr, options2) {
   return wordsWithSpaceDiff.diff(oldStr, newStr, options2);
 }
 
-// node_modules/diff2html/lib-esm/rematch.js
+// ../../node_modules/diff2html/lib-esm/rematch.js
 function levenshtein(a3, b) {
   if (a3.length === 0) {
     return b.length;
@@ -17656,7 +17903,7 @@ function newMatcherFn(distance2) {
   return group;
 }
 
-// node_modules/diff2html/lib-esm/render-utils.js
+// ../../node_modules/diff2html/lib-esm/render-utils.js
 var CSSLineClass = {
   INSERTS: "d2h-ins",
   DELETES: "d2h-del",
@@ -17834,7 +18081,7 @@ function diffHighlight(diffLine1, diffLine2, isCombined, config = {}) {
   };
 }
 
-// node_modules/diff2html/lib-esm/file-list-renderer.js
+// ../../node_modules/diff2html/lib-esm/file-list-renderer.js
 var baseTemplatesPath = "file-summary";
 var iconsBaseTemplatesPath = "icon";
 var defaultFileListRendererConfig = {
@@ -17864,7 +18111,7 @@ var FileListRenderer = class {
   }
 };
 
-// node_modules/diff2html/lib-esm/line-by-line-renderer.js
+// ../../node_modules/diff2html/lib-esm/line-by-line-renderer.js
 var defaultLineByLineRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath = "generic";
 var baseTemplatesPath2 = "line-by-line";
@@ -18039,7 +18286,7 @@ var LineByLineRenderer = class {
   }
 };
 
-// node_modules/diff2html/lib-esm/side-by-side-renderer.js
+// ../../node_modules/diff2html/lib-esm/side-by-side-renderer.js
 var defaultSideBySideRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath2 = "generic";
 var baseTemplatesPath3 = "side-by-side";
@@ -18225,10 +18472,10 @@ var SideBySideRenderer = class {
   }
 };
 
-// node_modules/diff2html/lib-esm/hoganjs-utils.js
+// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
 var Hogan3 = __toESM(require_hogan());
 
-// node_modules/diff2html/lib-esm/diff2html-templates.js
+// ../../node_modules/diff2html/lib-esm/diff2html-templates.js
 var Hogan2 = __toESM(require_hogan());
 var defaultTemplates = {};
 defaultTemplates["file-summary-line"] = new Hogan2.Template({ code: function(c3, p3, i4) {
@@ -18636,7 +18883,7 @@ defaultTemplates["tag-file-renamed"] = new Hogan2.Template({ code: function(c3, 
   return t3.fl();
 }, partials: {}, subs: {} });
 
-// node_modules/diff2html/lib-esm/hoganjs-utils.js
+// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
 var HoganJsUtils = class {
   constructor({ compiledTemplates = {}, rawTemplates = {} }) {
     const compiledRawTemplates = Object.entries(rawTemplates).reduce((previousTemplates, [name, templateString]) => {
@@ -18665,7 +18912,7 @@ var HoganJsUtils = class {
   }
 };
 
-// node_modules/diff2html/lib-esm/diff2html.js
+// ../../node_modules/diff2html/lib-esm/diff2html.js
 var defaultDiff2HtmlConfig = Object.assign(Object.assign(Object.assign({}, defaultLineByLineRendererConfig), defaultSideBySideRendererConfig), { outputFormat: OutputFormatType.LINE_BY_LINE, drawFileList: true });
 function html2(diffInput, configuration = {}) {
   const config = Object.assign(Object.assign({}, defaultDiff2HtmlConfig), configuration);
@@ -21229,7 +21476,7 @@ function App() {
                 className: route.tab === "work" ? "active" : "",
                 onClick: () => setShowOverflow(false),
                 children: [
-                  "Branches",
+                  "Projects",
                   badges.work > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.work })
                 ]
               }

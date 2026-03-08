@@ -138,6 +138,32 @@ function slugify(value) {
         .replace(/^-+|-+$/g, "");
     return slug || "repo";
 }
+/**
+ * Compute a unique slug-based ID for a repo root, deduplicating against existingIds.
+ * Exported for reuse by API routes.
+ */
+export function computeRepoId(root, existingIds) {
+    const existingSet = new Set(existingIds);
+    const baseName = path.basename(root);
+    const nameBase = stripLeadingDot(baseName) || baseName;
+    const baseSlug = slugify(nameBase || baseName);
+    const parentName = stripLeadingDot(path.basename(path.dirname(root)));
+    const parentSlug = parentName ? slugify(parentName) : "";
+    // Check if a conflict exists (another repo with same baseSlug in existingIds)
+    const needsParent = existingSet.has(baseSlug) || parentSlug;
+    const baseId = needsParent && parentSlug
+        ? `${parentSlug}-${baseSlug}`
+        : baseSlug;
+    if (!existingSet.has(baseId)) {
+        return baseId;
+    }
+    // Dedup with numeric suffix
+    let i = 1;
+    while (existingSet.has(`${baseId}-${i}`)) {
+        i += 1;
+    }
+    return `${baseId}-${i}`;
+}
 function runGit(args, options = { cwd: process.cwd() }) {
     const result = spawnSync("git", args, {
         cwd: options.cwd,
@@ -244,9 +270,26 @@ export class WorkScanner {
         ensureSchema(this.db);
     }
     getRepos() {
-        if (this.repoInfos.length === 0) {
-            this.refreshRepoInfos();
+        if (this.repoInfos.length > 0) {
+            return this.repoInfos;
         }
+        // Phase 2: try DB cold-start
+        const dbRows = this.db.prepare("SELECT id, root, name, default_branch, exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE exists = 1").all();
+        if (dbRows.length > 0) {
+            this.repoInfos = dbRows.map((row) => ({
+                id: row.id,
+                name: row.name,
+                root: row.root,
+                exists: row.exists === 1,
+                default_branch: row.default_branch,
+                excluded: row.excluded === 1,
+                user_modified: row.user_modified === 1,
+                last_scanned_at: row.last_scanned_at,
+            }));
+            return this.repoInfos;
+        }
+        // Phase 3: full discovery
+        this.refreshRepoInfos();
         return this.repoInfos;
     }
     hasCachedData() {
@@ -255,9 +298,28 @@ export class WorkScanner {
     }
     getRepoById(idOrPath) {
         const resolvedPath = path.resolve(resolveHome(idOrPath));
-        return this.getRepos().find((repo) => repo.id === idOrPath ||
+        const found = this.repoInfos.find((repo) => repo.id === idOrPath ||
             repo.root === idOrPath ||
             path.resolve(repo.root) === resolvedPath);
+        if (found)
+            return found;
+        // DB fallback when repoInfos is not yet populated
+        if (this.repoInfos.length === 0) {
+            const row = this.db.prepare("SELECT id, root, name, default_branch, exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE id = ? OR root = ? LIMIT 1").get(idOrPath, resolvedPath);
+            if (row) {
+                return {
+                    id: row.id,
+                    name: row.name,
+                    root: row.root,
+                    exists: row.exists === 1,
+                    default_branch: row.default_branch,
+                    excluded: row.excluded === 1,
+                    user_modified: row.user_modified === 1,
+                    last_scanned_at: row.last_scanned_at,
+                };
+            }
+        }
+        return undefined;
     }
     getBranches(repoRoot) {
         const rows = this.db
@@ -349,11 +411,23 @@ export class WorkScanner {
                 missingRepos.push(repo.root);
                 continue;
             }
+            if (repo.excluded) {
+                // Skip scanning excluded repos but still track them in missingRepos check above
+                continue;
+            }
             scannedRepos += 1;
             try {
                 const scanResult = this.scanRepo(repo.root, repo.id);
                 branchesUpdated += scanResult.updated;
                 branchesRemoved += scanResult.removed;
+                // Update last_scanned_at after successful scan
+                const scanNow = new Date().toISOString();
+                this.db.prepare("UPDATE work_repos SET last_scanned_at = ?, updated_at = ? WHERE root = ?").run(scanNow, scanNow, repo.root);
+                // Sync in-memory
+                const idx = this.repoInfos.findIndex((r) => r.root === repo.root);
+                if (idx >= 0) {
+                    this.repoInfos[idx] = { ...this.repoInfos[idx], last_scanned_at: scanNow };
+                }
             }
             catch (_error) {
                 // Log but continue scanning remaining repos
@@ -377,6 +451,146 @@ export class WorkScanner {
             data: summary,
         });
         return summary;
+    }
+    updateRepo(id, patch) {
+        const row = this.db.prepare("SELECT id, root, name, default_branch, exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE id = ?").get(id);
+        if (!row)
+            return null;
+        const now = new Date().toISOString();
+        let newName = row.name;
+        let userModified = row.user_modified;
+        if (patch.name !== undefined) {
+            if (patch.name.trim() === '') {
+                // Reset to derived name
+                const baseName = path.basename(row.root);
+                newName = stripLeadingDot(baseName) || baseName;
+                userModified = 0;
+            }
+            else {
+                newName = patch.name.trim();
+                userModified = 1;
+            }
+        }
+        const newExcluded = patch.excluded !== undefined ? (patch.excluded ? 1 : 0) : row.excluded;
+        this.db.prepare("UPDATE work_repos SET name = ?, excluded = ?, user_modified = ?, updated_at = ? WHERE id = ?").run(newName, newExcluded, userModified, now, id);
+        // Sync in-memory
+        const idx = this.repoInfos.findIndex((r) => r.id === id);
+        const updated = {
+            id: row.id,
+            name: newName,
+            root: row.root,
+            exists: row.exists === 1,
+            default_branch: row.default_branch,
+            excluded: newExcluded === 1,
+            user_modified: userModified === 1,
+            last_scanned_at: row.last_scanned_at,
+        };
+        if (idx >= 0) {
+            this.repoInfos[idx] = updated;
+        }
+        return updated;
+    }
+    async addRepo(root, options) {
+        const resolved = path.resolve(resolveHome(root));
+        if (!this.isGitDirectory(resolved)) {
+            throw new Error(`Not a git directory: ${resolved}`);
+        }
+        // Check not already tracked
+        const existing = this.db.prepare("SELECT id FROM work_repos WHERE root = ?").get(resolved);
+        if (existing)
+            return null;
+        // Compute ID
+        const existingIds = this.db.prepare("SELECT id FROM work_repos").all()
+            .map((r) => r.id);
+        const newId = computeRepoId(resolved, existingIds);
+        const baseName = path.basename(resolved);
+        const derivedName = stripLeadingDot(baseName) || baseName;
+        const name = options?.name?.trim() || derivedName;
+        const userModified = options?.name?.trim() ? 1 : 0;
+        const defaultBranch = this.isGitRepo(resolved) ? this.detectDefaultBranch(resolved) : "";
+        const now = new Date().toISOString();
+        this.db.prepare(`
+      INSERT INTO work_repos (id, root, name, default_branch, exists, excluded, user_modified, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, 0, ?, ?, ?)
+    `).run(newId, resolved, name, defaultBranch, userModified, now, now);
+        // Write to repos.json
+        try {
+            let config = { repos: [] };
+            try {
+                const raw = fs.readFileSync(this.configPath, "utf8");
+                config = JSON.parse(raw);
+                if (!Array.isArray(config.repos))
+                    config.repos = [];
+            }
+            catch {
+                // File missing or invalid — start fresh with all current roots + new one
+                const allRows = this.db.prepare("SELECT root FROM work_repos WHERE exists = 1").all();
+                config.repos = allRows.map((r) => r.root);
+            }
+            if (!config.repos.includes(resolved)) {
+                config.repos.push(resolved);
+            }
+            const dir = path.dirname(this.configPath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+            fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2), "utf8");
+        }
+        catch (err) {
+            console.error(`[work-scanner] addRepo: failed to write repos.json: ${err}`);
+        }
+        const newRepo = {
+            id: newId,
+            name,
+            root: resolved,
+            exists: true,
+            default_branch: defaultBranch,
+            excluded: false,
+            user_modified: userModified === 1,
+            last_scanned_at: null,
+        };
+        this.repoInfos.push(newRepo);
+        // Fire-and-forget scan
+        void (async () => {
+            try {
+                this.scanRepo(resolved, newId);
+                const scanNow = new Date().toISOString();
+                this.db.prepare("UPDATE work_repos SET last_scanned_at = ?, updated_at = ? WHERE root = ?").run(scanNow, scanNow, resolved);
+                const idx = this.repoInfos.findIndex((r) => r.root === resolved);
+                if (idx >= 0) {
+                    this.repoInfos[idx] = { ...this.repoInfos[idx], last_scanned_at: scanNow };
+                }
+            }
+            catch (err) {
+                console.error(`[work-scanner] addRepo background scan failed: ${err}`);
+            }
+        })();
+        return newRepo;
+    }
+    removeRepo(id) {
+        const row = this.db.prepare("SELECT root FROM work_repos WHERE id = ?").get(id);
+        if (!row)
+            return false;
+        const { root } = row;
+        this.db.prepare("DELETE FROM work_repos WHERE id = ?").run(id);
+        this.db.prepare("DELETE FROM branches WHERE repo_root = ?").run(root);
+        // Remove from repos.json
+        try {
+            const raw = fs.readFileSync(this.configPath, "utf8");
+            const config = JSON.parse(raw);
+            if (Array.isArray(config.repos)) {
+                config.repos = config.repos.filter((r) => path.resolve(resolveHome(r)) !== root);
+                fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2), "utf8");
+            }
+        }
+        catch {
+            // If file doesn't exist or parse error, ignore
+        }
+        this.repoInfos = this.repoInfos.filter((r) => r.id !== id);
+        return true;
+    }
+    isGitDirectory(candidate) {
+        return isGitDirectory(candidate);
     }
     refreshRepoInfos() {
         const roots = this.resolveRepoRoots();
@@ -413,6 +627,55 @@ export class WorkScanner {
                 root: candidate.root,
                 exists: repoExists,
                 default_branch: defaultBranch,
+                excluded: false,
+                user_modified: false,
+                last_scanned_at: null,
+            };
+        });
+        // Upsert each repo into work_repos table
+        const now = new Date().toISOString();
+        const upsertStmt = this.db.prepare(`
+      INSERT INTO work_repos (id, root, name, default_branch, exists, updated_at)
+      VALUES (@id, @root, @name, @default_branch, @exists, @now)
+      ON CONFLICT(root) DO UPDATE SET
+        default_branch = excluded.default_branch,
+        exists         = excluded.exists,
+        updated_at     = excluded.updated_at,
+        name = CASE WHEN user_modified = 0 THEN excluded.name ELSE name END
+    `);
+        for (const repo of this.repoInfos) {
+            upsertStmt.run({
+                id: repo.id,
+                root: repo.root,
+                name: repo.name,
+                default_branch: repo.default_branch,
+                exists: repo.exists ? 1 : 0,
+                now,
+            });
+        }
+        // Mark repos not in current candidate list as non-existent
+        if (sortedRoots.length > 0) {
+            const placeholders = sortedRoots.map(() => "?").join(",");
+            this.db.prepare(`UPDATE work_repos SET exists = 0, updated_at = ? WHERE root NOT IN (${placeholders})`).run(now, ...sortedRoots);
+        }
+        else {
+            this.db.prepare("UPDATE work_repos SET exists = 0, updated_at = ?").run(now);
+        }
+        // Reload excluded/user_modified/last_scanned_at from DB (preserved across refreshes)
+        const dbRows = this.db.prepare("SELECT root, excluded, user_modified, last_scanned_at FROM work_repos").all();
+        const dbByRoot = new Map(dbRows.map((r) => [r.root, r]));
+        this.repoInfos = this.repoInfos.map((repo) => {
+            const dbRow = dbByRoot.get(repo.root);
+            if (!dbRow)
+                return repo;
+            return {
+                ...repo,
+                excluded: dbRow.excluded === 1,
+                user_modified: dbRow.user_modified === 1,
+                last_scanned_at: dbRow.last_scanned_at,
+                name: dbRow.user_modified === 1
+                    ? this.db.prepare("SELECT name FROM work_repos WHERE root = ?").get(repo.root)?.name ?? repo.name
+                    : repo.name,
             };
         });
     }

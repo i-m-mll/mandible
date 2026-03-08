@@ -91,6 +91,15 @@ function resolveCanonicalRepoId(
       return byIssue[0].repo_id;
     }
   }
+  // Stripped-dot basename fallback: handles ".dotfiles" → "dotfiles"
+  const stripped = repoId.replace(/^\.+/, '');
+  if (stripped !== repoId) {
+    const db = getDb();
+    const row = db.prepare(
+      "SELECT id FROM work_repos WHERE id = ? OR name = ? LIMIT 1"
+    ).get(stripped, stripped) as { id: string } | undefined;
+    if (row) return row.id;
+  }
   return repoId;
 }
 

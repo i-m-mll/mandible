@@ -920,7 +920,7 @@ function App(): JSX.Element {
                   className={route.tab === 'work' ? 'active' : ''}
                   onClick={() => setShowOverflow(false)}
                 >
-                  Branches
+                  Projects
                   {badges.work > 0 && (
                     <span className="tab-badge">{badges.work}</span>
                   )}

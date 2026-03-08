@@ -5,6 +5,8 @@ export interface RouteHandler<Request = any, Response = any> {
 export interface WorkServer {
     get(path: string, handler: RouteHandler): void;
     post(path: string, handler: RouteHandler): void;
+    put(path: string, handler: RouteHandler): void;
+    delete(path: string, handler: RouteHandler): void;
 }
 export declare function filterAndSortBranches(branches: BranchData[], options: {
     sort?: string;

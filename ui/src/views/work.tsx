@@ -7,6 +7,9 @@ export type WorkRepo = {
   path?: string;
   root?: string;
   default_branch?: string;
+  excluded?: boolean;
+  user_modified?: boolean;
+  last_scanned_at?: string | null;
   [key: string]: unknown;
 };
 
@@ -40,6 +43,7 @@ export type WorkOverviewProps = {
   repos: WorkRepo[];
   branchesByRepo: Record<string, WorkBranch[]>;
   onRescan: () => void;
+  onReposChanged?: (repos: WorkRepo[]) => void;
 };
 
 const PROTECTED_BRANCHES = new Set(['main', 'develop']);
@@ -460,10 +464,11 @@ function BranchTableScroller({
 }
 
 export function WorkOverviewView({
-  repos,
+  repos: initialRepos,
   branchesByRepo,
   onRescan,
 }: WorkOverviewProps): JSX.Element {
+  const [repos, setRepos] = useState<WorkRepo[]>(initialRepos);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [repoToggles, setRepoToggles] = useState<Record<string, boolean>>({});
 
@@ -476,6 +481,38 @@ export function WorkOverviewView({
   // Per-project filters and sorts
   const [perRepoFilters, setPerRepoFilters] = useState<Record<string, string>>({});
   const [perRepoSorts, setPerRepoSorts] = useState<Record<string, BranchSortKey>>({});
+
+  // Repo management state
+  const [settingsOpenFor, setSettingsOpenFor] = useState<string | null>(null);
+  const [addingRepo, setAddingRepo] = useState(false);
+  const [addPath, setAddPath] = useState('');
+  const [addError, setAddError] = useState<string | null>(null);
+  const [showExcluded, setShowExcluded] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [editName, setEditName] = useState<Record<string, string>>({});
+
+  // Sync repos when initialRepos changes (external updates)
+  useEffect(() => {
+    setRepos(initialRepos);
+  }, [initialRepos]);
+
+  // Fetch repos with/without excluded when showExcluded changes
+  const fetchRepos = async (withExcluded: boolean) => {
+    try {
+      const url = withExcluded ? '/api/work/repos?include_excluded=true' : '/api/work/repos';
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json() as WorkRepo[];
+        setRepos(Array.isArray(data) ? data : []);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  useEffect(() => {
+    void fetchRepos(showExcluded);
+  }, [showExcluded]);
 
   const repoRows = useMemo(() => {
     return repos
@@ -525,6 +562,58 @@ export function WorkOverviewView({
     });
   };
 
+  const handleUpdateRepo = async (id: string, patch: { name?: string; excluded?: boolean }) => {
+    try {
+      const res = await fetch(`/api/work/repos/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      if (res.ok) {
+        const updated = await res.json() as WorkRepo;
+        setRepos((prev) => prev.map((r) => getRepoId(r) === id ? updated : r));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleRemoveRepo = async (id: string) => {
+    try {
+      const res = await fetch(`/api/work/repos/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        setRepos((prev) => prev.filter((r) => getRepoId(r) !== id));
+        setConfirmRemove(null);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleAddRepo = async () => {
+    setAddError(null);
+    try {
+      const res = await fetch('/api/work/repos/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ root: addPath }),
+      });
+      if (res.ok) {
+        const newRepo = await res.json() as WorkRepo;
+        setRepos((prev) => [...prev, newRepo]);
+        setAddingRepo(false);
+        setAddPath('');
+      } else {
+        const body = await res.json() as { error?: string };
+        setAddError(body.error ?? `Error ${res.status}`);
+      }
+    } catch (e) {
+      setAddError(String(e));
+    }
+  };
+
   const hasActiveFilters = Boolean(globalBranchFilter || repoFilter);
 
   return (
@@ -534,10 +623,50 @@ export function WorkOverviewView({
           <h2>Work Overview</h2>
           <p className="text-muted">Branch and worktree status across repos.</p>
         </div>
-        <button type="button" className="btn" onClick={onRescan}>
-          Rescan
-        </button>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <label style={{ fontSize: '0.85em', color: 'var(--text-muted, #888)', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={showExcluded}
+              onChange={(e) => setShowExcluded(e.currentTarget.checked)}
+              style={{ marginRight: '4px' }}
+            />
+            Show excluded
+          </label>
+          <button type="button" className="btn btn--sm" onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}>
+            + Add repo
+          </button>
+          <button type="button" className="btn" onClick={onRescan}>
+            Rescan
+          </button>
+        </div>
       </div>
+      {addingRepo && (
+        <div className="repo-add-form">
+          <input
+            type="text"
+            className="repo-add-form__input"
+            placeholder="Absolute path to git repo..."
+            value={addPath}
+            onInput={(e) => setAddPath(e.currentTarget.value)}
+          />
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={() => void handleAddRepo()}
+          >
+            Add
+          </button>
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost"
+            onClick={() => { setAddingRepo(false); setAddPath(''); setAddError(null); }}
+          >
+            Cancel
+          </button>
+          {addError && <span className="repo-add-form__error">{addError}</span>}
+        </div>
+      )}
       <div className="work-toolbar">
         <input
           type="search"
@@ -572,11 +701,14 @@ export function WorkOverviewView({
               branches.find((b) => b.default_branch && b.default_branch !== '—')
                 ?.default_branch ||
               'main';
+            const isExcluded = Boolean(repo.excluded);
+            const isSettingsOpen = settingsOpenFor === repoId;
+            const currentEditName = editName[repoId] ?? repo.name ?? repoTitle;
 
             return (
               <details
                 key={repoId}
-                className="repo-card repo-card--collapsible"
+                className={`repo-card repo-card--collapsible${isExcluded ? ' repo-card--excluded' : ''}`}
                 open={isOpen}
                 onToggle={(event) => {
                   const nextOpen = event.currentTarget.open;
@@ -587,13 +719,118 @@ export function WorkOverviewView({
                   <div className="repo-card__title">
                     <h3>
                       {repoTitle}
+                      {isExcluded && (
+                        <span className="work-badge-excluded" title="Excluded from scans">excluded</span>
+                      )}
                       <span className="branch-count">
                         ({branchCount} {branchCount === 1 ? 'branch' : 'branches'})
                       </span>
                     </h3>
                     {showPath ? <span className="text-muted">{repoPath}</span> : null}
                   </div>
+                  <div className="repo-card__header-actions">
+                    {isExcluded && (
+                      <button
+                        type="button"
+                        className="btn btn--xs"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void handleUpdateRepo(repoId, { excluded: false });
+                        }}
+                        title="Include this repo in scans"
+                      >
+                        Include
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className={`repo-card__gear${isSettingsOpen ? ' repo-card__gear--active' : ''}`}
+                      title="Repo settings"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setSettingsOpenFor((prev) => prev === repoId ? null : repoId);
+                      }}
+                    >
+                      &#9881;
+                    </button>
+                  </div>
                 </summary>
+                {isSettingsOpen && (
+                  <div className="repo-settings-strip">
+                    <div className="repo-settings-strip__row">
+                      <label className="repo-settings-strip__label">Name</label>
+                      <input
+                        type="text"
+                        className="repo-settings-strip__input"
+                        value={currentEditName}
+                        onInput={(e) =>
+                          setEditName((prev) => ({ ...prev, [repoId]: e.currentTarget.value }))
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="btn btn--xs"
+                        onClick={() => void handleUpdateRepo(repoId, { name: currentEditName }).then(() =>
+                          setEditName((prev) => { const next = { ...prev }; delete next[repoId]; return next; })
+                        )}
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--xs btn--ghost"
+                        onClick={() => void handleUpdateRepo(repoId, { name: '' }).then(() =>
+                          setEditName((prev) => { const next = { ...prev }; delete next[repoId]; return next; })
+                        )}
+                        title="Reset to derived name"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                    <div className="repo-settings-strip__row">
+                      <label className="repo-settings-strip__label">
+                        <input
+                          type="checkbox"
+                          checked={isExcluded}
+                          onChange={(e) => void handleUpdateRepo(repoId, { excluded: e.currentTarget.checked })}
+                          style={{ marginRight: '4px' }}
+                        />
+                        Exclude from scans
+                      </label>
+                    </div>
+                    <div className="repo-settings-strip__row">
+                      {confirmRemove === repoId ? (
+                        <>
+                          <span className="text-muted" style={{ fontSize: '0.85em' }}>Remove this repo from Mandible?</span>
+                          <button
+                            type="button"
+                            className="btn btn--xs btn--danger"
+                            onClick={() => void handleRemoveRepo(repoId)}
+                          >
+                            Confirm remove
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn--xs btn--ghost"
+                            onClick={() => setConfirmRemove(null)}
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn--xs btn--danger-outline"
+                          onClick={() => setConfirmRemove(repoId)}
+                        >
+                          Remove repo
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div className="repo-card__body">
                   <div className="repo-card__controls">
                     <input
