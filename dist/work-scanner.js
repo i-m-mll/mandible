@@ -274,13 +274,13 @@ export class WorkScanner {
             return this.repoInfos;
         }
         // Phase 2: try DB cold-start
-        const dbRows = this.db.prepare("SELECT id, root, name, default_branch, exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE exists = 1").all();
+        const dbRows = this.db.prepare("SELECT id, root, name, default_branch, dir_exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE dir_exists = 1").all();
         if (dbRows.length > 0) {
             this.repoInfos = dbRows.map((row) => ({
                 id: row.id,
                 name: row.name,
                 root: row.root,
-                exists: row.exists === 1,
+                exists: row.dir_exists === 1,
                 default_branch: row.default_branch,
                 excluded: row.excluded === 1,
                 user_modified: row.user_modified === 1,
@@ -305,13 +305,13 @@ export class WorkScanner {
             return found;
         // DB fallback when repoInfos is not yet populated
         if (this.repoInfos.length === 0) {
-            const row = this.db.prepare("SELECT id, root, name, default_branch, exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE id = ? OR root = ? LIMIT 1").get(idOrPath, resolvedPath);
+            const row = this.db.prepare("SELECT id, root, name, default_branch, dir_exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE id = ? OR root = ? LIMIT 1").get(idOrPath, resolvedPath);
             if (row) {
                 return {
                     id: row.id,
                     name: row.name,
                     root: row.root,
-                    exists: row.exists === 1,
+                    exists: row.dir_exists === 1,
                     default_branch: row.default_branch,
                     excluded: row.excluded === 1,
                     user_modified: row.user_modified === 1,
@@ -453,7 +453,7 @@ export class WorkScanner {
         return summary;
     }
     updateRepo(id, patch) {
-        const row = this.db.prepare("SELECT id, root, name, default_branch, exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE id = ?").get(id);
+        const row = this.db.prepare("SELECT id, root, name, default_branch, dir_exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE id = ?").get(id);
         if (!row)
             return null;
         const now = new Date().toISOString();
@@ -479,7 +479,7 @@ export class WorkScanner {
             id: row.id,
             name: newName,
             root: row.root,
-            exists: row.exists === 1,
+            exists: row.dir_exists === 1,
             default_branch: row.default_branch,
             excluded: newExcluded === 1,
             user_modified: userModified === 1,
@@ -510,7 +510,7 @@ export class WorkScanner {
         const defaultBranch = this.isGitRepo(resolved) ? this.detectDefaultBranch(resolved) : "";
         const now = new Date().toISOString();
         this.db.prepare(`
-      INSERT INTO work_repos (id, root, name, default_branch, exists, excluded, user_modified, created_at, updated_at)
+      INSERT INTO work_repos (id, root, name, default_branch, dir_exists, excluded, user_modified, created_at, updated_at)
       VALUES (?, ?, ?, ?, 1, 0, ?, ?, ?)
     `).run(newId, resolved, name, defaultBranch, userModified, now, now);
         // Write to repos.json
@@ -524,7 +524,7 @@ export class WorkScanner {
             }
             catch {
                 // File missing or invalid — start fresh with all current roots + new one
-                const allRows = this.db.prepare("SELECT root FROM work_repos WHERE exists = 1").all();
+                const allRows = this.db.prepare("SELECT root FROM work_repos WHERE dir_exists = 1").all();
                 config.repos = allRows.map((r) => r.root);
             }
             if (!config.repos.includes(resolved)) {
@@ -635,11 +635,11 @@ export class WorkScanner {
         // Upsert each repo into work_repos table
         const now = new Date().toISOString();
         const upsertStmt = this.db.prepare(`
-      INSERT INTO work_repos (id, root, name, default_branch, exists, updated_at)
+      INSERT INTO work_repos (id, root, name, default_branch, dir_exists, updated_at)
       VALUES (@id, @root, @name, @default_branch, @exists, @now)
       ON CONFLICT(root) DO UPDATE SET
         default_branch = excluded.default_branch,
-        exists         = excluded.exists,
+        dir_exists     = excluded.dir_exists,
         updated_at     = excluded.updated_at,
         name = CASE WHEN user_modified = 0 THEN excluded.name ELSE name END
     `);
@@ -656,10 +656,10 @@ export class WorkScanner {
         // Mark repos not in current candidate list as non-existent
         if (sortedRoots.length > 0) {
             const placeholders = sortedRoots.map(() => "?").join(",");
-            this.db.prepare(`UPDATE work_repos SET exists = 0, updated_at = ? WHERE root NOT IN (${placeholders})`).run(now, ...sortedRoots);
+            this.db.prepare(`UPDATE work_repos SET dir_exists = 0, updated_at = ? WHERE root NOT IN (${placeholders})`).run(now, ...sortedRoots);
         }
         else {
-            this.db.prepare("UPDATE work_repos SET exists = 0, updated_at = ?").run(now);
+            this.db.prepare("UPDATE work_repos SET dir_exists = 0, updated_at = ?").run(now);
         }
         // Reload excluded/user_modified/last_scanned_at from DB (preserved across refreshes)
         const dbRows = this.db.prepare("SELECT root, excluded, user_modified, last_scanned_at FROM work_repos").all();

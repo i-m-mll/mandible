@@ -429,7 +429,7 @@ const MIGRATIONS: Migration[] = [
         root            TEXT NOT NULL,
         name            TEXT NOT NULL,
         default_branch  TEXT NOT NULL DEFAULT '',
-        exists          INTEGER NOT NULL DEFAULT 1,
+        dir_exists      INTEGER NOT NULL DEFAULT 1,
         excluded        INTEGER NOT NULL DEFAULT 0,
         user_modified   INTEGER NOT NULL DEFAULT 0,
         last_scanned_at TEXT,
