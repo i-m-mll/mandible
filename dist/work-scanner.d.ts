@@ -30,6 +30,9 @@ export interface RepoInfo {
     root: string;
     exists: boolean;
     default_branch: string;
+    excluded: boolean;
+    user_modified: boolean;
+    last_scanned_at: string | null;
 }
 export interface ScanSummary {
     scanned_repos: number;
@@ -56,6 +59,11 @@ export interface SqliteDatabase {
     exec(sql: string): void;
     prepare(sql: string): SqliteStatement;
 }
+/**
+ * Compute a unique slug-based ID for a repo root, deduplicating against existingIds.
+ * Exported for reuse by API routes.
+ */
+export declare function computeRepoId(root: string, existingIds: string[]): string;
 export declare class WorkScanner {
     private readonly db;
     private readonly defaultRepoRoot;
@@ -75,6 +83,15 @@ export declare class WorkScanner {
         is_current: boolean;
     }>;
     scanAll(): Promise<ScanSummary>;
+    updateRepo(id: string, patch: {
+        name?: string;
+        excluded?: boolean;
+    }): RepoInfo | null;
+    addRepo(root: string, options?: {
+        name?: string;
+    }): Promise<RepoInfo | null>;
+    removeRepo(id: string): boolean;
+    private isGitDirectory;
     private refreshRepoInfos;
     private resolveRepoRoots;
     private isGitRepo;

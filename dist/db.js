@@ -409,6 +409,27 @@ const MIGRATIONS = [
         version: 26,
         name: "fix_session_projects_dotfile_names",
         statements: [],
+    },
+    {
+        version: 27,
+        name: "work_repos",
+        statements: [
+            `CREATE TABLE IF NOT EXISTS work_repos (
+        id              TEXT NOT NULL,
+        root            TEXT NOT NULL,
+        name            TEXT NOT NULL,
+        default_branch  TEXT NOT NULL DEFAULT '',
+        exists          INTEGER NOT NULL DEFAULT 1,
+        excluded        INTEGER NOT NULL DEFAULT 0,
+        user_modified   INTEGER NOT NULL DEFAULT 0,
+        last_scanned_at TEXT,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (root)
+      )`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS work_repos_id_idx ON work_repos(id)`,
+            `CREATE INDEX IF NOT EXISTS work_repos_excluded_idx ON work_repos(excluded)`
+        ]
     }
 ];
 export function getDbPath() {
