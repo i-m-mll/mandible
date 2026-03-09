@@ -1474,6 +1474,24 @@ tr:last-child td {
   white-space: nowrap;
 }
 
+/* ── Sidebar drag-to-resize handle (Bug: d472f7f) ── */
+
+.sidebar-drag-handle {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+  position: relative;
+  z-index: 1;
+  /* Keep the handle above sidebar content so it's always clickable */
+}
+
+.sidebar-drag-handle:hover,
+.sidebar-drag-handle--active {
+  background: rgba(77, 163, 255, 0.3);
+}
+
 /* ── Auth queue: sidebar + detail panel layout ── */
 
 .auth-sidebar-layout {
@@ -1484,8 +1502,6 @@ tr:last-child td {
 }
 
 .auth-sidebar {
-  width: 320px;
-  min-width: 320px;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
@@ -1738,8 +1754,6 @@ tr:last-child td {
 }
 
 .inbox-sidebar {
-  width: 400px;
-  min-width: 400px;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
@@ -2494,8 +2508,6 @@ tr:hover .work-actions__trigger {
 }
 
 .issues-tree {
-  width: 280px;
-  min-width: 280px;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   overflow-y: auto;
   padding: 12px;
@@ -2623,7 +2635,7 @@ tr:hover .work-actions__trigger {
 
 /* Issue list within a repo */
 .issues-repo-list {
-  padding-left: 8px;
+  padding-left: 4px;
   overflow-y: auto;
   max-height: 25vh;
   mask-image: linear-gradient(to bottom, black calc(100% - 28px), transparent);
@@ -2656,25 +2668,28 @@ tr:hover .work-actions__trigger {
   align-items: flex-start;
   gap: 8px;
   width: 100%;
-  padding: 5px 8px;
-  border: none;
-  background: transparent;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
-  border-radius: 6px;
-  transition: background 0.15s ease;
+  border-radius: 8px;
+  transition: background 0.15s ease, border-color 0.15s ease;
   line-height: 1.35;
+  margin-bottom: 4px;
 }
 
 .issues-item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .issues-item--selected {
   background: rgba(77, 163, 255, 0.12);
+  border-color: rgba(77, 163, 255, 0.35);
   color: var(--accent-blue);
 }
 
@@ -3457,8 +3472,6 @@ tr:hover .work-actions__trigger {
 }
 
 .chat-history-sidebar {
-  width: 320px;
-  min-width: 260px;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   background: var(--bg-secondary);
   display: flex;
@@ -4856,6 +4869,35 @@ tr:hover .work-actions__trigger {
 
 .stream-renderer__scroll-btn:hover {
   background: rgba(77, 163, 255, 0.25);
+}
+
+/* Bug: db5e986 — optimistic user prompt bubble shown immediately after submission */
+.user-prompt-bubble {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.user-prompt-bubble__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.user-prompt-bubble__text {
+  background: rgba(77, 163, 255, 0.1);
+  border: 1px solid rgba(77, 163, 255, 0.2);
+  border-radius: 12px 12px 2px 12px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--fg-default);
+  max-width: 80%;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* Message group — one per assistant turn */

@@ -65,7 +65,8 @@ export type UserEvent = {
   parent_tool_use_id: string | null;
   message: {
     role: 'user';
-    content: ToolResultContentBlock[];
+    /** Content blocks — may be tool results (mid-turn) or text blocks (initial prompt). */
+    content: Array<ToolResultContentBlock | TextContentBlock | { type: string; [key: string]: unknown }>;
   };
   isSynthetic?: boolean;
 };
@@ -99,11 +100,22 @@ export type ResultEventError = {
 
 export type ResultEvent = ResultEventSuccess | ResultEventError;
 
+/** Synthetic event appended locally after the user submits a prompt via the
+ *  rich-view input bar.  Never emitted by the server — used only for optimistic
+ *  display so the user sees their message immediately (Bug: db5e986). */
+export type SyntheticPromptEvent = {
+  type: 'synthetic_prompt';
+  text: string;
+  /** Monotonic local key so React/Preact can reconcile without a server id. */
+  localId: string;
+};
+
 export type StreamEvent =
   | SystemInitEvent
   | AssistantEvent
   | UserEvent
   | ResultEvent
+  | SyntheticPromptEvent
   | { type: string; [key: string]: unknown };
 
 // ---- Render model (derived from raw events) ----

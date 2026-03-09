@@ -10625,6 +10625,71 @@ var parseInline = marked.parseInline;
 var parser = _Parser.parse;
 var lexer = _Lexer.lex;
 
+// ui/src/hooks/useSidebarResize.ts
+function useSidebarResize(options2 = {}) {
+  const {
+    defaultWidth = 280,
+    minWidth = 190,
+    storageKey
+  } = options2;
+  const [width, setWidth] = d2(() => {
+    if (storageKey) {
+      const stored = localStorage.getItem(storageKey);
+      if (stored) {
+        const parsed = parseInt(stored, 10);
+        if (!Number.isNaN(parsed) && parsed >= minWidth) {
+          return parsed;
+        }
+      }
+    }
+    return defaultWidth;
+  });
+  const dragging = A2(false);
+  const startX = A2(0);
+  const startWidth = A2(0);
+  const rafId = A2(null);
+  const latestWidth = A2(width);
+  y2(() => {
+    latestWidth.current = width;
+  }, [width]);
+  y2(() => {
+    if (storageKey) {
+      localStorage.setItem(storageKey, String(width));
+    }
+  }, [width, storageKey]);
+  const handleMouseDown = q2((e3) => {
+    e3.preventDefault();
+    dragging.current = true;
+    startX.current = e3.clientX;
+    startWidth.current = latestWidth.current;
+    const onMouseMove = (ev) => {
+      if (!dragging.current)
+        return;
+      if (rafId.current !== null)
+        cancelAnimationFrame(rafId.current);
+      rafId.current = requestAnimationFrame(() => {
+        const delta = ev.clientX - startX.current;
+        const maxWidth = Math.floor(window.innerWidth * 0.5);
+        const next = Math.max(minWidth, Math.min(maxWidth, startWidth.current + delta));
+        setWidth(next);
+      });
+    };
+    const onMouseUp = () => {
+      dragging.current = false;
+      if (rafId.current !== null) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = null;
+      }
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  }, [minWidth]);
+  const effectiveWidth = typeof window !== "undefined" && window.innerWidth <= 700 ? null : width;
+  return { width: effectiveWidth, handleMouseDown };
+}
+
 // node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 var f3 = 0;
 var i3 = Array.isArray;
@@ -10786,6 +10851,24 @@ function stripAnsi(text) {
 function renderMarkdown(src) {
   const result = marked.parse(src, { async: false });
   return typeof result === "string" ? result : "";
+}
+function sanitizeInlineHtml(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
+function renderInlineMarkdown(src) {
+  if (!src)
+    return "";
+  const result = marked.parse(src, { async: false });
+  const html3 = typeof result === "string" ? result : "";
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml(stripped);
 }
 function parseDiffSections(raw) {
   const sections = [];
@@ -10978,7 +11061,13 @@ function AuthCard({
   const summaryContent = /* @__PURE__ */ u3("div", { className: "auth-card__summary", children: [
     /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--primary", children: [
       /* @__PURE__ */ u3("span", { className: statusClass2, children: statusLabel }),
-      /* @__PURE__ */ u3("span", { className: "auth-card__title", children: getAuthTitle(request) }),
+      /* @__PURE__ */ u3(
+        "span",
+        {
+          className: "auth-card__title",
+          dangerouslySetInnerHTML: { __html: renderInlineMarkdown(getAuthTitle(request)) }
+        }
+      ),
       repoName && /* @__PURE__ */ u3("span", { className: "auth-card__repo", children: repoName })
     ] }),
     /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--stats", children: [
@@ -11261,7 +11350,13 @@ function AuthSidebarItem({
       children: [
         /* @__PURE__ */ u3("span", { className: `auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}` }),
         /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__body", children: [
-          /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__title", children: getAuthTitle(request) }),
+          /* @__PURE__ */ u3(
+            "span",
+            {
+              className: "auth-sidebar-item__title",
+              dangerouslySetInnerHTML: { __html: renderInlineMarkdown(getAuthTitle(request)) }
+            }
+          ),
           repo && /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__repo", children: repo }),
           branchInfo && /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__branch", children: branchInfo }),
           /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__time", children: timestampLabel })
@@ -11283,6 +11378,11 @@ function AuthQueueView({
   onDismiss,
   onUpdateField
 }) {
+  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
+    defaultWidth: 320,
+    minWidth: 190,
+    storageKey: "sidebar-width:auth"
+  });
   const [filterMode, setFilterMode] = d2("active");
   const [repoFilter, setRepoFilter] = d2(null);
   const [localSelectedId, setLocalSelectedId] = d2(null);
@@ -11745,7 +11845,7 @@ function AuthQueueView({
   };
   return /* @__PURE__ */ u3("div", { className: "auth-sidebar-layout", children: [
     toastMessage && /* @__PURE__ */ u3("div", { className: "auth-toast auth-toast--floating", role: "status", children: toastMessage }),
-    /* @__PURE__ */ u3("div", { className: "auth-sidebar", children: [
+    /* @__PURE__ */ u3("div", { className: "auth-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
       /* @__PURE__ */ u3("div", { className: "auth-sidebar__header", children: [
         /* @__PURE__ */ u3("div", { className: "auth-sidebar__filters", children: [
           /* @__PURE__ */ u3(
@@ -11820,6 +11920,7 @@ function AuthQueueView({
         getAuthId(request)
       )) })
     ] }),
+    /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleSidebarMouseDown }),
     /* @__PURE__ */ u3("div", { className: "auth-detail", children: !selectedRequest ? /* @__PURE__ */ u3("div", { className: "auth-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select a request to view details" }) }) : (() => {
       const request = selectedRequest;
       const id = getAuthId(request);
@@ -11849,6 +11950,25 @@ function AuthQueueView({
 }
 
 // ui/src/views/inbox.tsx
+marked.setOptions({ async: false, gfm: true, breaks: false });
+function sanitizeInlineHtml2(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
+function renderInlineMarkdown2(src) {
+  if (!src)
+    return "";
+  const result = marked.parse(src, { async: false });
+  const html3 = typeof result === "string" ? result : "";
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml2(stripped);
+}
 function formatRelativeTime2(value) {
   if (value === null || value === void 0)
     return "";
@@ -12082,7 +12202,13 @@ function InboxSidebarItem({
           ),
           item.time !== null && /* @__PURE__ */ u3("span", { className: "inbox-sidebar-item__time", children: formatRelativeTime2(item.time) })
         ] }),
-        /* @__PURE__ */ u3("div", { className: "inbox-sidebar-item__title", children: item.title }),
+        /* @__PURE__ */ u3(
+          "div",
+          {
+            className: "inbox-sidebar-item__title",
+            dangerouslySetInnerHTML: { __html: renderInlineMarkdown2(item.title) }
+          }
+        ),
         /* @__PURE__ */ u3("div", { className: "inbox-sidebar-item__meta", children: [
           item.repo && /* @__PURE__ */ u3("span", { className: "inbox-sidebar-item__repo", children: item.repo }),
           item.branch && /* @__PURE__ */ u3("span", { className: "inbox-sidebar-item__branch", children: item.branch })
@@ -12235,6 +12361,11 @@ function InboxView({
   onAckAll,
   onRefresh
 }) {
+  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
+    defaultWidth: 400,
+    minWidth: 190,
+    storageKey: "sidebar-width:inbox"
+  });
   const [chips, setChips] = d2([]);
   const allItems = T2(() => data ? buildUnifiedItems(data) : [], [data]);
   const suggestions = T2(() => {
@@ -12273,12 +12404,13 @@ function InboxView({
   };
   if (loading && !data) {
     return /* @__PURE__ */ u3("div", { className: "inbox-sidebar-layout", children: [
-      /* @__PURE__ */ u3("div", { className: "inbox-sidebar", children: /* @__PURE__ */ u3("div", { className: "inbox-sidebar__header", children: /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "13px", padding: "14px" }, children: "Loading\u2026" }) }) }),
+      /* @__PURE__ */ u3("div", { className: "inbox-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: /* @__PURE__ */ u3("div", { className: "inbox-sidebar__header", children: /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "13px", padding: "14px" }, children: "Loading\u2026" }) }) }),
+      /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
       /* @__PURE__ */ u3("div", { className: "inbox-detail", children: /* @__PURE__ */ u3("div", { className: "inbox-detail__empty", children: /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading inbox\u2026" }) }) })
     ] });
   }
   return /* @__PURE__ */ u3("div", { className: "inbox-sidebar-layout", children: [
-    /* @__PURE__ */ u3("div", { className: "inbox-sidebar", children: [
+    /* @__PURE__ */ u3("div", { className: "inbox-sidebar", style: { width: `${sidebarWidth}px`, flexShrink: 0 }, children: [
       /* @__PURE__ */ u3("div", { className: "inbox-sidebar__chip-row", children: /* @__PURE__ */ u3(
         ChipInput,
         {
@@ -12324,6 +12456,7 @@ function InboxView({
         item.id
       )) })
     ] }),
+    /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
     /* @__PURE__ */ u3("div", { className: "inbox-detail", children: !selectedItem ? /* @__PURE__ */ u3("div", { className: "inbox-detail__empty", children: /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "14px" }, children: "Select an item to view details" }) }) : selectedItem.type === "continuation" ? /* @__PURE__ */ u3(
       ContinuationDetail,
       {
@@ -12353,6 +12486,24 @@ function renderMarkdown2(src) {
     return "";
   const result = marked.parse(src, { async: false });
   return typeof result === "string" ? result : "";
+}
+function sanitizeInlineHtml3(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
+function renderInlineMarkdown3(src) {
+  if (!src)
+    return "";
+  const result = marked.parse(src, { async: false });
+  const html3 = typeof result === "string" ? result : "";
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml3(stripped);
 }
 function formatRelativeTime3(value) {
   if (!value)
@@ -12442,6 +12593,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [showCommentBox, setShowCommentBox] = d2(false);
   const [actionInFlight, setActionInFlight] = d2(false);
   const [linkedSessions, setLinkedSessions] = d2([]);
+  const lastAppliedDeepLinkRef = A2(null);
   const resolveRepoId = q2((rawRepoId) => {
     if (!rawRepoId)
       return null;
@@ -12487,6 +12639,10 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   y2(() => {
     if (!initialIssueId)
       return;
+    const deepLinkKey = `${initialRepoId ?? ""}:${initialIssueId}`;
+    if (lastAppliedDeepLinkRef.current === deepLinkKey)
+      return;
+    lastAppliedDeepLinkRef.current = deepLinkKey;
     if (initialRepoId) {
       const canonicalRepoId = resolveRepoId(initialRepoId) ?? initialRepoId;
       const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
@@ -12552,17 +12708,17 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       return;
     }
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
-    if (repoId !== selectedRepoId) {
-      setSelectedRepoId(repoId);
-    }
     const issueId = resolveIssueId(repoId, selectedIssueId);
-    if (issueId !== selectedIssueId) {
-      setSelectedIssueId(issueId);
-    }
     let cancelled = false;
-    setDetailLoading(true);
-    const fetchDetail = (repoId2, issueId2) => getIssueDetail(repoId2, issueId2).then((data) => {
+    if (!issueDetail) {
+      setDetailLoading(true);
+    }
+    const fetchDetail = (rId, iId) => getIssueDetail(rId, iId).then((data) => {
       if (!cancelled) {
+        if (rId !== selectedRepoId)
+          setSelectedRepoId(rId);
+        if (iId !== selectedIssueId)
+          setSelectedIssueId(iId);
         setIssueDetail(data);
         setDetailLoading(false);
       }
@@ -12671,8 +12827,13 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     () => issueDetail ? issueDetail.labels.filter((l3) => l3 !== "merged") : [],
     [issueDetail]
   );
+  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
+    defaultWidth: 280,
+    minWidth: 190,
+    storageKey: "sidebar-width:issues"
+  });
   return /* @__PURE__ */ u3("div", { className: "issues-view", children: [
-    /* @__PURE__ */ u3("div", { className: "issues-tree", children: [
+    /* @__PURE__ */ u3("div", { className: "issues-tree", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
       /* @__PURE__ */ u3("div", { className: "issues-filter", children: /* @__PURE__ */ u3(
         "input",
         {
@@ -12754,7 +12915,13 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
                       className: `issue-status-dot issue-status-dot--${vs}`
                     }
                   ),
-                  /* @__PURE__ */ u3("span", { className: "issues-item__title", children: issue.title })
+                  /* @__PURE__ */ u3(
+                    "span",
+                    {
+                      className: "issues-item__title",
+                      dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(issue.title) }
+                    }
+                  )
                 ]
               },
               issue.id
@@ -12763,8 +12930,15 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
         ] }, repo.repo_id);
       })
     ] }),
+    /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
     /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : !issueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: [
-      /* @__PURE__ */ u3("h2", { className: "issues-detail__title", children: issueDetail.title }),
+      /* @__PURE__ */ u3(
+        "h2",
+        {
+          className: "issues-detail__title",
+          dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(issueDetail.title) }
+        }
+      ),
       /* @__PURE__ */ u3("div", { className: "issues-detail__meta", children: [
         /* @__PURE__ */ u3(
           "span",
@@ -13174,6 +13348,24 @@ function ReviewView({ params, loaders }) {
 }
 
 // ui/src/views/sessions.tsx
+marked.setOptions({ async: false, gfm: true, breaks: false });
+function sanitizeInlineHtml4(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
+function renderInlineMarkdown4(src) {
+  if (!src)
+    return "";
+  const html3 = marked.parse(src, { async: false });
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml4(stripped);
+}
 var TEN_MINUTES = 10 * 60 * 1e3;
 var REAP_THRESHOLD_MINUTES = 30;
 var COL_COUNT = 8;
@@ -13424,12 +13616,15 @@ function IssuePills({
   const closedCount = closedIssues.length;
   return /* @__PURE__ */ u3("div", { className: "linked-chips", children: [
     displayed.map((link2) => (
-      // Bug: a2b777a — use /api/issues/find/:id for cross-repo lookup; no repo needed.
+      // Bug: 387ae46 — include repo param so IssuesView can select directly
+      // without the slow async cross-repo find path.
+      // Guard: if repo_id is absent, fall back to cross-repo find path
+      // (avoids #/issues?repo=undefined&issue=<id> in the URL).
       /* @__PURE__ */ u3(
         "a",
         {
           className: "linked-issue-chip",
-          href: `#/issues?issue=${encodeURIComponent(link2.issue_id)}`,
+          href: link2.repo_id ? `#/issues?repo=${encodeURIComponent(link2.repo_id)}&issue=${encodeURIComponent(link2.issue_id)}` : `#/issues?issue=${encodeURIComponent(link2.issue_id)}`,
           children: link2.issue_id.slice(0, 8)
         },
         `${link2.repo_id}-${link2.issue_id}`
@@ -13649,7 +13844,12 @@ function SessionsView({
               const hasIssues = issues && issues.length > 0;
               const showTask = task !== "\u2014";
               if (showTask) {
-                return /* @__PURE__ */ u3("span", { children: task });
+                return /* @__PURE__ */ u3(
+                  "span",
+                  {
+                    dangerouslySetInnerHTML: { __html: renderInlineMarkdown4(task) }
+                  }
+                );
               }
               if (!hasIssues) {
                 return /* @__PURE__ */ u3("span", { className: "text-muted", children: "\u2014" });
@@ -13796,6 +13996,23 @@ function MarkdownContent({ content }) {
       dangerouslySetInnerHTML: { __html: html3 }
     }
   );
+}
+function sanitizeInlineHtml5(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
+function renderInlineMarkdown5(src) {
+  if (!src)
+    return "";
+  const html3 = marked.parse(src, { async: false });
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml5(stripped);
 }
 function CopyButton({ content }) {
   const [copied, setCopied] = d2(false);
@@ -14370,7 +14587,14 @@ function ConversationDetail({
       /* @__PURE__ */ u3("div", { className: "conv-detail__header-left", children: [
         /* @__PURE__ */ u3("h2", { className: "conv-detail__title", children: [
           conversation.parent_conversation_id && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent conversation", children: "\u2937 " }),
-          conversation.title || "Untitled"
+          /* @__PURE__ */ u3(
+            "span",
+            {
+              dangerouslySetInnerHTML: {
+                __html: renderInlineMarkdown5(conversation.title || "Untitled")
+              }
+            }
+          )
         ] }),
         /* @__PURE__ */ u3("div", { className: "conv-detail__meta", children: [
           /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
@@ -14545,7 +14769,14 @@ function ChatHistoryItem({
         /* @__PURE__ */ u3("div", { className: "chat-history-item__title", children: [
           conversation.starred ? "\u2605 " : "",
           isSubAgent && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent", children: "\u2937 " }),
-          truncate(conversation.title || "Untitled", 55)
+          /* @__PURE__ */ u3(
+            "span",
+            {
+              dangerouslySetInnerHTML: {
+                __html: renderInlineMarkdown5(truncate(conversation.title || "Untitled", 55))
+              }
+            }
+          )
         ] }),
         /* @__PURE__ */ u3("div", { className: "chat-history-item__meta", children: [
           /* @__PURE__ */ u3("span", { className: "chat-history-item__blocks", children: [
@@ -14559,6 +14790,11 @@ function ChatHistoryItem({
   );
 }
 function ConversationsView({ conversations: initialConversations }) {
+  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
+    defaultWidth: 320,
+    minWidth: 190,
+    storageKey: "sidebar-width:conversations"
+  });
   const [selectedId, setSelectedId] = d2(null);
   const [search, setSearch] = d2("");
   const [searchMode, setSearchMode] = d2("title");
@@ -14644,7 +14880,7 @@ function ConversationsView({ conversations: initialConversations }) {
     );
   }, [conversations, hideEmpty, search, searchMode]);
   return /* @__PURE__ */ u3("div", { className: "chat-history-view", children: [
-    /* @__PURE__ */ u3("div", { className: "chat-history-sidebar", children: [
+    /* @__PURE__ */ u3("div", { className: "chat-history-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
       /* @__PURE__ */ u3("div", { className: "chat-history-search-row", children: [
         /* @__PURE__ */ u3(
           "input",
@@ -14751,6 +14987,7 @@ function ConversationsView({ conversations: initialConversations }) {
         ] })
       ] })
     ] }),
+    /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
     /* @__PURE__ */ u3("div", { className: "chat-history-detail", children: selectedId ? /* @__PURE__ */ u3(
       ConversationDetail,
       {
@@ -15429,6 +15666,11 @@ function SwitchboardView({
   onSync,
   onSaveTemplate
 }) {
+  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
+    defaultWidth: 280,
+    minWidth: 180,
+    storageKey: "switchboard-sidebar-width"
+  });
   const [formName, setFormName] = d2("");
   const [formSource, setFormSource] = d2("");
   const [formTarget, setFormTarget] = d2("");
@@ -15581,13 +15823,14 @@ function SwitchboardView({
     acc[item.state] = (acc[item.state] ?? 0) + 1;
     return acc;
   }, {});
-  return /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "24px", height: "calc(100vh - 140px)" }, children: [
+  return /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "0", height: "calc(100vh - 140px)" }, children: [
     /* @__PURE__ */ u3("div", { style: {
-      width: "280px",
+      ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {},
       flexShrink: 0,
       display: "flex",
       flexDirection: "column",
-      gap: "8px"
+      gap: "8px",
+      paddingRight: "16px"
     }, children: [
       /* @__PURE__ */ u3("div", { className: "view-header", style: { marginBottom: "8px" }, children: /* @__PURE__ */ u3("h2", { style: { margin: 0, fontSize: "18px" }, children: "Switchboard" }) }),
       /* @__PURE__ */ u3("div", { style: {
@@ -15926,6 +16169,7 @@ function SwitchboardView({
         ] })
       ] })
     ] }),
+    /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleSidebarMouseDown }),
     /* @__PURE__ */ u3("div", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "12px" }, children: !selectedPairing ? /* @__PURE__ */ u3("div", { style: {
       flex: 1,
       display: "flex",
@@ -19269,10 +19513,13 @@ function buildTurn(assistant, results) {
 function useStreamState(events) {
   return T2(() => {
     const turns = [];
+    const syntheticPrompts = [];
+    const streamUserMessages = [];
     let initEvent = null;
     let resultEvent = null;
     let pendingAssistant = null;
     const pendingResults = /* @__PURE__ */ new Map();
+    let userMsgIdx = 0;
     for (const event of events) {
       if (event.type === "system" && event.subtype === "init") {
         initEvent = event;
@@ -19284,19 +19531,34 @@ function useStreamState(events) {
         pendingAssistant = event;
       } else if (event.type === "user") {
         const userEvent = event;
+        let hasText = false;
+        const textParts = [];
         for (const block2 of userEvent.message.content) {
           if (block2.type === "tool_result") {
             pendingResults.set(block2.tool_use_id, block2);
+          } else if (block2.type === "text" && block2.text) {
+            textParts.push(block2.text);
+            hasText = true;
           }
+        }
+        if (hasText) {
+          streamUserMessages.push({
+            id: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+            text: textParts.join("\n"),
+            insertionIdx: turns.length
+          });
         }
       } else if (event.type === "result") {
         resultEvent = event;
+      } else if (event.type === "synthetic_prompt") {
+        const sp = event;
+        syntheticPrompts.push({ localId: sp.localId, text: sp.text, insertionIdx: turns.length });
       }
     }
     if (pendingAssistant) {
       turns.push(buildTurn(pendingAssistant, pendingResults));
     }
-    return { turns, initEvent, resultEvent };
+    return { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages };
   }, [events]);
 }
 function deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo) {
@@ -19325,7 +19587,7 @@ function StreamRenderer({
   streaming,
   sessionInfo
 }) {
-  const { turns, initEvent, resultEvent } = useStreamState(events);
+  const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages } = useStreamState(events);
   const scrollRef = A2(null);
   const [userScrolled, setUserScrolled] = d2(false);
   y2(() => {
@@ -19353,11 +19615,50 @@ function StreamRenderer({
     setUserScrolled(false);
   }
   const statusBarProps = deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo);
-  if (events.length === 0) {
+  const hasContent = events.length > 0 || syntheticPrompts.length > 0 || streamUserMessages.length > 0;
+  if (!hasContent) {
     return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
       /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: streaming ? "Waiting for events\u2026" : "No events" }),
       /* @__PURE__ */ u3(StatusBar, { streaming, ...statusBarProps })
     ] });
+  }
+  const nodes = [];
+  let spIdx = 0;
+  let umIdx = 0;
+  for (let i4 = 0; i4 <= turns.length; i4++) {
+    while (umIdx < streamUserMessages.length && streamUserMessages[umIdx].insertionIdx === i4) {
+      const um = streamUserMessages[umIdx];
+      nodes.push(
+        /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: [
+          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__label", children: "You" }),
+          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: um.text })
+        ] }, `um-${um.id}`)
+      );
+      umIdx++;
+    }
+    while (spIdx < syntheticPrompts.length && syntheticPrompts[spIdx].insertionIdx === i4) {
+      const sp = syntheticPrompts[spIdx];
+      nodes.push(
+        /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: [
+          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__label", children: "You" }),
+          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: sp.text })
+        ] }, `sp-${sp.localId}`)
+      );
+      spIdx++;
+    }
+    if (i4 < turns.length) {
+      const turn = turns[i4];
+      nodes.push(
+        /* @__PURE__ */ u3(
+          MessageGroup,
+          {
+            turn,
+            isStreaming: streaming && i4 === turns.length - 1
+          },
+          turn.id
+        )
+      );
+    }
   }
   return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
     /* @__PURE__ */ u3(
@@ -19366,14 +19667,7 @@ function StreamRenderer({
         ref: scrollRef,
         className: "stream-renderer__scroll",
         onScroll: handleScroll,
-        children: turns.map((turn, i4) => /* @__PURE__ */ u3(
-          MessageGroup,
-          {
-            turn,
-            isStreaming: streaming && i4 === turns.length - 1
-          },
-          turn.id
-        ))
+        children: nodes
       }
     ),
     userScrolled && streaming && /* @__PURE__ */ u3(
@@ -19653,7 +19947,14 @@ function TerminalPane({
       return;
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(new TextEncoder().encode(prompt + "\n"));
+      ws.send(new TextEncoder().encode(prompt + "\r"));
+      const syntheticEvent = {
+        type: "synthetic_prompt",
+        text: prompt,
+        localId: `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      };
+      setStreamEvents((prev) => [...prev, syntheticEvent]);
+      setStreaming(true);
       setPrompt("");
     }
   };
@@ -19718,8 +20019,8 @@ function TerminalPane({
               }
             )
           ] }),
-          viewMode === "rich" && /* @__PURE__ */ u3("div", { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }, children: [
-            /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto" }, children: /* @__PURE__ */ u3(
+          viewMode === "rich" && /* @__PURE__ */ u3("div", { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }, children: [
+            /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto", minHeight: 0 }, children: /* @__PURE__ */ u3(
               StreamRenderer,
               {
                 events: streamEvents,
@@ -19737,7 +20038,8 @@ function TerminalPane({
                   background: "var(--bg-inset)",
                   display: "flex",
                   gap: "12px",
-                  alignItems: "center"
+                  alignItems: "center",
+                  flexShrink: 0
                 },
                 children: [
                   /* @__PURE__ */ u3(

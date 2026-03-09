@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 
 export type AuthRequest = {
   id?: string;
@@ -211,6 +212,35 @@ function stripAnsi(text: string): string {
 function renderMarkdown(src: string): string {
   const result = marked.parse(src, { async: false });
   return typeof result === 'string' ? result : '';
+}
+
+/**
+ * Strip dangerous tags and attributes from HTML produced by marked.
+ * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
+ * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
+ */
+function sanitizeInlineHtml(html: string): string {
+  let out = html.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    '',
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
+  return out;
+}
+
+/**
+ * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
+ * input so text flows inline in compact contexts (sidebar titles, card headers).
+ * Bug: a44fd6a — markdown rendering in auth sidebar and card titles
+ */
+function renderInlineMarkdown(src: string): string {
+  if (!src) return '';
+  const result = marked.parse(src, { async: false });
+  const html = typeof result === 'string' ? result : '';
+  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  return sanitizeInlineHtml(stripped);
 }
 
 type DiffFileSection = { filename: string; hunks: string };
@@ -458,7 +488,11 @@ function AuthCard({
     <div className="auth-card__summary">
       <div className="auth-card__row auth-card__row--primary">
         <span className={statusClass}>{statusLabel}</span>
-        <span className="auth-card__title">{getAuthTitle(request)}</span>
+        {/* Bug: a44fd6a — render auth request title as inline markdown */}
+        <span
+          className="auth-card__title"
+          dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+        />
         {repoName && (
           <span className="auth-card__repo">{repoName}</span>
         )}
@@ -865,7 +899,11 @@ function AuthSidebarItem({
     >
       <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />
       <span className="auth-sidebar-item__body">
-        <span className="auth-sidebar-item__title">{getAuthTitle(request)}</span>
+        {/* Bug: a44fd6a — render auth sidebar title as inline markdown */}
+        <span
+          className="auth-sidebar-item__title"
+          dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+        />
         {repo && (
           <span className="auth-sidebar-item__repo">{repo}</span>
         )}
@@ -893,6 +931,12 @@ export function AuthQueueView({
   onDismiss,
   onUpdateField,
 }: AuthQueueViewProps): JSX.Element {
+  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
+    defaultWidth: 320,
+    minWidth: 190,
+    storageKey: 'sidebar-width:auth',
+  });
+
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
 
@@ -1487,7 +1531,7 @@ export function AuthQueueView({
       )}
 
       {/* LEFT sidebar */}
-      <div className="auth-sidebar">
+      <div className="auth-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
         <div className="auth-sidebar__header">
           <div className="auth-sidebar__filters">
             <button
@@ -1571,6 +1615,9 @@ export function AuthQueueView({
           )}
         </div>
       </div>
+
+      {/* Drag handle */}
+      <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
 
       {/* RIGHT detail panel */}
       <div className="auth-detail">

@@ -7,7 +7,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { ConsoleSession } from '../../state';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
-import type { StreamEvent } from '../stream-renderer/types';
+import type { StreamEvent, SyntheticPromptEvent } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
 import { getConsoleStreamEvents, restartConsoleSession } from '../../api';
 
@@ -329,7 +329,19 @@ export function TerminalPane({
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       // Send as binary (Uint8Array) so the server's isBinary check routes it to the PTY.
-      ws.send(new TextEncoder().encode(prompt + '\n'));
+      // Bug: db5e986 — PTY expects \r (carriage return) for Enter, not \n.
+      // xterm's onData sends \r when the user presses Enter; the rich-view form
+      // submit must use the same byte so the PTY line editor triggers submission.
+      ws.send(new TextEncoder().encode(prompt + '\r'));
+      // Bug: db5e986 — optimistic display: append a synthetic user-prompt event
+      // immediately so the rich view shows the message before SSE events arrive.
+      const syntheticEvent: SyntheticPromptEvent = {
+        type: 'synthetic_prompt',
+        text: prompt,
+        localId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      };
+      setStreamEvents((prev) => [...prev, syntheticEvent]);
+      setStreaming(true);
       setPrompt('');
     }
   };
@@ -410,8 +422,12 @@ export function TerminalPane({
 
         {/* Rich view: StreamRenderer */}
         {viewMode === 'rich' && (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            <div style={{ flex: 1, overflow: 'auto' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+            {/* Bug: db5e986 — min-height:0 is required on flex column children so the
+                scrollable region doesn't overflow its container and push the input bar
+                below the visible area. Without it, flex items default to min-height:auto
+                which lets them grow beyond the parent's bounds. */}
+            <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
               <StreamRenderer
                 events={streamEvents}
                 streaming={streaming}
@@ -428,6 +444,7 @@ export function TerminalPane({
                 display: 'flex',
                 gap: '12px',
                 alignItems: 'center',
+                flexShrink: 0,
               }}
             >
               <input

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 import type {
   BlockType,
   Conversation,
@@ -120,6 +121,41 @@ function MarkdownContent({ content }: { content: string }): JSX.Element {
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
+}
+
+/**
+ * Strip dangerous tags and attributes from HTML produced by marked.
+ * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
+ * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
+ */
+function sanitizeInlineHtml(html: string): string {
+  // Remove dangerous block-level and executable tags (including their content)
+  let out = html.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    '',
+  );
+  // Also strip self-closing variants (e.g. <script />, <iframe />)
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
+  // Strip on* event handler attributes (onclick, onload, onerror, etc.)
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  // Strip javascript: href/src values
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
+  return out;
+}
+
+/**
+ * Render inline markdown — strips the outer <p>…</p> wrapper that marked adds
+ * for single-line input so the text flows inline without extra block spacing.
+ * Used for titles and short prose displayed in compact contexts (sidebar items,
+ * table cells, headings).
+ * Bug: a44fd6a — markdown rendering in History sidebar and detail titles
+ */
+function renderInlineMarkdown(src: string): string {
+  if (!src) return '';
+  const html = marked.parse(src, { async: false }) as string;
+  // Strip a single wrapping <p>…</p> (marked emits this for one-liner input)
+  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  return sanitizeInlineHtml(stripped);
 }
 
 // ── Copy-markdown button ──
@@ -835,7 +871,12 @@ function ConversationDetail({
             {conversation.parent_conversation_id && (
               <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
             )}
-            {conversation.title || 'Untitled'}
+            {/* Bug: a44fd6a — render conversation title as markdown */}
+            <span
+              dangerouslySetInnerHTML={{
+                __html: renderInlineMarkdown(conversation.title || 'Untitled'),
+              }}
+            />
           </h2>
           <div className="conv-detail__meta">
             <span className={`source-badge ${SOURCE_CLASSES[conversation.source] || ''}`}>
@@ -1037,7 +1078,12 @@ function ChatHistoryItem({
       <div className="chat-history-item__title">
         {conversation.starred ? '\u2605 ' : ''}
         {isSubAgent && <span className="conv-subagent-indicator" title="Sub-agent">&#x2937; </span>}
-        {truncate(conversation.title || 'Untitled', 55)}
+        <span
+          // Bug: a44fd6a — render conversation titles as inline markdown
+          dangerouslySetInnerHTML={{
+            __html: renderInlineMarkdown(truncate(conversation.title || 'Untitled', 55)),
+          }}
+        />
       </div>
       <div className="chat-history-item__meta">
         <span className="chat-history-item__blocks">{conversation.block_count} blocks</span>
@@ -1052,6 +1098,12 @@ function ChatHistoryItem({
 // ── Main View ──
 
 export function ConversationsView({ conversations: initialConversations }: ConversationsViewProps): JSX.Element {
+  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
+    defaultWidth: 320,
+    minWidth: 190,
+    storageKey: 'sidebar-width:conversations',
+  });
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [searchMode, setSearchMode] = useState<'title' | 'full'>('title');
@@ -1159,7 +1211,7 @@ export function ConversationsView({ conversations: initialConversations }: Conve
   return (
     <div className="chat-history-view">
       {/* Sidebar */}
-      <div className="chat-history-sidebar">
+      <div className="chat-history-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
         {/* Search row */}
         <div className="chat-history-search-row">
           <input
@@ -1261,6 +1313,9 @@ export function ConversationsView({ conversations: initialConversations }: Conve
           )}
         </div>
       </div>
+
+      {/* Drag handle */}
+      <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
 
       {/* Detail pane */}
       <div className="chat-history-detail">

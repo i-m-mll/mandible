@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { findIssue, getIssueDetail, getIssueSessions, issueAction, scanIssueRepo } from '../api';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 
 // --- Types ---
 
@@ -59,6 +60,35 @@ function renderMarkdown(src: string): string {
   if (!src) return '';
   const result = marked.parse(src, { async: false });
   return typeof result === 'string' ? result : '';
+}
+
+/**
+ * Strip dangerous tags and attributes from HTML produced by marked.
+ * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
+ * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
+ */
+function sanitizeInlineHtml(html: string): string {
+  let out = html.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    '',
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
+  return out;
+}
+
+/**
+ * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
+ * input so text flows inline in compact contexts (sidebar titles, list items).
+ * Bug: a44fd6a — markdown rendering in issues sidebar titles
+ */
+function renderInlineMarkdown(src: string): string {
+  if (!src) return '';
+  const result = marked.parse(src, { async: false });
+  const html = typeof result === 'string' ? result : '';
+  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  return sanitizeInlineHtml(stripped);
 }
 
 function formatRelativeTime(value?: string): string {
@@ -159,6 +189,9 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   const [actionInFlight, setActionInFlight] = useState(false);
   const [linkedSessions, setLinkedSessions] = useState<Array<{session_id: string; created_at: number}>>([]);
 
+  // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
+  const lastAppliedDeepLinkRef = useRef<string | null>(null);
+
   const resolveRepoId = useCallback((rawRepoId: string | null | undefined): string | null => {
     if (!rawRepoId) return null;
     const trimmed = rawRepoId.trim();
@@ -201,8 +234,14 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   // Supports two forms:
   //   #/issues?repo=<repoId>&issue=<issueId>  — legacy, requires known repo
   //   #/issues?issue=<issueId>                — cross-repo find via /api/issues/find/:id
+  //
+  // Bug: a44fd6a — gate to one-time per route change so repos list updates
+  // (e.g. after rescan) don't re-apply the deep-link and clobber user selection.
   useEffect(() => {
     if (!initialIssueId) return;
+    const deepLinkKey = `${initialRepoId ?? ''}:${initialIssueId}`;
+    if (lastAppliedDeepLinkRef.current === deepLinkKey) return;
+    lastAppliedDeepLinkRef.current = deepLinkKey;
 
     if (initialRepoId) {
       // Legacy path: repo provided, resolve directly
@@ -281,6 +320,12 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   // Fetch detail when selection changes.
   // If the first attempt fails (e.g. daemon just reloaded and hasn't scanned
   // this repo yet), trigger a per-repo scan and retry once before giving up.
+  //
+  // Bug: 5183781 — do NOT call setSelectedRepoId/setSelectedIssueId inside this
+  // effect. Those setState calls cause the effect to re-run (since selectedRepoId
+  // and selectedIssueId are in the dep array), triggering a second fetch and
+  // visible flicker. Instead, resolve the canonical IDs locally and use them
+  // for fetching; update state only after the fetch completes successfully.
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) {
       setIssueDetail(null);
@@ -288,18 +333,21 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
       return;
     }
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
-    if (repoId !== selectedRepoId) {
-      setSelectedRepoId(repoId);
-    }
     const issueId = resolveIssueId(repoId, selectedIssueId);
-    if (issueId !== selectedIssueId) {
-      setSelectedIssueId(issueId);
-    }
     let cancelled = false;
-    setDetailLoading(true);
-    const fetchDetail = (repoId: string, issueId: string) =>
-      getIssueDetail(repoId, issueId).then((data) => {
+    // Bug: a44fd6a — only show loading spinner when the detail pane is empty.
+    // If we already have content (switching between issues), keep the old content
+    // visible until the new fetch completes to avoid a flash to blank/spinner.
+    if (!issueDetail) {
+      setDetailLoading(true);
+    }
+    const fetchDetail = (rId: string, iId: string) =>
+      getIssueDetail(rId, iId).then((data) => {
         if (!cancelled) {
+          // Normalise state to canonical IDs only after a successful fetch so
+          // we don't trigger a mid-flight effect re-run (Bug: 5183781).
+          if (rId !== selectedRepoId) setSelectedRepoId(rId);
+          if (iId !== selectedIssueId) setSelectedIssueId(iId);
           setIssueDetail(data as GitBugIssueDetail);
           setDetailLoading(false);
         }
@@ -428,10 +476,16 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     [issueDetail],
   );
 
+  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
+    defaultWidth: 280,
+    minWidth: 190,
+    storageKey: 'sidebar-width:issues',
+  });
+
   return (
     <div className="issues-view">
       {/* Left tree panel */}
-      <div className="issues-tree">
+      <div className="issues-tree" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
         <div className="issues-filter">
           <input
             type="search"
@@ -513,7 +567,11 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
                           <span
                             className={`issue-status-dot issue-status-dot--${vs}`}
                           />
-                          <span className="issues-item__title">{issue.title}</span>
+                          {/* Bug: a44fd6a — render issue sidebar titles as inline markdown */}
+                          <span
+                            className="issues-item__title"
+                            dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issue.title) }}
+                          />
                         </button>
                       );
                     })}
@@ -524,6 +582,9 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           })
         )}
       </div>
+
+      {/* Drag handle */}
+      <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
 
       {/* Right detail panel */}
       <div className="issues-detail">
@@ -541,7 +602,11 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           </div>
         ) : (
           <div className="issues-detail__content">
-            <h2 className="issues-detail__title">{issueDetail.title}</h2>
+            {/* Bug: a44fd6a — render issue detail title as inline markdown */}
+            <h2
+              className="issues-detail__title"
+              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issueDetail.title) }}
+            />
             <div className="issues-detail__meta">
               <span
                 className={`status-pill ${
