@@ -352,15 +352,37 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           setDetailLoading(false);
         }
       });
+    // Bug: 88d3b1d — defensive fallback chain:
+    // 1. Try getIssueDetail(repoId, issueId) directly
+    // 2. On failure, trigger a targeted repo scan and retry once
+    // 3. If still failing (e.g. repoId or issueId format mismatch), try
+    //    findIssue(issueId) cross-repo — avoids "Failed to load" for valid issues
+    //    whose repoId was passed in a non-canonical format from the Monitor tab.
     fetchDetail(repoId, issueId).catch(() => {
-      // First attempt failed — trigger a targeted repo scan and retry once.
       scanIssueRepo(repoId)
         .then(() => fetchDetail(repoId, issueId))
         .catch(() => {
-          if (!cancelled) {
-            setIssueDetail(null);
-            setDetailLoading(false);
-          }
+          // Targeted scan + retry still failed — fall back to cross-repo find.
+          findIssue(issueId)
+            .then((found) => {
+              if (cancelled) return;
+              const d = found as { repo_id?: string; id?: string } | null;
+              if (d?.repo_id && d?.id) {
+                // Update state to canonical IDs so subsequent actions work correctly.
+                setSelectedRepoId(d.repo_id);
+                setSelectedIssueId(d.id);
+                setIssueDetail(found as GitBugIssueDetail);
+              } else {
+                setIssueDetail(null);
+              }
+              setDetailLoading(false);
+            })
+            .catch(() => {
+              if (!cancelled) {
+                setIssueDetail(null);
+                setDetailLoading(false);
+              }
+            });
         });
     });
     getIssueSessions(repoId, issueId)
