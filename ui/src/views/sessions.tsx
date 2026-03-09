@@ -724,8 +724,7 @@ export function SessionsView({
   return (
     <div className="view sessions-view">
       <div className="view-header">
-        <h2>Agent Registry</h2>
-        <p className="text-muted">Active and recent Mandible sessions.</p>
+        <h2>Agent Monitor</h2>
       </div>
       <div className="table-card">
         <table>

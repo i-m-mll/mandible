@@ -183,7 +183,7 @@ export class SessionDiscovery {
      */
     getProcessCwd(pid) {
         try {
-            const output = execSync(`lsof -a -p ${pid} -d cwd -Fn`, {
+            const output = execSync(`/usr/sbin/lsof -a -p ${pid} -d cwd -Fn`, {
                 encoding: "utf8",
                 stdio: ["ignore", "pipe", "ignore"],
                 timeout: 5000,
@@ -199,8 +199,12 @@ export class SessionDiscovery {
                 }
             }
         }
-        catch {
+        catch (error) {
             // lsof may fail for permission reasons or if the process exited
+            this.log("debug", "session_discovery_lsof_failed", {
+                pid,
+                error: error instanceof Error ? error.message : String(error),
+            });
         }
         return null;
     }
