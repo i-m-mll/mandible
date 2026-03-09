@@ -6,6 +6,22 @@ import { openPath, patchSession } from '../api.js';
 marked.setOptions({ async: false, gfm: true, breaks: false });
 
 /**
+ * Strip dangerous tags and attributes from HTML produced by marked.
+ * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
+ * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
+ */
+function sanitizeInlineHtml(html: string): string {
+  let out = html.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    '',
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
+  return out;
+}
+
+/**
  * Render inline markdown — strips the outer <p>…</p> wrapper that marked adds
  * for single-line input so the text flows inline in table cells without extra
  * block spacing.
@@ -13,7 +29,8 @@ marked.setOptions({ async: false, gfm: true, breaks: false });
 function renderInlineMarkdown(src: string): string {
   if (!src) return '';
   const html = marked.parse(src, { async: false }) as string;
-  return html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  return sanitizeInlineHtml(stripped);
 }
 
 export type IssueLink = {
@@ -404,10 +421,14 @@ function IssuePills({
       {displayed.map((link) => (
         // Bug: 387ae46 — include repo param so IssuesView can select directly
         // without the slow async cross-repo find path.
+        // Guard: if repo_id is absent, fall back to cross-repo find path
+        // (avoids #/issues?repo=undefined&issue=<id> in the URL).
         <a
           key={`${link.repo_id}-${link.issue_id}`}
           className="linked-issue-chip"
-          href={`#/issues?repo=${encodeURIComponent(link.repo_id)}&issue=${encodeURIComponent(link.issue_id)}`}
+          href={link.repo_id
+            ? `#/issues?repo=${encodeURIComponent(link.repo_id)}&issue=${encodeURIComponent(link.issue_id)}`
+            : `#/issues?issue=${encodeURIComponent(link.issue_id)}`}
         >
           {link.issue_id.slice(0, 8)}
         </a>

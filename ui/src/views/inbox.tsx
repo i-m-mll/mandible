@@ -2,7 +2,39 @@
 // Bug: 4fa87d9 — inbox sidebar redesign
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
+
+marked.setOptions({ async: false, gfm: true, breaks: false });
+
+/**
+ * Strip dangerous tags and attributes from HTML produced by marked.
+ * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
+ * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
+ */
+function sanitizeInlineHtml(html: string): string {
+  let out = html.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    '',
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
+  return out;
+}
+
+/**
+ * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
+ * input so text flows inline in compact contexts (sidebar item titles).
+ * Bug: 387ae46 — markdown rendering in inbox sidebar titles
+ */
+function renderInlineMarkdown(src: string): string {
+  if (!src) return '';
+  const result = marked.parse(src, { async: false });
+  const html = typeof result === 'string' ? result : '';
+  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  return sanitizeInlineHtml(stripped);
+}
 
 export interface InboxContinuation {
   session_id: string;
@@ -321,7 +353,11 @@ function InboxSidebarItem({
           </span>
         )}
       </div>
-      <div className="inbox-sidebar-item__title">{item.title}</div>
+      <div
+        className="inbox-sidebar-item__title"
+        // Bug: 387ae46 — render titles as inline markdown (sanitized)
+        dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.title) }}
+      />
       <div className="inbox-sidebar-item__meta">
         {item.repo && (
           <span className="inbox-sidebar-item__repo">{item.repo}</span>
@@ -592,7 +628,7 @@ export function InboxView({
   if (loading && !data) {
     return (
       <div className="inbox-sidebar-layout">
-        <div className="inbox-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
+        <div className="inbox-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
           <div className="inbox-sidebar__header">
             <span className="text-muted" style={{ fontSize: '13px', padding: '14px' }}>
               Loading…
