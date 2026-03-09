@@ -314,3 +314,46 @@ export interface ClaudeUsage {
   cache_read_input_tokens: number;
   output_tokens: number;
 }
+
+// --- Graph view types (Bug: 7a141c3) ---
+
+export type GraphNodeType = "issue" | "session" | "auth_request" | "branch";
+export type GraphEdgeType =
+  | "session_issue"    // session_issues table row
+  | "session_parent"   // sessions.parent_id FK
+  | "auth_branch"      // auth_requests.head_branch matches branches.branch
+  | "auth_issue"       // Bug: trailer in auth_requests.commit_message
+  | "branch_issue"     // Bug: trailer in branches.last_commit_message
+  | "umbrella_child";  // umbrella issue description references child issue IDs
+
+export interface GraphNode {
+  id: string;
+  type: GraphNodeType;
+  label: string;
+  // type-specific metadata for UI rendering:
+  status?: string;     // issue status, auth status, session status
+  labels?: string[];   // issue labels
+  repo?: string;       // repo name
+  branch?: string;     // branch name (sessions, auth requests, branches)
+  active?: boolean;    // session: currently running (status === 'active')
+  created_at?: string; // ISO string or epoch ms depending on source
+}
+
+export interface GraphEdge {
+  id: string;         // deterministic: `${type}:${source}:${target}`
+  source: string;     // node id
+  target: string;     // node id
+  type: GraphEdgeType;
+}
+
+export interface GraphPayload {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+export interface GraphQueryParams {
+  repo?: string;       // filter by repo name/id
+  since?: string;      // ISO timestamp or relative like "3d", "1w", "2h"
+  limit?: number;      // max nodes to return (default 50)
+  status?: "open" | "all"; // issue filter only (default 'open')
+}

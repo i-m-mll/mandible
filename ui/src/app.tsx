@@ -54,6 +54,8 @@ import { WorkOverviewView } from './views/work';
 import type { WorkBranch, WorkRepo } from './views/work';
 import { ConsoleView } from './views/console';
 import { LogsView } from './views/logs';
+import { GraphView } from './views/graph';
+import type { GraphNodeType } from './views/graph';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
 
@@ -89,7 +91,7 @@ function setLastSeenCommit(hash: string): void {
 
 
 type Route = {
-  tab: 'sessions' | 'auth' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'switchboard' | 'inbox' | 'console' | 'logs';
+  tab: 'sessions' | 'auth' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'switchboard' | 'inbox' | 'console' | 'logs' | 'graph';
   params: Record<string, string>;
 };
 
@@ -109,7 +111,7 @@ function parseHashRoute(): Route {
   }
   // Support legacy 'conversations' and 'chats' routes as aliases for 'chat-history'
   const normalizedPath = (path === 'conversations' || path === 'chats') ? 'chat-history' : path;
-  const tab = ['sessions', 'auth', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs'].includes(normalizedPath)
+  const tab = ['sessions', 'auth', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph'].includes(normalizedPath)
     ? (normalizedPath as Route['tab'])
     : 'sessions';
   return { tab, params };
@@ -140,6 +142,7 @@ function App(): JSX.Element {
   const errorToastTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
   const [rebuilding, setRebuilding] = useState(false);
+  const [graphRefreshToken, setGraphRefreshToken] = useState(0);
 
   useEffect(() => {
     const handleChange = () => setRoute(parseHashRoute());
@@ -364,6 +367,10 @@ function App(): JSX.Element {
       setRebuilding(true);
     };
 
+    const graphRefreshHandler = (_payload: SSEPayload) => {
+      setGraphRefreshToken((n) => n + 1);
+    };
+
     const unsubscribes = [
       client.on('session:registered', handler),
       client.on('session:updated', handler),
@@ -385,6 +392,13 @@ function App(): JSX.Element {
       client.on('console:session:deleted', handler),
       client.on('console:inbox:badge', handler),
       client.on('console:stream_event', consoleStreamHandler),
+      client.on('session:registered', graphRefreshHandler),
+      client.on('session:updated', graphRefreshHandler),
+      client.on('session:ended', graphRefreshHandler),
+      client.on('auth:new', graphRefreshHandler),
+      client.on('auth:updated', graphRefreshHandler),
+      client.on('auth:resolved', graphRefreshHandler),
+      client.on('work:branch:updated', graphRefreshHandler),
       client.on('mandible:rebuilding', rebuildingHandler),
     ];
 
@@ -789,6 +803,35 @@ function App(): JSX.Element {
     dispatch({ type: 'setSelectedInboxItemId', id });
   };
 
+  const handleGraphNavigate = (type: GraphNodeType, id: string, repoId?: string) => {
+    switch (type) {
+      case 'issue': {
+        // id is the full graph node ID "issue:<repo_id>:<issue_human_id>"; extract parts
+        const parts = id.split(':');
+        const humanId = parts[2] ?? id;
+        const resolvedRepoId = repoId ?? parts[1];
+        const params = new URLSearchParams({ issue: humanId });
+        if (resolvedRepoId) params.set('repo', resolvedRepoId);
+        window.location.hash = `#/issues?${params.toString()}`;
+        break;
+      }
+      case 'session':
+        window.location.hash = `#/sessions?session=${encodeURIComponent(id)}`;
+        break;
+      case 'auth_request':
+        window.location.hash = `#/auth?request=${encodeURIComponent(id)}`;
+        break;
+      case 'branch': {
+        // id here is already the bare branch name (extracted in GraphCanvas before calling onNavigate)
+        const params = new URLSearchParams({ branch: id });
+        if (repoId) params.set('repo', repoId);
+        window.location.hash = `#/work?${params.toString()}`;
+        break;
+      }
+      default:
+        break;
+    }
+  };
 
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
   if (rebuilding) {
@@ -896,6 +939,31 @@ function App(): JSX.Element {
               )}
             </a>
           </div>
+          <a
+            href="#/graph"
+            className={route.tab === 'graph' ? 'active' : ''}
+            aria-label="Graph"
+            title="Graph"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+              style={{ verticalAlign: 'middle', display: 'inline-block' }}
+            >
+              {/* Three nodes as circles */}
+              <circle cx="8" cy="3" r="2" stroke="currentColor" strokeWidth="1.3" />
+              <circle cx="2.5" cy="12" r="2" stroke="currentColor" strokeWidth="1.3" />
+              <circle cx="13.5" cy="12" r="2" stroke="currentColor" strokeWidth="1.3" />
+              {/* Edges connecting them */}
+              <line x1="8" y1="5" x2="2.5" y2="10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              <line x1="8" y1="5" x2="13.5" y2="10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              <line x1="4.5" y1="12" x2="11.5" y2="12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            </svg>
+          </a>
           <a href="#/settings" className={route.tab === 'settings' ? 'active' : ''} aria-label="Settings" title="Settings">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{verticalAlign: 'middle', display: 'inline-block'}}>
               <path d="M6.5 1.5l-.5 1.5A4.5 4.5 0 0 0 4.5 4l-1.5-.5L1.5 6l1.2.9A4.5 4.5 0 0 0 2.5 8a4.5 4.5 0 0 0 .2 1.1L1.5 10l1.5 2.5 1.5-.5a4.5 4.5 0 0 0 1.5 1l.5 1.5h3l.5-1.5a4.5 4.5 0 0 0 1.5-1l1.5.5 1.5-2.5-1.2-.9A4.5 4.5 0 0 0 13.5 8a4.5 4.5 0 0 0-.2-1.1L14.5 6 13 3.5l-1.5.5A4.5 4.5 0 0 0 10 3L9.5 1.5h-3Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
@@ -1051,6 +1119,9 @@ function App(): JSX.Element {
         )}
         {route.tab === 'logs' && (
           <LogsView />
+        )}
+        {route.tab === 'graph' && (
+          <GraphView onNavigate={handleGraphNavigate} refreshToken={graphRefreshToken} />
         )}
       </main>
     </div>

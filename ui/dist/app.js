@@ -63,8 +63,8 @@ var require_xterm = __commonJS({
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -72,15 +72,15 @@ var require_xterm = __commonJS({
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.AccessibilityManager = void 0;
-        const n2 = i5(9042), o3 = i5(9924), a3 = i5(844), h3 = i5(4725), c3 = i5(2585), l3 = i5(3656);
-        let d3 = t4.AccessibilityManager = class extends a3.Disposable {
+        const n2 = i5(9042), o3 = i5(9924), a4 = i5(844), h3 = i5(4725), c4 = i5(2585), l3 = i5(3656);
+        let d3 = t4.AccessibilityManager = class extends a4.Disposable {
           constructor(e5, t5, i6, s5) {
             super(), this._terminal = e5, this._coreBrowserService = i6, this._renderService = s5, this._rowColumns = /* @__PURE__ */ new WeakMap(), this._liveRegionLineCount = 0, this._charsToConsume = [], this._charsToAnnounce = "", this._accessibilityContainer = this._coreBrowserService.mainDocument.createElement("div"), this._accessibilityContainer.classList.add("xterm-accessibility"), this._rowContainer = this._coreBrowserService.mainDocument.createElement("div"), this._rowContainer.setAttribute("role", "list"), this._rowContainer.classList.add("xterm-accessibility-tree"), this._rowElements = [];
             for (let e6 = 0; e6 < this._terminal.rows; e6++)
               this._rowElements[e6] = this._createAccessibilityTreeNode(), this._rowContainer.appendChild(this._rowElements[e6]);
             if (this._topBoundaryFocusListener = (e6) => this._handleBoundaryFocus(e6, 0), this._bottomBoundaryFocusListener = (e6) => this._handleBoundaryFocus(e6, 1), this._rowElements[0].addEventListener("focus", this._topBoundaryFocusListener), this._rowElements[this._rowElements.length - 1].addEventListener("focus", this._bottomBoundaryFocusListener), this._refreshRowsDimensions(), this._accessibilityContainer.appendChild(this._rowContainer), this._liveRegion = this._coreBrowserService.mainDocument.createElement("div"), this._liveRegion.classList.add("live-region"), this._liveRegion.setAttribute("aria-live", "assertive"), this._accessibilityContainer.appendChild(this._liveRegion), this._liveRegionDebouncer = this.register(new o3.TimeBasedDebouncer(this._renderRows.bind(this))), !this._terminal.element)
               throw new Error("Cannot enable accessibility before Terminal.open");
-            this._terminal.element.insertAdjacentElement("afterbegin", this._accessibilityContainer), this.register(this._terminal.onResize((e6) => this._handleResize(e6.rows))), this.register(this._terminal.onRender((e6) => this._refreshRows(e6.start, e6.end))), this.register(this._terminal.onScroll(() => this._refreshRows())), this.register(this._terminal.onA11yChar((e6) => this._handleChar(e6))), this.register(this._terminal.onLineFeed(() => this._handleChar("\n"))), this.register(this._terminal.onA11yTab((e6) => this._handleTab(e6))), this.register(this._terminal.onKey((e6) => this._handleKey(e6.key))), this.register(this._terminal.onBlur(() => this._clearLiveRegion())), this.register(this._renderService.onDimensionsChange(() => this._refreshRowsDimensions())), this.register((0, l3.addDisposableDomListener)(document, "selectionchange", () => this._handleSelectionChange())), this.register(this._coreBrowserService.onDprChange(() => this._refreshRowsDimensions())), this._refreshRows(), this.register((0, a3.toDisposable)(() => {
+            this._terminal.element.insertAdjacentElement("afterbegin", this._accessibilityContainer), this.register(this._terminal.onResize((e6) => this._handleResize(e6.rows))), this.register(this._terminal.onRender((e6) => this._refreshRows(e6.start, e6.end))), this.register(this._terminal.onScroll(() => this._refreshRows())), this.register(this._terminal.onA11yChar((e6) => this._handleChar(e6))), this.register(this._terminal.onLineFeed(() => this._handleChar("\n"))), this.register(this._terminal.onA11yTab((e6) => this._handleTab(e6))), this.register(this._terminal.onKey((e6) => this._handleKey(e6.key))), this.register(this._terminal.onBlur(() => this._clearLiveRegion())), this.register(this._renderService.onDimensionsChange(() => this._refreshRowsDimensions())), this.register((0, l3.addDisposableDomListener)(document, "selectionchange", () => this._handleSelectionChange())), this.register(this._coreBrowserService.onDprChange(() => this._refreshRowsDimensions())), this._refreshRows(), this.register((0, a4.toDisposable)(() => {
               this._accessibilityContainer.remove(), this._rowElements.length = 0;
             }));
           }
@@ -103,8 +103,8 @@ var require_xterm = __commonJS({
           _renderRows(e5, t5) {
             const i6 = this._terminal.buffer, s5 = i6.lines.length.toString();
             for (let r4 = e5; r4 <= t5; r4++) {
-              const e6 = i6.lines.get(i6.ydisp + r4), t6 = [], n3 = e6?.translateToString(true, void 0, void 0, t6) || "", o4 = (i6.ydisp + r4 + 1).toString(), a4 = this._rowElements[r4];
-              a4 && (0 === n3.length ? (a4.innerText = "\xA0", this._rowColumns.set(a4, [0, 1])) : (a4.textContent = n3, this._rowColumns.set(a4, t6)), a4.setAttribute("aria-posinset", o4), a4.setAttribute("aria-setsize", s5));
+              const e6 = i6.lines.get(i6.ydisp + r4), t6 = [], n3 = e6?.translateToString(true, void 0, void 0, t6) || "", o4 = (i6.ydisp + r4 + 1).toString(), a5 = this._rowElements[r4];
+              a5 && (0 === n3.length ? (a5.innerText = "\xA0", this._rowColumns.set(a5, [0, 1])) : (a5.textContent = n3, this._rowColumns.set(a5, t6)), a5.setAttribute("aria-posinset", o4), a5.setAttribute("aria-setsize", s5));
             }
             this._announceCharacters();
           }
@@ -183,7 +183,7 @@ var require_xterm = __commonJS({
             e5.style.height = `${this._renderService.dimensions.css.cell.height}px`;
           }
         };
-        t4.AccessibilityManager = d3 = s4([r3(1, c3.IInstantiationService), r3(2, h3.ICoreBrowserService), r3(3, h3.IRenderService)], d3);
+        t4.AccessibilityManager = d3 = s4([r3(1, c4.IInstantiationService), r3(2, h3.ICoreBrowserService), r3(3, h3.IRenderService)], d3);
       }, 3614: (e4, t4) => {
         function i5(e5) {
           return e5.replace(/\r?\n/g, "\r");
@@ -242,8 +242,8 @@ var require_xterm = __commonJS({
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -251,13 +251,13 @@ var require_xterm = __commonJS({
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.Linkifier = void 0;
-        const n2 = i5(3656), o3 = i5(8460), a3 = i5(844), h3 = i5(2585), c3 = i5(4725);
-        let l3 = t4.Linkifier = class extends a3.Disposable {
+        const n2 = i5(3656), o3 = i5(8460), a4 = i5(844), h3 = i5(2585), c4 = i5(4725);
+        let l3 = t4.Linkifier = class extends a4.Disposable {
           get currentLink() {
             return this._currentLink;
           }
           constructor(e5, t5, i6, s5, r4) {
-            super(), this._element = e5, this._mouseService = t5, this._renderService = i6, this._bufferService = s5, this._linkProviderService = r4, this._linkCacheDisposables = [], this._isMouseOut = true, this._wasResized = false, this._activeLine = -1, this._onShowLinkUnderline = this.register(new o3.EventEmitter()), this.onShowLinkUnderline = this._onShowLinkUnderline.event, this._onHideLinkUnderline = this.register(new o3.EventEmitter()), this.onHideLinkUnderline = this._onHideLinkUnderline.event, this.register((0, a3.getDisposeArrayDisposable)(this._linkCacheDisposables)), this.register((0, a3.toDisposable)(() => {
+            super(), this._element = e5, this._mouseService = t5, this._renderService = i6, this._bufferService = s5, this._linkProviderService = r4, this._linkCacheDisposables = [], this._isMouseOut = true, this._wasResized = false, this._activeLine = -1, this._onShowLinkUnderline = this.register(new o3.EventEmitter()), this.onShowLinkUnderline = this._onShowLinkUnderline.event, this._onHideLinkUnderline = this.register(new o3.EventEmitter()), this.onHideLinkUnderline = this._onHideLinkUnderline.event, this.register((0, a4.getDisposeArrayDisposable)(this._linkCacheDisposables)), this.register((0, a4.toDisposable)(() => {
               this._lastMouseEvent = void 0, this._activeProviderReplies?.clear();
             })), this.register(this._bufferService.onResize(() => {
               this._clearCurrentLink(), this._wasResized = true;
@@ -353,7 +353,7 @@ var require_xterm = __commonJS({
             t5 && this._mouseDownLink === this._currentLink && this._linkAtPosition(this._currentLink.link, t5) && this._currentLink.link.activate(e5, this._currentLink.link.text);
           }
           _clearCurrentLink(e5, t5) {
-            this._currentLink && this._lastMouseEvent && (!e5 || !t5 || this._currentLink.link.range.start.y >= e5 && this._currentLink.link.range.end.y <= t5) && (this._linkLeave(this._element, this._currentLink.link, this._lastMouseEvent), this._currentLink = void 0, (0, a3.disposeArray)(this._linkCacheDisposables));
+            this._currentLink && this._lastMouseEvent && (!e5 || !t5 || this._currentLink.link.range.start.y >= e5 && this._currentLink.link.range.end.y <= t5) && (this._linkLeave(this._element, this._currentLink.link, this._lastMouseEvent), this._currentLink = void 0, (0, a4.disposeArray)(this._linkCacheDisposables));
           }
           _handleNewLink(e5) {
             if (!this._lastMouseEvent)
@@ -396,7 +396,7 @@ var require_xterm = __commonJS({
             return { x1: e5, y1: t5, x2: i6, y2: s5, cols: this._bufferService.cols, fg: r4 };
           }
         };
-        t4.Linkifier = l3 = s4([r3(1, c3.IMouseService), r3(2, c3.IRenderService), r3(3, h3.IBufferService), r3(4, c3.ILinkProviderService)], l3);
+        t4.Linkifier = l3 = s4([r3(1, c4.IMouseService), r3(2, c4.IRenderService), r3(3, h3.IBufferService), r3(4, c4.ILinkProviderService)], l3);
       }, 9042: (e4, t4) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.tooMuchOutput = t4.promptLabel = void 0, t4.promptLabel = "Terminal input", t4.tooMuchOutput = "Too much output to announce, navigate to rows manually to read";
       }, 3730: function(e4, t4, i5) {
@@ -405,8 +405,8 @@ var require_xterm = __commonJS({
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -415,7 +415,7 @@ var require_xterm = __commonJS({
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.OscLinkProvider = void 0;
         const n2 = i5(511), o3 = i5(2585);
-        let a3 = t4.OscLinkProvider = class {
+        let a4 = t4.OscLinkProvider = class {
           constructor(e5, t5, i6) {
             this._bufferService = e5, this._optionsService = t5, this._oscLinkService = i6;
           }
@@ -423,22 +423,22 @@ var require_xterm = __commonJS({
             const i6 = this._bufferService.buffer.lines.get(e5 - 1);
             if (!i6)
               return void t5(void 0);
-            const s5 = [], r4 = this._optionsService.rawOptions.linkHandler, o4 = new n2.CellData(), a4 = i6.getTrimmedLength();
-            let c3 = -1, l3 = -1, d3 = false;
-            for (let t6 = 0; t6 < a4; t6++)
+            const s5 = [], r4 = this._optionsService.rawOptions.linkHandler, o4 = new n2.CellData(), a5 = i6.getTrimmedLength();
+            let c4 = -1, l3 = -1, d3 = false;
+            for (let t6 = 0; t6 < a5; t6++)
               if (-1 !== l3 || i6.hasContent(t6)) {
                 if (i6.loadCell(t6, o4), o4.hasExtendedAttrs() && o4.extended.urlId) {
                   if (-1 === l3) {
-                    l3 = t6, c3 = o4.extended.urlId;
+                    l3 = t6, c4 = o4.extended.urlId;
                     continue;
                   }
-                  d3 = o4.extended.urlId !== c3;
+                  d3 = o4.extended.urlId !== c4;
                 } else
                   -1 !== l3 && (d3 = true);
-                if (d3 || -1 !== l3 && t6 === a4 - 1) {
-                  const i7 = this._oscLinkService.getLinkData(c3)?.uri;
+                if (d3 || -1 !== l3 && t6 === a5 - 1) {
+                  const i7 = this._oscLinkService.getLinkData(c4)?.uri;
                   if (i7) {
-                    const n3 = { start: { x: l3 + 1, y: e5 }, end: { x: t6 + (d3 || t6 !== a4 - 1 ? 0 : 1), y: e5 } };
+                    const n3 = { start: { x: l3 + 1, y: e5 }, end: { x: t6 + (d3 || t6 !== a5 - 1 ? 0 : 1), y: e5 } };
                     let o5 = false;
                     if (!r4?.allowNonHttpProtocols)
                       try {
@@ -449,7 +449,7 @@ var require_xterm = __commonJS({
                       }
                     o5 || s5.push({ text: i7, range: n3, activate: (e6, t7) => r4 ? r4.activate(e6, t7, n3) : h3(0, t7), hover: (e6, t7) => r4?.hover?.(e6, t7, n3), leave: (e6, t7) => r4?.leave?.(e6, t7, n3) });
                   }
-                  d3 = false, o4.hasExtendedAttrs() && o4.extended.urlId ? (l3 = t6, c3 = o4.extended.urlId) : (l3 = -1, c3 = -1);
+                  d3 = false, o4.hasExtendedAttrs() && o4.extended.urlId ? (l3 = t6, c4 = o4.extended.urlId) : (l3 = -1, c4 = -1);
                 }
               }
             t5(s5);
@@ -470,7 +470,7 @@ WARNING: This link could potentially be dangerous`)) {
               console.warn("Opening link blocked as opener could not be cleared");
           }
         }
-        t4.OscLinkProvider = a3 = s4([r3(0, o3.IBufferService), r3(1, o3.IOptionsService), r3(2, o3.IOscLinkService)], a3);
+        t4.OscLinkProvider = a4 = s4([r3(0, o3.IBufferService), r3(1, o3.IOptionsService), r3(2, o3.IOscLinkService)], a4);
       }, 6193: (e4, t4) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.RenderDebouncer = void 0, t4.RenderDebouncer = class {
           constructor(e5, t5) {
@@ -499,7 +499,7 @@ WARNING: This link could potentially be dangerous`)) {
         };
       }, 3236: (e4, t4, i5) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.Terminal = void 0;
-        const s4 = i5(3614), r3 = i5(3656), n2 = i5(3551), o3 = i5(9042), a3 = i5(3730), h3 = i5(1680), c3 = i5(3107), l3 = i5(5744), d3 = i5(2950), _2 = i5(1296), u4 = i5(428), f4 = i5(4269), v3 = i5(5114), p3 = i5(8934), g2 = i5(3230), m3 = i5(9312), S2 = i5(4725), C3 = i5(6731), b = i5(8055), w3 = i5(8969), y3 = i5(8460), E2 = i5(844), k3 = i5(6114), L2 = i5(8437), D3 = i5(2584), R = i5(7399), x2 = i5(5941), A3 = i5(9074), B3 = i5(2585), T3 = i5(5435), M2 = i5(4567), O2 = i5(779);
+        const s4 = i5(3614), r3 = i5(3656), n2 = i5(3551), o3 = i5(9042), a4 = i5(3730), h3 = i5(1680), c4 = i5(3107), l3 = i5(5744), d3 = i5(2950), _2 = i5(1296), u4 = i5(428), f4 = i5(4269), v3 = i5(5114), p3 = i5(8934), g2 = i5(3230), m4 = i5(9312), S2 = i5(4725), C3 = i5(6731), b = i5(8055), w3 = i5(8969), y5 = i5(8460), E2 = i5(844), k3 = i5(6114), L2 = i5(8437), D3 = i5(2584), R = i5(7399), x4 = i5(5941), A3 = i5(9074), B3 = i5(2585), T3 = i5(5435), M2 = i5(4567), O2 = i5(779);
         class P2 extends w3.CoreTerminal {
           get onFocus() {
             return this._onFocus.event;
@@ -517,7 +517,7 @@ WARNING: This link could potentially be dangerous`)) {
             return this._onWillOpen.event;
           }
           constructor(e5 = {}) {
-            super(e5), this.browser = k3, this._keyDownHandled = false, this._keyDownSeen = false, this._keyPressHandled = false, this._unprocessedDeadKey = false, this._accessibilityManager = this.register(new E2.MutableDisposable()), this._onCursorMove = this.register(new y3.EventEmitter()), this.onCursorMove = this._onCursorMove.event, this._onKey = this.register(new y3.EventEmitter()), this.onKey = this._onKey.event, this._onRender = this.register(new y3.EventEmitter()), this.onRender = this._onRender.event, this._onSelectionChange = this.register(new y3.EventEmitter()), this.onSelectionChange = this._onSelectionChange.event, this._onTitleChange = this.register(new y3.EventEmitter()), this.onTitleChange = this._onTitleChange.event, this._onBell = this.register(new y3.EventEmitter()), this.onBell = this._onBell.event, this._onFocus = this.register(new y3.EventEmitter()), this._onBlur = this.register(new y3.EventEmitter()), this._onA11yCharEmitter = this.register(new y3.EventEmitter()), this._onA11yTabEmitter = this.register(new y3.EventEmitter()), this._onWillOpen = this.register(new y3.EventEmitter()), this._setup(), this._decorationService = this._instantiationService.createInstance(A3.DecorationService), this._instantiationService.setService(B3.IDecorationService, this._decorationService), this._linkProviderService = this._instantiationService.createInstance(O2.LinkProviderService), this._instantiationService.setService(S2.ILinkProviderService, this._linkProviderService), this._linkProviderService.registerLinkProvider(this._instantiationService.createInstance(a3.OscLinkProvider)), this.register(this._inputHandler.onRequestBell(() => this._onBell.fire())), this.register(this._inputHandler.onRequestRefreshRows((e6, t5) => this.refresh(e6, t5))), this.register(this._inputHandler.onRequestSendFocus(() => this._reportFocus())), this.register(this._inputHandler.onRequestReset(() => this.reset())), this.register(this._inputHandler.onRequestWindowsOptionsReport((e6) => this._reportWindowsOptions(e6))), this.register(this._inputHandler.onColor((e6) => this._handleColorEvent(e6))), this.register((0, y3.forwardEvent)(this._inputHandler.onCursorMove, this._onCursorMove)), this.register((0, y3.forwardEvent)(this._inputHandler.onTitleChange, this._onTitleChange)), this.register((0, y3.forwardEvent)(this._inputHandler.onA11yChar, this._onA11yCharEmitter)), this.register((0, y3.forwardEvent)(this._inputHandler.onA11yTab, this._onA11yTabEmitter)), this.register(this._bufferService.onResize((e6) => this._afterResize(e6.cols, e6.rows))), this.register((0, E2.toDisposable)(() => {
+            super(e5), this.browser = k3, this._keyDownHandled = false, this._keyDownSeen = false, this._keyPressHandled = false, this._unprocessedDeadKey = false, this._accessibilityManager = this.register(new E2.MutableDisposable()), this._onCursorMove = this.register(new y5.EventEmitter()), this.onCursorMove = this._onCursorMove.event, this._onKey = this.register(new y5.EventEmitter()), this.onKey = this._onKey.event, this._onRender = this.register(new y5.EventEmitter()), this.onRender = this._onRender.event, this._onSelectionChange = this.register(new y5.EventEmitter()), this.onSelectionChange = this._onSelectionChange.event, this._onTitleChange = this.register(new y5.EventEmitter()), this.onTitleChange = this._onTitleChange.event, this._onBell = this.register(new y5.EventEmitter()), this.onBell = this._onBell.event, this._onFocus = this.register(new y5.EventEmitter()), this._onBlur = this.register(new y5.EventEmitter()), this._onA11yCharEmitter = this.register(new y5.EventEmitter()), this._onA11yTabEmitter = this.register(new y5.EventEmitter()), this._onWillOpen = this.register(new y5.EventEmitter()), this._setup(), this._decorationService = this._instantiationService.createInstance(A3.DecorationService), this._instantiationService.setService(B3.IDecorationService, this._decorationService), this._linkProviderService = this._instantiationService.createInstance(O2.LinkProviderService), this._instantiationService.setService(S2.ILinkProviderService, this._linkProviderService), this._linkProviderService.registerLinkProvider(this._instantiationService.createInstance(a4.OscLinkProvider)), this.register(this._inputHandler.onRequestBell(() => this._onBell.fire())), this.register(this._inputHandler.onRequestRefreshRows((e6, t5) => this.refresh(e6, t5))), this.register(this._inputHandler.onRequestSendFocus(() => this._reportFocus())), this.register(this._inputHandler.onRequestReset(() => this.reset())), this.register(this._inputHandler.onRequestWindowsOptionsReport((e6) => this._reportWindowsOptions(e6))), this.register(this._inputHandler.onColor((e6) => this._handleColorEvent(e6))), this.register((0, y5.forwardEvent)(this._inputHandler.onCursorMove, this._onCursorMove)), this.register((0, y5.forwardEvent)(this._inputHandler.onTitleChange, this._onTitleChange)), this.register((0, y5.forwardEvent)(this._inputHandler.onA11yChar, this._onA11yCharEmitter)), this.register((0, y5.forwardEvent)(this._inputHandler.onA11yTab, this._onA11yTabEmitter)), this.register(this._bufferService.onResize((e6) => this._afterResize(e6.cols, e6.rows))), this.register((0, E2.toDisposable)(() => {
               this._customKeyEventHandler = void 0, this.element?.parentNode?.removeChild(this.element);
             }));
           }
@@ -541,7 +541,7 @@ WARNING: This link could potentially be dangerous`)) {
                 switch (t5.type) {
                   case 0:
                     const s5 = b.color.toColorRGB("ansi" === e6 ? this._themeService.colors.ansi[t5.index] : this._themeService.colors[e6]);
-                    this.coreService.triggerDataEvent(`${D3.C0.ESC}]${i6};${(0, x2.toRgbString)(s5)}${D3.C1_ESCAPED.ST}`);
+                    this.coreService.triggerDataEvent(`${D3.C0.ESC}]${i6};${(0, x4.toRgbString)(s5)}${D3.C1_ESCAPED.ST}`);
                     break;
                   case 1:
                     if ("ansi" === e6)
@@ -583,8 +583,8 @@ WARNING: This link could potentially be dangerous`)) {
             const e5 = this.buffer.ybase + this.buffer.y, t5 = this.buffer.lines.get(e5);
             if (!t5)
               return;
-            const i6 = Math.min(this.buffer.x, this.cols - 1), s5 = this._renderService.dimensions.css.cell.height, r4 = t5.getWidth(i6), n3 = this._renderService.dimensions.css.cell.width * r4, o4 = this.buffer.y * this._renderService.dimensions.css.cell.height, a4 = i6 * this._renderService.dimensions.css.cell.width;
-            this.textarea.style.left = a4 + "px", this.textarea.style.top = o4 + "px", this.textarea.style.width = n3 + "px", this.textarea.style.height = s5 + "px", this.textarea.style.lineHeight = s5 + "px", this.textarea.style.zIndex = "-5";
+            const i6 = Math.min(this.buffer.x, this.cols - 1), s5 = this._renderService.dimensions.css.cell.height, r4 = t5.getWidth(i6), n3 = this._renderService.dimensions.css.cell.width * r4, o4 = this.buffer.y * this._renderService.dimensions.css.cell.height, a5 = i6 * this._renderService.dimensions.css.cell.width;
+            this.textarea.style.left = a5 + "px", this.textarea.style.top = o4 + "px", this.textarea.style.width = n3 + "px", this.textarea.style.height = s5 + "px", this.textarea.style.lineHeight = s5 + "px", this.textarea.style.zIndex = "-5";
           }
           _initGlobal() {
             this._bindKeys(), this.register((0, r3.addDisposableDomListener)(this.element, "copy", (e6) => {
@@ -616,11 +616,11 @@ WARNING: This link could potentially be dangerous`)) {
             }
             this._renderService.hasRenderer() || this._renderService.setRenderer(this._createRenderer()), this.viewport = this._instantiationService.createInstance(h3.Viewport, this._viewportElement, this._viewportScrollArea), this.viewport.onRequestScrollLines((e6) => this.scrollLines(e6.amount, e6.suppressScrollEvent, 1)), this.register(this._inputHandler.onRequestSyncScrollBar(() => this.viewport.syncScrollArea())), this.register(this.viewport), this.register(this.onCursorMove(() => {
               this._renderService.handleCursorMove(), this._syncTextArea();
-            })), this.register(this.onResize(() => this._renderService.handleResize(this.cols, this.rows))), this.register(this.onBlur(() => this._renderService.handleBlur())), this.register(this.onFocus(() => this._renderService.handleFocus())), this.register(this._renderService.onDimensionsChange(() => this.viewport.syncScrollArea())), this._selectionService = this.register(this._instantiationService.createInstance(m3.SelectionService, this.element, this.screenElement, this.linkifier)), this._instantiationService.setService(S2.ISelectionService, this._selectionService), this.register(this._selectionService.onRequestScrollLines((e6) => this.scrollLines(e6.amount, e6.suppressScrollEvent))), this.register(this._selectionService.onSelectionChange(() => this._onSelectionChange.fire())), this.register(this._selectionService.onRequestRedraw((e6) => this._renderService.handleSelectionChanged(e6.start, e6.end, e6.columnSelectMode))), this.register(this._selectionService.onLinuxMouseSelection((e6) => {
+            })), this.register(this.onResize(() => this._renderService.handleResize(this.cols, this.rows))), this.register(this.onBlur(() => this._renderService.handleBlur())), this.register(this.onFocus(() => this._renderService.handleFocus())), this.register(this._renderService.onDimensionsChange(() => this.viewport.syncScrollArea())), this._selectionService = this.register(this._instantiationService.createInstance(m4.SelectionService, this.element, this.screenElement, this.linkifier)), this._instantiationService.setService(S2.ISelectionService, this._selectionService), this.register(this._selectionService.onRequestScrollLines((e6) => this.scrollLines(e6.amount, e6.suppressScrollEvent))), this.register(this._selectionService.onSelectionChange(() => this._onSelectionChange.fire())), this.register(this._selectionService.onRequestRedraw((e6) => this._renderService.handleSelectionChanged(e6.start, e6.end, e6.columnSelectMode))), this.register(this._selectionService.onLinuxMouseSelection((e6) => {
               this.textarea.value = e6, this.textarea.focus(), this.textarea.select();
             })), this.register(this._onScroll.event((e6) => {
               this.viewport.syncScrollArea(), this._selectionService.refresh();
-            })), this.register((0, r3.addDisposableDomListener)(this._viewportElement, "scroll", () => this._selectionService.refresh())), this.register(this._instantiationService.createInstance(c3.BufferDecorationRenderer, this.screenElement)), this.register((0, r3.addDisposableDomListener)(this.element, "mousedown", (e6) => this._selectionService.handleMouseDown(e6))), this.coreMouseService.areMouseEventsActive ? (this._selectionService.disable(), this.element.classList.add("enable-mouse-events")) : this._selectionService.enable(), this.options.screenReaderMode && (this._accessibilityManager.value = this._instantiationService.createInstance(M2.AccessibilityManager, this)), this.register(this.optionsService.onSpecificOptionChange("screenReaderMode", (e6) => this._handleScreenReaderModeOptionChange(e6))), this.options.overviewRulerWidth && (this._overviewRulerRenderer = this.register(this._instantiationService.createInstance(l3.OverviewRulerRenderer, this._viewportElement, this.screenElement))), this.optionsService.onSpecificOptionChange("overviewRulerWidth", (e6) => {
+            })), this.register((0, r3.addDisposableDomListener)(this._viewportElement, "scroll", () => this._selectionService.refresh())), this.register(this._instantiationService.createInstance(c4.BufferDecorationRenderer, this.screenElement)), this.register((0, r3.addDisposableDomListener)(this.element, "mousedown", (e6) => this._selectionService.handleMouseDown(e6))), this.coreMouseService.areMouseEventsActive ? (this._selectionService.disable(), this.element.classList.add("enable-mouse-events")) : this._selectionService.enable(), this.options.screenReaderMode && (this._accessibilityManager.value = this._instantiationService.createInstance(M2.AccessibilityManager, this)), this.register(this.optionsService.onSpecificOptionChange("screenReaderMode", (e6) => this._handleScreenReaderModeOptionChange(e6))), this.options.overviewRulerWidth && (this._overviewRulerRenderer = this.register(this._instantiationService.createInstance(l3.OverviewRulerRenderer, this._viewportElement, this.screenElement))), this.optionsService.onSpecificOptionChange("overviewRulerWidth", (e6) => {
               !this._overviewRulerRenderer && e6 && this._viewportElement && this.screenElement && (this._overviewRulerRenderer = this.register(this._instantiationService.createInstance(l3.OverviewRulerRenderer, this._viewportElement, this.screenElement)));
             }), this._charSizeService.measure(), this.refresh(0, this.rows - 1), this._initGlobal(), this.bindMouse();
           }
@@ -882,8 +882,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -891,10 +891,10 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.Viewport = void 0;
-        const n2 = i5(3656), o3 = i5(4725), a3 = i5(8460), h3 = i5(844), c3 = i5(2585);
+        const n2 = i5(3656), o3 = i5(4725), a4 = i5(8460), h3 = i5(844), c4 = i5(2585);
         let l3 = t4.Viewport = class extends h3.Disposable {
-          constructor(e5, t5, i6, s5, r4, o4, h4, c4) {
-            super(), this._viewportElement = e5, this._scrollArea = t5, this._bufferService = i6, this._optionsService = s5, this._charSizeService = r4, this._renderService = o4, this._coreBrowserService = h4, this.scrollBarWidth = 0, this._currentRowHeight = 0, this._currentDeviceCellHeight = 0, this._lastRecordedBufferLength = 0, this._lastRecordedViewportHeight = 0, this._lastRecordedBufferHeight = 0, this._lastTouchY = 0, this._lastScrollTop = 0, this._wheelPartialScroll = 0, this._refreshAnimationFrame = null, this._ignoreNextScrollEvent = false, this._smoothScrollState = { startTime: 0, origin: -1, target: -1 }, this._onRequestScrollLines = this.register(new a3.EventEmitter()), this.onRequestScrollLines = this._onRequestScrollLines.event, this.scrollBarWidth = this._viewportElement.offsetWidth - this._scrollArea.offsetWidth || 15, this.register((0, n2.addDisposableDomListener)(this._viewportElement, "scroll", this._handleScroll.bind(this))), this._activeBuffer = this._bufferService.buffer, this.register(this._bufferService.buffers.onBufferActivate((e6) => this._activeBuffer = e6.activeBuffer)), this._renderDimensions = this._renderService.dimensions, this.register(this._renderService.onDimensionsChange((e6) => this._renderDimensions = e6)), this._handleThemeChange(c4.colors), this.register(c4.onChangeColors((e6) => this._handleThemeChange(e6))), this.register(this._optionsService.onSpecificOptionChange("scrollback", () => this.syncScrollArea())), setTimeout(() => this.syncScrollArea());
+          constructor(e5, t5, i6, s5, r4, o4, h4, c5) {
+            super(), this._viewportElement = e5, this._scrollArea = t5, this._bufferService = i6, this._optionsService = s5, this._charSizeService = r4, this._renderService = o4, this._coreBrowserService = h4, this.scrollBarWidth = 0, this._currentRowHeight = 0, this._currentDeviceCellHeight = 0, this._lastRecordedBufferLength = 0, this._lastRecordedViewportHeight = 0, this._lastRecordedBufferHeight = 0, this._lastTouchY = 0, this._lastScrollTop = 0, this._wheelPartialScroll = 0, this._refreshAnimationFrame = null, this._ignoreNextScrollEvent = false, this._smoothScrollState = { startTime: 0, origin: -1, target: -1 }, this._onRequestScrollLines = this.register(new a4.EventEmitter()), this.onRequestScrollLines = this._onRequestScrollLines.event, this.scrollBarWidth = this._viewportElement.offsetWidth - this._scrollArea.offsetWidth || 15, this.register((0, n2.addDisposableDomListener)(this._viewportElement, "scroll", this._handleScroll.bind(this))), this._activeBuffer = this._bufferService.buffer, this.register(this._bufferService.buffers.onBufferActivate((e6) => this._activeBuffer = e6.activeBuffer)), this._renderDimensions = this._renderService.dimensions, this.register(this._renderService.onDimensionsChange((e6) => this._renderDimensions = e6)), this._handleThemeChange(c5.colors), this.register(c5.onChangeColors((e6) => this._handleThemeChange(e6))), this.register(this._optionsService.onSpecificOptionChange("scrollback", () => this.syncScrollArea())), setTimeout(() => this.syncScrollArea());
           }
           _handleThemeChange(e5) {
             this._viewportElement.style.backgroundColor = e5.background.css;
@@ -996,15 +996,15 @@ WARNING: This link could potentially be dangerous`)) {
             return this._lastTouchY = e5.touches[0].pageY, 0 !== t5 && (this._viewportElement.scrollTop += t5, this._bubbleScroll(e5, t5));
           }
         };
-        t4.Viewport = l3 = s4([r3(2, c3.IBufferService), r3(3, c3.IOptionsService), r3(4, o3.ICharSizeService), r3(5, o3.IRenderService), r3(6, o3.ICoreBrowserService), r3(7, o3.IThemeService)], l3);
+        t4.Viewport = l3 = s4([r3(2, c4.IBufferService), r3(3, c4.IOptionsService), r3(4, o3.ICharSizeService), r3(5, o3.IRenderService), r3(6, o3.ICoreBrowserService), r3(7, o3.IThemeService)], l3);
       }, 3107: function(e4, t4, i5) {
         var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
           var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -1012,7 +1012,7 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferDecorationRenderer = void 0;
-        const n2 = i5(4725), o3 = i5(844), a3 = i5(2585);
+        const n2 = i5(4725), o3 = i5(844), a4 = i5(2585);
         let h3 = t4.BufferDecorationRenderer = class extends o3.Disposable {
           constructor(e5, t5, i6, s5, r4) {
             super(), this._screenElement = e5, this._bufferService = t5, this._coreBrowserService = i6, this._decorationService = s5, this._renderService = r4, this._decorationElements = /* @__PURE__ */ new Map(), this._altBufferIsActive = false, this._dimensionsChanged = false, this._container = document.createElement("div"), this._container.classList.add("xterm-decoration-container"), this._screenElement.appendChild(this._container), this.register(this._renderService.onRenderedViewportChange(() => this._doRefreshDecorations())), this.register(this._renderService.onDimensionsChange(() => {
@@ -1063,7 +1063,7 @@ WARNING: This link could potentially be dangerous`)) {
             this._decorationElements.get(e5)?.remove(), this._decorationElements.delete(e5), e5.dispose();
           }
         };
-        t4.BufferDecorationRenderer = h3 = s4([r3(1, a3.IBufferService), r3(2, n2.ICoreBrowserService), r3(3, a3.IDecorationService), r3(4, n2.IRenderService)], h3);
+        t4.BufferDecorationRenderer = h3 = s4([r3(1, a4.IBufferService), r3(2, n2.ICoreBrowserService), r3(3, a4.IDecorationService), r3(4, n2.IRenderService)], h3);
       }, 5871: (e4, t4) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.ColorZoneStore = void 0, t4.ColorZoneStore = class {
           constructor() {
@@ -1108,8 +1108,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -1117,17 +1117,17 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.OverviewRulerRenderer = void 0;
-        const n2 = i5(5871), o3 = i5(4725), a3 = i5(844), h3 = i5(2585), c3 = { full: 0, left: 0, center: 0, right: 0 }, l3 = { full: 0, left: 0, center: 0, right: 0 }, d3 = { full: 0, left: 0, center: 0, right: 0 };
-        let _2 = t4.OverviewRulerRenderer = class extends a3.Disposable {
+        const n2 = i5(5871), o3 = i5(4725), a4 = i5(844), h3 = i5(2585), c4 = { full: 0, left: 0, center: 0, right: 0 }, l3 = { full: 0, left: 0, center: 0, right: 0 }, d3 = { full: 0, left: 0, center: 0, right: 0 };
+        let _2 = t4.OverviewRulerRenderer = class extends a4.Disposable {
           get _width() {
             return this._optionsService.options.overviewRulerWidth || 0;
           }
           constructor(e5, t5, i6, s5, r4, o4, h4) {
             super(), this._viewportElement = e5, this._screenElement = t5, this._bufferService = i6, this._decorationService = s5, this._renderService = r4, this._optionsService = o4, this._coreBrowserService = h4, this._colorZoneStore = new n2.ColorZoneStore(), this._shouldUpdateDimensions = true, this._shouldUpdateAnchor = true, this._lastKnownBufferLength = 0, this._canvas = this._coreBrowserService.mainDocument.createElement("canvas"), this._canvas.classList.add("xterm-decoration-overview-ruler"), this._refreshCanvasDimensions(), this._viewportElement.parentElement?.insertBefore(this._canvas, this._viewportElement);
-            const c4 = this._canvas.getContext("2d");
-            if (!c4)
+            const c5 = this._canvas.getContext("2d");
+            if (!c5)
               throw new Error("Ctx cannot be null");
-            this._ctx = c4, this._registerDecorationListeners(), this._registerBufferChangeListeners(), this._registerDimensionChangeListeners(), this.register((0, a3.toDisposable)(() => {
+            this._ctx = c5, this._registerDecorationListeners(), this._registerBufferChangeListeners(), this._registerDimensionChangeListeners(), this.register((0, a4.toDisposable)(() => {
               this._canvas?.remove();
             }));
           }
@@ -1151,12 +1151,12 @@ WARNING: This link could potentially be dangerous`)) {
             l3.full = this._canvas.width, l3.left = e5, l3.center = t5, l3.right = e5, this._refreshDrawHeightConstants(), d3.full = 0, d3.left = 0, d3.center = l3.left, d3.right = l3.left + l3.center;
           }
           _refreshDrawHeightConstants() {
-            c3.full = Math.round(2 * this._coreBrowserService.dpr);
+            c4.full = Math.round(2 * this._coreBrowserService.dpr);
             const e5 = this._canvas.height / this._bufferService.buffer.lines.length, t5 = Math.round(Math.max(Math.min(e5, 12), 6) * this._coreBrowserService.dpr);
-            c3.left = t5, c3.center = t5, c3.right = t5;
+            c4.left = t5, c4.center = t5, c4.right = t5;
           }
           _refreshColorZonePadding() {
-            this._colorZoneStore.setPadding({ full: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c3.full), left: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c3.left), center: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c3.center), right: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c3.right) }), this._lastKnownBufferLength = this._bufferService.buffers.normal.lines.length;
+            this._colorZoneStore.setPadding({ full: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c4.full), left: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c4.left), center: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c4.center), right: Math.floor(this._bufferService.buffers.active.lines.length / (this._canvas.height - 1) * c4.right) }), this._lastKnownBufferLength = this._bufferService.buffers.normal.lines.length;
           }
           _refreshCanvasDimensions() {
             this._canvas.style.width = `${this._width}px`, this._canvas.width = Math.round(this._width * this._coreBrowserService.dpr), this._canvas.style.height = `${this._screenElement.clientHeight}px`, this._canvas.height = Math.round(this._screenElement.clientHeight * this._coreBrowserService.dpr), this._refreshDrawConstants(), this._refreshColorZonePadding();
@@ -1174,7 +1174,7 @@ WARNING: This link could potentially be dangerous`)) {
             this._shouldUpdateDimensions = false, this._shouldUpdateAnchor = false;
           }
           _renderColorZone(e5) {
-            this._ctx.fillStyle = e5.color, this._ctx.fillRect(d3[e5.position || "full"], Math.round((this._canvas.height - 1) * (e5.startBufferLine / this._bufferService.buffers.active.lines.length) - c3[e5.position || "full"] / 2), l3[e5.position || "full"], Math.round((this._canvas.height - 1) * ((e5.endBufferLine - e5.startBufferLine) / this._bufferService.buffers.active.lines.length) + c3[e5.position || "full"]));
+            this._ctx.fillStyle = e5.color, this._ctx.fillRect(d3[e5.position || "full"], Math.round((this._canvas.height - 1) * (e5.startBufferLine / this._bufferService.buffers.active.lines.length) - c4[e5.position || "full"] / 2), l3[e5.position || "full"], Math.round((this._canvas.height - 1) * ((e5.endBufferLine - e5.startBufferLine) / this._bufferService.buffers.active.lines.length) + c4[e5.position || "full"]));
           }
           _queueRefresh(e5, t5) {
             this._shouldUpdateDimensions = e5 || this._shouldUpdateDimensions, this._shouldUpdateAnchor = t5 || this._shouldUpdateAnchor, void 0 === this._animationFrame && (this._animationFrame = this._coreBrowserService.window.requestAnimationFrame(() => {
@@ -1189,8 +1189,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -1198,7 +1198,7 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.CompositionHelper = void 0;
-        const n2 = i5(4725), o3 = i5(2585), a3 = i5(2584);
+        const n2 = i5(4725), o3 = i5(2585), a4 = i5(2584);
         let h3 = t4.CompositionHelper = class {
           get isComposing() {
             return this._isComposing;
@@ -1247,7 +1247,7 @@ WARNING: This link could potentially be dangerous`)) {
             setTimeout(() => {
               if (!this._isComposing) {
                 const t5 = this._textarea.value, i6 = t5.replace(e5, "");
-                this._dataAlreadySent = i6, t5.length > e5.length ? this._coreService.triggerDataEvent(i6, true) : t5.length < e5.length ? this._coreService.triggerDataEvent(`${a3.C0.DEL}`, true) : t5.length === e5.length && t5 !== e5 && this._coreService.triggerDataEvent(t5, true);
+                this._dataAlreadySent = i6, t5.length > e5.length ? this._coreService.triggerDataEvent(i6, true) : t5.length < e5.length ? this._coreService.triggerDataEvent(`${a4.C0.DEL}`, true) : t5.length === e5.length && t5 !== e5 && this._coreService.triggerDataEvent(t5, true);
               }
             }, 0);
           }
@@ -1269,26 +1269,26 @@ WARNING: This link could potentially be dangerous`)) {
           const s4 = i6.getBoundingClientRect(), r3 = e5.getComputedStyle(i6), n2 = parseInt(r3.getPropertyValue("padding-left")), o3 = parseInt(r3.getPropertyValue("padding-top"));
           return [t5.clientX - s4.left - n2, t5.clientY - s4.top - o3];
         }
-        Object.defineProperty(t4, "__esModule", { value: true }), t4.getCoords = t4.getCoordsRelativeToElement = void 0, t4.getCoordsRelativeToElement = i5, t4.getCoords = function(e5, t5, s4, r3, n2, o3, a3, h3, c3) {
+        Object.defineProperty(t4, "__esModule", { value: true }), t4.getCoords = t4.getCoordsRelativeToElement = void 0, t4.getCoordsRelativeToElement = i5, t4.getCoords = function(e5, t5, s4, r3, n2, o3, a4, h3, c4) {
           if (!o3)
             return;
           const l3 = i5(e5, t5, s4);
-          return l3 ? (l3[0] = Math.ceil((l3[0] + (c3 ? a3 / 2 : 0)) / a3), l3[1] = Math.ceil(l3[1] / h3), l3[0] = Math.min(Math.max(l3[0], 1), r3 + (c3 ? 1 : 0)), l3[1] = Math.min(Math.max(l3[1], 1), n2), l3) : void 0;
+          return l3 ? (l3[0] = Math.ceil((l3[0] + (c4 ? a4 / 2 : 0)) / a4), l3[1] = Math.ceil(l3[1] / h3), l3[0] = Math.min(Math.max(l3[0], 1), r3 + (c4 ? 1 : 0)), l3[1] = Math.min(Math.max(l3[1], 1), n2), l3) : void 0;
         };
       }, 9504: (e4, t4, i5) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.moveToCellSequence = void 0;
         const s4 = i5(2584);
         function r3(e5, t5, i6, s5) {
-          const r4 = e5 - n2(e5, i6), a4 = t5 - n2(t5, i6), l3 = Math.abs(r4 - a4) - function(e6, t6, i7) {
+          const r4 = e5 - n2(e5, i6), a5 = t5 - n2(t5, i6), l3 = Math.abs(r4 - a5) - function(e6, t6, i7) {
             let s6 = 0;
-            const r5 = e6 - n2(e6, i7), a5 = t6 - n2(t6, i7);
-            for (let n3 = 0; n3 < Math.abs(r5 - a5); n3++) {
-              const a6 = "A" === o3(e6, t6) ? -1 : 1, h4 = i7.buffer.lines.get(r5 + a6 * n3);
+            const r5 = e6 - n2(e6, i7), a6 = t6 - n2(t6, i7);
+            for (let n3 = 0; n3 < Math.abs(r5 - a6); n3++) {
+              const a7 = "A" === o3(e6, t6) ? -1 : 1, h4 = i7.buffer.lines.get(r5 + a7 * n3);
               h4?.isWrapped && s6++;
             }
             return s6;
           }(e5, t5, i6);
-          return c3(l3, h3(o3(e5, t5), s5));
+          return c4(l3, h3(o3(e5, t5), s5));
         }
         function n2(e5, t5) {
           let i6 = 0, s5 = t5.buffer.lines.get(e5), r4 = s5?.isWrapped;
@@ -1299,17 +1299,17 @@ WARNING: This link could potentially be dangerous`)) {
         function o3(e5, t5) {
           return e5 > t5 ? "A" : "B";
         }
-        function a3(e5, t5, i6, s5, r4, n3) {
-          let o4 = e5, a4 = t5, h4 = "";
-          for (; o4 !== i6 || a4 !== s5; )
-            o4 += r4 ? 1 : -1, r4 && o4 > n3.cols - 1 ? (h4 += n3.buffer.translateBufferLineToString(a4, false, e5, o4), o4 = 0, e5 = 0, a4++) : !r4 && o4 < 0 && (h4 += n3.buffer.translateBufferLineToString(a4, false, 0, e5 + 1), o4 = n3.cols - 1, e5 = o4, a4--);
-          return h4 + n3.buffer.translateBufferLineToString(a4, false, e5, o4);
+        function a4(e5, t5, i6, s5, r4, n3) {
+          let o4 = e5, a5 = t5, h4 = "";
+          for (; o4 !== i6 || a5 !== s5; )
+            o4 += r4 ? 1 : -1, r4 && o4 > n3.cols - 1 ? (h4 += n3.buffer.translateBufferLineToString(a5, false, e5, o4), o4 = 0, e5 = 0, a5++) : !r4 && o4 < 0 && (h4 += n3.buffer.translateBufferLineToString(a5, false, 0, e5 + 1), o4 = n3.cols - 1, e5 = o4, a5--);
+          return h4 + n3.buffer.translateBufferLineToString(a5, false, e5, o4);
         }
         function h3(e5, t5) {
           const i6 = t5 ? "O" : "[";
           return s4.C0.ESC + i6 + e5;
         }
-        function c3(e5, t5) {
+        function c4(e5, t5) {
           e5 = Math.floor(e5);
           let i6 = "";
           for (let s5 = 0; s5 < e5; s5++)
@@ -1320,22 +1320,22 @@ WARNING: This link could potentially be dangerous`)) {
           const o4 = i6.buffer.x, l3 = i6.buffer.y;
           if (!i6.buffer.hasScrollback)
             return function(e6, t6, i7, s6, o5, l4) {
-              return 0 === r3(t6, s6, o5, l4).length ? "" : c3(a3(e6, t6, e6, t6 - n2(t6, o5), false, o5).length, h3("D", l4));
+              return 0 === r3(t6, s6, o5, l4).length ? "" : c4(a4(e6, t6, e6, t6 - n2(t6, o5), false, o5).length, h3("D", l4));
             }(o4, l3, 0, t5, i6, s5) + r3(l3, t5, i6, s5) + function(e6, t6, i7, s6, o5, l4) {
               let d4;
               d4 = r3(t6, s6, o5, l4).length > 0 ? s6 - n2(s6, o5) : t6;
-              const _3 = s6, u4 = function(e7, t7, i8, s7, o6, a4) {
+              const _3 = s6, u4 = function(e7, t7, i8, s7, o6, a5) {
                 let h4;
-                return h4 = r3(i8, s7, o6, a4).length > 0 ? s7 - n2(s7, o6) : t7, e7 < i8 && h4 <= s7 || e7 >= i8 && h4 < s7 ? "C" : "D";
+                return h4 = r3(i8, s7, o6, a5).length > 0 ? s7 - n2(s7, o6) : t7, e7 < i8 && h4 <= s7 || e7 >= i8 && h4 < s7 ? "C" : "D";
               }(e6, t6, i7, s6, o5, l4);
-              return c3(a3(e6, d4, i7, _3, "C" === u4, o5).length, h3(u4, l4));
+              return c4(a4(e6, d4, i7, _3, "C" === u4, o5).length, h3(u4, l4));
             }(o4, l3, e5, t5, i6, s5);
           let d3;
           if (l3 === t5)
-            return d3 = o4 > e5 ? "D" : "C", c3(Math.abs(o4 - e5), h3(d3, s5));
+            return d3 = o4 > e5 ? "D" : "C", c4(Math.abs(o4 - e5), h3(d3, s5));
           d3 = l3 > t5 ? "D" : "C";
           const _2 = Math.abs(l3 - t5);
-          return c3(function(e6, t6) {
+          return c4(function(e6, t6) {
             return t6.cols - e6;
           }(l3 > t5 ? e5 : o4, i6) + (_2 - 1) * i6.cols + 1 + ((l3 > t5 ? o4 : e5) - 1), h3(d3, s5));
         };
@@ -1345,8 +1345,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -1354,10 +1354,10 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.DomRenderer = void 0;
-        const n2 = i5(3787), o3 = i5(2550), a3 = i5(2223), h3 = i5(6171), c3 = i5(6052), l3 = i5(4725), d3 = i5(8055), _2 = i5(8460), u4 = i5(844), f4 = i5(2585), v3 = "xterm-dom-renderer-owner-", p3 = "xterm-rows", g2 = "xterm-fg-", m3 = "xterm-bg-", S2 = "xterm-focus", C3 = "xterm-selection";
+        const n2 = i5(3787), o3 = i5(2550), a4 = i5(2223), h3 = i5(6171), c4 = i5(6052), l3 = i5(4725), d3 = i5(8055), _2 = i5(8460), u4 = i5(844), f4 = i5(2585), v3 = "xterm-dom-renderer-owner-", p3 = "xterm-rows", g2 = "xterm-fg-", m4 = "xterm-bg-", S2 = "xterm-focus", C3 = "xterm-selection";
         let b = 1, w3 = t4.DomRenderer = class extends u4.Disposable {
-          constructor(e5, t5, i6, s5, r4, a4, l4, d4, f5, g3, m4, S3, w4) {
-            super(), this._terminal = e5, this._document = t5, this._element = i6, this._screenElement = s5, this._viewportElement = r4, this._helperContainer = a4, this._linkifier2 = l4, this._charSizeService = f5, this._optionsService = g3, this._bufferService = m4, this._coreBrowserService = S3, this._themeService = w4, this._terminalClass = b++, this._rowElements = [], this._selectionRenderModel = (0, c3.createSelectionRenderModel)(), this.onRequestRedraw = this.register(new _2.EventEmitter()).event, this._rowContainer = this._document.createElement("div"), this._rowContainer.classList.add(p3), this._rowContainer.style.lineHeight = "normal", this._rowContainer.setAttribute("aria-hidden", "true"), this._refreshRowElements(this._bufferService.cols, this._bufferService.rows), this._selectionContainer = this._document.createElement("div"), this._selectionContainer.classList.add(C3), this._selectionContainer.setAttribute("aria-hidden", "true"), this.dimensions = (0, h3.createRenderDimensions)(), this._updateDimensions(), this.register(this._optionsService.onOptionChange(() => this._handleOptionsChanged())), this.register(this._themeService.onChangeColors((e6) => this._injectCss(e6))), this._injectCss(this._themeService.colors), this._rowFactory = d4.createInstance(n2.DomRendererRowFactory, document), this._element.classList.add(v3 + this._terminalClass), this._screenElement.appendChild(this._rowContainer), this._screenElement.appendChild(this._selectionContainer), this.register(this._linkifier2.onShowLinkUnderline((e6) => this._handleLinkHover(e6))), this.register(this._linkifier2.onHideLinkUnderline((e6) => this._handleLinkLeave(e6))), this.register((0, u4.toDisposable)(() => {
+          constructor(e5, t5, i6, s5, r4, a5, l4, d4, f5, g3, m5, S3, w4) {
+            super(), this._terminal = e5, this._document = t5, this._element = i6, this._screenElement = s5, this._viewportElement = r4, this._helperContainer = a5, this._linkifier2 = l4, this._charSizeService = f5, this._optionsService = g3, this._bufferService = m5, this._coreBrowserService = S3, this._themeService = w4, this._terminalClass = b++, this._rowElements = [], this._selectionRenderModel = (0, c4.createSelectionRenderModel)(), this.onRequestRedraw = this.register(new _2.EventEmitter()).event, this._rowContainer = this._document.createElement("div"), this._rowContainer.classList.add(p3), this._rowContainer.style.lineHeight = "normal", this._rowContainer.setAttribute("aria-hidden", "true"), this._refreshRowElements(this._bufferService.cols, this._bufferService.rows), this._selectionContainer = this._document.createElement("div"), this._selectionContainer.classList.add(C3), this._selectionContainer.setAttribute("aria-hidden", "true"), this.dimensions = (0, h3.createRenderDimensions)(), this._updateDimensions(), this.register(this._optionsService.onOptionChange(() => this._handleOptionsChanged())), this.register(this._themeService.onChangeColors((e6) => this._injectCss(e6))), this._injectCss(this._themeService.colors), this._rowFactory = d4.createInstance(n2.DomRendererRowFactory, document), this._element.classList.add(v3 + this._terminalClass), this._screenElement.appendChild(this._rowContainer), this._screenElement.appendChild(this._selectionContainer), this.register(this._linkifier2.onShowLinkUnderline((e6) => this._handleLinkHover(e6))), this.register(this._linkifier2.onHideLinkUnderline((e6) => this._handleLinkLeave(e6))), this.register((0, u4.toDisposable)(() => {
               this._element.classList.remove(v3 + this._terminalClass), this._rowContainer.remove(), this._selectionContainer.remove(), this._widthCache.dispose(), this._themeStyleElement.remove(), this._dimensionsStyleElement.remove();
             })), this._widthCache = new o3.WidthCache(this._document, this._helperContainer), this._widthCache.setFont(this._optionsService.rawOptions.fontFamily, this._optionsService.rawOptions.fontSize, this._optionsService.rawOptions.fontWeight, this._optionsService.rawOptions.fontWeightBold), this._setDefaultSpacing();
           }
@@ -1377,8 +1377,8 @@ WARNING: This link could potentially be dangerous`)) {
             const i6 = `blink_underline_${this._terminalClass}`, s5 = `blink_bar_${this._terminalClass}`, r4 = `blink_block_${this._terminalClass}`;
             t5 += `@keyframes ${i6} { 50% {  border-bottom-style: hidden; }}`, t5 += `@keyframes ${s5} { 50% {  box-shadow: none; }}`, t5 += `@keyframes ${r4} { 0% {  background-color: ${e5.cursor.css};  color: ${e5.cursorAccent.css}; } 50% {  background-color: inherit;  color: ${e5.cursor.css}; }}`, t5 += `${this._terminalSelector} .${p3}.${S2} .xterm-cursor.xterm-cursor-blink.xterm-cursor-underline { animation: ${i6} 1s step-end infinite;}${this._terminalSelector} .${p3}.${S2} .xterm-cursor.xterm-cursor-blink.xterm-cursor-bar { animation: ${s5} 1s step-end infinite;}${this._terminalSelector} .${p3}.${S2} .xterm-cursor.xterm-cursor-blink.xterm-cursor-block { animation: ${r4} 1s step-end infinite;}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-block { background-color: ${e5.cursor.css}; color: ${e5.cursorAccent.css};}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-block:not(.xterm-cursor-blink) { background-color: ${e5.cursor.css} !important; color: ${e5.cursorAccent.css} !important;}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-outline { outline: 1px solid ${e5.cursor.css}; outline-offset: -1px;}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-bar { box-shadow: ${this._optionsService.rawOptions.cursorWidth}px 0 0 ${e5.cursor.css} inset;}${this._terminalSelector} .${p3} .xterm-cursor.xterm-cursor-underline { border-bottom: 1px ${e5.cursor.css}; border-bottom-style: solid; height: calc(100% - 1px);}`, t5 += `${this._terminalSelector} .${C3} { position: absolute; top: 0; left: 0; z-index: 1; pointer-events: none;}${this._terminalSelector}.focus .${C3} div { position: absolute; background-color: ${e5.selectionBackgroundOpaque.css};}${this._terminalSelector} .${C3} div { position: absolute; background-color: ${e5.selectionInactiveBackgroundOpaque.css};}`;
             for (const [i7, s6] of e5.ansi.entries())
-              t5 += `${this._terminalSelector} .${g2}${i7} { color: ${s6.css}; }${this._terminalSelector} .${g2}${i7}.xterm-dim { color: ${d3.color.multiplyOpacity(s6, 0.5).css}; }${this._terminalSelector} .${m3}${i7} { background-color: ${s6.css}; }`;
-            t5 += `${this._terminalSelector} .${g2}${a3.INVERTED_DEFAULT_COLOR} { color: ${d3.color.opaque(e5.background).css}; }${this._terminalSelector} .${g2}${a3.INVERTED_DEFAULT_COLOR}.xterm-dim { color: ${d3.color.multiplyOpacity(d3.color.opaque(e5.background), 0.5).css}; }${this._terminalSelector} .${m3}${a3.INVERTED_DEFAULT_COLOR} { background-color: ${e5.foreground.css}; }`, this._themeStyleElement.textContent = t5;
+              t5 += `${this._terminalSelector} .${g2}${i7} { color: ${s6.css}; }${this._terminalSelector} .${g2}${i7}.xterm-dim { color: ${d3.color.multiplyOpacity(s6, 0.5).css}; }${this._terminalSelector} .${m4}${i7} { background-color: ${s6.css}; }`;
+            t5 += `${this._terminalSelector} .${g2}${a4.INVERTED_DEFAULT_COLOR} { color: ${d3.color.opaque(e5.background).css}; }${this._terminalSelector} .${g2}${a4.INVERTED_DEFAULT_COLOR}.xterm-dim { color: ${d3.color.multiplyOpacity(d3.color.opaque(e5.background), 0.5).css}; }${this._terminalSelector} .${m4}${a4.INVERTED_DEFAULT_COLOR} { background-color: ${e5.foreground.css}; }`, this._themeStyleElement.textContent = t5;
           }
           _setDefaultSpacing() {
             const e5 = this.dimensions.css.cell.width - this._widthCache.get("W", false, false);
@@ -1414,20 +1414,20 @@ WARNING: This link could potentially be dangerous`)) {
             const s5 = this._selectionRenderModel.viewportStartRow, r4 = this._selectionRenderModel.viewportEndRow, n3 = this._selectionRenderModel.viewportCappedStartRow, o4 = this._selectionRenderModel.viewportCappedEndRow;
             if (n3 >= this._bufferService.rows || o4 < 0)
               return;
-            const a4 = this._document.createDocumentFragment();
+            const a5 = this._document.createDocumentFragment();
             if (i6) {
               const i7 = e5[0] > t5[0];
-              a4.appendChild(this._createSelectionElement(n3, i7 ? t5[0] : e5[0], i7 ? e5[0] : t5[0], o4 - n3 + 1));
+              a5.appendChild(this._createSelectionElement(n3, i7 ? t5[0] : e5[0], i7 ? e5[0] : t5[0], o4 - n3 + 1));
             } else {
               const i7 = s5 === n3 ? e5[0] : 0, h4 = n3 === r4 ? t5[0] : this._bufferService.cols;
-              a4.appendChild(this._createSelectionElement(n3, i7, h4));
-              const c4 = o4 - n3 - 1;
-              if (a4.appendChild(this._createSelectionElement(n3 + 1, 0, this._bufferService.cols, c4)), n3 !== o4) {
+              a5.appendChild(this._createSelectionElement(n3, i7, h4));
+              const c5 = o4 - n3 - 1;
+              if (a5.appendChild(this._createSelectionElement(n3 + 1, 0, this._bufferService.cols, c5)), n3 !== o4) {
                 const e6 = r4 === o4 ? t5[0] : this._bufferService.cols;
-                a4.appendChild(this._createSelectionElement(o4, 0, e6));
+                a5.appendChild(this._createSelectionElement(o4, 0, e6));
               }
             }
-            this._selectionContainer.appendChild(a4);
+            this._selectionContainer.appendChild(a5);
           }
           _createSelectionElement(e5, t5, i6, s5 = 1) {
             const r4 = this._document.createElement("div"), n3 = t5 * this.dimensions.css.cell.width;
@@ -1444,12 +1444,12 @@ WARNING: This link could potentially be dangerous`)) {
               e5.replaceChildren();
           }
           renderRows(e5, t5) {
-            const i6 = this._bufferService.buffer, s5 = i6.ybase + i6.y, r4 = Math.min(i6.x, this._bufferService.cols - 1), n3 = this._optionsService.rawOptions.cursorBlink, o4 = this._optionsService.rawOptions.cursorStyle, a4 = this._optionsService.rawOptions.cursorInactiveStyle;
+            const i6 = this._bufferService.buffer, s5 = i6.ybase + i6.y, r4 = Math.min(i6.x, this._bufferService.cols - 1), n3 = this._optionsService.rawOptions.cursorBlink, o4 = this._optionsService.rawOptions.cursorStyle, a5 = this._optionsService.rawOptions.cursorInactiveStyle;
             for (let h4 = e5; h4 <= t5; h4++) {
-              const e6 = h4 + i6.ydisp, t6 = this._rowElements[h4], c4 = i6.lines.get(e6);
-              if (!t6 || !c4)
+              const e6 = h4 + i6.ydisp, t6 = this._rowElements[h4], c5 = i6.lines.get(e6);
+              if (!t6 || !c5)
                 break;
-              t6.replaceChildren(...this._rowFactory.createRow(c4, e6, e6 === s5, o4, a4, r4, n3, this.dimensions.css.cell.width, this._widthCache, -1, -1));
+              t6.replaceChildren(...this._rowFactory.createRow(c5, e6, e6 === s5, o4, a5, r4, n3, this.dimensions.css.cell.width, this._widthCache, -1, -1));
             }
           }
           get _terminalSelector() {
@@ -1465,12 +1465,12 @@ WARNING: This link could potentially be dangerous`)) {
             i6 < 0 && (e5 = 0), s5 < 0 && (t5 = 0);
             const o4 = this._bufferService.rows - 1;
             i6 = Math.max(Math.min(i6, o4), 0), s5 = Math.max(Math.min(s5, o4), 0), r4 = Math.min(r4, this._bufferService.cols);
-            const a4 = this._bufferService.buffer, h4 = a4.ybase + a4.y, c4 = Math.min(a4.x, r4 - 1), l4 = this._optionsService.rawOptions.cursorBlink, d4 = this._optionsService.rawOptions.cursorStyle, _3 = this._optionsService.rawOptions.cursorInactiveStyle;
+            const a5 = this._bufferService.buffer, h4 = a5.ybase + a5.y, c5 = Math.min(a5.x, r4 - 1), l4 = this._optionsService.rawOptions.cursorBlink, d4 = this._optionsService.rawOptions.cursorStyle, _3 = this._optionsService.rawOptions.cursorInactiveStyle;
             for (let o5 = i6; o5 <= s5; ++o5) {
-              const u5 = o5 + a4.ydisp, f5 = this._rowElements[o5], v4 = a4.lines.get(u5);
+              const u5 = o5 + a5.ydisp, f5 = this._rowElements[o5], v4 = a5.lines.get(u5);
               if (!f5 || !v4)
                 break;
-              f5.replaceChildren(...this._rowFactory.createRow(v4, u5, u5 === h4, d4, _3, c4, l4, this.dimensions.css.cell.width, this._widthCache, n3 ? o5 === i6 ? e5 : 0 : -1, n3 ? (o5 === s5 ? t5 : r4) - 1 : -1));
+              f5.replaceChildren(...this._rowFactory.createRow(v4, u5, u5 === h4, d4, _3, c5, l4, this.dimensions.css.cell.width, this._widthCache, n3 ? o5 === i6 ? e5 : 0 : -1, n3 ? (o5 === s5 ? t5 : r4) - 1 : -1));
             }
           }
         };
@@ -1481,8 +1481,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -1490,19 +1490,19 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.DomRendererRowFactory = void 0;
-        const n2 = i5(2223), o3 = i5(643), a3 = i5(511), h3 = i5(2585), c3 = i5(8055), l3 = i5(4725), d3 = i5(4269), _2 = i5(6171), u4 = i5(3734);
+        const n2 = i5(2223), o3 = i5(643), a4 = i5(511), h3 = i5(2585), c4 = i5(8055), l3 = i5(4725), d3 = i5(4269), _2 = i5(6171), u4 = i5(3734);
         let f4 = t4.DomRendererRowFactory = class {
           constructor(e5, t5, i6, s5, r4, n3, o4) {
-            this._document = e5, this._characterJoinerService = t5, this._optionsService = i6, this._coreBrowserService = s5, this._coreService = r4, this._decorationService = n3, this._themeService = o4, this._workCell = new a3.CellData(), this._columnSelectMode = false, this.defaultSpacing = 0;
+            this._document = e5, this._characterJoinerService = t5, this._optionsService = i6, this._coreBrowserService = s5, this._coreService = r4, this._decorationService = n3, this._themeService = o4, this._workCell = new a4.CellData(), this._columnSelectMode = false, this.defaultSpacing = 0;
           }
           handleSelectionChanged(e5, t5, i6) {
             this._selectionStart = e5, this._selectionEnd = t5, this._columnSelectMode = i6;
           }
-          createRow(e5, t5, i6, s5, r4, a4, h4, l4, _3, f5, p3) {
-            const g2 = [], m3 = this._characterJoinerService.getJoinedCharacters(t5), S2 = this._themeService.colors;
+          createRow(e5, t5, i6, s5, r4, a5, h4, l4, _3, f5, p3) {
+            const g2 = [], m4 = this._characterJoinerService.getJoinedCharacters(t5), S2 = this._themeService.colors;
             let C3, b = e5.getNoBgTrimmedLength();
-            i6 && b < a4 + 1 && (b = a4 + 1);
-            let w3 = 0, y3 = "", E2 = 0, k3 = 0, L2 = 0, D3 = false, R = 0, x2 = false, A3 = 0;
+            i6 && b < a5 + 1 && (b = a5 + 1);
+            let w3 = 0, y5 = "", E2 = 0, k3 = 0, L2 = 0, D3 = false, R = 0, x4 = false, A3 = 0;
             const B3 = [], T3 = -1 !== f5 && -1 !== p3;
             for (let M2 = 0; M2 < b; M2++) {
               e5.loadCell(M2, this._workCell);
@@ -1510,26 +1510,26 @@ WARNING: This link could potentially be dangerous`)) {
               if (0 === b2)
                 continue;
               let O2 = false, P2 = M2, I2 = this._workCell;
-              if (m3.length > 0 && M2 === m3[0][0]) {
+              if (m4.length > 0 && M2 === m4[0][0]) {
                 O2 = true;
-                const t6 = m3.shift();
+                const t6 = m4.shift();
                 I2 = new d3.JoinedCellData(this._workCell, e5.translateToString(true, t6[0], t6[1]), t6[1] - t6[0]), P2 = t6[1] - 1, b2 = I2.getWidth();
               }
-              const H = this._isCellInSelection(M2, t5), F2 = i6 && M2 === a4, W = T3 && M2 >= f5 && M2 <= p3;
+              const H = this._isCellInSelection(M2, t5), F2 = i6 && M2 === a5, W = T3 && M2 >= f5 && M2 <= p3;
               let U = false;
               this._decorationService.forEachDecorationAtCell(M2, t5, void 0, (e6) => {
                 U = true;
               });
               let N2 = I2.getChars() || o3.WHITESPACE_CELL_CHAR;
               if (" " === N2 && (I2.isUnderline() || I2.isOverline()) && (N2 = "\xA0"), A3 = b2 * l4 - _3.get(N2, I2.isBold(), I2.isItalic()), C3) {
-                if (w3 && (H && x2 || !H && !x2 && I2.bg === E2) && (H && x2 && S2.selectionForeground || I2.fg === k3) && I2.extended.ext === L2 && W === D3 && A3 === R && !F2 && !O2 && !U) {
-                  I2.isInvisible() ? y3 += o3.WHITESPACE_CELL_CHAR : y3 += N2, w3++;
+                if (w3 && (H && x4 || !H && !x4 && I2.bg === E2) && (H && x4 && S2.selectionForeground || I2.fg === k3) && I2.extended.ext === L2 && W === D3 && A3 === R && !F2 && !O2 && !U) {
+                  I2.isInvisible() ? y5 += o3.WHITESPACE_CELL_CHAR : y5 += N2, w3++;
                   continue;
                 }
-                w3 && (C3.textContent = y3), C3 = this._document.createElement("span"), w3 = 0, y3 = "";
+                w3 && (C3.textContent = y5), C3 = this._document.createElement("span"), w3 = 0, y5 = "";
               } else
                 C3 = this._document.createElement("span");
-              if (E2 = I2.bg, k3 = I2.fg, L2 = I2.extended.ext, D3 = W, R = A3, x2 = H, O2 && a4 >= M2 && a4 <= P2 && (a4 = M2), !this._coreService.isCursorHidden && F2 && this._coreService.isCursorInitialized) {
+              if (E2 = I2.bg, k3 = I2.fg, L2 = I2.extended.ext, D3 = W, R = A3, x4 = H, O2 && a5 >= M2 && a5 <= P2 && (a5 = M2), !this._coreService.isCursorHidden && F2 && this._coreService.isCursorInitialized) {
                 if (B3.push("xterm-cursor"), this._coreBrowserService.isFocused)
                   h4 && B3.push("xterm-cursor-blink"), B3.push("bar" === s5 ? "xterm-cursor-bar" : "underline" === s5 ? "xterm-cursor-underline" : "xterm-cursor-block");
                 else if (r4)
@@ -1547,14 +1547,14 @@ WARNING: This link could potentially be dangerous`)) {
                       B3.push("xterm-cursor-underline");
                   }
               }
-              if (I2.isBold() && B3.push("xterm-bold"), I2.isItalic() && B3.push("xterm-italic"), I2.isDim() && B3.push("xterm-dim"), y3 = I2.isInvisible() ? o3.WHITESPACE_CELL_CHAR : I2.getChars() || o3.WHITESPACE_CELL_CHAR, I2.isUnderline() && (B3.push(`xterm-underline-${I2.extended.underlineStyle}`), " " === y3 && (y3 = "\xA0"), !I2.isUnderlineColorDefault()))
+              if (I2.isBold() && B3.push("xterm-bold"), I2.isItalic() && B3.push("xterm-italic"), I2.isDim() && B3.push("xterm-dim"), y5 = I2.isInvisible() ? o3.WHITESPACE_CELL_CHAR : I2.getChars() || o3.WHITESPACE_CELL_CHAR, I2.isUnderline() && (B3.push(`xterm-underline-${I2.extended.underlineStyle}`), " " === y5 && (y5 = "\xA0"), !I2.isUnderlineColorDefault()))
                 if (I2.isUnderlineColorRGB())
                   C3.style.textDecorationColor = `rgb(${u4.AttributeData.toColorRGB(I2.getUnderlineColor()).join(",")})`;
                 else {
                   let e6 = I2.getUnderlineColor();
                   this._optionsService.rawOptions.drawBoldTextInBrightColors && I2.isBold() && e6 < 8 && (e6 += 8), C3.style.textDecorationColor = S2.ansi[e6].css;
                 }
-              I2.isOverline() && (B3.push("xterm-overline"), " " === y3 && (y3 = "\xA0")), I2.isStrikethrough() && B3.push("xterm-strikethrough"), W && (C3.style.textDecoration = "underline");
+              I2.isOverline() && (B3.push("xterm-overline"), " " === y5 && (y5 = "\xA0")), I2.isStrikethrough() && B3.push("xterm-strikethrough"), W && (C3.style.textDecoration = "underline");
               let $2 = I2.getFgColor(), j3 = I2.getFgColorMode(), z3 = I2.getBgColor(), K = I2.getBgColorMode();
               const q3 = !!I2.isInverse();
               if (q3) {
@@ -1563,46 +1563,46 @@ WARNING: This link could potentially be dangerous`)) {
                 const t6 = j3;
                 j3 = K, K = t6;
               }
-              let V2, G2, X, J = false;
+              let V2, G2, X2, J = false;
               switch (this._decorationService.forEachDecorationAtCell(M2, t5, void 0, (e6) => {
                 "top" !== e6.options.layer && J || (e6.backgroundColorRGB && (K = 50331648, z3 = e6.backgroundColorRGB.rgba >> 8 & 16777215, V2 = e6.backgroundColorRGB), e6.foregroundColorRGB && (j3 = 50331648, $2 = e6.foregroundColorRGB.rgba >> 8 & 16777215, G2 = e6.foregroundColorRGB), J = "top" === e6.options.layer);
               }), !J && H && (V2 = this._coreBrowserService.isFocused ? S2.selectionBackgroundOpaque : S2.selectionInactiveBackgroundOpaque, z3 = V2.rgba >> 8 & 16777215, K = 50331648, J = true, S2.selectionForeground && (j3 = 50331648, $2 = S2.selectionForeground.rgba >> 8 & 16777215, G2 = S2.selectionForeground)), J && B3.push("xterm-decoration-top"), K) {
                 case 16777216:
                 case 33554432:
-                  X = S2.ansi[z3], B3.push(`xterm-bg-${z3}`);
+                  X2 = S2.ansi[z3], B3.push(`xterm-bg-${z3}`);
                   break;
                 case 50331648:
-                  X = c3.channels.toColor(z3 >> 16, z3 >> 8 & 255, 255 & z3), this._addStyle(C3, `background-color:#${v3((z3 >>> 0).toString(16), "0", 6)}`);
+                  X2 = c4.channels.toColor(z3 >> 16, z3 >> 8 & 255, 255 & z3), this._addStyle(C3, `background-color:#${v3((z3 >>> 0).toString(16), "0", 6)}`);
                   break;
                 default:
-                  q3 ? (X = S2.foreground, B3.push(`xterm-bg-${n2.INVERTED_DEFAULT_COLOR}`)) : X = S2.background;
+                  q3 ? (X2 = S2.foreground, B3.push(`xterm-bg-${n2.INVERTED_DEFAULT_COLOR}`)) : X2 = S2.background;
               }
-              switch (V2 || I2.isDim() && (V2 = c3.color.multiplyOpacity(X, 0.5)), j3) {
+              switch (V2 || I2.isDim() && (V2 = c4.color.multiplyOpacity(X2, 0.5)), j3) {
                 case 16777216:
                 case 33554432:
-                  I2.isBold() && $2 < 8 && this._optionsService.rawOptions.drawBoldTextInBrightColors && ($2 += 8), this._applyMinimumContrast(C3, X, S2.ansi[$2], I2, V2, void 0) || B3.push(`xterm-fg-${$2}`);
+                  I2.isBold() && $2 < 8 && this._optionsService.rawOptions.drawBoldTextInBrightColors && ($2 += 8), this._applyMinimumContrast(C3, X2, S2.ansi[$2], I2, V2, void 0) || B3.push(`xterm-fg-${$2}`);
                   break;
                 case 50331648:
-                  const e6 = c3.channels.toColor($2 >> 16 & 255, $2 >> 8 & 255, 255 & $2);
-                  this._applyMinimumContrast(C3, X, e6, I2, V2, G2) || this._addStyle(C3, `color:#${v3($2.toString(16), "0", 6)}`);
+                  const e6 = c4.channels.toColor($2 >> 16 & 255, $2 >> 8 & 255, 255 & $2);
+                  this._applyMinimumContrast(C3, X2, e6, I2, V2, G2) || this._addStyle(C3, `color:#${v3($2.toString(16), "0", 6)}`);
                   break;
                 default:
-                  this._applyMinimumContrast(C3, X, S2.foreground, I2, V2, G2) || q3 && B3.push(`xterm-fg-${n2.INVERTED_DEFAULT_COLOR}`);
+                  this._applyMinimumContrast(C3, X2, S2.foreground, I2, V2, G2) || q3 && B3.push(`xterm-fg-${n2.INVERTED_DEFAULT_COLOR}`);
               }
-              B3.length && (C3.className = B3.join(" "), B3.length = 0), F2 || O2 || U ? C3.textContent = y3 : w3++, A3 !== this.defaultSpacing && (C3.style.letterSpacing = `${A3}px`), g2.push(C3), M2 = P2;
+              B3.length && (C3.className = B3.join(" "), B3.length = 0), F2 || O2 || U ? C3.textContent = y5 : w3++, A3 !== this.defaultSpacing && (C3.style.letterSpacing = `${A3}px`), g2.push(C3), M2 = P2;
             }
-            return C3 && w3 && (C3.textContent = y3), g2;
+            return C3 && w3 && (C3.textContent = y5), g2;
           }
           _applyMinimumContrast(e5, t5, i6, s5, r4, n3) {
             if (1 === this._optionsService.rawOptions.minimumContrastRatio || (0, _2.treatGlyphAsBackgroundColor)(s5.getCode()))
               return false;
             const o4 = this._getContrastCache(s5);
-            let a4;
-            if (r4 || n3 || (a4 = o4.getColor(t5.rgba, i6.rgba)), void 0 === a4) {
+            let a5;
+            if (r4 || n3 || (a5 = o4.getColor(t5.rgba, i6.rgba)), void 0 === a5) {
               const e6 = this._optionsService.rawOptions.minimumContrastRatio / (s5.isDim() ? 2 : 1);
-              a4 = c3.color.ensureContrastRatio(r4 || t5, n3 || i6, e6), o4.setColor((r4 || t5).rgba, (n3 || i6).rgba, a4 ?? null);
+              a5 = c4.color.ensureContrastRatio(r4 || t5, n3 || i6, e6), o4.setColor((r4 || t5).rgba, (n3 || i6).rgba, a5 ?? null);
             }
-            return !!a4 && (this._addStyle(e5, `color:${a4.css}`), true);
+            return !!a5 && (this._addStyle(e5, `color:${a5.css}`), true);
           }
           _getContrastCache(e5) {
             return e5.isDim() ? this._themeService.colors.halfContrastCache : this._themeService.colors.contrastCache;
@@ -1707,8 +1707,8 @@ WARNING: This link could potentially be dangerous`)) {
           update(e5, t5, i6, s4 = false) {
             if (this.selectionStart = t5, this.selectionEnd = i6, !t5 || !i6 || t5[0] === i6[0] && t5[1] === i6[1])
               return void this.clear();
-            const r3 = e5.buffers.active.ydisp, n2 = t5[1] - r3, o3 = i6[1] - r3, a3 = Math.max(n2, 0), h3 = Math.min(o3, e5.rows - 1);
-            a3 >= e5.rows || h3 < 0 ? this.clear() : (this.hasSelection = true, this.columnSelectMode = s4, this.viewportStartRow = n2, this.viewportEndRow = o3, this.viewportCappedStartRow = a3, this.viewportCappedEndRow = h3, this.startCol = t5[0], this.endCol = i6[0]);
+            const r3 = e5.buffers.active.ydisp, n2 = t5[1] - r3, o3 = i6[1] - r3, a4 = Math.max(n2, 0), h3 = Math.min(o3, e5.rows - 1);
+            a4 >= e5.rows || h3 < 0 ? this.clear() : (this.hasSelection = true, this.columnSelectMode = s4, this.viewportStartRow = n2, this.viewportEndRow = o3, this.viewportCappedStartRow = a4, this.viewportCappedEndRow = h3, this.startCol = t5[0], this.endCol = i6[0]);
           }
           isCellSelected(e5, t5, i6) {
             return !!this.hasSelection && (i6 -= e5.buffer.active.viewportY, this.columnSelectMode ? this.startCol <= this.endCol ? t5 >= this.startCol && i6 >= this.viewportCappedStartRow && t5 < this.endCol && i6 <= this.viewportCappedEndRow : t5 < this.startCol && i6 >= this.viewportCappedStartRow && t5 >= this.endCol && i6 <= this.viewportCappedEndRow : i6 > this.viewportStartRow && i6 < this.viewportEndRow || this.viewportStartRow === this.viewportEndRow && i6 === this.viewportStartRow && t5 >= this.startCol && t5 < this.endCol || this.viewportStartRow < this.viewportEndRow && i6 === this.viewportEndRow && t5 < this.endCol || this.viewportStartRow < this.viewportEndRow && i6 === this.viewportStartRow && t5 >= this.startCol);
@@ -1757,8 +1757,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -1766,8 +1766,8 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.CharSizeService = void 0;
-        const n2 = i5(2585), o3 = i5(8460), a3 = i5(844);
-        let h3 = t4.CharSizeService = class extends a3.Disposable {
+        const n2 = i5(2585), o3 = i5(8460), a4 = i5(844);
+        let h3 = t4.CharSizeService = class extends a4.Disposable {
           get hasValidSize() {
             return this.width > 0 && this.height > 0;
           }
@@ -1786,7 +1786,7 @@ WARNING: This link could potentially be dangerous`)) {
           }
         };
         t4.CharSizeService = h3 = s4([r3(2, n2.IOptionsService)], h3);
-        class c3 extends a3.Disposable {
+        class c4 extends a4.Disposable {
           constructor() {
             super(...arguments), this._result = { width: 0, height: 0 };
           }
@@ -1794,7 +1794,7 @@ WARNING: This link could potentially be dangerous`)) {
             void 0 !== e5 && e5 > 0 && void 0 !== t5 && t5 > 0 && (this._result.width = e5, this._result.height = t5);
           }
         }
-        class l3 extends c3 {
+        class l3 extends c4 {
           constructor(e5, t5, i6) {
             super(), this._document = e5, this._parentElement = t5, this._optionsService = i6, this._measureElement = this._document.createElement("span"), this._measureElement.classList.add("xterm-char-measure-element"), this._measureElement.textContent = "W".repeat(32), this._measureElement.setAttribute("aria-hidden", "true"), this._measureElement.style.whiteSpace = "pre", this._measureElement.style.fontKerning = "none", this._parentElement.appendChild(this._measureElement);
           }
@@ -1802,7 +1802,7 @@ WARNING: This link could potentially be dangerous`)) {
             return this._measureElement.style.fontFamily = this._optionsService.rawOptions.fontFamily, this._measureElement.style.fontSize = `${this._optionsService.rawOptions.fontSize}px`, this._validateAndSet(Number(this._measureElement.offsetWidth) / 32, Number(this._measureElement.offsetHeight)), this._result;
           }
         }
-        class d3 extends c3 {
+        class d3 extends c4 {
           constructor(e5) {
             super(), this._optionsService = e5, this._canvas = new OffscreenCanvas(100, 100), this._ctx = this._canvas.getContext("2d");
             const t5 = this._ctx.measureText("W");
@@ -1821,8 +1821,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -1830,8 +1830,8 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.CharacterJoinerService = t4.JoinedCellData = void 0;
-        const n2 = i5(3734), o3 = i5(643), a3 = i5(511), h3 = i5(2585);
-        class c3 extends n2.AttributeData {
+        const n2 = i5(3734), o3 = i5(643), a4 = i5(511), h3 = i5(2585);
+        class c4 extends n2.AttributeData {
           constructor(e5, t5, i6) {
             super(), this.content = 0, this.combinedData = "", this.fg = e5.fg, this.bg = e5.bg, this.combinedData = t5, this._width = i6;
           }
@@ -1854,10 +1854,10 @@ WARNING: This link could potentially be dangerous`)) {
             return [this.fg, this.getChars(), this.getWidth(), this.getCode()];
           }
         }
-        t4.JoinedCellData = c3;
+        t4.JoinedCellData = c4;
         let l3 = t4.CharacterJoinerService = class e5 {
           constructor(e6) {
-            this._bufferService = e6, this._characterJoiners = [], this._nextCharacterJoinerId = 0, this._workCell = new a3.CellData();
+            this._bufferService = e6, this._characterJoiners = [], this._nextCharacterJoinerId = 0, this._workCell = new a4.CellData();
           }
           register(e6) {
             const t5 = { id: this._nextCharacterJoinerId++, handler: e6 };
@@ -1876,21 +1876,21 @@ WARNING: This link could potentially be dangerous`)) {
             if (!t5 || 0 === t5.length)
               return [];
             const i6 = [], s5 = t5.translateToString(true);
-            let r4 = 0, n3 = 0, a4 = 0, h4 = t5.getFg(0), c4 = t5.getBg(0);
+            let r4 = 0, n3 = 0, a5 = 0, h4 = t5.getFg(0), c5 = t5.getBg(0);
             for (let e7 = 0; e7 < t5.getTrimmedLength(); e7++)
               if (t5.loadCell(e7, this._workCell), 0 !== this._workCell.getWidth()) {
-                if (this._workCell.fg !== h4 || this._workCell.bg !== c4) {
+                if (this._workCell.fg !== h4 || this._workCell.bg !== c5) {
                   if (e7 - r4 > 1) {
-                    const e8 = this._getJoinedRanges(s5, a4, n3, t5, r4);
+                    const e8 = this._getJoinedRanges(s5, a5, n3, t5, r4);
                     for (let t6 = 0; t6 < e8.length; t6++)
                       i6.push(e8[t6]);
                   }
-                  r4 = e7, a4 = n3, h4 = this._workCell.fg, c4 = this._workCell.bg;
+                  r4 = e7, a5 = n3, h4 = this._workCell.fg, c5 = this._workCell.bg;
                 }
                 n3 += this._workCell.getChars().length || o3.WHITESPACE_CELL_CHAR.length;
               }
             if (this._bufferService.cols - r4 > 1) {
-              const e7 = this._getJoinedRanges(s5, a4, n3, t5, r4);
+              const e7 = this._getJoinedRanges(s5, a5, n3, t5, r4);
               for (let t6 = 0; t6 < e7.length; t6++)
                 i6.push(e7[t6]);
             }
@@ -1898,9 +1898,9 @@ WARNING: This link could potentially be dangerous`)) {
           }
           _getJoinedRanges(t5, i6, s5, r4, n3) {
             const o4 = t5.substring(i6, s5);
-            let a4 = [];
+            let a5 = [];
             try {
-              a4 = this._characterJoiners[0].handler(o4);
+              a5 = this._characterJoiners[0].handler(o4);
             } catch (e6) {
               console.error(e6);
             }
@@ -1908,27 +1908,27 @@ WARNING: This link could potentially be dangerous`)) {
               try {
                 const i7 = this._characterJoiners[t6].handler(o4);
                 for (let t7 = 0; t7 < i7.length; t7++)
-                  e5._mergeRanges(a4, i7[t7]);
+                  e5._mergeRanges(a5, i7[t7]);
               } catch (e6) {
                 console.error(e6);
               }
-            return this._stringRangesToCellRanges(a4, r4, n3), a4;
+            return this._stringRangesToCellRanges(a5, r4, n3), a5;
           }
           _stringRangesToCellRanges(e6, t5, i6) {
-            let s5 = 0, r4 = false, n3 = 0, a4 = e6[s5];
-            if (a4) {
+            let s5 = 0, r4 = false, n3 = 0, a5 = e6[s5];
+            if (a5) {
               for (let h4 = i6; h4 < this._bufferService.cols; h4++) {
-                const i7 = t5.getWidth(h4), c4 = t5.getString(h4).length || o3.WHITESPACE_CELL_CHAR.length;
+                const i7 = t5.getWidth(h4), c5 = t5.getString(h4).length || o3.WHITESPACE_CELL_CHAR.length;
                 if (0 !== i7) {
-                  if (!r4 && a4[0] <= n3 && (a4[0] = h4, r4 = true), a4[1] <= n3) {
-                    if (a4[1] = h4, a4 = e6[++s5], !a4)
+                  if (!r4 && a5[0] <= n3 && (a5[0] = h4, r4 = true), a5[1] <= n3) {
+                    if (a5[1] = h4, a5 = e6[++s5], !a5)
                       break;
-                    a4[0] <= n3 ? (a4[0] = h4, r4 = true) : r4 = false;
+                    a5[0] <= n3 ? (a5[0] = h4, r4 = true) : r4 = false;
                   }
-                  n3 += c4;
+                  n3 += c5;
                 }
               }
-              a4 && (a4[1] = this._bufferService.cols);
+              a5 && (a5[1] = this._bufferService.cols);
             }
           }
           static _mergeRanges(e6, t5) {
@@ -1958,7 +1958,7 @@ WARNING: This link could potentially be dangerous`)) {
         const s4 = i5(844), r3 = i5(8460), n2 = i5(3656);
         class o3 extends s4.Disposable {
           constructor(e5, t5, i6) {
-            super(), this._textarea = e5, this._window = t5, this.mainDocument = i6, this._isFocused = false, this._cachedIsFocused = void 0, this._screenDprMonitor = new a3(this._window), this._onDprChange = this.register(new r3.EventEmitter()), this.onDprChange = this._onDprChange.event, this._onWindowChange = this.register(new r3.EventEmitter()), this.onWindowChange = this._onWindowChange.event, this.register(this.onWindowChange((e6) => this._screenDprMonitor.setWindow(e6))), this.register((0, r3.forwardEvent)(this._screenDprMonitor.onDprChange, this._onDprChange)), this._textarea.addEventListener("focus", () => this._isFocused = true), this._textarea.addEventListener("blur", () => this._isFocused = false);
+            super(), this._textarea = e5, this._window = t5, this.mainDocument = i6, this._isFocused = false, this._cachedIsFocused = void 0, this._screenDprMonitor = new a4(this._window), this._onDprChange = this.register(new r3.EventEmitter()), this.onDprChange = this._onDprChange.event, this._onWindowChange = this.register(new r3.EventEmitter()), this.onWindowChange = this._onWindowChange.event, this.register(this.onWindowChange((e6) => this._screenDprMonitor.setWindow(e6))), this.register((0, r3.forwardEvent)(this._screenDprMonitor.onDprChange, this._onDprChange)), this._textarea.addEventListener("focus", () => this._isFocused = true), this._textarea.addEventListener("blur", () => this._isFocused = false);
           }
           get window() {
             return this._window;
@@ -1974,7 +1974,7 @@ WARNING: This link could potentially be dangerous`)) {
           }
         }
         t4.CoreBrowserService = o3;
-        class a3 extends s4.Disposable {
+        class a4 extends s4.Disposable {
           constructor(e5) {
             super(), this._parentWindow = e5, this._windowResizeListener = this.register(new s4.MutableDisposable()), this._onDprChange = this.register(new r3.EventEmitter()), this.onDprChange = this._onDprChange.event, this._outerListener = () => this._setDprAndFireIfDiffers(), this._currentDevicePixelRatio = this._parentWindow.devicePixelRatio, this._updateDpr(), this._setWindowResizeListener(), this.register((0, s4.toDisposable)(() => this.clearListener()));
           }
@@ -2015,8 +2015,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -2025,7 +2025,7 @@ WARNING: This link could potentially be dangerous`)) {
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.MouseService = void 0;
         const n2 = i5(4725), o3 = i5(9806);
-        let a3 = t4.MouseService = class {
+        let a4 = t4.MouseService = class {
           constructor(e5, t5) {
             this._renderService = e5, this._charSizeService = t5;
           }
@@ -2038,15 +2038,15 @@ WARNING: This link could potentially be dangerous`)) {
               return i6[0] = Math.min(Math.max(i6[0], 0), this._renderService.dimensions.css.canvas.width - 1), i6[1] = Math.min(Math.max(i6[1], 0), this._renderService.dimensions.css.canvas.height - 1), { col: Math.floor(i6[0] / this._renderService.dimensions.css.cell.width), row: Math.floor(i6[1] / this._renderService.dimensions.css.cell.height), x: Math.floor(i6[0]), y: Math.floor(i6[1]) };
           }
         };
-        t4.MouseService = a3 = s4([r3(0, n2.IRenderService), r3(1, n2.ICharSizeService)], a3);
+        t4.MouseService = a4 = s4([r3(0, n2.IRenderService), r3(1, n2.ICharSizeService)], a4);
       }, 3230: function(e4, t4, i5) {
         var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
           var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -2054,13 +2054,13 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.RenderService = void 0;
-        const n2 = i5(6193), o3 = i5(4725), a3 = i5(8460), h3 = i5(844), c3 = i5(7226), l3 = i5(2585);
+        const n2 = i5(6193), o3 = i5(4725), a4 = i5(8460), h3 = i5(844), c4 = i5(7226), l3 = i5(2585);
         let d3 = t4.RenderService = class extends h3.Disposable {
           get dimensions() {
             return this._renderer.value.dimensions;
           }
           constructor(e5, t5, i6, s5, r4, o4, l4, d4) {
-            super(), this._rowCount = e5, this._charSizeService = s5, this._renderer = this.register(new h3.MutableDisposable()), this._pausedResizeTask = new c3.DebouncedIdleTask(), this._observerDisposable = this.register(new h3.MutableDisposable()), this._isPaused = false, this._needsFullRefresh = false, this._isNextRenderRedrawOnly = true, this._needsSelectionRefresh = false, this._canvasWidth = 0, this._canvasHeight = 0, this._selectionState = { start: void 0, end: void 0, columnSelectMode: false }, this._onDimensionsChange = this.register(new a3.EventEmitter()), this.onDimensionsChange = this._onDimensionsChange.event, this._onRenderedViewportChange = this.register(new a3.EventEmitter()), this.onRenderedViewportChange = this._onRenderedViewportChange.event, this._onRender = this.register(new a3.EventEmitter()), this.onRender = this._onRender.event, this._onRefreshRequest = this.register(new a3.EventEmitter()), this.onRefreshRequest = this._onRefreshRequest.event, this._renderDebouncer = new n2.RenderDebouncer((e6, t6) => this._renderRows(e6, t6), l4), this.register(this._renderDebouncer), this.register(l4.onDprChange(() => this.handleDevicePixelRatioChange())), this.register(o4.onResize(() => this._fullRefresh())), this.register(o4.buffers.onBufferActivate(() => this._renderer.value?.clear())), this.register(i6.onOptionChange(() => this._handleOptionsChanged())), this.register(this._charSizeService.onCharSizeChange(() => this.handleCharSizeChanged())), this.register(r4.onDecorationRegistered(() => this._fullRefresh())), this.register(r4.onDecorationRemoved(() => this._fullRefresh())), this.register(i6.onMultipleOptionChange(["customGlyphs", "drawBoldTextInBrightColors", "letterSpacing", "lineHeight", "fontFamily", "fontSize", "fontWeight", "fontWeightBold", "minimumContrastRatio", "rescaleOverlappingGlyphs"], () => {
+            super(), this._rowCount = e5, this._charSizeService = s5, this._renderer = this.register(new h3.MutableDisposable()), this._pausedResizeTask = new c4.DebouncedIdleTask(), this._observerDisposable = this.register(new h3.MutableDisposable()), this._isPaused = false, this._needsFullRefresh = false, this._isNextRenderRedrawOnly = true, this._needsSelectionRefresh = false, this._canvasWidth = 0, this._canvasHeight = 0, this._selectionState = { start: void 0, end: void 0, columnSelectMode: false }, this._onDimensionsChange = this.register(new a4.EventEmitter()), this.onDimensionsChange = this._onDimensionsChange.event, this._onRenderedViewportChange = this.register(new a4.EventEmitter()), this.onRenderedViewportChange = this._onRenderedViewportChange.event, this._onRender = this.register(new a4.EventEmitter()), this.onRender = this._onRender.event, this._onRefreshRequest = this.register(new a4.EventEmitter()), this.onRefreshRequest = this._onRefreshRequest.event, this._renderDebouncer = new n2.RenderDebouncer((e6, t6) => this._renderRows(e6, t6), l4), this.register(this._renderDebouncer), this.register(l4.onDprChange(() => this.handleDevicePixelRatioChange())), this.register(o4.onResize(() => this._fullRefresh())), this.register(o4.buffers.onBufferActivate(() => this._renderer.value?.clear())), this.register(i6.onOptionChange(() => this._handleOptionsChanged())), this.register(this._charSizeService.onCharSizeChange(() => this.handleCharSizeChanged())), this.register(r4.onDecorationRegistered(() => this._fullRefresh())), this.register(r4.onDecorationRemoved(() => this._fullRefresh())), this.register(i6.onMultipleOptionChange(["customGlyphs", "drawBoldTextInBrightColors", "letterSpacing", "lineHeight", "fontFamily", "fontSize", "fontWeight", "fontWeightBold", "minimumContrastRatio", "rescaleOverlappingGlyphs"], () => {
               this.clear(), this.handleResize(o4.cols, o4.rows), this._fullRefresh();
             })), this.register(i6.onMultipleOptionChange(["cursorBlink", "cursorStyle"], () => this.refreshRows(o4.buffer.y, o4.buffer.y, true))), this.register(d4.onChangeColors(() => this._fullRefresh())), this._registerIntersectionObserver(l4.window, t5), this.register(l4.onWindowChange((e6) => this._registerIntersectionObserver(e6, t5)));
           }
@@ -2135,8 +2135,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -2144,12 +2144,12 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.SelectionService = void 0;
-        const n2 = i5(9806), o3 = i5(9504), a3 = i5(456), h3 = i5(4725), c3 = i5(8460), l3 = i5(844), d3 = i5(6114), _2 = i5(4841), u4 = i5(511), f4 = i5(2585), v3 = String.fromCharCode(160), p3 = new RegExp(v3, "g");
+        const n2 = i5(9806), o3 = i5(9504), a4 = i5(456), h3 = i5(4725), c4 = i5(8460), l3 = i5(844), d3 = i5(6114), _2 = i5(4841), u4 = i5(511), f4 = i5(2585), v3 = String.fromCharCode(160), p3 = new RegExp(v3, "g");
         let g2 = t4.SelectionService = class extends l3.Disposable {
           constructor(e5, t5, i6, s5, r4, n3, o4, h4, d4) {
-            super(), this._element = e5, this._screenElement = t5, this._linkifier = i6, this._bufferService = s5, this._coreService = r4, this._mouseService = n3, this._optionsService = o4, this._renderService = h4, this._coreBrowserService = d4, this._dragScrollAmount = 0, this._enabled = true, this._workCell = new u4.CellData(), this._mouseDownTimeStamp = 0, this._oldHasSelection = false, this._oldSelectionStart = void 0, this._oldSelectionEnd = void 0, this._onLinuxMouseSelection = this.register(new c3.EventEmitter()), this.onLinuxMouseSelection = this._onLinuxMouseSelection.event, this._onRedrawRequest = this.register(new c3.EventEmitter()), this.onRequestRedraw = this._onRedrawRequest.event, this._onSelectionChange = this.register(new c3.EventEmitter()), this.onSelectionChange = this._onSelectionChange.event, this._onRequestScrollLines = this.register(new c3.EventEmitter()), this.onRequestScrollLines = this._onRequestScrollLines.event, this._mouseMoveListener = (e6) => this._handleMouseMove(e6), this._mouseUpListener = (e6) => this._handleMouseUp(e6), this._coreService.onUserInput(() => {
+            super(), this._element = e5, this._screenElement = t5, this._linkifier = i6, this._bufferService = s5, this._coreService = r4, this._mouseService = n3, this._optionsService = o4, this._renderService = h4, this._coreBrowserService = d4, this._dragScrollAmount = 0, this._enabled = true, this._workCell = new u4.CellData(), this._mouseDownTimeStamp = 0, this._oldHasSelection = false, this._oldSelectionStart = void 0, this._oldSelectionEnd = void 0, this._onLinuxMouseSelection = this.register(new c4.EventEmitter()), this.onLinuxMouseSelection = this._onLinuxMouseSelection.event, this._onRedrawRequest = this.register(new c4.EventEmitter()), this.onRequestRedraw = this._onRedrawRequest.event, this._onSelectionChange = this.register(new c4.EventEmitter()), this.onSelectionChange = this._onSelectionChange.event, this._onRequestScrollLines = this.register(new c4.EventEmitter()), this.onRequestScrollLines = this._onRequestScrollLines.event, this._mouseMoveListener = (e6) => this._handleMouseMove(e6), this._mouseUpListener = (e6) => this._handleMouseUp(e6), this._coreService.onUserInput(() => {
               this.hasSelection && this.clearSelection();
-            }), this._trimListener = this._bufferService.buffer.lines.onTrim((e6) => this._handleTrim(e6)), this.register(this._bufferService.buffers.onBufferActivate((e6) => this._handleBufferActivate(e6))), this.enable(), this._model = new a3.SelectionModel(this._bufferService), this._activeSelectionMode = 0, this.register((0, l3.toDisposable)(() => {
+            }), this._trimListener = this._bufferService.buffer.lines.onTrim((e6) => this._handleTrim(e6)), this.register(this._bufferService.buffers.onBufferActivate((e6) => this._handleBufferActivate(e6))), this.enable(), this._model = new a4.SelectionModel(this._bufferService), this._activeSelectionMode = 0, this.register((0, l3.toDisposable)(() => {
               this._removeMouseDownListeners();
             }));
           }
@@ -2349,22 +2349,22 @@ WARNING: This link could potentially be dangerous`)) {
             if (!n3)
               return;
             const o4 = r4.translateBufferLineToString(e5[1], false);
-            let a4 = this._convertViewportColToCharacterIndex(n3, e5[0]), h4 = a4;
-            const c4 = e5[0] - a4;
+            let a5 = this._convertViewportColToCharacterIndex(n3, e5[0]), h4 = a5;
+            const c5 = e5[0] - a5;
             let l4 = 0, d4 = 0, _3 = 0, u5 = 0;
-            if (" " === o4.charAt(a4)) {
-              for (; a4 > 0 && " " === o4.charAt(a4 - 1); )
-                a4--;
+            if (" " === o4.charAt(a5)) {
+              for (; a5 > 0 && " " === o4.charAt(a5 - 1); )
+                a5--;
               for (; h4 < o4.length && " " === o4.charAt(h4 + 1); )
                 h4++;
             } else {
               let t6 = e5[0], i7 = e5[0];
               0 === n3.getWidth(t6) && (l4++, t6--), 2 === n3.getWidth(i7) && (d4++, i7++);
               const s6 = n3.getString(i7).length;
-              for (s6 > 1 && (u5 += s6 - 1, h4 += s6 - 1); t6 > 0 && a4 > 0 && !this._isCharWordSeparator(n3.loadCell(t6 - 1, this._workCell)); ) {
+              for (s6 > 1 && (u5 += s6 - 1, h4 += s6 - 1); t6 > 0 && a5 > 0 && !this._isCharWordSeparator(n3.loadCell(t6 - 1, this._workCell)); ) {
                 n3.loadCell(t6 - 1, this._workCell);
                 const e6 = this._workCell.getChars().length;
-                0 === this._workCell.getWidth() ? (l4++, t6--) : e6 > 1 && (_3 += e6 - 1, a4 -= e6 - 1), a4--, t6--;
+                0 === this._workCell.getWidth() ? (l4++, t6--) : e6 > 1 && (_3 += e6 - 1, a5 -= e6 - 1), a5--, t6--;
               }
               for (; i7 < n3.length && h4 + 1 < o4.length && !this._isCharWordSeparator(n3.loadCell(i7 + 1, this._workCell)); ) {
                 n3.loadCell(i7 + 1, this._workCell);
@@ -2373,8 +2373,8 @@ WARNING: This link could potentially be dangerous`)) {
               }
             }
             h4++;
-            let f5 = a4 + c4 - l4 + _3, v4 = Math.min(this._bufferService.cols, h4 - a4 + l4 + d4 - _3 - u5);
-            if (t5 || "" !== o4.slice(a4, h4).trim()) {
+            let f5 = a5 + c5 - l4 + _3, v4 = Math.min(this._bufferService.cols, h4 - a5 + l4 + d4 - _3 - u5);
+            if (t5 || "" !== o4.slice(a5, h4).trim()) {
               if (i6 && 0 === f5 && 32 !== n3.getCodePoint(0)) {
                 const t6 = r4.lines.get(e5[1] - 1);
                 if (t6 && n3.isWrapped && 32 !== t6.getCodePoint(this._bufferService.cols - 1)) {
@@ -2434,8 +2434,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -2443,7 +2443,7 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.ThemeService = t4.DEFAULT_ANSI_COLORS = void 0;
-        const n2 = i5(7239), o3 = i5(8055), a3 = i5(8460), h3 = i5(844), c3 = i5(2585), l3 = o3.css.toColor("#ffffff"), d3 = o3.css.toColor("#000000"), _2 = o3.css.toColor("#ffffff"), u4 = o3.css.toColor("#000000"), f4 = { css: "rgba(255, 255, 255, 0.3)", rgba: 4294967117 };
+        const n2 = i5(7239), o3 = i5(8055), a4 = i5(8460), h3 = i5(844), c4 = i5(2585), l3 = o3.css.toColor("#ffffff"), d3 = o3.css.toColor("#000000"), _2 = o3.css.toColor("#ffffff"), u4 = o3.css.toColor("#000000"), f4 = { css: "rgba(255, 255, 255, 0.3)", rgba: 4294967117 };
         t4.DEFAULT_ANSI_COLORS = Object.freeze((() => {
           const e5 = [o3.css.toColor("#2e3436"), o3.css.toColor("#cc0000"), o3.css.toColor("#4e9a06"), o3.css.toColor("#c4a000"), o3.css.toColor("#3465a4"), o3.css.toColor("#75507b"), o3.css.toColor("#06989a"), o3.css.toColor("#d3d7cf"), o3.css.toColor("#555753"), o3.css.toColor("#ef2929"), o3.css.toColor("#8ae234"), o3.css.toColor("#fce94f"), o3.css.toColor("#729fcf"), o3.css.toColor("#ad7fa8"), o3.css.toColor("#34e2e2"), o3.css.toColor("#eeeeec")], t5 = [0, 95, 135, 175, 215, 255];
           for (let i6 = 0; i6 < 216; i6++) {
@@ -2461,7 +2461,7 @@ WARNING: This link could potentially be dangerous`)) {
             return this._colors;
           }
           constructor(e5) {
-            super(), this._optionsService = e5, this._contrastCache = new n2.ColorContrastCache(), this._halfContrastCache = new n2.ColorContrastCache(), this._onChangeColors = this.register(new a3.EventEmitter()), this.onChangeColors = this._onChangeColors.event, this._colors = { foreground: l3, background: d3, cursor: _2, cursorAccent: u4, selectionForeground: void 0, selectionBackgroundTransparent: f4, selectionBackgroundOpaque: o3.color.blend(d3, f4), selectionInactiveBackgroundTransparent: f4, selectionInactiveBackgroundOpaque: o3.color.blend(d3, f4), ansi: t4.DEFAULT_ANSI_COLORS.slice(), contrastCache: this._contrastCache, halfContrastCache: this._halfContrastCache }, this._updateRestoreColors(), this._setTheme(this._optionsService.rawOptions.theme), this.register(this._optionsService.onSpecificOptionChange("minimumContrastRatio", () => this._contrastCache.clear())), this.register(this._optionsService.onSpecificOptionChange("theme", () => this._setTheme(this._optionsService.rawOptions.theme)));
+            super(), this._optionsService = e5, this._contrastCache = new n2.ColorContrastCache(), this._halfContrastCache = new n2.ColorContrastCache(), this._onChangeColors = this.register(new a4.EventEmitter()), this.onChangeColors = this._onChangeColors.event, this._colors = { foreground: l3, background: d3, cursor: _2, cursorAccent: u4, selectionForeground: void 0, selectionBackgroundTransparent: f4, selectionBackgroundOpaque: o3.color.blend(d3, f4), selectionInactiveBackgroundTransparent: f4, selectionInactiveBackgroundOpaque: o3.color.blend(d3, f4), ansi: t4.DEFAULT_ANSI_COLORS.slice(), contrastCache: this._contrastCache, halfContrastCache: this._halfContrastCache }, this._updateRestoreColors(), this._setTheme(this._optionsService.rawOptions.theme), this.register(this._optionsService.onSpecificOptionChange("minimumContrastRatio", () => this._contrastCache.clear())), this.register(this._optionsService.onSpecificOptionChange("theme", () => this._setTheme(this._optionsService.rawOptions.theme)));
           }
           _setTheme(e5 = {}) {
             const i6 = this._colors;
@@ -2517,7 +2517,7 @@ WARNING: This link could potentially be dangerous`)) {
             }
           return t5;
         }
-        t4.ThemeService = v3 = s4([r3(0, c3.IOptionsService)], v3);
+        t4.ThemeService = v3 = s4([r3(0, c4.IOptionsService)], v3);
       }, 6349: (e4, t4, i5) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.CircularList = void 0;
         const s4 = i5(8460), r3 = i5(844);
@@ -2619,7 +2619,7 @@ WARNING: This link could potentially be dangerous`)) {
       }, 8055: (e4, t4) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.contrastRatio = t4.toPaddedHex = t4.rgba = t4.rgb = t4.css = t4.color = t4.channels = t4.NULL_COLOR = void 0;
         let i5 = 0, s4 = 0, r3 = 0, n2 = 0;
-        var o3, a3, h3, c3, l3;
+        var o3, a4, h3, c4, l3;
         function d3(e5) {
           const t5 = e5.toString(16);
           return t5.length < 2 ? "0" + t5 : t5;
@@ -2642,8 +2642,8 @@ WARNING: This link could potentially be dangerous`)) {
           e5.blend = function(e6, t6) {
             if (n2 = (255 & t6.rgba) / 255, 1 === n2)
               return { css: t6.css, rgba: t6.rgba };
-            const a4 = t6.rgba >> 24 & 255, h4 = t6.rgba >> 16 & 255, c4 = t6.rgba >> 8 & 255, l4 = e6.rgba >> 24 & 255, d4 = e6.rgba >> 16 & 255, _3 = e6.rgba >> 8 & 255;
-            return i5 = l4 + Math.round((a4 - l4) * n2), s4 = d4 + Math.round((h4 - d4) * n2), r3 = _3 + Math.round((c4 - _3) * n2), { css: o3.toCss(i5, s4, r3), rgba: o3.toRgba(i5, s4, r3) };
+            const a5 = t6.rgba >> 24 & 255, h4 = t6.rgba >> 16 & 255, c5 = t6.rgba >> 8 & 255, l4 = e6.rgba >> 24 & 255, d4 = e6.rgba >> 16 & 255, _3 = e6.rgba >> 8 & 255;
+            return i5 = l4 + Math.round((a5 - l4) * n2), s4 = d4 + Math.round((h4 - d4) * n2), r3 = _3 + Math.round((c5 - _3) * n2), { css: o3.toCss(i5, s4, r3), rgba: o3.toRgba(i5, s4, r3) };
           }, e5.isOpaque = function(e6) {
             return 255 == (255 & e6.rgba);
           }, e5.ensureContrastRatio = function(e6, t6, i6) {
@@ -2658,13 +2658,13 @@ WARNING: This link could potentially be dangerous`)) {
           }, e5.toColorRGB = function(e6) {
             return [e6.rgba >> 24 & 255, e6.rgba >> 16 & 255, e6.rgba >> 8 & 255];
           };
-        }(a3 || (t4.color = a3 = {})), function(e5) {
-          let t5, a4;
+        }(a4 || (t4.color = a4 = {})), function(e5) {
+          let t5, a5;
           try {
             const e6 = document.createElement("canvas");
             e6.width = 1, e6.height = 1;
             const i6 = e6.getContext("2d", { willReadFrequently: true });
-            i6 && (t5 = i6, t5.globalCompositeOperation = "copy", a4 = t5.createLinearGradient(0, 0, 1, 1));
+            i6 && (t5 = i6, t5.globalCompositeOperation = "copy", a5 = t5.createLinearGradient(0, 0, 1, 1));
           } catch {
           }
           e5.toColor = function(e6) {
@@ -2682,9 +2682,9 @@ WARNING: This link could potentially be dangerous`)) {
             const h4 = e6.match(/rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(,\s*(0|1|\d?\.(\d+))\s*)?\)/);
             if (h4)
               return i5 = parseInt(h4[1]), s4 = parseInt(h4[2]), r3 = parseInt(h4[3]), n2 = Math.round(255 * (void 0 === h4[5] ? 1 : parseFloat(h4[5]))), o3.toColor(i5, s4, r3, n2);
-            if (!t5 || !a4)
+            if (!t5 || !a5)
               throw new Error("css.toColor: Unsupported css format");
-            if (t5.fillStyle = a4, t5.fillStyle = e6, "string" != typeof t5.fillStyle)
+            if (t5.fillStyle = a5, t5.fillStyle = e6, "string" != typeof t5.fillStyle)
               throw new Error("css.toColor: Unsupported css format");
             if (t5.fillRect(0, 0, 1, 1), [i5, s4, r3, n2] = t5.getImageData(0, 0, 1, 1).data, 255 !== n2)
               throw new Error("css.toColor: Unsupported css format");
@@ -2698,52 +2698,52 @@ WARNING: This link could potentially be dangerous`)) {
           e5.relativeLuminance = function(e6) {
             return t5(e6 >> 16 & 255, e6 >> 8 & 255, 255 & e6);
           }, e5.relativeLuminance2 = t5;
-        }(c3 || (t4.rgb = c3 = {})), function(e5) {
+        }(c4 || (t4.rgb = c4 = {})), function(e5) {
           function t5(e6, t6, i6) {
             const s5 = e6 >> 24 & 255, r4 = e6 >> 16 & 255, n3 = e6 >> 8 & 255;
-            let o4 = t6 >> 24 & 255, a5 = t6 >> 16 & 255, h4 = t6 >> 8 & 255, l4 = _2(c3.relativeLuminance2(o4, a5, h4), c3.relativeLuminance2(s5, r4, n3));
-            for (; l4 < i6 && (o4 > 0 || a5 > 0 || h4 > 0); )
-              o4 -= Math.max(0, Math.ceil(0.1 * o4)), a5 -= Math.max(0, Math.ceil(0.1 * a5)), h4 -= Math.max(0, Math.ceil(0.1 * h4)), l4 = _2(c3.relativeLuminance2(o4, a5, h4), c3.relativeLuminance2(s5, r4, n3));
-            return (o4 << 24 | a5 << 16 | h4 << 8 | 255) >>> 0;
+            let o4 = t6 >> 24 & 255, a6 = t6 >> 16 & 255, h4 = t6 >> 8 & 255, l4 = _2(c4.relativeLuminance2(o4, a6, h4), c4.relativeLuminance2(s5, r4, n3));
+            for (; l4 < i6 && (o4 > 0 || a6 > 0 || h4 > 0); )
+              o4 -= Math.max(0, Math.ceil(0.1 * o4)), a6 -= Math.max(0, Math.ceil(0.1 * a6)), h4 -= Math.max(0, Math.ceil(0.1 * h4)), l4 = _2(c4.relativeLuminance2(o4, a6, h4), c4.relativeLuminance2(s5, r4, n3));
+            return (o4 << 24 | a6 << 16 | h4 << 8 | 255) >>> 0;
           }
-          function a4(e6, t6, i6) {
+          function a5(e6, t6, i6) {
             const s5 = e6 >> 24 & 255, r4 = e6 >> 16 & 255, n3 = e6 >> 8 & 255;
-            let o4 = t6 >> 24 & 255, a5 = t6 >> 16 & 255, h4 = t6 >> 8 & 255, l4 = _2(c3.relativeLuminance2(o4, a5, h4), c3.relativeLuminance2(s5, r4, n3));
-            for (; l4 < i6 && (o4 < 255 || a5 < 255 || h4 < 255); )
-              o4 = Math.min(255, o4 + Math.ceil(0.1 * (255 - o4))), a5 = Math.min(255, a5 + Math.ceil(0.1 * (255 - a5))), h4 = Math.min(255, h4 + Math.ceil(0.1 * (255 - h4))), l4 = _2(c3.relativeLuminance2(o4, a5, h4), c3.relativeLuminance2(s5, r4, n3));
-            return (o4 << 24 | a5 << 16 | h4 << 8 | 255) >>> 0;
+            let o4 = t6 >> 24 & 255, a6 = t6 >> 16 & 255, h4 = t6 >> 8 & 255, l4 = _2(c4.relativeLuminance2(o4, a6, h4), c4.relativeLuminance2(s5, r4, n3));
+            for (; l4 < i6 && (o4 < 255 || a6 < 255 || h4 < 255); )
+              o4 = Math.min(255, o4 + Math.ceil(0.1 * (255 - o4))), a6 = Math.min(255, a6 + Math.ceil(0.1 * (255 - a6))), h4 = Math.min(255, h4 + Math.ceil(0.1 * (255 - h4))), l4 = _2(c4.relativeLuminance2(o4, a6, h4), c4.relativeLuminance2(s5, r4, n3));
+            return (o4 << 24 | a6 << 16 | h4 << 8 | 255) >>> 0;
           }
           e5.blend = function(e6, t6) {
             if (n2 = (255 & t6) / 255, 1 === n2)
               return t6;
-            const a5 = t6 >> 24 & 255, h4 = t6 >> 16 & 255, c4 = t6 >> 8 & 255, l4 = e6 >> 24 & 255, d4 = e6 >> 16 & 255, _3 = e6 >> 8 & 255;
-            return i5 = l4 + Math.round((a5 - l4) * n2), s4 = d4 + Math.round((h4 - d4) * n2), r3 = _3 + Math.round((c4 - _3) * n2), o3.toRgba(i5, s4, r3);
+            const a6 = t6 >> 24 & 255, h4 = t6 >> 16 & 255, c5 = t6 >> 8 & 255, l4 = e6 >> 24 & 255, d4 = e6 >> 16 & 255, _3 = e6 >> 8 & 255;
+            return i5 = l4 + Math.round((a6 - l4) * n2), s4 = d4 + Math.round((h4 - d4) * n2), r3 = _3 + Math.round((c5 - _3) * n2), o3.toRgba(i5, s4, r3);
           }, e5.ensureContrastRatio = function(e6, i6, s5) {
-            const r4 = c3.relativeLuminance(e6 >> 8), n3 = c3.relativeLuminance(i6 >> 8);
+            const r4 = c4.relativeLuminance(e6 >> 8), n3 = c4.relativeLuminance(i6 >> 8);
             if (_2(r4, n3) < s5) {
               if (n3 < r4) {
-                const n4 = t5(e6, i6, s5), o5 = _2(r4, c3.relativeLuminance(n4 >> 8));
+                const n4 = t5(e6, i6, s5), o5 = _2(r4, c4.relativeLuminance(n4 >> 8));
                 if (o5 < s5) {
-                  const t6 = a4(e6, i6, s5);
-                  return o5 > _2(r4, c3.relativeLuminance(t6 >> 8)) ? n4 : t6;
+                  const t6 = a5(e6, i6, s5);
+                  return o5 > _2(r4, c4.relativeLuminance(t6 >> 8)) ? n4 : t6;
                 }
                 return n4;
               }
-              const o4 = a4(e6, i6, s5), h4 = _2(r4, c3.relativeLuminance(o4 >> 8));
+              const o4 = a5(e6, i6, s5), h4 = _2(r4, c4.relativeLuminance(o4 >> 8));
               if (h4 < s5) {
                 const n4 = t5(e6, i6, s5);
-                return h4 > _2(r4, c3.relativeLuminance(n4 >> 8)) ? o4 : n4;
+                return h4 > _2(r4, c4.relativeLuminance(n4 >> 8)) ? o4 : n4;
               }
               return o4;
             }
-          }, e5.reduceLuminance = t5, e5.increaseLuminance = a4, e5.toChannels = function(e6) {
+          }, e5.reduceLuminance = t5, e5.increaseLuminance = a5, e5.toChannels = function(e6) {
             return [e6 >> 24 & 255, e6 >> 16 & 255, e6 >> 8 & 255, 255 & e6];
           };
         }(l3 || (t4.rgba = l3 = {})), t4.toPaddedHex = d3, t4.contrastRatio = _2;
       }, 8969: (e4, t4, i5) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.CoreTerminal = void 0;
-        const s4 = i5(844), r3 = i5(2585), n2 = i5(4348), o3 = i5(7866), a3 = i5(744), h3 = i5(7302), c3 = i5(6975), l3 = i5(8460), d3 = i5(1753), _2 = i5(1480), u4 = i5(7994), f4 = i5(9282), v3 = i5(5435), p3 = i5(5981), g2 = i5(2660);
-        let m3 = false;
+        const s4 = i5(844), r3 = i5(2585), n2 = i5(4348), o3 = i5(7866), a4 = i5(744), h3 = i5(7302), c4 = i5(6975), l3 = i5(8460), d3 = i5(1753), _2 = i5(1480), u4 = i5(7994), f4 = i5(9282), v3 = i5(5435), p3 = i5(5981), g2 = i5(2660);
+        let m4 = false;
         class S2 extends s4.Disposable {
           get onScroll() {
             return this._onScrollApi || (this._onScrollApi = this.register(new l3.EventEmitter()), this._onScroll.event((e5) => {
@@ -2767,7 +2767,7 @@ WARNING: This link could potentially be dangerous`)) {
               this.optionsService.options[t5] = e5[t5];
           }
           constructor(e5) {
-            super(), this._windowsWrappingHeuristics = this.register(new s4.MutableDisposable()), this._onBinary = this.register(new l3.EventEmitter()), this.onBinary = this._onBinary.event, this._onData = this.register(new l3.EventEmitter()), this.onData = this._onData.event, this._onLineFeed = this.register(new l3.EventEmitter()), this.onLineFeed = this._onLineFeed.event, this._onResize = this.register(new l3.EventEmitter()), this.onResize = this._onResize.event, this._onWriteParsed = this.register(new l3.EventEmitter()), this.onWriteParsed = this._onWriteParsed.event, this._onScroll = this.register(new l3.EventEmitter()), this._instantiationService = new n2.InstantiationService(), this.optionsService = this.register(new h3.OptionsService(e5)), this._instantiationService.setService(r3.IOptionsService, this.optionsService), this._bufferService = this.register(this._instantiationService.createInstance(a3.BufferService)), this._instantiationService.setService(r3.IBufferService, this._bufferService), this._logService = this.register(this._instantiationService.createInstance(o3.LogService)), this._instantiationService.setService(r3.ILogService, this._logService), this.coreService = this.register(this._instantiationService.createInstance(c3.CoreService)), this._instantiationService.setService(r3.ICoreService, this.coreService), this.coreMouseService = this.register(this._instantiationService.createInstance(d3.CoreMouseService)), this._instantiationService.setService(r3.ICoreMouseService, this.coreMouseService), this.unicodeService = this.register(this._instantiationService.createInstance(_2.UnicodeService)), this._instantiationService.setService(r3.IUnicodeService, this.unicodeService), this._charsetService = this._instantiationService.createInstance(u4.CharsetService), this._instantiationService.setService(r3.ICharsetService, this._charsetService), this._oscLinkService = this._instantiationService.createInstance(g2.OscLinkService), this._instantiationService.setService(r3.IOscLinkService, this._oscLinkService), this._inputHandler = this.register(new v3.InputHandler(this._bufferService, this._charsetService, this.coreService, this._logService, this.optionsService, this._oscLinkService, this.coreMouseService, this.unicodeService)), this.register((0, l3.forwardEvent)(this._inputHandler.onLineFeed, this._onLineFeed)), this.register(this._inputHandler), this.register((0, l3.forwardEvent)(this._bufferService.onResize, this._onResize)), this.register((0, l3.forwardEvent)(this.coreService.onData, this._onData)), this.register((0, l3.forwardEvent)(this.coreService.onBinary, this._onBinary)), this.register(this.coreService.onRequestScrollToBottom(() => this.scrollToBottom())), this.register(this.coreService.onUserInput(() => this._writeBuffer.handleUserInput())), this.register(this.optionsService.onMultipleOptionChange(["windowsMode", "windowsPty"], () => this._handleWindowsPtyOptionChange())), this.register(this._bufferService.onScroll((e6) => {
+            super(), this._windowsWrappingHeuristics = this.register(new s4.MutableDisposable()), this._onBinary = this.register(new l3.EventEmitter()), this.onBinary = this._onBinary.event, this._onData = this.register(new l3.EventEmitter()), this.onData = this._onData.event, this._onLineFeed = this.register(new l3.EventEmitter()), this.onLineFeed = this._onLineFeed.event, this._onResize = this.register(new l3.EventEmitter()), this.onResize = this._onResize.event, this._onWriteParsed = this.register(new l3.EventEmitter()), this.onWriteParsed = this._onWriteParsed.event, this._onScroll = this.register(new l3.EventEmitter()), this._instantiationService = new n2.InstantiationService(), this.optionsService = this.register(new h3.OptionsService(e5)), this._instantiationService.setService(r3.IOptionsService, this.optionsService), this._bufferService = this.register(this._instantiationService.createInstance(a4.BufferService)), this._instantiationService.setService(r3.IBufferService, this._bufferService), this._logService = this.register(this._instantiationService.createInstance(o3.LogService)), this._instantiationService.setService(r3.ILogService, this._logService), this.coreService = this.register(this._instantiationService.createInstance(c4.CoreService)), this._instantiationService.setService(r3.ICoreService, this.coreService), this.coreMouseService = this.register(this._instantiationService.createInstance(d3.CoreMouseService)), this._instantiationService.setService(r3.ICoreMouseService, this.coreMouseService), this.unicodeService = this.register(this._instantiationService.createInstance(_2.UnicodeService)), this._instantiationService.setService(r3.IUnicodeService, this.unicodeService), this._charsetService = this._instantiationService.createInstance(u4.CharsetService), this._instantiationService.setService(r3.ICharsetService, this._charsetService), this._oscLinkService = this._instantiationService.createInstance(g2.OscLinkService), this._instantiationService.setService(r3.IOscLinkService, this._oscLinkService), this._inputHandler = this.register(new v3.InputHandler(this._bufferService, this._charsetService, this.coreService, this._logService, this.optionsService, this._oscLinkService, this.coreMouseService, this.unicodeService)), this.register((0, l3.forwardEvent)(this._inputHandler.onLineFeed, this._onLineFeed)), this.register(this._inputHandler), this.register((0, l3.forwardEvent)(this._bufferService.onResize, this._onResize)), this.register((0, l3.forwardEvent)(this.coreService.onData, this._onData)), this.register((0, l3.forwardEvent)(this.coreService.onBinary, this._onBinary)), this.register(this.coreService.onRequestScrollToBottom(() => this.scrollToBottom())), this.register(this.coreService.onUserInput(() => this._writeBuffer.handleUserInput())), this.register(this.optionsService.onMultipleOptionChange(["windowsMode", "windowsPty"], () => this._handleWindowsPtyOptionChange())), this.register(this._bufferService.onScroll((e6) => {
               this._onScroll.fire({ position: this._bufferService.buffer.ydisp, source: 0 }), this._inputHandler.markRangeDirty(this._bufferService.buffer.scrollTop, this._bufferService.buffer.scrollBottom);
             })), this.register(this._inputHandler.onScroll((e6) => {
               this._onScroll.fire({ position: this._bufferService.buffer.ydisp, source: 0 }), this._inputHandler.markRangeDirty(this._bufferService.buffer.scrollTop, this._bufferService.buffer.scrollBottom);
@@ -2777,13 +2777,13 @@ WARNING: This link could potentially be dangerous`)) {
             this._writeBuffer.write(e5, t5);
           }
           writeSync(e5, t5) {
-            this._logService.logLevel <= r3.LogLevelEnum.WARN && !m3 && (this._logService.warn("writeSync is unreliable and will be removed soon."), m3 = true), this._writeBuffer.writeSync(e5, t5);
+            this._logService.logLevel <= r3.LogLevelEnum.WARN && !m4 && (this._logService.warn("writeSync is unreliable and will be removed soon."), m4 = true), this._writeBuffer.writeSync(e5, t5);
           }
           input(e5, t5 = true) {
             this.coreService.triggerDataEvent(e5, t5);
           }
           resize(e5, t5) {
-            isNaN(e5) || isNaN(t5) || (e5 = Math.max(e5, a3.MINIMUM_COLS), t5 = Math.max(t5, a3.MINIMUM_ROWS), this._bufferService.resize(e5, t5));
+            isNaN(e5) || isNaN(t5) || (e5 = Math.max(e5, a4.MINIMUM_COLS), t5 = Math.max(t5, a4.MINIMUM_ROWS), this._bufferService.resize(e5, t5));
           }
           scroll(e5, t5 = false) {
             this._bufferService.scroll(e5, t5);
@@ -2876,8 +2876,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -2885,7 +2885,7 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.InputHandler = t4.WindowsOptionsReportType = void 0;
-        const n2 = i5(2584), o3 = i5(7116), a3 = i5(2015), h3 = i5(844), c3 = i5(482), l3 = i5(8437), d3 = i5(8460), _2 = i5(643), u4 = i5(511), f4 = i5(3734), v3 = i5(2585), p3 = i5(1480), g2 = i5(6242), m3 = i5(6351), S2 = i5(5941), C3 = { "(": 0, ")": 1, "*": 2, "+": 3, "-": 1, ".": 2 }, b = 131072;
+        const n2 = i5(2584), o3 = i5(7116), a4 = i5(2015), h3 = i5(844), c4 = i5(482), l3 = i5(8437), d3 = i5(8460), _2 = i5(643), u4 = i5(511), f4 = i5(3734), v3 = i5(2585), p3 = i5(1480), g2 = i5(6242), m4 = i5(6351), S2 = i5(5941), C3 = { "(": 0, ")": 1, "*": 2, "+": 3, "-": 1, ".": 2 }, b = 131072;
         function w3(e5, t5) {
           if (e5 > 24)
             return t5.setWinLines || false;
@@ -2937,17 +2937,17 @@ WARNING: This link could potentially be dangerous`)) {
           }
           return false;
         }
-        var y3;
+        var y5;
         !function(e5) {
           e5[e5.GET_WIN_SIZE_PIXELS = 0] = "GET_WIN_SIZE_PIXELS", e5[e5.GET_CELL_SIZE_PIXELS = 1] = "GET_CELL_SIZE_PIXELS";
-        }(y3 || (t4.WindowsOptionsReportType = y3 = {}));
+        }(y5 || (t4.WindowsOptionsReportType = y5 = {}));
         let E2 = 0;
         class k3 extends h3.Disposable {
           getAttrData() {
             return this._curAttrData;
           }
-          constructor(e5, t5, i6, s5, r4, h4, _3, f5, v4 = new a3.EscapeSequenceParser()) {
-            super(), this._bufferService = e5, this._charsetService = t5, this._coreService = i6, this._logService = s5, this._optionsService = r4, this._oscLinkService = h4, this._coreMouseService = _3, this._unicodeService = f5, this._parser = v4, this._parseBuffer = new Uint32Array(4096), this._stringDecoder = new c3.StringToUtf32(), this._utf8Decoder = new c3.Utf8ToUtf32(), this._workCell = new u4.CellData(), this._windowTitle = "", this._iconName = "", this._windowTitleStack = [], this._iconNameStack = [], this._curAttrData = l3.DEFAULT_ATTR_DATA.clone(), this._eraseAttrDataInternal = l3.DEFAULT_ATTR_DATA.clone(), this._onRequestBell = this.register(new d3.EventEmitter()), this.onRequestBell = this._onRequestBell.event, this._onRequestRefreshRows = this.register(new d3.EventEmitter()), this.onRequestRefreshRows = this._onRequestRefreshRows.event, this._onRequestReset = this.register(new d3.EventEmitter()), this.onRequestReset = this._onRequestReset.event, this._onRequestSendFocus = this.register(new d3.EventEmitter()), this.onRequestSendFocus = this._onRequestSendFocus.event, this._onRequestSyncScrollBar = this.register(new d3.EventEmitter()), this.onRequestSyncScrollBar = this._onRequestSyncScrollBar.event, this._onRequestWindowsOptionsReport = this.register(new d3.EventEmitter()), this.onRequestWindowsOptionsReport = this._onRequestWindowsOptionsReport.event, this._onA11yChar = this.register(new d3.EventEmitter()), this.onA11yChar = this._onA11yChar.event, this._onA11yTab = this.register(new d3.EventEmitter()), this.onA11yTab = this._onA11yTab.event, this._onCursorMove = this.register(new d3.EventEmitter()), this.onCursorMove = this._onCursorMove.event, this._onLineFeed = this.register(new d3.EventEmitter()), this.onLineFeed = this._onLineFeed.event, this._onScroll = this.register(new d3.EventEmitter()), this.onScroll = this._onScroll.event, this._onTitleChange = this.register(new d3.EventEmitter()), this.onTitleChange = this._onTitleChange.event, this._onColor = this.register(new d3.EventEmitter()), this.onColor = this._onColor.event, this._parseStack = { paused: false, cursorStartX: 0, cursorStartY: 0, decodedLength: 0, position: 0 }, this._specialColors = [256, 257, 258], this.register(this._parser), this._dirtyRowTracker = new L2(this._bufferService), this._activeBuffer = this._bufferService.buffer, this.register(this._bufferService.buffers.onBufferActivate((e6) => this._activeBuffer = e6.activeBuffer)), this._parser.setCsiHandlerFallback((e6, t6) => {
+          constructor(e5, t5, i6, s5, r4, h4, _3, f5, v4 = new a4.EscapeSequenceParser()) {
+            super(), this._bufferService = e5, this._charsetService = t5, this._coreService = i6, this._logService = s5, this._optionsService = r4, this._oscLinkService = h4, this._coreMouseService = _3, this._unicodeService = f5, this._parser = v4, this._parseBuffer = new Uint32Array(4096), this._stringDecoder = new c4.StringToUtf32(), this._utf8Decoder = new c4.Utf8ToUtf32(), this._workCell = new u4.CellData(), this._windowTitle = "", this._iconName = "", this._windowTitleStack = [], this._iconNameStack = [], this._curAttrData = l3.DEFAULT_ATTR_DATA.clone(), this._eraseAttrDataInternal = l3.DEFAULT_ATTR_DATA.clone(), this._onRequestBell = this.register(new d3.EventEmitter()), this.onRequestBell = this._onRequestBell.event, this._onRequestRefreshRows = this.register(new d3.EventEmitter()), this.onRequestRefreshRows = this._onRequestRefreshRows.event, this._onRequestReset = this.register(new d3.EventEmitter()), this.onRequestReset = this._onRequestReset.event, this._onRequestSendFocus = this.register(new d3.EventEmitter()), this.onRequestSendFocus = this._onRequestSendFocus.event, this._onRequestSyncScrollBar = this.register(new d3.EventEmitter()), this.onRequestSyncScrollBar = this._onRequestSyncScrollBar.event, this._onRequestWindowsOptionsReport = this.register(new d3.EventEmitter()), this.onRequestWindowsOptionsReport = this._onRequestWindowsOptionsReport.event, this._onA11yChar = this.register(new d3.EventEmitter()), this.onA11yChar = this._onA11yChar.event, this._onA11yTab = this.register(new d3.EventEmitter()), this.onA11yTab = this._onA11yTab.event, this._onCursorMove = this.register(new d3.EventEmitter()), this.onCursorMove = this._onCursorMove.event, this._onLineFeed = this.register(new d3.EventEmitter()), this.onLineFeed = this._onLineFeed.event, this._onScroll = this.register(new d3.EventEmitter()), this.onScroll = this._onScroll.event, this._onTitleChange = this.register(new d3.EventEmitter()), this.onTitleChange = this._onTitleChange.event, this._onColor = this.register(new d3.EventEmitter()), this.onColor = this._onColor.event, this._parseStack = { paused: false, cursorStartX: 0, cursorStartY: 0, decodedLength: 0, position: 0 }, this._specialColors = [256, 257, 258], this.register(this._parser), this._dirtyRowTracker = new L2(this._bufferService), this._activeBuffer = this._bufferService.buffer, this.register(this._bufferService.buffers.onBufferActivate((e6) => this._activeBuffer = e6.activeBuffer)), this._parser.setCsiHandlerFallback((e6, t6) => {
               this._logService.debug("Unknown CSI code: ", { identifier: this._parser.identToString(e6), params: t6.toArray() });
             }), this._parser.setEscHandlerFallback((e6) => {
               this._logService.debug("Unknown ESC code: ", { identifier: this._parser.identToString(e6) });
@@ -2960,7 +2960,7 @@ WARNING: This link could potentially be dangerous`)) {
             }), this._parser.setPrintHandler((e6, t6, i7) => this.print(e6, t6, i7)), this._parser.registerCsiHandler({ final: "@" }, (e6) => this.insertChars(e6)), this._parser.registerCsiHandler({ intermediates: " ", final: "@" }, (e6) => this.scrollLeft(e6)), this._parser.registerCsiHandler({ final: "A" }, (e6) => this.cursorUp(e6)), this._parser.registerCsiHandler({ intermediates: " ", final: "A" }, (e6) => this.scrollRight(e6)), this._parser.registerCsiHandler({ final: "B" }, (e6) => this.cursorDown(e6)), this._parser.registerCsiHandler({ final: "C" }, (e6) => this.cursorForward(e6)), this._parser.registerCsiHandler({ final: "D" }, (e6) => this.cursorBackward(e6)), this._parser.registerCsiHandler({ final: "E" }, (e6) => this.cursorNextLine(e6)), this._parser.registerCsiHandler({ final: "F" }, (e6) => this.cursorPrecedingLine(e6)), this._parser.registerCsiHandler({ final: "G" }, (e6) => this.cursorCharAbsolute(e6)), this._parser.registerCsiHandler({ final: "H" }, (e6) => this.cursorPosition(e6)), this._parser.registerCsiHandler({ final: "I" }, (e6) => this.cursorForwardTab(e6)), this._parser.registerCsiHandler({ final: "J" }, (e6) => this.eraseInDisplay(e6, false)), this._parser.registerCsiHandler({ prefix: "?", final: "J" }, (e6) => this.eraseInDisplay(e6, true)), this._parser.registerCsiHandler({ final: "K" }, (e6) => this.eraseInLine(e6, false)), this._parser.registerCsiHandler({ prefix: "?", final: "K" }, (e6) => this.eraseInLine(e6, true)), this._parser.registerCsiHandler({ final: "L" }, (e6) => this.insertLines(e6)), this._parser.registerCsiHandler({ final: "M" }, (e6) => this.deleteLines(e6)), this._parser.registerCsiHandler({ final: "P" }, (e6) => this.deleteChars(e6)), this._parser.registerCsiHandler({ final: "S" }, (e6) => this.scrollUp(e6)), this._parser.registerCsiHandler({ final: "T" }, (e6) => this.scrollDown(e6)), this._parser.registerCsiHandler({ final: "X" }, (e6) => this.eraseChars(e6)), this._parser.registerCsiHandler({ final: "Z" }, (e6) => this.cursorBackwardTab(e6)), this._parser.registerCsiHandler({ final: "`" }, (e6) => this.charPosAbsolute(e6)), this._parser.registerCsiHandler({ final: "a" }, (e6) => this.hPositionRelative(e6)), this._parser.registerCsiHandler({ final: "b" }, (e6) => this.repeatPrecedingCharacter(e6)), this._parser.registerCsiHandler({ final: "c" }, (e6) => this.sendDeviceAttributesPrimary(e6)), this._parser.registerCsiHandler({ prefix: ">", final: "c" }, (e6) => this.sendDeviceAttributesSecondary(e6)), this._parser.registerCsiHandler({ final: "d" }, (e6) => this.linePosAbsolute(e6)), this._parser.registerCsiHandler({ final: "e" }, (e6) => this.vPositionRelative(e6)), this._parser.registerCsiHandler({ final: "f" }, (e6) => this.hVPosition(e6)), this._parser.registerCsiHandler({ final: "g" }, (e6) => this.tabClear(e6)), this._parser.registerCsiHandler({ final: "h" }, (e6) => this.setMode(e6)), this._parser.registerCsiHandler({ prefix: "?", final: "h" }, (e6) => this.setModePrivate(e6)), this._parser.registerCsiHandler({ final: "l" }, (e6) => this.resetMode(e6)), this._parser.registerCsiHandler({ prefix: "?", final: "l" }, (e6) => this.resetModePrivate(e6)), this._parser.registerCsiHandler({ final: "m" }, (e6) => this.charAttributes(e6)), this._parser.registerCsiHandler({ final: "n" }, (e6) => this.deviceStatus(e6)), this._parser.registerCsiHandler({ prefix: "?", final: "n" }, (e6) => this.deviceStatusPrivate(e6)), this._parser.registerCsiHandler({ intermediates: "!", final: "p" }, (e6) => this.softReset(e6)), this._parser.registerCsiHandler({ intermediates: " ", final: "q" }, (e6) => this.setCursorStyle(e6)), this._parser.registerCsiHandler({ final: "r" }, (e6) => this.setScrollRegion(e6)), this._parser.registerCsiHandler({ final: "s" }, (e6) => this.saveCursor(e6)), this._parser.registerCsiHandler({ final: "t" }, (e6) => this.windowOptions(e6)), this._parser.registerCsiHandler({ final: "u" }, (e6) => this.restoreCursor(e6)), this._parser.registerCsiHandler({ intermediates: "'", final: "}" }, (e6) => this.insertColumns(e6)), this._parser.registerCsiHandler({ intermediates: "'", final: "~" }, (e6) => this.deleteColumns(e6)), this._parser.registerCsiHandler({ intermediates: '"', final: "q" }, (e6) => this.selectProtected(e6)), this._parser.registerCsiHandler({ intermediates: "$", final: "p" }, (e6) => this.requestMode(e6, true)), this._parser.registerCsiHandler({ prefix: "?", intermediates: "$", final: "p" }, (e6) => this.requestMode(e6, false)), this._parser.setExecuteHandler(n2.C0.BEL, () => this.bell()), this._parser.setExecuteHandler(n2.C0.LF, () => this.lineFeed()), this._parser.setExecuteHandler(n2.C0.VT, () => this.lineFeed()), this._parser.setExecuteHandler(n2.C0.FF, () => this.lineFeed()), this._parser.setExecuteHandler(n2.C0.CR, () => this.carriageReturn()), this._parser.setExecuteHandler(n2.C0.BS, () => this.backspace()), this._parser.setExecuteHandler(n2.C0.HT, () => this.tab()), this._parser.setExecuteHandler(n2.C0.SO, () => this.shiftOut()), this._parser.setExecuteHandler(n2.C0.SI, () => this.shiftIn()), this._parser.setExecuteHandler(n2.C1.IND, () => this.index()), this._parser.setExecuteHandler(n2.C1.NEL, () => this.nextLine()), this._parser.setExecuteHandler(n2.C1.HTS, () => this.tabSet()), this._parser.registerOscHandler(0, new g2.OscHandler((e6) => (this.setTitle(e6), this.setIconName(e6), true))), this._parser.registerOscHandler(1, new g2.OscHandler((e6) => this.setIconName(e6))), this._parser.registerOscHandler(2, new g2.OscHandler((e6) => this.setTitle(e6))), this._parser.registerOscHandler(4, new g2.OscHandler((e6) => this.setOrReportIndexedColor(e6))), this._parser.registerOscHandler(8, new g2.OscHandler((e6) => this.setHyperlink(e6))), this._parser.registerOscHandler(10, new g2.OscHandler((e6) => this.setOrReportFgColor(e6))), this._parser.registerOscHandler(11, new g2.OscHandler((e6) => this.setOrReportBgColor(e6))), this._parser.registerOscHandler(12, new g2.OscHandler((e6) => this.setOrReportCursorColor(e6))), this._parser.registerOscHandler(104, new g2.OscHandler((e6) => this.restoreIndexedColor(e6))), this._parser.registerOscHandler(110, new g2.OscHandler((e6) => this.restoreFgColor(e6))), this._parser.registerOscHandler(111, new g2.OscHandler((e6) => this.restoreBgColor(e6))), this._parser.registerOscHandler(112, new g2.OscHandler((e6) => this.restoreCursorColor(e6))), this._parser.registerEscHandler({ final: "7" }, () => this.saveCursor()), this._parser.registerEscHandler({ final: "8" }, () => this.restoreCursor()), this._parser.registerEscHandler({ final: "D" }, () => this.index()), this._parser.registerEscHandler({ final: "E" }, () => this.nextLine()), this._parser.registerEscHandler({ final: "H" }, () => this.tabSet()), this._parser.registerEscHandler({ final: "M" }, () => this.reverseIndex()), this._parser.registerEscHandler({ final: "=" }, () => this.keypadApplicationMode()), this._parser.registerEscHandler({ final: ">" }, () => this.keypadNumericMode()), this._parser.registerEscHandler({ final: "c" }, () => this.fullReset()), this._parser.registerEscHandler({ final: "n" }, () => this.setgLevel(2)), this._parser.registerEscHandler({ final: "o" }, () => this.setgLevel(3)), this._parser.registerEscHandler({ final: "|" }, () => this.setgLevel(3)), this._parser.registerEscHandler({ final: "}" }, () => this.setgLevel(2)), this._parser.registerEscHandler({ final: "~" }, () => this.setgLevel(1)), this._parser.registerEscHandler({ intermediates: "%", final: "@" }, () => this.selectDefaultCharset()), this._parser.registerEscHandler({ intermediates: "%", final: "G" }, () => this.selectDefaultCharset());
             for (const e6 in o3.CHARSETS)
               this._parser.registerEscHandler({ intermediates: "(", final: e6 }, () => this.selectCharset("(" + e6)), this._parser.registerEscHandler({ intermediates: ")", final: e6 }, () => this.selectCharset(")" + e6)), this._parser.registerEscHandler({ intermediates: "*", final: e6 }, () => this.selectCharset("*" + e6)), this._parser.registerEscHandler({ intermediates: "+", final: e6 }, () => this.selectCharset("+" + e6)), this._parser.registerEscHandler({ intermediates: "-", final: e6 }, () => this.selectCharset("-" + e6)), this._parser.registerEscHandler({ intermediates: ".", final: e6 }, () => this.selectCharset("." + e6)), this._parser.registerEscHandler({ intermediates: "/", final: e6 }, () => this.selectCharset("/" + e6));
-            this._parser.registerEscHandler({ intermediates: "#", final: "8" }, () => this.screenAlignmentPattern()), this._parser.setErrorHandler((e6) => (this._logService.error("Parsing error: ", e6), e6)), this._parser.registerDcsHandler({ intermediates: "$", final: "q" }, new m3.DcsHandler((e6, t6) => this.requestStatusString(e6, t6)));
+            this._parser.registerEscHandler({ intermediates: "#", final: "8" }, () => this.screenAlignmentPattern()), this._parser.setErrorHandler((e6) => (this._logService.error("Parsing error: ", e6), e6)), this._parser.registerDcsHandler({ intermediates: "$", final: "q" }, new m4.DcsHandler((e6, t6) => this.requestStatusString(e6, t6)));
           }
           _preserveStack(e5, t5, i6, s5) {
             this._parseStack.paused = true, this._parseStack.cursorStartX = e5, this._parseStack.cursorStartY = t5, this._parseStack.decodedLength = i6, this._parseStack.position = s5;
@@ -2995,12 +2995,12 @@ WARNING: This link could potentially be dangerous`)) {
                 return this._preserveStack(s5, r4, t6, 0), this._logSlowResolvingAsync(i6), i6;
             }
             this._activeBuffer.x === s5 && this._activeBuffer.y === r4 || this._onCursorMove.fire();
-            const a4 = this._dirtyRowTracker.end + (this._bufferService.buffer.ybase - this._bufferService.buffer.ydisp), h4 = this._dirtyRowTracker.start + (this._bufferService.buffer.ybase - this._bufferService.buffer.ydisp);
-            h4 < this._bufferService.rows && this._onRequestRefreshRows.fire(Math.min(h4, this._bufferService.rows - 1), Math.min(a4, this._bufferService.rows - 1));
+            const a5 = this._dirtyRowTracker.end + (this._bufferService.buffer.ybase - this._bufferService.buffer.ydisp), h4 = this._dirtyRowTracker.start + (this._bufferService.buffer.ybase - this._bufferService.buffer.ydisp);
+            h4 < this._bufferService.rows && this._onRequestRefreshRows.fire(Math.min(h4, this._bufferService.rows - 1), Math.min(a5, this._bufferService.rows - 1));
           }
           print(e5, t5, i6) {
             let s5, r4;
-            const n3 = this._charsetService.charset, o4 = this._optionsService.rawOptions.screenReaderMode, a4 = this._bufferService.cols, h4 = this._coreService.decPrivateModes.wraparound, d4 = this._coreService.modes.insertMode, u5 = this._curAttrData;
+            const n3 = this._charsetService.charset, o4 = this._optionsService.rawOptions.screenReaderMode, a5 = this._bufferService.cols, h4 = this._coreService.decPrivateModes.wraparound, d4 = this._coreService.modes.insertMode, u5 = this._curAttrData;
             let f5 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y);
             this._dirtyRowTracker.markDirty(this._activeBuffer.y), this._activeBuffer.x && i6 - t5 > 0 && 2 === f5.getWidth(this._activeBuffer.x - 1) && f5.setCellFromCodepoint(this._activeBuffer.x - 1, 0, 1, u5);
             let v4 = this._parser.precedingJoinState;
@@ -3011,32 +3011,32 @@ WARNING: This link could potentially be dangerous`)) {
               }
               const t6 = this._unicodeService.charProperties(s5, v4);
               r4 = p3.UnicodeService.extractWidth(t6);
-              const i7 = p3.UnicodeService.extractShouldJoin(t6), m4 = i7 ? p3.UnicodeService.extractWidth(v4) : 0;
-              if (v4 = t6, o4 && this._onA11yChar.fire((0, c3.stringFromCodePoint)(s5)), this._getCurrentLinkId() && this._oscLinkService.addLineToLink(this._getCurrentLinkId(), this._activeBuffer.ybase + this._activeBuffer.y), this._activeBuffer.x + r4 - m4 > a4) {
+              const i7 = p3.UnicodeService.extractShouldJoin(t6), m5 = i7 ? p3.UnicodeService.extractWidth(v4) : 0;
+              if (v4 = t6, o4 && this._onA11yChar.fire((0, c4.stringFromCodePoint)(s5)), this._getCurrentLinkId() && this._oscLinkService.addLineToLink(this._getCurrentLinkId(), this._activeBuffer.ybase + this._activeBuffer.y), this._activeBuffer.x + r4 - m5 > a5) {
                 if (h4) {
                   const e6 = f5;
-                  let t7 = this._activeBuffer.x - m4;
-                  for (this._activeBuffer.x = m4, this._activeBuffer.y++, this._activeBuffer.y === this._activeBuffer.scrollBottom + 1 ? (this._activeBuffer.y--, this._bufferService.scroll(this._eraseAttrData(), true)) : (this._activeBuffer.y >= this._bufferService.rows && (this._activeBuffer.y = this._bufferService.rows - 1), this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y).isWrapped = true), f5 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y), m4 > 0 && f5 instanceof l3.BufferLine && f5.copyCellsFrom(e6, t7, 0, m4, false); t7 < a4; )
+                  let t7 = this._activeBuffer.x - m5;
+                  for (this._activeBuffer.x = m5, this._activeBuffer.y++, this._activeBuffer.y === this._activeBuffer.scrollBottom + 1 ? (this._activeBuffer.y--, this._bufferService.scroll(this._eraseAttrData(), true)) : (this._activeBuffer.y >= this._bufferService.rows && (this._activeBuffer.y = this._bufferService.rows - 1), this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y).isWrapped = true), f5 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y), m5 > 0 && f5 instanceof l3.BufferLine && f5.copyCellsFrom(e6, t7, 0, m5, false); t7 < a5; )
                     e6.setCellFromCodepoint(t7++, 0, 1, u5);
-                } else if (this._activeBuffer.x = a4 - 1, 2 === r4)
+                } else if (this._activeBuffer.x = a5 - 1, 2 === r4)
                   continue;
               }
               if (i7 && this._activeBuffer.x) {
                 const e6 = f5.getWidth(this._activeBuffer.x - 1) ? 1 : 2;
                 f5.addCodepointToCell(this._activeBuffer.x - e6, s5, r4);
-                for (let e7 = r4 - m4; --e7 >= 0; )
+                for (let e7 = r4 - m5; --e7 >= 0; )
                   f5.setCellFromCodepoint(this._activeBuffer.x++, 0, 0, u5);
-              } else if (d4 && (f5.insertCells(this._activeBuffer.x, r4 - m4, this._activeBuffer.getNullCell(u5)), 2 === f5.getWidth(a4 - 1) && f5.setCellFromCodepoint(a4 - 1, _2.NULL_CELL_CODE, _2.NULL_CELL_WIDTH, u5)), f5.setCellFromCodepoint(this._activeBuffer.x++, s5, r4, u5), r4 > 0)
+              } else if (d4 && (f5.insertCells(this._activeBuffer.x, r4 - m5, this._activeBuffer.getNullCell(u5)), 2 === f5.getWidth(a5 - 1) && f5.setCellFromCodepoint(a5 - 1, _2.NULL_CELL_CODE, _2.NULL_CELL_WIDTH, u5)), f5.setCellFromCodepoint(this._activeBuffer.x++, s5, r4, u5), r4 > 0)
                 for (; --r4; )
                   f5.setCellFromCodepoint(this._activeBuffer.x++, 0, 0, u5);
             }
-            this._parser.precedingJoinState = v4, this._activeBuffer.x < a4 && i6 - t5 > 0 && 0 === f5.getWidth(this._activeBuffer.x) && !f5.hasContent(this._activeBuffer.x) && f5.setCellFromCodepoint(this._activeBuffer.x, 0, 1, u5), this._dirtyRowTracker.markDirty(this._activeBuffer.y);
+            this._parser.precedingJoinState = v4, this._activeBuffer.x < a5 && i6 - t5 > 0 && 0 === f5.getWidth(this._activeBuffer.x) && !f5.hasContent(this._activeBuffer.x) && f5.setCellFromCodepoint(this._activeBuffer.x, 0, 1, u5), this._dirtyRowTracker.markDirty(this._activeBuffer.y);
           }
           registerCsiHandler(e5, t5) {
             return "t" !== e5.final || e5.prefix || e5.intermediates ? this._parser.registerCsiHandler(e5, t5) : this._parser.registerCsiHandler(e5, (e6) => !w3(e6.params[0], this._optionsService.rawOptions.windowOptions) || t5(e6));
           }
           registerDcsHandler(e5, t5) {
-            return this._parser.registerDcsHandler(e5, new m3.DcsHandler(t5));
+            return this._parser.registerDcsHandler(e5, new m4.DcsHandler(t5));
           }
           registerEscHandler(e5, t5) {
             return this._parser.registerEscHandler(e5, t5);
@@ -3289,14 +3289,14 @@ WARNING: This link could potentially be dangerous`)) {
             if (!t5)
               return true;
             const i6 = e5.params[0] || 1, s5 = p3.UnicodeService.extractWidth(t5), r4 = this._activeBuffer.x - s5, n3 = this._activeBuffer.lines.get(this._activeBuffer.ybase + this._activeBuffer.y).getString(r4), o4 = new Uint32Array(n3.length * i6);
-            let a4 = 0;
+            let a5 = 0;
             for (let e6 = 0; e6 < n3.length; ) {
               const t6 = n3.codePointAt(e6) || 0;
-              o4[a4++] = t6, e6 += t6 > 65535 ? 2 : 1;
+              o4[a5++] = t6, e6 += t6 > 65535 ? 2 : 1;
             }
-            let h4 = a4;
+            let h4 = a5;
             for (let e6 = 1; e6 < i6; ++e6)
-              o4.copyWithin(h4, 0, a4), h4 += a4;
+              o4.copyWithin(h4, 0, a5), h4 += a5;
             return this.print(o4, 0, h4), true;
           }
           sendDeviceAttributesPrimary(e5) {
@@ -3461,8 +3461,8 @@ WARNING: This link could potentially be dangerous`)) {
             return true;
           }
           requestMode(e5, t5) {
-            const i6 = this._coreService.decPrivateModes, { activeProtocol: s5, activeEncoding: r4 } = this._coreMouseService, o4 = this._coreService, { buffers: a4, cols: h4 } = this._bufferService, { active: c4, alt: l4 } = a4, d4 = this._optionsService.rawOptions, _3 = (e6) => e6 ? 1 : 2, u5 = e5.params[0];
-            return f5 = u5, v4 = t5 ? 2 === u5 ? 4 : 4 === u5 ? _3(o4.modes.insertMode) : 12 === u5 ? 3 : 20 === u5 ? _3(d4.convertEol) : 0 : 1 === u5 ? _3(i6.applicationCursorKeys) : 3 === u5 ? d4.windowOptions.setWinLines ? 80 === h4 ? 2 : 132 === h4 ? 1 : 0 : 0 : 6 === u5 ? _3(i6.origin) : 7 === u5 ? _3(i6.wraparound) : 8 === u5 ? 3 : 9 === u5 ? _3("X10" === s5) : 12 === u5 ? _3(d4.cursorBlink) : 25 === u5 ? _3(!o4.isCursorHidden) : 45 === u5 ? _3(i6.reverseWraparound) : 66 === u5 ? _3(i6.applicationKeypad) : 67 === u5 ? 4 : 1e3 === u5 ? _3("VT200" === s5) : 1002 === u5 ? _3("DRAG" === s5) : 1003 === u5 ? _3("ANY" === s5) : 1004 === u5 ? _3(i6.sendFocus) : 1005 === u5 ? 4 : 1006 === u5 ? _3("SGR" === r4) : 1015 === u5 ? 4 : 1016 === u5 ? _3("SGR_PIXELS" === r4) : 1048 === u5 ? 1 : 47 === u5 || 1047 === u5 || 1049 === u5 ? _3(c4 === l4) : 2004 === u5 ? _3(i6.bracketedPasteMode) : 0, o4.triggerDataEvent(`${n2.C0.ESC}[${t5 ? "" : "?"}${f5};${v4}$y`), true;
+            const i6 = this._coreService.decPrivateModes, { activeProtocol: s5, activeEncoding: r4 } = this._coreMouseService, o4 = this._coreService, { buffers: a5, cols: h4 } = this._bufferService, { active: c5, alt: l4 } = a5, d4 = this._optionsService.rawOptions, _3 = (e6) => e6 ? 1 : 2, u5 = e5.params[0];
+            return f5 = u5, v4 = t5 ? 2 === u5 ? 4 : 4 === u5 ? _3(o4.modes.insertMode) : 12 === u5 ? 3 : 20 === u5 ? _3(d4.convertEol) : 0 : 1 === u5 ? _3(i6.applicationCursorKeys) : 3 === u5 ? d4.windowOptions.setWinLines ? 80 === h4 ? 2 : 132 === h4 ? 1 : 0 : 0 : 6 === u5 ? _3(i6.origin) : 7 === u5 ? _3(i6.wraparound) : 8 === u5 ? 3 : 9 === u5 ? _3("X10" === s5) : 12 === u5 ? _3(d4.cursorBlink) : 25 === u5 ? _3(!o4.isCursorHidden) : 45 === u5 ? _3(i6.reverseWraparound) : 66 === u5 ? _3(i6.applicationKeypad) : 67 === u5 ? 4 : 1e3 === u5 ? _3("VT200" === s5) : 1002 === u5 ? _3("DRAG" === s5) : 1003 === u5 ? _3("ANY" === s5) : 1004 === u5 ? _3(i6.sendFocus) : 1005 === u5 ? 4 : 1006 === u5 ? _3("SGR" === r4) : 1015 === u5 ? 4 : 1016 === u5 ? _3("SGR_PIXELS" === r4) : 1048 === u5 ? 1 : 47 === u5 || 1047 === u5 || 1049 === u5 ? _3(c5 === l4) : 2004 === u5 ? _3(i6.bracketedPasteMode) : 0, o4.triggerDataEvent(`${n2.C0.ESC}[${t5 ? "" : "?"}${f5};${v4}$y`), true;
             var f5, v4;
           }
           _updateAttrColor(e5, t5, i6, s5, r4) {
@@ -3564,10 +3564,10 @@ WARNING: This link could potentially be dangerous`)) {
             const t5 = e5.length > 1 ? e5.params[1] : 0;
             switch (e5.params[0]) {
               case 14:
-                2 !== t5 && this._onRequestWindowsOptionsReport.fire(y3.GET_WIN_SIZE_PIXELS);
+                2 !== t5 && this._onRequestWindowsOptionsReport.fire(y5.GET_WIN_SIZE_PIXELS);
                 break;
               case 16:
-                this._onRequestWindowsOptionsReport.fire(y3.GET_CELL_SIZE_PIXELS);
+                this._onRequestWindowsOptionsReport.fire(y5.GET_CELL_SIZE_PIXELS);
                 break;
               case 18:
                 this._bufferService && this._coreService.triggerDataEvent(`${n2.C0.ESC}[8;${this._bufferService.rows};${this._bufferService.cols}t`);
@@ -4137,10 +4137,10 @@ WARNING: This link could potentially be dangerous`)) {
         t4.ExtendedAttrs = s4;
       }, 9092: (e4, t4, i5) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.Buffer = t4.MAX_BUFFER_SIZE = void 0;
-        const s4 = i5(6349), r3 = i5(7226), n2 = i5(3734), o3 = i5(8437), a3 = i5(4634), h3 = i5(511), c3 = i5(643), l3 = i5(4863), d3 = i5(7116);
+        const s4 = i5(6349), r3 = i5(7226), n2 = i5(3734), o3 = i5(8437), a4 = i5(4634), h3 = i5(511), c4 = i5(643), l3 = i5(4863), d3 = i5(7116);
         t4.MAX_BUFFER_SIZE = 4294967295, t4.Buffer = class {
           constructor(e5, t5, i6) {
-            this._hasScrollback = e5, this._optionsService = t5, this._bufferService = i6, this.ydisp = 0, this.ybase = 0, this.y = 0, this.x = 0, this.tabs = {}, this.savedY = 0, this.savedX = 0, this.savedCurAttrData = o3.DEFAULT_ATTR_DATA.clone(), this.savedCharset = d3.DEFAULT_CHARSET, this.markers = [], this._nullCell = h3.CellData.fromCharData([0, c3.NULL_CELL_CHAR, c3.NULL_CELL_WIDTH, c3.NULL_CELL_CODE]), this._whitespaceCell = h3.CellData.fromCharData([0, c3.WHITESPACE_CELL_CHAR, c3.WHITESPACE_CELL_WIDTH, c3.WHITESPACE_CELL_CODE]), this._isClearing = false, this._memoryCleanupQueue = new r3.IdleTaskQueue(), this._memoryCleanupPosition = 0, this._cols = this._bufferService.cols, this._rows = this._bufferService.rows, this.lines = new s4.CircularList(this._getCorrectBufferLength(this._rows)), this.scrollTop = 0, this.scrollBottom = this._rows - 1, this.setupTabStops();
+            this._hasScrollback = e5, this._optionsService = t5, this._bufferService = i6, this.ydisp = 0, this.ybase = 0, this.y = 0, this.x = 0, this.tabs = {}, this.savedY = 0, this.savedX = 0, this.savedCurAttrData = o3.DEFAULT_ATTR_DATA.clone(), this.savedCharset = d3.DEFAULT_CHARSET, this.markers = [], this._nullCell = h3.CellData.fromCharData([0, c4.NULL_CELL_CHAR, c4.NULL_CELL_WIDTH, c4.NULL_CELL_CODE]), this._whitespaceCell = h3.CellData.fromCharData([0, c4.WHITESPACE_CELL_CHAR, c4.WHITESPACE_CELL_WIDTH, c4.WHITESPACE_CELL_CODE]), this._isClearing = false, this._memoryCleanupQueue = new r3.IdleTaskQueue(), this._memoryCleanupPosition = 0, this._cols = this._bufferService.cols, this._rows = this._bufferService.rows, this.lines = new s4.CircularList(this._getCorrectBufferLength(this._rows)), this.scrollTop = 0, this.scrollBottom = this._rows - 1, this.setupTabStops();
           }
           getNullCell(e5) {
             return e5 ? (this._nullCell.fg = e5.fg, this._nullCell.bg = e5.bg, this._nullCell.extended = e5.extended) : (this._nullCell.fg = 0, this._nullCell.bg = 0, this._nullCell.extended = new n2.ExtendedAttrs()), this._nullCell;
@@ -4218,10 +4218,10 @@ WARNING: This link could potentially be dangerous`)) {
             this._cols !== e5 && (e5 > this._cols ? this._reflowLarger(e5, t5) : this._reflowSmaller(e5, t5));
           }
           _reflowLarger(e5, t5) {
-            const i6 = (0, a3.reflowLargerGetLinesToRemove)(this.lines, this._cols, e5, this.ybase + this.y, this.getNullCell(o3.DEFAULT_ATTR_DATA));
+            const i6 = (0, a4.reflowLargerGetLinesToRemove)(this.lines, this._cols, e5, this.ybase + this.y, this.getNullCell(o3.DEFAULT_ATTR_DATA));
             if (i6.length > 0) {
-              const s5 = (0, a3.reflowLargerCreateNewLayout)(this.lines, i6);
-              (0, a3.reflowLargerApplyNewLayout)(this.lines, s5.layout), this._reflowLargerAdjustViewport(e5, t5, s5.countRemoved);
+              const s5 = (0, a4.reflowLargerCreateNewLayout)(this.lines, i6);
+              (0, a4.reflowLargerApplyNewLayout)(this.lines, s5.layout), this._reflowLargerAdjustViewport(e5, t5, s5.countRemoved);
             }
           }
           _reflowLargerAdjustViewport(e5, t5, i6) {
@@ -4238,13 +4238,13 @@ WARNING: This link could potentially be dangerous`)) {
               let h4 = this.lines.get(n3);
               if (!h4 || !h4.isWrapped && h4.getTrimmedLength() <= e5)
                 continue;
-              const c4 = [h4];
+              const c5 = [h4];
               for (; h4.isWrapped && n3 > 0; )
-                h4 = this.lines.get(--n3), c4.unshift(h4);
+                h4 = this.lines.get(--n3), c5.unshift(h4);
               const l4 = this.ybase + this.y;
-              if (l4 >= n3 && l4 < n3 + c4.length)
+              if (l4 >= n3 && l4 < n3 + c5.length)
                 continue;
-              const d4 = c4[c4.length - 1].getTrimmedLength(), _2 = (0, a3.reflowSmallerGetNewLineLengths)(c4, this._cols, e5), u4 = _2.length - c4.length;
+              const d4 = c5[c5.length - 1].getTrimmedLength(), _2 = (0, a4.reflowSmallerGetNewLineLengths)(c5, this._cols, e5), u4 = _2.length - c5.length;
               let f4;
               f4 = 0 === this.ybase && this.y !== this.lines.length - 1 ? Math.max(0, this.y - this.lines.maxLength + u4) : Math.max(0, this.lines.length - this.lines.maxLength + u4);
               const v3 = [];
@@ -4252,22 +4252,22 @@ WARNING: This link could potentially be dangerous`)) {
                 const e7 = this.getBlankLine(o3.DEFAULT_ATTR_DATA, true);
                 v3.push(e7);
               }
-              v3.length > 0 && (s5.push({ start: n3 + c4.length + r4, newLines: v3 }), r4 += v3.length), c4.push(...v3);
+              v3.length > 0 && (s5.push({ start: n3 + c5.length + r4, newLines: v3 }), r4 += v3.length), c5.push(...v3);
               let p3 = _2.length - 1, g2 = _2[p3];
               0 === g2 && (p3--, g2 = _2[p3]);
-              let m3 = c4.length - u4 - 1, S2 = d4;
-              for (; m3 >= 0; ) {
+              let m4 = c5.length - u4 - 1, S2 = d4;
+              for (; m4 >= 0; ) {
                 const e6 = Math.min(S2, g2);
-                if (void 0 === c4[p3])
+                if (void 0 === c5[p3])
                   break;
-                if (c4[p3].copyCellsFrom(c4[m3], S2 - e6, g2 - e6, e6, true), g2 -= e6, 0 === g2 && (p3--, g2 = _2[p3]), S2 -= e6, 0 === S2) {
-                  m3--;
-                  const e7 = Math.max(m3, 0);
-                  S2 = (0, a3.getWrappedLineTrimmedLength)(c4, e7, this._cols);
+                if (c5[p3].copyCellsFrom(c5[m4], S2 - e6, g2 - e6, e6, true), g2 -= e6, 0 === g2 && (p3--, g2 = _2[p3]), S2 -= e6, 0 === S2) {
+                  m4--;
+                  const e7 = Math.max(m4, 0);
+                  S2 = (0, a4.getWrappedLineTrimmedLength)(c5, e7, this._cols);
                 }
               }
-              for (let t6 = 0; t6 < c4.length; t6++)
-                _2[t6] < e5 && c4[t6].setCell(_2[t6], i6);
+              for (let t6 = 0; t6 < c5.length; t6++)
+                _2[t6] < e5 && c5[t6].setCell(_2[t6], i6);
               let C3 = u4 - f4;
               for (; C3-- > 0; )
                 0 === this.ybase ? this.y < t5 - 1 ? (this.y++, this.lines.pop()) : (this.ybase++, this.ydisp++) : this.ybase < Math.min(this.lines.maxLength, this.lines.length + r4) - t5 && (this.ybase === this.ydisp && this.ydisp++, this.ybase++);
@@ -4278,19 +4278,19 @@ WARNING: This link could potentially be dangerous`)) {
               for (let e7 = 0; e7 < this.lines.length; e7++)
                 t6.push(this.lines.get(e7));
               const i7 = this.lines.length;
-              let n3 = i7 - 1, o4 = 0, a4 = s5[o4];
+              let n3 = i7 - 1, o4 = 0, a5 = s5[o4];
               this.lines.length = Math.min(this.lines.maxLength, this.lines.length + r4);
               let h4 = 0;
-              for (let c5 = Math.min(this.lines.maxLength - 1, i7 + r4 - 1); c5 >= 0; c5--)
-                if (a4 && a4.start > n3 + h4) {
-                  for (let e7 = a4.newLines.length - 1; e7 >= 0; e7--)
-                    this.lines.set(c5--, a4.newLines[e7]);
-                  c5++, e6.push({ index: n3 + 1, amount: a4.newLines.length }), h4 += a4.newLines.length, a4 = s5[++o4];
+              for (let c6 = Math.min(this.lines.maxLength - 1, i7 + r4 - 1); c6 >= 0; c6--)
+                if (a5 && a5.start > n3 + h4) {
+                  for (let e7 = a5.newLines.length - 1; e7 >= 0; e7--)
+                    this.lines.set(c6--, a5.newLines[e7]);
+                  c6++, e6.push({ index: n3 + 1, amount: a5.newLines.length }), h4 += a5.newLines.length, a5 = s5[++o4];
                 } else
-                  this.lines.set(c5, t6[n3--]);
-              let c4 = 0;
+                  this.lines.set(c6, t6[n3--]);
+              let c5 = 0;
               for (let t7 = e6.length - 1; t7 >= 0; t7--)
-                e6[t7].index += c4, this.lines.onInsertEmitter.fire(e6[t7]), c4 += e6[t7].amount;
+                e6[t7].index += c5, this.lines.onInsertEmitter.fire(e6[t7]), c5 += e6[t7].amount;
               const l4 = Math.max(0, i7 + r4 - this.lines.maxLength);
               l4 > 0 && this.lines.onTrimEmitter.fire(l4);
             }
@@ -4351,7 +4351,7 @@ WARNING: This link could potentially be dangerous`)) {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferLine = t4.DEFAULT_ATTR_DATA = void 0;
         const s4 = i5(3734), r3 = i5(511), n2 = i5(643), o3 = i5(482);
         t4.DEFAULT_ATTR_DATA = Object.freeze(new s4.AttributeData());
-        let a3 = 0;
+        let a4 = 0;
         class h3 {
           constructor(e5, t5, i6 = false) {
             this.isWrapped = i6, this._combined = {}, this._extendedAttrs = {}, this._data = new Uint32Array(3 * e5);
@@ -4397,7 +4397,7 @@ WARNING: This link could potentially be dangerous`)) {
             return 536870912 & this._data[3 * e5 + 2];
           }
           loadCell(e5, t5) {
-            return a3 = 3 * e5, t5.content = this._data[a3 + 0], t5.fg = this._data[a3 + 1], t5.bg = this._data[a3 + 2], 2097152 & t5.content && (t5.combinedData = this._combined[e5]), 268435456 & t5.bg && (t5.extended = this._extendedAttrs[e5]), t5;
+            return a4 = 3 * e5, t5.content = this._data[a4 + 0], t5.fg = this._data[a4 + 1], t5.bg = this._data[a4 + 2], 2097152 & t5.content && (t5.combinedData = this._combined[e5]), 268435456 & t5.bg && (t5.extended = this._extendedAttrs[e5]), t5;
           }
           setCell(e5, t5) {
             2097152 & t5.content && (this._combined[e5] = t5.combinedData), 268435456 & t5.bg && (this._extendedAttrs[e5] = t5.extended), this._data[3 * e5 + 0] = t5.content, this._data[3 * e5 + 1] = t5.fg, this._data[3 * e5 + 2] = t5.bg;
@@ -4540,9 +4540,9 @@ WARNING: This link could potentially be dangerous`)) {
             t5 = t5 ?? 0, i6 = i6 ?? this.length, e5 && (i6 = Math.min(i6, this.getTrimmedLength())), s5 && (s5.length = 0);
             let r4 = "";
             for (; t5 < i6; ) {
-              const e6 = this._data[3 * t5 + 0], i7 = 2097151 & e6, a4 = 2097152 & e6 ? this._combined[t5] : i7 ? (0, o3.stringFromCodePoint)(i7) : n2.WHITESPACE_CELL_CHAR;
-              if (r4 += a4, s5)
-                for (let e7 = 0; e7 < a4.length; ++e7)
+              const e6 = this._data[3 * t5 + 0], i7 = 2097151 & e6, a5 = 2097152 & e6 ? this._combined[t5] : i7 ? (0, o3.stringFromCodePoint)(i7) : n2.WHITESPACE_CELL_CHAR;
+              if (r4 += a5, s5)
+                for (let e7 = 0; e7 < a5.length; ++e7)
                   s5.push(t5);
               t5 += e6 >> 22 || 1;
             }
@@ -4565,27 +4565,27 @@ WARNING: This link could potentially be dangerous`)) {
         }
         Object.defineProperty(t4, "__esModule", { value: true }), t4.getWrappedLineTrimmedLength = t4.reflowSmallerGetNewLineLengths = t4.reflowLargerApplyNewLayout = t4.reflowLargerCreateNewLayout = t4.reflowLargerGetLinesToRemove = void 0, t4.reflowLargerGetLinesToRemove = function(e5, t5, s4, r3, n2) {
           const o3 = [];
-          for (let a3 = 0; a3 < e5.length - 1; a3++) {
-            let h3 = a3, c3 = e5.get(++h3);
-            if (!c3.isWrapped)
+          for (let a4 = 0; a4 < e5.length - 1; a4++) {
+            let h3 = a4, c4 = e5.get(++h3);
+            if (!c4.isWrapped)
               continue;
-            const l3 = [e5.get(a3)];
-            for (; h3 < e5.length && c3.isWrapped; )
-              l3.push(c3), c3 = e5.get(++h3);
-            if (r3 >= a3 && r3 < h3) {
-              a3 += l3.length - 1;
+            const l3 = [e5.get(a4)];
+            for (; h3 < e5.length && c4.isWrapped; )
+              l3.push(c4), c4 = e5.get(++h3);
+            if (r3 >= a4 && r3 < h3) {
+              a4 += l3.length - 1;
               continue;
             }
             let d3 = 0, _2 = i5(l3, d3, t5), u4 = 1, f4 = 0;
             for (; u4 < l3.length; ) {
-              const e6 = i5(l3, u4, t5), r4 = e6 - f4, o4 = s4 - _2, a4 = Math.min(r4, o4);
-              l3[d3].copyCellsFrom(l3[u4], f4, _2, a4, false), _2 += a4, _2 === s4 && (d3++, _2 = 0), f4 += a4, f4 === e6 && (u4++, f4 = 0), 0 === _2 && 0 !== d3 && 2 === l3[d3 - 1].getWidth(s4 - 1) && (l3[d3].copyCellsFrom(l3[d3 - 1], s4 - 1, _2++, 1, false), l3[d3 - 1].setCell(s4 - 1, n2));
+              const e6 = i5(l3, u4, t5), r4 = e6 - f4, o4 = s4 - _2, a5 = Math.min(r4, o4);
+              l3[d3].copyCellsFrom(l3[u4], f4, _2, a5, false), _2 += a5, _2 === s4 && (d3++, _2 = 0), f4 += a5, f4 === e6 && (u4++, f4 = 0), 0 === _2 && 0 !== d3 && 2 === l3[d3 - 1].getWidth(s4 - 1) && (l3[d3].copyCellsFrom(l3[d3 - 1], s4 - 1, _2++, 1, false), l3[d3 - 1].setCell(s4 - 1, n2));
             }
             l3[d3].replaceCells(_2, s4, n2);
             let v3 = 0;
             for (let e6 = l3.length - 1; e6 > 0 && (e6 > d3 || 0 === l3[e6].getTrimmedLength()); e6--)
               v3++;
-            v3 > 0 && (o3.push(a3 + l3.length - v3), o3.push(v3)), a3 += l3.length - 1;
+            v3 > 0 && (o3.push(a4 + l3.length - v3), o3.push(v3)), a4 += l3.length - 1;
           }
           return o3;
         }, t4.reflowLargerCreateNewLayout = function(e5, t5) {
@@ -4607,16 +4607,16 @@ WARNING: This link could potentially be dangerous`)) {
           e5.length = t5.length;
         }, t4.reflowSmallerGetNewLineLengths = function(e5, t5, s4) {
           const r3 = [], n2 = e5.map((s5, r4) => i5(e5, r4, t5)).reduce((e6, t6) => e6 + t6);
-          let o3 = 0, a3 = 0, h3 = 0;
+          let o3 = 0, a4 = 0, h3 = 0;
           for (; h3 < n2; ) {
             if (n2 - h3 < s4) {
               r3.push(n2 - h3);
               break;
             }
             o3 += s4;
-            const c3 = i5(e5, a3, t5);
-            o3 > c3 && (o3 -= c3, a3++);
-            const l3 = 2 === e5[a3].getWidth(o3 - 1);
+            const c4 = i5(e5, a4, t5);
+            o3 > c4 && (o3 -= c4, a4++);
+            const l3 = 2 === e5[a4].getWidth(o3 - 1);
             l3 && o3--;
             const d3 = l3 ? s4 - 1 : s4;
             r3.push(d3), h3 += d3;
@@ -4735,7 +4735,7 @@ WARNING: This link could potentially be dangerous`)) {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.evaluateKeyboardEvent = void 0;
         const s4 = i5(2584), r3 = { 48: ["0", ")"], 49: ["1", "!"], 50: ["2", "@"], 51: ["3", "#"], 52: ["4", "$"], 53: ["5", "%"], 54: ["6", "^"], 55: ["7", "&"], 56: ["8", "*"], 57: ["9", "("], 186: [";", ":"], 187: ["=", "+"], 188: [",", "<"], 189: ["-", "_"], 190: [".", ">"], 191: ["/", "?"], 192: ["`", "~"], 219: ["[", "{"], 220: ["\\", "|"], 221: ["]", "}"], 222: ["'", '"'] };
         t4.evaluateKeyboardEvent = function(e5, t5, i6, n2) {
-          const o3 = { type: 0, cancel: false, key: void 0 }, a3 = (e5.shiftKey ? 1 : 0) | (e5.altKey ? 2 : 0) | (e5.ctrlKey ? 4 : 0) | (e5.metaKey ? 8 : 0);
+          const o3 = { type: 0, cancel: false, key: void 0 }, a4 = (e5.shiftKey ? 1 : 0) | (e5.altKey ? 2 : 0) | (e5.ctrlKey ? 4 : 0) | (e5.metaKey ? 8 : 0);
           switch (e5.keyCode) {
             case 0:
               "UIKeyInputUpArrow" === e5.key ? o3.key = t5 ? s4.C0.ESC + "OA" : s4.C0.ESC + "[A" : "UIKeyInputLeftArrow" === e5.key ? o3.key = t5 ? s4.C0.ESC + "OD" : s4.C0.ESC + "[D" : "UIKeyInputRightArrow" === e5.key ? o3.key = t5 ? s4.C0.ESC + "OC" : s4.C0.ESC + "[C" : "UIKeyInputDownArrow" === e5.key && (o3.key = t5 ? s4.C0.ESC + "OB" : s4.C0.ESC + "[B");
@@ -4759,76 +4759,76 @@ WARNING: This link could potentially be dangerous`)) {
             case 37:
               if (e5.metaKey)
                 break;
-              a3 ? (o3.key = s4.C0.ESC + "[1;" + (a3 + 1) + "D", o3.key === s4.C0.ESC + "[1;3D" && (o3.key = s4.C0.ESC + (i6 ? "b" : "[1;5D"))) : o3.key = t5 ? s4.C0.ESC + "OD" : s4.C0.ESC + "[D";
+              a4 ? (o3.key = s4.C0.ESC + "[1;" + (a4 + 1) + "D", o3.key === s4.C0.ESC + "[1;3D" && (o3.key = s4.C0.ESC + (i6 ? "b" : "[1;5D"))) : o3.key = t5 ? s4.C0.ESC + "OD" : s4.C0.ESC + "[D";
               break;
             case 39:
               if (e5.metaKey)
                 break;
-              a3 ? (o3.key = s4.C0.ESC + "[1;" + (a3 + 1) + "C", o3.key === s4.C0.ESC + "[1;3C" && (o3.key = s4.C0.ESC + (i6 ? "f" : "[1;5C"))) : o3.key = t5 ? s4.C0.ESC + "OC" : s4.C0.ESC + "[C";
+              a4 ? (o3.key = s4.C0.ESC + "[1;" + (a4 + 1) + "C", o3.key === s4.C0.ESC + "[1;3C" && (o3.key = s4.C0.ESC + (i6 ? "f" : "[1;5C"))) : o3.key = t5 ? s4.C0.ESC + "OC" : s4.C0.ESC + "[C";
               break;
             case 38:
               if (e5.metaKey)
                 break;
-              a3 ? (o3.key = s4.C0.ESC + "[1;" + (a3 + 1) + "A", i6 || o3.key !== s4.C0.ESC + "[1;3A" || (o3.key = s4.C0.ESC + "[1;5A")) : o3.key = t5 ? s4.C0.ESC + "OA" : s4.C0.ESC + "[A";
+              a4 ? (o3.key = s4.C0.ESC + "[1;" + (a4 + 1) + "A", i6 || o3.key !== s4.C0.ESC + "[1;3A" || (o3.key = s4.C0.ESC + "[1;5A")) : o3.key = t5 ? s4.C0.ESC + "OA" : s4.C0.ESC + "[A";
               break;
             case 40:
               if (e5.metaKey)
                 break;
-              a3 ? (o3.key = s4.C0.ESC + "[1;" + (a3 + 1) + "B", i6 || o3.key !== s4.C0.ESC + "[1;3B" || (o3.key = s4.C0.ESC + "[1;5B")) : o3.key = t5 ? s4.C0.ESC + "OB" : s4.C0.ESC + "[B";
+              a4 ? (o3.key = s4.C0.ESC + "[1;" + (a4 + 1) + "B", i6 || o3.key !== s4.C0.ESC + "[1;3B" || (o3.key = s4.C0.ESC + "[1;5B")) : o3.key = t5 ? s4.C0.ESC + "OB" : s4.C0.ESC + "[B";
               break;
             case 45:
               e5.shiftKey || e5.ctrlKey || (o3.key = s4.C0.ESC + "[2~");
               break;
             case 46:
-              o3.key = a3 ? s4.C0.ESC + "[3;" + (a3 + 1) + "~" : s4.C0.ESC + "[3~";
+              o3.key = a4 ? s4.C0.ESC + "[3;" + (a4 + 1) + "~" : s4.C0.ESC + "[3~";
               break;
             case 36:
-              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "H" : t5 ? s4.C0.ESC + "OH" : s4.C0.ESC + "[H";
+              o3.key = a4 ? s4.C0.ESC + "[1;" + (a4 + 1) + "H" : t5 ? s4.C0.ESC + "OH" : s4.C0.ESC + "[H";
               break;
             case 35:
-              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "F" : t5 ? s4.C0.ESC + "OF" : s4.C0.ESC + "[F";
+              o3.key = a4 ? s4.C0.ESC + "[1;" + (a4 + 1) + "F" : t5 ? s4.C0.ESC + "OF" : s4.C0.ESC + "[F";
               break;
             case 33:
-              e5.shiftKey ? o3.type = 2 : e5.ctrlKey ? o3.key = s4.C0.ESC + "[5;" + (a3 + 1) + "~" : o3.key = s4.C0.ESC + "[5~";
+              e5.shiftKey ? o3.type = 2 : e5.ctrlKey ? o3.key = s4.C0.ESC + "[5;" + (a4 + 1) + "~" : o3.key = s4.C0.ESC + "[5~";
               break;
             case 34:
-              e5.shiftKey ? o3.type = 3 : e5.ctrlKey ? o3.key = s4.C0.ESC + "[6;" + (a3 + 1) + "~" : o3.key = s4.C0.ESC + "[6~";
+              e5.shiftKey ? o3.type = 3 : e5.ctrlKey ? o3.key = s4.C0.ESC + "[6;" + (a4 + 1) + "~" : o3.key = s4.C0.ESC + "[6~";
               break;
             case 112:
-              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "P" : s4.C0.ESC + "OP";
+              o3.key = a4 ? s4.C0.ESC + "[1;" + (a4 + 1) + "P" : s4.C0.ESC + "OP";
               break;
             case 113:
-              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "Q" : s4.C0.ESC + "OQ";
+              o3.key = a4 ? s4.C0.ESC + "[1;" + (a4 + 1) + "Q" : s4.C0.ESC + "OQ";
               break;
             case 114:
-              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "R" : s4.C0.ESC + "OR";
+              o3.key = a4 ? s4.C0.ESC + "[1;" + (a4 + 1) + "R" : s4.C0.ESC + "OR";
               break;
             case 115:
-              o3.key = a3 ? s4.C0.ESC + "[1;" + (a3 + 1) + "S" : s4.C0.ESC + "OS";
+              o3.key = a4 ? s4.C0.ESC + "[1;" + (a4 + 1) + "S" : s4.C0.ESC + "OS";
               break;
             case 116:
-              o3.key = a3 ? s4.C0.ESC + "[15;" + (a3 + 1) + "~" : s4.C0.ESC + "[15~";
+              o3.key = a4 ? s4.C0.ESC + "[15;" + (a4 + 1) + "~" : s4.C0.ESC + "[15~";
               break;
             case 117:
-              o3.key = a3 ? s4.C0.ESC + "[17;" + (a3 + 1) + "~" : s4.C0.ESC + "[17~";
+              o3.key = a4 ? s4.C0.ESC + "[17;" + (a4 + 1) + "~" : s4.C0.ESC + "[17~";
               break;
             case 118:
-              o3.key = a3 ? s4.C0.ESC + "[18;" + (a3 + 1) + "~" : s4.C0.ESC + "[18~";
+              o3.key = a4 ? s4.C0.ESC + "[18;" + (a4 + 1) + "~" : s4.C0.ESC + "[18~";
               break;
             case 119:
-              o3.key = a3 ? s4.C0.ESC + "[19;" + (a3 + 1) + "~" : s4.C0.ESC + "[19~";
+              o3.key = a4 ? s4.C0.ESC + "[19;" + (a4 + 1) + "~" : s4.C0.ESC + "[19~";
               break;
             case 120:
-              o3.key = a3 ? s4.C0.ESC + "[20;" + (a3 + 1) + "~" : s4.C0.ESC + "[20~";
+              o3.key = a4 ? s4.C0.ESC + "[20;" + (a4 + 1) + "~" : s4.C0.ESC + "[20~";
               break;
             case 121:
-              o3.key = a3 ? s4.C0.ESC + "[21;" + (a3 + 1) + "~" : s4.C0.ESC + "[21~";
+              o3.key = a4 ? s4.C0.ESC + "[21;" + (a4 + 1) + "~" : s4.C0.ESC + "[21~";
               break;
             case 122:
-              o3.key = a3 ? s4.C0.ESC + "[23;" + (a3 + 1) + "~" : s4.C0.ESC + "[23~";
+              o3.key = a4 ? s4.C0.ESC + "[23;" + (a4 + 1) + "~" : s4.C0.ESC + "[23~";
               break;
             case 123:
-              o3.key = a3 ? s4.C0.ESC + "[24;" + (a3 + 1) + "~" : s4.C0.ESC + "[24~";
+              o3.key = a4 ? s4.C0.ESC + "[24;" + (a4 + 1) + "~" : s4.C0.ESC + "[24~";
               break;
             default:
               if (!e5.ctrlKey || e5.shiftKey || e5.altKey || e5.metaKey)
@@ -4903,7 +4903,7 @@ WARNING: This link could potentially be dangerous`)) {
             const i5 = e5.length;
             if (!i5)
               return 0;
-            let s4, r3, n2, o3, a3 = 0, h3 = 0, c3 = 0;
+            let s4, r3, n2, o3, a4 = 0, h3 = 0, c4 = 0;
             if (this.interim[0]) {
               let s5 = false, r4 = this.interim[0];
               r4 &= 192 == (224 & r4) ? 31 : 224 == (240 & r4) ? 15 : 7;
@@ -4911,27 +4911,27 @@ WARNING: This link could potentially be dangerous`)) {
               for (; (n3 = 63 & this.interim[++o4]) && o4 < 4; )
                 r4 <<= 6, r4 |= n3;
               const h4 = 192 == (224 & this.interim[0]) ? 2 : 224 == (240 & this.interim[0]) ? 3 : 4, l4 = h4 - o4;
-              for (; c3 < l4; ) {
-                if (c3 >= i5)
+              for (; c4 < l4; ) {
+                if (c4 >= i5)
                   return 0;
-                if (n3 = e5[c3++], 128 != (192 & n3)) {
-                  c3--, s5 = true;
+                if (n3 = e5[c4++], 128 != (192 & n3)) {
+                  c4--, s5 = true;
                   break;
                 }
                 this.interim[o4++] = n3, r4 <<= 6, r4 |= 63 & n3;
               }
-              s5 || (2 === h4 ? r4 < 128 ? c3-- : t5[a3++] = r4 : 3 === h4 ? r4 < 2048 || r4 >= 55296 && r4 <= 57343 || 65279 === r4 || (t5[a3++] = r4) : r4 < 65536 || r4 > 1114111 || (t5[a3++] = r4)), this.interim.fill(0);
+              s5 || (2 === h4 ? r4 < 128 ? c4-- : t5[a4++] = r4 : 3 === h4 ? r4 < 2048 || r4 >= 55296 && r4 <= 57343 || 65279 === r4 || (t5[a4++] = r4) : r4 < 65536 || r4 > 1114111 || (t5[a4++] = r4)), this.interim.fill(0);
             }
             const l3 = i5 - 4;
-            let d3 = c3;
+            let d3 = c4;
             for (; d3 < i5; ) {
               for (; !(!(d3 < l3) || 128 & (s4 = e5[d3]) || 128 & (r3 = e5[d3 + 1]) || 128 & (n2 = e5[d3 + 2]) || 128 & (o3 = e5[d3 + 3])); )
-                t5[a3++] = s4, t5[a3++] = r3, t5[a3++] = n2, t5[a3++] = o3, d3 += 4;
+                t5[a4++] = s4, t5[a4++] = r3, t5[a4++] = n2, t5[a4++] = o3, d3 += 4;
               if (s4 = e5[d3++], s4 < 128)
-                t5[a3++] = s4;
+                t5[a4++] = s4;
               else if (192 == (224 & s4)) {
                 if (d3 >= i5)
-                  return this.interim[0] = s4, a3;
+                  return this.interim[0] = s4, a4;
                 if (r3 = e5[d3++], 128 != (192 & r3)) {
                   d3--;
                   continue;
@@ -4940,48 +4940,48 @@ WARNING: This link could potentially be dangerous`)) {
                   d3--;
                   continue;
                 }
-                t5[a3++] = h3;
+                t5[a4++] = h3;
               } else if (224 == (240 & s4)) {
                 if (d3 >= i5)
-                  return this.interim[0] = s4, a3;
+                  return this.interim[0] = s4, a4;
                 if (r3 = e5[d3++], 128 != (192 & r3)) {
                   d3--;
                   continue;
                 }
                 if (d3 >= i5)
-                  return this.interim[0] = s4, this.interim[1] = r3, a3;
+                  return this.interim[0] = s4, this.interim[1] = r3, a4;
                 if (n2 = e5[d3++], 128 != (192 & n2)) {
                   d3--;
                   continue;
                 }
                 if (h3 = (15 & s4) << 12 | (63 & r3) << 6 | 63 & n2, h3 < 2048 || h3 >= 55296 && h3 <= 57343 || 65279 === h3)
                   continue;
-                t5[a3++] = h3;
+                t5[a4++] = h3;
               } else if (240 == (248 & s4)) {
                 if (d3 >= i5)
-                  return this.interim[0] = s4, a3;
+                  return this.interim[0] = s4, a4;
                 if (r3 = e5[d3++], 128 != (192 & r3)) {
                   d3--;
                   continue;
                 }
                 if (d3 >= i5)
-                  return this.interim[0] = s4, this.interim[1] = r3, a3;
+                  return this.interim[0] = s4, this.interim[1] = r3, a4;
                 if (n2 = e5[d3++], 128 != (192 & n2)) {
                   d3--;
                   continue;
                 }
                 if (d3 >= i5)
-                  return this.interim[0] = s4, this.interim[1] = r3, this.interim[2] = n2, a3;
+                  return this.interim[0] = s4, this.interim[1] = r3, this.interim[2] = n2, a4;
                 if (o3 = e5[d3++], 128 != (192 & o3)) {
                   d3--;
                   continue;
                 }
                 if (h3 = (7 & s4) << 18 | (63 & r3) << 12 | (63 & n2) << 6 | 63 & o3, h3 < 65536 || h3 > 1114111)
                   continue;
-                t5[a3++] = h3;
+                t5[a4++] = h3;
               }
             }
-            return a3;
+            return a4;
           }
         };
       }, 225: (e4, t4, i5) => {
@@ -5176,13 +5176,13 @@ WARNING: This link could potentially be dangerous`)) {
             this._active = o3, this._ident = 0;
           }
         };
-        const a3 = new r3.Params();
-        a3.addParam(0), t4.DcsHandler = class {
+        const a4 = new r3.Params();
+        a4.addParam(0), t4.DcsHandler = class {
           constructor(e5) {
-            this._handler = e5, this._data = "", this._params = a3, this._hitLimit = false;
+            this._handler = e5, this._data = "", this._params = a4, this._hitLimit = false;
           }
           hook(e5) {
-            this._params = e5.length > 1 || e5.params[0] ? e5.clone() : a3, this._data = "", this._hitLimit = false;
+            this._params = e5.length > 1 || e5.params[0] ? e5.clone() : a4, this._data = "", this._hitLimit = false;
           }
           put(e5, t5, i6) {
             this._hitLimit || (this._data += (0, s4.utf32ToString)(e5, t5, i6), this._data.length > n2.PAYLOAD_LIMIT && (this._data = "", this._hitLimit = true));
@@ -5192,14 +5192,14 @@ WARNING: This link could potentially be dangerous`)) {
             if (this._hitLimit)
               t5 = false;
             else if (e5 && (t5 = this._handler(this._data, this._params), t5 instanceof Promise))
-              return t5.then((e6) => (this._params = a3, this._data = "", this._hitLimit = false, e6));
-            return this._params = a3, this._data = "", this._hitLimit = false, t5;
+              return t5.then((e6) => (this._params = a4, this._data = "", this._hitLimit = false, e6));
+            return this._params = a4, this._data = "", this._hitLimit = false, t5;
           }
         };
       }, 2015: (e4, t4, i5) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.EscapeSequenceParser = t4.VT500_TRANSITION_TABLE = t4.TransitionTable = void 0;
         const s4 = i5(844), r3 = i5(8742), n2 = i5(6242), o3 = i5(6351);
-        class a3 {
+        class a4 {
           constructor(e5) {
             this.table = new Uint8Array(e5);
           }
@@ -5214,10 +5214,10 @@ WARNING: This link could potentially be dangerous`)) {
               this.table[t5 << 8 | e5[r4]] = i6 << 4 | s5;
           }
         }
-        t4.TransitionTable = a3;
+        t4.TransitionTable = a4;
         const h3 = 160;
         t4.VT500_TRANSITION_TABLE = function() {
-          const e5 = new a3(4095), t5 = Array.apply(null, Array(256)).map((e6, t6) => t6), i6 = (e6, i7) => t5.slice(e6, i7), s5 = i6(32, 127), r4 = i6(0, 24);
+          const e5 = new a4(4095), t5 = Array.apply(null, Array(256)).map((e6, t6) => t6), i6 = (e6, i7) => t5.slice(e6, i7), s5 = i6(32, 127), r4 = i6(0, 24);
           r4.push(25), r4.push.apply(r4, i6(28, 32));
           const n3 = i6(0, 14);
           let o4;
@@ -5225,7 +5225,7 @@ WARNING: This link could potentially be dangerous`)) {
             e5.addMany([24, 26, 153, 154], o4, 3, 0), e5.addMany(i6(128, 144), o4, 3, 0), e5.addMany(i6(144, 152), o4, 3, 0), e5.add(156, o4, 0, 0), e5.add(27, o4, 11, 1), e5.add(157, o4, 4, 8), e5.addMany([152, 158, 159], o4, 0, 7), e5.add(155, o4, 11, 3), e5.add(144, o4, 11, 9);
           return e5.addMany(r4, 0, 3, 0), e5.addMany(r4, 1, 3, 1), e5.add(127, 1, 0, 1), e5.addMany(r4, 8, 0, 8), e5.addMany(r4, 3, 3, 3), e5.add(127, 3, 0, 3), e5.addMany(r4, 4, 3, 4), e5.add(127, 4, 0, 4), e5.addMany(r4, 6, 3, 6), e5.addMany(r4, 5, 3, 5), e5.add(127, 5, 0, 5), e5.addMany(r4, 2, 3, 2), e5.add(127, 2, 0, 2), e5.add(93, 1, 4, 8), e5.addMany(s5, 8, 5, 8), e5.add(127, 8, 5, 8), e5.addMany([156, 27, 24, 26, 7], 8, 6, 0), e5.addMany(i6(28, 32), 8, 0, 8), e5.addMany([88, 94, 95], 1, 0, 7), e5.addMany(s5, 7, 0, 7), e5.addMany(r4, 7, 0, 7), e5.add(156, 7, 0, 0), e5.add(127, 7, 0, 7), e5.add(91, 1, 11, 3), e5.addMany(i6(64, 127), 3, 7, 0), e5.addMany(i6(48, 60), 3, 8, 4), e5.addMany([60, 61, 62, 63], 3, 9, 4), e5.addMany(i6(48, 60), 4, 8, 4), e5.addMany(i6(64, 127), 4, 7, 0), e5.addMany([60, 61, 62, 63], 4, 0, 6), e5.addMany(i6(32, 64), 6, 0, 6), e5.add(127, 6, 0, 6), e5.addMany(i6(64, 127), 6, 0, 0), e5.addMany(i6(32, 48), 3, 9, 5), e5.addMany(i6(32, 48), 5, 9, 5), e5.addMany(i6(48, 64), 5, 0, 6), e5.addMany(i6(64, 127), 5, 7, 0), e5.addMany(i6(32, 48), 4, 9, 5), e5.addMany(i6(32, 48), 1, 9, 2), e5.addMany(i6(32, 48), 2, 9, 2), e5.addMany(i6(48, 127), 2, 10, 0), e5.addMany(i6(48, 80), 1, 10, 0), e5.addMany(i6(81, 88), 1, 10, 0), e5.addMany([89, 90, 92], 1, 10, 0), e5.addMany(i6(96, 127), 1, 10, 0), e5.add(80, 1, 11, 9), e5.addMany(r4, 9, 0, 9), e5.add(127, 9, 0, 9), e5.addMany(i6(28, 32), 9, 0, 9), e5.addMany(i6(32, 48), 9, 9, 12), e5.addMany(i6(48, 60), 9, 8, 10), e5.addMany([60, 61, 62, 63], 9, 9, 10), e5.addMany(r4, 11, 0, 11), e5.addMany(i6(32, 128), 11, 0, 11), e5.addMany(i6(28, 32), 11, 0, 11), e5.addMany(r4, 10, 0, 10), e5.add(127, 10, 0, 10), e5.addMany(i6(28, 32), 10, 0, 10), e5.addMany(i6(48, 60), 10, 8, 10), e5.addMany([60, 61, 62, 63], 10, 0, 11), e5.addMany(i6(32, 48), 10, 9, 12), e5.addMany(r4, 12, 0, 12), e5.add(127, 12, 0, 12), e5.addMany(i6(28, 32), 12, 0, 12), e5.addMany(i6(32, 48), 12, 9, 12), e5.addMany(i6(48, 64), 12, 0, 11), e5.addMany(i6(64, 127), 12, 12, 13), e5.addMany(i6(64, 127), 10, 12, 13), e5.addMany(i6(64, 127), 9, 12, 13), e5.addMany(r4, 13, 13, 13), e5.addMany(s5, 13, 13, 13), e5.add(127, 13, 0, 13), e5.addMany([27, 156, 24, 26], 13, 14, 0), e5.add(h3, 0, 2, 0), e5.add(h3, 8, 5, 8), e5.add(h3, 6, 0, 6), e5.add(h3, 11, 0, 11), e5.add(h3, 13, 13, 13), e5;
         }();
-        class c3 extends s4.Disposable {
+        class c4 extends s4.Disposable {
           constructor(e5 = t4.VT500_TRANSITION_TABLE) {
             super(), this._transitions = e5, this._parseStack = { state: 0, handlers: [], handlerPos: 0, transition: 0, chunkPos: 0 }, this.initialState = 0, this.currentState = this.initialState, this._params = new r3.Params(), this._params.addParam(0), this._collect = 0, this.precedingJoinState = 0, this._printHandlerFb = (e6, t5, i6) => {
             }, this._executeHandlerFb = (e6) => {
@@ -5413,11 +5413,11 @@ WARNING: This link could potentially be dangerous`)) {
                   break;
                 case 7:
                   const o5 = this._csiHandlers[this._collect << 8 | r4];
-                  let a4 = o5 ? o5.length - 1 : -1;
-                  for (; a4 >= 0 && (s5 = o5[a4](this._params), true !== s5); a4--)
+                  let a5 = o5 ? o5.length - 1 : -1;
+                  for (; a5 >= 0 && (s5 = o5[a5](this._params), true !== s5); a5--)
                     if (s5 instanceof Promise)
-                      return this._preserveStack(3, o5, a4, n3, i7), s5;
-                  a4 < 0 && this._csiHandlerFb(this._collect << 8 | r4, this._params), this.precedingJoinState = 0;
+                      return this._preserveStack(3, o5, a5, n3, i7), s5;
+                  a5 < 0 && this._csiHandlerFb(this._collect << 8 | r4, this._params), this.precedingJoinState = 0;
                   break;
                 case 8:
                   do {
@@ -5438,11 +5438,11 @@ WARNING: This link could potentially be dangerous`)) {
                   this._collect <<= 8, this._collect |= r4;
                   break;
                 case 10:
-                  const c4 = this._escHandlers[this._collect << 8 | r4];
-                  let l3 = c4 ? c4.length - 1 : -1;
-                  for (; l3 >= 0 && (s5 = c4[l3](), true !== s5); l3--)
+                  const c5 = this._escHandlers[this._collect << 8 | r4];
+                  let l3 = c5 ? c5.length - 1 : -1;
+                  for (; l3 >= 0 && (s5 = c5[l3](), true !== s5); l3--)
                     if (s5 instanceof Promise)
-                      return this._preserveStack(4, c4, l3, n3, i7), s5;
+                      return this._preserveStack(4, c5, l3, n3, i7), s5;
                   l3 < 0 && this._escHandlerFb(this._collect << 8 | r4), this.precedingJoinState = 0;
                   break;
                 case 11:
@@ -5482,7 +5482,7 @@ WARNING: This link could potentially be dangerous`)) {
             }
           }
         }
-        t4.EscapeSequenceParser = c3;
+        t4.EscapeSequenceParser = c4;
       }, 6242: (e4, t4, i5) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.OscHandler = t4.OscParser = void 0;
         const s4 = i5(5770), r3 = i5(482), n2 = [];
@@ -5826,8 +5826,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -5835,14 +5835,14 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.BufferService = t4.MINIMUM_ROWS = t4.MINIMUM_COLS = void 0;
-        const n2 = i5(8460), o3 = i5(844), a3 = i5(5295), h3 = i5(2585);
+        const n2 = i5(8460), o3 = i5(844), a4 = i5(5295), h3 = i5(2585);
         t4.MINIMUM_COLS = 2, t4.MINIMUM_ROWS = 1;
-        let c3 = t4.BufferService = class extends o3.Disposable {
+        let c4 = t4.BufferService = class extends o3.Disposable {
           get buffer() {
             return this.buffers.active;
           }
           constructor(e5) {
-            super(), this.isUserScrolling = false, this._onResize = this.register(new n2.EventEmitter()), this.onResize = this._onResize.event, this._onScroll = this.register(new n2.EventEmitter()), this.onScroll = this._onScroll.event, this.cols = Math.max(e5.rawOptions.cols || 0, t4.MINIMUM_COLS), this.rows = Math.max(e5.rawOptions.rows || 0, t4.MINIMUM_ROWS), this.buffers = this.register(new a3.BufferSet(e5, this));
+            super(), this.isUserScrolling = false, this._onResize = this.register(new n2.EventEmitter()), this.onResize = this._onResize.event, this._onScroll = this.register(new n2.EventEmitter()), this.onScroll = this._onScroll.event, this.cols = Math.max(e5.rawOptions.cols || 0, t4.MINIMUM_COLS), this.rows = Math.max(e5.rawOptions.rows || 0, t4.MINIMUM_ROWS), this.buffers = this.register(new a4.BufferSet(e5, this));
           }
           resize(e5, t5) {
             this.cols = e5, this.rows = t5, this.buffers.resize(e5, t5), this._onResize.fire({ cols: e5, rows: t5 });
@@ -5876,7 +5876,7 @@ WARNING: This link could potentially be dangerous`)) {
             s5.ydisp = Math.max(Math.min(s5.ydisp + e5, s5.ybase), 0), r4 !== s5.ydisp && (t5 || this._onScroll.fire(s5.ydisp));
           }
         };
-        t4.BufferService = c3 = s4([r3(0, h3.IOptionsService)], c3);
+        t4.BufferService = c4 = s4([r3(0, h3.IOptionsService)], c4);
       }, 7994: (e4, t4) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.CharsetService = void 0, t4.CharsetService = class {
           constructor() {
@@ -5898,8 +5898,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -5907,22 +5907,22 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.CoreMouseService = void 0;
-        const n2 = i5(2585), o3 = i5(8460), a3 = i5(844), h3 = { NONE: { events: 0, restrict: () => false }, X10: { events: 1, restrict: (e5) => 4 !== e5.button && 1 === e5.action && (e5.ctrl = false, e5.alt = false, e5.shift = false, true) }, VT200: { events: 19, restrict: (e5) => 32 !== e5.action }, DRAG: { events: 23, restrict: (e5) => 32 !== e5.action || 3 !== e5.button }, ANY: { events: 31, restrict: (e5) => true } };
-        function c3(e5, t5) {
+        const n2 = i5(2585), o3 = i5(8460), a4 = i5(844), h3 = { NONE: { events: 0, restrict: () => false }, X10: { events: 1, restrict: (e5) => 4 !== e5.button && 1 === e5.action && (e5.ctrl = false, e5.alt = false, e5.shift = false, true) }, VT200: { events: 19, restrict: (e5) => 32 !== e5.action }, DRAG: { events: 23, restrict: (e5) => 32 !== e5.action || 3 !== e5.button }, ANY: { events: 31, restrict: (e5) => true } };
+        function c4(e5, t5) {
           let i6 = (e5.ctrl ? 16 : 0) | (e5.shift ? 4 : 0) | (e5.alt ? 8 : 0);
           return 4 === e5.button ? (i6 |= 64, i6 |= e5.action) : (i6 |= 3 & e5.button, 4 & e5.button && (i6 |= 64), 8 & e5.button && (i6 |= 128), 32 === e5.action ? i6 |= 32 : 0 !== e5.action || t5 || (i6 |= 3)), i6;
         }
         const l3 = String.fromCharCode, d3 = { DEFAULT: (e5) => {
-          const t5 = [c3(e5, false) + 32, e5.col + 32, e5.row + 32];
+          const t5 = [c4(e5, false) + 32, e5.col + 32, e5.row + 32];
           return t5[0] > 255 || t5[1] > 255 || t5[2] > 255 ? "" : `\x1B[M${l3(t5[0])}${l3(t5[1])}${l3(t5[2])}`;
         }, SGR: (e5) => {
           const t5 = 0 === e5.action && 4 !== e5.button ? "m" : "M";
-          return `\x1B[<${c3(e5, true)};${e5.col};${e5.row}${t5}`;
+          return `\x1B[<${c4(e5, true)};${e5.col};${e5.row}${t5}`;
         }, SGR_PIXELS: (e5) => {
           const t5 = 0 === e5.action && 4 !== e5.button ? "m" : "M";
-          return `\x1B[<${c3(e5, true)};${e5.x};${e5.y}${t5}`;
+          return `\x1B[<${c4(e5, true)};${e5.x};${e5.y}${t5}`;
         } };
-        let _2 = t4.CoreMouseService = class extends a3.Disposable {
+        let _2 = t4.CoreMouseService = class extends a4.Disposable {
           constructor(e5, t5) {
             super(), this._bufferService = e5, this._coreService = t5, this._protocols = {}, this._encodings = {}, this._activeProtocol = "", this._activeEncoding = "", this._lastEvent = null, this._onProtocolChange = this.register(new o3.EventEmitter()), this.onProtocolChange = this._onProtocolChange.event;
             for (const e6 of Object.keys(h3))
@@ -6000,8 +6000,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -6009,13 +6009,13 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.CoreService = void 0;
-        const n2 = i5(1439), o3 = i5(8460), a3 = i5(844), h3 = i5(2585), c3 = Object.freeze({ insertMode: false }), l3 = Object.freeze({ applicationCursorKeys: false, applicationKeypad: false, bracketedPasteMode: false, origin: false, reverseWraparound: false, sendFocus: false, wraparound: true });
-        let d3 = t4.CoreService = class extends a3.Disposable {
+        const n2 = i5(1439), o3 = i5(8460), a4 = i5(844), h3 = i5(2585), c4 = Object.freeze({ insertMode: false }), l3 = Object.freeze({ applicationCursorKeys: false, applicationKeypad: false, bracketedPasteMode: false, origin: false, reverseWraparound: false, sendFocus: false, wraparound: true });
+        let d3 = t4.CoreService = class extends a4.Disposable {
           constructor(e5, t5, i6) {
-            super(), this._bufferService = e5, this._logService = t5, this._optionsService = i6, this.isCursorInitialized = false, this.isCursorHidden = false, this._onData = this.register(new o3.EventEmitter()), this.onData = this._onData.event, this._onUserInput = this.register(new o3.EventEmitter()), this.onUserInput = this._onUserInput.event, this._onBinary = this.register(new o3.EventEmitter()), this.onBinary = this._onBinary.event, this._onRequestScrollToBottom = this.register(new o3.EventEmitter()), this.onRequestScrollToBottom = this._onRequestScrollToBottom.event, this.modes = (0, n2.clone)(c3), this.decPrivateModes = (0, n2.clone)(l3);
+            super(), this._bufferService = e5, this._logService = t5, this._optionsService = i6, this.isCursorInitialized = false, this.isCursorHidden = false, this._onData = this.register(new o3.EventEmitter()), this.onData = this._onData.event, this._onUserInput = this.register(new o3.EventEmitter()), this.onUserInput = this._onUserInput.event, this._onBinary = this.register(new o3.EventEmitter()), this.onBinary = this._onBinary.event, this._onRequestScrollToBottom = this.register(new o3.EventEmitter()), this.onRequestScrollToBottom = this._onRequestScrollToBottom.event, this.modes = (0, n2.clone)(c4), this.decPrivateModes = (0, n2.clone)(l3);
           }
           reset() {
-            this.modes = (0, n2.clone)(c3), this.decPrivateModes = (0, n2.clone)(l3);
+            this.modes = (0, n2.clone)(c4), this.decPrivateModes = (0, n2.clone)(l3);
           }
           triggerDataEvent(e5, t5 = false) {
             if (this._optionsService.rawOptions.disableStdin)
@@ -6031,8 +6031,8 @@ WARNING: This link could potentially be dangerous`)) {
       }, 9074: (e4, t4, i5) => {
         Object.defineProperty(t4, "__esModule", { value: true }), t4.DecorationService = void 0;
         const s4 = i5(8055), r3 = i5(8460), n2 = i5(844), o3 = i5(6106);
-        let a3 = 0, h3 = 0;
-        class c3 extends n2.Disposable {
+        let a4 = 0, h3 = 0;
+        class c4 extends n2.Disposable {
           get decorations() {
             return this._decorations.values();
           }
@@ -6063,11 +6063,11 @@ WARNING: This link could potentially be dangerous`)) {
           }
           forEachDecorationAtCell(e5, t5, i6, s5) {
             this._decorations.forEachByKey(t5, (t6) => {
-              a3 = t6.options.x ?? 0, h3 = a3 + (t6.options.width ?? 1), e5 >= a3 && e5 < h3 && (!i6 || (t6.options.layer ?? "bottom") === i6) && s5(t6);
+              a4 = t6.options.x ?? 0, h3 = a4 + (t6.options.width ?? 1), e5 >= a4 && e5 < h3 && (!i6 || (t6.options.layer ?? "bottom") === i6) && s5(t6);
             });
           }
         }
-        t4.DecorationService = c3;
+        t4.DecorationService = c4;
         class l3 extends n2.Disposable {
           get isDisposed() {
             return this._isDisposed;
@@ -6139,8 +6139,8 @@ WARNING: This link could potentially be dangerous`)) {
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a4 = e5.length - 1; a4 >= 0; a4--)
-              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a5 = e5.length - 1; a5 >= 0; a5--)
+              (r4 = e5[a5]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -6148,8 +6148,8 @@ WARNING: This link could potentially be dangerous`)) {
           };
         };
         Object.defineProperty(t4, "__esModule", { value: true }), t4.traceCall = t4.setTraceLogger = t4.LogService = void 0;
-        const n2 = i5(844), o3 = i5(2585), a3 = { trace: o3.LogLevelEnum.TRACE, debug: o3.LogLevelEnum.DEBUG, info: o3.LogLevelEnum.INFO, warn: o3.LogLevelEnum.WARN, error: o3.LogLevelEnum.ERROR, off: o3.LogLevelEnum.OFF };
-        let h3, c3 = t4.LogService = class extends n2.Disposable {
+        const n2 = i5(844), o3 = i5(2585), a4 = { trace: o3.LogLevelEnum.TRACE, debug: o3.LogLevelEnum.DEBUG, info: o3.LogLevelEnum.INFO, warn: o3.LogLevelEnum.WARN, error: o3.LogLevelEnum.ERROR, off: o3.LogLevelEnum.OFF };
+        let h3, c4 = t4.LogService = class extends n2.Disposable {
           get logLevel() {
             return this._logLevel;
           }
@@ -6157,7 +6157,7 @@ WARNING: This link could potentially be dangerous`)) {
             super(), this._optionsService = e5, this._logLevel = o3.LogLevelEnum.OFF, this._updateLogLevel(), this.register(this._optionsService.onSpecificOptionChange("logLevel", () => this._updateLogLevel())), h3 = this;
           }
           _updateLogLevel() {
-            this._logLevel = a3[this._optionsService.rawOptions.logLevel];
+            this._logLevel = a4[this._optionsService.rawOptions.logLevel];
           }
           _evalLazyOptionalParams(e5) {
             for (let t5 = 0; t5 < e5.length; t5++)
@@ -6182,7 +6182,7 @@ WARNING: This link could potentially be dangerous`)) {
             this._logLevel <= o3.LogLevelEnum.ERROR && this._log(this._optionsService.options.logger?.error.bind(this._optionsService.options.logger) ?? console.error, e5, t5);
           }
         };
-        t4.LogService = c3 = s4([r3(0, o3.IOptionsService)], c3), t4.setTraceLogger = function(e5) {
+        t4.LogService = c4 = s4([r3(0, o3.IOptionsService)], c4), t4.setTraceLogger = function(e5) {
           h3 = e5;
         }, t4.traceCall = function(e5, t5, i6) {
           if ("function" != typeof i6.value)
@@ -6201,7 +6201,7 @@ WARNING: This link could potentially be dangerous`)) {
         const s4 = i5(8460), r3 = i5(844), n2 = i5(6114);
         t4.DEFAULT_OPTIONS = { cols: 80, rows: 24, cursorBlink: false, cursorStyle: "block", cursorWidth: 1, cursorInactiveStyle: "outline", customGlyphs: true, drawBoldTextInBrightColors: true, documentOverride: null, fastScrollModifier: "alt", fastScrollSensitivity: 5, fontFamily: "courier-new, courier, monospace", fontSize: 15, fontWeight: "normal", fontWeightBold: "bold", ignoreBracketedPasteMode: false, lineHeight: 1, letterSpacing: 0, linkHandler: null, logLevel: "info", logger: null, scrollback: 1e3, scrollOnUserInput: true, scrollSensitivity: 1, screenReaderMode: false, smoothScrollDuration: 0, macOptionIsMeta: false, macOptionClickForcesSelection: false, minimumContrastRatio: 1, disableStdin: false, allowProposedApi: false, allowTransparency: false, tabStopWidth: 8, theme: {}, rescaleOverlappingGlyphs: false, rightClickSelectsWord: n2.isMac, windowOptions: {}, windowsMode: false, windowsPty: {}, wordSeparator: " ()[]{}',\"`", altClickMovesCursor: true, convertEol: false, termName: "xterm", cancelEvents: false, overviewRulerWidth: 0 };
         const o3 = ["normal", "bold", "100", "200", "300", "400", "500", "600", "700", "800", "900"];
-        class a3 extends r3.Disposable {
+        class a4 extends r3.Disposable {
           constructor(e5) {
             super(), this._onOptionChange = this.register(new s4.EventEmitter()), this.onOptionChange = this._onOptionChange.event;
             const i6 = { ...t4.DEFAULT_OPTIONS };
@@ -6289,15 +6289,15 @@ WARNING: This link could potentially be dangerous`)) {
             return i6;
           }
         }
-        t4.OptionsService = a3;
+        t4.OptionsService = a4;
       }, 2660: function(e4, t4, i5) {
         var s4 = this && this.__decorate || function(e5, t5, i6, s5) {
           var r4, n3 = arguments.length, o4 = n3 < 3 ? t5 : null === s5 ? s5 = Object.getOwnPropertyDescriptor(t5, i6) : s5;
           if ("object" == typeof Reflect && "function" == typeof Reflect.decorate)
             o4 = Reflect.decorate(e5, t5, i6, s5);
           else
-            for (var a3 = e5.length - 1; a3 >= 0; a3--)
-              (r4 = e5[a3]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
+            for (var a4 = e5.length - 1; a4 >= 0; a4--)
+              (r4 = e5[a4]) && (o4 = (n3 < 3 ? r4(o4) : n3 > 3 ? r4(t5, i6, o4) : r4(t5, i6)) || o4);
           return n3 > 3 && o4 && Object.defineProperty(t5, i6, o4), o4;
         }, r3 = this && this.__param || function(e5, t5) {
           return function(i6, s5) {
@@ -6417,9 +6417,9 @@ WARNING: This link could potentially be dangerous`)) {
                 const i7 = e5.charCodeAt(r4);
                 56320 <= i7 && i7 <= 57343 ? o3 = 1024 * (o3 - 55296) + i7 - 56320 + 65536 : t5 += this.wcwidth(i7);
               }
-              const a3 = this.charProperties(o3, i6);
-              let h3 = n2.extractWidth(a3);
-              n2.extractShouldJoin(a3) && (h3 -= n2.extractWidth(i6)), t5 += h3, i6 = a3;
+              const a4 = this.charProperties(o3, i6);
+              let h3 = n2.extractWidth(a4);
+              n2.extractShouldJoin(a4) && (h3 -= n2.extractWidth(i6)), t5 += h3, i6 = a4;
             }
             return t5;
           }
@@ -6440,7 +6440,7 @@ WARNING: This link could potentially be dangerous`)) {
       return (() => {
         var e4 = s3;
         Object.defineProperty(e4, "__esModule", { value: true }), e4.Terminal = void 0;
-        const t4 = i4(9042), r3 = i4(3236), n2 = i4(844), o3 = i4(5741), a3 = i4(8285), h3 = i4(7975), c3 = i4(7090), l3 = ["cols", "rows"];
+        const t4 = i4(9042), r3 = i4(3236), n2 = i4(844), o3 = i4(5741), a4 = i4(8285), h3 = i4(7975), c4 = i4(7090), l3 = ["cols", "rows"];
         class d3 extends n2.Disposable {
           constructor(e5) {
             super(), this._core = this.register(new r3.Terminal(e5)), this._addonManager = this.register(new o3.AddonManager()), this._publicOptions = { ...this._core.options };
@@ -6503,7 +6503,7 @@ WARNING: This link could potentially be dangerous`)) {
             return this._parser || (this._parser = new h3.ParserApi(this._core)), this._parser;
           }
           get unicode() {
-            return this._checkProposedApi(), new c3.UnicodeApi(this._core);
+            return this._checkProposedApi(), new c4.UnicodeApi(this._core);
           }
           get textarea() {
             return this._core.textarea;
@@ -6515,7 +6515,7 @@ WARNING: This link could potentially be dangerous`)) {
             return this._core.cols;
           }
           get buffer() {
-            return this._buffer || (this._buffer = this.register(new a3.BufferNamespaceApi(this._core))), this._buffer;
+            return this._buffer || (this._buffer = this.register(new a4.BufferNamespaceApi(this._core))), this._buffer;
           }
           get markers() {
             return this._checkProposedApi(), this._core.markers;
@@ -6695,8 +6695,8 @@ var require_addon_fit = __commonJS({
             const e4 = this._terminal._core, t4 = e4._renderService.dimensions;
             if (0 === t4.css.cell.width || 0 === t4.css.cell.height)
               return;
-            const r3 = 0 === this._terminal.options.scrollback ? 0 : e4.viewport.scrollBarWidth, i4 = window.getComputedStyle(this._terminal.element.parentElement), o3 = parseInt(i4.getPropertyValue("height")), s3 = Math.max(0, parseInt(i4.getPropertyValue("width"))), n2 = window.getComputedStyle(this._terminal.element), l3 = o3 - (parseInt(n2.getPropertyValue("padding-top")) + parseInt(n2.getPropertyValue("padding-bottom"))), a3 = s3 - (parseInt(n2.getPropertyValue("padding-right")) + parseInt(n2.getPropertyValue("padding-left"))) - r3;
-            return { cols: Math.max(2, Math.floor(a3 / t4.css.cell.width)), rows: Math.max(1, Math.floor(l3 / t4.css.cell.height)) };
+            const r3 = 0 === this._terminal.options.scrollback ? 0 : e4.viewport.scrollBarWidth, i4 = window.getComputedStyle(this._terminal.element.parentElement), o3 = parseInt(i4.getPropertyValue("height")), s3 = Math.max(0, parseInt(i4.getPropertyValue("width"))), n2 = window.getComputedStyle(this._terminal.element), l3 = o3 - (parseInt(n2.getPropertyValue("padding-top")) + parseInt(n2.getPropertyValue("padding-bottom"))), a4 = s3 - (parseInt(n2.getPropertyValue("padding-right")) + parseInt(n2.getPropertyValue("padding-left"))) - r3;
+            return { cols: Math.max(2, Math.floor(a4 / t4.css.cell.width)), rows: Math.max(1, Math.floor(l3 / t4.css.cell.height)) };
           }
         };
       })(), e3;
@@ -6758,9 +6758,9 @@ var require_compiler = __commonJS({
           seenTag = false;
           lineStart = tokens.length;
         }
-        function changeDelimiters(text2, index) {
-          var close = "=" + ctag, closeIndex = text2.indexOf(close, index), delimiters2 = trim(
-            text2.substring(text2.indexOf("=", index) + 1, closeIndex)
+        function changeDelimiters(text2, index2) {
+          var close = "=" + ctag, closeIndex = text2.indexOf(close, index2), delimiters2 = trim(
+            text2.substring(text2.indexOf("=", index2) + 1, closeIndex)
           ).split(" ");
           otag = delimiters2[0];
           ctag = delimiters2[delimiters2.length - 1];
@@ -6836,12 +6836,12 @@ var require_compiler = __commonJS({
         }
         return s3.replace(/^\s*|\s*$/g, "");
       }
-      function tagChange(tag2, text, index) {
-        if (text.charAt(index) != tag2.charAt(0)) {
+      function tagChange(tag2, text, index2) {
+        if (text.charAt(index2) != tag2.charAt(0)) {
           return false;
         }
         for (var i4 = 1, l3 = tag2.length; i4 < l3; i4++) {
-          if (text.charAt(index + i4) != tag2.charAt(i4)) {
+          if (text.charAt(index2 + i4) != tag2.charAt(i4)) {
             return false;
           }
         }
@@ -7122,13 +7122,13 @@ var require_template = __commonJS({
           }
         },
         // maybe start a section
-        s: function(val, ctx, partials, inverted, start, end, tags) {
+        s: function(val, ctx, partials, inverted, start2, end, tags) {
           var pass;
           if (isArray(val) && val.length === 0) {
             return false;
           }
           if (typeof val == "function") {
-            val = this.ms(val, ctx, partials, inverted, start, end, tags);
+            val = this.ms(val, ctx, partials, inverted, start2, end, tags);
           }
           pass = !!val;
           if (!inverted && pass && ctx) {
@@ -7206,14 +7206,14 @@ var require_template = __commonJS({
           return r3;
         },
         // method replace section
-        ms: function(func, ctx, partials, inverted, start, end, tags) {
+        ms: function(func, ctx, partials, inverted, start2, end, tags) {
           var textSource, cx = ctx[ctx.length - 1], result = func.call(cx);
           if (typeof result == "function") {
             if (inverted) {
               return true;
             } else {
               textSource = this.activeSub && this.subsText && this.subsText[this.activeSub] ? this.subsText[this.activeSub] : this.text;
-              return this.ls(result, cx, ctx, partials, textSource.substring(start, end), tags);
+              return this.ls(result, cx, ctx, partials, textSource.substring(start2, end), tags);
             }
           }
           return result;
@@ -7290,8 +7290,8 @@ var require_template = __commonJS({
         str = coerceToString(str);
         return hChars.test(str) ? str.replace(rAmp, "&amp;").replace(rLt, "&lt;").replace(rGt, "&gt;").replace(rApos, "&#39;").replace(rQuot, "&quot;") : str;
       }
-      var isArray = Array.isArray || function(a3) {
-        return Object.prototype.toString.call(a3) === "[object Array]";
+      var isArray = Array.isArray || function(a4) {
+        return Object.prototype.toString.call(a4) === "[object Array]";
       };
     })(typeof exports !== "undefined" ? exports : Hogan4);
   }
@@ -7375,21 +7375,21 @@ function M(n2) {
   (!n2.__d && (n2.__d = true) && i.push(n2) && !$.__r++ || o != l.debounceRendering) && ((o = l.debounceRendering) || r)($);
 }
 function $() {
-  for (var n2, u4, t3, o3, r3, f4, c3, s3 = 1; i.length; )
-    i.length > s3 && i.sort(e), n2 = i.shift(), s3 = i.length, n2.__d && (t3 = void 0, o3 = void 0, r3 = (o3 = (u4 = n2).__v).__e, f4 = [], c3 = [], u4.__P && ((t3 = w({}, o3)).__v = o3.__v + 1, l.vnode && l.vnode(t3), O(u4.__P, t3, o3, u4.__n, u4.__P.namespaceURI, 32 & o3.__u ? [r3] : null, f4, null == r3 ? S(o3) : r3, !!(32 & o3.__u), c3), t3.__v = o3.__v, t3.__.__k[t3.__i] = t3, N(f4, t3, c3), o3.__e = o3.__ = null, t3.__e != r3 && C(t3)));
+  for (var n2, u4, t3, o3, r3, f4, c4, s3 = 1; i.length; )
+    i.length > s3 && i.sort(e), n2 = i.shift(), s3 = i.length, n2.__d && (t3 = void 0, o3 = void 0, r3 = (o3 = (u4 = n2).__v).__e, f4 = [], c4 = [], u4.__P && ((t3 = w({}, o3)).__v = o3.__v + 1, l.vnode && l.vnode(t3), O(u4.__P, t3, o3, u4.__n, u4.__P.namespaceURI, 32 & o3.__u ? [r3] : null, f4, null == r3 ? S(o3) : r3, !!(32 & o3.__u), c4), t3.__v = o3.__v, t3.__.__k[t3.__i] = t3, N(f4, t3, c4), o3.__e = o3.__ = null, t3.__e != r3 && C(t3)));
   $.__r = 0;
 }
-function I(n2, l3, u4, t3, i4, o3, r3, e3, f4, c3, s3) {
-  var a3, h3, y3, d3, w3, g2, _2, m3 = t3 && t3.__k || v, b = l3.length;
-  for (f4 = P(u4, l3, m3, f4, b), a3 = 0; a3 < b; a3++)
-    null != (y3 = u4.__k[a3]) && (h3 = -1 == y3.__i ? p : m3[y3.__i] || p, y3.__i = a3, g2 = O(n2, y3, h3, i4, o3, r3, e3, f4, c3, s3), d3 = y3.__e, y3.ref && h3.ref != y3.ref && (h3.ref && B(h3.ref, null, y3), s3.push(y3.ref, y3.__c || d3, y3)), null == w3 && null != d3 && (w3 = d3), (_2 = !!(4 & y3.__u)) || h3.__k === y3.__k ? f4 = A(y3, f4, n2, _2) : "function" == typeof y3.type && void 0 !== g2 ? f4 = g2 : d3 && (f4 = d3.nextSibling), y3.__u &= -7);
+function I(n2, l3, u4, t3, i4, o3, r3, e3, f4, c4, s3) {
+  var a4, h3, y5, d3, w3, g2, _2, m4 = t3 && t3.__k || v, b = l3.length;
+  for (f4 = P(u4, l3, m4, f4, b), a4 = 0; a4 < b; a4++)
+    null != (y5 = u4.__k[a4]) && (h3 = -1 == y5.__i ? p : m4[y5.__i] || p, y5.__i = a4, g2 = O(n2, y5, h3, i4, o3, r3, e3, f4, c4, s3), d3 = y5.__e, y5.ref && h3.ref != y5.ref && (h3.ref && B(h3.ref, null, y5), s3.push(y5.ref, y5.__c || d3, y5)), null == w3 && null != d3 && (w3 = d3), (_2 = !!(4 & y5.__u)) || h3.__k === y5.__k ? f4 = A(y5, f4, n2, _2) : "function" == typeof y5.type && void 0 !== g2 ? f4 = g2 : d3 && (f4 = d3.nextSibling), y5.__u &= -7);
   return u4.__e = w3, f4;
 }
 function P(n2, l3, u4, t3, i4) {
-  var o3, r3, e3, f4, c3, s3 = u4.length, a3 = s3, h3 = 0;
+  var o3, r3, e3, f4, c4, s3 = u4.length, a4 = s3, h3 = 0;
   for (n2.__k = new Array(i4), o3 = 0; o3 < i4; o3++)
-    null != (r3 = l3[o3]) && "boolean" != typeof r3 && "function" != typeof r3 ? ("string" == typeof r3 || "number" == typeof r3 || "bigint" == typeof r3 || r3.constructor == String ? r3 = n2.__k[o3] = m(null, r3, null, null, null) : d(r3) ? r3 = n2.__k[o3] = m(k, { children: r3 }, null, null, null) : void 0 === r3.constructor && r3.__b > 0 ? r3 = n2.__k[o3] = m(r3.type, r3.props, r3.key, r3.ref ? r3.ref : null, r3.__v) : n2.__k[o3] = r3, f4 = o3 + h3, r3.__ = n2, r3.__b = n2.__b + 1, e3 = null, -1 != (c3 = r3.__i = L(r3, u4, f4, a3)) && (a3--, (e3 = u4[c3]) && (e3.__u |= 2)), null == e3 || null == e3.__v ? (-1 == c3 && (i4 > s3 ? h3-- : i4 < s3 && h3++), "function" != typeof r3.type && (r3.__u |= 4)) : c3 != f4 && (c3 == f4 - 1 ? h3-- : c3 == f4 + 1 ? h3++ : (c3 > f4 ? h3-- : h3++, r3.__u |= 4))) : n2.__k[o3] = null;
-  if (a3)
+    null != (r3 = l3[o3]) && "boolean" != typeof r3 && "function" != typeof r3 ? ("string" == typeof r3 || "number" == typeof r3 || "bigint" == typeof r3 || r3.constructor == String ? r3 = n2.__k[o3] = m(null, r3, null, null, null) : d(r3) ? r3 = n2.__k[o3] = m(k, { children: r3 }, null, null, null) : void 0 === r3.constructor && r3.__b > 0 ? r3 = n2.__k[o3] = m(r3.type, r3.props, r3.key, r3.ref ? r3.ref : null, r3.__v) : n2.__k[o3] = r3, f4 = o3 + h3, r3.__ = n2, r3.__b = n2.__b + 1, e3 = null, -1 != (c4 = r3.__i = L(r3, u4, f4, a4)) && (a4--, (e3 = u4[c4]) && (e3.__u |= 2)), null == e3 || null == e3.__v ? (-1 == c4 && (i4 > s3 ? h3-- : i4 < s3 && h3++), "function" != typeof r3.type && (r3.__u |= 4)) : c4 != f4 && (c4 == f4 - 1 ? h3-- : c4 == f4 + 1 ? h3++ : (c4 > f4 ? h3-- : h3++, r3.__u |= 4))) : n2.__k[o3] = null;
+  if (a4)
     for (o3 = 0; o3 < s3; o3++)
       null != (e3 = u4[o3]) && 0 == (2 & e3.__u) && (e3.__e == t3 && (t3 = S(e3)), D(e3, e3));
   return t3;
@@ -7408,12 +7408,12 @@ function A(n2, l3, u4, t3) {
   return l3;
 }
 function L(n2, l3, u4, t3) {
-  var i4, o3, r3, e3 = n2.key, f4 = n2.type, c3 = l3[u4], s3 = null != c3 && 0 == (2 & c3.__u);
-  if (null === c3 && null == e3 || s3 && e3 == c3.key && f4 == c3.type)
+  var i4, o3, r3, e3 = n2.key, f4 = n2.type, c4 = l3[u4], s3 = null != c4 && 0 == (2 & c4.__u);
+  if (null === c4 && null == e3 || s3 && e3 == c4.key && f4 == c4.type)
     return u4;
   if (t3 > (s3 ? 1 : 0)) {
     for (i4 = u4 - 1, o3 = u4 + 1; i4 >= 0 || o3 < l3.length; )
-      if (null != (c3 = l3[r3 = i4 >= 0 ? i4-- : o3++]) && 0 == (2 & c3.__u) && e3 == c3.key && f4 == c3.type)
+      if (null != (c4 = l3[r3 = i4 >= 0 ? i4-- : o3++]) && 0 == (2 & c4.__u) && e3 == c4.key && f4 == c4.type)
         return r3;
   }
   return -1;
@@ -7461,15 +7461,15 @@ function F(n2) {
     }
   };
 }
-function O(n2, u4, t3, i4, o3, r3, e3, f4, c3, s3) {
-  var a3, h3, p3, v3, y3, _2, m3, b, S2, C3, M2, $2, P2, A3, H, L2, T3, j3 = u4.type;
+function O(n2, u4, t3, i4, o3, r3, e3, f4, c4, s3) {
+  var a4, h3, p3, v3, y5, _2, m4, b, S2, C3, M2, $2, P2, A3, H, L2, T3, j3 = u4.type;
   if (void 0 !== u4.constructor)
     return null;
-  128 & t3.__u && (c3 = !!(32 & t3.__u), r3 = [f4 = u4.__e = t3.__e]), (a3 = l.__b) && a3(u4);
+  128 & t3.__u && (c4 = !!(32 & t3.__u), r3 = [f4 = u4.__e = t3.__e]), (a4 = l.__b) && a4(u4);
   n:
     if ("function" == typeof j3)
       try {
-        if (b = u4.props, S2 = "prototype" in j3 && j3.prototype.render, C3 = (a3 = j3.contextType) && i4[a3.__c], M2 = a3 ? C3 ? C3.props.value : a3.__ : i4, t3.__c ? m3 = (h3 = u4.__c = t3.__c).__ = h3.__E : (S2 ? u4.__c = h3 = new j3(b, M2) : (u4.__c = h3 = new x(b, M2), h3.constructor = j3, h3.render = E), C3 && C3.sub(h3), h3.state || (h3.state = {}), h3.__n = i4, p3 = h3.__d = true, h3.__h = [], h3._sb = []), S2 && null == h3.__s && (h3.__s = h3.state), S2 && null != j3.getDerivedStateFromProps && (h3.__s == h3.state && (h3.__s = w({}, h3.__s)), w(h3.__s, j3.getDerivedStateFromProps(b, h3.__s))), v3 = h3.props, y3 = h3.state, h3.__v = u4, p3)
+        if (b = u4.props, S2 = "prototype" in j3 && j3.prototype.render, C3 = (a4 = j3.contextType) && i4[a4.__c], M2 = a4 ? C3 ? C3.props.value : a4.__ : i4, t3.__c ? m4 = (h3 = u4.__c = t3.__c).__ = h3.__E : (S2 ? u4.__c = h3 = new j3(b, M2) : (u4.__c = h3 = new x(b, M2), h3.constructor = j3, h3.render = E), C3 && C3.sub(h3), h3.state || (h3.state = {}), h3.__n = i4, p3 = h3.__d = true, h3.__h = [], h3._sb = []), S2 && null == h3.__s && (h3.__s = h3.state), S2 && null != j3.getDerivedStateFromProps && (h3.__s == h3.state && (h3.__s = w({}, h3.__s)), w(h3.__s, j3.getDerivedStateFromProps(b, h3.__s))), v3 = h3.props, y5 = h3.state, h3.__v = u4, p3)
           S2 && null == j3.getDerivedStateFromProps && null != h3.componentWillMount && h3.componentWillMount(), S2 && null != h3.componentDidMount && h3.__h.push(h3.componentDidMount);
         else {
           if (S2 && null == j3.getDerivedStateFromProps && b !== v3 && null != h3.componentWillReceiveProps && h3.componentWillReceiveProps(b, M2), u4.__v == t3.__v || !h3.__e && null != h3.shouldComponentUpdate && false === h3.shouldComponentUpdate(b, h3.__s, M2)) {
@@ -7481,22 +7481,22 @@ function O(n2, u4, t3, i4, o3, r3, e3, f4, c3, s3) {
             break n;
           }
           null != h3.componentWillUpdate && h3.componentWillUpdate(b, h3.__s, M2), S2 && null != h3.componentDidUpdate && h3.__h.push(function() {
-            h3.componentDidUpdate(v3, y3, _2);
+            h3.componentDidUpdate(v3, y5, _2);
           });
         }
         if (h3.context = M2, h3.props = b, h3.__P = n2, h3.__e = false, P2 = l.__r, A3 = 0, S2) {
-          for (h3.state = h3.__s, h3.__d = false, P2 && P2(u4), a3 = h3.render(h3.props, h3.state, h3.context), H = 0; H < h3._sb.length; H++)
+          for (h3.state = h3.__s, h3.__d = false, P2 && P2(u4), a4 = h3.render(h3.props, h3.state, h3.context), H = 0; H < h3._sb.length; H++)
             h3.__h.push(h3._sb[H]);
           h3._sb = [];
         } else
           do {
-            h3.__d = false, P2 && P2(u4), a3 = h3.render(h3.props, h3.state, h3.context), h3.state = h3.__s;
+            h3.__d = false, P2 && P2(u4), a4 = h3.render(h3.props, h3.state, h3.context), h3.state = h3.__s;
           } while (h3.__d && ++A3 < 25);
-        h3.state = h3.__s, null != h3.getChildContext && (i4 = w(w({}, i4), h3.getChildContext())), S2 && !p3 && null != h3.getSnapshotBeforeUpdate && (_2 = h3.getSnapshotBeforeUpdate(v3, y3)), L2 = a3, null != a3 && a3.type === k && null == a3.key && (L2 = V(a3.props.children)), f4 = I(n2, d(L2) ? L2 : [L2], u4, t3, i4, o3, r3, e3, f4, c3, s3), h3.base = u4.__e, u4.__u &= -161, h3.__h.length && e3.push(h3), m3 && (h3.__E = h3.__ = null);
+        h3.state = h3.__s, null != h3.getChildContext && (i4 = w(w({}, i4), h3.getChildContext())), S2 && !p3 && null != h3.getSnapshotBeforeUpdate && (_2 = h3.getSnapshotBeforeUpdate(v3, y5)), L2 = a4, null != a4 && a4.type === k && null == a4.key && (L2 = V(a4.props.children)), f4 = I(n2, d(L2) ? L2 : [L2], u4, t3, i4, o3, r3, e3, f4, c4, s3), h3.base = u4.__e, u4.__u &= -161, h3.__h.length && e3.push(h3), m4 && (h3.__E = h3.__ = null);
       } catch (n3) {
-        if (u4.__v = null, c3 || null != r3)
+        if (u4.__v = null, c4 || null != r3)
           if (n3.then) {
-            for (u4.__u |= c3 ? 160 : 128; f4 && 8 == f4.nodeType && f4.nextSibling; )
+            for (u4.__u |= c4 ? 160 : 128; f4 && 8 == f4.nodeType && f4.nextSibling; )
               f4 = f4.nextSibling;
             r3[r3.indexOf(f4)] = null, u4.__e = f4;
           } else {
@@ -7509,8 +7509,8 @@ function O(n2, u4, t3, i4, o3, r3, e3, f4, c3, s3) {
         l.__e(n3, u4, t3);
       }
     else
-      null == r3 && u4.__v == t3.__v ? (u4.__k = t3.__k, u4.__e = t3.__e) : f4 = u4.__e = q(t3.__e, u4, t3, i4, o3, r3, e3, c3, s3);
-  return (a3 = l.diffed) && a3(u4), 128 & u4.__u ? void 0 : f4;
+      null == r3 && u4.__v == t3.__v ? (u4.__k = t3.__k, u4.__e = t3.__e) : f4 = u4.__e = q(t3.__e, u4, t3, i4, o3, r3, e3, c4, s3);
+  return (a4 = l.diffed) && a4(u4), 128 & u4.__u ? void 0 : f4;
 }
 function z(n2) {
   n2 && n2.__c && (n2.__c.__e = true), n2 && n2.__k && n2.__k.forEach(z);
@@ -7531,44 +7531,44 @@ function N(n2, u4, t3) {
 function V(n2) {
   return "object" != typeof n2 || null == n2 || n2.__b && n2.__b > 0 ? n2 : d(n2) ? n2.map(V) : w({}, n2);
 }
-function q(u4, t3, i4, o3, r3, e3, f4, c3, s3) {
-  var a3, h3, v3, y3, w3, _2, m3, b = i4.props || p, k3 = t3.props, x2 = t3.type;
-  if ("svg" == x2 ? r3 = "http://www.w3.org/2000/svg" : "math" == x2 ? r3 = "http://www.w3.org/1998/Math/MathML" : r3 || (r3 = "http://www.w3.org/1999/xhtml"), null != e3) {
-    for (a3 = 0; a3 < e3.length; a3++)
-      if ((w3 = e3[a3]) && "setAttribute" in w3 == !!x2 && (x2 ? w3.localName == x2 : 3 == w3.nodeType)) {
-        u4 = w3, e3[a3] = null;
+function q(u4, t3, i4, o3, r3, e3, f4, c4, s3) {
+  var a4, h3, v3, y5, w3, _2, m4, b = i4.props || p, k3 = t3.props, x4 = t3.type;
+  if ("svg" == x4 ? r3 = "http://www.w3.org/2000/svg" : "math" == x4 ? r3 = "http://www.w3.org/1998/Math/MathML" : r3 || (r3 = "http://www.w3.org/1999/xhtml"), null != e3) {
+    for (a4 = 0; a4 < e3.length; a4++)
+      if ((w3 = e3[a4]) && "setAttribute" in w3 == !!x4 && (x4 ? w3.localName == x4 : 3 == w3.nodeType)) {
+        u4 = w3, e3[a4] = null;
         break;
       }
   }
   if (null == u4) {
-    if (null == x2)
+    if (null == x4)
       return document.createTextNode(k3);
-    u4 = document.createElementNS(r3, x2, k3.is && k3), c3 && (l.__m && l.__m(t3, e3), c3 = false), e3 = null;
+    u4 = document.createElementNS(r3, x4, k3.is && k3), c4 && (l.__m && l.__m(t3, e3), c4 = false), e3 = null;
   }
-  if (null == x2)
-    b === k3 || c3 && u4.data == k3 || (u4.data = k3);
+  if (null == x4)
+    b === k3 || c4 && u4.data == k3 || (u4.data = k3);
   else {
-    if (e3 = e3 && n.call(u4.childNodes), !c3 && null != e3)
-      for (b = {}, a3 = 0; a3 < u4.attributes.length; a3++)
-        b[(w3 = u4.attributes[a3]).name] = w3.value;
-    for (a3 in b)
-      if (w3 = b[a3], "children" == a3)
+    if (e3 = e3 && n.call(u4.childNodes), !c4 && null != e3)
+      for (b = {}, a4 = 0; a4 < u4.attributes.length; a4++)
+        b[(w3 = u4.attributes[a4]).name] = w3.value;
+    for (a4 in b)
+      if (w3 = b[a4], "children" == a4)
         ;
-      else if ("dangerouslySetInnerHTML" == a3)
+      else if ("dangerouslySetInnerHTML" == a4)
         v3 = w3;
-      else if (!(a3 in k3)) {
-        if ("value" == a3 && "defaultValue" in k3 || "checked" == a3 && "defaultChecked" in k3)
+      else if (!(a4 in k3)) {
+        if ("value" == a4 && "defaultValue" in k3 || "checked" == a4 && "defaultChecked" in k3)
           continue;
-        j(u4, a3, null, w3, r3);
+        j(u4, a4, null, w3, r3);
       }
-    for (a3 in k3)
-      w3 = k3[a3], "children" == a3 ? y3 = w3 : "dangerouslySetInnerHTML" == a3 ? h3 = w3 : "value" == a3 ? _2 = w3 : "checked" == a3 ? m3 = w3 : c3 && "function" != typeof w3 || b[a3] === w3 || j(u4, a3, w3, b[a3], r3);
+    for (a4 in k3)
+      w3 = k3[a4], "children" == a4 ? y5 = w3 : "dangerouslySetInnerHTML" == a4 ? h3 = w3 : "value" == a4 ? _2 = w3 : "checked" == a4 ? m4 = w3 : c4 && "function" != typeof w3 || b[a4] === w3 || j(u4, a4, w3, b[a4], r3);
     if (h3)
-      c3 || v3 && (h3.__html == v3.__html || h3.__html == u4.innerHTML) || (u4.innerHTML = h3.__html), t3.__k = [];
-    else if (v3 && (u4.innerHTML = ""), I("template" == t3.type ? u4.content : u4, d(y3) ? y3 : [y3], t3, i4, o3, "foreignObject" == x2 ? "http://www.w3.org/1999/xhtml" : r3, e3, f4, e3 ? e3[0] : i4.__k && S(i4, 0), c3, s3), null != e3)
-      for (a3 = e3.length; a3--; )
-        g(e3[a3]);
-    c3 || (a3 = "value", "progress" == x2 && null == _2 ? u4.removeAttribute("value") : null != _2 && (_2 !== u4[a3] || "progress" == x2 && !_2 || "option" == x2 && _2 != b[a3]) && j(u4, a3, _2, b[a3], r3), a3 = "checked", null != m3 && m3 != u4[a3] && j(u4, a3, m3, b[a3], r3));
+      c4 || v3 && (h3.__html == v3.__html || h3.__html == u4.innerHTML) || (u4.innerHTML = h3.__html), t3.__k = [];
+    else if (v3 && (u4.innerHTML = ""), I("template" == t3.type ? u4.content : u4, d(y5) ? y5 : [y5], t3, i4, o3, "foreignObject" == x4 ? "http://www.w3.org/1999/xhtml" : r3, e3, f4, e3 ? e3[0] : i4.__k && S(i4, 0), c4, s3), null != e3)
+      for (a4 = e3.length; a4--; )
+        g(e3[a4]);
+    c4 || (a4 = "value", "progress" == x4 && null == _2 ? u4.removeAttribute("value") : null != _2 && (_2 !== u4[a4] || "progress" == x4 && !_2 || "option" == x4 && _2 != b[a4]) && j(u4, a4, _2, b[a4], r3), a4 = "checked", null != m4 && m4 != u4[a4] && j(u4, a4, m4, b[a4], r3));
   }
   return u4;
 }
@@ -7664,21 +7664,21 @@ function h2(n2, u4, i4) {
       if (u5.every(function(n4) {
         return !n4.__N;
       }))
-        return !c3 || c3.call(this, n3, t3, r3);
+        return !c4 || c4.call(this, n3, t3, r3);
       var i5 = o3.__c.props !== n3;
       return u5.forEach(function(n4) {
         if (n4.__N) {
           var t4 = n4.__[0];
           n4.__ = n4.__N, n4.__N = void 0, t4 !== n4.__[0] && (i5 = true);
         }
-      }), c3 && c3.call(this, n3, t3, r3) || i5;
+      }), c4 && c4.call(this, n3, t3, r3) || i5;
     };
     r2.__f = true;
-    var c3 = r2.shouldComponentUpdate, e3 = r2.componentWillUpdate;
+    var c4 = r2.shouldComponentUpdate, e3 = r2.componentWillUpdate;
     r2.componentWillUpdate = function(n3, t3, r3) {
       if (this.__e) {
-        var u5 = c3;
-        c3 = void 0, f4(n3, t3, r3), c3 = u5;
+        var u5 = c4;
+        c4 = void 0, f4(n3, t3, r3), c4 = u5;
       }
       e3 && e3.call(this, n3, t3, r3);
     }, r2.shouldComponentUpdate = f4;
@@ -8093,8 +8093,8 @@ async function getInboxGlobal() {
   const res = await apiGet("/api/inbox/global");
   return await parseMaybeJson(res);
 }
-async function acknowledgeInboxItem(type, id) {
-  await apiPost(`/api/inbox/${type}/${encodeURIComponent(id)}/ack`, {});
+async function acknowledgeInboxItem(type2, id2) {
+  await apiPost(`/api/inbox/${type2}/${encodeURIComponent(id2)}/ack`, {});
 }
 async function ackAllInbox() {
   await apiPost("/api/inbox/ack-all");
@@ -8220,8 +8220,8 @@ async function getConversations(params) {
   const resp = await apiGet(`/api/conversations${qs ? "?" + qs : ""}`);
   return await parseMaybeJson(resp);
 }
-async function getConversation(id) {
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}`);
+async function getConversation(id2) {
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id2)}`);
   const payload = await parseMaybeJson(resp);
   return {
     ...payload.conversation ?? {},
@@ -8229,12 +8229,12 @@ async function getConversation(id) {
     children: payload.children ?? []
   };
 }
-async function updateConversation(id, data) {
-  const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, data);
+async function updateConversation(id2, data) {
+  const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id2)}`, data);
   return await parseMaybeJson(resp);
 }
-async function exportConversationBlocks(id, data) {
-  const resp = await apiPost(`/api/conversations/${encodeURIComponent(id)}/export`, data);
+async function exportConversationBlocks(id2, data) {
+  const resp = await apiPost(`/api/conversations/${encodeURIComponent(id2)}/export`, data);
   return await parseMaybeJson(resp);
 }
 async function triggerIngestion(source) {
@@ -8303,14 +8303,14 @@ var SSEClient = class {
       this.eventSource = null;
     }
   }
-  on(type, handler) {
-    const bucket = this.listeners.get(type) || /* @__PURE__ */ new Set();
+  on(type2, handler) {
+    const bucket = this.listeners.get(type2) || /* @__PURE__ */ new Set();
     bucket.add(handler);
-    this.listeners.set(type, bucket);
+    this.listeners.set(type2, bucket);
     if (this.pendingEvents.length > 0) {
       const remaining = [];
       for (const event of this.pendingEvents) {
-        if (event.type === type || type === "*") {
+        if (event.type === type2 || type2 === "*") {
           handler(event);
         } else {
           remaining.push(event);
@@ -8318,16 +8318,16 @@ var SSEClient = class {
       }
       this.pendingEvents = remaining;
     }
-    return () => this.off(type, handler);
+    return () => this.off(type2, handler);
   }
-  off(type, handler) {
-    const bucket = this.listeners.get(type);
+  off(type2, handler) {
+    const bucket = this.listeners.get(type2);
     if (!bucket) {
       return;
     }
     bucket.delete(handler);
     if (!bucket.size) {
-      this.listeners.delete(type);
+      this.listeners.delete(type2);
     }
   }
   handleMessage(data) {
@@ -8356,16 +8356,16 @@ var SSEClient = class {
   parsePayload(data) {
     try {
       const parsed = JSON.parse(data);
-      const type = parsed.type || parsed.event || "message";
-      return { type, ...parsed };
+      const type2 = parsed.type || parsed.event || "message";
+      return { type: type2, ...parsed };
     } catch {
       return { type: "message", data };
     }
   }
   /** Dispatch to registered handlers. Returns true if at least one handler ran. */
-  dispatch(type, payload) {
+  dispatch(type2, payload) {
     let handled = false;
-    const handlers = this.listeners.get(type);
+    const handlers = this.listeners.get(type2);
     if (handlers && handlers.size > 0) {
       handlers.forEach((handler) => handler(payload));
       handled = true;
@@ -8495,7 +8495,7 @@ function splitCells(tableRow, count) {
   }
   return cells;
 }
-function rtrim(str, c3, invert) {
+function rtrim(str, c4, invert) {
   const l3 = str.length;
   if (l3 === 0) {
     return "";
@@ -8503,9 +8503,9 @@ function rtrim(str, c3, invert) {
   let suffLen = 0;
   while (suffLen < l3) {
     const currChar = str.charAt(l3 - suffLen - 1);
-    if (currChar === c3 && !invert) {
+    if (currChar === c4 && !invert) {
       suffLen++;
-    } else if (currChar !== c3 && invert) {
+    } else if (currChar !== c4 && invert) {
       suffLen++;
     } else {
       break;
@@ -9025,8 +9025,8 @@ ${currentText}` : currentText;
       } else {
         const lastParenIndex = findClosingBracket(cap[2], "()");
         if (lastParenIndex > -1) {
-          const start = cap[0].indexOf("!") === 0 ? 5 : 4;
-          const linkLen = start + cap[1].length + lastParenIndex;
+          const start2 = cap[0].indexOf("!") === 0 ? 5 : 4;
+          const linkLen = start2 + cap[1].length + lastParenIndex;
           cap[2] = cap[2].substring(0, lastParenIndex);
           cap[0] = cap[0].substring(0, linkLen).trim();
           cap[3] = "";
@@ -9768,15 +9768,15 @@ ${body}</blockquote>
   }
   list(token) {
     const ordered = token.ordered;
-    const start = token.start;
+    const start2 = token.start;
     let body = "";
     for (let j3 = 0; j3 < token.items.length; j3++) {
       const item = token.items[j3];
       body += this.listitem(item);
     }
-    const type = ordered ? "ol" : "ul";
-    const startAttr = ordered && start !== 1 ? ' start="' + start + '"' : "";
-    return "<" + type + startAttr + ">\n" + body + "</" + type + ">\n";
+    const type2 = ordered ? "ol" : "ul";
+    const startAttr = ordered && start2 !== 1 ? ' start="' + start2 + '"' : "";
+    return "<" + type2 + startAttr + ">\n" + body + "</" + type2 + ">\n";
   }
   listitem(item) {
     let itemBody = "";
@@ -9837,9 +9837,9 @@ ${text}</tr>
   }
   tablecell(token) {
     const content = this.parser.parseInline(token.tokens);
-    const type = token.header ? "th" : "td";
-    const tag2 = token.align ? `<${type} align="${token.align}">` : `<${type}>`;
-    return tag2 + content + `</${type}>
+    const type2 = token.header ? "th" : "td";
+    const tag2 = token.align ? `<${type2} align="${token.align}">` : `<${type2}>`;
+    return tag2 + content + `</${type2}>
 `;
   }
   /**
@@ -10418,7 +10418,7 @@ convertRendererFunction_fn = function(func, prop, renderer) {
           return func.apply(this, arguments);
         }
         const ordered = token.ordered;
-        const start = token.start;
+        const start2 = token.start;
         const loose = token.loose;
         let body = "";
         for (let j3 = 0; j3 < token.items.length; j3++) {
@@ -10455,7 +10455,7 @@ convertRendererFunction_fn = function(func, prop, renderer) {
             tokens: item.tokens
           });
         }
-        return func.call(this, body, ordered, start);
+        return func.call(this, body, ordered, start2);
       };
     case "html":
       return function(token) {
@@ -10701,14 +10701,14 @@ var f3 = 0;
 var i3 = Array.isArray;
 function u3(e3, t3, n2, o3, i4, u4) {
   t3 || (t3 = {});
-  var a3, c3, p3 = t3;
+  var a4, c4, p3 = t3;
   if ("ref" in p3)
-    for (c3 in p3 = {}, t3)
-      "ref" == c3 ? a3 = t3[c3] : p3[c3] = t3[c3];
-  var l3 = { type: e3, props: p3, key: n2, ref: a3, __k: null, __: null, __b: 0, __e: null, __c: null, constructor: void 0, __v: --f3, __i: -1, __u: 0, __source: i4, __self: u4 };
-  if ("function" == typeof e3 && (a3 = e3.defaultProps))
-    for (c3 in a3)
-      void 0 === p3[c3] && (p3[c3] = a3[c3]);
+    for (c4 in p3 = {}, t3)
+      "ref" == c4 ? a4 = t3[c4] : p3[c4] = t3[c4];
+  var l3 = { type: e3, props: p3, key: n2, ref: a4, __k: null, __: null, __b: 0, __e: null, __c: null, constructor: void 0, __v: --f3, __i: -1, __u: 0, __source: i4, __self: u4 };
+  if ("function" == typeof e3 && (a4 = e3.defaultProps))
+    for (c4 in a4)
+      void 0 === p3[c4] && (p3[c4] = a4[c4]);
   return l.vnode && l.vnode(l3), l3;
 }
 
@@ -10838,9 +10838,9 @@ function truncateSummary(text, maxChars) {
   return `${text.slice(0, Math.max(0, maxChars - 1)).trim()}\u2026`;
 }
 function buildFailureSummary(request, outputs) {
-  const id = getAuthId(request);
+  const id2 = getAuthId(request);
   const errorText = typeof request.error === "string" ? request.error.trim() : "";
-  const outputText = outputs[id] || (typeof request.output === "string" ? request.output : "");
+  const outputText = outputs[id2] || (typeof request.output === "string" ? request.output : "");
   const source = errorText || outputText.trim();
   if (!source) {
     return null;
@@ -10944,8 +10944,8 @@ function isBranchMerged(request, branchesByRepo) {
   return !branches.includes(headBranch);
 }
 function getRequestHash(request) {
-  const id = getAuthId(request);
-  return id ? id.slice(0, 8) : "";
+  const id2 = getAuthId(request);
+  return id2 ? id2.slice(0, 8) : "";
 }
 function getStatusOrder(request) {
   const status = getAuthStatus(request);
@@ -11208,9 +11208,9 @@ function AuthCard({
                         type: "button",
                         className: "panel__edit-save",
                         onClick: () => {
-                          const id = getAuthId(request);
-                          if (id && onUpdateField) {
-                            void onUpdateField(id, "commit_message", editCommitValue);
+                          const id2 = getAuthId(request);
+                          if (id2 && onUpdateField) {
+                            void onUpdateField(id2, "commit_message", editCommitValue);
                           }
                           setEditingCommitMsg(false);
                         },
@@ -11325,7 +11325,7 @@ function AuthSidebarItem({
   selected,
   onSelect
 }) {
-  const id = getAuthId(request);
+  const id2 = getAuthId(request);
   const status = getAuthStatus(request);
   const exitCode = request.exit_code ?? null;
   const failedLike = isFailedLikeStatus(status, exitCode);
@@ -11352,7 +11352,7 @@ function AuthSidebarItem({
     {
       type: "button",
       className: `auth-sidebar-item${selected ? " auth-sidebar-item--selected" : ""}`,
-      onClick: () => onSelect(id),
+      onClick: () => onSelect(id2),
       children: [
         /* @__PURE__ */ u3("span", { className: `auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}` }),
         /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__body", children: [
@@ -11395,16 +11395,16 @@ function AuthQueueView({
   const [branchInput, setBranchInput] = d2("");
   const [localSelectedId, setLocalSelectedId] = d2(null);
   const selectedId = externalSelectedId !== void 0 ? externalSelectedId : localSelectedId;
-  const handleSelect = q2((id) => {
-    setLocalSelectedId(id);
-    onSelectAuth?.(id);
+  const handleSelect = q2((id2) => {
+    setLocalSelectedId(id2);
+    onSelectAuth?.(id2);
   }, [onSelectAuth]);
   const [recentlyResolved, setRecentlyResolved] = d2(() => /* @__PURE__ */ new Map());
   const timersRef = A2(/* @__PURE__ */ new Map());
   y2(() => {
     const timers = timersRef.current;
     return () => {
-      timers.forEach((timer) => clearTimeout(timer));
+      timers.forEach((timer2) => clearTimeout(timer2));
       timers.clear();
     };
   }, []);
@@ -11416,35 +11416,35 @@ function AuthQueueView({
     const prevStatuses = prevQueueRef.current;
     const nextStatuses = /* @__PURE__ */ new Map();
     for (const request of queue) {
-      const id = getAuthId(request);
+      const id2 = getAuthId(request);
       const status = getAuthStatus(request);
       const exitCode = request.exit_code ?? null;
-      nextStatuses.set(id, { status, exitCode });
-      const prevStatus = prevStatuses.get(id);
+      nextStatuses.set(id2, { status, exitCode });
+      const prevStatus = prevStatuses.get(id2);
       if (prevStatus && !isHistoryStatus(prevStatus.status, prevStatus.exitCode) && isHistoryStatus(status, exitCode)) {
         setRecentlyResolved((prev) => {
           const next = new Map(prev);
-          next.set(id, { status, resolvedAt: Date.now() });
+          next.set(id2, { status, resolvedAt: Date.now() });
           return next;
         });
-        const existingTimer = timersRef.current.get(id);
+        const existingTimer = timersRef.current.get(id2);
         if (existingTimer) {
           clearTimeout(existingTimer);
         }
-        const timer = setTimeout(() => {
+        const timer2 = setTimeout(() => {
           setRecentlyResolved((prev) => {
             const next = new Map(prev);
-            next.delete(id);
+            next.delete(id2);
             return next;
           });
-          timersRef.current.delete(id);
+          timersRef.current.delete(id2);
         }, RESOLVED_LINGER_MS);
-        timersRef.current.set(id, timer);
+        timersRef.current.set(id2, timer2);
       }
       if (prevStatus && isFailedLikeStatus(prevStatus.status, prevStatus.exitCode) && status === "pending") {
         setRetryCounts((prev) => {
           const next = new Map(prev);
-          next.set(id, (next.get(id) ?? 0) + 1);
+          next.set(id2, (next.get(id2) ?? 0) + 1);
           return next;
         });
       }
@@ -11460,8 +11460,8 @@ function AuthQueueView({
   );
   const lingeringQueue = T2(
     () => queue.filter((r3) => {
-      const id = getAuthId(r3);
-      return recentlyResolved.has(id);
+      const id2 = getAuthId(r3);
+      return recentlyResolved.has(id2);
     }),
     [queue, recentlyResolved]
   );
@@ -11475,10 +11475,10 @@ function AuthQueueView({
       return isHistoryStatus(status, r3.exit_code ?? null);
     });
     const filtered = source.filter((r3) => {
-      const id = getAuthId(r3);
-      return !recentlyResolved.has(id) && !activeIds.has(id);
+      const id2 = getAuthId(r3);
+      return !recentlyResolved.has(id2) && !activeIds.has(id2);
     });
-    return filtered.slice().sort((a3, b) => getResolvedAtMs(b) - getResolvedAtMs(a3));
+    return filtered.slice().sort((a4, b) => getResolvedAtMs(b) - getResolvedAtMs(a4));
   }, [queue, historyQueue, recentlyResolved, activeIds]);
   const [sortMode, setSortMode] = d2("newest");
   const [customOrder, setCustomOrder] = d2(null);
@@ -11486,22 +11486,22 @@ function AuthQueueView({
     const sorted = [...activeQueue];
     switch (sortMode) {
       case "oldest":
-        return sorted.sort((a3, b) => (getCreatedAtMs(a3) ?? 0) - (getCreatedAtMs(b) ?? 0));
+        return sorted.sort((a4, b) => (getCreatedAtMs(a4) ?? 0) - (getCreatedAtMs(b) ?? 0));
       case "status":
-        return sorted.sort((a3, b) => getStatusOrder(a3) - getStatusOrder(b));
+        return sorted.sort((a4, b) => getStatusOrder(a4) - getStatusOrder(b));
       case "newest":
       default:
-        return sorted.sort((a3, b) => (getCreatedAtMs(b) ?? 0) - (getCreatedAtMs(a3) ?? 0));
+        return sorted.sort((a4, b) => (getCreatedAtMs(b) ?? 0) - (getCreatedAtMs(a4) ?? 0));
     }
   }, [activeQueue, sortMode]);
   const orderedActiveQueue = T2(() => {
     if (!customOrder)
       return sortedActiveQueue;
     const byId = new Map(sortedActiveQueue.map((request) => [getAuthId(request), request]));
-    const ordered = customOrder.map((id) => byId.get(id)).filter((request) => Boolean(request));
+    const ordered = customOrder.map((id2) => byId.get(id2)).filter((request) => Boolean(request));
     for (const request of sortedActiveQueue) {
-      const id = getAuthId(request);
-      if (!customOrder.includes(id)) {
+      const id2 = getAuthId(request);
+      if (!customOrder.includes(id2)) {
         ordered.push(request);
       }
     }
@@ -11517,8 +11517,8 @@ function AuthQueueView({
     if (!hasActiveList) {
       return;
     }
-    const interval = setInterval(() => setTimeTick((t3) => t3 + 1), 3e4);
-    return () => clearInterval(interval);
+    const interval2 = setInterval(() => setTimeTick((t3) => t3 + 1), 3e4);
+    return () => clearInterval(interval2);
   }, [hasActiveList]);
   const [inFlight, setInFlight] = d2(() => /* @__PURE__ */ new Set());
   const inFlightRef = A2(/* @__PURE__ */ new Set());
@@ -11552,24 +11552,24 @@ function AuthQueueView({
     };
   }, []);
   const runAction = q2(
-    (id, action, onError) => {
-      if (!id || inFlightRef.current.has(id)) {
+    (id2, action, onError) => {
+      if (!id2 || inFlightRef.current.has(id2)) {
         return;
       }
       setInFlightState((prev) => {
         const next = new Set(prev);
-        next.add(id);
+        next.add(id2);
         return next;
       });
-      Promise.resolve(action(id)).catch((err) => {
+      Promise.resolve(action(id2)).catch((err) => {
         onError?.(err);
       }).finally(() => {
         setInFlightState((prev) => {
-          if (!prev.has(id)) {
+          if (!prev.has(id2)) {
             return prev;
           }
           const next = new Set(prev);
-          next.delete(id);
+          next.delete(id2);
           return next;
         });
       });
@@ -11577,14 +11577,14 @@ function AuthQueueView({
     [setInFlightState]
   );
   const handleApprove = q2(
-    (id) => runAction(id, onApprove, (err) => {
+    (id2) => runAction(id2, onApprove, (err) => {
       const message = err instanceof Error ? err.message : "Approval failed. Try again.";
       showToast(message);
     }),
     [runAction, onApprove, showToast]
   );
   const handleReject = q2(
-    (id) => runAction(id, onReject),
+    (id2) => runAction(id2, onReject),
     [runAction, onReject]
   );
   const [retryingIds, setRetryingIds] = d2(() => /* @__PURE__ */ new Set());
@@ -11600,13 +11600,13 @@ function AuthQueueView({
     []
   );
   const handleRetry = q2(
-    (id) => {
+    (id2) => {
       setRetryingIdsState((prev) => {
         const next = new Set(prev);
-        next.add(id);
+        next.add(id2);
         return next;
       });
-      runAction(id, onRetry, void 0);
+      runAction(id2, onRetry, void 0);
       Promise.resolve().then(() => {
       });
     },
@@ -11618,9 +11618,9 @@ function AuthQueueView({
         return prev;
       let changed = false;
       const next = new Set(prev);
-      for (const id of prev) {
-        if (!inFlight.has(id)) {
-          next.delete(id);
+      for (const id2 of prev) {
+        if (!inFlight.has(id2)) {
+          next.delete(id2);
           changed = true;
         }
       }
@@ -11628,7 +11628,7 @@ function AuthQueueView({
     });
   }, [inFlight]);
   const handleDismiss = q2(
-    (id) => runAction(id, onDismiss, () => showToast("Dismiss failed. Try again.")),
+    (id2) => runAction(id2, onDismiss, () => showToast("Dismiss failed. Try again.")),
     [runAction, onDismiss, showToast]
   );
   const [dismissConfirmId, setDismissConfirmId] = d2(null);
@@ -11641,17 +11641,17 @@ function AuthQueueView({
     };
   }, []);
   const toggleDismissConfirm = q2(
-    (id) => {
-      if (dismissConfirmId === id) {
+    (id2) => {
+      if (dismissConfirmId === id2) {
         setDismissConfirmId(null);
         if (dismissTimerRef.current) {
           clearTimeout(dismissTimerRef.current);
           dismissTimerRef.current = null;
         }
-        handleDismiss(id);
+        handleDismiss(id2);
         return;
       }
-      setDismissConfirmId(id);
+      setDismissConfirmId(id2);
       if (dismissTimerRef.current) {
         clearTimeout(dismissTimerRef.current);
       }
@@ -11672,17 +11672,17 @@ function AuthQueueView({
     };
   }, []);
   const toggleRejectConfirm = q2(
-    (id) => {
-      if (rejectConfirmId === id) {
+    (id2) => {
+      if (rejectConfirmId === id2) {
         setRejectConfirmId(null);
         if (rejectTimerRef.current) {
           clearTimeout(rejectTimerRef.current);
           rejectTimerRef.current = null;
         }
-        handleReject(id);
+        handleReject(id2);
         return;
       }
-      setRejectConfirmId(id);
+      setRejectConfirmId(id2);
       if (rejectTimerRef.current) {
         clearTimeout(rejectTimerRef.current);
       }
@@ -11698,10 +11698,10 @@ function AuthQueueView({
       const active = [...orderedActiveQueue, ...lingeringQueue];
       const seen = /* @__PURE__ */ new Set();
       return active.filter((r3) => {
-        const id = getAuthId(r3);
-        if (seen.has(id))
+        const id2 = getAuthId(r3);
+        if (seen.has(id2))
           return false;
-        seen.add(id);
+        seen.add(id2);
         return true;
       });
     }
@@ -11724,7 +11724,7 @@ function AuthQueueView({
       if (ts > existing)
         repoLatest.set(repo, ts);
     }
-    return Array.from(repoLatest.entries()).sort((a3, b) => b[1] - a3[1]).map(([repo]) => repo);
+    return Array.from(repoLatest.entries()).sort((a4, b) => b[1] - a4[1]).map(([repo]) => repo);
   }, [sidebarItems]);
   const uniqueBranchesForRepo = T2(() => {
     if (!repoFilter)
@@ -11742,7 +11742,7 @@ function AuthQueueView({
       if (ts > existing)
         branchLatest.set(branch, ts);
     }
-    return Array.from(branchLatest.entries()).sort((a3, b) => b[1] - a3[1]).map(([branch]) => branch);
+    return Array.from(branchLatest.entries()).sort((a4, b) => b[1] - a4[1]).map(([branch]) => branch);
   }, [sidebarItems, repoFilter]);
   y2(() => {
     if (repoFilter && !uniqueRepos.includes(repoFilter)) {
@@ -11791,7 +11791,7 @@ function AuthQueueView({
     }
   }, [filterMode, repoFilter, branchFilter, filteredSidebarItems]);
   const renderDetailActions = (request) => {
-    const id = getAuthId(request);
+    const id2 = getAuthId(request);
     const status = getAuthStatus(request);
     const exitCode = request.exit_code ?? null;
     const isFailed = isFailedLikeStatus(status, exitCode);
@@ -11799,19 +11799,19 @@ function AuthQueueView({
     if (isHistory && !isFailed) {
       return null;
     }
-    const actionDisabled = inFlight.has(id);
+    const actionDisabled = inFlight.has(id2);
     const isExecuting = status === "approved" || status === "executing";
     const isSubmitting = actionDisabled && !isExecuting && !isFailed;
     const showForceDismiss = !isHistory && !isFailed && !isExecuting && !isSubmitting;
     if (isFailed) {
-      const isRetrying = retryingIds.has(id);
+      const isRetrying = retryingIds.has(id2);
       return /* @__PURE__ */ u3("div", { className: "auth-actions", children: [
         /* @__PURE__ */ u3(
           "button",
           {
             type: "button",
             className: "btn btn--success",
-            onClick: () => handleRetry(id),
+            onClick: () => handleRetry(id2),
             disabled: actionDisabled,
             children: isRetrying ? "Retrying..." : "Retry"
           }
@@ -11820,10 +11820,10 @@ function AuthQueueView({
           "button",
           {
             type: "button",
-            className: `btn btn--danger${dismissConfirmId === id ? " btn--confirm" : ""}`,
-            onClick: () => toggleDismissConfirm(id),
+            className: `btn btn--danger${dismissConfirmId === id2 ? " btn--confirm" : ""}`,
+            onClick: () => toggleDismissConfirm(id2),
             disabled: actionDisabled,
-            children: actionDisabled && !isRetrying ? "Dismissing..." : dismissConfirmId === id ? "Confirm dismiss?" : "Dismiss"
+            children: actionDisabled && !isRetrying ? "Dismissing..." : dismissConfirmId === id2 ? "Confirm dismiss?" : "Dismiss"
           }
         )
       ] });
@@ -11856,7 +11856,7 @@ function AuthQueueView({
         {
           type: "button",
           className: "btn btn--success",
-          onClick: () => handleApprove(id),
+          onClick: () => handleApprove(id2),
           disabled: actionDisabled,
           children: "Approve"
         }
@@ -11865,10 +11865,10 @@ function AuthQueueView({
         "button",
         {
           type: "button",
-          className: `btn btn--danger${rejectConfirmId === id ? " btn--confirm" : ""}`,
-          onClick: () => toggleRejectConfirm(id),
+          className: `btn btn--danger${rejectConfirmId === id2 ? " btn--confirm" : ""}`,
+          onClick: () => toggleRejectConfirm(id2),
           disabled: actionDisabled,
-          children: rejectConfirmId === id ? "Confirm reject?" : "Reject"
+          children: rejectConfirmId === id2 ? "Confirm reject?" : "Reject"
         }
       ),
       showForceDismiss && /* @__PURE__ */ u3(
@@ -11876,7 +11876,7 @@ function AuthQueueView({
         {
           type: "button",
           className: "btn btn--danger",
-          onClick: () => handleDismiss(id),
+          onClick: () => handleDismiss(id2),
           disabled: actionDisabled,
           children: "Force Dismiss"
         }
@@ -12040,11 +12040,11 @@ function AuthQueueView({
     /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleSidebarMouseDown }),
     /* @__PURE__ */ u3("div", { className: "auth-detail", children: !selectedRequest ? /* @__PURE__ */ u3("div", { className: "auth-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select a request to view details" }) }) : (() => {
       const request = selectedRequest;
-      const id = getAuthId(request);
+      const id2 = getAuthId(request);
       const status = getAuthStatus(request);
       const exitCode = request.exit_code ?? null;
       const isFailed = isFailedLikeStatus(status, exitCode);
-      const retryCount = retryCounts.get(id) ?? 0;
+      const retryCount = retryCounts.get(id2) ?? 0;
       const attemptCount = isFailed && retryCount > 0 ? retryCount + 1 : null;
       const failureSummary = isFailed ? buildFailureSummary(request, outputs) : null;
       const isHistory = isHistoryStatus(status, exitCode);
@@ -12057,7 +12057,7 @@ function AuthQueueView({
           failureSummary,
           attemptCount,
           branchMerged: isHistory && !isFailed && isBranchMerged(request, branchesByRepo),
-          executionOutput: outputs[id],
+          executionOutput: outputs[id2],
           actions: renderDetailActions(request),
           onUpdateField
         }
@@ -12136,16 +12136,16 @@ function itemTypeBadgeColor(item) {
 }
 function buildUnifiedItems(data) {
   const items = [];
-  for (const c3 of data.continuations) {
-    const t3 = c3.ended_at ? Date.parse(c3.ended_at) : null;
+  for (const c4 of data.continuations) {
+    const t3 = c4.ended_at ? Date.parse(c4.ended_at) : null;
     items.push({
-      id: `continuation:${c3.session_id}`,
+      id: `continuation:${c4.session_id}`,
       type: "continuation",
-      title: c3.continuation.slice(0, 80).replace(/\n/g, " "),
-      repo: c3.repo ?? null,
-      branch: c3.branch ?? null,
+      title: c4.continuation.slice(0, 80).replace(/\n/g, " "),
+      repo: c4.repo ?? null,
+      branch: c4.branch ?? null,
       time: t3,
-      raw: c3
+      raw: c4
     });
   }
   for (const ar of data.auth_results) {
@@ -12170,22 +12170,22 @@ function buildUnifiedItems(data) {
       raw: issue
     });
   }
-  items.sort((a3, b) => {
-    if (a3.time === null && b.time === null)
+  items.sort((a4, b) => {
+    if (a4.time === null && b.time === null)
       return 0;
-    if (a3.time === null)
+    if (a4.time === null)
       return 1;
     if (b.time === null)
       return -1;
-    return b.time - a3.time;
+    return b.time - a4.time;
   });
   return items;
 }
 function ChipInput({
   chips,
   suggestions,
-  onAdd,
-  onRemove
+  onAdd: onAdd2,
+  onRemove: onRemove2
 }) {
   const [inputValue, setInputValue] = d2("");
   const [showDropdown, setShowDropdown] = d2(false);
@@ -12199,10 +12199,10 @@ function ChipInput({
     return { repos: repos.slice(0, 5), branches: branches.slice(0, 5) };
   }, [inputValue, suggestions]);
   const hasMatches = filteredSuggestions.repos.length > 0 || filteredSuggestions.branches.length > 0;
-  const alreadyAdded = (type, value) => chips.some((c3) => c3.type === type && c3.value === value);
-  const handleSelect = (type, value) => {
-    if (!alreadyAdded(type, value)) {
-      onAdd({ type, value });
+  const alreadyAdded = (type2, value) => chips.some((c4) => c4.type === type2 && c4.value === value);
+  const handleSelect = (type2, value) => {
+    if (!alreadyAdded(type2, value)) {
+      onAdd2({ type: type2, value });
     }
     setInputValue("");
     setShowDropdown(false);
@@ -12221,7 +12221,7 @@ function ChipInput({
               {
                 type: "button",
                 className: "inbox-chip__remove",
-                onClick: () => onRemove(chip),
+                onClick: () => onRemove2(chip),
                 "aria-label": `Remove filter ${chip.value}`,
                 children: "\xD7"
               }
@@ -12250,7 +12250,7 @@ function ChipInput({
               setShowDropdown(false);
             }
             if (e3.key === "Backspace" && inputValue === "" && chips.length > 0) {
-              onRemove(chips[chips.length - 1]);
+              onRemove2(chips[chips.length - 1]);
             }
           }
         }
@@ -12497,8 +12497,8 @@ function InboxView({
     return { repos: Array.from(repos).sort(), branches: Array.from(branches).sort() };
   }, [allItems]);
   const filteredItems = T2(() => {
-    const repoChips = chips.filter((c3) => c3.type === "repo").map((c3) => c3.value);
-    const branchChips = chips.filter((c3) => c3.type === "branch").map((c3) => c3.value);
+    const repoChips = chips.filter((c4) => c4.type === "repo").map((c4) => c4.value);
+    const branchChips = chips.filter((c4) => c4.type === "branch").map((c4) => c4.value);
     return allItems.filter((item) => {
       const repoMatch = repoChips.length === 0 || item.repo !== null && repoChips.includes(item.repo);
       const branchMatch = branchChips.length === 0 || item.branch !== null && branchChips.includes(item.branch);
@@ -12515,7 +12515,7 @@ function InboxView({
     }
   }, [filteredItems.length > 0, selectedItemId]);
   const handleAddChip = (chip) => setChips((prev) => [...prev, chip]);
-  const handleRemoveChip = (chip) => setChips((prev) => prev.filter((c3) => !(c3.type === chip.type && c3.value === chip.value)));
+  const handleRemoveChip = (chip) => setChips((prev) => prev.filter((c4) => !(c4.type === chip.type && c4.value === chip.value)));
   const handleAckAll = async () => {
     await onAckAll();
   };
@@ -12568,7 +12568,7 @@ function InboxView({
         {
           item,
           selected: selectedItemId === item.id,
-          onSelect: (id) => onSelectItem?.(id)
+          onSelect: (id2) => onSelectItem?.(id2)
         },
         item.id
       )) })
@@ -12660,7 +12660,7 @@ function labelColor(label) {
   }
   return LABEL_COLORS[Math.abs(hash) % LABEL_COLORS.length];
 }
-function ScrollableIssueList({ children, totalCount }) {
+function ScrollableIssueList({ children: children2, totalCount }) {
   const listRef = A2(null);
   const [needsFade, setNeedsFade] = d2(true);
   const checkFade = q2(() => {
@@ -12673,7 +12673,7 @@ function ScrollableIssueList({ children, totalCount }) {
   }, []);
   y2(() => {
     checkFade();
-  }, [children, checkFade]);
+  }, [children2, checkFade]);
   y2(() => {
     const el = listRef.current;
     if (!el)
@@ -12689,7 +12689,7 @@ function ScrollableIssueList({ children, totalCount }) {
         ref: listRef,
         className: `issues-repo-list${needsFade ? "" : " issues-repo-list--no-fade"}`,
         onScroll: checkFade,
-        children
+        children: children2
       }
     ),
     needsFade && totalCount > 0 && /* @__PURE__ */ u3("div", { className: "issues-repo-list__count", children: [
@@ -12701,7 +12701,7 @@ function ScrollableIssueList({ children, totalCount }) {
 function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [selectedRepoId, setSelectedRepoId] = d2(null);
   const [selectedIssueId, setSelectedIssueId] = d2(null);
-  const [filter, setFilter] = d2("");
+  const [filter2, setFilter] = d2("");
   const [statusFilter, setStatusFilter] = d2("open");
   const [expandedRepos, setExpandedRepos] = d2(() => /* @__PURE__ */ new Set());
   const [issueDetail, setIssueDetail] = d2(null);
@@ -12799,7 +12799,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       });
     }
   }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
-  const normalizedFilter = T2(() => filter.trim().toLowerCase(), [filter]);
+  const normalizedFilter = T2(() => filter2.trim().toLowerCase(), [filter2]);
   const filteredRepos = T2(() => {
     return repos.map((repo) => {
       let issues = repo.issues;
@@ -12971,7 +12971,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           type: "search",
           className: "issues-filter__input",
           placeholder: "Filter issues...",
-          value: filter,
+          value: filter2,
           onInput: (e3) => setFilter(e3.currentTarget.value)
         }
       ) }),
@@ -13079,12 +13079,12 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           }
         ),
         displayLabels.map((lbl) => {
-          const color = labelColor(lbl);
+          const color2 = labelColor(lbl);
           return /* @__PURE__ */ u3(
             "span",
             {
               className: "issue-label-pill",
-              style: { background: color.bg, color: color.fg },
+              style: { background: color2.bg, color: color2.fg },
               children: lbl
             },
             lbl
@@ -13220,11 +13220,11 @@ function getRepoId(repo) {
   return repo.id || repo.name || "";
 }
 function getRepoLabel(repo) {
-  const root = repo.root || repo.path || "";
-  const base = root ? root.split(/[\\/]/).filter(Boolean).pop() : "";
+  const root2 = repo.root || repo.path || "";
+  const base = root2 ? root2.split(/[\\/]/).filter(Boolean).pop() : "";
   const title = repo.name || base || repo.id || "Unknown repo";
-  if (root && root !== title) {
-    return `${title} \u2014 ${root}`;
+  if (root2 && root2 !== title) {
+    return `${title} \u2014 ${root2}`;
   }
   return title;
 }
@@ -13310,16 +13310,16 @@ function ReviewView({ params, loaders }) {
   }, [selectedRepo]);
   const repoOptions = T2(() => {
     return repos.map((repo) => {
-      const id = getRepoId(repo);
-      if (!id) {
+      const id2 = getRepoId(repo);
+      if (!id2) {
         return null;
       }
-      return { id, label: getRepoLabel(repo) };
-    }).filter((item) => Boolean(item)).sort((a3, b) => a3.label.localeCompare(b.label));
+      return { id: id2, label: getRepoLabel(repo) };
+    }).filter((item) => Boolean(item)).sort((a4, b) => a4.label.localeCompare(b.label));
   }, [repos]);
   const branchOptions = T2(() => {
     const names = branches.map(getBranchName).filter((name) => Boolean(name));
-    return Array.from(new Set(names)).sort((a3, b) => a3.localeCompare(b));
+    return Array.from(new Set(names)).sort((a4, b) => a4.localeCompare(b));
   }, [branches]);
   const repoPlaceholder = loadingRepos ? "Loading repositories..." : repoOptions.length === 0 ? "No repositories found" : "Select a repository";
   const branchPlaceholder = selectedRepo ? loadingBranches ? "Loading branches..." : "Choose a branch or commit" : "Select a repository first";
@@ -13531,22 +13531,22 @@ function parseTimestamp(value) {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : parsed;
 }
-function formatDuration(start, end = null) {
-  if (!start) {
+function formatDuration(start2, end = null) {
+  if (!start2) {
     return "\u2014";
   }
-  const now = end ?? Date.now();
-  const delta = Math.max(now - start, 0);
+  const now2 = end ?? Date.now();
+  const delta = Math.max(now2 - start2, 0);
   const totalMinutes = Math.floor(delta / 6e4);
   const totalHours = Math.floor(totalMinutes / 60);
-  const m3 = totalMinutes % 60;
+  const m4 = totalMinutes % 60;
   if (totalMinutes < 1) {
     return "< 1m";
   }
   if (totalHours > 0) {
-    return `${totalHours}h ${m3}m`;
+    return `${totalHours}h ${m4}m`;
   }
-  return `${m3}m`;
+  return `${m4}m`;
 }
 function shouldHideSession(session) {
   const status = getSessionStatus(session).toLowerCase();
@@ -13591,8 +13591,8 @@ function formatInactive(minutes) {
     return `${minutes}m`;
   }
   const h3 = Math.floor(minutes / 60);
-  const m3 = minutes % 60;
-  return m3 > 0 ? `${h3}h ${m3}m` : `${h3}h`;
+  const m4 = minutes % 60;
+  return m4 > 0 ? `${h3}h ${m4}m` : `${h3}h`;
 }
 function statusClass(status) {
   const normalized = status.toLowerCase();
@@ -13623,9 +13623,9 @@ function appBadge(app) {
 function buildTree(sessions) {
   const byId = /* @__PURE__ */ new Map();
   sessions.forEach((session) => {
-    const id = getSessionId(session);
-    if (id) {
-      byId.set(id, session);
+    const id2 = getSessionId(session);
+    if (id2) {
+      byId.set(id2, session);
     }
   });
   const childrenMap = /* @__PURE__ */ new Map();
@@ -13643,9 +13643,9 @@ function buildTree(sessions) {
   return { roots, childrenMap };
 }
 function countDescendants(sessionId, childrenMap) {
-  const children = childrenMap.get(sessionId) || [];
-  let count = children.length;
-  for (const child of children) {
+  const children2 = childrenMap.get(sessionId) || [];
+  let count = children2.length;
+  for (const child of children2) {
     const childId = getSessionId(child);
     if (childId) {
       count += countDescendants(childId, childrenMap);
@@ -13658,8 +13658,8 @@ function isTreeDead(session, childrenMap) {
     return false;
   }
   const sessionId = getSessionId(session);
-  const children = sessionId ? childrenMap.get(sessionId) || [] : [];
-  return children.every((child) => isTreeDead(child, childrenMap));
+  const children2 = sessionId ? childrenMap.get(sessionId) || [] : [];
+  return children2.every((child) => isTreeDead(child, childrenMap));
 }
 function copyToClipboard(text) {
   navigator.clipboard.writeText(text).catch(() => {
@@ -13798,8 +13798,8 @@ function SessionsView({
   const [, setTick] = d2(0);
   const { roots, childrenMap } = T2(() => buildTree(sessions), [sessions]);
   y2(() => {
-    const id = setInterval(() => setTick((n2) => n2 + 1), 3e4);
-    return () => clearInterval(id);
+    const id2 = setInterval(() => setTick((n2) => n2 + 1), 3e4);
+    return () => clearInterval(id2);
   }, []);
   y2(() => {
     if (highlightSessionId) {
@@ -13807,22 +13807,22 @@ function SessionsView({
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
         el.classList.add("session-row--highlight");
-        const timer = setTimeout(() => el.classList.remove("session-row--highlight"), 3e3);
-        return () => clearTimeout(timer);
+        const timer2 = setTimeout(() => el.classList.remove("session-row--highlight"), 3e3);
+        return () => clearTimeout(timer2);
       }
     }
   }, [highlightSessionId]);
   const { activeRoots, endedRoots } = T2(() => {
     const active = [];
     const ended = [];
-    for (const root of roots) {
-      if (isTreeDead(root, childrenMap)) {
-        ended.push(root);
+    for (const root2 of roots) {
+      if (isTreeDead(root2, childrenMap)) {
+        ended.push(root2);
       } else {
-        active.push(root);
+        active.push(root2);
       }
     }
-    active.sort((a3, b) => (b.pinned || 0) - (a3.pinned || 0));
+    active.sort((a4, b) => (b.pinned || 0) - (a4.pinned || 0));
     return { activeRoots: active, endedRoots: ended };
   }, [roots, childrenMap]);
   const toggleExpand = (sessionId) => {
@@ -13841,8 +13841,8 @@ function SessionsView({
       return [];
     }
     const sessionId = getSessionId(session);
-    const children = sessionId ? childrenMap.get(sessionId) || [] : [];
-    const visibleChildren = children.filter((c3) => !shouldHideSession(c3));
+    const children2 = sessionId ? childrenMap.get(sessionId) || [] : [];
+    const visibleChildren = children2.filter((c4) => !shouldHideSession(c4));
     const isExpanded = sessionId ? expandedIds.has(sessionId) : false;
     const result = [{ session, depth, isLastChild }];
     if (isExpanded) {
@@ -13855,8 +13855,8 @@ function SessionsView({
   };
   const renderRow = ({ session, depth, isLastChild }) => {
     const sessionId = getSessionId(session);
-    const children = sessionId ? childrenMap.get(sessionId) || [] : [];
-    const visibleChildren = children.filter((c3) => !shouldHideSession(c3));
+    const children2 = sessionId ? childrenMap.get(sessionId) || [] : [];
+    const visibleChildren = children2.filter((c4) => !shouldHideSession(c4));
     const hasChildren = visibleChildren.length > 0;
     const isExpanded = sessionId ? expandedIds.has(sessionId) : false;
     const status = getSessionStatus(session);
@@ -13886,7 +13886,7 @@ function SessionsView({
     })).map((p3) => ({
       ...p3,
       repo_name: p3.repo_name.replace(/^\.+/, "") || p3.repo_name
-    })).filter((p3, idx, arr) => arr.findIndex((x2) => x2.repo_name === p3.repo_name) === idx).filter((p3) => !looksLikeWorktreeOrBranchName(p3.repo_name) && !looksLikeWorktreeOrBranchName(p3.repo_id));
+    })).filter((p3, idx, arr) => arr.findIndex((x4) => x4.repo_name === p3.repo_name) === idx).filter((p3) => !looksLikeWorktreeOrBranchName(p3.repo_name) && !looksLikeWorktreeOrBranchName(p3.repo_id));
     const rowClasses = [
       "session-row",
       isDead ? "row-dead" : "",
@@ -14408,10 +14408,10 @@ function ExportPanel({
       return;
     const blob = new Blob([result.content], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
-    const a3 = document.createElement("a");
-    a3.href = url;
-    a3.download = result.filename;
-    a3.click();
+    const a4 = document.createElement("a");
+    a4.href = url;
+    a4.download = result.filename;
+    a4.click();
     URL.revokeObjectURL(url);
   };
   return /* @__PURE__ */ u3("div", { className: "export-panel", children: [
@@ -14475,11 +14475,11 @@ function ExportPanel({
   ] });
 }
 function SubAgentsList({
-  children,
+  children: children2,
   onNavigate
 }) {
   const [expanded, setExpanded] = d2(true);
-  if (children.length === 0)
+  if (children2.length === 0)
     return /* @__PURE__ */ u3(k, {});
   return /* @__PURE__ */ u3("div", { className: "conv-subagents", children: [
     /* @__PURE__ */ u3(
@@ -14492,13 +14492,13 @@ function SubAgentsList({
           /* @__PURE__ */ u3("span", { className: "conv-subagents__toggle", children: expanded ? "\u25BE" : "\u25B8" }),
           /* @__PURE__ */ u3("span", { className: "conv-subagents__title", children: [
             "Sub-agents (",
-            children.length,
+            children2.length,
             ")"
           ] })
         ]
       }
     ),
-    expanded && /* @__PURE__ */ u3("div", { className: "conv-subagents__list", children: children.map((child) => {
+    expanded && /* @__PURE__ */ u3("div", { className: "conv-subagents__list", children: children2.map((child) => {
       const durationStr = child.duration_seconds != null ? child.duration_seconds < 60 ? `${child.duration_seconds}s` : `${Math.floor(child.duration_seconds / 60)}m ${child.duration_seconds % 60}s` : null;
       return /* @__PURE__ */ u3(
         "div",
@@ -14587,8 +14587,8 @@ function ConversationDetail({
   );
   const selectedHiddenCount = T2(() => {
     let count = 0;
-    for (const id of selected) {
-      const block2 = blocks.find((b) => b.id === id);
+    for (const id2 of selected) {
+      const block2 = blocks.find((b) => b.id === id2);
       if (block2 && !visibleTypes.has(block2.type)) {
         count++;
       }
@@ -14666,13 +14666,13 @@ function ConversationDetail({
     setSelected(/* @__PURE__ */ new Set());
     setLastSelectedId(null);
   };
-  const toggleType = (type) => {
+  const toggleType = (type2) => {
     setVisibleTypes((prev) => {
       const next = new Set(prev);
-      if (next.has(type)) {
-        next.delete(type);
+      if (next.has(type2)) {
+        next.delete(type2);
       } else {
-        next.add(type);
+        next.add(type2);
       }
       return next;
     });
@@ -14747,18 +14747,18 @@ function ConversationDetail({
     ] }),
     conversation.children && conversation.children.length > 0 && /* @__PURE__ */ u3(SubAgentsList, { children: conversation.children, onNavigate }),
     /* @__PURE__ */ u3("div", { className: "conv-filter-bar", children: [
-      /* @__PURE__ */ u3("div", { className: "conv-filter-bar__types", children: presentTypes.map((type) => /* @__PURE__ */ u3(
+      /* @__PURE__ */ u3("div", { className: "conv-filter-bar__types", children: presentTypes.map((type2) => /* @__PURE__ */ u3(
         "button",
         {
           type: "button",
-          className: `conv-filter-btn${visibleTypes.has(type) ? " conv-filter-btn--active" : ""}`,
-          onClick: () => toggleType(type),
+          className: `conv-filter-btn${visibleTypes.has(type2) ? " conv-filter-btn--active" : ""}`,
+          onClick: () => toggleType(type2),
           children: [
-            BLOCK_TYPE_LABELS[type],
-            /* @__PURE__ */ u3("span", { className: "conv-filter-btn__count", children: typeCounts[type] || 0 })
+            BLOCK_TYPE_LABELS[type2],
+            /* @__PURE__ */ u3("span", { className: "conv-filter-btn__count", children: typeCounts[type2] || 0 })
           ]
         },
-        type
+        type2
       )) }),
       /* @__PURE__ */ u3("div", { className: "conv-filter-bar__actions", children: [
         /* @__PURE__ */ u3(
@@ -15123,7 +15123,7 @@ function ConversationsView({ conversations: initialConversations }) {
       ConversationDetail,
       {
         conversationId: selectedId,
-        onNavigate: (id) => setSelectedId(id)
+        onNavigate: (id2) => setSelectedId(id2)
       }
     ) : /* @__PURE__ */ u3("div", { className: "chat-history-detail__empty", children: "Select a conversation to view it" }) })
   ] });
@@ -16436,8 +16436,8 @@ function getRepoId2(repo) {
   return repo.id || repo.name || "";
 }
 function getRepoTitle(repo, repoId) {
-  const root = repo.root || repo.path || "";
-  const base = root ? root.split(/[\\/]/).filter(Boolean).pop() : "";
+  const root2 = repo.root || repo.path || "";
+  const base = root2 ? root2.split(/[\\/]/).filter(Boolean).pop() : "";
   return repo.name || base || repoId || "Unknown repo";
 }
 function getRepoPath(repo) {
@@ -16510,23 +16510,23 @@ function sortBranches(branches, sortKey) {
       rest.push(branch);
     }
   }
-  pinned.sort((a3, b) => getBranchName2(a3).localeCompare(getBranchName2(b)));
-  rest.sort((a3, b) => {
+  pinned.sort((a4, b) => getBranchName2(a4).localeCompare(getBranchName2(b)));
+  rest.sort((a4, b) => {
     if (sortKey === "name") {
-      return getBranchName2(a3).localeCompare(getBranchName2(b));
+      return getBranchName2(a4).localeCompare(getBranchName2(b));
     }
     if (sortKey === "ahead") {
-      const aScore = (a3.ahead_default ?? a3.ahead ?? 0) + (a3.behind_default ?? a3.behind ?? 0);
+      const aScore = (a4.ahead_default ?? a4.ahead ?? 0) + (a4.behind_default ?? a4.behind ?? 0);
       const bScore = (b.ahead_default ?? b.ahead ?? 0) + (b.behind_default ?? b.behind ?? 0);
       if (aScore !== bScore) {
         return bScore - aScore;
       }
     }
-    const recencyDelta = getBranchTimestamp(b) - getBranchTimestamp(a3);
+    const recencyDelta = getBranchTimestamp(b) - getBranchTimestamp(a4);
     if (recencyDelta !== 0) {
       return recencyDelta;
     }
-    return getBranchName2(a3).localeCompare(getBranchName2(b));
+    return getBranchName2(a4).localeCompare(getBranchName2(b));
   });
   return [...pinned, ...rest];
 }
@@ -16587,7 +16587,7 @@ function BranchContextMenu({
       }
     }
   ];
-  const visibleActions = actions.filter((a3) => a3.show !== false);
+  const visibleActions = actions.filter((a4) => a4.show !== false);
   return /* @__PURE__ */ u3("span", { className: "work-actions", ref: anchorRef, children: [
     /* @__PURE__ */ u3(
       "button",
@@ -16823,27 +16823,27 @@ function WorkOverviewView({
       return next;
     });
   };
-  const handleUpdateRepo = async (id, patch) => {
+  const handleUpdateRepo = async (id2, patch) => {
     try {
-      const res = await fetch(`/api/work/repos/${encodeURIComponent(id)}`, {
+      const res = await fetch(`/api/work/repos/${encodeURIComponent(id2)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch)
       });
       if (res.ok) {
         const updated = await res.json();
-        setRepos((prev) => prev.map((r3) => getRepoId2(r3) === id ? updated : r3));
+        setRepos((prev) => prev.map((r3) => getRepoId2(r3) === id2 ? updated : r3));
       }
     } catch {
     }
   };
-  const handleRemoveRepo = async (id) => {
+  const handleRemoveRepo = async (id2) => {
     try {
-      const res = await fetch(`/api/work/repos/${encodeURIComponent(id)}`, {
+      const res = await fetch(`/api/work/repos/${encodeURIComponent(id2)}`, {
         method: "DELETE"
       });
       if (res.ok) {
-        setRepos((prev) => prev.filter((r3) => getRepoId2(r3) !== id));
+        setRepos((prev) => prev.filter((r3) => getRepoId2(r3) !== id2));
         setConfirmRemove(null);
       }
     } catch {
@@ -17186,12 +17186,12 @@ function ConsoleSubTabBar({
   isConsoleActive
 }) {
   const sortedSessions = T2(() => {
-    return [...sessions].sort((a3, b) => {
-      if (a3.pinned && !b.pinned)
+    return [...sessions].sort((a4, b) => {
+      if (a4.pinned && !b.pinned)
         return -1;
-      if (!a3.pinned && b.pinned)
+      if (!a4.pinned && b.pinned)
         return 1;
-      return a3.created_at - b.created_at;
+      return a4.created_at - b.created_at;
     });
   }, [sessions]);
   y2(() => {
@@ -17439,11 +17439,11 @@ function hashCode(text) {
 }
 function max(arr) {
   const length = arr.length;
-  let max2 = -Infinity;
+  let max3 = -Infinity;
   for (let i4 = 0; i4 < length; i4++) {
-    max2 = Math.max(max2, arr[i4]);
+    max3 = Math.max(max3, arr[i4]);
   }
-  return max2;
+  return max3;
 }
 
 // node_modules/diff2html/lib-esm/diff-parser.js
@@ -17491,7 +17491,7 @@ function parse(diffInput, config = {}) {
   const renameTo = /^rename to "?(.+)"?/;
   const similarityIndex = /^similarity index (\d+)%/;
   const dissimilarityIndex = /^dissimilarity index (\d+)%/;
-  const index = /^index ([\da-z]+)\.\.([\da-z]+)\s*(\d{6})?/;
+  const index2 = /^index ([\da-z]+)\.\.([\da-z]+)\s*(\d{6})?/;
   const binaryFiles = /^Binary files (.*) and (.*) differ/;
   const binaryDiff = /^GIT binary patch/;
   const combinedIndex = /^index ([\da-z]+),([\da-z]+)\.\.([\da-z]+)/;
@@ -17714,7 +17714,7 @@ function parse(diffInput, config = {}) {
       currentFile.unchangedPercentage = parseInt(values[1], 10);
     } else if (values = dissimilarityIndex.exec(line)) {
       currentFile.changedPercentage = parseInt(values[1], 10);
-    } else if (values = index.exec(line)) {
+    } else if (values = index2.exec(line)) {
       currentFile.checksumBefore = values[1];
       currentFile.checksumAfter = values[2];
       if (values[3])
@@ -17876,11 +17876,11 @@ var Diff = class {
       return left === right || !!options2.ignoreCase && left.toLowerCase() === right.toLowerCase();
     }
   }
-  removeEmpty(array) {
+  removeEmpty(array2) {
     const ret = [];
-    for (let i4 = 0; i4 < array.length; i4++) {
-      if (array[i4]) {
-        ret.push(array[i4]);
+    for (let i4 = 0; i4 < array2.length; i4++) {
+      if (array2[i4]) {
+        ret.push(array2[i4]);
       }
     }
     return ret;
@@ -17994,14 +17994,14 @@ function removeSuffix(string, oldSuffix) {
 function maximumOverlap(string1, string2) {
   return string2.slice(0, overlapCount(string1, string2));
 }
-function overlapCount(a3, b) {
+function overlapCount(a4, b) {
   let startA = 0;
-  if (a3.length > b.length) {
-    startA = a3.length - b.length;
+  if (a4.length > b.length) {
+    startA = a4.length - b.length;
   }
   let endB = b.length;
-  if (a3.length < b.length) {
-    endB = a3.length;
+  if (a4.length < b.length) {
+    endB = a4.length;
   }
   const map = Array(endB);
   let k3 = 0;
@@ -18020,11 +18020,11 @@ function overlapCount(a3, b) {
     }
   }
   k3 = 0;
-  for (let i4 = startA; i4 < a3.length; i4++) {
-    while (k3 > 0 && a3[i4] != b[k3]) {
+  for (let i4 = startA; i4 < a4.length; i4++) {
+    while (k3 > 0 && a4[i4] != b[k3]) {
       k3 = map[k3];
     }
-    if (a3[i4] == b[k3]) {
+    if (a4[i4] == b[k3]) {
       k3++;
     }
   }
@@ -18192,12 +18192,12 @@ function diffWordsWithSpace(oldStr, newStr, options2) {
 }
 
 // node_modules/diff2html/lib-esm/rematch.js
-function levenshtein(a3, b) {
-  if (a3.length === 0) {
+function levenshtein(a4, b) {
+  if (a4.length === 0) {
     return b.length;
   }
   if (b.length === 0) {
-    return a3.length;
+    return a4.length;
   }
   const matrix = [];
   let i4;
@@ -18205,38 +18205,38 @@ function levenshtein(a3, b) {
     matrix[i4] = [i4];
   }
   let j3;
-  for (j3 = 0; j3 <= a3.length; j3++) {
+  for (j3 = 0; j3 <= a4.length; j3++) {
     matrix[0][j3] = j3;
   }
   for (i4 = 1; i4 <= b.length; i4++) {
-    for (j3 = 1; j3 <= a3.length; j3++) {
-      if (b.charAt(i4 - 1) === a3.charAt(j3 - 1)) {
+    for (j3 = 1; j3 <= a4.length; j3++) {
+      if (b.charAt(i4 - 1) === a4.charAt(j3 - 1)) {
         matrix[i4][j3] = matrix[i4 - 1][j3 - 1];
       } else {
         matrix[i4][j3] = Math.min(matrix[i4 - 1][j3 - 1] + 1, Math.min(matrix[i4][j3 - 1] + 1, matrix[i4 - 1][j3] + 1));
       }
     }
   }
-  return matrix[b.length][a3.length];
+  return matrix[b.length][a4.length];
 }
 function newDistanceFn(str) {
-  return (x2, y3) => {
-    const xValue = str(x2).trim();
-    const yValue = str(y3).trim();
+  return (x4, y5) => {
+    const xValue = str(x4).trim();
+    const yValue = str(y5).trim();
     const lev = levenshtein(xValue, yValue);
     return lev / (xValue.length + yValue.length);
   };
 }
 function newMatcherFn(distance2) {
-  function findBestMatch(a3, b, cache = /* @__PURE__ */ new Map()) {
+  function findBestMatch(a4, b, cache = /* @__PURE__ */ new Map()) {
     let bestMatchDist = Infinity;
     let bestMatch;
-    for (let i4 = 0; i4 < a3.length; ++i4) {
+    for (let i4 = 0; i4 < a4.length; ++i4) {
       for (let j3 = 0; j3 < b.length; ++j3) {
-        const cacheKey = JSON.stringify([a3[i4], b[j3]]);
+        const cacheKey = JSON.stringify([a4[i4], b[j3]]);
         let md;
         if (!(cache.has(cacheKey) && (md = cache.get(cacheKey)))) {
-          md = distance2(a3[i4], b[j3]);
+          md = distance2(a4[i4], b[j3]);
           cache.set(cacheKey, md);
         }
         if (md < bestMatchDist) {
@@ -18247,18 +18247,18 @@ function newMatcherFn(distance2) {
     }
     return bestMatch;
   }
-  function group(a3, b, level = 0, cache = /* @__PURE__ */ new Map()) {
-    const bm = findBestMatch(a3, b, cache);
-    if (!bm || a3.length + b.length < 3) {
-      return [[a3, b]];
+  function group(a4, b, level = 0, cache = /* @__PURE__ */ new Map()) {
+    const bm = findBestMatch(a4, b, cache);
+    if (!bm || a4.length + b.length < 3) {
+      return [[a4, b]];
     }
-    const a1 = a3.slice(0, bm.indexA);
+    const a1 = a4.slice(0, bm.indexA);
     const b1 = b.slice(0, bm.indexB);
-    const aMatch = [a3[bm.indexA]];
+    const aMatch = [a4[bm.indexA]];
     const bMatch = [b[bm.indexB]];
     const tailA = bm.indexA + 1;
     const tailB = bm.indexB + 1;
-    const a22 = a3.slice(tailA);
+    const a22 = a4.slice(tailA);
     const b2 = b.slice(tailB);
     const group1 = group(a1, b1, level + 1, cache);
     const groupMatch = group(aMatch, bMatch, level + 1, cache);
@@ -18267,7 +18267,7 @@ function newMatcherFn(distance2) {
     if (bm.indexA > 0 || bm.indexB > 0) {
       result = group1.concat(result);
     }
-    if (a3.length > tailA || b.length > tailB) {
+    if (a4.length > tailA || b.length > tailB) {
       result = result.concat(group2);
     }
     return result;
@@ -18850,28 +18850,28 @@ var Hogan3 = __toESM(require_hogan());
 // node_modules/diff2html/lib-esm/diff2html-templates.js
 var Hogan2 = __toESM(require_hogan());
 var defaultTemplates = {};
-defaultTemplates["file-summary-line"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["file-summary-line"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<li class="d2h-file-list-line">');
   t3.b("\n" + i4);
   t3.b('    <span class="d2h-file-name-wrapper">');
   t3.b("\n" + i4);
-  t3.b(t3.rp("<fileIcon0", c3, p3, "      "));
+  t3.b(t3.rp("<fileIcon0", c4, p3, "      "));
   t3.b('      <a href="#');
-  t3.b(t3.v(t3.f("fileHtmlId", c3, p3, 0)));
+  t3.b(t3.v(t3.f("fileHtmlId", c4, p3, 0)));
   t3.b('" class="d2h-file-name">');
-  t3.b(t3.v(t3.f("fileName", c3, p3, 0)));
+  t3.b(t3.v(t3.f("fileName", c4, p3, 0)));
   t3.b("</a>");
   t3.b("\n" + i4);
   t3.b('      <span class="d2h-file-stats">');
   t3.b("\n" + i4);
   t3.b('          <span class="d2h-lines-added">');
-  t3.b(t3.v(t3.f("addedLines", c3, p3, 0)));
+  t3.b(t3.v(t3.f("addedLines", c4, p3, 0)));
   t3.b("</span>");
   t3.b("\n" + i4);
   t3.b('          <span class="d2h-lines-deleted">');
-  t3.b(t3.v(t3.f("deletedLines", c3, p3, 0)));
+  t3.b(t3.v(t3.f("deletedLines", c4, p3, 0)));
   t3.b("</span>");
   t3.b("\n" + i4);
   t3.b("      </span>");
@@ -18881,17 +18881,17 @@ defaultTemplates["file-summary-line"] = new Hogan2.Template({ code: function(c3,
   t3.b("</li>");
   return t3.fl();
 }, partials: { "<fileIcon0": { name: "fileIcon", partials: {}, subs: {} } }, subs: {} });
-defaultTemplates["file-summary-wrapper"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["file-summary-wrapper"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<div class="d2h-file-list-wrapper ');
-  t3.b(t3.v(t3.f("colorScheme", c3, p3, 0)));
+  t3.b(t3.v(t3.f("colorScheme", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
   t3.b('    <div class="d2h-file-list-header">');
   t3.b("\n" + i4);
   t3.b('        <span class="d2h-file-list-title">Files changed (');
-  t3.b(t3.v(t3.f("filesNumber", c3, p3, 0)));
+  t3.b(t3.v(t3.f("filesNumber", c4, p3, 0)));
   t3.b(")</span>");
   t3.b("\n" + i4);
   t3.b('        <a class="d2h-file-switch d2h-hide">hide</a>');
@@ -18903,38 +18903,38 @@ defaultTemplates["file-summary-wrapper"] = new Hogan2.Template({ code: function(
   t3.b('    <ol class="d2h-file-list">');
   t3.b("\n" + i4);
   t3.b("    ");
-  t3.b(t3.t(t3.f("files", c3, p3, 0)));
+  t3.b(t3.t(t3.f("files", c4, p3, 0)));
   t3.b("\n" + i4);
   t3.b("    </ol>");
   t3.b("\n" + i4);
   t3.b("</div>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["generic-block-header"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["generic-block-header"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b("<tr>");
   t3.b("\n" + i4);
   t3.b('    <td class="');
-  t3.b(t3.v(t3.f("lineClass", c3, p3, 0)));
+  t3.b(t3.v(t3.f("lineClass", c4, p3, 0)));
   t3.b(" ");
-  t3.b(t3.v(t3.d("CSSLineClass.INFO", c3, p3, 0)));
+  t3.b(t3.v(t3.d("CSSLineClass.INFO", c4, p3, 0)));
   t3.b('"></td>');
   t3.b("\n" + i4);
   t3.b('    <td class="');
-  t3.b(t3.v(t3.d("CSSLineClass.INFO", c3, p3, 0)));
+  t3.b(t3.v(t3.d("CSSLineClass.INFO", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
   t3.b('        <div class="');
-  t3.b(t3.v(t3.f("contentClass", c3, p3, 0)));
+  t3.b(t3.v(t3.f("contentClass", c4, p3, 0)));
   t3.b('">');
-  if (t3.s(t3.f("blockHeader", c3, p3, 1), c3, p3, 0, 156, 173, "{{ }}")) {
-    t3.rs(c3, p3, function(c4, p4, t4) {
-      t4.b(t4.t(t4.f("blockHeader", c4, p4, 0)));
+  if (t3.s(t3.f("blockHeader", c4, p3, 1), c4, p3, 0, 156, 173, "{{ }}")) {
+    t3.rs(c4, p3, function(c5, p4, t4) {
+      t4.b(t4.t(t4.f("blockHeader", c5, p4, 0)));
     });
-    c3.pop();
+    c4.pop();
   }
-  if (!t3.s(t3.f("blockHeader", c3, p3, 1), c3, p3, 1, 0, 0, "")) {
+  if (!t3.s(t3.f("blockHeader", c4, p3, 1), c4, p3, 1, 0, 0, "")) {
     t3.b("&nbsp;");
   }
   ;
@@ -18945,17 +18945,17 @@ defaultTemplates["generic-block-header"] = new Hogan2.Template({ code: function(
   t3.b("</tr>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["generic-empty-diff"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["generic-empty-diff"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b("<tr>");
   t3.b("\n" + i4);
   t3.b('    <td class="');
-  t3.b(t3.v(t3.d("CSSLineClass.INFO", c3, p3, 0)));
+  t3.b(t3.v(t3.d("CSSLineClass.INFO", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
   t3.b('        <div class="');
-  t3.b(t3.v(t3.f("contentClass", c3, p3, 0)));
+  t3.b(t3.v(t3.f("contentClass", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
   t3.b("            File without changes");
@@ -18967,17 +18967,17 @@ defaultTemplates["generic-empty-diff"] = new Hogan2.Template({ code: function(c3
   t3.b("</tr>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["generic-file-path"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["generic-file-path"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<span class="d2h-file-name-wrapper">');
   t3.b("\n" + i4);
-  t3.b(t3.rp("<fileIcon0", c3, p3, "    "));
+  t3.b(t3.rp("<fileIcon0", c4, p3, "    "));
   t3.b('    <span class="d2h-file-name">');
-  t3.b(t3.v(t3.f("fileDiffName", c3, p3, 0)));
+  t3.b(t3.v(t3.f("fileDiffName", c4, p3, 0)));
   t3.b("</span>");
   t3.b("\n" + i4);
-  t3.b(t3.rp("<fileTag1", c3, p3, "    "));
+  t3.b(t3.rp("<fileTag1", c4, p3, "    "));
   t3.b("</span>");
   t3.b("\n" + i4);
   t3.b('<label class="d2h-file-collapse">');
@@ -18989,54 +18989,54 @@ defaultTemplates["generic-file-path"] = new Hogan2.Template({ code: function(c3,
   t3.b("</label>");
   return t3.fl();
 }, partials: { "<fileIcon0": { name: "fileIcon", partials: {}, subs: {} }, "<fileTag1": { name: "fileTag", partials: {}, subs: {} } }, subs: {} });
-defaultTemplates["generic-line"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["generic-line"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b("<tr>");
   t3.b("\n" + i4);
   t3.b('    <td class="');
-  t3.b(t3.v(t3.f("lineClass", c3, p3, 0)));
+  t3.b(t3.v(t3.f("lineClass", c4, p3, 0)));
   t3.b(" ");
-  t3.b(t3.v(t3.f("type", c3, p3, 0)));
+  t3.b(t3.v(t3.f("type", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
   t3.b("      ");
-  t3.b(t3.t(t3.f("lineNumber", c3, p3, 0)));
+  t3.b(t3.t(t3.f("lineNumber", c4, p3, 0)));
   t3.b("\n" + i4);
   t3.b("    </td>");
   t3.b("\n" + i4);
   t3.b('    <td class="');
-  t3.b(t3.v(t3.f("type", c3, p3, 0)));
+  t3.b(t3.v(t3.f("type", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
   t3.b('        <div class="');
-  t3.b(t3.v(t3.f("contentClass", c3, p3, 0)));
+  t3.b(t3.v(t3.f("contentClass", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
-  if (t3.s(t3.f("prefix", c3, p3, 1), c3, p3, 0, 162, 238, "{{ }}")) {
-    t3.rs(c3, p3, function(c4, p4, t4) {
+  if (t3.s(t3.f("prefix", c4, p3, 1), c4, p3, 0, 162, 238, "{{ }}")) {
+    t3.rs(c4, p3, function(c5, p4, t4) {
       t4.b('            <span class="d2h-code-line-prefix">');
-      t4.b(t4.t(t4.f("prefix", c4, p4, 0)));
+      t4.b(t4.t(t4.f("prefix", c5, p4, 0)));
       t4.b("</span>");
       t4.b("\n" + i4);
     });
-    c3.pop();
+    c4.pop();
   }
-  if (!t3.s(t3.f("prefix", c3, p3, 1), c3, p3, 1, 0, 0, "")) {
+  if (!t3.s(t3.f("prefix", c4, p3, 1), c4, p3, 1, 0, 0, "")) {
     t3.b('            <span class="d2h-code-line-prefix">&nbsp;</span>');
     t3.b("\n" + i4);
   }
   ;
-  if (t3.s(t3.f("content", c3, p3, 1), c3, p3, 0, 371, 445, "{{ }}")) {
-    t3.rs(c3, p3, function(c4, p4, t4) {
+  if (t3.s(t3.f("content", c4, p3, 1), c4, p3, 0, 371, 445, "{{ }}")) {
+    t3.rs(c4, p3, function(c5, p4, t4) {
       t4.b('            <span class="d2h-code-line-ctn">');
-      t4.b(t4.t(t4.f("content", c4, p4, 0)));
+      t4.b(t4.t(t4.f("content", c5, p4, 0)));
       t4.b("</span>");
       t4.b("\n" + i4);
     });
-    c3.pop();
+    c4.pop();
   }
-  if (!t3.s(t3.f("content", c3, p3, 1), c3, p3, 1, 0, 0, "")) {
+  if (!t3.s(t3.f("content", c4, p3, 1), c4, p3, 1, 0, 0, "")) {
     t3.b('            <span class="d2h-code-line-ctn"><br></span>');
     t3.b("\n" + i4);
   }
@@ -19048,20 +19048,20 @@ defaultTemplates["generic-line"] = new Hogan2.Template({ code: function(c3, p3, 
   t3.b("</tr>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["generic-wrapper"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["generic-wrapper"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<div class="d2h-wrapper ');
-  t3.b(t3.v(t3.f("colorScheme", c3, p3, 0)));
+  t3.b(t3.v(t3.f("colorScheme", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
   t3.b("    ");
-  t3.b(t3.t(t3.f("content", c3, p3, 0)));
+  t3.b(t3.t(t3.f("content", c4, p3, 0)));
   t3.b("\n" + i4);
   t3.b("</div>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["icon-file-added"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["icon-file-added"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<svg aria-hidden="true" class="d2h-icon d2h-added" height="16" title="added" version="1.1" viewBox="0 0 14 16"');
@@ -19073,7 +19073,7 @@ defaultTemplates["icon-file-added"] = new Hogan2.Template({ code: function(c3, p
   t3.b("</svg>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["icon-file-changed"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["icon-file-changed"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<svg aria-hidden="true" class="d2h-icon d2h-changed" height="16" title="modified" version="1.1"');
@@ -19085,7 +19085,7 @@ defaultTemplates["icon-file-changed"] = new Hogan2.Template({ code: function(c3,
   t3.b("</svg>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["icon-file-deleted"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["icon-file-deleted"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<svg aria-hidden="true" class="d2h-icon d2h-deleted" height="16" title="removed" version="1.1"');
@@ -19097,7 +19097,7 @@ defaultTemplates["icon-file-deleted"] = new Hogan2.Template({ code: function(c3,
   t3.b("</svg>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["icon-file-renamed"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["icon-file-renamed"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<svg aria-hidden="true" class="d2h-icon d2h-moved" height="16" title="renamed" version="1.1"');
@@ -19109,7 +19109,7 @@ defaultTemplates["icon-file-renamed"] = new Hogan2.Template({ code: function(c3,
   t3.b("</svg>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["icon-file"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["icon-file"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<svg aria-hidden="true" class="d2h-icon" height="16" version="1.1" viewBox="0 0 12 16" width="12">');
@@ -19119,19 +19119,19 @@ defaultTemplates["icon-file"] = new Hogan2.Template({ code: function(c3, p3, i4)
   t3.b("</svg>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["line-by-line-file-diff"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["line-by-line-file-diff"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<div id="');
-  t3.b(t3.v(t3.f("fileHtmlId", c3, p3, 0)));
+  t3.b(t3.v(t3.f("fileHtmlId", c4, p3, 0)));
   t3.b('" class="d2h-file-wrapper" data-lang="');
-  t3.b(t3.v(t3.d("file.language", c3, p3, 0)));
+  t3.b(t3.v(t3.d("file.language", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
   t3.b('    <div class="d2h-file-header">');
   t3.b("\n" + i4);
   t3.b("    ");
-  t3.b(t3.t(t3.f("filePath", c3, p3, 0)));
+  t3.b(t3.t(t3.f("filePath", c4, p3, 0)));
   t3.b("\n" + i4);
   t3.b("    </div>");
   t3.b("\n" + i4);
@@ -19144,7 +19144,7 @@ defaultTemplates["line-by-line-file-diff"] = new Hogan2.Template({ code: functio
   t3.b('                <tbody class="d2h-diff-tbody">');
   t3.b("\n" + i4);
   t3.b("                ");
-  t3.b(t3.t(t3.f("diffs", c3, p3, 0)));
+  t3.b(t3.t(t3.f("diffs", c4, p3, 0)));
   t3.b("\n" + i4);
   t3.b("                </tbody>");
   t3.b("\n" + i4);
@@ -19157,31 +19157,31 @@ defaultTemplates["line-by-line-file-diff"] = new Hogan2.Template({ code: functio
   t3.b("</div>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["line-by-line-numbers"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["line-by-line-numbers"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<div class="line-num1">');
-  t3.b(t3.v(t3.f("oldNumber", c3, p3, 0)));
+  t3.b(t3.v(t3.f("oldNumber", c4, p3, 0)));
   t3.b("</div>");
   t3.b("\n" + i4);
   t3.b('<div class="line-num2">');
-  t3.b(t3.v(t3.f("newNumber", c3, p3, 0)));
+  t3.b(t3.v(t3.f("newNumber", c4, p3, 0)));
   t3.b("</div>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["side-by-side-file-diff"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["side-by-side-file-diff"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<div id="');
-  t3.b(t3.v(t3.f("fileHtmlId", c3, p3, 0)));
+  t3.b(t3.v(t3.f("fileHtmlId", c4, p3, 0)));
   t3.b('" class="d2h-file-wrapper" data-lang="');
-  t3.b(t3.v(t3.d("file.language", c3, p3, 0)));
+  t3.b(t3.v(t3.d("file.language", c4, p3, 0)));
   t3.b('">');
   t3.b("\n" + i4);
   t3.b('    <div class="d2h-file-header">');
   t3.b("\n" + i4);
   t3.b("      ");
-  t3.b(t3.t(t3.f("filePath", c3, p3, 0)));
+  t3.b(t3.t(t3.f("filePath", c4, p3, 0)));
   t3.b("\n" + i4);
   t3.b("    </div>");
   t3.b("\n" + i4);
@@ -19196,7 +19196,7 @@ defaultTemplates["side-by-side-file-diff"] = new Hogan2.Template({ code: functio
   t3.b('                    <tbody class="d2h-diff-tbody">');
   t3.b("\n" + i4);
   t3.b("                    ");
-  t3.b(t3.t(t3.d("diffs.left", c3, p3, 0)));
+  t3.b(t3.t(t3.d("diffs.left", c4, p3, 0)));
   t3.b("\n" + i4);
   t3.b("                    </tbody>");
   t3.b("\n" + i4);
@@ -19215,7 +19215,7 @@ defaultTemplates["side-by-side-file-diff"] = new Hogan2.Template({ code: functio
   t3.b('                    <tbody class="d2h-diff-tbody">');
   t3.b("\n" + i4);
   t3.b("                    ");
-  t3.b(t3.t(t3.d("diffs.right", c3, p3, 0)));
+  t3.b(t3.t(t3.d("diffs.right", c4, p3, 0)));
   t3.b("\n" + i4);
   t3.b("                    </tbody>");
   t3.b("\n" + i4);
@@ -19230,25 +19230,25 @@ defaultTemplates["side-by-side-file-diff"] = new Hogan2.Template({ code: functio
   t3.b("</div>");
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["tag-file-added"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["tag-file-added"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<span class="d2h-tag d2h-added d2h-added-tag">ADDED</span>');
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["tag-file-changed"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["tag-file-changed"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<span class="d2h-tag d2h-changed d2h-changed-tag">CHANGED</span>');
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["tag-file-deleted"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["tag-file-deleted"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<span class="d2h-tag d2h-deleted d2h-deleted-tag">DELETED</span>');
   return t3.fl();
 }, partials: {}, subs: {} });
-defaultTemplates["tag-file-renamed"] = new Hogan2.Template({ code: function(c3, p3, i4) {
+defaultTemplates["tag-file-renamed"] = new Hogan2.Template({ code: function(c4, p3, i4) {
   var t3 = this;
   t3.b(i4 = i4 || "");
   t3.b('<span class="d2h-tag d2h-moved d2h-moved-tag">RENAMED</span>');
@@ -19553,10 +19553,10 @@ function ToolUseBlock({
 function MessageGroup({ turn, isStreaming, isThinking }) {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
-  function renderBlock(block2, index) {
+  function renderBlock(block2, index2) {
     switch (block2.type) {
       case "text":
-        return block2.text.trim() ? /* @__PURE__ */ u3(TextBlock, { text: block2.text }, `text-${index}`) : null;
+        return block2.text.trim() ? /* @__PURE__ */ u3(TextBlock, { text: block2.text }, `text-${index2}`) : null;
       case "thinking":
         return /* @__PURE__ */ u3(
           ThinkingBlock,
@@ -19564,7 +19564,7 @@ function MessageGroup({ turn, isStreaming, isThinking }) {
             thinking: block2.thinking,
             defaultExpanded: false
           },
-          `thinking-${index}`
+          `thinking-${index2}`
         );
       case "tool_use": {
         const result = toolResults.get(block2.id) ?? null;
@@ -19745,13 +19745,13 @@ function StreamRenderer({
       if (streamStartTimeRef.current === null) {
         streamStartTimeRef.current = Date.now();
       }
-      const interval = setInterval(() => {
+      const interval2 = setInterval(() => {
         if (streamStartTimeRef.current !== null) {
           setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1e3));
         }
       }, 1e3);
       setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1e3));
-      return () => clearInterval(interval);
+      return () => clearInterval(interval2);
     } else {
       streamStartTimeRef.current = null;
     }
@@ -20043,7 +20043,7 @@ function TerminalPane({
             const sessionId_ = sessionId;
             fetch(`/api/console/sessions/${sessionId_}/buffer`).then((r3) => r3.ok ? r3.json() : null).then((resp) => {
               if (resp?.data && termRef.current) {
-                const bytes = Uint8Array.from(atob(resp.data), (c3) => c3.charCodeAt(0));
+                const bytes = Uint8Array.from(atob(resp.data), (c4) => c4.charCodeAt(0));
                 termRef.current.write(bytes);
               }
             }).catch(() => {
@@ -20442,7 +20442,7 @@ function ConsoleView({
         (s3) => s3.agent_type === "operator" && s3.pinned
       );
       const pinnedSession = sessions.find((s3) => s3.pinned);
-      const firstSession = [...sessions].sort((a3, b) => a3.created_at - b.created_at)[0];
+      const firstSession = [...sessions].sort((a4, b) => a4.created_at - b.created_at)[0];
       const target = operatorSession ?? pinnedSession ?? firstSession;
       if (target) {
         onSelectSession(target.id);
@@ -20620,10 +20620,10 @@ function LogsView() {
     fetchLogs();
   }, [fetchLogs]);
   y2(() => {
-    const timer = window.setInterval(() => {
+    const timer2 = window.setInterval(() => {
       fetchLogs();
     }, 5e3);
-    return () => window.clearInterval(timer);
+    return () => window.clearInterval(timer2);
   }, [fetchLogs]);
   y2(() => {
     if (autoScroll && bottomRef.current) {
@@ -20696,6 +20696,4237 @@ function LogsView() {
   ] });
 }
 
+// node_modules/d3-dispatch/src/dispatch.js
+var noop = { value: () => {
+} };
+function dispatch() {
+  for (var i4 = 0, n2 = arguments.length, _2 = {}, t3; i4 < n2; ++i4) {
+    if (!(t3 = arguments[i4] + "") || t3 in _2 || /[\s.]/.test(t3))
+      throw new Error("illegal type: " + t3);
+    _2[t3] = [];
+  }
+  return new Dispatch(_2);
+}
+function Dispatch(_2) {
+  this._ = _2;
+}
+function parseTypenames(typenames, types) {
+  return typenames.trim().split(/^|\s+/).map(function(t3) {
+    var name = "", i4 = t3.indexOf(".");
+    if (i4 >= 0)
+      name = t3.slice(i4 + 1), t3 = t3.slice(0, i4);
+    if (t3 && !types.hasOwnProperty(t3))
+      throw new Error("unknown type: " + t3);
+    return { type: t3, name };
+  });
+}
+Dispatch.prototype = dispatch.prototype = {
+  constructor: Dispatch,
+  on: function(typename, callback) {
+    var _2 = this._, T3 = parseTypenames(typename + "", _2), t3, i4 = -1, n2 = T3.length;
+    if (arguments.length < 2) {
+      while (++i4 < n2)
+        if ((t3 = (typename = T3[i4]).type) && (t3 = get(_2[t3], typename.name)))
+          return t3;
+      return;
+    }
+    if (callback != null && typeof callback !== "function")
+      throw new Error("invalid callback: " + callback);
+    while (++i4 < n2) {
+      if (t3 = (typename = T3[i4]).type)
+        _2[t3] = set(_2[t3], typename.name, callback);
+      else if (callback == null)
+        for (t3 in _2)
+          _2[t3] = set(_2[t3], typename.name, null);
+    }
+    return this;
+  },
+  copy: function() {
+    var copy = {}, _2 = this._;
+    for (var t3 in _2)
+      copy[t3] = _2[t3].slice();
+    return new Dispatch(copy);
+  },
+  call: function(type2, that) {
+    if ((n2 = arguments.length - 2) > 0)
+      for (var args = new Array(n2), i4 = 0, n2, t3; i4 < n2; ++i4)
+        args[i4] = arguments[i4 + 2];
+    if (!this._.hasOwnProperty(type2))
+      throw new Error("unknown type: " + type2);
+    for (t3 = this._[type2], i4 = 0, n2 = t3.length; i4 < n2; ++i4)
+      t3[i4].value.apply(that, args);
+  },
+  apply: function(type2, that, args) {
+    if (!this._.hasOwnProperty(type2))
+      throw new Error("unknown type: " + type2);
+    for (var t3 = this._[type2], i4 = 0, n2 = t3.length; i4 < n2; ++i4)
+      t3[i4].value.apply(that, args);
+  }
+};
+function get(type2, name) {
+  for (var i4 = 0, n2 = type2.length, c4; i4 < n2; ++i4) {
+    if ((c4 = type2[i4]).name === name) {
+      return c4.value;
+    }
+  }
+}
+function set(type2, name, callback) {
+  for (var i4 = 0, n2 = type2.length; i4 < n2; ++i4) {
+    if (type2[i4].name === name) {
+      type2[i4] = noop, type2 = type2.slice(0, i4).concat(type2.slice(i4 + 1));
+      break;
+    }
+  }
+  if (callback != null)
+    type2.push({ name, value: callback });
+  return type2;
+}
+var dispatch_default = dispatch;
+
+// node_modules/d3-selection/src/namespaces.js
+var xhtml = "http://www.w3.org/1999/xhtml";
+var namespaces_default = {
+  svg: "http://www.w3.org/2000/svg",
+  xhtml,
+  xlink: "http://www.w3.org/1999/xlink",
+  xml: "http://www.w3.org/XML/1998/namespace",
+  xmlns: "http://www.w3.org/2000/xmlns/"
+};
+
+// node_modules/d3-selection/src/namespace.js
+function namespace_default(name) {
+  var prefix = name += "", i4 = prefix.indexOf(":");
+  if (i4 >= 0 && (prefix = name.slice(0, i4)) !== "xmlns")
+    name = name.slice(i4 + 1);
+  return namespaces_default.hasOwnProperty(prefix) ? { space: namespaces_default[prefix], local: name } : name;
+}
+
+// node_modules/d3-selection/src/creator.js
+function creatorInherit(name) {
+  return function() {
+    var document2 = this.ownerDocument, uri = this.namespaceURI;
+    return uri === xhtml && document2.documentElement.namespaceURI === xhtml ? document2.createElement(name) : document2.createElementNS(uri, name);
+  };
+}
+function creatorFixed(fullname) {
+  return function() {
+    return this.ownerDocument.createElementNS(fullname.space, fullname.local);
+  };
+}
+function creator_default(name) {
+  var fullname = namespace_default(name);
+  return (fullname.local ? creatorFixed : creatorInherit)(fullname);
+}
+
+// node_modules/d3-selection/src/selector.js
+function none() {
+}
+function selector_default(selector) {
+  return selector == null ? none : function() {
+    return this.querySelector(selector);
+  };
+}
+
+// node_modules/d3-selection/src/selection/select.js
+function select_default(select) {
+  if (typeof select !== "function")
+    select = selector_default(select);
+  for (var groups = this._groups, m4 = groups.length, subgroups = new Array(m4), j3 = 0; j3 < m4; ++j3) {
+    for (var group = groups[j3], n2 = group.length, subgroup = subgroups[j3] = new Array(n2), node, subnode, i4 = 0; i4 < n2; ++i4) {
+      if ((node = group[i4]) && (subnode = select.call(node, node.__data__, i4, group))) {
+        if ("__data__" in node)
+          subnode.__data__ = node.__data__;
+        subgroup[i4] = subnode;
+      }
+    }
+  }
+  return new Selection(subgroups, this._parents);
+}
+
+// node_modules/d3-selection/src/array.js
+function array(x4) {
+  return x4 == null ? [] : Array.isArray(x4) ? x4 : Array.from(x4);
+}
+
+// node_modules/d3-selection/src/selectorAll.js
+function empty() {
+  return [];
+}
+function selectorAll_default(selector) {
+  return selector == null ? empty : function() {
+    return this.querySelectorAll(selector);
+  };
+}
+
+// node_modules/d3-selection/src/selection/selectAll.js
+function arrayAll(select) {
+  return function() {
+    return array(select.apply(this, arguments));
+  };
+}
+function selectAll_default(select) {
+  if (typeof select === "function")
+    select = arrayAll(select);
+  else
+    select = selectorAll_default(select);
+  for (var groups = this._groups, m4 = groups.length, subgroups = [], parents = [], j3 = 0; j3 < m4; ++j3) {
+    for (var group = groups[j3], n2 = group.length, node, i4 = 0; i4 < n2; ++i4) {
+      if (node = group[i4]) {
+        subgroups.push(select.call(node, node.__data__, i4, group));
+        parents.push(node);
+      }
+    }
+  }
+  return new Selection(subgroups, parents);
+}
+
+// node_modules/d3-selection/src/matcher.js
+function matcher_default(selector) {
+  return function() {
+    return this.matches(selector);
+  };
+}
+function childMatcher(selector) {
+  return function(node) {
+    return node.matches(selector);
+  };
+}
+
+// node_modules/d3-selection/src/selection/selectChild.js
+var find = Array.prototype.find;
+function childFind(match) {
+  return function() {
+    return find.call(this.children, match);
+  };
+}
+function childFirst() {
+  return this.firstElementChild;
+}
+function selectChild_default(match) {
+  return this.select(match == null ? childFirst : childFind(typeof match === "function" ? match : childMatcher(match)));
+}
+
+// node_modules/d3-selection/src/selection/selectChildren.js
+var filter = Array.prototype.filter;
+function children() {
+  return Array.from(this.children);
+}
+function childrenFilter(match) {
+  return function() {
+    return filter.call(this.children, match);
+  };
+}
+function selectChildren_default(match) {
+  return this.selectAll(match == null ? children : childrenFilter(typeof match === "function" ? match : childMatcher(match)));
+}
+
+// node_modules/d3-selection/src/selection/filter.js
+function filter_default(match) {
+  if (typeof match !== "function")
+    match = matcher_default(match);
+  for (var groups = this._groups, m4 = groups.length, subgroups = new Array(m4), j3 = 0; j3 < m4; ++j3) {
+    for (var group = groups[j3], n2 = group.length, subgroup = subgroups[j3] = [], node, i4 = 0; i4 < n2; ++i4) {
+      if ((node = group[i4]) && match.call(node, node.__data__, i4, group)) {
+        subgroup.push(node);
+      }
+    }
+  }
+  return new Selection(subgroups, this._parents);
+}
+
+// node_modules/d3-selection/src/selection/sparse.js
+function sparse_default(update) {
+  return new Array(update.length);
+}
+
+// node_modules/d3-selection/src/selection/enter.js
+function enter_default() {
+  return new Selection(this._enter || this._groups.map(sparse_default), this._parents);
+}
+function EnterNode(parent, datum2) {
+  this.ownerDocument = parent.ownerDocument;
+  this.namespaceURI = parent.namespaceURI;
+  this._next = null;
+  this._parent = parent;
+  this.__data__ = datum2;
+}
+EnterNode.prototype = {
+  constructor: EnterNode,
+  appendChild: function(child) {
+    return this._parent.insertBefore(child, this._next);
+  },
+  insertBefore: function(child, next) {
+    return this._parent.insertBefore(child, next);
+  },
+  querySelector: function(selector) {
+    return this._parent.querySelector(selector);
+  },
+  querySelectorAll: function(selector) {
+    return this._parent.querySelectorAll(selector);
+  }
+};
+
+// node_modules/d3-selection/src/constant.js
+function constant_default(x4) {
+  return function() {
+    return x4;
+  };
+}
+
+// node_modules/d3-selection/src/selection/data.js
+function bindIndex(parent, group, enter, update, exit, data) {
+  var i4 = 0, node, groupLength = group.length, dataLength = data.length;
+  for (; i4 < dataLength; ++i4) {
+    if (node = group[i4]) {
+      node.__data__ = data[i4];
+      update[i4] = node;
+    } else {
+      enter[i4] = new EnterNode(parent, data[i4]);
+    }
+  }
+  for (; i4 < groupLength; ++i4) {
+    if (node = group[i4]) {
+      exit[i4] = node;
+    }
+  }
+}
+function bindKey(parent, group, enter, update, exit, data, key2) {
+  var i4, node, nodeByKeyValue = /* @__PURE__ */ new Map(), groupLength = group.length, dataLength = data.length, keyValues = new Array(groupLength), keyValue;
+  for (i4 = 0; i4 < groupLength; ++i4) {
+    if (node = group[i4]) {
+      keyValues[i4] = keyValue = key2.call(node, node.__data__, i4, group) + "";
+      if (nodeByKeyValue.has(keyValue)) {
+        exit[i4] = node;
+      } else {
+        nodeByKeyValue.set(keyValue, node);
+      }
+    }
+  }
+  for (i4 = 0; i4 < dataLength; ++i4) {
+    keyValue = key2.call(parent, data[i4], i4, data) + "";
+    if (node = nodeByKeyValue.get(keyValue)) {
+      update[i4] = node;
+      node.__data__ = data[i4];
+      nodeByKeyValue.delete(keyValue);
+    } else {
+      enter[i4] = new EnterNode(parent, data[i4]);
+    }
+  }
+  for (i4 = 0; i4 < groupLength; ++i4) {
+    if ((node = group[i4]) && nodeByKeyValue.get(keyValues[i4]) === node) {
+      exit[i4] = node;
+    }
+  }
+}
+function datum(node) {
+  return node.__data__;
+}
+function data_default(value, key2) {
+  if (!arguments.length)
+    return Array.from(this, datum);
+  var bind = key2 ? bindKey : bindIndex, parents = this._parents, groups = this._groups;
+  if (typeof value !== "function")
+    value = constant_default(value);
+  for (var m4 = groups.length, update = new Array(m4), enter = new Array(m4), exit = new Array(m4), j3 = 0; j3 < m4; ++j3) {
+    var parent = parents[j3], group = groups[j3], groupLength = group.length, data = arraylike(value.call(parent, parent && parent.__data__, j3, parents)), dataLength = data.length, enterGroup = enter[j3] = new Array(dataLength), updateGroup = update[j3] = new Array(dataLength), exitGroup = exit[j3] = new Array(groupLength);
+    bind(parent, group, enterGroup, updateGroup, exitGroup, data, key2);
+    for (var i0 = 0, i1 = 0, previous, next; i0 < dataLength; ++i0) {
+      if (previous = enterGroup[i0]) {
+        if (i0 >= i1)
+          i1 = i0 + 1;
+        while (!(next = updateGroup[i1]) && ++i1 < dataLength)
+          ;
+        previous._next = next || null;
+      }
+    }
+  }
+  update = new Selection(update, parents);
+  update._enter = enter;
+  update._exit = exit;
+  return update;
+}
+function arraylike(data) {
+  return typeof data === "object" && "length" in data ? data : Array.from(data);
+}
+
+// node_modules/d3-selection/src/selection/exit.js
+function exit_default() {
+  return new Selection(this._exit || this._groups.map(sparse_default), this._parents);
+}
+
+// node_modules/d3-selection/src/selection/join.js
+function join_default(onenter, onupdate, onexit) {
+  var enter = this.enter(), update = this, exit = this.exit();
+  if (typeof onenter === "function") {
+    enter = onenter(enter);
+    if (enter)
+      enter = enter.selection();
+  } else {
+    enter = enter.append(onenter + "");
+  }
+  if (onupdate != null) {
+    update = onupdate(update);
+    if (update)
+      update = update.selection();
+  }
+  if (onexit == null)
+    exit.remove();
+  else
+    onexit(exit);
+  return enter && update ? enter.merge(update).order() : update;
+}
+
+// node_modules/d3-selection/src/selection/merge.js
+function merge_default(context) {
+  var selection2 = context.selection ? context.selection() : context;
+  for (var groups0 = this._groups, groups1 = selection2._groups, m0 = groups0.length, m1 = groups1.length, m4 = Math.min(m0, m1), merges = new Array(m0), j3 = 0; j3 < m4; ++j3) {
+    for (var group0 = groups0[j3], group1 = groups1[j3], n2 = group0.length, merge = merges[j3] = new Array(n2), node, i4 = 0; i4 < n2; ++i4) {
+      if (node = group0[i4] || group1[i4]) {
+        merge[i4] = node;
+      }
+    }
+  }
+  for (; j3 < m0; ++j3) {
+    merges[j3] = groups0[j3];
+  }
+  return new Selection(merges, this._parents);
+}
+
+// node_modules/d3-selection/src/selection/order.js
+function order_default() {
+  for (var groups = this._groups, j3 = -1, m4 = groups.length; ++j3 < m4; ) {
+    for (var group = groups[j3], i4 = group.length - 1, next = group[i4], node; --i4 >= 0; ) {
+      if (node = group[i4]) {
+        if (next && node.compareDocumentPosition(next) ^ 4)
+          next.parentNode.insertBefore(node, next);
+        next = node;
+      }
+    }
+  }
+  return this;
+}
+
+// node_modules/d3-selection/src/selection/sort.js
+function sort_default(compare) {
+  if (!compare)
+    compare = ascending;
+  function compareNode(a4, b) {
+    return a4 && b ? compare(a4.__data__, b.__data__) : !a4 - !b;
+  }
+  for (var groups = this._groups, m4 = groups.length, sortgroups = new Array(m4), j3 = 0; j3 < m4; ++j3) {
+    for (var group = groups[j3], n2 = group.length, sortgroup = sortgroups[j3] = new Array(n2), node, i4 = 0; i4 < n2; ++i4) {
+      if (node = group[i4]) {
+        sortgroup[i4] = node;
+      }
+    }
+    sortgroup.sort(compareNode);
+  }
+  return new Selection(sortgroups, this._parents).order();
+}
+function ascending(a4, b) {
+  return a4 < b ? -1 : a4 > b ? 1 : a4 >= b ? 0 : NaN;
+}
+
+// node_modules/d3-selection/src/selection/call.js
+function call_default() {
+  var callback = arguments[0];
+  arguments[0] = this;
+  callback.apply(null, arguments);
+  return this;
+}
+
+// node_modules/d3-selection/src/selection/nodes.js
+function nodes_default() {
+  return Array.from(this);
+}
+
+// node_modules/d3-selection/src/selection/node.js
+function node_default() {
+  for (var groups = this._groups, j3 = 0, m4 = groups.length; j3 < m4; ++j3) {
+    for (var group = groups[j3], i4 = 0, n2 = group.length; i4 < n2; ++i4) {
+      var node = group[i4];
+      if (node)
+        return node;
+    }
+  }
+  return null;
+}
+
+// node_modules/d3-selection/src/selection/size.js
+function size_default() {
+  let size = 0;
+  for (const node of this)
+    ++size;
+  return size;
+}
+
+// node_modules/d3-selection/src/selection/empty.js
+function empty_default() {
+  return !this.node();
+}
+
+// node_modules/d3-selection/src/selection/each.js
+function each_default(callback) {
+  for (var groups = this._groups, j3 = 0, m4 = groups.length; j3 < m4; ++j3) {
+    for (var group = groups[j3], i4 = 0, n2 = group.length, node; i4 < n2; ++i4) {
+      if (node = group[i4])
+        callback.call(node, node.__data__, i4, group);
+    }
+  }
+  return this;
+}
+
+// node_modules/d3-selection/src/selection/attr.js
+function attrRemove(name) {
+  return function() {
+    this.removeAttribute(name);
+  };
+}
+function attrRemoveNS(fullname) {
+  return function() {
+    this.removeAttributeNS(fullname.space, fullname.local);
+  };
+}
+function attrConstant(name, value) {
+  return function() {
+    this.setAttribute(name, value);
+  };
+}
+function attrConstantNS(fullname, value) {
+  return function() {
+    this.setAttributeNS(fullname.space, fullname.local, value);
+  };
+}
+function attrFunction(name, value) {
+  return function() {
+    var v3 = value.apply(this, arguments);
+    if (v3 == null)
+      this.removeAttribute(name);
+    else
+      this.setAttribute(name, v3);
+  };
+}
+function attrFunctionNS(fullname, value) {
+  return function() {
+    var v3 = value.apply(this, arguments);
+    if (v3 == null)
+      this.removeAttributeNS(fullname.space, fullname.local);
+    else
+      this.setAttributeNS(fullname.space, fullname.local, v3);
+  };
+}
+function attr_default(name, value) {
+  var fullname = namespace_default(name);
+  if (arguments.length < 2) {
+    var node = this.node();
+    return fullname.local ? node.getAttributeNS(fullname.space, fullname.local) : node.getAttribute(fullname);
+  }
+  return this.each((value == null ? fullname.local ? attrRemoveNS : attrRemove : typeof value === "function" ? fullname.local ? attrFunctionNS : attrFunction : fullname.local ? attrConstantNS : attrConstant)(fullname, value));
+}
+
+// node_modules/d3-selection/src/window.js
+function window_default(node) {
+  return node.ownerDocument && node.ownerDocument.defaultView || node.document && node || node.defaultView;
+}
+
+// node_modules/d3-selection/src/selection/style.js
+function styleRemove(name) {
+  return function() {
+    this.style.removeProperty(name);
+  };
+}
+function styleConstant(name, value, priority) {
+  return function() {
+    this.style.setProperty(name, value, priority);
+  };
+}
+function styleFunction(name, value, priority) {
+  return function() {
+    var v3 = value.apply(this, arguments);
+    if (v3 == null)
+      this.style.removeProperty(name);
+    else
+      this.style.setProperty(name, v3, priority);
+  };
+}
+function style_default(name, value, priority) {
+  return arguments.length > 1 ? this.each((value == null ? styleRemove : typeof value === "function" ? styleFunction : styleConstant)(name, value, priority == null ? "" : priority)) : styleValue(this.node(), name);
+}
+function styleValue(node, name) {
+  return node.style.getPropertyValue(name) || window_default(node).getComputedStyle(node, null).getPropertyValue(name);
+}
+
+// node_modules/d3-selection/src/selection/property.js
+function propertyRemove(name) {
+  return function() {
+    delete this[name];
+  };
+}
+function propertyConstant(name, value) {
+  return function() {
+    this[name] = value;
+  };
+}
+function propertyFunction(name, value) {
+  return function() {
+    var v3 = value.apply(this, arguments);
+    if (v3 == null)
+      delete this[name];
+    else
+      this[name] = v3;
+  };
+}
+function property_default(name, value) {
+  return arguments.length > 1 ? this.each((value == null ? propertyRemove : typeof value === "function" ? propertyFunction : propertyConstant)(name, value)) : this.node()[name];
+}
+
+// node_modules/d3-selection/src/selection/classed.js
+function classArray(string) {
+  return string.trim().split(/^|\s+/);
+}
+function classList(node) {
+  return node.classList || new ClassList(node);
+}
+function ClassList(node) {
+  this._node = node;
+  this._names = classArray(node.getAttribute("class") || "");
+}
+ClassList.prototype = {
+  add: function(name) {
+    var i4 = this._names.indexOf(name);
+    if (i4 < 0) {
+      this._names.push(name);
+      this._node.setAttribute("class", this._names.join(" "));
+    }
+  },
+  remove: function(name) {
+    var i4 = this._names.indexOf(name);
+    if (i4 >= 0) {
+      this._names.splice(i4, 1);
+      this._node.setAttribute("class", this._names.join(" "));
+    }
+  },
+  contains: function(name) {
+    return this._names.indexOf(name) >= 0;
+  }
+};
+function classedAdd(node, names) {
+  var list2 = classList(node), i4 = -1, n2 = names.length;
+  while (++i4 < n2)
+    list2.add(names[i4]);
+}
+function classedRemove(node, names) {
+  var list2 = classList(node), i4 = -1, n2 = names.length;
+  while (++i4 < n2)
+    list2.remove(names[i4]);
+}
+function classedTrue(names) {
+  return function() {
+    classedAdd(this, names);
+  };
+}
+function classedFalse(names) {
+  return function() {
+    classedRemove(this, names);
+  };
+}
+function classedFunction(names, value) {
+  return function() {
+    (value.apply(this, arguments) ? classedAdd : classedRemove)(this, names);
+  };
+}
+function classed_default(name, value) {
+  var names = classArray(name + "");
+  if (arguments.length < 2) {
+    var list2 = classList(this.node()), i4 = -1, n2 = names.length;
+    while (++i4 < n2)
+      if (!list2.contains(names[i4]))
+        return false;
+    return true;
+  }
+  return this.each((typeof value === "function" ? classedFunction : value ? classedTrue : classedFalse)(names, value));
+}
+
+// node_modules/d3-selection/src/selection/text.js
+function textRemove() {
+  this.textContent = "";
+}
+function textConstant(value) {
+  return function() {
+    this.textContent = value;
+  };
+}
+function textFunction(value) {
+  return function() {
+    var v3 = value.apply(this, arguments);
+    this.textContent = v3 == null ? "" : v3;
+  };
+}
+function text_default(value) {
+  return arguments.length ? this.each(value == null ? textRemove : (typeof value === "function" ? textFunction : textConstant)(value)) : this.node().textContent;
+}
+
+// node_modules/d3-selection/src/selection/html.js
+function htmlRemove() {
+  this.innerHTML = "";
+}
+function htmlConstant(value) {
+  return function() {
+    this.innerHTML = value;
+  };
+}
+function htmlFunction(value) {
+  return function() {
+    var v3 = value.apply(this, arguments);
+    this.innerHTML = v3 == null ? "" : v3;
+  };
+}
+function html_default(value) {
+  return arguments.length ? this.each(value == null ? htmlRemove : (typeof value === "function" ? htmlFunction : htmlConstant)(value)) : this.node().innerHTML;
+}
+
+// node_modules/d3-selection/src/selection/raise.js
+function raise() {
+  if (this.nextSibling)
+    this.parentNode.appendChild(this);
+}
+function raise_default() {
+  return this.each(raise);
+}
+
+// node_modules/d3-selection/src/selection/lower.js
+function lower() {
+  if (this.previousSibling)
+    this.parentNode.insertBefore(this, this.parentNode.firstChild);
+}
+function lower_default() {
+  return this.each(lower);
+}
+
+// node_modules/d3-selection/src/selection/append.js
+function append_default(name) {
+  var create2 = typeof name === "function" ? name : creator_default(name);
+  return this.select(function() {
+    return this.appendChild(create2.apply(this, arguments));
+  });
+}
+
+// node_modules/d3-selection/src/selection/insert.js
+function constantNull() {
+  return null;
+}
+function insert_default(name, before) {
+  var create2 = typeof name === "function" ? name : creator_default(name), select = before == null ? constantNull : typeof before === "function" ? before : selector_default(before);
+  return this.select(function() {
+    return this.insertBefore(create2.apply(this, arguments), select.apply(this, arguments) || null);
+  });
+}
+
+// node_modules/d3-selection/src/selection/remove.js
+function remove() {
+  var parent = this.parentNode;
+  if (parent)
+    parent.removeChild(this);
+}
+function remove_default() {
+  return this.each(remove);
+}
+
+// node_modules/d3-selection/src/selection/clone.js
+function selection_cloneShallow() {
+  var clone = this.cloneNode(false), parent = this.parentNode;
+  return parent ? parent.insertBefore(clone, this.nextSibling) : clone;
+}
+function selection_cloneDeep() {
+  var clone = this.cloneNode(true), parent = this.parentNode;
+  return parent ? parent.insertBefore(clone, this.nextSibling) : clone;
+}
+function clone_default(deep) {
+  return this.select(deep ? selection_cloneDeep : selection_cloneShallow);
+}
+
+// node_modules/d3-selection/src/selection/datum.js
+function datum_default(value) {
+  return arguments.length ? this.property("__data__", value) : this.node().__data__;
+}
+
+// node_modules/d3-selection/src/selection/on.js
+function contextListener(listener) {
+  return function(event) {
+    listener.call(this, event, this.__data__);
+  };
+}
+function parseTypenames2(typenames) {
+  return typenames.trim().split(/^|\s+/).map(function(t3) {
+    var name = "", i4 = t3.indexOf(".");
+    if (i4 >= 0)
+      name = t3.slice(i4 + 1), t3 = t3.slice(0, i4);
+    return { type: t3, name };
+  });
+}
+function onRemove(typename) {
+  return function() {
+    var on = this.__on;
+    if (!on)
+      return;
+    for (var j3 = 0, i4 = -1, m4 = on.length, o3; j3 < m4; ++j3) {
+      if (o3 = on[j3], (!typename.type || o3.type === typename.type) && o3.name === typename.name) {
+        this.removeEventListener(o3.type, o3.listener, o3.options);
+      } else {
+        on[++i4] = o3;
+      }
+    }
+    if (++i4)
+      on.length = i4;
+    else
+      delete this.__on;
+  };
+}
+function onAdd(typename, value, options2) {
+  return function() {
+    var on = this.__on, o3, listener = contextListener(value);
+    if (on)
+      for (var j3 = 0, m4 = on.length; j3 < m4; ++j3) {
+        if ((o3 = on[j3]).type === typename.type && o3.name === typename.name) {
+          this.removeEventListener(o3.type, o3.listener, o3.options);
+          this.addEventListener(o3.type, o3.listener = listener, o3.options = options2);
+          o3.value = value;
+          return;
+        }
+      }
+    this.addEventListener(typename.type, listener, options2);
+    o3 = { type: typename.type, name: typename.name, value, listener, options: options2 };
+    if (!on)
+      this.__on = [o3];
+    else
+      on.push(o3);
+  };
+}
+function on_default(typename, value, options2) {
+  var typenames = parseTypenames2(typename + ""), i4, n2 = typenames.length, t3;
+  if (arguments.length < 2) {
+    var on = this.node().__on;
+    if (on)
+      for (var j3 = 0, m4 = on.length, o3; j3 < m4; ++j3) {
+        for (i4 = 0, o3 = on[j3]; i4 < n2; ++i4) {
+          if ((t3 = typenames[i4]).type === o3.type && t3.name === o3.name) {
+            return o3.value;
+          }
+        }
+      }
+    return;
+  }
+  on = value ? onAdd : onRemove;
+  for (i4 = 0; i4 < n2; ++i4)
+    this.each(on(typenames[i4], value, options2));
+  return this;
+}
+
+// node_modules/d3-selection/src/selection/dispatch.js
+function dispatchEvent(node, type2, params) {
+  var window2 = window_default(node), event = window2.CustomEvent;
+  if (typeof event === "function") {
+    event = new event(type2, params);
+  } else {
+    event = window2.document.createEvent("Event");
+    if (params)
+      event.initEvent(type2, params.bubbles, params.cancelable), event.detail = params.detail;
+    else
+      event.initEvent(type2, false, false);
+  }
+  node.dispatchEvent(event);
+}
+function dispatchConstant(type2, params) {
+  return function() {
+    return dispatchEvent(this, type2, params);
+  };
+}
+function dispatchFunction(type2, params) {
+  return function() {
+    return dispatchEvent(this, type2, params.apply(this, arguments));
+  };
+}
+function dispatch_default2(type2, params) {
+  return this.each((typeof params === "function" ? dispatchFunction : dispatchConstant)(type2, params));
+}
+
+// node_modules/d3-selection/src/selection/iterator.js
+function* iterator_default() {
+  for (var groups = this._groups, j3 = 0, m4 = groups.length; j3 < m4; ++j3) {
+    for (var group = groups[j3], i4 = 0, n2 = group.length, node; i4 < n2; ++i4) {
+      if (node = group[i4])
+        yield node;
+    }
+  }
+}
+
+// node_modules/d3-selection/src/selection/index.js
+var root = [null];
+function Selection(groups, parents) {
+  this._groups = groups;
+  this._parents = parents;
+}
+function selection() {
+  return new Selection([[document.documentElement]], root);
+}
+function selection_selection() {
+  return this;
+}
+Selection.prototype = selection.prototype = {
+  constructor: Selection,
+  select: select_default,
+  selectAll: selectAll_default,
+  selectChild: selectChild_default,
+  selectChildren: selectChildren_default,
+  filter: filter_default,
+  data: data_default,
+  enter: enter_default,
+  exit: exit_default,
+  join: join_default,
+  merge: merge_default,
+  selection: selection_selection,
+  order: order_default,
+  sort: sort_default,
+  call: call_default,
+  nodes: nodes_default,
+  node: node_default,
+  size: size_default,
+  empty: empty_default,
+  each: each_default,
+  attr: attr_default,
+  style: style_default,
+  property: property_default,
+  classed: classed_default,
+  text: text_default,
+  html: html_default,
+  raise: raise_default,
+  lower: lower_default,
+  append: append_default,
+  insert: insert_default,
+  remove: remove_default,
+  clone: clone_default,
+  datum: datum_default,
+  on: on_default,
+  dispatch: dispatch_default2,
+  [Symbol.iterator]: iterator_default
+};
+var selection_default = selection;
+
+// node_modules/d3-selection/src/select.js
+function select_default2(selector) {
+  return typeof selector === "string" ? new Selection([[document.querySelector(selector)]], [document.documentElement]) : new Selection([[selector]], root);
+}
+
+// node_modules/d3-selection/src/sourceEvent.js
+function sourceEvent_default(event) {
+  let sourceEvent;
+  while (sourceEvent = event.sourceEvent)
+    event = sourceEvent;
+  return event;
+}
+
+// node_modules/d3-selection/src/pointer.js
+function pointer_default(event, node) {
+  event = sourceEvent_default(event);
+  if (node === void 0)
+    node = event.currentTarget;
+  if (node) {
+    var svg = node.ownerSVGElement || node;
+    if (svg.createSVGPoint) {
+      var point = svg.createSVGPoint();
+      point.x = event.clientX, point.y = event.clientY;
+      point = point.matrixTransform(node.getScreenCTM().inverse());
+      return [point.x, point.y];
+    }
+    if (node.getBoundingClientRect) {
+      var rect = node.getBoundingClientRect();
+      return [event.clientX - rect.left - node.clientLeft, event.clientY - rect.top - node.clientTop];
+    }
+  }
+  return [event.pageX, event.pageY];
+}
+
+// node_modules/d3-drag/src/noevent.js
+var nonpassivecapture = { capture: true, passive: false };
+function noevent_default(event) {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
+// node_modules/d3-drag/src/nodrag.js
+function nodrag_default(view) {
+  var root2 = view.document.documentElement, selection2 = select_default2(view).on("dragstart.drag", noevent_default, nonpassivecapture);
+  if ("onselectstart" in root2) {
+    selection2.on("selectstart.drag", noevent_default, nonpassivecapture);
+  } else {
+    root2.__noselect = root2.style.MozUserSelect;
+    root2.style.MozUserSelect = "none";
+  }
+}
+function yesdrag(view, noclick) {
+  var root2 = view.document.documentElement, selection2 = select_default2(view).on("dragstart.drag", null);
+  if (noclick) {
+    selection2.on("click.drag", noevent_default, nonpassivecapture);
+    setTimeout(function() {
+      selection2.on("click.drag", null);
+    }, 0);
+  }
+  if ("onselectstart" in root2) {
+    selection2.on("selectstart.drag", null);
+  } else {
+    root2.style.MozUserSelect = root2.__noselect;
+    delete root2.__noselect;
+  }
+}
+
+// node_modules/d3-color/src/define.js
+function define_default(constructor, factory, prototype) {
+  constructor.prototype = factory.prototype = prototype;
+  prototype.constructor = constructor;
+}
+function extend(parent, definition) {
+  var prototype = Object.create(parent.prototype);
+  for (var key2 in definition)
+    prototype[key2] = definition[key2];
+  return prototype;
+}
+
+// node_modules/d3-color/src/color.js
+function Color() {
+}
+var darker = 0.7;
+var brighter = 1 / darker;
+var reI = "\\s*([+-]?\\d+)\\s*";
+var reN = "\\s*([+-]?(?:\\d*\\.)?\\d+(?:[eE][+-]?\\d+)?)\\s*";
+var reP = "\\s*([+-]?(?:\\d*\\.)?\\d+(?:[eE][+-]?\\d+)?)%\\s*";
+var reHex = /^#([0-9a-f]{3,8})$/;
+var reRgbInteger = new RegExp(`^rgb\\(${reI},${reI},${reI}\\)$`);
+var reRgbPercent = new RegExp(`^rgb\\(${reP},${reP},${reP}\\)$`);
+var reRgbaInteger = new RegExp(`^rgba\\(${reI},${reI},${reI},${reN}\\)$`);
+var reRgbaPercent = new RegExp(`^rgba\\(${reP},${reP},${reP},${reN}\\)$`);
+var reHslPercent = new RegExp(`^hsl\\(${reN},${reP},${reP}\\)$`);
+var reHslaPercent = new RegExp(`^hsla\\(${reN},${reP},${reP},${reN}\\)$`);
+var named = {
+  aliceblue: 15792383,
+  antiquewhite: 16444375,
+  aqua: 65535,
+  aquamarine: 8388564,
+  azure: 15794175,
+  beige: 16119260,
+  bisque: 16770244,
+  black: 0,
+  blanchedalmond: 16772045,
+  blue: 255,
+  blueviolet: 9055202,
+  brown: 10824234,
+  burlywood: 14596231,
+  cadetblue: 6266528,
+  chartreuse: 8388352,
+  chocolate: 13789470,
+  coral: 16744272,
+  cornflowerblue: 6591981,
+  cornsilk: 16775388,
+  crimson: 14423100,
+  cyan: 65535,
+  darkblue: 139,
+  darkcyan: 35723,
+  darkgoldenrod: 12092939,
+  darkgray: 11119017,
+  darkgreen: 25600,
+  darkgrey: 11119017,
+  darkkhaki: 12433259,
+  darkmagenta: 9109643,
+  darkolivegreen: 5597999,
+  darkorange: 16747520,
+  darkorchid: 10040012,
+  darkred: 9109504,
+  darksalmon: 15308410,
+  darkseagreen: 9419919,
+  darkslateblue: 4734347,
+  darkslategray: 3100495,
+  darkslategrey: 3100495,
+  darkturquoise: 52945,
+  darkviolet: 9699539,
+  deeppink: 16716947,
+  deepskyblue: 49151,
+  dimgray: 6908265,
+  dimgrey: 6908265,
+  dodgerblue: 2003199,
+  firebrick: 11674146,
+  floralwhite: 16775920,
+  forestgreen: 2263842,
+  fuchsia: 16711935,
+  gainsboro: 14474460,
+  ghostwhite: 16316671,
+  gold: 16766720,
+  goldenrod: 14329120,
+  gray: 8421504,
+  green: 32768,
+  greenyellow: 11403055,
+  grey: 8421504,
+  honeydew: 15794160,
+  hotpink: 16738740,
+  indianred: 13458524,
+  indigo: 4915330,
+  ivory: 16777200,
+  khaki: 15787660,
+  lavender: 15132410,
+  lavenderblush: 16773365,
+  lawngreen: 8190976,
+  lemonchiffon: 16775885,
+  lightblue: 11393254,
+  lightcoral: 15761536,
+  lightcyan: 14745599,
+  lightgoldenrodyellow: 16448210,
+  lightgray: 13882323,
+  lightgreen: 9498256,
+  lightgrey: 13882323,
+  lightpink: 16758465,
+  lightsalmon: 16752762,
+  lightseagreen: 2142890,
+  lightskyblue: 8900346,
+  lightslategray: 7833753,
+  lightslategrey: 7833753,
+  lightsteelblue: 11584734,
+  lightyellow: 16777184,
+  lime: 65280,
+  limegreen: 3329330,
+  linen: 16445670,
+  magenta: 16711935,
+  maroon: 8388608,
+  mediumaquamarine: 6737322,
+  mediumblue: 205,
+  mediumorchid: 12211667,
+  mediumpurple: 9662683,
+  mediumseagreen: 3978097,
+  mediumslateblue: 8087790,
+  mediumspringgreen: 64154,
+  mediumturquoise: 4772300,
+  mediumvioletred: 13047173,
+  midnightblue: 1644912,
+  mintcream: 16121850,
+  mistyrose: 16770273,
+  moccasin: 16770229,
+  navajowhite: 16768685,
+  navy: 128,
+  oldlace: 16643558,
+  olive: 8421376,
+  olivedrab: 7048739,
+  orange: 16753920,
+  orangered: 16729344,
+  orchid: 14315734,
+  palegoldenrod: 15657130,
+  palegreen: 10025880,
+  paleturquoise: 11529966,
+  palevioletred: 14381203,
+  papayawhip: 16773077,
+  peachpuff: 16767673,
+  peru: 13468991,
+  pink: 16761035,
+  plum: 14524637,
+  powderblue: 11591910,
+  purple: 8388736,
+  rebeccapurple: 6697881,
+  red: 16711680,
+  rosybrown: 12357519,
+  royalblue: 4286945,
+  saddlebrown: 9127187,
+  salmon: 16416882,
+  sandybrown: 16032864,
+  seagreen: 3050327,
+  seashell: 16774638,
+  sienna: 10506797,
+  silver: 12632256,
+  skyblue: 8900331,
+  slateblue: 6970061,
+  slategray: 7372944,
+  slategrey: 7372944,
+  snow: 16775930,
+  springgreen: 65407,
+  steelblue: 4620980,
+  tan: 13808780,
+  teal: 32896,
+  thistle: 14204888,
+  tomato: 16737095,
+  turquoise: 4251856,
+  violet: 15631086,
+  wheat: 16113331,
+  white: 16777215,
+  whitesmoke: 16119285,
+  yellow: 16776960,
+  yellowgreen: 10145074
+};
+define_default(Color, color, {
+  copy(channels) {
+    return Object.assign(new this.constructor(), this, channels);
+  },
+  displayable() {
+    return this.rgb().displayable();
+  },
+  hex: color_formatHex,
+  // Deprecated! Use color.formatHex.
+  formatHex: color_formatHex,
+  formatHex8: color_formatHex8,
+  formatHsl: color_formatHsl,
+  formatRgb: color_formatRgb,
+  toString: color_formatRgb
+});
+function color_formatHex() {
+  return this.rgb().formatHex();
+}
+function color_formatHex8() {
+  return this.rgb().formatHex8();
+}
+function color_formatHsl() {
+  return hslConvert(this).formatHsl();
+}
+function color_formatRgb() {
+  return this.rgb().formatRgb();
+}
+function color(format) {
+  var m4, l3;
+  format = (format + "").trim().toLowerCase();
+  return (m4 = reHex.exec(format)) ? (l3 = m4[1].length, m4 = parseInt(m4[1], 16), l3 === 6 ? rgbn(m4) : l3 === 3 ? new Rgb(m4 >> 8 & 15 | m4 >> 4 & 240, m4 >> 4 & 15 | m4 & 240, (m4 & 15) << 4 | m4 & 15, 1) : l3 === 8 ? rgba(m4 >> 24 & 255, m4 >> 16 & 255, m4 >> 8 & 255, (m4 & 255) / 255) : l3 === 4 ? rgba(m4 >> 12 & 15 | m4 >> 8 & 240, m4 >> 8 & 15 | m4 >> 4 & 240, m4 >> 4 & 15 | m4 & 240, ((m4 & 15) << 4 | m4 & 15) / 255) : null) : (m4 = reRgbInteger.exec(format)) ? new Rgb(m4[1], m4[2], m4[3], 1) : (m4 = reRgbPercent.exec(format)) ? new Rgb(m4[1] * 255 / 100, m4[2] * 255 / 100, m4[3] * 255 / 100, 1) : (m4 = reRgbaInteger.exec(format)) ? rgba(m4[1], m4[2], m4[3], m4[4]) : (m4 = reRgbaPercent.exec(format)) ? rgba(m4[1] * 255 / 100, m4[2] * 255 / 100, m4[3] * 255 / 100, m4[4]) : (m4 = reHslPercent.exec(format)) ? hsla(m4[1], m4[2] / 100, m4[3] / 100, 1) : (m4 = reHslaPercent.exec(format)) ? hsla(m4[1], m4[2] / 100, m4[3] / 100, m4[4]) : named.hasOwnProperty(format) ? rgbn(named[format]) : format === "transparent" ? new Rgb(NaN, NaN, NaN, 0) : null;
+}
+function rgbn(n2) {
+  return new Rgb(n2 >> 16 & 255, n2 >> 8 & 255, n2 & 255, 1);
+}
+function rgba(r3, g2, b, a4) {
+  if (a4 <= 0)
+    r3 = g2 = b = NaN;
+  return new Rgb(r3, g2, b, a4);
+}
+function rgbConvert(o3) {
+  if (!(o3 instanceof Color))
+    o3 = color(o3);
+  if (!o3)
+    return new Rgb();
+  o3 = o3.rgb();
+  return new Rgb(o3.r, o3.g, o3.b, o3.opacity);
+}
+function rgb(r3, g2, b, opacity) {
+  return arguments.length === 1 ? rgbConvert(r3) : new Rgb(r3, g2, b, opacity == null ? 1 : opacity);
+}
+function Rgb(r3, g2, b, opacity) {
+  this.r = +r3;
+  this.g = +g2;
+  this.b = +b;
+  this.opacity = +opacity;
+}
+define_default(Rgb, rgb, extend(Color, {
+  brighter(k3) {
+    k3 = k3 == null ? brighter : Math.pow(brighter, k3);
+    return new Rgb(this.r * k3, this.g * k3, this.b * k3, this.opacity);
+  },
+  darker(k3) {
+    k3 = k3 == null ? darker : Math.pow(darker, k3);
+    return new Rgb(this.r * k3, this.g * k3, this.b * k3, this.opacity);
+  },
+  rgb() {
+    return this;
+  },
+  clamp() {
+    return new Rgb(clampi(this.r), clampi(this.g), clampi(this.b), clampa(this.opacity));
+  },
+  displayable() {
+    return -0.5 <= this.r && this.r < 255.5 && (-0.5 <= this.g && this.g < 255.5) && (-0.5 <= this.b && this.b < 255.5) && (0 <= this.opacity && this.opacity <= 1);
+  },
+  hex: rgb_formatHex,
+  // Deprecated! Use color.formatHex.
+  formatHex: rgb_formatHex,
+  formatHex8: rgb_formatHex8,
+  formatRgb: rgb_formatRgb,
+  toString: rgb_formatRgb
+}));
+function rgb_formatHex() {
+  return `#${hex(this.r)}${hex(this.g)}${hex(this.b)}`;
+}
+function rgb_formatHex8() {
+  return `#${hex(this.r)}${hex(this.g)}${hex(this.b)}${hex((isNaN(this.opacity) ? 1 : this.opacity) * 255)}`;
+}
+function rgb_formatRgb() {
+  const a4 = clampa(this.opacity);
+  return `${a4 === 1 ? "rgb(" : "rgba("}${clampi(this.r)}, ${clampi(this.g)}, ${clampi(this.b)}${a4 === 1 ? ")" : `, ${a4})`}`;
+}
+function clampa(opacity) {
+  return isNaN(opacity) ? 1 : Math.max(0, Math.min(1, opacity));
+}
+function clampi(value) {
+  return Math.max(0, Math.min(255, Math.round(value) || 0));
+}
+function hex(value) {
+  value = clampi(value);
+  return (value < 16 ? "0" : "") + value.toString(16);
+}
+function hsla(h3, s3, l3, a4) {
+  if (a4 <= 0)
+    h3 = s3 = l3 = NaN;
+  else if (l3 <= 0 || l3 >= 1)
+    h3 = s3 = NaN;
+  else if (s3 <= 0)
+    h3 = NaN;
+  return new Hsl(h3, s3, l3, a4);
+}
+function hslConvert(o3) {
+  if (o3 instanceof Hsl)
+    return new Hsl(o3.h, o3.s, o3.l, o3.opacity);
+  if (!(o3 instanceof Color))
+    o3 = color(o3);
+  if (!o3)
+    return new Hsl();
+  if (o3 instanceof Hsl)
+    return o3;
+  o3 = o3.rgb();
+  var r3 = o3.r / 255, g2 = o3.g / 255, b = o3.b / 255, min2 = Math.min(r3, g2, b), max3 = Math.max(r3, g2, b), h3 = NaN, s3 = max3 - min2, l3 = (max3 + min2) / 2;
+  if (s3) {
+    if (r3 === max3)
+      h3 = (g2 - b) / s3 + (g2 < b) * 6;
+    else if (g2 === max3)
+      h3 = (b - r3) / s3 + 2;
+    else
+      h3 = (r3 - g2) / s3 + 4;
+    s3 /= l3 < 0.5 ? max3 + min2 : 2 - max3 - min2;
+    h3 *= 60;
+  } else {
+    s3 = l3 > 0 && l3 < 1 ? 0 : h3;
+  }
+  return new Hsl(h3, s3, l3, o3.opacity);
+}
+function hsl(h3, s3, l3, opacity) {
+  return arguments.length === 1 ? hslConvert(h3) : new Hsl(h3, s3, l3, opacity == null ? 1 : opacity);
+}
+function Hsl(h3, s3, l3, opacity) {
+  this.h = +h3;
+  this.s = +s3;
+  this.l = +l3;
+  this.opacity = +opacity;
+}
+define_default(Hsl, hsl, extend(Color, {
+  brighter(k3) {
+    k3 = k3 == null ? brighter : Math.pow(brighter, k3);
+    return new Hsl(this.h, this.s, this.l * k3, this.opacity);
+  },
+  darker(k3) {
+    k3 = k3 == null ? darker : Math.pow(darker, k3);
+    return new Hsl(this.h, this.s, this.l * k3, this.opacity);
+  },
+  rgb() {
+    var h3 = this.h % 360 + (this.h < 0) * 360, s3 = isNaN(h3) || isNaN(this.s) ? 0 : this.s, l3 = this.l, m22 = l3 + (l3 < 0.5 ? l3 : 1 - l3) * s3, m1 = 2 * l3 - m22;
+    return new Rgb(
+      hsl2rgb(h3 >= 240 ? h3 - 240 : h3 + 120, m1, m22),
+      hsl2rgb(h3, m1, m22),
+      hsl2rgb(h3 < 120 ? h3 + 240 : h3 - 120, m1, m22),
+      this.opacity
+    );
+  },
+  clamp() {
+    return new Hsl(clamph(this.h), clampt(this.s), clampt(this.l), clampa(this.opacity));
+  },
+  displayable() {
+    return (0 <= this.s && this.s <= 1 || isNaN(this.s)) && (0 <= this.l && this.l <= 1) && (0 <= this.opacity && this.opacity <= 1);
+  },
+  formatHsl() {
+    const a4 = clampa(this.opacity);
+    return `${a4 === 1 ? "hsl(" : "hsla("}${clamph(this.h)}, ${clampt(this.s) * 100}%, ${clampt(this.l) * 100}%${a4 === 1 ? ")" : `, ${a4})`}`;
+  }
+}));
+function clamph(value) {
+  value = (value || 0) % 360;
+  return value < 0 ? value + 360 : value;
+}
+function clampt(value) {
+  return Math.max(0, Math.min(1, value || 0));
+}
+function hsl2rgb(h3, m1, m22) {
+  return (h3 < 60 ? m1 + (m22 - m1) * h3 / 60 : h3 < 180 ? m22 : h3 < 240 ? m1 + (m22 - m1) * (240 - h3) / 60 : m1) * 255;
+}
+
+// node_modules/d3-interpolate/src/basis.js
+function basis(t1, v0, v1, v22, v3) {
+  var t22 = t1 * t1, t3 = t22 * t1;
+  return ((1 - 3 * t1 + 3 * t22 - t3) * v0 + (4 - 6 * t22 + 3 * t3) * v1 + (1 + 3 * t1 + 3 * t22 - 3 * t3) * v22 + t3 * v3) / 6;
+}
+function basis_default(values) {
+  var n2 = values.length - 1;
+  return function(t3) {
+    var i4 = t3 <= 0 ? t3 = 0 : t3 >= 1 ? (t3 = 1, n2 - 1) : Math.floor(t3 * n2), v1 = values[i4], v22 = values[i4 + 1], v0 = i4 > 0 ? values[i4 - 1] : 2 * v1 - v22, v3 = i4 < n2 - 1 ? values[i4 + 2] : 2 * v22 - v1;
+    return basis((t3 - i4 / n2) * n2, v0, v1, v22, v3);
+  };
+}
+
+// node_modules/d3-interpolate/src/basisClosed.js
+function basisClosed_default(values) {
+  var n2 = values.length;
+  return function(t3) {
+    var i4 = Math.floor(((t3 %= 1) < 0 ? ++t3 : t3) * n2), v0 = values[(i4 + n2 - 1) % n2], v1 = values[i4 % n2], v22 = values[(i4 + 1) % n2], v3 = values[(i4 + 2) % n2];
+    return basis((t3 - i4 / n2) * n2, v0, v1, v22, v3);
+  };
+}
+
+// node_modules/d3-interpolate/src/constant.js
+var constant_default2 = (x4) => () => x4;
+
+// node_modules/d3-interpolate/src/color.js
+function linear(a4, d3) {
+  return function(t3) {
+    return a4 + t3 * d3;
+  };
+}
+function exponential(a4, b, y5) {
+  return a4 = Math.pow(a4, y5), b = Math.pow(b, y5) - a4, y5 = 1 / y5, function(t3) {
+    return Math.pow(a4 + t3 * b, y5);
+  };
+}
+function gamma(y5) {
+  return (y5 = +y5) === 1 ? nogamma : function(a4, b) {
+    return b - a4 ? exponential(a4, b, y5) : constant_default2(isNaN(a4) ? b : a4);
+  };
+}
+function nogamma(a4, b) {
+  var d3 = b - a4;
+  return d3 ? linear(a4, d3) : constant_default2(isNaN(a4) ? b : a4);
+}
+
+// node_modules/d3-interpolate/src/rgb.js
+var rgb_default = function rgbGamma(y5) {
+  var color2 = gamma(y5);
+  function rgb2(start2, end) {
+    var r3 = color2((start2 = rgb(start2)).r, (end = rgb(end)).r), g2 = color2(start2.g, end.g), b = color2(start2.b, end.b), opacity = nogamma(start2.opacity, end.opacity);
+    return function(t3) {
+      start2.r = r3(t3);
+      start2.g = g2(t3);
+      start2.b = b(t3);
+      start2.opacity = opacity(t3);
+      return start2 + "";
+    };
+  }
+  rgb2.gamma = rgbGamma;
+  return rgb2;
+}(1);
+function rgbSpline(spline) {
+  return function(colors) {
+    var n2 = colors.length, r3 = new Array(n2), g2 = new Array(n2), b = new Array(n2), i4, color2;
+    for (i4 = 0; i4 < n2; ++i4) {
+      color2 = rgb(colors[i4]);
+      r3[i4] = color2.r || 0;
+      g2[i4] = color2.g || 0;
+      b[i4] = color2.b || 0;
+    }
+    r3 = spline(r3);
+    g2 = spline(g2);
+    b = spline(b);
+    color2.opacity = 1;
+    return function(t3) {
+      color2.r = r3(t3);
+      color2.g = g2(t3);
+      color2.b = b(t3);
+      return color2 + "";
+    };
+  };
+}
+var rgbBasis = rgbSpline(basis_default);
+var rgbBasisClosed = rgbSpline(basisClosed_default);
+
+// node_modules/d3-interpolate/src/number.js
+function number_default(a4, b) {
+  return a4 = +a4, b = +b, function(t3) {
+    return a4 * (1 - t3) + b * t3;
+  };
+}
+
+// node_modules/d3-interpolate/src/string.js
+var reA = /[-+]?(?:\d+\.?\d*|\.?\d+)(?:[eE][-+]?\d+)?/g;
+var reB = new RegExp(reA.source, "g");
+function zero(b) {
+  return function() {
+    return b;
+  };
+}
+function one(b) {
+  return function(t3) {
+    return b(t3) + "";
+  };
+}
+function string_default(a4, b) {
+  var bi = reA.lastIndex = reB.lastIndex = 0, am, bm, bs, i4 = -1, s3 = [], q3 = [];
+  a4 = a4 + "", b = b + "";
+  while ((am = reA.exec(a4)) && (bm = reB.exec(b))) {
+    if ((bs = bm.index) > bi) {
+      bs = b.slice(bi, bs);
+      if (s3[i4])
+        s3[i4] += bs;
+      else
+        s3[++i4] = bs;
+    }
+    if ((am = am[0]) === (bm = bm[0])) {
+      if (s3[i4])
+        s3[i4] += bm;
+      else
+        s3[++i4] = bm;
+    } else {
+      s3[++i4] = null;
+      q3.push({ i: i4, x: number_default(am, bm) });
+    }
+    bi = reB.lastIndex;
+  }
+  if (bi < b.length) {
+    bs = b.slice(bi);
+    if (s3[i4])
+      s3[i4] += bs;
+    else
+      s3[++i4] = bs;
+  }
+  return s3.length < 2 ? q3[0] ? one(q3[0].x) : zero(b) : (b = q3.length, function(t3) {
+    for (var i5 = 0, o3; i5 < b; ++i5)
+      s3[(o3 = q3[i5]).i] = o3.x(t3);
+    return s3.join("");
+  });
+}
+
+// node_modules/d3-interpolate/src/transform/decompose.js
+var degrees = 180 / Math.PI;
+var identity = {
+  translateX: 0,
+  translateY: 0,
+  rotate: 0,
+  skewX: 0,
+  scaleX: 1,
+  scaleY: 1
+};
+function decompose_default(a4, b, c4, d3, e3, f4) {
+  var scaleX, scaleY, skewX;
+  if (scaleX = Math.sqrt(a4 * a4 + b * b))
+    a4 /= scaleX, b /= scaleX;
+  if (skewX = a4 * c4 + b * d3)
+    c4 -= a4 * skewX, d3 -= b * skewX;
+  if (scaleY = Math.sqrt(c4 * c4 + d3 * d3))
+    c4 /= scaleY, d3 /= scaleY, skewX /= scaleY;
+  if (a4 * d3 < b * c4)
+    a4 = -a4, b = -b, skewX = -skewX, scaleX = -scaleX;
+  return {
+    translateX: e3,
+    translateY: f4,
+    rotate: Math.atan2(b, a4) * degrees,
+    skewX: Math.atan(skewX) * degrees,
+    scaleX,
+    scaleY
+  };
+}
+
+// node_modules/d3-interpolate/src/transform/parse.js
+var svgNode;
+function parseCss(value) {
+  const m4 = new (typeof DOMMatrix === "function" ? DOMMatrix : WebKitCSSMatrix)(value + "");
+  return m4.isIdentity ? identity : decompose_default(m4.a, m4.b, m4.c, m4.d, m4.e, m4.f);
+}
+function parseSvg(value) {
+  if (value == null)
+    return identity;
+  if (!svgNode)
+    svgNode = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  svgNode.setAttribute("transform", value);
+  if (!(value = svgNode.transform.baseVal.consolidate()))
+    return identity;
+  value = value.matrix;
+  return decompose_default(value.a, value.b, value.c, value.d, value.e, value.f);
+}
+
+// node_modules/d3-interpolate/src/transform/index.js
+function interpolateTransform(parse2, pxComma, pxParen, degParen) {
+  function pop(s3) {
+    return s3.length ? s3.pop() + " " : "";
+  }
+  function translate(xa, ya, xb, yb, s3, q3) {
+    if (xa !== xb || ya !== yb) {
+      var i4 = s3.push("translate(", null, pxComma, null, pxParen);
+      q3.push({ i: i4 - 4, x: number_default(xa, xb) }, { i: i4 - 2, x: number_default(ya, yb) });
+    } else if (xb || yb) {
+      s3.push("translate(" + xb + pxComma + yb + pxParen);
+    }
+  }
+  function rotate(a4, b, s3, q3) {
+    if (a4 !== b) {
+      if (a4 - b > 180)
+        b += 360;
+      else if (b - a4 > 180)
+        a4 += 360;
+      q3.push({ i: s3.push(pop(s3) + "rotate(", null, degParen) - 2, x: number_default(a4, b) });
+    } else if (b) {
+      s3.push(pop(s3) + "rotate(" + b + degParen);
+    }
+  }
+  function skewX(a4, b, s3, q3) {
+    if (a4 !== b) {
+      q3.push({ i: s3.push(pop(s3) + "skewX(", null, degParen) - 2, x: number_default(a4, b) });
+    } else if (b) {
+      s3.push(pop(s3) + "skewX(" + b + degParen);
+    }
+  }
+  function scale(xa, ya, xb, yb, s3, q3) {
+    if (xa !== xb || ya !== yb) {
+      var i4 = s3.push(pop(s3) + "scale(", null, ",", null, ")");
+      q3.push({ i: i4 - 4, x: number_default(xa, xb) }, { i: i4 - 2, x: number_default(ya, yb) });
+    } else if (xb !== 1 || yb !== 1) {
+      s3.push(pop(s3) + "scale(" + xb + "," + yb + ")");
+    }
+  }
+  return function(a4, b) {
+    var s3 = [], q3 = [];
+    a4 = parse2(a4), b = parse2(b);
+    translate(a4.translateX, a4.translateY, b.translateX, b.translateY, s3, q3);
+    rotate(a4.rotate, b.rotate, s3, q3);
+    skewX(a4.skewX, b.skewX, s3, q3);
+    scale(a4.scaleX, a4.scaleY, b.scaleX, b.scaleY, s3, q3);
+    a4 = b = null;
+    return function(t3) {
+      var i4 = -1, n2 = q3.length, o3;
+      while (++i4 < n2)
+        s3[(o3 = q3[i4]).i] = o3.x(t3);
+      return s3.join("");
+    };
+  };
+}
+var interpolateTransformCss = interpolateTransform(parseCss, "px, ", "px)", "deg)");
+var interpolateTransformSvg = interpolateTransform(parseSvg, ", ", ")", ")");
+
+// node_modules/d3-interpolate/src/zoom.js
+var epsilon2 = 1e-12;
+function cosh(x4) {
+  return ((x4 = Math.exp(x4)) + 1 / x4) / 2;
+}
+function sinh(x4) {
+  return ((x4 = Math.exp(x4)) - 1 / x4) / 2;
+}
+function tanh(x4) {
+  return ((x4 = Math.exp(2 * x4)) - 1) / (x4 + 1);
+}
+var zoom_default = function zoomRho(rho, rho2, rho4) {
+  function zoom(p0, p1) {
+    var ux0 = p0[0], uy0 = p0[1], w0 = p0[2], ux1 = p1[0], uy1 = p1[1], w1 = p1[2], dx = ux1 - ux0, dy = uy1 - uy0, d22 = dx * dx + dy * dy, i4, S2;
+    if (d22 < epsilon2) {
+      S2 = Math.log(w1 / w0) / rho;
+      i4 = function(t3) {
+        return [
+          ux0 + t3 * dx,
+          uy0 + t3 * dy,
+          w0 * Math.exp(rho * t3 * S2)
+        ];
+      };
+    } else {
+      var d1 = Math.sqrt(d22), b0 = (w1 * w1 - w0 * w0 + rho4 * d22) / (2 * w0 * rho2 * d1), b1 = (w1 * w1 - w0 * w0 - rho4 * d22) / (2 * w1 * rho2 * d1), r0 = Math.log(Math.sqrt(b0 * b0 + 1) - b0), r1 = Math.log(Math.sqrt(b1 * b1 + 1) - b1);
+      S2 = (r1 - r0) / rho;
+      i4 = function(t3) {
+        var s3 = t3 * S2, coshr0 = cosh(r0), u4 = w0 / (rho2 * d1) * (coshr0 * tanh(rho * s3 + r0) - sinh(r0));
+        return [
+          ux0 + u4 * dx,
+          uy0 + u4 * dy,
+          w0 * coshr0 / cosh(rho * s3 + r0)
+        ];
+      };
+    }
+    i4.duration = S2 * 1e3 * rho / Math.SQRT2;
+    return i4;
+  }
+  zoom.rho = function(_2) {
+    var _1 = Math.max(1e-3, +_2), _22 = _1 * _1, _4 = _22 * _22;
+    return zoomRho(_1, _22, _4);
+  };
+  return zoom;
+}(Math.SQRT2, 2, 4);
+
+// node_modules/d3-timer/src/timer.js
+var frame = 0;
+var timeout = 0;
+var interval = 0;
+var pokeDelay = 1e3;
+var taskHead;
+var taskTail;
+var clockLast = 0;
+var clockNow = 0;
+var clockSkew = 0;
+var clock = typeof performance === "object" && performance.now ? performance : Date;
+var setFrame = typeof window === "object" && window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : function(f4) {
+  setTimeout(f4, 17);
+};
+function now() {
+  return clockNow || (setFrame(clearNow), clockNow = clock.now() + clockSkew);
+}
+function clearNow() {
+  clockNow = 0;
+}
+function Timer() {
+  this._call = this._time = this._next = null;
+}
+Timer.prototype = timer.prototype = {
+  constructor: Timer,
+  restart: function(callback, delay, time) {
+    if (typeof callback !== "function")
+      throw new TypeError("callback is not a function");
+    time = (time == null ? now() : +time) + (delay == null ? 0 : +delay);
+    if (!this._next && taskTail !== this) {
+      if (taskTail)
+        taskTail._next = this;
+      else
+        taskHead = this;
+      taskTail = this;
+    }
+    this._call = callback;
+    this._time = time;
+    sleep();
+  },
+  stop: function() {
+    if (this._call) {
+      this._call = null;
+      this._time = Infinity;
+      sleep();
+    }
+  }
+};
+function timer(callback, delay, time) {
+  var t3 = new Timer();
+  t3.restart(callback, delay, time);
+  return t3;
+}
+function timerFlush() {
+  now();
+  ++frame;
+  var t3 = taskHead, e3;
+  while (t3) {
+    if ((e3 = clockNow - t3._time) >= 0)
+      t3._call.call(void 0, e3);
+    t3 = t3._next;
+  }
+  --frame;
+}
+function wake() {
+  clockNow = (clockLast = clock.now()) + clockSkew;
+  frame = timeout = 0;
+  try {
+    timerFlush();
+  } finally {
+    frame = 0;
+    nap();
+    clockNow = 0;
+  }
+}
+function poke() {
+  var now2 = clock.now(), delay = now2 - clockLast;
+  if (delay > pokeDelay)
+    clockSkew -= delay, clockLast = now2;
+}
+function nap() {
+  var t0, t1 = taskHead, t22, time = Infinity;
+  while (t1) {
+    if (t1._call) {
+      if (time > t1._time)
+        time = t1._time;
+      t0 = t1, t1 = t1._next;
+    } else {
+      t22 = t1._next, t1._next = null;
+      t1 = t0 ? t0._next = t22 : taskHead = t22;
+    }
+  }
+  taskTail = t0;
+  sleep(time);
+}
+function sleep(time) {
+  if (frame)
+    return;
+  if (timeout)
+    timeout = clearTimeout(timeout);
+  var delay = time - clockNow;
+  if (delay > 24) {
+    if (time < Infinity)
+      timeout = setTimeout(wake, time - clock.now() - clockSkew);
+    if (interval)
+      interval = clearInterval(interval);
+  } else {
+    if (!interval)
+      clockLast = clock.now(), interval = setInterval(poke, pokeDelay);
+    frame = 1, setFrame(wake);
+  }
+}
+
+// node_modules/d3-timer/src/timeout.js
+function timeout_default(callback, delay, time) {
+  var t3 = new Timer();
+  delay = delay == null ? 0 : +delay;
+  t3.restart((elapsed) => {
+    t3.stop();
+    callback(elapsed + delay);
+  }, delay, time);
+  return t3;
+}
+
+// node_modules/d3-transition/src/transition/schedule.js
+var emptyOn = dispatch_default("start", "end", "cancel", "interrupt");
+var emptyTween = [];
+var CREATED = 0;
+var SCHEDULED = 1;
+var STARTING = 2;
+var STARTED = 3;
+var RUNNING = 4;
+var ENDING = 5;
+var ENDED = 6;
+function schedule_default(node, name, id2, index2, group, timing) {
+  var schedules = node.__transition;
+  if (!schedules)
+    node.__transition = {};
+  else if (id2 in schedules)
+    return;
+  create(node, id2, {
+    name,
+    index: index2,
+    // For context during callback.
+    group,
+    // For context during callback.
+    on: emptyOn,
+    tween: emptyTween,
+    time: timing.time,
+    delay: timing.delay,
+    duration: timing.duration,
+    ease: timing.ease,
+    timer: null,
+    state: CREATED
+  });
+}
+function init(node, id2) {
+  var schedule = get2(node, id2);
+  if (schedule.state > CREATED)
+    throw new Error("too late; already scheduled");
+  return schedule;
+}
+function set2(node, id2) {
+  var schedule = get2(node, id2);
+  if (schedule.state > STARTED)
+    throw new Error("too late; already running");
+  return schedule;
+}
+function get2(node, id2) {
+  var schedule = node.__transition;
+  if (!schedule || !(schedule = schedule[id2]))
+    throw new Error("transition not found");
+  return schedule;
+}
+function create(node, id2, self2) {
+  var schedules = node.__transition, tween;
+  schedules[id2] = self2;
+  self2.timer = timer(schedule, 0, self2.time);
+  function schedule(elapsed) {
+    self2.state = SCHEDULED;
+    self2.timer.restart(start2, self2.delay, self2.time);
+    if (self2.delay <= elapsed)
+      start2(elapsed - self2.delay);
+  }
+  function start2(elapsed) {
+    var i4, j3, n2, o3;
+    if (self2.state !== SCHEDULED)
+      return stop();
+    for (i4 in schedules) {
+      o3 = schedules[i4];
+      if (o3.name !== self2.name)
+        continue;
+      if (o3.state === STARTED)
+        return timeout_default(start2);
+      if (o3.state === RUNNING) {
+        o3.state = ENDED;
+        o3.timer.stop();
+        o3.on.call("interrupt", node, node.__data__, o3.index, o3.group);
+        delete schedules[i4];
+      } else if (+i4 < id2) {
+        o3.state = ENDED;
+        o3.timer.stop();
+        o3.on.call("cancel", node, node.__data__, o3.index, o3.group);
+        delete schedules[i4];
+      }
+    }
+    timeout_default(function() {
+      if (self2.state === STARTED) {
+        self2.state = RUNNING;
+        self2.timer.restart(tick, self2.delay, self2.time);
+        tick(elapsed);
+      }
+    });
+    self2.state = STARTING;
+    self2.on.call("start", node, node.__data__, self2.index, self2.group);
+    if (self2.state !== STARTING)
+      return;
+    self2.state = STARTED;
+    tween = new Array(n2 = self2.tween.length);
+    for (i4 = 0, j3 = -1; i4 < n2; ++i4) {
+      if (o3 = self2.tween[i4].value.call(node, node.__data__, self2.index, self2.group)) {
+        tween[++j3] = o3;
+      }
+    }
+    tween.length = j3 + 1;
+  }
+  function tick(elapsed) {
+    var t3 = elapsed < self2.duration ? self2.ease.call(null, elapsed / self2.duration) : (self2.timer.restart(stop), self2.state = ENDING, 1), i4 = -1, n2 = tween.length;
+    while (++i4 < n2) {
+      tween[i4].call(node, t3);
+    }
+    if (self2.state === ENDING) {
+      self2.on.call("end", node, node.__data__, self2.index, self2.group);
+      stop();
+    }
+  }
+  function stop() {
+    self2.state = ENDED;
+    self2.timer.stop();
+    delete schedules[id2];
+    for (var i4 in schedules)
+      return;
+    delete node.__transition;
+  }
+}
+
+// node_modules/d3-transition/src/interrupt.js
+function interrupt_default(node, name) {
+  var schedules = node.__transition, schedule, active, empty2 = true, i4;
+  if (!schedules)
+    return;
+  name = name == null ? null : name + "";
+  for (i4 in schedules) {
+    if ((schedule = schedules[i4]).name !== name) {
+      empty2 = false;
+      continue;
+    }
+    active = schedule.state > STARTING && schedule.state < ENDING;
+    schedule.state = ENDED;
+    schedule.timer.stop();
+    schedule.on.call(active ? "interrupt" : "cancel", node, node.__data__, schedule.index, schedule.group);
+    delete schedules[i4];
+  }
+  if (empty2)
+    delete node.__transition;
+}
+
+// node_modules/d3-transition/src/selection/interrupt.js
+function interrupt_default2(name) {
+  return this.each(function() {
+    interrupt_default(this, name);
+  });
+}
+
+// node_modules/d3-transition/src/transition/tween.js
+function tweenRemove(id2, name) {
+  var tween0, tween1;
+  return function() {
+    var schedule = set2(this, id2), tween = schedule.tween;
+    if (tween !== tween0) {
+      tween1 = tween0 = tween;
+      for (var i4 = 0, n2 = tween1.length; i4 < n2; ++i4) {
+        if (tween1[i4].name === name) {
+          tween1 = tween1.slice();
+          tween1.splice(i4, 1);
+          break;
+        }
+      }
+    }
+    schedule.tween = tween1;
+  };
+}
+function tweenFunction(id2, name, value) {
+  var tween0, tween1;
+  if (typeof value !== "function")
+    throw new Error();
+  return function() {
+    var schedule = set2(this, id2), tween = schedule.tween;
+    if (tween !== tween0) {
+      tween1 = (tween0 = tween).slice();
+      for (var t3 = { name, value }, i4 = 0, n2 = tween1.length; i4 < n2; ++i4) {
+        if (tween1[i4].name === name) {
+          tween1[i4] = t3;
+          break;
+        }
+      }
+      if (i4 === n2)
+        tween1.push(t3);
+    }
+    schedule.tween = tween1;
+  };
+}
+function tween_default(name, value) {
+  var id2 = this._id;
+  name += "";
+  if (arguments.length < 2) {
+    var tween = get2(this.node(), id2).tween;
+    for (var i4 = 0, n2 = tween.length, t3; i4 < n2; ++i4) {
+      if ((t3 = tween[i4]).name === name) {
+        return t3.value;
+      }
+    }
+    return null;
+  }
+  return this.each((value == null ? tweenRemove : tweenFunction)(id2, name, value));
+}
+function tweenValue(transition2, name, value) {
+  var id2 = transition2._id;
+  transition2.each(function() {
+    var schedule = set2(this, id2);
+    (schedule.value || (schedule.value = {}))[name] = value.apply(this, arguments);
+  });
+  return function(node) {
+    return get2(node, id2).value[name];
+  };
+}
+
+// node_modules/d3-transition/src/transition/interpolate.js
+function interpolate_default(a4, b) {
+  var c4;
+  return (typeof b === "number" ? number_default : b instanceof color ? rgb_default : (c4 = color(b)) ? (b = c4, rgb_default) : string_default)(a4, b);
+}
+
+// node_modules/d3-transition/src/transition/attr.js
+function attrRemove2(name) {
+  return function() {
+    this.removeAttribute(name);
+  };
+}
+function attrRemoveNS2(fullname) {
+  return function() {
+    this.removeAttributeNS(fullname.space, fullname.local);
+  };
+}
+function attrConstant2(name, interpolate, value1) {
+  var string00, string1 = value1 + "", interpolate0;
+  return function() {
+    var string0 = this.getAttribute(name);
+    return string0 === string1 ? null : string0 === string00 ? interpolate0 : interpolate0 = interpolate(string00 = string0, value1);
+  };
+}
+function attrConstantNS2(fullname, interpolate, value1) {
+  var string00, string1 = value1 + "", interpolate0;
+  return function() {
+    var string0 = this.getAttributeNS(fullname.space, fullname.local);
+    return string0 === string1 ? null : string0 === string00 ? interpolate0 : interpolate0 = interpolate(string00 = string0, value1);
+  };
+}
+function attrFunction2(name, interpolate, value) {
+  var string00, string10, interpolate0;
+  return function() {
+    var string0, value1 = value(this), string1;
+    if (value1 == null)
+      return void this.removeAttribute(name);
+    string0 = this.getAttribute(name);
+    string1 = value1 + "";
+    return string0 === string1 ? null : string0 === string00 && string1 === string10 ? interpolate0 : (string10 = string1, interpolate0 = interpolate(string00 = string0, value1));
+  };
+}
+function attrFunctionNS2(fullname, interpolate, value) {
+  var string00, string10, interpolate0;
+  return function() {
+    var string0, value1 = value(this), string1;
+    if (value1 == null)
+      return void this.removeAttributeNS(fullname.space, fullname.local);
+    string0 = this.getAttributeNS(fullname.space, fullname.local);
+    string1 = value1 + "";
+    return string0 === string1 ? null : string0 === string00 && string1 === string10 ? interpolate0 : (string10 = string1, interpolate0 = interpolate(string00 = string0, value1));
+  };
+}
+function attr_default2(name, value) {
+  var fullname = namespace_default(name), i4 = fullname === "transform" ? interpolateTransformSvg : interpolate_default;
+  return this.attrTween(name, typeof value === "function" ? (fullname.local ? attrFunctionNS2 : attrFunction2)(fullname, i4, tweenValue(this, "attr." + name, value)) : value == null ? (fullname.local ? attrRemoveNS2 : attrRemove2)(fullname) : (fullname.local ? attrConstantNS2 : attrConstant2)(fullname, i4, value));
+}
+
+// node_modules/d3-transition/src/transition/attrTween.js
+function attrInterpolate(name, i4) {
+  return function(t3) {
+    this.setAttribute(name, i4.call(this, t3));
+  };
+}
+function attrInterpolateNS(fullname, i4) {
+  return function(t3) {
+    this.setAttributeNS(fullname.space, fullname.local, i4.call(this, t3));
+  };
+}
+function attrTweenNS(fullname, value) {
+  var t0, i0;
+  function tween() {
+    var i4 = value.apply(this, arguments);
+    if (i4 !== i0)
+      t0 = (i0 = i4) && attrInterpolateNS(fullname, i4);
+    return t0;
+  }
+  tween._value = value;
+  return tween;
+}
+function attrTween(name, value) {
+  var t0, i0;
+  function tween() {
+    var i4 = value.apply(this, arguments);
+    if (i4 !== i0)
+      t0 = (i0 = i4) && attrInterpolate(name, i4);
+    return t0;
+  }
+  tween._value = value;
+  return tween;
+}
+function attrTween_default(name, value) {
+  var key2 = "attr." + name;
+  if (arguments.length < 2)
+    return (key2 = this.tween(key2)) && key2._value;
+  if (value == null)
+    return this.tween(key2, null);
+  if (typeof value !== "function")
+    throw new Error();
+  var fullname = namespace_default(name);
+  return this.tween(key2, (fullname.local ? attrTweenNS : attrTween)(fullname, value));
+}
+
+// node_modules/d3-transition/src/transition/delay.js
+function delayFunction(id2, value) {
+  return function() {
+    init(this, id2).delay = +value.apply(this, arguments);
+  };
+}
+function delayConstant(id2, value) {
+  return value = +value, function() {
+    init(this, id2).delay = value;
+  };
+}
+function delay_default(value) {
+  var id2 = this._id;
+  return arguments.length ? this.each((typeof value === "function" ? delayFunction : delayConstant)(id2, value)) : get2(this.node(), id2).delay;
+}
+
+// node_modules/d3-transition/src/transition/duration.js
+function durationFunction(id2, value) {
+  return function() {
+    set2(this, id2).duration = +value.apply(this, arguments);
+  };
+}
+function durationConstant(id2, value) {
+  return value = +value, function() {
+    set2(this, id2).duration = value;
+  };
+}
+function duration_default(value) {
+  var id2 = this._id;
+  return arguments.length ? this.each((typeof value === "function" ? durationFunction : durationConstant)(id2, value)) : get2(this.node(), id2).duration;
+}
+
+// node_modules/d3-transition/src/transition/ease.js
+function easeConstant(id2, value) {
+  if (typeof value !== "function")
+    throw new Error();
+  return function() {
+    set2(this, id2).ease = value;
+  };
+}
+function ease_default(value) {
+  var id2 = this._id;
+  return arguments.length ? this.each(easeConstant(id2, value)) : get2(this.node(), id2).ease;
+}
+
+// node_modules/d3-transition/src/transition/easeVarying.js
+function easeVarying(id2, value) {
+  return function() {
+    var v3 = value.apply(this, arguments);
+    if (typeof v3 !== "function")
+      throw new Error();
+    set2(this, id2).ease = v3;
+  };
+}
+function easeVarying_default(value) {
+  if (typeof value !== "function")
+    throw new Error();
+  return this.each(easeVarying(this._id, value));
+}
+
+// node_modules/d3-transition/src/transition/filter.js
+function filter_default2(match) {
+  if (typeof match !== "function")
+    match = matcher_default(match);
+  for (var groups = this._groups, m4 = groups.length, subgroups = new Array(m4), j3 = 0; j3 < m4; ++j3) {
+    for (var group = groups[j3], n2 = group.length, subgroup = subgroups[j3] = [], node, i4 = 0; i4 < n2; ++i4) {
+      if ((node = group[i4]) && match.call(node, node.__data__, i4, group)) {
+        subgroup.push(node);
+      }
+    }
+  }
+  return new Transition(subgroups, this._parents, this._name, this._id);
+}
+
+// node_modules/d3-transition/src/transition/merge.js
+function merge_default2(transition2) {
+  if (transition2._id !== this._id)
+    throw new Error();
+  for (var groups0 = this._groups, groups1 = transition2._groups, m0 = groups0.length, m1 = groups1.length, m4 = Math.min(m0, m1), merges = new Array(m0), j3 = 0; j3 < m4; ++j3) {
+    for (var group0 = groups0[j3], group1 = groups1[j3], n2 = group0.length, merge = merges[j3] = new Array(n2), node, i4 = 0; i4 < n2; ++i4) {
+      if (node = group0[i4] || group1[i4]) {
+        merge[i4] = node;
+      }
+    }
+  }
+  for (; j3 < m0; ++j3) {
+    merges[j3] = groups0[j3];
+  }
+  return new Transition(merges, this._parents, this._name, this._id);
+}
+
+// node_modules/d3-transition/src/transition/on.js
+function start(name) {
+  return (name + "").trim().split(/^|\s+/).every(function(t3) {
+    var i4 = t3.indexOf(".");
+    if (i4 >= 0)
+      t3 = t3.slice(0, i4);
+    return !t3 || t3 === "start";
+  });
+}
+function onFunction(id2, name, listener) {
+  var on0, on1, sit = start(name) ? init : set2;
+  return function() {
+    var schedule = sit(this, id2), on = schedule.on;
+    if (on !== on0)
+      (on1 = (on0 = on).copy()).on(name, listener);
+    schedule.on = on1;
+  };
+}
+function on_default2(name, listener) {
+  var id2 = this._id;
+  return arguments.length < 2 ? get2(this.node(), id2).on.on(name) : this.each(onFunction(id2, name, listener));
+}
+
+// node_modules/d3-transition/src/transition/remove.js
+function removeFunction(id2) {
+  return function() {
+    var parent = this.parentNode;
+    for (var i4 in this.__transition)
+      if (+i4 !== id2)
+        return;
+    if (parent)
+      parent.removeChild(this);
+  };
+}
+function remove_default2() {
+  return this.on("end.remove", removeFunction(this._id));
+}
+
+// node_modules/d3-transition/src/transition/select.js
+function select_default3(select) {
+  var name = this._name, id2 = this._id;
+  if (typeof select !== "function")
+    select = selector_default(select);
+  for (var groups = this._groups, m4 = groups.length, subgroups = new Array(m4), j3 = 0; j3 < m4; ++j3) {
+    for (var group = groups[j3], n2 = group.length, subgroup = subgroups[j3] = new Array(n2), node, subnode, i4 = 0; i4 < n2; ++i4) {
+      if ((node = group[i4]) && (subnode = select.call(node, node.__data__, i4, group))) {
+        if ("__data__" in node)
+          subnode.__data__ = node.__data__;
+        subgroup[i4] = subnode;
+        schedule_default(subgroup[i4], name, id2, i4, subgroup, get2(node, id2));
+      }
+    }
+  }
+  return new Transition(subgroups, this._parents, name, id2);
+}
+
+// node_modules/d3-transition/src/transition/selectAll.js
+function selectAll_default2(select) {
+  var name = this._name, id2 = this._id;
+  if (typeof select !== "function")
+    select = selectorAll_default(select);
+  for (var groups = this._groups, m4 = groups.length, subgroups = [], parents = [], j3 = 0; j3 < m4; ++j3) {
+    for (var group = groups[j3], n2 = group.length, node, i4 = 0; i4 < n2; ++i4) {
+      if (node = group[i4]) {
+        for (var children2 = select.call(node, node.__data__, i4, group), child, inherit2 = get2(node, id2), k3 = 0, l3 = children2.length; k3 < l3; ++k3) {
+          if (child = children2[k3]) {
+            schedule_default(child, name, id2, k3, children2, inherit2);
+          }
+        }
+        subgroups.push(children2);
+        parents.push(node);
+      }
+    }
+  }
+  return new Transition(subgroups, parents, name, id2);
+}
+
+// node_modules/d3-transition/src/transition/selection.js
+var Selection2 = selection_default.prototype.constructor;
+function selection_default2() {
+  return new Selection2(this._groups, this._parents);
+}
+
+// node_modules/d3-transition/src/transition/style.js
+function styleNull(name, interpolate) {
+  var string00, string10, interpolate0;
+  return function() {
+    var string0 = styleValue(this, name), string1 = (this.style.removeProperty(name), styleValue(this, name));
+    return string0 === string1 ? null : string0 === string00 && string1 === string10 ? interpolate0 : interpolate0 = interpolate(string00 = string0, string10 = string1);
+  };
+}
+function styleRemove2(name) {
+  return function() {
+    this.style.removeProperty(name);
+  };
+}
+function styleConstant2(name, interpolate, value1) {
+  var string00, string1 = value1 + "", interpolate0;
+  return function() {
+    var string0 = styleValue(this, name);
+    return string0 === string1 ? null : string0 === string00 ? interpolate0 : interpolate0 = interpolate(string00 = string0, value1);
+  };
+}
+function styleFunction2(name, interpolate, value) {
+  var string00, string10, interpolate0;
+  return function() {
+    var string0 = styleValue(this, name), value1 = value(this), string1 = value1 + "";
+    if (value1 == null)
+      string1 = value1 = (this.style.removeProperty(name), styleValue(this, name));
+    return string0 === string1 ? null : string0 === string00 && string1 === string10 ? interpolate0 : (string10 = string1, interpolate0 = interpolate(string00 = string0, value1));
+  };
+}
+function styleMaybeRemove(id2, name) {
+  var on0, on1, listener0, key2 = "style." + name, event = "end." + key2, remove2;
+  return function() {
+    var schedule = set2(this, id2), on = schedule.on, listener = schedule.value[key2] == null ? remove2 || (remove2 = styleRemove2(name)) : void 0;
+    if (on !== on0 || listener0 !== listener)
+      (on1 = (on0 = on).copy()).on(event, listener0 = listener);
+    schedule.on = on1;
+  };
+}
+function style_default2(name, value, priority) {
+  var i4 = (name += "") === "transform" ? interpolateTransformCss : interpolate_default;
+  return value == null ? this.styleTween(name, styleNull(name, i4)).on("end.style." + name, styleRemove2(name)) : typeof value === "function" ? this.styleTween(name, styleFunction2(name, i4, tweenValue(this, "style." + name, value))).each(styleMaybeRemove(this._id, name)) : this.styleTween(name, styleConstant2(name, i4, value), priority).on("end.style." + name, null);
+}
+
+// node_modules/d3-transition/src/transition/styleTween.js
+function styleInterpolate(name, i4, priority) {
+  return function(t3) {
+    this.style.setProperty(name, i4.call(this, t3), priority);
+  };
+}
+function styleTween(name, value, priority) {
+  var t3, i0;
+  function tween() {
+    var i4 = value.apply(this, arguments);
+    if (i4 !== i0)
+      t3 = (i0 = i4) && styleInterpolate(name, i4, priority);
+    return t3;
+  }
+  tween._value = value;
+  return tween;
+}
+function styleTween_default(name, value, priority) {
+  var key2 = "style." + (name += "");
+  if (arguments.length < 2)
+    return (key2 = this.tween(key2)) && key2._value;
+  if (value == null)
+    return this.tween(key2, null);
+  if (typeof value !== "function")
+    throw new Error();
+  return this.tween(key2, styleTween(name, value, priority == null ? "" : priority));
+}
+
+// node_modules/d3-transition/src/transition/text.js
+function textConstant2(value) {
+  return function() {
+    this.textContent = value;
+  };
+}
+function textFunction2(value) {
+  return function() {
+    var value1 = value(this);
+    this.textContent = value1 == null ? "" : value1;
+  };
+}
+function text_default2(value) {
+  return this.tween("text", typeof value === "function" ? textFunction2(tweenValue(this, "text", value)) : textConstant2(value == null ? "" : value + ""));
+}
+
+// node_modules/d3-transition/src/transition/textTween.js
+function textInterpolate(i4) {
+  return function(t3) {
+    this.textContent = i4.call(this, t3);
+  };
+}
+function textTween(value) {
+  var t0, i0;
+  function tween() {
+    var i4 = value.apply(this, arguments);
+    if (i4 !== i0)
+      t0 = (i0 = i4) && textInterpolate(i4);
+    return t0;
+  }
+  tween._value = value;
+  return tween;
+}
+function textTween_default(value) {
+  var key2 = "text";
+  if (arguments.length < 1)
+    return (key2 = this.tween(key2)) && key2._value;
+  if (value == null)
+    return this.tween(key2, null);
+  if (typeof value !== "function")
+    throw new Error();
+  return this.tween(key2, textTween(value));
+}
+
+// node_modules/d3-transition/src/transition/transition.js
+function transition_default() {
+  var name = this._name, id0 = this._id, id1 = newId();
+  for (var groups = this._groups, m4 = groups.length, j3 = 0; j3 < m4; ++j3) {
+    for (var group = groups[j3], n2 = group.length, node, i4 = 0; i4 < n2; ++i4) {
+      if (node = group[i4]) {
+        var inherit2 = get2(node, id0);
+        schedule_default(node, name, id1, i4, group, {
+          time: inherit2.time + inherit2.delay + inherit2.duration,
+          delay: 0,
+          duration: inherit2.duration,
+          ease: inherit2.ease
+        });
+      }
+    }
+  }
+  return new Transition(groups, this._parents, name, id1);
+}
+
+// node_modules/d3-transition/src/transition/end.js
+function end_default() {
+  var on0, on1, that = this, id2 = that._id, size = that.size();
+  return new Promise(function(resolve, reject) {
+    var cancel = { value: reject }, end = { value: function() {
+      if (--size === 0)
+        resolve();
+    } };
+    that.each(function() {
+      var schedule = set2(this, id2), on = schedule.on;
+      if (on !== on0) {
+        on1 = (on0 = on).copy();
+        on1._.cancel.push(cancel);
+        on1._.interrupt.push(cancel);
+        on1._.end.push(end);
+      }
+      schedule.on = on1;
+    });
+    if (size === 0)
+      resolve();
+  });
+}
+
+// node_modules/d3-transition/src/transition/index.js
+var id = 0;
+function Transition(groups, parents, name, id2) {
+  this._groups = groups;
+  this._parents = parents;
+  this._name = name;
+  this._id = id2;
+}
+function transition(name) {
+  return selection_default().transition(name);
+}
+function newId() {
+  return ++id;
+}
+var selection_prototype = selection_default.prototype;
+Transition.prototype = transition.prototype = {
+  constructor: Transition,
+  select: select_default3,
+  selectAll: selectAll_default2,
+  selectChild: selection_prototype.selectChild,
+  selectChildren: selection_prototype.selectChildren,
+  filter: filter_default2,
+  merge: merge_default2,
+  selection: selection_default2,
+  transition: transition_default,
+  call: selection_prototype.call,
+  nodes: selection_prototype.nodes,
+  node: selection_prototype.node,
+  size: selection_prototype.size,
+  empty: selection_prototype.empty,
+  each: selection_prototype.each,
+  on: on_default2,
+  attr: attr_default2,
+  attrTween: attrTween_default,
+  style: style_default2,
+  styleTween: styleTween_default,
+  text: text_default2,
+  textTween: textTween_default,
+  remove: remove_default2,
+  tween: tween_default,
+  delay: delay_default,
+  duration: duration_default,
+  ease: ease_default,
+  easeVarying: easeVarying_default,
+  end: end_default,
+  [Symbol.iterator]: selection_prototype[Symbol.iterator]
+};
+
+// node_modules/d3-ease/src/cubic.js
+function cubicInOut(t3) {
+  return ((t3 *= 2) <= 1 ? t3 * t3 * t3 : (t3 -= 2) * t3 * t3 + 2) / 2;
+}
+
+// node_modules/d3-transition/src/selection/transition.js
+var defaultTiming = {
+  time: null,
+  // Set on use.
+  delay: 0,
+  duration: 250,
+  ease: cubicInOut
+};
+function inherit(node, id2) {
+  var timing;
+  while (!(timing = node.__transition) || !(timing = timing[id2])) {
+    if (!(node = node.parentNode)) {
+      throw new Error(`transition ${id2} not found`);
+    }
+  }
+  return timing;
+}
+function transition_default2(name) {
+  var id2, timing;
+  if (name instanceof Transition) {
+    id2 = name._id, name = name._name;
+  } else {
+    id2 = newId(), (timing = defaultTiming).time = now(), name = name == null ? null : name + "";
+  }
+  for (var groups = this._groups, m4 = groups.length, j3 = 0; j3 < m4; ++j3) {
+    for (var group = groups[j3], n2 = group.length, node, i4 = 0; i4 < n2; ++i4) {
+      if (node = group[i4]) {
+        schedule_default(node, name, id2, i4, group, timing || inherit(node, id2));
+      }
+    }
+  }
+  return new Transition(groups, this._parents, name, id2);
+}
+
+// node_modules/d3-transition/src/selection/index.js
+selection_default.prototype.interrupt = interrupt_default2;
+selection_default.prototype.transition = transition_default2;
+
+// node_modules/d3-brush/src/brush.js
+var { abs, max: max2, min } = Math;
+function number1(e3) {
+  return [+e3[0], +e3[1]];
+}
+function number2(e3) {
+  return [number1(e3[0]), number1(e3[1])];
+}
+var X = {
+  name: "x",
+  handles: ["w", "e"].map(type),
+  input: function(x4, e3) {
+    return x4 == null ? null : [[+x4[0], e3[0][1]], [+x4[1], e3[1][1]]];
+  },
+  output: function(xy) {
+    return xy && [xy[0][0], xy[1][0]];
+  }
+};
+var Y = {
+  name: "y",
+  handles: ["n", "s"].map(type),
+  input: function(y5, e3) {
+    return y5 == null ? null : [[e3[0][0], +y5[0]], [e3[1][0], +y5[1]]];
+  },
+  output: function(xy) {
+    return xy && [xy[0][1], xy[1][1]];
+  }
+};
+var XY = {
+  name: "xy",
+  handles: ["n", "w", "e", "s", "nw", "ne", "sw", "se"].map(type),
+  input: function(xy) {
+    return xy == null ? null : number2(xy);
+  },
+  output: function(xy) {
+    return xy;
+  }
+};
+function type(t3) {
+  return { type: t3 };
+}
+
+// node_modules/d3-force/src/center.js
+function center_default(x4, y5) {
+  var nodes, strength = 1;
+  if (x4 == null)
+    x4 = 0;
+  if (y5 == null)
+    y5 = 0;
+  function force() {
+    var i4, n2 = nodes.length, node, sx = 0, sy = 0;
+    for (i4 = 0; i4 < n2; ++i4) {
+      node = nodes[i4], sx += node.x, sy += node.y;
+    }
+    for (sx = (sx / n2 - x4) * strength, sy = (sy / n2 - y5) * strength, i4 = 0; i4 < n2; ++i4) {
+      node = nodes[i4], node.x -= sx, node.y -= sy;
+    }
+  }
+  force.initialize = function(_2) {
+    nodes = _2;
+  };
+  force.x = function(_2) {
+    return arguments.length ? (x4 = +_2, force) : x4;
+  };
+  force.y = function(_2) {
+    return arguments.length ? (y5 = +_2, force) : y5;
+  };
+  force.strength = function(_2) {
+    return arguments.length ? (strength = +_2, force) : strength;
+  };
+  return force;
+}
+
+// node_modules/d3-quadtree/src/add.js
+function add_default(d3) {
+  const x4 = +this._x.call(null, d3), y5 = +this._y.call(null, d3);
+  return add(this.cover(x4, y5), x4, y5, d3);
+}
+function add(tree, x4, y5, d3) {
+  if (isNaN(x4) || isNaN(y5))
+    return tree;
+  var parent, node = tree._root, leaf = { data: d3 }, x0 = tree._x0, y0 = tree._y0, x1 = tree._x1, y1 = tree._y1, xm, ym, xp, yp, right, bottom, i4, j3;
+  if (!node)
+    return tree._root = leaf, tree;
+  while (node.length) {
+    if (right = x4 >= (xm = (x0 + x1) / 2))
+      x0 = xm;
+    else
+      x1 = xm;
+    if (bottom = y5 >= (ym = (y0 + y1) / 2))
+      y0 = ym;
+    else
+      y1 = ym;
+    if (parent = node, !(node = node[i4 = bottom << 1 | right]))
+      return parent[i4] = leaf, tree;
+  }
+  xp = +tree._x.call(null, node.data);
+  yp = +tree._y.call(null, node.data);
+  if (x4 === xp && y5 === yp)
+    return leaf.next = node, parent ? parent[i4] = leaf : tree._root = leaf, tree;
+  do {
+    parent = parent ? parent[i4] = new Array(4) : tree._root = new Array(4);
+    if (right = x4 >= (xm = (x0 + x1) / 2))
+      x0 = xm;
+    else
+      x1 = xm;
+    if (bottom = y5 >= (ym = (y0 + y1) / 2))
+      y0 = ym;
+    else
+      y1 = ym;
+  } while ((i4 = bottom << 1 | right) === (j3 = (yp >= ym) << 1 | xp >= xm));
+  return parent[j3] = node, parent[i4] = leaf, tree;
+}
+function addAll(data) {
+  var d3, i4, n2 = data.length, x4, y5, xz = new Array(n2), yz = new Array(n2), x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (i4 = 0; i4 < n2; ++i4) {
+    if (isNaN(x4 = +this._x.call(null, d3 = data[i4])) || isNaN(y5 = +this._y.call(null, d3)))
+      continue;
+    xz[i4] = x4;
+    yz[i4] = y5;
+    if (x4 < x0)
+      x0 = x4;
+    if (x4 > x1)
+      x1 = x4;
+    if (y5 < y0)
+      y0 = y5;
+    if (y5 > y1)
+      y1 = y5;
+  }
+  if (x0 > x1 || y0 > y1)
+    return this;
+  this.cover(x0, y0).cover(x1, y1);
+  for (i4 = 0; i4 < n2; ++i4) {
+    add(this, xz[i4], yz[i4], data[i4]);
+  }
+  return this;
+}
+
+// node_modules/d3-quadtree/src/cover.js
+function cover_default(x4, y5) {
+  if (isNaN(x4 = +x4) || isNaN(y5 = +y5))
+    return this;
+  var x0 = this._x0, y0 = this._y0, x1 = this._x1, y1 = this._y1;
+  if (isNaN(x0)) {
+    x1 = (x0 = Math.floor(x4)) + 1;
+    y1 = (y0 = Math.floor(y5)) + 1;
+  } else {
+    var z3 = x1 - x0 || 1, node = this._root, parent, i4;
+    while (x0 > x4 || x4 >= x1 || y0 > y5 || y5 >= y1) {
+      i4 = (y5 < y0) << 1 | x4 < x0;
+      parent = new Array(4), parent[i4] = node, node = parent, z3 *= 2;
+      switch (i4) {
+        case 0:
+          x1 = x0 + z3, y1 = y0 + z3;
+          break;
+        case 1:
+          x0 = x1 - z3, y1 = y0 + z3;
+          break;
+        case 2:
+          x1 = x0 + z3, y0 = y1 - z3;
+          break;
+        case 3:
+          x0 = x1 - z3, y0 = y1 - z3;
+          break;
+      }
+    }
+    if (this._root && this._root.length)
+      this._root = node;
+  }
+  this._x0 = x0;
+  this._y0 = y0;
+  this._x1 = x1;
+  this._y1 = y1;
+  return this;
+}
+
+// node_modules/d3-quadtree/src/data.js
+function data_default2() {
+  var data = [];
+  this.visit(function(node) {
+    if (!node.length)
+      do
+        data.push(node.data);
+      while (node = node.next);
+  });
+  return data;
+}
+
+// node_modules/d3-quadtree/src/extent.js
+function extent_default(_2) {
+  return arguments.length ? this.cover(+_2[0][0], +_2[0][1]).cover(+_2[1][0], +_2[1][1]) : isNaN(this._x0) ? void 0 : [[this._x0, this._y0], [this._x1, this._y1]];
+}
+
+// node_modules/d3-quadtree/src/quad.js
+function quad_default(node, x0, y0, x1, y1) {
+  this.node = node;
+  this.x0 = x0;
+  this.y0 = y0;
+  this.x1 = x1;
+  this.y1 = y1;
+}
+
+// node_modules/d3-quadtree/src/find.js
+function find_default(x4, y5, radius) {
+  var data, x0 = this._x0, y0 = this._y0, x1, y1, x22, y22, x32 = this._x1, y32 = this._y1, quads = [], node = this._root, q3, i4;
+  if (node)
+    quads.push(new quad_default(node, x0, y0, x32, y32));
+  if (radius == null)
+    radius = Infinity;
+  else {
+    x0 = x4 - radius, y0 = y5 - radius;
+    x32 = x4 + radius, y32 = y5 + radius;
+    radius *= radius;
+  }
+  while (q3 = quads.pop()) {
+    if (!(node = q3.node) || (x1 = q3.x0) > x32 || (y1 = q3.y0) > y32 || (x22 = q3.x1) < x0 || (y22 = q3.y1) < y0)
+      continue;
+    if (node.length) {
+      var xm = (x1 + x22) / 2, ym = (y1 + y22) / 2;
+      quads.push(
+        new quad_default(node[3], xm, ym, x22, y22),
+        new quad_default(node[2], x1, ym, xm, y22),
+        new quad_default(node[1], xm, y1, x22, ym),
+        new quad_default(node[0], x1, y1, xm, ym)
+      );
+      if (i4 = (y5 >= ym) << 1 | x4 >= xm) {
+        q3 = quads[quads.length - 1];
+        quads[quads.length - 1] = quads[quads.length - 1 - i4];
+        quads[quads.length - 1 - i4] = q3;
+      }
+    } else {
+      var dx = x4 - +this._x.call(null, node.data), dy = y5 - +this._y.call(null, node.data), d22 = dx * dx + dy * dy;
+      if (d22 < radius) {
+        var d3 = Math.sqrt(radius = d22);
+        x0 = x4 - d3, y0 = y5 - d3;
+        x32 = x4 + d3, y32 = y5 + d3;
+        data = node.data;
+      }
+    }
+  }
+  return data;
+}
+
+// node_modules/d3-quadtree/src/remove.js
+function remove_default3(d3) {
+  if (isNaN(x4 = +this._x.call(null, d3)) || isNaN(y5 = +this._y.call(null, d3)))
+    return this;
+  var parent, node = this._root, retainer, previous, next, x0 = this._x0, y0 = this._y0, x1 = this._x1, y1 = this._y1, x4, y5, xm, ym, right, bottom, i4, j3;
+  if (!node)
+    return this;
+  if (node.length)
+    while (true) {
+      if (right = x4 >= (xm = (x0 + x1) / 2))
+        x0 = xm;
+      else
+        x1 = xm;
+      if (bottom = y5 >= (ym = (y0 + y1) / 2))
+        y0 = ym;
+      else
+        y1 = ym;
+      if (!(parent = node, node = node[i4 = bottom << 1 | right]))
+        return this;
+      if (!node.length)
+        break;
+      if (parent[i4 + 1 & 3] || parent[i4 + 2 & 3] || parent[i4 + 3 & 3])
+        retainer = parent, j3 = i4;
+    }
+  while (node.data !== d3)
+    if (!(previous = node, node = node.next))
+      return this;
+  if (next = node.next)
+    delete node.next;
+  if (previous)
+    return next ? previous.next = next : delete previous.next, this;
+  if (!parent)
+    return this._root = next, this;
+  next ? parent[i4] = next : delete parent[i4];
+  if ((node = parent[0] || parent[1] || parent[2] || parent[3]) && node === (parent[3] || parent[2] || parent[1] || parent[0]) && !node.length) {
+    if (retainer)
+      retainer[j3] = node;
+    else
+      this._root = node;
+  }
+  return this;
+}
+function removeAll(data) {
+  for (var i4 = 0, n2 = data.length; i4 < n2; ++i4)
+    this.remove(data[i4]);
+  return this;
+}
+
+// node_modules/d3-quadtree/src/root.js
+function root_default() {
+  return this._root;
+}
+
+// node_modules/d3-quadtree/src/size.js
+function size_default2() {
+  var size = 0;
+  this.visit(function(node) {
+    if (!node.length)
+      do
+        ++size;
+      while (node = node.next);
+  });
+  return size;
+}
+
+// node_modules/d3-quadtree/src/visit.js
+function visit_default(callback) {
+  var quads = [], q3, node = this._root, child, x0, y0, x1, y1;
+  if (node)
+    quads.push(new quad_default(node, this._x0, this._y0, this._x1, this._y1));
+  while (q3 = quads.pop()) {
+    if (!callback(node = q3.node, x0 = q3.x0, y0 = q3.y0, x1 = q3.x1, y1 = q3.y1) && node.length) {
+      var xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+      if (child = node[3])
+        quads.push(new quad_default(child, xm, ym, x1, y1));
+      if (child = node[2])
+        quads.push(new quad_default(child, x0, ym, xm, y1));
+      if (child = node[1])
+        quads.push(new quad_default(child, xm, y0, x1, ym));
+      if (child = node[0])
+        quads.push(new quad_default(child, x0, y0, xm, ym));
+    }
+  }
+  return this;
+}
+
+// node_modules/d3-quadtree/src/visitAfter.js
+function visitAfter_default(callback) {
+  var quads = [], next = [], q3;
+  if (this._root)
+    quads.push(new quad_default(this._root, this._x0, this._y0, this._x1, this._y1));
+  while (q3 = quads.pop()) {
+    var node = q3.node;
+    if (node.length) {
+      var child, x0 = q3.x0, y0 = q3.y0, x1 = q3.x1, y1 = q3.y1, xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+      if (child = node[0])
+        quads.push(new quad_default(child, x0, y0, xm, ym));
+      if (child = node[1])
+        quads.push(new quad_default(child, xm, y0, x1, ym));
+      if (child = node[2])
+        quads.push(new quad_default(child, x0, ym, xm, y1));
+      if (child = node[3])
+        quads.push(new quad_default(child, xm, ym, x1, y1));
+    }
+    next.push(q3);
+  }
+  while (q3 = next.pop()) {
+    callback(q3.node, q3.x0, q3.y0, q3.x1, q3.y1);
+  }
+  return this;
+}
+
+// node_modules/d3-quadtree/src/x.js
+function defaultX(d3) {
+  return d3[0];
+}
+function x_default(_2) {
+  return arguments.length ? (this._x = _2, this) : this._x;
+}
+
+// node_modules/d3-quadtree/src/y.js
+function defaultY(d3) {
+  return d3[1];
+}
+function y_default(_2) {
+  return arguments.length ? (this._y = _2, this) : this._y;
+}
+
+// node_modules/d3-quadtree/src/quadtree.js
+function quadtree(nodes, x4, y5) {
+  var tree = new Quadtree(x4 == null ? defaultX : x4, y5 == null ? defaultY : y5, NaN, NaN, NaN, NaN);
+  return nodes == null ? tree : tree.addAll(nodes);
+}
+function Quadtree(x4, y5, x0, y0, x1, y1) {
+  this._x = x4;
+  this._y = y5;
+  this._x0 = x0;
+  this._y0 = y0;
+  this._x1 = x1;
+  this._y1 = y1;
+  this._root = void 0;
+}
+function leaf_copy(leaf) {
+  var copy = { data: leaf.data }, next = copy;
+  while (leaf = leaf.next)
+    next = next.next = { data: leaf.data };
+  return copy;
+}
+var treeProto = quadtree.prototype = Quadtree.prototype;
+treeProto.copy = function() {
+  var copy = new Quadtree(this._x, this._y, this._x0, this._y0, this._x1, this._y1), node = this._root, nodes, child;
+  if (!node)
+    return copy;
+  if (!node.length)
+    return copy._root = leaf_copy(node), copy;
+  nodes = [{ source: node, target: copy._root = new Array(4) }];
+  while (node = nodes.pop()) {
+    for (var i4 = 0; i4 < 4; ++i4) {
+      if (child = node.source[i4]) {
+        if (child.length)
+          nodes.push({ source: child, target: node.target[i4] = new Array(4) });
+        else
+          node.target[i4] = leaf_copy(child);
+      }
+    }
+  }
+  return copy;
+};
+treeProto.add = add_default;
+treeProto.addAll = addAll;
+treeProto.cover = cover_default;
+treeProto.data = data_default2;
+treeProto.extent = extent_default;
+treeProto.find = find_default;
+treeProto.remove = remove_default3;
+treeProto.removeAll = removeAll;
+treeProto.root = root_default;
+treeProto.size = size_default2;
+treeProto.visit = visit_default;
+treeProto.visitAfter = visitAfter_default;
+treeProto.x = x_default;
+treeProto.y = y_default;
+
+// node_modules/d3-force/src/constant.js
+function constant_default4(x4) {
+  return function() {
+    return x4;
+  };
+}
+
+// node_modules/d3-force/src/jiggle.js
+function jiggle_default(random) {
+  return (random() - 0.5) * 1e-6;
+}
+
+// node_modules/d3-force/src/collide.js
+function x2(d3) {
+  return d3.x + d3.vx;
+}
+function y3(d3) {
+  return d3.y + d3.vy;
+}
+function collide_default(radius) {
+  var nodes, radii, random, strength = 1, iterations = 1;
+  if (typeof radius !== "function")
+    radius = constant_default4(radius == null ? 1 : +radius);
+  function force() {
+    var i4, n2 = nodes.length, tree, node, xi, yi, ri, ri2;
+    for (var k3 = 0; k3 < iterations; ++k3) {
+      tree = quadtree(nodes, x2, y3).visitAfter(prepare);
+      for (i4 = 0; i4 < n2; ++i4) {
+        node = nodes[i4];
+        ri = radii[node.index], ri2 = ri * ri;
+        xi = node.x + node.vx;
+        yi = node.y + node.vy;
+        tree.visit(apply);
+      }
+    }
+    function apply(quad, x0, y0, x1, y1) {
+      var data = quad.data, rj = quad.r, r3 = ri + rj;
+      if (data) {
+        if (data.index > node.index) {
+          var x4 = xi - data.x - data.vx, y5 = yi - data.y - data.vy, l3 = x4 * x4 + y5 * y5;
+          if (l3 < r3 * r3) {
+            if (x4 === 0)
+              x4 = jiggle_default(random), l3 += x4 * x4;
+            if (y5 === 0)
+              y5 = jiggle_default(random), l3 += y5 * y5;
+            l3 = (r3 - (l3 = Math.sqrt(l3))) / l3 * strength;
+            node.vx += (x4 *= l3) * (r3 = (rj *= rj) / (ri2 + rj));
+            node.vy += (y5 *= l3) * r3;
+            data.vx -= x4 * (r3 = 1 - r3);
+            data.vy -= y5 * r3;
+          }
+        }
+        return;
+      }
+      return x0 > xi + r3 || x1 < xi - r3 || y0 > yi + r3 || y1 < yi - r3;
+    }
+  }
+  function prepare(quad) {
+    if (quad.data)
+      return quad.r = radii[quad.data.index];
+    for (var i4 = quad.r = 0; i4 < 4; ++i4) {
+      if (quad[i4] && quad[i4].r > quad.r) {
+        quad.r = quad[i4].r;
+      }
+    }
+  }
+  function initialize() {
+    if (!nodes)
+      return;
+    var i4, n2 = nodes.length, node;
+    radii = new Array(n2);
+    for (i4 = 0; i4 < n2; ++i4)
+      node = nodes[i4], radii[node.index] = +radius(node, i4, nodes);
+  }
+  force.initialize = function(_nodes, _random) {
+    nodes = _nodes;
+    random = _random;
+    initialize();
+  };
+  force.iterations = function(_2) {
+    return arguments.length ? (iterations = +_2, force) : iterations;
+  };
+  force.strength = function(_2) {
+    return arguments.length ? (strength = +_2, force) : strength;
+  };
+  force.radius = function(_2) {
+    return arguments.length ? (radius = typeof _2 === "function" ? _2 : constant_default4(+_2), initialize(), force) : radius;
+  };
+  return force;
+}
+
+// node_modules/d3-force/src/link.js
+function index(d3) {
+  return d3.index;
+}
+function find2(nodeById, nodeId) {
+  var node = nodeById.get(nodeId);
+  if (!node)
+    throw new Error("node not found: " + nodeId);
+  return node;
+}
+function link_default(links) {
+  var id2 = index, strength = defaultStrength, strengths, distance2 = constant_default4(30), distances, nodes, count, bias, random, iterations = 1;
+  if (links == null)
+    links = [];
+  function defaultStrength(link2) {
+    return 1 / Math.min(count[link2.source.index], count[link2.target.index]);
+  }
+  function force(alpha) {
+    for (var k3 = 0, n2 = links.length; k3 < iterations; ++k3) {
+      for (var i4 = 0, link2, source, target, x4, y5, l3, b; i4 < n2; ++i4) {
+        link2 = links[i4], source = link2.source, target = link2.target;
+        x4 = target.x + target.vx - source.x - source.vx || jiggle_default(random);
+        y5 = target.y + target.vy - source.y - source.vy || jiggle_default(random);
+        l3 = Math.sqrt(x4 * x4 + y5 * y5);
+        l3 = (l3 - distances[i4]) / l3 * alpha * strengths[i4];
+        x4 *= l3, y5 *= l3;
+        target.vx -= x4 * (b = bias[i4]);
+        target.vy -= y5 * b;
+        source.vx += x4 * (b = 1 - b);
+        source.vy += y5 * b;
+      }
+    }
+  }
+  function initialize() {
+    if (!nodes)
+      return;
+    var i4, n2 = nodes.length, m4 = links.length, nodeById = new Map(nodes.map((d3, i5) => [id2(d3, i5, nodes), d3])), link2;
+    for (i4 = 0, count = new Array(n2); i4 < m4; ++i4) {
+      link2 = links[i4], link2.index = i4;
+      if (typeof link2.source !== "object")
+        link2.source = find2(nodeById, link2.source);
+      if (typeof link2.target !== "object")
+        link2.target = find2(nodeById, link2.target);
+      count[link2.source.index] = (count[link2.source.index] || 0) + 1;
+      count[link2.target.index] = (count[link2.target.index] || 0) + 1;
+    }
+    for (i4 = 0, bias = new Array(m4); i4 < m4; ++i4) {
+      link2 = links[i4], bias[i4] = count[link2.source.index] / (count[link2.source.index] + count[link2.target.index]);
+    }
+    strengths = new Array(m4), initializeStrength();
+    distances = new Array(m4), initializeDistance();
+  }
+  function initializeStrength() {
+    if (!nodes)
+      return;
+    for (var i4 = 0, n2 = links.length; i4 < n2; ++i4) {
+      strengths[i4] = +strength(links[i4], i4, links);
+    }
+  }
+  function initializeDistance() {
+    if (!nodes)
+      return;
+    for (var i4 = 0, n2 = links.length; i4 < n2; ++i4) {
+      distances[i4] = +distance2(links[i4], i4, links);
+    }
+  }
+  force.initialize = function(_nodes, _random) {
+    nodes = _nodes;
+    random = _random;
+    initialize();
+  };
+  force.links = function(_2) {
+    return arguments.length ? (links = _2, initialize(), force) : links;
+  };
+  force.id = function(_2) {
+    return arguments.length ? (id2 = _2, force) : id2;
+  };
+  force.iterations = function(_2) {
+    return arguments.length ? (iterations = +_2, force) : iterations;
+  };
+  force.strength = function(_2) {
+    return arguments.length ? (strength = typeof _2 === "function" ? _2 : constant_default4(+_2), initializeStrength(), force) : strength;
+  };
+  force.distance = function(_2) {
+    return arguments.length ? (distance2 = typeof _2 === "function" ? _2 : constant_default4(+_2), initializeDistance(), force) : distance2;
+  };
+  return force;
+}
+
+// node_modules/d3-force/src/lcg.js
+var a3 = 1664525;
+var c3 = 1013904223;
+var m3 = 4294967296;
+function lcg_default() {
+  let s3 = 1;
+  return () => (s3 = (a3 * s3 + c3) % m3) / m3;
+}
+
+// node_modules/d3-force/src/simulation.js
+function x3(d3) {
+  return d3.x;
+}
+function y4(d3) {
+  return d3.y;
+}
+var initialRadius = 10;
+var initialAngle = Math.PI * (3 - Math.sqrt(5));
+function simulation_default(nodes) {
+  var simulation, alpha = 1, alphaMin = 1e-3, alphaDecay = 1 - Math.pow(alphaMin, 1 / 300), alphaTarget = 0, velocityDecay = 0.6, forces = /* @__PURE__ */ new Map(), stepper = timer(step), event = dispatch_default("tick", "end"), random = lcg_default();
+  if (nodes == null)
+    nodes = [];
+  function step() {
+    tick();
+    event.call("tick", simulation);
+    if (alpha < alphaMin) {
+      stepper.stop();
+      event.call("end", simulation);
+    }
+  }
+  function tick(iterations) {
+    var i4, n2 = nodes.length, node;
+    if (iterations === void 0)
+      iterations = 1;
+    for (var k3 = 0; k3 < iterations; ++k3) {
+      alpha += (alphaTarget - alpha) * alphaDecay;
+      forces.forEach(function(force) {
+        force(alpha);
+      });
+      for (i4 = 0; i4 < n2; ++i4) {
+        node = nodes[i4];
+        if (node.fx == null)
+          node.x += node.vx *= velocityDecay;
+        else
+          node.x = node.fx, node.vx = 0;
+        if (node.fy == null)
+          node.y += node.vy *= velocityDecay;
+        else
+          node.y = node.fy, node.vy = 0;
+      }
+    }
+    return simulation;
+  }
+  function initializeNodes() {
+    for (var i4 = 0, n2 = nodes.length, node; i4 < n2; ++i4) {
+      node = nodes[i4], node.index = i4;
+      if (node.fx != null)
+        node.x = node.fx;
+      if (node.fy != null)
+        node.y = node.fy;
+      if (isNaN(node.x) || isNaN(node.y)) {
+        var radius = initialRadius * Math.sqrt(0.5 + i4), angle = i4 * initialAngle;
+        node.x = radius * Math.cos(angle);
+        node.y = radius * Math.sin(angle);
+      }
+      if (isNaN(node.vx) || isNaN(node.vy)) {
+        node.vx = node.vy = 0;
+      }
+    }
+  }
+  function initializeForce(force) {
+    if (force.initialize)
+      force.initialize(nodes, random);
+    return force;
+  }
+  initializeNodes();
+  return simulation = {
+    tick,
+    restart: function() {
+      return stepper.restart(step), simulation;
+    },
+    stop: function() {
+      return stepper.stop(), simulation;
+    },
+    nodes: function(_2) {
+      return arguments.length ? (nodes = _2, initializeNodes(), forces.forEach(initializeForce), simulation) : nodes;
+    },
+    alpha: function(_2) {
+      return arguments.length ? (alpha = +_2, simulation) : alpha;
+    },
+    alphaMin: function(_2) {
+      return arguments.length ? (alphaMin = +_2, simulation) : alphaMin;
+    },
+    alphaDecay: function(_2) {
+      return arguments.length ? (alphaDecay = +_2, simulation) : +alphaDecay;
+    },
+    alphaTarget: function(_2) {
+      return arguments.length ? (alphaTarget = +_2, simulation) : alphaTarget;
+    },
+    velocityDecay: function(_2) {
+      return arguments.length ? (velocityDecay = 1 - _2, simulation) : 1 - velocityDecay;
+    },
+    randomSource: function(_2) {
+      return arguments.length ? (random = _2, forces.forEach(initializeForce), simulation) : random;
+    },
+    force: function(name, _2) {
+      return arguments.length > 1 ? (_2 == null ? forces.delete(name) : forces.set(name, initializeForce(_2)), simulation) : forces.get(name);
+    },
+    find: function(x4, y5, radius) {
+      var i4 = 0, n2 = nodes.length, dx, dy, d22, node, closest;
+      if (radius == null)
+        radius = Infinity;
+      else
+        radius *= radius;
+      for (i4 = 0; i4 < n2; ++i4) {
+        node = nodes[i4];
+        dx = x4 - node.x;
+        dy = y5 - node.y;
+        d22 = dx * dx + dy * dy;
+        if (d22 < radius)
+          closest = node, radius = d22;
+      }
+      return closest;
+    },
+    on: function(name, _2) {
+      return arguments.length > 1 ? (event.on(name, _2), simulation) : event.on(name);
+    }
+  };
+}
+
+// node_modules/d3-force/src/manyBody.js
+function manyBody_default() {
+  var nodes, node, random, alpha, strength = constant_default4(-30), strengths, distanceMin2 = 1, distanceMax2 = Infinity, theta2 = 0.81;
+  function force(_2) {
+    var i4, n2 = nodes.length, tree = quadtree(nodes, x3, y4).visitAfter(accumulate);
+    for (alpha = _2, i4 = 0; i4 < n2; ++i4)
+      node = nodes[i4], tree.visit(apply);
+  }
+  function initialize() {
+    if (!nodes)
+      return;
+    var i4, n2 = nodes.length, node2;
+    strengths = new Array(n2);
+    for (i4 = 0; i4 < n2; ++i4)
+      node2 = nodes[i4], strengths[node2.index] = +strength(node2, i4, nodes);
+  }
+  function accumulate(quad) {
+    var strength2 = 0, q3, c4, weight = 0, x4, y5, i4;
+    if (quad.length) {
+      for (x4 = y5 = i4 = 0; i4 < 4; ++i4) {
+        if ((q3 = quad[i4]) && (c4 = Math.abs(q3.value))) {
+          strength2 += q3.value, weight += c4, x4 += c4 * q3.x, y5 += c4 * q3.y;
+        }
+      }
+      quad.x = x4 / weight;
+      quad.y = y5 / weight;
+    } else {
+      q3 = quad;
+      q3.x = q3.data.x;
+      q3.y = q3.data.y;
+      do
+        strength2 += strengths[q3.data.index];
+      while (q3 = q3.next);
+    }
+    quad.value = strength2;
+  }
+  function apply(quad, x1, _2, x22) {
+    if (!quad.value)
+      return true;
+    var x4 = quad.x - node.x, y5 = quad.y - node.y, w3 = x22 - x1, l3 = x4 * x4 + y5 * y5;
+    if (w3 * w3 / theta2 < l3) {
+      if (l3 < distanceMax2) {
+        if (x4 === 0)
+          x4 = jiggle_default(random), l3 += x4 * x4;
+        if (y5 === 0)
+          y5 = jiggle_default(random), l3 += y5 * y5;
+        if (l3 < distanceMin2)
+          l3 = Math.sqrt(distanceMin2 * l3);
+        node.vx += x4 * quad.value * alpha / l3;
+        node.vy += y5 * quad.value * alpha / l3;
+      }
+      return true;
+    } else if (quad.length || l3 >= distanceMax2)
+      return;
+    if (quad.data !== node || quad.next) {
+      if (x4 === 0)
+        x4 = jiggle_default(random), l3 += x4 * x4;
+      if (y5 === 0)
+        y5 = jiggle_default(random), l3 += y5 * y5;
+      if (l3 < distanceMin2)
+        l3 = Math.sqrt(distanceMin2 * l3);
+    }
+    do
+      if (quad.data !== node) {
+        w3 = strengths[quad.data.index] * alpha / l3;
+        node.vx += x4 * w3;
+        node.vy += y5 * w3;
+      }
+    while (quad = quad.next);
+  }
+  force.initialize = function(_nodes, _random) {
+    nodes = _nodes;
+    random = _random;
+    initialize();
+  };
+  force.strength = function(_2) {
+    return arguments.length ? (strength = typeof _2 === "function" ? _2 : constant_default4(+_2), initialize(), force) : strength;
+  };
+  force.distanceMin = function(_2) {
+    return arguments.length ? (distanceMin2 = _2 * _2, force) : Math.sqrt(distanceMin2);
+  };
+  force.distanceMax = function(_2) {
+    return arguments.length ? (distanceMax2 = _2 * _2, force) : Math.sqrt(distanceMax2);
+  };
+  force.theta = function(_2) {
+    return arguments.length ? (theta2 = _2 * _2, force) : Math.sqrt(theta2);
+  };
+  return force;
+}
+
+// node_modules/d3-zoom/src/constant.js
+var constant_default5 = (x4) => () => x4;
+
+// node_modules/d3-zoom/src/event.js
+function ZoomEvent(type2, {
+  sourceEvent,
+  target,
+  transform: transform2,
+  dispatch: dispatch2
+}) {
+  Object.defineProperties(this, {
+    type: { value: type2, enumerable: true, configurable: true },
+    sourceEvent: { value: sourceEvent, enumerable: true, configurable: true },
+    target: { value: target, enumerable: true, configurable: true },
+    transform: { value: transform2, enumerable: true, configurable: true },
+    _: { value: dispatch2 }
+  });
+}
+
+// node_modules/d3-zoom/src/transform.js
+function Transform(k3, x4, y5) {
+  this.k = k3;
+  this.x = x4;
+  this.y = y5;
+}
+Transform.prototype = {
+  constructor: Transform,
+  scale: function(k3) {
+    return k3 === 1 ? this : new Transform(this.k * k3, this.x, this.y);
+  },
+  translate: function(x4, y5) {
+    return x4 === 0 & y5 === 0 ? this : new Transform(this.k, this.x + this.k * x4, this.y + this.k * y5);
+  },
+  apply: function(point) {
+    return [point[0] * this.k + this.x, point[1] * this.k + this.y];
+  },
+  applyX: function(x4) {
+    return x4 * this.k + this.x;
+  },
+  applyY: function(y5) {
+    return y5 * this.k + this.y;
+  },
+  invert: function(location) {
+    return [(location[0] - this.x) / this.k, (location[1] - this.y) / this.k];
+  },
+  invertX: function(x4) {
+    return (x4 - this.x) / this.k;
+  },
+  invertY: function(y5) {
+    return (y5 - this.y) / this.k;
+  },
+  rescaleX: function(x4) {
+    return x4.copy().domain(x4.range().map(this.invertX, this).map(x4.invert, x4));
+  },
+  rescaleY: function(y5) {
+    return y5.copy().domain(y5.range().map(this.invertY, this).map(y5.invert, y5));
+  },
+  toString: function() {
+    return "translate(" + this.x + "," + this.y + ") scale(" + this.k + ")";
+  }
+};
+var identity2 = new Transform(1, 0, 0);
+transform.prototype = Transform.prototype;
+function transform(node) {
+  while (!node.__zoom)
+    if (!(node = node.parentNode))
+      return identity2;
+  return node.__zoom;
+}
+
+// node_modules/d3-zoom/src/noevent.js
+function nopropagation2(event) {
+  event.stopImmediatePropagation();
+}
+function noevent_default3(event) {
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}
+
+// node_modules/d3-zoom/src/zoom.js
+function defaultFilter(event) {
+  return (!event.ctrlKey || event.type === "wheel") && !event.button;
+}
+function defaultExtent() {
+  var e3 = this;
+  if (e3 instanceof SVGElement) {
+    e3 = e3.ownerSVGElement || e3;
+    if (e3.hasAttribute("viewBox")) {
+      e3 = e3.viewBox.baseVal;
+      return [[e3.x, e3.y], [e3.x + e3.width, e3.y + e3.height]];
+    }
+    return [[0, 0], [e3.width.baseVal.value, e3.height.baseVal.value]];
+  }
+  return [[0, 0], [e3.clientWidth, e3.clientHeight]];
+}
+function defaultTransform() {
+  return this.__zoom || identity2;
+}
+function defaultWheelDelta(event) {
+  return -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 2e-3) * (event.ctrlKey ? 10 : 1);
+}
+function defaultTouchable() {
+  return navigator.maxTouchPoints || "ontouchstart" in this;
+}
+function defaultConstrain(transform2, extent, translateExtent) {
+  var dx0 = transform2.invertX(extent[0][0]) - translateExtent[0][0], dx1 = transform2.invertX(extent[1][0]) - translateExtent[1][0], dy0 = transform2.invertY(extent[0][1]) - translateExtent[0][1], dy1 = transform2.invertY(extent[1][1]) - translateExtent[1][1];
+  return transform2.translate(
+    dx1 > dx0 ? (dx0 + dx1) / 2 : Math.min(0, dx0) || Math.max(0, dx1),
+    dy1 > dy0 ? (dy0 + dy1) / 2 : Math.min(0, dy0) || Math.max(0, dy1)
+  );
+}
+function zoom_default2() {
+  var filter2 = defaultFilter, extent = defaultExtent, constrain = defaultConstrain, wheelDelta = defaultWheelDelta, touchable = defaultTouchable, scaleExtent = [0, Infinity], translateExtent = [[-Infinity, -Infinity], [Infinity, Infinity]], duration = 250, interpolate = zoom_default, listeners = dispatch_default("start", "zoom", "end"), touchstarting, touchfirst, touchending, touchDelay = 500, wheelDelay = 150, clickDistance2 = 0, tapDistance = 10;
+  function zoom(selection2) {
+    selection2.property("__zoom", defaultTransform).on("wheel.zoom", wheeled, { passive: false }).on("mousedown.zoom", mousedowned).on("dblclick.zoom", dblclicked).filter(touchable).on("touchstart.zoom", touchstarted).on("touchmove.zoom", touchmoved).on("touchend.zoom touchcancel.zoom", touchended).style("-webkit-tap-highlight-color", "rgba(0,0,0,0)");
+  }
+  zoom.transform = function(collection, transform2, point, event) {
+    var selection2 = collection.selection ? collection.selection() : collection;
+    selection2.property("__zoom", defaultTransform);
+    if (collection !== selection2) {
+      schedule(collection, transform2, point, event);
+    } else {
+      selection2.interrupt().each(function() {
+        gesture(this, arguments).event(event).start().zoom(null, typeof transform2 === "function" ? transform2.apply(this, arguments) : transform2).end();
+      });
+    }
+  };
+  zoom.scaleBy = function(selection2, k3, p3, event) {
+    zoom.scaleTo(selection2, function() {
+      var k0 = this.__zoom.k, k1 = typeof k3 === "function" ? k3.apply(this, arguments) : k3;
+      return k0 * k1;
+    }, p3, event);
+  };
+  zoom.scaleTo = function(selection2, k3, p3, event) {
+    zoom.transform(selection2, function() {
+      var e3 = extent.apply(this, arguments), t0 = this.__zoom, p0 = p3 == null ? centroid(e3) : typeof p3 === "function" ? p3.apply(this, arguments) : p3, p1 = t0.invert(p0), k1 = typeof k3 === "function" ? k3.apply(this, arguments) : k3;
+      return constrain(translate(scale(t0, k1), p0, p1), e3, translateExtent);
+    }, p3, event);
+  };
+  zoom.translateBy = function(selection2, x4, y5, event) {
+    zoom.transform(selection2, function() {
+      return constrain(this.__zoom.translate(
+        typeof x4 === "function" ? x4.apply(this, arguments) : x4,
+        typeof y5 === "function" ? y5.apply(this, arguments) : y5
+      ), extent.apply(this, arguments), translateExtent);
+    }, null, event);
+  };
+  zoom.translateTo = function(selection2, x4, y5, p3, event) {
+    zoom.transform(selection2, function() {
+      var e3 = extent.apply(this, arguments), t3 = this.__zoom, p0 = p3 == null ? centroid(e3) : typeof p3 === "function" ? p3.apply(this, arguments) : p3;
+      return constrain(identity2.translate(p0[0], p0[1]).scale(t3.k).translate(
+        typeof x4 === "function" ? -x4.apply(this, arguments) : -x4,
+        typeof y5 === "function" ? -y5.apply(this, arguments) : -y5
+      ), e3, translateExtent);
+    }, p3, event);
+  };
+  function scale(transform2, k3) {
+    k3 = Math.max(scaleExtent[0], Math.min(scaleExtent[1], k3));
+    return k3 === transform2.k ? transform2 : new Transform(k3, transform2.x, transform2.y);
+  }
+  function translate(transform2, p0, p1) {
+    var x4 = p0[0] - p1[0] * transform2.k, y5 = p0[1] - p1[1] * transform2.k;
+    return x4 === transform2.x && y5 === transform2.y ? transform2 : new Transform(transform2.k, x4, y5);
+  }
+  function centroid(extent2) {
+    return [(+extent2[0][0] + +extent2[1][0]) / 2, (+extent2[0][1] + +extent2[1][1]) / 2];
+  }
+  function schedule(transition2, transform2, point, event) {
+    transition2.on("start.zoom", function() {
+      gesture(this, arguments).event(event).start();
+    }).on("interrupt.zoom end.zoom", function() {
+      gesture(this, arguments).event(event).end();
+    }).tween("zoom", function() {
+      var that = this, args = arguments, g2 = gesture(that, args).event(event), e3 = extent.apply(that, args), p3 = point == null ? centroid(e3) : typeof point === "function" ? point.apply(that, args) : point, w3 = Math.max(e3[1][0] - e3[0][0], e3[1][1] - e3[0][1]), a4 = that.__zoom, b = typeof transform2 === "function" ? transform2.apply(that, args) : transform2, i4 = interpolate(a4.invert(p3).concat(w3 / a4.k), b.invert(p3).concat(w3 / b.k));
+      return function(t3) {
+        if (t3 === 1)
+          t3 = b;
+        else {
+          var l3 = i4(t3), k3 = w3 / l3[2];
+          t3 = new Transform(k3, p3[0] - l3[0] * k3, p3[1] - l3[1] * k3);
+        }
+        g2.zoom(null, t3);
+      };
+    });
+  }
+  function gesture(that, args, clean) {
+    return !clean && that.__zooming || new Gesture(that, args);
+  }
+  function Gesture(that, args) {
+    this.that = that;
+    this.args = args;
+    this.active = 0;
+    this.sourceEvent = null;
+    this.extent = extent.apply(that, args);
+    this.taps = 0;
+  }
+  Gesture.prototype = {
+    event: function(event) {
+      if (event)
+        this.sourceEvent = event;
+      return this;
+    },
+    start: function() {
+      if (++this.active === 1) {
+        this.that.__zooming = this;
+        this.emit("start");
+      }
+      return this;
+    },
+    zoom: function(key2, transform2) {
+      if (this.mouse && key2 !== "mouse")
+        this.mouse[1] = transform2.invert(this.mouse[0]);
+      if (this.touch0 && key2 !== "touch")
+        this.touch0[1] = transform2.invert(this.touch0[0]);
+      if (this.touch1 && key2 !== "touch")
+        this.touch1[1] = transform2.invert(this.touch1[0]);
+      this.that.__zoom = transform2;
+      this.emit("zoom");
+      return this;
+    },
+    end: function() {
+      if (--this.active === 0) {
+        delete this.that.__zooming;
+        this.emit("end");
+      }
+      return this;
+    },
+    emit: function(type2) {
+      var d3 = select_default2(this.that).datum();
+      listeners.call(
+        type2,
+        this.that,
+        new ZoomEvent(type2, {
+          sourceEvent: this.sourceEvent,
+          target: zoom,
+          type: type2,
+          transform: this.that.__zoom,
+          dispatch: listeners
+        }),
+        d3
+      );
+    }
+  };
+  function wheeled(event, ...args) {
+    if (!filter2.apply(this, arguments))
+      return;
+    var g2 = gesture(this, args).event(event), t3 = this.__zoom, k3 = Math.max(scaleExtent[0], Math.min(scaleExtent[1], t3.k * Math.pow(2, wheelDelta.apply(this, arguments)))), p3 = pointer_default(event);
+    if (g2.wheel) {
+      if (g2.mouse[0][0] !== p3[0] || g2.mouse[0][1] !== p3[1]) {
+        g2.mouse[1] = t3.invert(g2.mouse[0] = p3);
+      }
+      clearTimeout(g2.wheel);
+    } else if (t3.k === k3)
+      return;
+    else {
+      g2.mouse = [p3, t3.invert(p3)];
+      interrupt_default(this);
+      g2.start();
+    }
+    noevent_default3(event);
+    g2.wheel = setTimeout(wheelidled, wheelDelay);
+    g2.zoom("mouse", constrain(translate(scale(t3, k3), g2.mouse[0], g2.mouse[1]), g2.extent, translateExtent));
+    function wheelidled() {
+      g2.wheel = null;
+      g2.end();
+    }
+  }
+  function mousedowned(event, ...args) {
+    if (touchending || !filter2.apply(this, arguments))
+      return;
+    var currentTarget = event.currentTarget, g2 = gesture(this, args, true).event(event), v3 = select_default2(event.view).on("mousemove.zoom", mousemoved, true).on("mouseup.zoom", mouseupped, true), p3 = pointer_default(event, currentTarget), x0 = event.clientX, y0 = event.clientY;
+    nodrag_default(event.view);
+    nopropagation2(event);
+    g2.mouse = [p3, this.__zoom.invert(p3)];
+    interrupt_default(this);
+    g2.start();
+    function mousemoved(event2) {
+      noevent_default3(event2);
+      if (!g2.moved) {
+        var dx = event2.clientX - x0, dy = event2.clientY - y0;
+        g2.moved = dx * dx + dy * dy > clickDistance2;
+      }
+      g2.event(event2).zoom("mouse", constrain(translate(g2.that.__zoom, g2.mouse[0] = pointer_default(event2, currentTarget), g2.mouse[1]), g2.extent, translateExtent));
+    }
+    function mouseupped(event2) {
+      v3.on("mousemove.zoom mouseup.zoom", null);
+      yesdrag(event2.view, g2.moved);
+      noevent_default3(event2);
+      g2.event(event2).end();
+    }
+  }
+  function dblclicked(event, ...args) {
+    if (!filter2.apply(this, arguments))
+      return;
+    var t0 = this.__zoom, p0 = pointer_default(event.changedTouches ? event.changedTouches[0] : event, this), p1 = t0.invert(p0), k1 = t0.k * (event.shiftKey ? 0.5 : 2), t1 = constrain(translate(scale(t0, k1), p0, p1), extent.apply(this, args), translateExtent);
+    noevent_default3(event);
+    if (duration > 0)
+      select_default2(this).transition().duration(duration).call(schedule, t1, p0, event);
+    else
+      select_default2(this).call(zoom.transform, t1, p0, event);
+  }
+  function touchstarted(event, ...args) {
+    if (!filter2.apply(this, arguments))
+      return;
+    var touches = event.touches, n2 = touches.length, g2 = gesture(this, args, event.changedTouches.length === n2).event(event), started, i4, t3, p3;
+    nopropagation2(event);
+    for (i4 = 0; i4 < n2; ++i4) {
+      t3 = touches[i4], p3 = pointer_default(t3, this);
+      p3 = [p3, this.__zoom.invert(p3), t3.identifier];
+      if (!g2.touch0)
+        g2.touch0 = p3, started = true, g2.taps = 1 + !!touchstarting;
+      else if (!g2.touch1 && g2.touch0[2] !== p3[2])
+        g2.touch1 = p3, g2.taps = 0;
+    }
+    if (touchstarting)
+      touchstarting = clearTimeout(touchstarting);
+    if (started) {
+      if (g2.taps < 2)
+        touchfirst = p3[0], touchstarting = setTimeout(function() {
+          touchstarting = null;
+        }, touchDelay);
+      interrupt_default(this);
+      g2.start();
+    }
+  }
+  function touchmoved(event, ...args) {
+    if (!this.__zooming)
+      return;
+    var g2 = gesture(this, args).event(event), touches = event.changedTouches, n2 = touches.length, i4, t3, p3, l3;
+    noevent_default3(event);
+    for (i4 = 0; i4 < n2; ++i4) {
+      t3 = touches[i4], p3 = pointer_default(t3, this);
+      if (g2.touch0 && g2.touch0[2] === t3.identifier)
+        g2.touch0[0] = p3;
+      else if (g2.touch1 && g2.touch1[2] === t3.identifier)
+        g2.touch1[0] = p3;
+    }
+    t3 = g2.that.__zoom;
+    if (g2.touch1) {
+      var p0 = g2.touch0[0], l0 = g2.touch0[1], p1 = g2.touch1[0], l1 = g2.touch1[1], dp = (dp = p1[0] - p0[0]) * dp + (dp = p1[1] - p0[1]) * dp, dl = (dl = l1[0] - l0[0]) * dl + (dl = l1[1] - l0[1]) * dl;
+      t3 = scale(t3, Math.sqrt(dp / dl));
+      p3 = [(p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2];
+      l3 = [(l0[0] + l1[0]) / 2, (l0[1] + l1[1]) / 2];
+    } else if (g2.touch0)
+      p3 = g2.touch0[0], l3 = g2.touch0[1];
+    else
+      return;
+    g2.zoom("touch", constrain(translate(t3, p3, l3), g2.extent, translateExtent));
+  }
+  function touchended(event, ...args) {
+    if (!this.__zooming)
+      return;
+    var g2 = gesture(this, args).event(event), touches = event.changedTouches, n2 = touches.length, i4, t3;
+    nopropagation2(event);
+    if (touchending)
+      clearTimeout(touchending);
+    touchending = setTimeout(function() {
+      touchending = null;
+    }, touchDelay);
+    for (i4 = 0; i4 < n2; ++i4) {
+      t3 = touches[i4];
+      if (g2.touch0 && g2.touch0[2] === t3.identifier)
+        delete g2.touch0;
+      else if (g2.touch1 && g2.touch1[2] === t3.identifier)
+        delete g2.touch1;
+    }
+    if (g2.touch1 && !g2.touch0)
+      g2.touch0 = g2.touch1, delete g2.touch1;
+    if (g2.touch0)
+      g2.touch0[1] = this.__zoom.invert(g2.touch0[0]);
+    else {
+      g2.end();
+      if (g2.taps === 2) {
+        t3 = pointer_default(t3, this);
+        if (Math.hypot(touchfirst[0] - t3[0], touchfirst[1] - t3[1]) < tapDistance) {
+          var p3 = select_default2(this).on("dblclick.zoom");
+          if (p3)
+            p3.apply(this, arguments);
+        }
+      }
+    }
+  }
+  zoom.wheelDelta = function(_2) {
+    return arguments.length ? (wheelDelta = typeof _2 === "function" ? _2 : constant_default5(+_2), zoom) : wheelDelta;
+  };
+  zoom.filter = function(_2) {
+    return arguments.length ? (filter2 = typeof _2 === "function" ? _2 : constant_default5(!!_2), zoom) : filter2;
+  };
+  zoom.touchable = function(_2) {
+    return arguments.length ? (touchable = typeof _2 === "function" ? _2 : constant_default5(!!_2), zoom) : touchable;
+  };
+  zoom.extent = function(_2) {
+    return arguments.length ? (extent = typeof _2 === "function" ? _2 : constant_default5([[+_2[0][0], +_2[0][1]], [+_2[1][0], +_2[1][1]]]), zoom) : extent;
+  };
+  zoom.scaleExtent = function(_2) {
+    return arguments.length ? (scaleExtent[0] = +_2[0], scaleExtent[1] = +_2[1], zoom) : [scaleExtent[0], scaleExtent[1]];
+  };
+  zoom.translateExtent = function(_2) {
+    return arguments.length ? (translateExtent[0][0] = +_2[0][0], translateExtent[1][0] = +_2[1][0], translateExtent[0][1] = +_2[0][1], translateExtent[1][1] = +_2[1][1], zoom) : [[translateExtent[0][0], translateExtent[0][1]], [translateExtent[1][0], translateExtent[1][1]]];
+  };
+  zoom.constrain = function(_2) {
+    return arguments.length ? (constrain = _2, zoom) : constrain;
+  };
+  zoom.duration = function(_2) {
+    return arguments.length ? (duration = +_2, zoom) : duration;
+  };
+  zoom.interpolate = function(_2) {
+    return arguments.length ? (interpolate = _2, zoom) : interpolate;
+  };
+  zoom.on = function() {
+    var value = listeners.on.apply(listeners, arguments);
+    return value === listeners ? zoom : value;
+  };
+  zoom.clickDistance = function(_2) {
+    return arguments.length ? (clickDistance2 = (_2 = +_2) * _2, zoom) : Math.sqrt(clickDistance2);
+  };
+  zoom.tapDistance = function(_2) {
+    return arguments.length ? (tapDistance = +_2, zoom) : tapDistance;
+  };
+  return zoom;
+}
+
+// ui/src/components/graph/GraphTooltip.tsx
+function GraphTooltip({ node, x: x4, y: y5 }) {
+  const tooltipWidth = 240;
+  const left = x4 + tooltipWidth + 12 > window.innerWidth ? x4 - tooltipWidth - 12 : x4 + 12;
+  const top = y5 - 8;
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "graph-tooltip",
+      style: { left, top },
+      children: [
+        /* @__PURE__ */ u3("div", { className: "graph-tooltip__type", children: node.type.replace("_", " ") }),
+        /* @__PURE__ */ u3("div", { className: "graph-tooltip__label", children: node.label }),
+        node.status && /* @__PURE__ */ u3("div", { className: "graph-tooltip__row", children: [
+          /* @__PURE__ */ u3("span", { children: "status" }),
+          node.status
+        ] }),
+        node.branch && /* @__PURE__ */ u3("div", { className: "graph-tooltip__row", children: [
+          /* @__PURE__ */ u3("span", { children: "branch" }),
+          node.branch
+        ] }),
+        node.repo && /* @__PURE__ */ u3("div", { className: "graph-tooltip__row", children: [
+          /* @__PURE__ */ u3("span", { children: "repo" }),
+          node.repo
+        ] }),
+        node.labels && node.labels.length > 0 && /* @__PURE__ */ u3("div", { className: "graph-tooltip__row", children: [
+          /* @__PURE__ */ u3("span", { children: "labels" }),
+          node.labels.join(", ")
+        ] })
+      ]
+    }
+  );
+}
+
+// ui/src/components/graph/GraphCanvas.tsx
+var NODE_RADIUS_SESSION = 10;
+var NODE_RADIUS_ISSUE = 14;
+function truncate2(s3, max3 = 20) {
+  return s3.length > max3 ? s3.slice(0, max3) + "\u2026" : s3;
+}
+function getNodeColor(node) {
+  switch (node.type) {
+    case "session":
+      if (node.active || node.status === "running" || node.status === "active") {
+        return "var(--accent-green)";
+      }
+      return "rgba(154,164,178,0.5)";
+    case "auth_request":
+      if (node.status === "pending")
+        return "var(--accent-yellow)";
+      if (node.status === "approved" || node.status === "completed")
+        return "var(--accent-green)";
+      if (node.status === "failed" || node.status === "rejected")
+        return "var(--accent-red)";
+      return "var(--accent-yellow)";
+    case "issue":
+      if (node.labels?.includes("umbrella"))
+        return "var(--accent-purple)";
+      if (node.labels?.includes("error"))
+        return "var(--accent-red)";
+      if (node.labels?.includes("feature"))
+        return "var(--accent-blue)";
+      if (node.labels?.includes("deferred"))
+        return "var(--text-muted)";
+      return "rgba(255,255,255,0.85)";
+    case "branch":
+      return "var(--text-muted)";
+    default:
+      return "rgba(255,255,255,0.5)";
+  }
+}
+function getLinkDistance(type2) {
+  if (type2 === "session_issue")
+    return 80;
+  if (type2 === "umbrella_child")
+    return 60;
+  return 120;
+}
+function getLinkStrength(edge, nodes) {
+  if (edge.type === "umbrella_child")
+    return 0.7;
+  if (edge.type === "session_issue") {
+    const src = nodes.find((n2) => n2.id === edge.source);
+    const tgt = nodes.find((n2) => n2.id === edge.target);
+    if (src?.active || tgt?.active)
+      return 0.8;
+  }
+  return 0.4;
+}
+function NodeShape({ node, selected, onClick, onMouseEnter, onMouseLeave }) {
+  if (!Number.isFinite(node.x) || !Number.isFinite(node.y))
+    return null;
+  const color2 = getNodeColor(node);
+  const isActiveSession = node.type === "session" && (node.active || node.status === "running" || node.status === "active");
+  const labelText = node.type === "branch" && node.branch && node.branch.length < node.label.length ? truncate2(node.branch) : truncate2(node.label);
+  const strokeProps = selected ? { stroke: "white", strokeWidth: 2 } : { stroke: "rgba(255,255,255,0.15)", strokeWidth: 1 };
+  let shape;
+  let labelY;
+  if (node.type === "session") {
+    shape = /* @__PURE__ */ u3(
+      "circle",
+      {
+        r: NODE_RADIUS_SESSION,
+        fill: color2,
+        className: isActiveSession ? "graph-node--pulse" : void 0,
+        ...strokeProps
+      }
+    );
+    labelY = NODE_RADIUS_SESSION + 12;
+  } else if (node.type === "issue") {
+    shape = /* @__PURE__ */ u3(
+      "circle",
+      {
+        r: NODE_RADIUS_ISSUE,
+        fill: color2,
+        ...strokeProps
+      }
+    );
+    labelY = NODE_RADIUS_ISSUE + 12;
+  } else if (node.type === "auth_request") {
+    shape = /* @__PURE__ */ u3(
+      "rect",
+      {
+        x: -10,
+        y: -10,
+        width: 20,
+        height: 20,
+        transform: "rotate(45)",
+        fill: color2,
+        ...strokeProps
+      }
+    );
+    labelY = 18;
+  } else {
+    shape = /* @__PURE__ */ u3(
+      "rect",
+      {
+        x: -22,
+        y: -9,
+        width: 44,
+        height: 18,
+        rx: 3,
+        fill: color2,
+        ...strokeProps
+      }
+    );
+    labelY = 22;
+  }
+  const fontSize = node.type === "issue" ? 11 : 10;
+  return /* @__PURE__ */ u3(
+    "g",
+    {
+      transform: `translate(${node.x},${node.y})`,
+      style: { cursor: "pointer" },
+      onClick: () => onClick(node),
+      onMouseEnter: (e3) => onMouseEnter(node, e3),
+      onMouseLeave: () => onMouseLeave(),
+      children: [
+        shape,
+        /* @__PURE__ */ u3(
+          "text",
+          {
+            textAnchor: "middle",
+            y: labelY,
+            fontSize,
+            fill: "rgba(230,237,243,0.75)",
+            style: { pointerEvents: "none", userSelect: "none" },
+            children: labelText
+          }
+        )
+      ]
+    }
+  );
+}
+function EdgeLine({ edge }) {
+  const src = edge.source;
+  const tgt = edge.target;
+  if (!Number.isFinite(src?.x) || !Number.isFinite(tgt?.x))
+    return null;
+  let stroke;
+  let strokeWidth;
+  let strokeDasharray;
+  let markerEnd;
+  switch (edge.type) {
+    case "session_issue":
+      stroke = "rgba(77,163,255,0.4)";
+      strokeWidth = 1.5;
+      markerEnd = "url(#graph-arrow)";
+      break;
+    case "umbrella_child":
+      stroke = "rgba(168,85,247,0.4)";
+      strokeWidth = 1;
+      strokeDasharray = "4 3";
+      break;
+    case "auth_branch":
+      stroke = "rgba(245,194,92,0.4)";
+      strokeWidth = 1;
+      strokeDasharray = "2 4";
+      markerEnd = "url(#graph-arrow)";
+      break;
+    case "auth_issue":
+      stroke = "rgba(245,194,92,0.4)";
+      strokeWidth = 1;
+      strokeDasharray = "2 4";
+      break;
+    case "branch_issue":
+      stroke = "rgba(154,164,178,0.3)";
+      strokeWidth = 1;
+      break;
+    case "session_parent":
+      stroke = "rgba(154,164,178,0.25)";
+      strokeWidth = 1;
+      strokeDasharray = "3 3";
+      break;
+    default:
+      stroke = "rgba(154,164,178,0.2)";
+      strokeWidth = 1;
+  }
+  return /* @__PURE__ */ u3("g", { children: [
+    /* @__PURE__ */ u3(
+      "line",
+      {
+        x1: src.x,
+        y1: src.y,
+        x2: tgt.x,
+        y2: tgt.y,
+        stroke,
+        strokeWidth,
+        strokeDasharray,
+        markerEnd
+      }
+    ),
+    /* @__PURE__ */ u3(
+      "line",
+      {
+        x1: src.x,
+        y1: src.y,
+        x2: tgt.x,
+        y2: tgt.y,
+        stroke: "transparent",
+        strokeWidth: 10
+      }
+    )
+  ] });
+}
+function GraphCanvas({ nodes, edges, onNavigate }) {
+  const containerRef = A2(null);
+  const svgRef = A2(null);
+  const simRef = A2(null);
+  const nodesRef = A2([]);
+  const edgesRef = A2([]);
+  const [tick, setTick] = d2(0);
+  const [tooltip, setTooltip] = d2(null);
+  const [bounds, setBounds] = d2({ width: 800, height: 600 });
+  const [selectedId, setSelectedId] = d2(null);
+  y2(() => {
+    if (!containerRef.current)
+      return;
+    const ro = new ResizeObserver((entries) => {
+      const e3 = entries[0];
+      if (e3)
+        setBounds({ width: e3.contentRect.width, height: e3.contentRect.height });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+  y2(() => {
+    const incoming = nodes;
+    const incomingEdges = edges;
+    const existing = new Map(nodesRef.current.map((n2) => [n2.id, n2]));
+    const next = incoming.map((node) => {
+      const prev = existing.get(node.id);
+      if (prev)
+        return Object.assign(prev, node);
+      return {
+        ...node,
+        x: bounds.width / 2 + (Math.random() - 0.5) * 200,
+        y: bounds.height / 2 + (Math.random() - 0.5) * 200,
+        vx: 0,
+        vy: 0
+      };
+    });
+    nodesRef.current = next;
+    edgesRef.current = incomingEdges.map((e3) => ({
+      ...e3,
+      source: e3.source,
+      target: e3.target
+    }));
+    if (simRef.current) {
+      simRef.current.nodes(nodesRef.current);
+      simRef.current.force("link").links(edgesRef.current);
+      simRef.current.alpha(0.4).restart();
+    } else {
+      const sim = simulation_default(nodesRef.current).alphaDecay(0.025).force("charge", manyBody_default().strength(-250)).force("center", center_default(bounds.width / 2, bounds.height / 2).strength(0.08)).force(
+        "link",
+        link_default(edgesRef.current).id((d3) => d3.id).distance((link2) => getLinkDistance(link2.type)).strength((link2) => getLinkStrength(link2, incoming))
+      ).force("collide", collide_default().radius(NODE_RADIUS_ISSUE + 6)).on("tick", () => setTick((t3) => t3 + 1));
+      simRef.current = sim;
+    }
+  }, [nodes, edges, bounds]);
+  y2(() => {
+    return () => {
+      simRef.current?.stop();
+      simRef.current = null;
+    };
+  }, []);
+  y2(() => {
+    if (!svgRef.current)
+      return;
+    const zoomBehavior = zoom_default2().scaleExtent([0.2, 3]).on("zoom", (event) => {
+      select_default2(svgRef.current).select("g.graph-viewport").attr("transform", event.transform.toString());
+    });
+    select_default2(svgRef.current).call(zoomBehavior);
+  }, []);
+  const handleNodeClick = (node) => {
+    setSelectedId(node.id);
+    if (node.type === "issue") {
+      onNavigate("issue", node.id, node.repo);
+    } else if (node.type === "session") {
+      onNavigate("session", node.id);
+    } else if (node.type === "auth_request") {
+      onNavigate("auth_request", node.id);
+    } else if (node.type === "branch") {
+      onNavigate("branch", node.branch ?? node.id, node.repo);
+    }
+  };
+  const handleNodeMouseEnter = (node, e3) => {
+    setTooltip({ node, x: e3.clientX, y: e3.clientY });
+  };
+  const handleNodeMouseLeave = () => {
+    setTooltip(null);
+  };
+  return /* @__PURE__ */ u3("div", { ref: containerRef, className: "graph-canvas", children: [
+    /* @__PURE__ */ u3("svg", { ref: svgRef, width: "100%", height: "100%", "data-tick": tick, children: [
+      /* @__PURE__ */ u3("defs", { children: /* @__PURE__ */ u3(
+        "marker",
+        {
+          id: "graph-arrow",
+          viewBox: "0 -5 10 10",
+          refX: "18",
+          refY: "0",
+          markerWidth: "6",
+          markerHeight: "6",
+          orient: "auto",
+          children: /* @__PURE__ */ u3("path", { d: "M0,-5L10,0L0,5", fill: "rgba(77,163,255,0.5)" })
+        }
+      ) }),
+      /* @__PURE__ */ u3("g", { className: "graph-viewport", children: [
+        edgesRef.current.map((edge) => /* @__PURE__ */ u3(EdgeLine, { edge }, edge.id)),
+        nodesRef.current.map((node) => /* @__PURE__ */ u3(
+          NodeShape,
+          {
+            node,
+            selected: selectedId === node.id,
+            onClick: handleNodeClick,
+            onMouseEnter: handleNodeMouseEnter,
+            onMouseLeave: handleNodeMouseLeave
+          },
+          node.id
+        ))
+      ] })
+    ] }),
+    tooltip && /* @__PURE__ */ u3(GraphTooltip, { node: tooltip.node, x: tooltip.x, y: tooltip.y })
+  ] });
+}
+
+// ui/src/views/graph.tsx
+async function getGraph(params) {
+  const q3 = new URLSearchParams();
+  if (params?.since)
+    q3.set("since", params.since);
+  if (params?.repo)
+    q3.set("repo", params.repo);
+  if (params?.status)
+    q3.set("status", params.status);
+  const qs = q3.toString();
+  const r3 = await fetch(`/api/graph${qs ? "?" + qs : ""}`);
+  if (!r3.ok)
+    throw new Error(`graph fetch failed: ${r3.status}`);
+  return r3.json();
+}
+function GraphView({ onNavigate, refreshToken }) {
+  const [nodes, setNodes] = d2([]);
+  const [edges, setEdges] = d2([]);
+  const [loading, setLoading] = d2(true);
+  const [error, setError] = d2(null);
+  const [repoFilter, setRepoFilter] = d2("all");
+  const [sinceFilter, setSinceFilter] = d2("3d");
+  const [statusFilter, setStatusFilter] = d2("open");
+  const repos = T2(() => {
+    const seen = /* @__PURE__ */ new Set();
+    nodes.forEach((n2) => n2.repo && seen.add(n2.repo));
+    return ["all", ...Array.from(seen).sort()];
+  }, [nodes]);
+  const visibleNodes = T2(() => {
+    return nodes.filter((n2) => {
+      if (repoFilter !== "all" && n2.repo !== repoFilter)
+        return false;
+      if (statusFilter === "open") {
+        if (n2.type === "session" && (n2.status === "ended" || n2.status === "dead"))
+          return false;
+        if (n2.type === "issue" && n2.status !== "open")
+          return false;
+      }
+      return true;
+    });
+  }, [nodes, repoFilter, statusFilter]);
+  const visibleNodeIds = T2(() => new Set(visibleNodes.map((n2) => n2.id)), [visibleNodes]);
+  const visibleEdges = T2(
+    () => edges.filter((e3) => {
+      const srcId = typeof e3.source === "string" ? e3.source : e3.source.id;
+      const tgtId = typeof e3.target === "string" ? e3.target : e3.target.id;
+      return visibleNodeIds.has(srcId) && visibleNodeIds.has(tgtId);
+    }),
+    [edges, visibleNodeIds]
+  );
+  y2(() => {
+    let active = true;
+    setLoading(true);
+    setError(null);
+    getGraph({
+      since: sinceFilter === "all" ? void 0 : sinceFilter,
+      status: statusFilter === "all" ? "all" : void 0
+    }).then((data) => {
+      if (active) {
+        setNodes(data.nodes);
+        setEdges(data.edges);
+      }
+    }).catch((err) => {
+      if (active) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setError(msg);
+      }
+    }).finally(() => {
+      if (active)
+        setLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [sinceFilter, statusFilter, refreshToken]);
+  return /* @__PURE__ */ u3("div", { className: "graph-view", children: [
+    /* @__PURE__ */ u3("div", { className: "view-header", children: [
+      /* @__PURE__ */ u3("h2", { children: "Graph" }),
+      /* @__PURE__ */ u3("div", { className: "graph-toolbar", children: [
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            className: "graph-toolbar__select",
+            value: repoFilter,
+            onChange: (e3) => setRepoFilter(e3.target.value),
+            children: repos.map((r3) => /* @__PURE__ */ u3("option", { value: r3, children: r3 }, r3))
+          }
+        ),
+        /* @__PURE__ */ u3("div", { className: "graph-toolbar__toggle-group", children: ["1d", "3d", "7d", "all"].map((v3) => /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `graph-toolbar__toggle${sinceFilter === v3 ? " graph-toolbar__toggle--active" : ""}`,
+            onClick: () => setSinceFilter(v3),
+            children: v3
+          },
+          v3
+        )) }),
+        /* @__PURE__ */ u3("div", { className: "graph-toolbar__toggle-group", children: ["open", "all"].map((v3) => /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `graph-toolbar__toggle${statusFilter === v3 ? " graph-toolbar__toggle--active" : ""}`,
+            onClick: () => setStatusFilter(v3),
+            children: v3 === "open" ? "open only" : "all"
+          },
+          v3
+        )) })
+      ] })
+    ] }),
+    loading && /* @__PURE__ */ u3("div", { className: "graph-loading", children: "Loading graph\u2026" }),
+    error && /* @__PURE__ */ u3("div", { className: "graph-error", children: error }),
+    !loading && !error && visibleNodes.length === 0 && /* @__PURE__ */ u3("div", { className: "graph-loading", children: "No graph data for this time range." }),
+    !loading && !error && visibleNodes.length > 0 && /* @__PURE__ */ u3("div", { className: "graph-canvas-wrap", children: /* @__PURE__ */ u3(GraphCanvas, { nodes: visibleNodes, edges: visibleEdges, onNavigate }) })
+  ] });
+}
+
 // ui/src/state.ts
 var initialState = {
   sessions: [],
@@ -20743,13 +24974,13 @@ function unwrapSseData(payload) {
   return data;
 }
 function upsertById(items, getId, nextItem) {
-  const id = getId(nextItem);
-  const index = items.findIndex((item) => getId(item) === id);
-  if (index === -1) {
+  const id2 = getId(nextItem);
+  const index2 = items.findIndex((item) => getId(item) === id2);
+  if (index2 === -1) {
     return [nextItem, ...items];
   }
   const updated = items.slice();
-  updated[index] = { ...updated[index], ...nextItem };
+  updated[index2] = { ...updated[index2], ...nextItem };
   return updated;
 }
 function appReducer(state, action) {
@@ -20789,8 +25020,8 @@ function appReducer(state, action) {
     }
     case "authResolved": {
       const updated = state.authQueue.map((request) => {
-        const id = getAuthId2(request);
-        if (id !== action.requestId) {
+        const id2 = getAuthId2(request);
+        if (id2 !== action.requestId) {
           return request;
         }
         return {
@@ -20837,7 +25068,7 @@ function appReducer(state, action) {
     case "setConversations":
       return { ...state, conversations: action.conversations };
     case "upsertConversation": {
-      const getId = (c3) => c3.id;
+      const getId = (c4) => c4.id;
       const updated = upsertById(state.conversations, getId, action.conversation);
       return { ...state, conversations: updated };
     }
@@ -20885,7 +25116,7 @@ function appReducer(state, action) {
       if (!state.inboxData)
         return state;
       const continuations = state.inboxData.continuations.filter(
-        (c3) => c3.session_id !== action.sessionId
+        (c4) => c4.session_id !== action.sessionId
       );
       const inboxData = {
         ...state.inboxData,
@@ -21209,7 +25440,7 @@ function loadCachedState() {
     if (parsed.v !== CACHE_VERSION)
       return {};
     const cached = parsed.state;
-    const now = Date.now();
+    const now2 = Date.now();
     if (Array.isArray(cached.authQueue)) {
       cached.authQueue = cached.authQueue.filter((item) => {
         const status = (item.status || item.state || "").toLowerCase();
@@ -21217,7 +25448,7 @@ function loadCachedState() {
         if (!isResolved)
           return true;
         const resolvedAt = typeof item.resolved_at === "number" ? item.resolved_at : typeof item.resolved_at === "string" ? Number(item.resolved_at) : null;
-        return resolvedAt !== null && resolvedAt >= now - RECENT_RESOLVED_MS;
+        return resolvedAt !== null && resolvedAt >= now2 - RECENT_RESOLVED_MS;
       });
     }
     if (Array.isArray(cached.authHistory)) {
@@ -21225,9 +25456,9 @@ function loadCachedState() {
         const resolvedAt = typeof item.resolved_at === "number" ? item.resolved_at : typeof item.resolved_at === "string" ? Number(item.resolved_at) : null;
         if (resolvedAt === null) {
           const createdAt = typeof item.created_at === "number" ? item.created_at : typeof item.created_at === "string" ? Number(item.created_at) : null;
-          return createdAt !== null && createdAt >= now - RECENT_HISTORY_MS;
+          return createdAt !== null && createdAt >= now2 - RECENT_HISTORY_MS;
         }
-        return resolvedAt >= now - RECENT_HISTORY_MS;
+        return resolvedAt >= now2 - RECENT_HISTORY_MS;
       });
     }
     return cached;
@@ -21293,7 +25524,7 @@ function parseHashRoute() {
     });
   }
   const normalizedPath = path === "conversations" || path === "chats" ? "chat-history" : path;
-  const tab = ["sessions", "auth", "chat-history", "work", "review", "issues", "settings", "switchboard", "inbox", "console", "logs"].includes(normalizedPath) ? normalizedPath : "sessions";
+  const tab = ["sessions", "auth", "chat-history", "work", "review", "issues", "settings", "switchboard", "inbox", "console", "logs", "graph"].includes(normalizedPath) ? normalizedPath : "sessions";
   return { tab, params };
 }
 function RebuildingSplash() {
@@ -21304,7 +25535,7 @@ function RebuildingSplash() {
   ] }) });
 }
 function App() {
-  const [state, dispatch] = h2(appReducer, void 0, () => ({
+  const [state, dispatch2] = h2(appReducer, void 0, () => ({
     ...initialState,
     ...loadCachedState()
   }));
@@ -21314,6 +25545,7 @@ function App() {
   const [errorToast, setErrorToast] = d2(null);
   const errorToastTimerRef = A2(null);
   const [rebuilding, setRebuilding] = d2(false);
+  const [graphRefreshToken, setGraphRefreshToken] = d2(0);
   y2(() => {
     const handleChange = () => setRoute(parseHashRoute());
     window.addEventListener("hashchange", handleChange);
@@ -21356,17 +25588,17 @@ function App() {
     let active = true;
     getSessions("?include=issues").then((sessions) => {
       if (active) {
-        dispatch({ type: "setSessions", sessions });
+        dispatch2({ type: "setSessions", sessions });
       }
     }).catch(() => void 0);
     getAuthQueue().then((queue) => {
       if (active) {
-        dispatch({ type: "setAuthQueue", queue });
+        dispatch2({ type: "setAuthQueue", queue });
       }
     }).catch(() => void 0);
     getAuthHistory(200).then((history) => {
       if (active) {
-        dispatch({ type: "setAuthHistory", history });
+        dispatch2({ type: "setAuthHistory", history });
       }
     }).catch(() => void 0);
     const loadWork = async () => {
@@ -21375,7 +25607,7 @@ function App() {
         if (!active) {
           return;
         }
-        dispatch({ type: "setWorkRepos", repos });
+        dispatch2({ type: "setWorkRepos", repos });
         await Promise.all(
           repos.map(async (repo) => {
             const repoId = getRepoId3(repo);
@@ -21384,7 +25616,7 @@ function App() {
             }
             const branches = await getRepoBranches(repoId);
             if (active) {
-              dispatch({ type: "setRepoBranches", repoId, branches });
+              dispatch2({ type: "setRepoBranches", repoId, branches });
             }
           })
         );
@@ -21395,42 +25627,42 @@ function App() {
     loadWork();
     getIssueRepos().then((repos) => {
       if (active) {
-        dispatch({ type: "setIssueRepos", repos });
+        dispatch2({ type: "setIssueRepos", repos });
       }
     }).catch(() => void 0);
     getConversations({ limit: 50 }).then((result) => {
       if (active) {
-        dispatch({ type: "setConversations", conversations: result.conversations });
+        dispatch2({ type: "setConversations", conversations: result.conversations });
       }
     }).catch(() => void 0);
     getSettings().then((settings) => {
       if (active) {
-        dispatch({ type: "setSettings", settings });
+        dispatch2({ type: "setSettings", settings });
       }
     }).catch(() => void 0);
     getSwitchboardPairings().then((pairings) => {
       if (active) {
-        dispatch({ type: "setSwitchboardPairings", pairings });
+        dispatch2({ type: "setSwitchboardPairings", pairings });
       }
     }).catch(() => void 0);
     getSwitchboardTemplates().then(({ templates }) => {
       if (active) {
-        dispatch({ type: "setSwitchboardTemplates", templates });
+        dispatch2({ type: "setSwitchboardTemplates", templates });
       }
     }).catch(() => void 0);
-    dispatch({ type: "setInboxLoading", loading: true });
+    dispatch2({ type: "setInboxLoading", loading: true });
     getInboxGlobal().then((data) => {
       if (active) {
-        dispatch({ type: "setInboxData", data });
+        dispatch2({ type: "setInboxData", data });
       }
     }).catch(() => {
       if (active) {
-        dispatch({ type: "setInboxLoading", loading: false });
+        dispatch2({ type: "setInboxLoading", loading: false });
       }
     });
     getConsoleSessions().then((sessions) => {
       if (active)
-        dispatch({ type: "setConsoleSessions", sessions });
+        dispatch2({ type: "setConsoleSessions", sessions });
     }).catch(() => void 0);
     return () => {
       active = false;
@@ -21439,7 +25671,7 @@ function App() {
   y2(() => {
     const client = createSSEClient();
     const handler = (payload) => {
-      dispatch({ type: "sse", payload });
+      dispatch2({ type: "sse", payload });
     };
     const daemonHandler = (payload) => {
       const data = payload.data && typeof payload.data === "object" ? payload.data : null;
@@ -21462,7 +25694,7 @@ function App() {
         }
         return null;
       }).filter((ref) => ref !== null);
-      dispatch({
+      dispatch2({
         type: "setDaemonReload",
         reload: {
           hash: commitHash,
@@ -21480,6 +25712,9 @@ function App() {
     };
     const rebuildingHandler = () => {
       setRebuilding(true);
+    };
+    const graphRefreshHandler = (_payload) => {
+      setGraphRefreshToken((n2) => n2 + 1);
     };
     const unsubscribes = [
       client.on("session:registered", handler),
@@ -21502,6 +25737,13 @@ function App() {
       client.on("console:session:deleted", handler),
       client.on("console:inbox:badge", handler),
       client.on("console:stream_event", consoleStreamHandler),
+      client.on("session:registered", graphRefreshHandler),
+      client.on("session:updated", graphRefreshHandler),
+      client.on("session:ended", graphRefreshHandler),
+      client.on("auth:new", graphRefreshHandler),
+      client.on("auth:updated", graphRefreshHandler),
+      client.on("auth:resolved", graphRefreshHandler),
+      client.on("work:branch:updated", graphRefreshHandler),
       client.on("mandible:rebuilding", rebuildingHandler)
     ];
     client.connect();
@@ -21512,23 +25754,23 @@ function App() {
   }, []);
   y2(() => {
     const POLL_INTERVAL = 1e4;
-    const timer = window.setInterval(() => {
-      getSessions("?include=issues").then((sessions) => dispatch({ type: "setSessions", sessions })).catch(() => void 0);
-      getAuthQueue().then((queue) => dispatch({ type: "setAuthQueue", queue })).catch(() => void 0);
-      getAuthHistory(200).then((history) => dispatch({ type: "setAuthHistory", history })).catch(() => void 0);
+    const timer2 = window.setInterval(() => {
+      getSessions("?include=issues").then((sessions) => dispatch2({ type: "setSessions", sessions })).catch(() => void 0);
+      getAuthQueue().then((queue) => dispatch2({ type: "setAuthQueue", queue })).catch(() => void 0);
+      getAuthHistory(200).then((history) => dispatch2({ type: "setAuthHistory", history })).catch(() => void 0);
       getIssueRepos().then((repos) => {
         if (repos.length > 0)
-          dispatch({ type: "setIssueRepos", repos });
+          dispatch2({ type: "setIssueRepos", repos });
       }).catch(() => void 0);
     }, POLL_INTERVAL);
-    return () => window.clearInterval(timer);
+    return () => window.clearInterval(timer2);
   }, []);
   y2(() => {
     if (!rebuilding)
       return;
     const POLL_MS = 2e3;
     const startTimer = window.setTimeout(() => {
-      const interval = window.setInterval(async () => {
+      const interval2 = window.setInterval(async () => {
         try {
           const res = await fetch("/api/health");
           if (res.ok) {
@@ -21537,15 +25779,15 @@ function App() {
         } catch {
         }
       }, POLL_MS);
-      return () => window.clearInterval(interval);
+      return () => window.clearInterval(interval2);
     }, 1e3);
     return () => window.clearTimeout(startTimer);
   }, [rebuilding]);
   y2(() => {
-    const timer = window.setTimeout(() => {
+    const timer2 = window.setTimeout(() => {
       saveCachedState(state);
     }, 500);
-    return () => window.clearTimeout(timer);
+    return () => window.clearTimeout(timer2);
   }, [
     state.sessions,
     state.authQueue,
@@ -21563,16 +25805,16 @@ function App() {
     }
     return result;
   }, [state.workBranches]);
-  const handleToastDismiss = () => dispatch({ type: "setDaemonReload", reload: null });
-  const handleSelectAuth = (id) => dispatch({ type: "setSelectedAuthId", id });
+  const handleToastDismiss = () => dispatch2({ type: "setDaemonReload", reload: null });
+  const handleSelectAuth = (id2) => dispatch2({ type: "setSelectedAuthId", id: id2 });
   y2(() => {
     if (!state.daemonReload) {
       return;
     }
-    const timer = window.setTimeout(() => {
-      dispatch({ type: "setDaemonReload", reload: null });
+    const timer2 = window.setTimeout(() => {
+      dispatch2({ type: "setDaemonReload", reload: null });
     }, 1e4);
-    return () => window.clearTimeout(timer);
+    return () => window.clearTimeout(timer2);
   }, [state.daemonReload?.hash]);
   const showErrorToast = (message) => {
     setErrorToast(message);
@@ -21602,7 +25844,7 @@ function App() {
   const handleApprove = async (requestId) => {
     try {
       await approveAuthRequest(requestId);
-      dispatch({ type: "authResolved", requestId, status: "approved" });
+      dispatch2({ type: "authResolved", requestId, status: "approved" });
     } catch (err) {
       throw err;
     }
@@ -21610,14 +25852,14 @@ function App() {
   const handleReject = async (requestId) => {
     try {
       await rejectAuthRequest(requestId);
-      dispatch({ type: "authResolved", requestId, status: "rejected" });
+      dispatch2({ type: "authResolved", requestId, status: "rejected" });
     } catch {
     }
   };
   const handleRetry = async (requestId) => {
     try {
       await retryAuthRequest(requestId);
-      dispatch({ type: "authResolved", requestId, status: "pending" });
+      dispatch2({ type: "authResolved", requestId, status: "pending" });
     } catch {
       return;
     }
@@ -21625,7 +25867,7 @@ function App() {
   const handleDismiss = async (requestId) => {
     try {
       await dismissAuthRequest(requestId);
-      dispatch({ type: "authResolved", requestId, status: "dismissed" });
+      dispatch2({ type: "authResolved", requestId, status: "dismissed" });
     } catch {
       return;
     }
@@ -21634,7 +25876,7 @@ function App() {
     try {
       await updateAuthRequestField(requestId, { [field]: value });
       const queue = await getAuthQueue();
-      dispatch({ type: "setAuthQueue", queue });
+      dispatch2({ type: "setAuthQueue", queue });
     } catch {
       return;
     }
@@ -21643,7 +25885,7 @@ function App() {
     try {
       await triggerWorkScan();
       const repos = await getWorkRepos();
-      dispatch({ type: "setWorkRepos", repos });
+      dispatch2({ type: "setWorkRepos", repos });
       await Promise.all(
         repos.map(async (repo) => {
           const repoId = getRepoId3(repo);
@@ -21651,7 +25893,7 @@ function App() {
             return;
           }
           const branches = await getRepoBranches(repoId);
-          dispatch({ type: "setRepoBranches", repoId, branches });
+          dispatch2({ type: "setRepoBranches", repoId, branches });
         })
       );
     } catch {
@@ -21661,7 +25903,7 @@ function App() {
   const handleIssueRescan = async () => {
     try {
       const repos = await scanIssues();
-      dispatch({ type: "setIssueRepos", repos });
+      dispatch2({ type: "setIssueRepos", repos });
     } catch {
       return;
     }
@@ -21671,7 +25913,7 @@ function App() {
       (s3) => (s3.id || s3.session_id) === sessionId
     );
     if (session) {
-      dispatch({
+      dispatch2({
         type: "upsertSession",
         session: { ...session, pinned: pinned ? 1 : 0 }
       });
@@ -21679,53 +25921,53 @@ function App() {
   };
   const handleSettingsSave = async (key2, value) => {
     await updateSetting(key2, value);
-    dispatch({ type: "updateSetting", key: key2, value });
+    dispatch2({ type: "updateSetting", key: key2, value });
   };
   const handleSelectPairing = async (name) => {
     if (name === null) {
-      dispatch({ type: "setSwitchboardSelected", name: null });
-      dispatch({ type: "setSwitchboardItems", items: [] });
-      dispatch({ type: "setSwitchboardConsistencyErrors", errors: [] });
+      dispatch2({ type: "setSwitchboardSelected", name: null });
+      dispatch2({ type: "setSwitchboardItems", items: [] });
+      dispatch2({ type: "setSwitchboardConsistencyErrors", errors: [] });
       return;
     }
-    dispatch({ type: "setSwitchboardSelected", name });
-    dispatch({ type: "setSwitchboardItemsLoading", loading: true });
+    dispatch2({ type: "setSwitchboardSelected", name });
+    dispatch2({ type: "setSwitchboardItemsLoading", loading: true });
     try {
       const result = await getSwitchboardItems(name);
-      dispatch({ type: "setSwitchboardItems", items: result.items });
-      dispatch({ type: "setSwitchboardConsistencyErrors", errors: result.consistencyErrors ?? [] });
+      dispatch2({ type: "setSwitchboardItems", items: result.items });
+      dispatch2({ type: "setSwitchboardConsistencyErrors", errors: result.consistencyErrors ?? [] });
     } catch {
-      dispatch({ type: "setSwitchboardItems", items: [] });
-      dispatch({ type: "setSwitchboardConsistencyErrors", errors: [] });
+      dispatch2({ type: "setSwitchboardItems", items: [] });
+      dispatch2({ type: "setSwitchboardConsistencyErrors", errors: [] });
     } finally {
-      dispatch({ type: "setSwitchboardItemsLoading", loading: false });
+      dispatch2({ type: "setSwitchboardItemsLoading", loading: false });
     }
   };
   const handleAddPairing = async (name, source, target, hooks) => {
     await addSwitchboardPairing(name, source, target, hooks);
     const pairings = await getSwitchboardPairings();
-    dispatch({ type: "setSwitchboardPairings", pairings });
+    dispatch2({ type: "setSwitchboardPairings", pairings });
   };
   const handleDeletePairing = async (name) => {
     await deleteSwitchboardPairing(name);
-    dispatch({ type: "removeSwitchboardPairing", name });
+    dispatch2({ type: "removeSwitchboardPairing", name });
   };
   const handleUpdatePairing = async (name, source, target, hooks) => {
     await updateSwitchboardPairing(name, source, target, hooks);
     const pairings = await getSwitchboardPairings();
-    dispatch({ type: "setSwitchboardPairings", pairings });
+    dispatch2({ type: "setSwitchboardPairings", pairings });
   };
   const handleToggleItem = async (pairingName, item) => {
     const result = await toggleSwitchboardItem(pairingName, item);
     try {
       const fetched = await getSwitchboardItems(pairingName);
-      dispatch({ type: "setSwitchboardItems", items: fetched.items });
-      dispatch({ type: "setSwitchboardConsistencyErrors", errors: fetched.consistencyErrors ?? [] });
+      dispatch2({ type: "setSwitchboardItems", items: fetched.items });
+      dispatch2({ type: "setSwitchboardConsistencyErrors", errors: fetched.consistencyErrors ?? [] });
     } catch {
       const newState = result.state;
       const existing = state.switchboardItems.find((i4) => i4.name === item);
       if (existing) {
-        dispatch({ type: "updateSwitchboardItem", item: { ...existing, state: newState } });
+        dispatch2({ type: "updateSwitchboardItem", item: { ...existing, state: newState } });
       }
     }
   };
@@ -21733,8 +25975,8 @@ function App() {
     await syncSwitchboard(pairingName);
     try {
       const result = await getSwitchboardItems(pairingName);
-      dispatch({ type: "setSwitchboardItems", items: result.items });
-      dispatch({ type: "setSwitchboardConsistencyErrors", errors: result.consistencyErrors ?? [] });
+      dispatch2({ type: "setSwitchboardItems", items: result.items });
+      dispatch2({ type: "setSwitchboardConsistencyErrors", errors: result.consistencyErrors ?? [] });
     } catch {
     }
   };
@@ -21743,13 +25985,13 @@ function App() {
       hook_setup: hookSetup || void 0,
       hook_teardown: hookTeardown || void 0
     });
-    dispatch({ type: "upsertSwitchboardTemplate", template });
-    getSwitchboardTemplates().then(({ templates }) => dispatch({ type: "setSwitchboardTemplates", templates })).catch(() => void 0);
+    dispatch2({ type: "upsertSwitchboardTemplate", template });
+    getSwitchboardTemplates().then(({ templates }) => dispatch2({ type: "setSwitchboardTemplates", templates })).catch(() => void 0);
   };
   const handleAckContinuation = async (sessionId) => {
     try {
       await acknowledgeInboxItem("continuation", sessionId);
-      dispatch({ type: "ackInboxContinuation", sessionId });
+      dispatch2({ type: "ackInboxContinuation", sessionId });
     } catch {
       return;
     }
@@ -21757,25 +25999,25 @@ function App() {
   const handleAckAuthResult = async (requestId) => {
     try {
       await acknowledgeInboxItem("auth_result", requestId);
-      dispatch({ type: "ackInboxAuthResult", requestId });
+      dispatch2({ type: "ackInboxAuthResult", requestId });
     } catch {
       return;
     }
   };
   const handleInboxRefresh = () => {
-    dispatch({ type: "setInboxLoading", loading: true });
-    getInboxGlobal().then((data) => dispatch({ type: "setInboxData", data })).catch(() => dispatch({ type: "setInboxLoading", loading: false }));
+    dispatch2({ type: "setInboxLoading", loading: true });
+    getInboxGlobal().then((data) => dispatch2({ type: "setInboxData", data })).catch(() => dispatch2({ type: "setInboxLoading", loading: false }));
   };
   const handleConsoleSelectSession = (sessionId) => {
-    dispatch({ type: "setConsoleActiveSessionId", sessionId });
+    dispatch2({ type: "setConsoleActiveSessionId", sessionId });
   };
   const handleConsoleCloseSession = async (sessionId) => {
     try {
       await closeConsoleSession(sessionId);
-      dispatch({ type: "removeConsoleSession", sessionId });
+      dispatch2({ type: "removeConsoleSession", sessionId });
       if (state.consoleActiveSessionId === sessionId) {
         const next = state.consoleSessions.find((s3) => s3.id !== sessionId && !s3.pinned) ?? state.consoleSessions.find((s3) => s3.id !== sessionId);
-        dispatch({ type: "setConsoleActiveSessionId", sessionId: next?.id ?? null });
+        dispatch2({ type: "setConsoleActiveSessionId", sessionId: next?.id ?? null });
       }
     } catch {
       return;
@@ -21785,13 +26027,13 @@ function App() {
     try {
       const result = await createConsoleSession(label, agentType);
       const rawResult = result;
-      const id = rawResult.id ?? rawResult.session?.id ?? "";
-      if (!id)
+      const id2 = rawResult.id ?? rawResult.session?.id ?? "";
+      if (!id2)
         return;
-      dispatch({
+      dispatch2({
         type: "upsertConsoleSession",
         session: {
-          id,
+          id: id2,
           label,
           agent_type: agentType,
           interaction_mode: "both",
@@ -21804,7 +26046,7 @@ function App() {
           stopped_at: null
         }
       });
-      dispatch({ type: "setConsoleActiveSessionId", sessionId: id });
+      dispatch2({ type: "setConsoleActiveSessionId", sessionId: id2 });
     } catch {
       return;
     }
@@ -21812,13 +26054,42 @@ function App() {
   const handleAckAll = async () => {
     try {
       await ackAllInbox();
-      dispatch({ type: "ackAllInboxItems" });
+      dispatch2({ type: "ackAllInboxItems" });
     } catch {
       return;
     }
   };
-  const handleSelectInboxItem = (id) => {
-    dispatch({ type: "setSelectedInboxItemId", id });
+  const handleSelectInboxItem = (id2) => {
+    dispatch2({ type: "setSelectedInboxItemId", id: id2 });
+  };
+  const handleGraphNavigate = (type2, id2, repoId) => {
+    switch (type2) {
+      case "issue": {
+        const parts = id2.split(":");
+        const humanId = parts[2] ?? id2;
+        const resolvedRepoId = repoId ?? parts[1];
+        const params = new URLSearchParams({ issue: humanId });
+        if (resolvedRepoId)
+          params.set("repo", resolvedRepoId);
+        window.location.hash = `#/issues?${params.toString()}`;
+        break;
+      }
+      case "session":
+        window.location.hash = `#/sessions?session=${encodeURIComponent(id2)}`;
+        break;
+      case "auth_request":
+        window.location.hash = `#/auth?request=${encodeURIComponent(id2)}`;
+        break;
+      case "branch": {
+        const params = new URLSearchParams({ branch: id2 });
+        if (repoId)
+          params.set("repo", repoId);
+        window.location.hash = `#/work?${params.toString()}`;
+        break;
+      }
+      default:
+        break;
+    }
   };
   if (rebuilding) {
     return /* @__PURE__ */ u3(RebuildingSplash, {});
@@ -21925,6 +26196,35 @@ function App() {
             }
           )
         ] }),
+        /* @__PURE__ */ u3(
+          "a",
+          {
+            href: "#/graph",
+            className: route.tab === "graph" ? "active" : "",
+            "aria-label": "Graph",
+            title: "Graph",
+            children: /* @__PURE__ */ u3(
+              "svg",
+              {
+                width: "16",
+                height: "16",
+                viewBox: "0 0 16 16",
+                fill: "none",
+                xmlns: "http://www.w3.org/2000/svg",
+                "aria-hidden": "true",
+                style: { verticalAlign: "middle", display: "inline-block" },
+                children: [
+                  /* @__PURE__ */ u3("circle", { cx: "8", cy: "3", r: "2", stroke: "currentColor", strokeWidth: "1.3" }),
+                  /* @__PURE__ */ u3("circle", { cx: "2.5", cy: "12", r: "2", stroke: "currentColor", strokeWidth: "1.3" }),
+                  /* @__PURE__ */ u3("circle", { cx: "13.5", cy: "12", r: "2", stroke: "currentColor", strokeWidth: "1.3" }),
+                  /* @__PURE__ */ u3("line", { x1: "8", y1: "5", x2: "2.5", y2: "10", stroke: "currentColor", strokeWidth: "1.3", strokeLinecap: "round" }),
+                  /* @__PURE__ */ u3("line", { x1: "8", y1: "5", x2: "13.5", y2: "10", stroke: "currentColor", strokeWidth: "1.3", strokeLinecap: "round" }),
+                  /* @__PURE__ */ u3("line", { x1: "4.5", y1: "12", x2: "11.5", y2: "12", stroke: "currentColor", strokeWidth: "1.3", strokeLinecap: "round" })
+                ]
+              }
+            )
+          }
+        ),
         /* @__PURE__ */ u3("a", { href: "#/settings", className: route.tab === "settings" ? "active" : "", "aria-label": "Settings", title: "Settings", children: /* @__PURE__ */ u3("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": "true", style: { verticalAlign: "middle", display: "inline-block" }, children: [
           /* @__PURE__ */ u3("path", { d: "M6.5 1.5l-.5 1.5A4.5 4.5 0 0 0 4.5 4l-1.5-.5L1.5 6l1.2.9A4.5 4.5 0 0 0 2.5 8a4.5 4.5 0 0 0 .2 1.1L1.5 10l1.5 2.5 1.5-.5a4.5 4.5 0 0 0 1.5 1l.5 1.5h3l.5-1.5a4.5 4.5 0 0 0 1.5-1l1.5.5 1.5-2.5-1.2-.9A4.5 4.5 0 0 0 13.5 8a4.5 4.5 0 0 0-.2-1.1L14.5 6 13 3.5l-1.5.5A4.5 4.5 0 0 0 10 3L9.5 1.5h-3Z", stroke: "currentColor", strokeWidth: "1.3", strokeLinejoin: "round" }),
           /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "2", stroke: "currentColor", strokeWidth: "1.3" })
@@ -22094,7 +26394,8 @@ function App() {
           onSave: handleSettingsSave
         }
       ),
-      route.tab === "logs" && /* @__PURE__ */ u3(LogsView, {})
+      route.tab === "logs" && /* @__PURE__ */ u3(LogsView, {}),
+      route.tab === "graph" && /* @__PURE__ */ u3(GraphView, { onNavigate: handleGraphNavigate, refreshToken: graphRefreshToken })
     ] })
   ] });
 }
