@@ -34,8 +34,6 @@ function getNodeColor(node: GraphNode): string {
       if (node.labels?.includes('feature')) return 'var(--accent-blue)';
       if (node.labels?.includes('deferred')) return 'var(--text-muted)';
       return 'rgba(255,255,255,0.85)';
-    case 'branch':
-      return 'var(--text-muted)';
     default:
       return 'rgba(255,255,255,0.5)';
   }
@@ -70,9 +68,7 @@ function NodeShape({ node, selected, onClick, onMouseEnter, onMouseLeave }: Node
 
   const color = getNodeColor(node);
   const isActiveSession = node.type === 'session' && (node.active || node.status === 'running' || node.status === 'active');
-  const labelText = node.type === 'branch' && node.branch && node.branch.length < node.label.length
-    ? truncate(node.branch)
-    : truncate(node.label);
+  const labelText = truncate(node.label);
 
   const strokeProps = selected
     ? { stroke: 'white', strokeWidth: 2 }
@@ -115,19 +111,15 @@ function NodeShape({ node, selected, onClick, onMouseEnter, onMouseLeave }: Node
     );
     labelY = 18;
   } else {
-    // branch: rounded rect
+    // Fallback: small circle
     shape = (
-      <rect
-        x={-22}
-        y={-9}
-        width={44}
-        height={18}
-        rx={3}
+      <circle
+        r={8}
         fill={color}
         {...strokeProps}
       />
     );
-    labelY = 22;
+    labelY = 20;
   }
 
   const fontSize = node.type === 'issue' ? 11 : 10;
@@ -179,20 +171,10 @@ function EdgeLine({ edge }: EdgeLineProps): JSX.Element | null {
       strokeWidth = 1;
       strokeDasharray = '4 3';
       break;
-    case 'auth_branch':
-      stroke = 'rgba(245,194,92,0.4)';
-      strokeWidth = 1;
-      strokeDasharray = '2 4';
-      markerEnd = 'url(#graph-arrow)';
-      break;
     case 'auth_issue':
       stroke = 'rgba(245,194,92,0.4)';
       strokeWidth = 1;
       strokeDasharray = '2 4';
-      break;
-    case 'branch_issue':
-      stroke = 'rgba(154,164,178,0.3)';
-      strokeWidth = 1;
       break;
     case 'session_parent':
       stroke = 'rgba(154,164,178,0.25)';
@@ -330,8 +312,6 @@ export function GraphCanvas({ nodes, edges, onNavigate }: GraphCanvasProps): JSX
       onNavigate('session', node.id);
     } else if (node.type === 'auth_request') {
       onNavigate('auth_request', node.id);
-    } else if (node.type === 'branch') {
-      onNavigate('branch', node.branch ?? node.id, node.repo);
     }
   };
 

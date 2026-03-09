@@ -5623,6 +5623,55 @@ tr:hover .work-actions__trigger {
   cursor: pointer;
 }
 
+.graph-toolbar__combobox-group {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.graph-toolbar__combobox {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.graph-toolbar__combobox--disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.graph-toolbar__combobox-input {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.1));
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  padding: 3px 22px 3px 8px;
+  width: 120px;
+}
+
+.graph-toolbar__combobox-input:focus {
+  outline: none;
+  border-color: var(--border-active, var(--accent-blue));
+}
+
+.graph-toolbar__combobox-clear {
+  position: absolute;
+  right: 4px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.graph-toolbar__combobox-clear:hover {
+  color: var(--text-primary);
+}
+
 .graph-toolbar__toggle-group {
   display: flex;
   border: 1px solid rgba(255,255,255,0.1);

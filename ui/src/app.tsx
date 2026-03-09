@@ -821,13 +821,6 @@ function App(): JSX.Element {
       case 'auth_request':
         window.location.hash = `#/auth?request=${encodeURIComponent(id)}`;
         break;
-      case 'branch': {
-        // id here is already the bare branch name (extracted in GraphCanvas before calling onNavigate)
-        const params = new URLSearchParams({ branch: id });
-        if (repoId) params.set('repo', repoId);
-        window.location.hash = `#/work?${params.toString()}`;
-        break;
-      }
       default:
         break;
     }
@@ -1035,6 +1028,7 @@ function App(): JSX.Element {
             outputs={state.authOutputs}
             branchesByRepo={authBranchesByRepo}
             selectedAuthId={state.selectedAuthId}
+            initialRequestId={route.params.request}
             onSelectAuth={handleSelectAuth}
             onApprove={handleApprove}
             onReject={handleReject}

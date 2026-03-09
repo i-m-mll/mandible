@@ -317,13 +317,11 @@ export interface ClaudeUsage {
 
 // --- Graph view types (Bug: 7a141c3) ---
 
-export type GraphNodeType = "issue" | "session" | "auth_request" | "branch";
+export type GraphNodeType = "issue" | "session" | "auth_request";
 export type GraphEdgeType =
   | "session_issue"    // session_issues table row
   | "session_parent"   // sessions.parent_id FK
-  | "auth_branch"      // auth_requests.head_branch matches branches.branch
   | "auth_issue"       // Bug: trailer in auth_requests.commit_message
-  | "branch_issue"     // Bug: trailer in branches.last_commit_message
   | "umbrella_child";  // umbrella issue description references child issue IDs
 
 export interface GraphNode {
@@ -353,6 +351,7 @@ export interface GraphPayload {
 
 export interface GraphQueryParams {
   repo?: string;       // filter by repo name/id
+  branch?: string;     // filter by branch name (sessions and auth_requests)
   since?: string;      // ISO timestamp or relative like "3d", "1w", "2h"
   limit?: number;      // max nodes to return (default 50)
   status?: "open" | "all"; // issue filter only (default 'open')
