@@ -5,7 +5,7 @@ import { TextBlock } from './TextBlock';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolUseBlock } from './ToolUseBlock';
 
-export function MessageGroup({ turn, isStreaming }: MessageGroupProps): JSX.Element {
+export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProps): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
 
@@ -50,7 +50,14 @@ export function MessageGroup({ turn, isStreaming }: MessageGroupProps): JSX.Elem
 
   return (
     <div className="message-group">
-      <div className="message-group__role" aria-label="Role">Assistant</div>
+      <div className="message-group__role" aria-label="Role">
+        Assistant
+        {isThinking && (
+          <span className="message-group__thinking-indicator" aria-label="Thinking">
+            thinking…
+          </span>
+        )}
+      </div>
       <div className="message-group__content">
         {blocks.map((block, i) => renderBlock(block, i))}
       </div>

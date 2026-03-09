@@ -152,6 +152,32 @@ export function StreamRenderer({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [userScrolled, setUserScrolled] = useState(false);
 
+  // Track when streaming started so we can show elapsed time in the StatusBar.
+  // streamStartTimeRef records the wall-clock ms when streaming first became active.
+  const streamStartTimeRef = useRef<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState<number | undefined>(undefined);
+
+  // When streaming begins, record start time; clear on completion.
+  useEffect(() => {
+    if (streaming) {
+      if (streamStartTimeRef.current === null) {
+        streamStartTimeRef.current = Date.now();
+      }
+      // Tick every second to update the displayed elapsed time.
+      const interval = setInterval(() => {
+        if (streamStartTimeRef.current !== null) {
+          setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1000));
+        }
+      }, 1000);
+      // Compute immediately so the first render shows 0s rather than undefined.
+      setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1000));
+      return () => clearInterval(interval);
+    } else {
+      // Streaming ended — keep the final elapsed snapshot but stop ticking.
+      streamStartTimeRef.current = null;
+    }
+  }, [streaming]);
+
   // Auto-scroll to bottom when new events arrive while streaming
   useEffect(() => {
     if (!streaming || userScrolled) {
@@ -190,9 +216,9 @@ export function StreamRenderer({
     return (
       <div className="stream-renderer">
         <div className="stream-renderer__empty">
-          {streaming ? 'Waiting for events…' : 'No events'}
+          {streaming ? 'Starting…' : 'No events'}
         </div>
-        <StatusBar streaming={streaming} {...statusBarProps} />
+        <StatusBar streaming={streaming} elapsedSeconds={elapsedSeconds} {...statusBarProps} />
       </div>
     );
   }
@@ -229,11 +255,17 @@ export function StreamRenderer({
     }
     if (i < turns.length) {
       const turn = turns[i];
+      const isLastStreamingTurn = streaming && i === turns.length - 1;
+      // Show "thinking…" indicator when the streaming turn contains a thinking block
+      const isThinking =
+        isLastStreamingTurn &&
+        turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
       nodes.push(
         <MessageGroup
           key={turn.id}
           turn={turn}
-          isStreaming={streaming && i === turns.length - 1}
+          isStreaming={isLastStreamingTurn}
+          isThinking={isThinking}
         />,
       );
     }
@@ -257,7 +289,7 @@ export function StreamRenderer({
           Jump to bottom ↓
         </button>
       )}
-      <StatusBar streaming={streaming} {...statusBarProps} />
+      <StatusBar streaming={streaming} elapsedSeconds={elapsedSeconds} {...statusBarProps} />
     </div>
   );
 }
