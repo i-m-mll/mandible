@@ -127,6 +127,13 @@ function labelColor(label: string): { bg: string; fg: string } {
   return LABEL_COLORS[Math.abs(hash) % LABEL_COLORS.length];
 }
 
+// Bug: cce48c1 — maps git-bug internal label names → user-facing display text
+// "error" is the git-bug label for bug-fix issues; displaying it as "error" looks like an error state.
+const LABEL_DISPLAY_NAMES: Record<string, string> = {
+  error: 'bug',
+  umbrella: 'umbrella',
+};
+
 // --- Components ---
 
 type StatusFilter = 'all' | 'open' | 'merged' | 'closed';
@@ -418,6 +425,21 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     setCommentText('');
   }, []);
 
+  // Bug: cce48c1 — scroll selected issue into view when selection changes (deep-link or click)
+  useEffect(() => {
+    if (!selectedRepoId || !selectedIssueId) return;
+    // Small delay to allow any expand animation to complete
+    const timer = setTimeout(() => {
+      const issueEl = document.querySelector(
+        `[data-issue-key="${selectedRepoId}:${selectedIssueId}"]`
+      );
+      if (issueEl) {
+        issueEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [selectedRepoId, selectedIssueId]);
+
   // Close issue (manual close — no "merged" label)
   const handleCloseIssue = useCallback(async () => {
     if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
@@ -584,6 +606,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
                           key={issue.id}
                           type="button"
                           className={`issues-item${isSelected ? ' issues-item--selected' : ''}`}
+                          data-issue-key={`${repo.repo_id}:${issue.id}`}
                           onClick={() => selectIssue(repo.repo_id, issue.id)}
                         >
                           <span
@@ -643,13 +666,15 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
               </span>
               {displayLabels.map((lbl) => {
                 const color = labelColor(lbl);
+                const display = LABEL_DISPLAY_NAMES[lbl] ?? lbl;
                 return (
                   <span
                     key={lbl}
                     className="issue-label-pill"
                     style={{ background: color.bg, color: color.fg }}
+                    title="label"
                   >
-                    {lbl}
+                    {display}
                   </span>
                 );
               })}

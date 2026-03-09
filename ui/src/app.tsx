@@ -353,12 +353,13 @@ function App(): JSX.Element {
     };
     // SSE handler for console stream events — dispatches a CustomEvent so TerminalPane
     // components can subscribe per-session without needing to go through global state.
-    // Bug: b949700 — console rich view SSE bridge
+    // Bug: b949700 — console rich view SSE bridge; fix: f2e6a46
     const consoleStreamHandler = (payload: SSEPayload) => {
-      // Bug: 13e621e — payload fields are spread at top level; there is no payload.data wrapper.
-      // The broadcast sends { console_session_id, event } which arrives as direct payload fields.
+      // Bug: f2e6a46 — payload.data contains { console_session_id, event }; spread that, not payload.
+      // The SSE broadcast wraps data in a 'data' field: { type, data: {...}, timestamp }.
+      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
       window.dispatchEvent(
-        new CustomEvent('console:stream_event', { detail: { ...payload } }),
+        new CustomEvent('console:stream_event', { detail: data }),
       );
     };
 
