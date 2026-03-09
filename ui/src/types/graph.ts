@@ -1,11 +1,10 @@
 // Bug: 5733427 — GraphView bigbuild P2: shared graph type definitions
-export type GraphNodeType = 'issue' | 'session' | 'auth_request' | 'branch'
+// Bug: bdcc1f5 — removed 'branch' node type and branch-related edge types
+export type GraphNodeType = 'issue' | 'session' | 'auth_request'
 export type GraphEdgeType =
   | 'session_issue'
   | 'session_parent'
-  | 'auth_branch'
   | 'auth_issue'
-  | 'branch_issue'
   | 'umbrella_child'
 
 export interface GraphNode {

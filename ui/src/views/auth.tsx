@@ -42,6 +42,8 @@ export type AuthQueueViewProps = {
   /** Known branch names per repo — used to detect stale entries whose branch was merged & deleted. */
   branchesByRepo?: Record<string, string[]>;
   selectedAuthId?: string | null;
+  /** Deep-link: select and scroll to a specific request on mount (from graph node click). */
+  initialRequestId?: string;
   onSelectAuth?: (id: string | null) => void;
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
@@ -895,6 +897,7 @@ function AuthSidebarItem({
     <button
       type="button"
       className={`auth-sidebar-item${selected ? ' auth-sidebar-item--selected' : ''}`}
+      data-request-id={id}
       onClick={() => onSelect(id)}
     >
       <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />
@@ -924,6 +927,7 @@ export function AuthQueueView({
   outputs,
   branchesByRepo,
   selectedAuthId: externalSelectedId,
+  initialRequestId,
   onSelectAuth,
   onApprove,
   onReject,
@@ -957,6 +961,21 @@ export function AuthQueueView({
     setLocalSelectedId(id);
     onSelectAuth?.(id);
   }, [onSelectAuth]);
+
+  // Bug: bdcc1f5 — deep-link from graph node click: select and scroll to initial request
+  useEffect(() => {
+    if (!initialRequestId) return;
+    setLocalSelectedId(initialRequestId);
+    onSelectAuth?.(initialRequestId);
+    setTimeout(() => {
+      const el = document.querySelector(`[data-request-id="${initialRequestId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 200);
+  // Only run on mount / when initialRequestId changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRequestId]);
 
   // Track recently resolved requests: Map<requestId, {status, resolvedAt}>
   const [recentlyResolved, setRecentlyResolved] = useState<
@@ -1367,8 +1386,17 @@ export function AuthQueueView({
       if (ts > existing) repoLatest.set(repo, ts);
     }
     return Array.from(repoLatest.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([repo]) => repo);
+      .sort(([, a], [, b]) => b - a)
+      .map(([repo]) => repo)
+      // Bug: bdcc1f5 — filter out old worktree directory artifacts and non-canonical names
+      .filter((repo) =>
+        !repo.toLowerCase().startsWith('feature') &&
+        !repo.includes('__') &&
+        repo !== 'main' &&
+        repo !== 'Main' &&
+        repo !== 'test' &&
+        repo !== 'tmp'
+      );
   }, [sidebarItems]);
 
   // Derive unique head-branch names for the currently selected repo (for autocomplete).

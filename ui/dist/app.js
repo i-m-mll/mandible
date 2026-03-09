@@ -11352,6 +11352,7 @@ function AuthSidebarItem({
     {
       type: "button",
       className: `auth-sidebar-item${selected ? " auth-sidebar-item--selected" : ""}`,
+      "data-request-id": id2,
       onClick: () => onSelect(id2),
       children: [
         /* @__PURE__ */ u3("span", { className: `auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}` }),
@@ -11377,6 +11378,7 @@ function AuthQueueView({
   outputs,
   branchesByRepo,
   selectedAuthId: externalSelectedId,
+  initialRequestId,
   onSelectAuth,
   onApprove,
   onReject,
@@ -11399,6 +11401,18 @@ function AuthQueueView({
     setLocalSelectedId(id2);
     onSelectAuth?.(id2);
   }, [onSelectAuth]);
+  y2(() => {
+    if (!initialRequestId)
+      return;
+    setLocalSelectedId(initialRequestId);
+    onSelectAuth?.(initialRequestId);
+    setTimeout(() => {
+      const el = document.querySelector(`[data-request-id="${initialRequestId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }, 200);
+  }, [initialRequestId]);
   const [recentlyResolved, setRecentlyResolved] = d2(() => /* @__PURE__ */ new Map());
   const timersRef = A2(/* @__PURE__ */ new Map());
   y2(() => {
@@ -11724,7 +11738,9 @@ function AuthQueueView({
       if (ts > existing)
         repoLatest.set(repo, ts);
     }
-    return Array.from(repoLatest.entries()).sort((a4, b) => b[1] - a4[1]).map(([repo]) => repo);
+    return Array.from(repoLatest.entries()).sort(([, a4], [, b]) => b - a4).map(([repo]) => repo).filter(
+      (repo) => !repo.toLowerCase().startsWith("feature") && !repo.includes("__") && repo !== "main" && repo !== "Main" && repo !== "test" && repo !== "tmp"
+    );
   }, [sidebarItems]);
   const uniqueBranchesForRepo = T2(() => {
     if (!repoFilter)
@@ -24509,8 +24525,6 @@ function getNodeColor(node) {
       if (node.labels?.includes("deferred"))
         return "var(--text-muted)";
       return "rgba(255,255,255,0.85)";
-    case "branch":
-      return "var(--text-muted)";
     default:
       return "rgba(255,255,255,0.5)";
   }
@@ -24538,7 +24552,7 @@ function NodeShape({ node, selected, onClick, onMouseEnter, onMouseLeave }) {
     return null;
   const color2 = getNodeColor(node);
   const isActiveSession = node.type === "session" && (node.active || node.status === "running" || node.status === "active");
-  const labelText = node.type === "branch" && node.branch && node.branch.length < node.label.length ? truncate2(node.branch) : truncate2(node.label);
+  const labelText = truncate2(node.label);
   const strokeProps = selected ? { stroke: "white", strokeWidth: 2 } : { stroke: "rgba(255,255,255,0.15)", strokeWidth: 1 };
   let shape;
   let labelY;
@@ -24579,18 +24593,14 @@ function NodeShape({ node, selected, onClick, onMouseEnter, onMouseLeave }) {
     labelY = 18;
   } else {
     shape = /* @__PURE__ */ u3(
-      "rect",
+      "circle",
       {
-        x: -22,
-        y: -9,
-        width: 44,
-        height: 18,
-        rx: 3,
+        r: 8,
         fill: color2,
         ...strokeProps
       }
     );
-    labelY = 22;
+    labelY = 20;
   }
   const fontSize = node.type === "issue" ? 11 : 10;
   return /* @__PURE__ */ u3(
@@ -24638,20 +24648,10 @@ function EdgeLine({ edge }) {
       strokeWidth = 1;
       strokeDasharray = "4 3";
       break;
-    case "auth_branch":
-      stroke = "rgba(245,194,92,0.4)";
-      strokeWidth = 1;
-      strokeDasharray = "2 4";
-      markerEnd = "url(#graph-arrow)";
-      break;
     case "auth_issue":
       stroke = "rgba(245,194,92,0.4)";
       strokeWidth = 1;
       strokeDasharray = "2 4";
-      break;
-    case "branch_issue":
-      stroke = "rgba(154,164,178,0.3)";
-      strokeWidth = 1;
       break;
     case "session_parent":
       stroke = "rgba(154,164,178,0.25)";
@@ -24766,8 +24766,6 @@ function GraphCanvas({ nodes, edges, onNavigate }) {
       onNavigate("session", node.id);
     } else if (node.type === "auth_request") {
       onNavigate("auth_request", node.id);
-    } else if (node.type === "branch") {
-      onNavigate("branch", node.branch ?? node.id, node.repo);
     }
   };
   const handleNodeMouseEnter = (node, e3) => {
@@ -24817,6 +24815,8 @@ async function getGraph(params) {
     q3.set("since", params.since);
   if (params?.repo)
     q3.set("repo", params.repo);
+  if (params?.branch)
+    q3.set("branch", params.branch);
   if (params?.status)
     q3.set("status", params.status);
   const qs = q3.toString();
@@ -24830,18 +24830,29 @@ function GraphView({ onNavigate, refreshToken }) {
   const [edges, setEdges] = d2([]);
   const [loading, setLoading] = d2(true);
   const [error, setError] = d2(null);
-  const [repoFilter, setRepoFilter] = d2("all");
   const [sinceFilter, setSinceFilter] = d2("3d");
   const [statusFilter, setStatusFilter] = d2("open");
+  const [repoInput, setRepoInput] = d2("");
+  const [repoFilter, setRepoFilter] = d2(null);
+  const [branchInput, setBranchInput] = d2("");
+  const [branchFilter, setBranchFilter] = d2(null);
   const repos = T2(() => {
     const seen = /* @__PURE__ */ new Set();
     nodes.forEach((n2) => n2.repo && seen.add(n2.repo));
-    return ["all", ...Array.from(seen).sort()];
+    return Array.from(seen).sort();
   }, [nodes]);
+  const branchesForRepo = T2(() => {
+    if (!repoFilter)
+      return [];
+    const seen = /* @__PURE__ */ new Set();
+    nodes.forEach((n2) => {
+      if (n2.repo === repoFilter && n2.branch)
+        seen.add(n2.branch);
+    });
+    return Array.from(seen).sort();
+  }, [nodes, repoFilter]);
   const visibleNodes = T2(() => {
     return nodes.filter((n2) => {
-      if (repoFilter !== "all" && n2.repo !== repoFilter)
-        return false;
       if (statusFilter === "open") {
         if (n2.type === "session" && (n2.status === "ended" || n2.status === "dead"))
           return false;
@@ -24850,7 +24861,7 @@ function GraphView({ onNavigate, refreshToken }) {
       }
       return true;
     });
-  }, [nodes, repoFilter, statusFilter]);
+  }, [nodes, statusFilter]);
   const visibleNodeIds = T2(() => new Set(visibleNodes.map((n2) => n2.id)), [visibleNodes]);
   const visibleEdges = T2(
     () => edges.filter((e3) => {
@@ -24866,7 +24877,9 @@ function GraphView({ onNavigate, refreshToken }) {
     setError(null);
     getGraph({
       since: sinceFilter === "all" ? void 0 : sinceFilter,
-      status: statusFilter === "all" ? "all" : void 0
+      status: statusFilter === "all" ? "all" : void 0,
+      repo: repoFilter ?? void 0,
+      branch: branchFilter ?? void 0
     }).then((data) => {
       if (active) {
         setNodes(data.nodes);
@@ -24884,20 +24897,88 @@ function GraphView({ onNavigate, refreshToken }) {
     return () => {
       active = false;
     };
-  }, [sinceFilter, statusFilter, refreshToken]);
+  }, [sinceFilter, statusFilter, repoFilter, branchFilter, refreshToken]);
   return /* @__PURE__ */ u3("div", { className: "graph-view", children: [
     /* @__PURE__ */ u3("div", { className: "view-header", children: [
       /* @__PURE__ */ u3("h2", { children: "Graph" }),
       /* @__PURE__ */ u3("div", { className: "graph-toolbar", children: [
-        /* @__PURE__ */ u3(
-          "select",
-          {
-            className: "graph-toolbar__select",
-            value: repoFilter,
-            onChange: (e3) => setRepoFilter(e3.target.value),
-            children: repos.map((r3) => /* @__PURE__ */ u3("option", { value: r3, children: r3 }, r3))
-          }
-        ),
+        /* @__PURE__ */ u3("div", { className: "graph-toolbar__combobox-group", children: [
+          /* @__PURE__ */ u3("div", { className: "graph-toolbar__combobox", children: [
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "text",
+                className: "graph-toolbar__combobox-input",
+                placeholder: "All repos",
+                value: repoInput,
+                list: "graph-repo-list",
+                onInput: (e3) => {
+                  const val = e3.target.value;
+                  setRepoInput(val);
+                  if (repos.includes(val)) {
+                    setRepoFilter(val);
+                    setBranchInput("");
+                    setBranchFilter(null);
+                  } else if (val === "") {
+                    setRepoFilter(null);
+                    setBranchInput("");
+                    setBranchFilter(null);
+                  }
+                }
+              }
+            ),
+            repoInput && /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "graph-toolbar__combobox-clear",
+                onClick: () => {
+                  setRepoInput("");
+                  setRepoFilter(null);
+                  setBranchInput("");
+                  setBranchFilter(null);
+                },
+                children: "\xD7"
+              }
+            ),
+            /* @__PURE__ */ u3("datalist", { id: "graph-repo-list", children: repos.map((r3) => /* @__PURE__ */ u3("option", { value: r3 }, r3)) })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: `graph-toolbar__combobox${!repoFilter ? " graph-toolbar__combobox--disabled" : ""}`, children: [
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "text",
+                className: "graph-toolbar__combobox-input",
+                placeholder: "All branches",
+                value: branchInput,
+                disabled: !repoFilter,
+                list: "graph-branch-list",
+                onInput: (e3) => {
+                  const val = e3.target.value;
+                  setBranchInput(val);
+                  if (branchesForRepo.includes(val)) {
+                    setBranchFilter(val);
+                  } else if (val === "") {
+                    setBranchFilter(null);
+                  }
+                }
+              }
+            ),
+            branchInput && /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "graph-toolbar__combobox-clear",
+                onClick: () => {
+                  setBranchInput("");
+                  setBranchFilter(null);
+                },
+                children: "\xD7"
+              }
+            ),
+            /* @__PURE__ */ u3("datalist", { id: "graph-branch-list", children: branchesForRepo.map((b) => /* @__PURE__ */ u3("option", { value: b }, b)) })
+          ] })
+        ] }),
         /* @__PURE__ */ u3("div", { className: "graph-toolbar__toggle-group", children: ["1d", "3d", "7d", "all"].map((v3) => /* @__PURE__ */ u3(
           "button",
           {
@@ -26080,13 +26161,6 @@ function App() {
       case "auth_request":
         window.location.hash = `#/auth?request=${encodeURIComponent(id2)}`;
         break;
-      case "branch": {
-        const params = new URLSearchParams({ branch: id2 });
-        if (repoId)
-          params.set("repo", repoId);
-        window.location.hash = `#/work?${params.toString()}`;
-        break;
-      }
       default:
         break;
     }
@@ -26304,6 +26378,7 @@ function App() {
           outputs: state.authOutputs,
           branchesByRepo: authBranchesByRepo,
           selectedAuthId: state.selectedAuthId,
+          initialRequestId: route.params.request,
           onSelectAuth: handleSelectAuth,
           onApprove: handleApprove,
           onReject: handleReject,
