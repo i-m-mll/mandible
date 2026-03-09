@@ -44,7 +44,8 @@ export function GraphView({ onNavigate, refreshToken }: GraphViewProps): JSX.Ele
     return nodes.filter((n) => {
       if (repoFilter !== 'all' && n.repo !== repoFilter) return false;
       if (statusFilter === 'open') {
-        if (n.type === 'session' && n.status !== 'running' && n.status !== 'active') return false;
+        // Only show sessions that are not yet terminated (idle = between tool calls, still in progress)
+        if (n.type === 'session' && (n.status === 'ended' || n.status === 'dead')) return false;
         if (n.type === 'issue' && n.status !== 'open') return false;
         // auth_request and branch: always include regardless of status filter
       }
@@ -69,7 +70,10 @@ export function GraphView({ onNavigate, refreshToken }: GraphViewProps): JSX.Ele
     let active = true;
     setLoading(true);
     setError(null);
-    getGraph({ since: sinceFilter === 'all' ? undefined : sinceFilter })
+    getGraph({
+      since: sinceFilter === 'all' ? undefined : sinceFilter,
+      status: statusFilter === 'all' ? 'all' : undefined,
+    })
       .then((data) => {
         if (active) {
           setNodes(data.nodes);
@@ -88,7 +92,7 @@ export function GraphView({ onNavigate, refreshToken }: GraphViewProps): JSX.Ele
     return () => {
       active = false;
     };
-  }, [sinceFilter, refreshToken]);
+  }, [sinceFilter, statusFilter, refreshToken]);
 
   return (
     <div className="graph-view">

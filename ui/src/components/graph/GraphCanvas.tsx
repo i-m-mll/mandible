@@ -331,7 +331,7 @@ export function GraphCanvas({ nodes, edges, onNavigate }: GraphCanvasProps): JSX
     } else if (node.type === 'auth_request') {
       onNavigate('auth_request', node.id);
     } else if (node.type === 'branch') {
-      onNavigate('branch', node.id, node.repo);
+      onNavigate('branch', node.branch ?? node.id, node.repo);
     }
   };
 

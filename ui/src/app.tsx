@@ -806,8 +806,12 @@ function App(): JSX.Element {
   const handleGraphNavigate = (type: GraphNodeType, id: string, repoId?: string) => {
     switch (type) {
       case 'issue': {
-        const params = new URLSearchParams({ issue: id });
-        if (repoId) params.set('repo', repoId);
+        // id is the full graph node ID "issue:<repo_id>:<issue_human_id>"; extract parts
+        const parts = id.split(':');
+        const humanId = parts[2] ?? id;
+        const resolvedRepoId = repoId ?? parts[1];
+        const params = new URLSearchParams({ issue: humanId });
+        if (resolvedRepoId) params.set('repo', resolvedRepoId);
         window.location.hash = `#/issues?${params.toString()}`;
         break;
       }
@@ -818,6 +822,7 @@ function App(): JSX.Element {
         window.location.hash = `#/auth?request=${encodeURIComponent(id)}`;
         break;
       case 'branch': {
+        // id here is already the bare branch name (extracted in GraphCanvas before calling onNavigate)
         const params = new URLSearchParams({ branch: id });
         if (repoId) params.set('repo', repoId);
         window.location.hash = `#/work?${params.toString()}`;
