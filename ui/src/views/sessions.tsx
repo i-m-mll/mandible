@@ -1,5 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { marked } from 'marked';
 import { openPath, patchSession } from '../api.js';
+
+// Bug: a44fd6a — render task/intent fields as inline markdown
+marked.setOptions({ async: false, gfm: true, breaks: false });
+
+/**
+ * Render inline markdown — strips the outer <p>…</p> wrapper that marked adds
+ * for single-line input so the text flows inline in table cells without extra
+ * block spacing.
+ */
+function renderInlineMarkdown(src: string): string {
+  if (!src) return '';
+  const html = marked.parse(src, { async: false }) as string;
+  return html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+}
 
 export type IssueLink = {
   issue_id: string;
@@ -693,7 +708,12 @@ export function SessionsView({
               // Only show task text if it's meaningful (not just an m-dash)
               const showTask = task !== '\u2014';
               if (showTask) {
-                return <span>{task}</span>;
+                return (
+                  <span
+                    // Bug: a44fd6a — render task/intent as inline markdown
+                    dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(task) }}
+                  />
+                );
               }
               if (!hasIssues) {
                 return <span className="text-muted">{'\u2014'}</span>;
