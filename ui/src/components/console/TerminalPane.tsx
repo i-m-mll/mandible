@@ -468,7 +468,7 @@ export function TerminalPane({
                 value={prompt}
                 onInput={(e) => setPrompt(e.currentTarget.value)}
                 placeholder="Send a message to the agent..."
-                disabled={wsStatus !== 'open' || interactionMode === 'inbox_only'}
+                disabled={interactionMode === 'inbox_only'}
                 style={{
                   flex: 1,
                   background: 'var(--bg-page)',
@@ -483,7 +483,7 @@ export function TerminalPane({
               />
               <button
                 type="submit"
-                disabled={!prompt.trim() || wsStatus !== 'open' || interactionMode === 'inbox_only'}
+                disabled={!prompt.trim() || interactionMode === 'inbox_only'}
                 style={{
                   padding: '8px 16px',
                   borderRadius: '6px',
