@@ -23,6 +23,7 @@ import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerSwitchboardRoutes } from "./routes/switchboard.js";
 import { registerConsoleRoutes } from "./routes/console.js";
+import { registerGraphRoutes } from "./routes/graph.js";
 import { PtyManager } from "./pty-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
@@ -79,6 +80,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const sessionDiscovery = new SessionDiscovery(db, sessionRegistry, workScanner, logger);
   const reaperTimer = new ReaperTimer(sessionDiscovery, logger);
   registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner);
+
+  registerGraphRoutes(router, issueScanner);
 
   // Console routes + PTY manager (Bug: e980dd8)
   const ptyManager = new PtyManager(db, logger);
