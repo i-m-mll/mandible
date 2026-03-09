@@ -18,7 +18,7 @@ import { registerWorkRoutes } from "./routes/work.js";
 import { registerReviewRoutes } from "./routes/review.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerInboxRoutes } from "./routes/inbox.js";
-import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerSettingsRoutes, syncReaperSettingsToConfigFile } from "./routes/settings.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerSwitchboardRoutes } from "./routes/switchboard.js";
@@ -72,6 +72,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const issueScanner = registerIssueRoutes(router, workScanner);
   registerInboxRoutes(router, sessionRegistry, issueScanner);
   registerSettingsRoutes(router);
+  // Bug: 94bba43 — sync reaper settings to config file on startup so
+  // the fallback config file is always current even if Mandible was down
+  // when settings were last changed.
+  syncReaperSettingsToConfigFile();
   registerSystemRoutes(router, workScanner);
   registerConversationRoutes(router);
   registerSwitchboardRoutes(router);
