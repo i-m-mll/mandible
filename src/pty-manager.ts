@@ -405,6 +405,17 @@ export class PtySession {
     return [...this.streamEvents];
   }
 
+  /**
+   * Feed raw text through the stream-json line parser without writing to
+   * the ring buffer or broadcasting raw PTY bytes.
+   * Used by the /prompt endpoint to ingest non-PTY subprocess stdout.
+   * Bug: a97f54b — --output-format stream-json only works with -p; a separate
+   * non-PTY subprocess is required to get structured events from Claude.
+   */
+  ingestText(data: string): void {
+    this.feedLineParser(data);
+  }
+
   // ----------------------------------------------------------------
   // Private
   // ----------------------------------------------------------------
