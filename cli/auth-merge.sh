@@ -475,11 +475,11 @@ restart_mandible_if_dist_changed() {
   if [[ -n "$server_changed" ]]; then
     local uid
     uid=$(id -u)
-    if launchctl kickstart -k "gui/${uid}/com.mll.mandible" >/dev/null 2>&1; then
-      err "${GREEN}[post-merge] restarted com.mll.mandible (dist/ changed)${RESET}"
-    else
-      err "${BOLD_YELLOW}[post-merge] failed to restart com.mll.mandible${RESET}"
-    fi
+    # Bug: 4980617 — background restart so auth-merge exits first, giving
+    # the executor time to run storeExecutionResult() before daemon dies.
+    (sleep 3 && launchctl kickstart -k "gui/${uid}/com.mll.mandible") &
+    disown $! 2>/dev/null || true
+    err "${GREEN}[post-merge] scheduled com.mll.mandible restart in 3s (dist/ changed)${RESET}"
   else
     err "${DIM_WHITE}[post-merge] ui/dist/ changed only — no restart needed, browser will reload${RESET}"
   fi
