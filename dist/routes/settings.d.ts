@@ -15,4 +15,12 @@ export declare function getBoolSetting(key: string, defaultValue: boolean): bool
 export declare function getIntSetting(key: string, defaultValue: number): number;
 /** Get a string setting with fallback default. */
 export declare function getStrSetting(key: string, defaultValue: string): string;
+/**
+ * Update a single variable in ~/.config/claude-reaper/config.
+ * If the `export VAR=` line exists, replace its value; otherwise append it.
+ * Creates the directory and file if they don't exist.
+ */
+export declare function dualWriteReaperConf(envVar: string, value: string): void;
+/** Sync all reaper_* settings from DB to config file on startup. */
+export declare function syncReaperSettingsToConfigFile(): void;
 export declare function registerSettingsRoutes(server: RouteRegistrar): void;
