@@ -4926,6 +4926,21 @@ tr:hover .work-actions__trigger {
   letter-spacing: 0.08em;
   color: var(--text-muted);
   margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Thinking indicator: subtle pulsing label shown on the last streaming turn
+   when the assistant content includes a thinking block. */
+.message-group__thinking-indicator {
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  opacity: 0.7;
+  animation: stream-pulse 1.8s ease-in-out infinite;
 }
 
 .message-group__content {
