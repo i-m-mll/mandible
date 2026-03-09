@@ -2,6 +2,7 @@ import path from "node:path";
 import { getDb } from "../db.js";
 import { extractBugRefs } from "../utils/bug-refs.js";
 // Bug: 7a141c3 — graph API implementation
+// Bug: bdcc1f5 — remove branch nodes, add branch filter, fix issue visibility
 function parseSince(since) {
     // ISO date string
     if (/^\d{4}-/.test(since)) {
@@ -38,6 +39,7 @@ function parseQueryParams(query) {
     const status = query.status === "all" ? "all" : "open";
     return {
         repo: query.repo || undefined,
+        branch: query.branch || undefined,
         since: query.since || undefined,
         limit,
         status,
@@ -56,6 +58,7 @@ export function registerGraphRoutes(app, issueScanner) {
         const edges = [];
         // ----------------------------------------------------------------
         // 1. Issue nodes (from IssueScanner in-memory cache)
+        //    No `since` filter — open issues should always appear regardless of age.
         // ----------------------------------------------------------------
         const summaries = issueScanner.getRepoSummaries();
         const issueNodeIds = new Set();
@@ -67,12 +70,7 @@ export function registerGraphRoutes(app, issueScanner) {
                 if (params.status === "open" && issue.status !== "open") {
                     continue;
                 }
-                if (sinceMs !== null && issue.created_at) {
-                    const issueMs = new Date(issue.created_at).getTime();
-                    if (!Number.isNaN(issueMs) && issueMs < sinceMs) {
-                        continue;
-                    }
-                }
+                // No created_at/since filter for issues — old open issues must appear
                 const nodeId = `issue:${issue.repo_id}:${issue.id}`;
                 issueNodeIds.add(nodeId);
                 nodes.push({
@@ -99,6 +97,10 @@ export function registerGraphRoutes(app, issueScanner) {
         if (sinceIso !== null) {
             sessionQuery += ` AND created_at >= :sinceIso`;
             sessionBindings.sinceIso = sinceIso;
+        }
+        if (params.branch) {
+            sessionQuery += ` AND branch = :branch`;
+            sessionBindings.branch = params.branch;
         }
         sessionQuery += ` ORDER BY created_at DESC LIMIT :limit`;
         sessionBindings.limit = limit;
@@ -161,6 +163,10 @@ export function registerGraphRoutes(app, issueScanner) {
             authQuery += ` AND repo = :repo`;
             authBindings.repo = params.repo;
         }
+        if (params.branch) {
+            authQuery += ` AND head_branch = :branch`;
+            authBindings.branch = params.branch;
+        }
         authQuery += ` ORDER BY created_at DESC LIMIT :limit`;
         authBindings.limit = limit;
         let authRows;
@@ -184,41 +190,6 @@ export function registerGraphRoutes(app, issueScanner) {
                 created_at: new Date(ar.created_at).toISOString(),
             });
         }
-        let branchQuery = `
-      SELECT repo_root, branch, last_commit_message, last_commit_date, is_dirty, ahead, updated_at
-      FROM branches
-      WHERE 1=1
-    `;
-        const branchBindings = {};
-        if (sinceIso !== null) {
-            branchQuery += ` AND updated_at >= :sinceIso`;
-            branchBindings.sinceIso = sinceIso;
-        }
-        branchQuery += ` ORDER BY updated_at DESC LIMIT :limit`;
-        branchBindings.limit = limit;
-        let branchRows;
-        try {
-            branchRows = db.prepare(branchQuery).all(branchBindings);
-        }
-        catch {
-            branchRows = [];
-        }
-        const branchNodeIds = new Set();
-        for (const b of branchRows) {
-            if (params.repo && path.basename(b.repo_root) !== params.repo) {
-                continue;
-            }
-            const nodeId = `branch:${b.repo_root}:${b.branch}`;
-            branchNodeIds.add(nodeId);
-            nodes.push({
-                id: nodeId,
-                type: "branch",
-                label: b.branch,
-                repo: path.basename(b.repo_root),
-                branch: b.branch,
-                created_at: b.updated_at,
-            });
-        }
         let sessionIssueRows;
         try {
             sessionIssueRows = db.prepare(`SELECT session_id, issue_id, repo_id FROM session_issues`).all();
@@ -236,30 +207,6 @@ export function registerGraphRoutes(app, issueScanner) {
                     target: issueNodeId,
                     type: "session_issue",
                 });
-            }
-        }
-        // ----------------------------------------------------------------
-        // 6. auth_branch edges: match auth_request.head_branch → branch node
-        // ----------------------------------------------------------------
-        for (const ar of authRows) {
-            if (!ar.head_branch)
-                continue;
-            const authNodeId = `auth_request:${ar.id}`;
-            // Find a branch node with matching branch name (and matching repo if available)
-            for (const b of branchRows) {
-                if (b.branch !== ar.head_branch)
-                    continue;
-                if (ar.repo && path.basename(b.repo_root) !== ar.repo)
-                    continue;
-                const branchNodeId = `branch:${b.repo_root}:${b.branch}`;
-                if (authNodeIds.has(authNodeId) && branchNodeIds.has(branchNodeId)) {
-                    edges.push({
-                        id: `auth_branch:${ar.id}:${b.repo_root}:${b.branch}`,
-                        source: authNodeId,
-                        target: branchNodeId,
-                        type: "auth_branch",
-                    });
-                }
             }
         }
         // ----------------------------------------------------------------
@@ -284,89 +231,6 @@ export function registerGraphRoutes(app, issueScanner) {
                                 target: issueNodeId,
                                 type: "auth_issue",
                             });
-                        }
-                    }
-                }
-            }
-        }
-        // ----------------------------------------------------------------
-        // 8. branch_issue edges: Bug: trailers in last_commit_message
-        // ----------------------------------------------------------------
-        for (const b of branchRows) {
-            if (!b.last_commit_message)
-                continue;
-            const branchNodeId = `branch:${b.repo_root}:${b.branch}`;
-            if (!branchNodeIds.has(branchNodeId))
-                continue;
-            const refs = extractBugRefs(b.last_commit_message);
-            for (const ref of refs) {
-                for (const issueNodeId of issueNodeIds) {
-                    const parts = issueNodeId.split(":");
-                    const issueHumanId = parts[2];
-                    if (issueHumanId && (issueHumanId === ref || issueHumanId.startsWith(ref))) {
-                        edges.push({
-                            id: `branch_issue:${b.repo_root}:${b.branch}:${issueNodeId}`,
-                            source: branchNodeId,
-                            target: issueNodeId,
-                            type: "branch_issue",
-                        });
-                    }
-                }
-            }
-        }
-        // ----------------------------------------------------------------
-        // 9. umbrella_child edges
-        // ----------------------------------------------------------------
-        const CHILD_REF_REGEX = /\b([0-9a-f]{7,40})\b/g;
-        // Build a flat map of issue human_id → nodeId for quick lookup
-        const issueIdToNodeId = new Map();
-        for (const nodeId of issueNodeIds) {
-            const parts = nodeId.split(":");
-            const humanId = parts[2];
-            if (humanId) {
-                issueIdToNodeId.set(humanId, nodeId);
-            }
-        }
-        for (const summary of summaries) {
-            for (const issue of summary.issues) {
-                if (!issue.labels.includes("umbrella"))
-                    continue;
-                const umbrellaNodeId = `issue:${issue.repo_id}:${issue.id}`;
-                if (!issueNodeIds.has(umbrellaNodeId))
-                    continue;
-                // Fetch detail to get description (not available in list scan)
-                const detail = issueScanner.getIssueDetail(issue.repo_id, issue.id);
-                if (!detail?.description)
-                    continue;
-                const description = detail.description;
-                let match;
-                CHILD_REF_REGEX.lastIndex = 0;
-                while ((match = CHILD_REF_REGEX.exec(description)) !== null) {
-                    const candidate = match[1];
-                    // Exact match first
-                    if (issueIdToNodeId.has(candidate)) {
-                        const childNodeId = issueIdToNodeId.get(candidate);
-                        if (childNodeId !== umbrellaNodeId) {
-                            edges.push({
-                                id: `umbrella_child:${umbrellaNodeId}:${childNodeId}`,
-                                source: umbrellaNodeId,
-                                target: childNodeId,
-                                type: "umbrella_child",
-                            });
-                        }
-                    }
-                    else {
-                        // Prefix match
-                        for (const [humanId, nodeId] of issueIdToNodeId) {
-                            if (humanId.startsWith(candidate) && nodeId !== umbrellaNodeId) {
-                                edges.push({
-                                    id: `umbrella_child:${umbrellaNodeId}:${nodeId}`,
-                                    source: umbrellaNodeId,
-                                    target: nodeId,
-                                    type: "umbrella_child",
-                                });
-                                break;
-                            }
                         }
                     }
                 }
