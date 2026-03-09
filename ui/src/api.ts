@@ -592,6 +592,23 @@ export async function getConsoleStreamEvents<T = unknown>(
   return payload.events ?? [];
 }
 
+/**
+ * Send a prompt to a console session via the non-PTY subprocess mechanism.
+ * Bug: a97f54b — --output-format stream-json requires -p; the PTY emits no JSON.
+ * This spawns a separate `claude -p --continue --output-format stream-json` process
+ * on the server and feeds its output through the SSE console:stream_event pipeline.
+ * Returns immediately (202); events arrive asynchronously via SSE.
+ */
+export async function sendConsolePrompt(
+  sessionId: string,
+  prompt: string,
+): Promise<void> {
+  await apiPost(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/prompt`,
+    { prompt },
+  );
+}
+
 // ── Backup API ──
 
 export type BackupStatus = {

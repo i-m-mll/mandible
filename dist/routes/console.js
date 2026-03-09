@@ -2,6 +2,7 @@
  * Console session HTTP routes.
  * Bug: e980dd8
  */
+import { spawn } from "node:child_process";
 import { getDb } from "../db.js";
 function sendJson(res, code, payload) {
     res.status(code).json(payload);
@@ -182,6 +183,77 @@ export function registerConsoleRoutes(server, manager) {
             data: buf.toString("base64"),
             bytes: buf.length,
         });
+    });
+    // ------------------------------------------------------------------
+    // POST /api/console/sessions/:id/prompt — send a prompt via non-PTY subprocess
+    //
+    // Bug: a97f54b — --output-format stream-json only works with -p (non-interactive).
+    // The PTY session runs Claude in full TUI mode and emits no JSON to stdout.
+    // This endpoint spawns a separate `claude -p --continue --output-format stream-json`
+    // subprocess to capture structured stream events for the rich view, while the
+    // PTY session continues providing the terminal view unchanged.
+    //
+    // The subprocess stdout is fed through PtySession.ingestText() which runs the
+    // same line parser and broadcasts console:stream_event via SSE.
+    //
+    // Returns 202 immediately; events arrive asynchronously via SSE.
+    // ------------------------------------------------------------------
+    server.post("/api/console/sessions/:id/prompt", (req, res) => {
+        const id = req.params.id;
+        const ptySession = manager.get(id);
+        if (!ptySession) {
+            sendJson(res, 404, { error: "not_found" });
+            return;
+        }
+        const body = (req.body ?? {});
+        if (typeof body.prompt !== "string" || !body.prompt.trim()) {
+            sendJson(res, 400, { error: "missing_prompt" });
+            return;
+        }
+        const prompt = body.prompt.trim();
+        const cwd = ptySession.meta.cwd ?? process.env.HOME ?? "/tmp";
+        // Clean env: strip agent signing keys just like buildPtyEnv does for PTY
+        const POLLUTED_EXACT = new Set(["CLAUDECODE", "GIT_CONFIG_COUNT"]);
+        const POLLUTED_PREFIX = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
+        const env = {};
+        for (const [k, v] of Object.entries(process.env)) {
+            if (v === undefined)
+                continue;
+            if (POLLUTED_EXACT.has(k))
+                continue;
+            if (POLLUTED_PREFIX.some((p) => k.startsWith(p)))
+                continue;
+            env[k] = v;
+        }
+        // Merge session-level env overrides
+        Object.assign(env, ptySession.meta.env ?? {});
+        // Spawn non-PTY subprocess: claude -p --continue --output-format stream-json
+        const child = spawn(ptySession.meta.command === "claude" ? ptySession.meta.command : "claude", ["-p", prompt, "--continue", "--output-format", "stream-json", "--dangerously-skip-permissions"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+        let lineBuffer = "";
+        child.stdout.on("data", (chunk) => {
+            lineBuffer += chunk.toString("utf8");
+            const lines = lineBuffer.split("\n");
+            lineBuffer = lines.pop() ?? "";
+            for (const line of lines) {
+                if (line.trim()) {
+                    ptySession.ingestText(line + "\n");
+                }
+            }
+        });
+        // stderr is discarded (Claude's TUI diagnostics are not stream-json)
+        child.stderr.on("data", () => { });
+        child.on("close", () => {
+            // Flush any remaining partial line
+            if (lineBuffer.trim()) {
+                ptySession.ingestText(lineBuffer + "\n");
+            }
+            lineBuffer = "";
+        });
+        child.on("error", () => {
+            // Best-effort: subprocess failed (e.g. claude not in PATH). Nothing to emit.
+        });
+        // Respond immediately; events arrive via SSE
+        res.status(202).json({ ok: true });
     });
     // ------------------------------------------------------------------
     // GET /api/console/pinned — ordered list of pinned session IDs

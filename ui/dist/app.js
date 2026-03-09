@@ -8169,6 +8169,12 @@ async function getConsoleStreamEvents(sessionId, limit = 500) {
     return payload;
   return payload.events ?? [];
 }
+async function sendConsolePrompt(sessionId, prompt) {
+  await apiPost(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/prompt`,
+    { prompt }
+  );
+}
 async function getBackupStatus() {
   const response = await apiGet("/api/backup/status");
   return await parseMaybeJson(response);
@@ -11385,6 +11391,8 @@ function AuthQueueView({
   });
   const [filterMode, setFilterMode] = d2("active");
   const [repoFilter, setRepoFilter] = d2(null);
+  const [branchFilter, setBranchFilter] = d2(null);
+  const [branchInput, setBranchInput] = d2("");
   const [localSelectedId, setLocalSelectedId] = d2(null);
   const selectedId = externalSelectedId !== void 0 ? externalSelectedId : localSelectedId;
   const handleSelect = q2((id) => {
@@ -11706,27 +11714,59 @@ function AuthQueueView({
     return [...allActive, ...allHistory];
   }, [filterMode, orderedActiveQueue, lingeringQueue, historyRequests]);
   const uniqueRepos = T2(() => {
-    const repos = /* @__PURE__ */ new Set();
+    const repoLatest = /* @__PURE__ */ new Map();
     for (const r3 of sidebarItems) {
       const repo = r3.repo && r3.repo.trim() ? r3.repo.trim() : null;
-      if (repo)
-        repos.add(repo);
+      if (!repo)
+        continue;
+      const ts = getTimestampMs(r3.resolved_at ?? null) ?? getTimestampMs(r3.last_executed_at ?? null) ?? getTimestampMs(r3.created_at ?? null) ?? 0;
+      const existing = repoLatest.get(repo) ?? 0;
+      if (ts > existing)
+        repoLatest.set(repo, ts);
     }
-    return Array.from(repos).sort();
+    return Array.from(repoLatest.entries()).sort((a3, b) => b[1] - a3[1]).map(([repo]) => repo);
   }, [sidebarItems]);
+  const uniqueBranchesForRepo = T2(() => {
+    if (!repoFilter)
+      return [];
+    const branchLatest = /* @__PURE__ */ new Map();
+    for (const r3 of sidebarItems) {
+      const repo = r3.repo && r3.repo.trim() ? r3.repo.trim() : null;
+      if (repo !== repoFilter)
+        continue;
+      const branch = (r3.head_branch ?? r3.head ?? "").trim();
+      if (!branch)
+        continue;
+      const ts = getTimestampMs(r3.resolved_at ?? null) ?? getTimestampMs(r3.last_executed_at ?? null) ?? getTimestampMs(r3.created_at ?? null) ?? 0;
+      const existing = branchLatest.get(branch) ?? 0;
+      if (ts > existing)
+        branchLatest.set(branch, ts);
+    }
+    return Array.from(branchLatest.entries()).sort((a3, b) => b[1] - a3[1]).map(([branch]) => branch);
+  }, [sidebarItems, repoFilter]);
   y2(() => {
     if (repoFilter && !uniqueRepos.includes(repoFilter)) {
       setRepoFilter(null);
+      setBranchFilter(null);
+      setBranchInput("");
     }
   }, [uniqueRepos, repoFilter]);
   const filteredSidebarItems = T2(() => {
-    if (!repoFilter)
-      return sidebarItems;
-    return sidebarItems.filter((r3) => {
-      const repo = r3.repo && r3.repo.trim() ? r3.repo.trim() : null;
-      return repo === repoFilter;
-    });
-  }, [sidebarItems, repoFilter]);
+    let items = sidebarItems;
+    if (repoFilter) {
+      items = items.filter((r3) => {
+        const repo = r3.repo && r3.repo.trim() ? r3.repo.trim() : null;
+        return repo === repoFilter;
+      });
+    }
+    if (branchFilter) {
+      items = items.filter((r3) => {
+        const branch = (r3.head_branch ?? r3.head ?? "").trim();
+        return branch === branchFilter;
+      });
+    }
+    return items;
+  }, [sidebarItems, repoFilter, branchFilter]);
   const selectedRequest = T2(() => {
     if (!selectedId)
       return null;
@@ -11749,7 +11789,7 @@ function AuthQueueView({
       setLocalSelectedId(firstId);
       onSelectAuth?.(firstId);
     }
-  }, [filterMode, repoFilter, filteredSidebarItems]);
+  }, [filterMode, repoFilter, branchFilter, filteredSidebarItems]);
   const renderDetailActions = (request) => {
     const id = getAuthId(request);
     const status = getAuthStatus(request);
@@ -11895,22 +11935,99 @@ function AuthQueueView({
           {
             type: "button",
             className: `auth-sidebar__repo-btn${repoFilter === null ? " auth-sidebar__repo-btn--active" : ""}`,
-            onClick: () => setRepoFilter(null),
+            onClick: () => {
+              setRepoFilter(null);
+              setBranchFilter(null);
+              setBranchInput("");
+            },
             children: "All repos"
           }
         ),
-        uniqueRepos.map((repo) => /* @__PURE__ */ u3(
+        uniqueRepos.map((repo) => {
+          const displayName = repo.includes("/") && repo.split("/").length === 2 ? repo.split("/")[1] : repo;
+          return /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `auth-sidebar__repo-btn${repoFilter === repo ? " auth-sidebar__repo-btn--active" : ""}`,
+              onClick: () => {
+                if (repoFilter === repo) {
+                  setRepoFilter(null);
+                } else {
+                  setRepoFilter(repo);
+                }
+                setBranchFilter(null);
+                setBranchInput("");
+              },
+              children: displayName
+            },
+            repo
+          );
+        })
+      ] }),
+      repoFilter && uniqueBranchesForRepo.length > 1 && /* @__PURE__ */ u3("div", { className: "auth-sidebar__branch-filter", children: [
+        /* @__PURE__ */ u3("div", { className: "auth-sidebar__branch-filter-row", children: [
+          /* @__PURE__ */ u3(
+            "input",
+            {
+              type: "text",
+              className: "auth-sidebar__branch-input",
+              placeholder: "Filter by branch\u2026",
+              value: branchInput,
+              list: "auth-branch-list",
+              onInput: (e3) => {
+                const val = e3.target.value;
+                setBranchInput(val);
+                if (uniqueBranchesForRepo.includes(val)) {
+                  setBranchFilter(val);
+                } else {
+                  setBranchFilter(null);
+                }
+              },
+              onKeyDown: (e3) => {
+                if (e3.key === "Escape") {
+                  setBranchInput("");
+                  setBranchFilter(null);
+                }
+              }
+            }
+          ),
+          branchInput && /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "auth-sidebar__branch-clear",
+              onClick: () => {
+                setBranchInput("");
+                setBranchFilter(null);
+              },
+              "aria-label": "Clear branch filter",
+              children: "\xD7"
+            }
+          )
+        ] }),
+        /* @__PURE__ */ u3("datalist", { id: "auth-branch-list", children: uniqueBranchesForRepo.map((branch) => /* @__PURE__ */ u3("option", { value: branch }, branch)) }),
+        /* @__PURE__ */ u3("div", { className: "auth-sidebar__branch-tags", children: uniqueBranchesForRepo.slice(0, 5).map((branch) => /* @__PURE__ */ u3(
           "button",
           {
             type: "button",
-            className: `auth-sidebar__repo-btn${repoFilter === repo ? " auth-sidebar__repo-btn--active" : ""}`,
-            onClick: () => setRepoFilter(repoFilter === repo ? null : repo),
-            children: repo
+            className: `auth-sidebar__branch-tag${branchFilter === branch ? " auth-sidebar__branch-tag--active" : ""}`,
+            onClick: () => {
+              if (branchFilter === branch) {
+                setBranchFilter(null);
+                setBranchInput("");
+              } else {
+                setBranchFilter(branch);
+                setBranchInput(branch);
+              }
+            },
+            title: branch,
+            children: branch.split("/").pop() ?? branch
           },
-          repo
-        ))
+          branch
+        )) })
       ] }),
-      /* @__PURE__ */ u3("div", { className: "auth-sidebar__list", children: filteredSidebarItems.length === 0 ? /* @__PURE__ */ u3("div", { className: "auth-sidebar__empty", children: repoFilter ? `No requests for ${repoFilter}.` : filterMode === "active" ? "No active requests." : filterMode === "historical" ? "No historical requests." : "No auth requests." }) : filteredSidebarItems.map((request) => /* @__PURE__ */ u3(
+      /* @__PURE__ */ u3("div", { className: "auth-sidebar__list", children: filteredSidebarItems.length === 0 ? /* @__PURE__ */ u3("div", { className: "auth-sidebar__empty", children: branchFilter ? `No requests for branch ${branchFilter.split("/").pop() ?? branchFilter}.` : repoFilter ? `No requests for ${repoFilter.includes("/") ? repoFilter.split("/")[1] : repoFilter}.` : filterMode === "active" ? "No active requests." : filterMode === "historical" ? "No historical requests." : "No auth requests." }) : filteredSidebarItems.map((request) => /* @__PURE__ */ u3(
         AuthSidebarItem,
         {
           request,
@@ -12725,10 +12842,24 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     });
     fetchDetail(repoId, issueId).catch(() => {
       scanIssueRepo(repoId).then(() => fetchDetail(repoId, issueId)).catch(() => {
-        if (!cancelled) {
-          setIssueDetail(null);
+        findIssue(issueId).then((found) => {
+          if (cancelled)
+            return;
+          const d3 = found;
+          if (d3?.repo_id && d3?.id) {
+            setSelectedRepoId(d3.repo_id);
+            setSelectedIssueId(d3.id);
+            setIssueDetail(found);
+          } else {
+            setIssueDetail(null);
+          }
           setDetailLoading(false);
-        }
+        }).catch(() => {
+          if (!cancelled) {
+            setIssueDetail(null);
+            setDetailLoading(false);
+          }
+        });
       });
     });
     getIssueSessions(repoId, issueId).then((data) => {
@@ -19419,7 +19550,7 @@ function ToolUseBlock({
 }
 
 // ui/src/components/stream-renderer/MessageGroup.tsx
-function MessageGroup({ turn, isStreaming }) {
+function MessageGroup({ turn, isStreaming, isThinking }) {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
   function renderBlock(block2, index) {
@@ -19455,7 +19586,10 @@ function MessageGroup({ turn, isStreaming }) {
     }
   }
   return /* @__PURE__ */ u3("div", { className: "message-group", children: [
-    /* @__PURE__ */ u3("div", { className: "message-group__role", "aria-label": "Role", children: "Assistant" }),
+    /* @__PURE__ */ u3("div", { className: "message-group__role", "aria-label": "Role", children: [
+      "Assistant",
+      isThinking && /* @__PURE__ */ u3("span", { className: "message-group__thinking-indicator", "aria-label": "Thinking", children: "thinking\u2026" })
+    ] }),
     /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) })
   ] });
 }
@@ -19479,24 +19613,38 @@ function StatusBar({
   totalCostUsd,
   numTurns,
   durationMs,
-  error
+  error,
+  elapsedSeconds
 }) {
   const dotClass = error ? "status-bar__dot status-bar__dot--error" : streaming ? "status-bar__dot status-bar__dot--streaming" : "status-bar__dot status-bar__dot--done";
-  const parts = [];
+  const centerParts = [];
   if (numTurns !== void 0) {
-    parts.push(`${numTurns} turn${numTurns === 1 ? "" : "s"}`);
+    centerParts.push(`${numTurns} turn${numTurns === 1 ? "" : "s"}`);
   }
   if (totalCostUsd !== void 0) {
-    parts.push(formatCost(totalCostUsd));
+    centerParts.push(formatCost(totalCostUsd));
   }
   if (model) {
-    parts.push(model);
+    centerParts.push(model);
   }
-  const centerText = parts.join(" \xB7 ");
-  const rightText = !streaming && durationMs !== void 0 ? formatDuration2(durationMs) : "";
+  const centerText = centerParts.join(" \xB7 ");
+  let rightText = "";
+  if (streaming && elapsedSeconds !== void 0) {
+    rightText = `${elapsedSeconds}s`;
+  } else if (!streaming && durationMs !== void 0) {
+    rightText = formatDuration2(durationMs);
+  }
+  let labelContent;
+  if (error) {
+    labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__error", children: error });
+  } else if (streaming) {
+    labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Streaming\u2026" });
+  } else {
+    labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Complete" });
+  }
   return /* @__PURE__ */ u3("div", { className: "status-bar", children: [
     /* @__PURE__ */ u3("span", { className: dotClass, "aria-hidden": "true" }),
-    error ? /* @__PURE__ */ u3("span", { className: "status-bar__error", children: error }) : streaming ? /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Streaming\u2026" }) : /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Complete" }),
+    labelContent,
     centerText && /* @__PURE__ */ u3("span", { className: "status-bar__center", children: centerText }),
     rightText && /* @__PURE__ */ u3("span", { className: "status-bar__right", children: rightText })
   ] });
@@ -19590,6 +19738,24 @@ function StreamRenderer({
   const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages } = useStreamState(events);
   const scrollRef = A2(null);
   const [userScrolled, setUserScrolled] = d2(false);
+  const streamStartTimeRef = A2(null);
+  const [elapsedSeconds, setElapsedSeconds] = d2(void 0);
+  y2(() => {
+    if (streaming) {
+      if (streamStartTimeRef.current === null) {
+        streamStartTimeRef.current = Date.now();
+      }
+      const interval = setInterval(() => {
+        if (streamStartTimeRef.current !== null) {
+          setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1e3));
+        }
+      }, 1e3);
+      setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1e3));
+      return () => clearInterval(interval);
+    } else {
+      streamStartTimeRef.current = null;
+    }
+  }, [streaming]);
   y2(() => {
     if (!streaming || userScrolled) {
       return;
@@ -19618,8 +19784,8 @@ function StreamRenderer({
   const hasContent = events.length > 0 || syntheticPrompts.length > 0 || streamUserMessages.length > 0;
   if (!hasContent) {
     return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
-      /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: streaming ? "Waiting for events\u2026" : "No events" }),
-      /* @__PURE__ */ u3(StatusBar, { streaming, ...statusBarProps })
+      /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: streaming ? "Starting\u2026" : "No events" }),
+      /* @__PURE__ */ u3(StatusBar, { streaming, elapsedSeconds, ...statusBarProps })
     ] });
   }
   const nodes = [];
@@ -19648,12 +19814,15 @@ function StreamRenderer({
     }
     if (i4 < turns.length) {
       const turn = turns[i4];
+      const isLastStreamingTurn = streaming && i4 === turns.length - 1;
+      const isThinking = isLastStreamingTurn && turn.assistantEvent.message.content.some((b) => b.type === "thinking");
       nodes.push(
         /* @__PURE__ */ u3(
           MessageGroup,
           {
             turn,
-            isStreaming: streaming && i4 === turns.length - 1
+            isStreaming: isLastStreamingTurn,
+            isThinking
           },
           turn.id
         )
@@ -19679,7 +19848,7 @@ function StreamRenderer({
         children: "Jump to bottom \u2193"
       }
     ),
-    /* @__PURE__ */ u3(StatusBar, { streaming, ...statusBarProps })
+    /* @__PURE__ */ u3(StatusBar, { streaming, elapsedSeconds, ...statusBarProps })
   ] });
 }
 
@@ -19945,16 +20114,23 @@ function TerminalPane({
     e3.preventDefault();
     if (!prompt.trim())
       return;
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(new TextEncoder().encode(prompt + "\r"));
+    if (viewMode === "rich") {
+      const submittedPrompt = prompt.trim();
+      setPrompt("");
       const syntheticEvent = {
         type: "synthetic_prompt",
-        text: prompt,
+        text: submittedPrompt,
         localId: `${Date.now()}-${Math.random().toString(36).slice(2)}`
       };
       setStreamEvents((prev) => [...prev, syntheticEvent]);
       setStreaming(true);
+      sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
+      });
+      return;
+    }
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(new TextEncoder().encode(prompt + "\r"));
       setPrompt("");
     }
   };

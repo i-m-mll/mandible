@@ -9,7 +9,7 @@ import type { ConsoleSession } from '../../state';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
 import type { StreamEvent, SyntheticPromptEvent } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
-import { getConsoleStreamEvents, restartConsoleSession } from '../../api';
+import { getConsoleStreamEvents, restartConsoleSession, sendConsolePrompt } from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
 
@@ -326,22 +326,38 @@ export function TerminalPane({
   const handlePromptSubmit = (e: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     e.preventDefault();
     if (!prompt.trim()) return;
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      // Send as binary (Uint8Array) so the server's isBinary check routes it to the PTY.
-      // Bug: db5e986 — PTY expects \r (carriage return) for Enter, not \n.
-      // xterm's onData sends \r when the user presses Enter; the rich-view form
-      // submit must use the same byte so the PTY line editor triggers submission.
-      ws.send(new TextEncoder().encode(prompt + '\r'));
-      // Bug: db5e986 — optimistic display: append a synthetic user-prompt event
-      // immediately so the rich view shows the message before SSE events arrive.
+
+    // Bug: a97f54b — rich view uses a separate non-PTY subprocess for stream-json events.
+    // --output-format stream-json only works with -p (non-interactive); the PTY runs
+    // Claude in TUI mode and emits no parseable JSON to stdout.
+    // In rich view: call the /prompt API endpoint which spawns `claude -p --continue
+    // --output-format stream-json` and feeds events through the SSE pipeline.
+    // In terminal view: fall through to the PTY write path as before.
+    if (viewMode === 'rich') {
+      const submittedPrompt = prompt.trim();
+      setPrompt('');
+      // Optimistic display: append synthetic event immediately before SSE events arrive
       const syntheticEvent: SyntheticPromptEvent = {
         type: 'synthetic_prompt',
-        text: prompt,
+        text: submittedPrompt,
         localId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       };
       setStreamEvents((prev) => [...prev, syntheticEvent]);
       setStreaming(true);
+      // Fire and forget; stream events arrive asynchronously via SSE
+      sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
+        // Non-fatal: if the API call fails the user sees no response but the
+        // synthetic event is already displayed. A future retry UX can be added.
+      });
+      return;
+    }
+
+    // Terminal view: send directly to PTY via WebSocket (unchanged path)
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // Send as binary (Uint8Array) so the server's isBinary check routes it to the PTY.
+      // Bug: db5e986 — PTY expects \r (carriage return) for Enter, not \n.
+      ws.send(new TextEncoder().encode(prompt + '\r'));
       setPrompt('');
     }
   };

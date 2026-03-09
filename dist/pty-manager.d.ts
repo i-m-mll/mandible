@@ -59,6 +59,14 @@ export declare class PtySession {
     getBufferSnapshot(): Buffer;
     /** Return the history of structured stream events for the rich view. */
     getStreamEvents(): ClaudeStreamLine[];
+    /**
+     * Feed raw text through the stream-json line parser without writing to
+     * the ring buffer or broadcasting raw PTY bytes.
+     * Used by the /prompt endpoint to ingest non-PTY subprocess stdout.
+     * Bug: a97f54b — --output-format stream-json only works with -p; a separate
+     * non-PTY subprocess is required to get structured events from Claude.
+     */
+    ingestText(data: string): void;
     private handleData;
     private feedLineParser;
     private parseStreamJsonLine;

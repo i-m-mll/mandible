@@ -157,6 +157,8 @@ export interface MessageGroupProps {
   turn: RenderedTurn;
   /** True if this is the last turn and the stream is still open. */
   isStreaming: boolean;
+  /** True if this turn contains a thinking block and is still streaming — shows "thinking…" indicator. */
+  isThinking?: boolean;
 }
 
 export interface StatusBarProps {
@@ -166,6 +168,8 @@ export interface StatusBarProps {
   numTurns?: number;
   durationMs?: number;
   error?: string;
+  /** Elapsed seconds since streaming started — shown live while streaming=true. */
+  elapsedSeconds?: number;
 }
 
 export interface StreamRendererProps {
