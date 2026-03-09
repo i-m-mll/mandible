@@ -281,6 +281,12 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   // Fetch detail when selection changes.
   // If the first attempt fails (e.g. daemon just reloaded and hasn't scanned
   // this repo yet), trigger a per-repo scan and retry once before giving up.
+  //
+  // Bug: 5183781 — do NOT call setSelectedRepoId/setSelectedIssueId inside this
+  // effect. Those setState calls cause the effect to re-run (since selectedRepoId
+  // and selectedIssueId are in the dep array), triggering a second fetch and
+  // visible flicker. Instead, resolve the canonical IDs locally and use them
+  // for fetching; update state only after the fetch completes successfully.
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) {
       setIssueDetail(null);
@@ -288,18 +294,16 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
       return;
     }
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
-    if (repoId !== selectedRepoId) {
-      setSelectedRepoId(repoId);
-    }
     const issueId = resolveIssueId(repoId, selectedIssueId);
-    if (issueId !== selectedIssueId) {
-      setSelectedIssueId(issueId);
-    }
     let cancelled = false;
     setDetailLoading(true);
-    const fetchDetail = (repoId: string, issueId: string) =>
-      getIssueDetail(repoId, issueId).then((data) => {
+    const fetchDetail = (rId: string, iId: string) =>
+      getIssueDetail(rId, iId).then((data) => {
         if (!cancelled) {
+          // Normalise state to canonical IDs only after a successful fetch so
+          // we don't trigger a mid-flight effect re-run (Bug: 5183781).
+          if (rId !== selectedRepoId) setSelectedRepoId(rId);
+          if (iId !== selectedIssueId) setSelectedIssueId(iId);
           setIssueDetail(data as GitBugIssueDetail);
           setDetailLoading(false);
         }
