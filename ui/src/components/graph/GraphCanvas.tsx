@@ -266,7 +266,17 @@ export function GraphCanvas({ nodes, edges, onNavigate }: GraphCanvasProps): JSX
       simRef.current.nodes(nodesRef.current);
       (simRef.current.force('link') as d3.ForceLink<SimGraphNode, SimGraphEdge>)
         .links(edgesRef.current);
-      simRef.current.alpha(0.4).restart();
+      // Zero residual velocity on existing nodes — prevents charge force from
+      // amplifying stale vx/vy over many simulation ticks. New nodes still settle
+      // naturally into good positions. Bug: 98cc82a
+      for (const node of nodesRef.current) {
+        if (existing.has(node.id)) {
+          node.vx = 0;
+          node.vy = 0;
+        }
+      }
+      // Low alpha (0.1 vs prior 0.4): existing nodes barely move; new nodes settle.
+      simRef.current.alpha(0.1).restart();
     } else {
       const sim = d3
         .forceSimulation<SimGraphNode, SimGraphEdge>(nodesRef.current)

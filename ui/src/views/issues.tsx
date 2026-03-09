@@ -425,18 +425,27 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     setCommentText('');
   }, []);
 
-  // Bug: cce48c1 — scroll selected issue into view when selection changes (deep-link or click)
+  // Bug: cce48c1 — scroll selected issue into view. Two scroll containers:
+  // 1. .issues-tree (sidebar): needs to scroll so the repo group is visible
+  // 2. .issues-repo-list (inner list, 25vh max): needs to scroll so the item is visible
+  // scrollIntoView on the button only reaches the inner container (nearest scrollable ancestor).
+  // We must also call scrollIntoView on the repo group to scroll the outer sidebar.
+  // 150ms: allows expand state update + Preact re-render to flush before querying DOM.
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) return;
-    // Small delay to allow any expand animation to complete
     const timer = setTimeout(() => {
-      const issueEl = document.querySelector(
+      const issueEl = document.querySelector<HTMLElement>(
         `[data-issue-key="${selectedRepoId}:${selectedIssueId}"]`
       );
-      if (issueEl) {
-        issueEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      if (!issueEl) return;
+      // Scroll inner list so item is visible within its 25vh container
+      issueEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      // Scroll outer sidebar so the repo group header is also visible
+      const repoGroupEl = issueEl.closest('.issues-repo-group');
+      if (repoGroupEl) {
+        repoGroupEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
-    }, 50);
+    }, 150);
     return () => clearTimeout(timer);
   }, [selectedRepoId, selectedIssueId]);
 
