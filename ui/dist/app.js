@@ -24767,7 +24767,7 @@ function GraphCanvas({ nodes, edges, onNavigate }) {
     } else if (node.type === "auth_request") {
       onNavigate("auth_request", node.id);
     } else if (node.type === "branch") {
-      onNavigate("branch", node.id, node.repo);
+      onNavigate("branch", node.branch ?? node.id, node.repo);
     }
   };
   const handleNodeMouseEnter = (node, e3) => {
@@ -24843,7 +24843,7 @@ function GraphView({ onNavigate, refreshToken }) {
       if (repoFilter !== "all" && n2.repo !== repoFilter)
         return false;
       if (statusFilter === "open") {
-        if (n2.type === "session" && n2.status !== "running" && n2.status !== "active")
+        if (n2.type === "session" && (n2.status === "ended" || n2.status === "dead"))
           return false;
         if (n2.type === "issue" && n2.status !== "open")
           return false;
@@ -24864,7 +24864,10 @@ function GraphView({ onNavigate, refreshToken }) {
     let active = true;
     setLoading(true);
     setError(null);
-    getGraph({ since: sinceFilter === "all" ? void 0 : sinceFilter }).then((data) => {
+    getGraph({
+      since: sinceFilter === "all" ? void 0 : sinceFilter,
+      status: statusFilter === "all" ? "all" : void 0
+    }).then((data) => {
       if (active) {
         setNodes(data.nodes);
         setEdges(data.edges);
@@ -24881,7 +24884,7 @@ function GraphView({ onNavigate, refreshToken }) {
     return () => {
       active = false;
     };
-  }, [sinceFilter, refreshToken]);
+  }, [sinceFilter, statusFilter, refreshToken]);
   return /* @__PURE__ */ u3("div", { className: "graph-view", children: [
     /* @__PURE__ */ u3("div", { className: "view-header", children: [
       /* @__PURE__ */ u3("h2", { children: "Graph" }),
@@ -26062,9 +26065,12 @@ function App() {
   const handleGraphNavigate = (type2, id2, repoId) => {
     switch (type2) {
       case "issue": {
-        const params = new URLSearchParams({ issue: id2 });
-        if (repoId)
-          params.set("repo", repoId);
+        const parts = id2.split(":");
+        const humanId = parts[2] ?? id2;
+        const resolvedRepoId = repoId ?? parts[1];
+        const params = new URLSearchParams({ issue: humanId });
+        if (resolvedRepoId)
+          params.set("repo", resolvedRepoId);
         window.location.hash = `#/issues?${params.toString()}`;
         break;
       }
