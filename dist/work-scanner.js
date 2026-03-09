@@ -2,6 +2,7 @@ import { spawnSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { parse as parseToml } from "smol-toml";
 import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
 const DEFAULT_REPO_ROOT = path.join(os.homedir(), ".dotfiles");
@@ -98,6 +99,33 @@ function scanDirForRepos(dir, depth, roots) {
         }
     }
 }
+// Bug: 7ed20d0 — read repos.toml to discover repos nested deeper than depth-2
+// (e.g. ~/Main/10 Projects/10 PhD/20 Feedbax/feedbax) that the directory scan misses.
+function readReposToml(monorepoRoot) {
+    const tomlPath = path.join(monorepoRoot, ".projects", "repos.toml");
+    try {
+        const content = fs.readFileSync(tomlPath, "utf8");
+        const parsed = parseToml(content);
+        const repos = (parsed["repos"] ?? {});
+        const roots = [];
+        for (const [, entry] of Object.entries(repos)) {
+            if (!entry || typeof entry !== "object")
+                continue;
+            const repoPath = entry["path"];
+            if (typeof repoPath !== "string")
+                continue;
+            const resolved = path.resolve(monorepoRoot, repoPath);
+            if (isGitDirectory(resolved)) {
+                roots.push(resolved);
+            }
+        }
+        return roots;
+    }
+    catch (err) {
+        console.warn(`[work-scanner] Could not read repos.toml at ${tomlPath}:`, err);
+        return [];
+    }
+}
 function discoverRepos(defaultRepoRoot) {
     const roots = [];
     const dotfiles = path.join(os.homedir(), ".dotfiles");
@@ -125,6 +153,16 @@ function discoverRepos(defaultRepoRoot) {
     ];
     for (const dir of depth2Dirs) {
         scanDirForRepos(dir, 2, roots);
+    }
+    // Supplement depth-2 scan with repos registered in repos.toml, which captures
+    // repos nested deeper than 2 levels (e.g. ~/Main/10 Projects/10 PhD/20 Feedbax/feedbax).
+    const mainDir = path.join(os.homedir(), "Main");
+    if (fs.existsSync(mainDir)) {
+        const tomlRepos = readReposToml(mainDir);
+        for (const r of tomlRepos) {
+            if (!roots.includes(r))
+                roots.push(r);
+        }
     }
     return roots;
 }
