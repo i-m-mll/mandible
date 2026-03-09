@@ -387,11 +387,12 @@ function IssuePills({
   return (
     <div className="linked-chips">
       {displayed.map((link) => (
-        // Bug: a2b777a — use /api/issues/find/:id for cross-repo lookup; no repo needed.
+        // Bug: 387ae46 — include repo param so IssuesView can select directly
+        // without the slow async cross-repo find path.
         <a
           key={`${link.repo_id}-${link.issue_id}`}
           className="linked-issue-chip"
-          href={`#/issues?issue=${encodeURIComponent(link.issue_id)}`}
+          href={`#/issues?repo=${encodeURIComponent(link.repo_id)}&issue=${encodeURIComponent(link.issue_id)}`}
         >
           {link.issue_id.slice(0, 8)}
         </a>
