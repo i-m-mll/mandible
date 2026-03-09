@@ -1,4 +1,5 @@
 import type { InboxData } from './views/inbox';
+import type { GraphNode, GraphEdge } from './types/graph';
 
 export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[] };
 
@@ -805,3 +806,27 @@ export type ConversationChild = {
   model: string | null;
   duration_seconds: number | null;
 };
+
+// ── Graph API ──
+
+export type GraphQueryParams = {
+  repo?: string;
+  since?: string;
+  limit?: number;
+  status?: 'open' | 'all';
+};
+
+export type { GraphNode, GraphEdge };
+
+export async function getGraph(
+  params: GraphQueryParams = {},
+): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
+  const query = new URLSearchParams();
+  if (params.repo) query.set('repo', params.repo);
+  if (params.since) query.set('since', params.since);
+  if (params.limit != null) query.set('limit', String(params.limit));
+  if (params.status) query.set('status', params.status);
+  const qs = query.toString();
+  const response = await apiGet(`/api/graph${qs ? '?' + qs : ''}`);
+  return (await parseMaybeJson(response)) as { nodes: GraphNode[]; edges: GraphEdge[] };
+}
