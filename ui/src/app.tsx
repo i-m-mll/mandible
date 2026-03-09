@@ -352,12 +352,10 @@ function App(): JSX.Element {
     // components can subscribe per-session without needing to go through global state.
     // Bug: b949700 — console rich view SSE bridge
     const consoleStreamHandler = (payload: SSEPayload) => {
-      const data = payload.data && typeof payload.data === 'object'
-        ? (payload.data as Record<string, unknown>)
-        : null;
-      if (!data) return;
+      // Bug: 13e621e — payload fields are spread at top level; there is no payload.data wrapper.
+      // The broadcast sends { console_session_id, event } which arrives as direct payload fields.
       window.dispatchEvent(
-        new CustomEvent('console:stream_event', { detail: { ...data } }),
+        new CustomEvent('console:stream_event', { detail: { ...payload } }),
       );
     };
 
@@ -951,7 +949,7 @@ function App(): JSX.Element {
           </div>
         </nav>
       </header>
-      <main className="app-content">
+      <main className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}`}>
         {route.tab === 'sessions' && (
           <SessionsView
             sessions={state.sessions}

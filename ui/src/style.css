@@ -33,7 +33,8 @@ a {
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -160,7 +161,20 @@ a {
 }
 
 .app-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 28px 32px 48px;
+}
+
+/* Full-bleed layout for console tab — no padding, internal overflow only */
+.app-content--console {
+  padding: 0;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .view-header {
@@ -4537,8 +4551,8 @@ tr:hover .work-actions__trigger {
 .console-view {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 80px);          /* Fill remaining height below app-header */
-  padding: 0;                           /* Override .app-content padding */
+  height: 100%;
+  padding: 0;
 }
 
 .console-sub-tab-bar {

@@ -1,6 +1,6 @@
 @import "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600&display=swap";
 
-/* node_modules/@xterm/xterm/css/xterm.css */
+/* ../../node_modules/@xterm/xterm/css/xterm.css */
 .xterm {
   cursor: text;
   position: relative;
@@ -165,7 +165,7 @@
   position: relative;
 }
 
-/* node_modules/diff2html/bundles/css/diff2html.min.css */
+/* ../../node_modules/diff2html/bundles/css/diff2html.min.css */
 :host,
 :root {
   --d2h-bg-color:#fff;
@@ -929,7 +929,8 @@ a {
   text-decoration: none;
 }
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
@@ -1040,7 +1041,18 @@ a {
   color: var(--accent-yellow);
 }
 .app-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 28px 32px 48px;
+}
+.app-content--console {
+  padding: 0;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .view-header {
   display: flex;
@@ -4713,7 +4725,7 @@ tr:hover .work-actions__trigger {
 .console-view {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 80px);
+  height: 100%;
   padding: 0;
 }
 .console-sub-tab-bar {
