@@ -585,7 +585,7 @@ main() {
     local pre_merge_head
     pre_merge_head=$(git rev-parse ORIG_HEAD 2>/dev/null || git rev-parse HEAD)
 
-    if git merge --continue -S; then
+    if git commit -S --no-edit; then
       verify_merge_not_empty
       if [[ ${#sources[@]} -gt 0 ]]; then
         auto_close_issues "$target" "$pre_merge_head"
@@ -595,7 +595,7 @@ main() {
       restart_mandible_if_dist_changed "$pre_merge_head"
       exit 0
     else
-      err "${RED}git merge --continue failed.${RESET}"
+      err "${RED}git commit failed.${RESET}"
       if has_conflicts; then
         err "Conflicts remain — resolve them manually and run 'git merge --continue'."
       fi
