@@ -122,6 +122,20 @@ function MarkdownContent({ content }: { content: string }): JSX.Element {
   );
 }
 
+/**
+ * Render inline markdown — strips the outer <p>…</p> wrapper that marked adds
+ * for single-line input so the text flows inline without extra block spacing.
+ * Used for titles and short prose displayed in compact contexts (sidebar items,
+ * table cells, headings).
+ * Bug: a44fd6a — markdown rendering in History sidebar and detail titles
+ */
+function renderInlineMarkdown(src: string): string {
+  if (!src) return '';
+  const html = marked.parse(src, { async: false }) as string;
+  // Strip a single wrapping <p>…</p> (marked emits this for one-liner input)
+  return html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+}
+
 // ── Copy-markdown button ──
 
 function CopyButton({ content }: { content: string }): JSX.Element {
@@ -835,7 +849,12 @@ function ConversationDetail({
             {conversation.parent_conversation_id && (
               <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
             )}
-            {conversation.title || 'Untitled'}
+            {/* Bug: a44fd6a — render conversation title as markdown */}
+            <span
+              dangerouslySetInnerHTML={{
+                __html: renderInlineMarkdown(conversation.title || 'Untitled'),
+              }}
+            />
           </h2>
           <div className="conv-detail__meta">
             <span className={`source-badge ${SOURCE_CLASSES[conversation.source] || ''}`}>
@@ -1037,7 +1056,12 @@ function ChatHistoryItem({
       <div className="chat-history-item__title">
         {conversation.starred ? '\u2605 ' : ''}
         {isSubAgent && <span className="conv-subagent-indicator" title="Sub-agent">&#x2937; </span>}
-        {truncate(conversation.title || 'Untitled', 55)}
+        <span
+          // Bug: a44fd6a — render conversation titles as inline markdown
+          dangerouslySetInnerHTML={{
+            __html: renderInlineMarkdown(truncate(conversation.title || 'Untitled', 55)),
+          }}
+        />
       </div>
       <div className="chat-history-item__meta">
         <span className="chat-history-item__blocks">{conversation.block_count} blocks</span>

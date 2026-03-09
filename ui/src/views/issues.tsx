@@ -61,6 +61,18 @@ function renderMarkdown(src: string): string {
   return typeof result === 'string' ? result : '';
 }
 
+/**
+ * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
+ * input so text flows inline in compact contexts (sidebar titles, list items).
+ * Bug: a44fd6a — markdown rendering in issues sidebar titles
+ */
+function renderInlineMarkdown(src: string): string {
+  if (!src) return '';
+  const result = marked.parse(src, { async: false });
+  const html = typeof result === 'string' ? result : '';
+  return html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+}
+
 function formatRelativeTime(value?: string): string {
   if (!value) return '';
   const parsed = Date.parse(value);
@@ -517,7 +529,11 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
                           <span
                             className={`issue-status-dot issue-status-dot--${vs}`}
                           />
-                          <span className="issues-item__title">{issue.title}</span>
+                          {/* Bug: a44fd6a — render issue sidebar titles as inline markdown */}
+                          <span
+                            className="issues-item__title"
+                            dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issue.title) }}
+                          />
                         </button>
                       );
                     })}
@@ -545,7 +561,11 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           </div>
         ) : (
           <div className="issues-detail__content">
-            <h2 className="issues-detail__title">{issueDetail.title}</h2>
+            {/* Bug: a44fd6a — render issue detail title as inline markdown */}
+            <h2
+              className="issues-detail__title"
+              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issueDetail.title) }}
+            />
             <div className="issues-detail__meta">
               <span
                 className={`status-pill ${

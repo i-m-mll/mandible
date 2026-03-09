@@ -213,6 +213,18 @@ function renderMarkdown(src: string): string {
   return typeof result === 'string' ? result : '';
 }
 
+/**
+ * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
+ * input so text flows inline in compact contexts (sidebar titles, card headers).
+ * Bug: a44fd6a — markdown rendering in auth sidebar and card titles
+ */
+function renderInlineMarkdown(src: string): string {
+  if (!src) return '';
+  const result = marked.parse(src, { async: false });
+  const html = typeof result === 'string' ? result : '';
+  return html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+}
+
 type DiffFileSection = { filename: string; hunks: string };
 
 /** Parse unified diff into per-file sections, stripping noise lines. */
@@ -458,7 +470,11 @@ function AuthCard({
     <div className="auth-card__summary">
       <div className="auth-card__row auth-card__row--primary">
         <span className={statusClass}>{statusLabel}</span>
-        <span className="auth-card__title">{getAuthTitle(request)}</span>
+        {/* Bug: a44fd6a — render auth request title as inline markdown */}
+        <span
+          className="auth-card__title"
+          dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+        />
         {repoName && (
           <span className="auth-card__repo">{repoName}</span>
         )}
@@ -865,7 +881,11 @@ function AuthSidebarItem({
     >
       <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />
       <span className="auth-sidebar-item__body">
-        <span className="auth-sidebar-item__title">{getAuthTitle(request)}</span>
+        {/* Bug: a44fd6a — render auth sidebar title as inline markdown */}
+        <span
+          className="auth-sidebar-item__title"
+          dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+        />
         {repo && (
           <span className="auth-sidebar-item__repo">{repo}</span>
         )}
