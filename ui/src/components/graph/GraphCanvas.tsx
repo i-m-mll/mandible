@@ -217,6 +217,10 @@ export function GraphCanvas({ nodes, edges, onNavigate }: GraphCanvasProps): JSX
   const simRef = useRef<d3.Simulation<SimGraphNode, SimGraphEdge> | null>(null);
   const nodesRef = useRef<SimGraphNode[]>([]);
   const edgesRef = useRef<SimGraphEdge[]>([]);
+  // Store zoom behavior in a ref so it persists across rerenders and data refreshes.
+  // This ensures the zoom transform is never reset when nodes/edges change — only on
+  // first mount is the transform initialized to identity.
+  const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const [tick, setTick] = useState(0);
   const [tooltip, setTooltip] = useState<{ node: GraphNode; x: number; y: number } | null>(null);
   const [bounds, setBounds] = useState({ width: 800, height: 600 });
@@ -292,7 +296,9 @@ export function GraphCanvas({ nodes, edges, onNavigate }: GraphCanvasProps): JSX
     };
   }, []);
 
-  // Zoom behavior
+  // Zoom behavior — initialized once on mount. Storing in zoomRef ensures the
+  // transform is never reset when nodes/edges change (data refreshes only
+  // update simulation data; they never touch the zoom transform).
   useEffect(() => {
     if (!svgRef.current) return;
     const zoomBehavior = d3
@@ -301,6 +307,7 @@ export function GraphCanvas({ nodes, edges, onNavigate }: GraphCanvasProps): JSX
       .on('zoom', (event) => {
         d3.select(svgRef.current).select('g.graph-viewport').attr('transform', event.transform.toString());
       });
+    zoomRef.current = zoomBehavior;
     d3.select(svgRef.current).call(zoomBehavior);
   }, []);
 
