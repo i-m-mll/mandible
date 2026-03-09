@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 import type {
   BlockType,
   Conversation,
@@ -1052,6 +1053,12 @@ function ChatHistoryItem({
 // ── Main View ──
 
 export function ConversationsView({ conversations: initialConversations }: ConversationsViewProps): JSX.Element {
+  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
+    defaultWidth: 320,
+    minWidth: 190,
+    storageKey: 'sidebar-width:conversations',
+  });
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [searchMode, setSearchMode] = useState<'title' | 'full'>('title');
@@ -1159,7 +1166,7 @@ export function ConversationsView({ conversations: initialConversations }: Conve
   return (
     <div className="chat-history-view">
       {/* Sidebar */}
-      <div className="chat-history-sidebar">
+      <div className="chat-history-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
         {/* Search row */}
         <div className="chat-history-search-row">
           <input
@@ -1261,6 +1268,9 @@ export function ConversationsView({ conversations: initialConversations }: Conve
           )}
         </div>
       </div>
+
+      {/* Drag handle */}
+      <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
 
       {/* Detail pane */}
       <div className="chat-history-detail">

@@ -1474,6 +1474,24 @@ tr:last-child td {
   white-space: nowrap;
 }
 
+/* ── Sidebar drag-to-resize handle (Bug: d472f7f) ── */
+
+.sidebar-drag-handle {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+  position: relative;
+  z-index: 1;
+  /* Keep the handle above sidebar content so it's always clickable */
+}
+
+.sidebar-drag-handle:hover,
+.sidebar-drag-handle--active {
+  background: rgba(77, 163, 255, 0.3);
+}
+
 /* ── Auth queue: sidebar + detail panel layout ── */
 
 .auth-sidebar-layout {
@@ -1484,8 +1502,6 @@ tr:last-child td {
 }
 
 .auth-sidebar {
-  width: 320px;
-  min-width: 320px;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
@@ -1738,8 +1754,6 @@ tr:last-child td {
 }
 
 .inbox-sidebar {
-  width: 400px;
-  min-width: 400px;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
@@ -2494,8 +2508,6 @@ tr:hover .work-actions__trigger {
 }
 
 .issues-tree {
-  width: 280px;
-  min-width: 280px;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   overflow-y: auto;
   padding: 12px;
@@ -3457,8 +3469,6 @@ tr:hover .work-actions__trigger {
 }
 
 .chat-history-sidebar {
-  width: 320px;
-  min-width: 260px;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   background: var(--bg-secondary);
   display: flex;

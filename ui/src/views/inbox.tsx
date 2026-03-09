@@ -2,6 +2,7 @@
 // Bug: 4fa87d9 — inbox sidebar redesign
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 
 export interface InboxContinuation {
   session_id: string;
@@ -534,6 +535,12 @@ export function InboxView({
   onAckAll,
   onRefresh,
 }: InboxViewProps): JSX.Element {
+  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
+    defaultWidth: 400,
+    minWidth: 190,
+    storageKey: 'sidebar-width:inbox',
+  });
+
   const [chips, setChips] = useState<FilterChip[]>([]);
 
   // Build full unified item list from data
@@ -585,13 +592,14 @@ export function InboxView({
   if (loading && !data) {
     return (
       <div className="inbox-sidebar-layout">
-        <div className="inbox-sidebar">
+        <div className="inbox-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
           <div className="inbox-sidebar__header">
             <span className="text-muted" style={{ fontSize: '13px', padding: '14px' }}>
               Loading…
             </span>
           </div>
         </div>
+        <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
         <div className="inbox-detail">
           <div className="inbox-detail__empty">
             <span className="text-muted">Loading inbox…</span>
@@ -604,7 +612,7 @@ export function InboxView({
   return (
     <div className="inbox-sidebar-layout">
       {/* LEFT SIDEBAR */}
-      <div className="inbox-sidebar">
+      <div className="inbox-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
         {/* Filter chips + autocomplete */}
         <div className="inbox-sidebar__chip-row">
           <ChipInput
@@ -657,6 +665,9 @@ export function InboxView({
           )}
         </div>
       </div>
+
+      {/* Drag handle */}
+      <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
 
       {/* RIGHT DETAIL PANEL */}
       <div className="inbox-detail">
