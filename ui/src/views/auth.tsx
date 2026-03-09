@@ -943,6 +943,12 @@ export function AuthQueueView({
   // Repo filter: null = show all repos
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
 
+  // Branch filter: null = show all branches within the selected repo
+  const [branchFilter, setBranchFilter] = useState<string | null>(null);
+
+  // Branch autocomplete input text (separate from the committed filter value)
+  const [branchInput, setBranchInput] = useState<string>('');
+
   // Local selection state — mirrors app state via onSelectAuth
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
   const selectedId = externalSelectedId !== undefined ? externalSelectedId : localSelectedId;
@@ -1343,31 +1349,78 @@ export function AuthQueueView({
     return [...allActive, ...allHistory];
   }, [filterMode, orderedActiveQueue, lingeringQueue, historyRequests]);
 
-  // Derive unique repo names from all sidebar items (before repo filtering)
+  // Derive unique repo names from all sidebar items (before repo filtering),
+  // sorted by most recent activity (most-recently-touched repo first).
+  // Bug: 74dd78b — sort repos by recency instead of alphabetically
   const uniqueRepos = useMemo((): string[] => {
-    const repos = new Set<string>();
+    // Track the latest timestamp per repo
+    const repoLatest = new Map<string, number>();
     for (const r of sidebarItems) {
       const repo = r.repo && r.repo.trim() ? r.repo.trim() : null;
-      if (repo) repos.add(repo);
+      if (!repo) continue;
+      const ts =
+        getTimestampMs(r.resolved_at ?? null) ??
+        getTimestampMs(r.last_executed_at ?? null) ??
+        getTimestampMs(r.created_at ?? null) ??
+        0;
+      const existing = repoLatest.get(repo) ?? 0;
+      if (ts > existing) repoLatest.set(repo, ts);
     }
-    return Array.from(repos).sort();
+    return Array.from(repoLatest.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([repo]) => repo);
   }, [sidebarItems]);
 
-  // Reset repoFilter if it no longer exists in the current list
+  // Derive unique head-branch names for the currently selected repo (for autocomplete).
+  // Bug: 74dd78b — branch autocomplete within selected repo
+  const uniqueBranchesForRepo = useMemo((): string[] => {
+    if (!repoFilter) return [];
+    const branchLatest = new Map<string, number>();
+    for (const r of sidebarItems) {
+      const repo = r.repo && r.repo.trim() ? r.repo.trim() : null;
+      if (repo !== repoFilter) continue;
+      const branch = (r.head_branch ?? r.head ?? '').trim();
+      if (!branch) continue;
+      const ts =
+        getTimestampMs(r.resolved_at ?? null) ??
+        getTimestampMs(r.last_executed_at ?? null) ??
+        getTimestampMs(r.created_at ?? null) ??
+        0;
+      const existing = branchLatest.get(branch) ?? 0;
+      if (ts > existing) branchLatest.set(branch, ts);
+    }
+    return Array.from(branchLatest.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([branch]) => branch);
+  }, [sidebarItems, repoFilter]);
+
+  // Reset repoFilter if it no longer exists in the current list;
+  // also reset branchFilter whenever repoFilter changes.
   useEffect(() => {
     if (repoFilter && !uniqueRepos.includes(repoFilter)) {
       setRepoFilter(null);
+      setBranchFilter(null);
+      setBranchInput('');
     }
   }, [uniqueRepos, repoFilter]);
 
-  // Apply repo filter on top of the mode-filtered list
+  // Apply repo + branch filters on top of the mode-filtered list
   const filteredSidebarItems = useMemo((): AuthRequest[] => {
-    if (!repoFilter) return sidebarItems;
-    return sidebarItems.filter((r) => {
-      const repo = r.repo && r.repo.trim() ? r.repo.trim() : null;
-      return repo === repoFilter;
-    });
-  }, [sidebarItems, repoFilter]);
+    let items = sidebarItems;
+    if (repoFilter) {
+      items = items.filter((r) => {
+        const repo = r.repo && r.repo.trim() ? r.repo.trim() : null;
+        return repo === repoFilter;
+      });
+    }
+    if (branchFilter) {
+      items = items.filter((r) => {
+        const branch = (r.head_branch ?? r.head ?? '').trim();
+        return branch === branchFilter;
+      });
+    }
+    return items;
+  }, [sidebarItems, repoFilter, branchFilter]);
 
   // Find the selected request from whichever list contains it
   const selectedRequest = useMemo((): AuthRequest | null => {
@@ -1409,7 +1462,7 @@ export function AuthQueueView({
       onSelectAuth?.(firstId);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterMode, repoFilter, filteredSidebarItems]);
+  }, [filterMode, repoFilter, branchFilter, filteredSidebarItems]);
 
   // Render the action buttons for the selected request in the detail panel
   const renderDetailActions = (request: AuthRequest): JSX.Element | null => {
@@ -1575,33 +1628,124 @@ export function AuthQueueView({
             <button
               type="button"
               className={`auth-sidebar__repo-btn${repoFilter === null ? ' auth-sidebar__repo-btn--active' : ''}`}
-              onClick={() => setRepoFilter(null)}
+              onClick={() => {
+                setRepoFilter(null);
+                setBranchFilter(null);
+                setBranchInput('');
+              }}
             >
               All repos
             </button>
-            {uniqueRepos.map((repo) => (
-              <button
-                key={repo}
-                type="button"
-                className={`auth-sidebar__repo-btn${repoFilter === repo ? ' auth-sidebar__repo-btn--active' : ''}`}
-                onClick={() => setRepoFilter(repoFilter === repo ? null : repo)}
-              >
-                {repo}
-              </button>
-            ))}
+            {uniqueRepos.map((repo) => {
+              // Display last path component (e.g. "mandible" from "mll/mandible")
+              const displayName = repo.includes('/') && repo.split('/').length === 2
+                ? repo.split('/')[1]
+                : repo;
+              return (
+                <button
+                  key={repo}
+                  type="button"
+                  className={`auth-sidebar__repo-btn${repoFilter === repo ? ' auth-sidebar__repo-btn--active' : ''}`}
+                  onClick={() => {
+                    if (repoFilter === repo) {
+                      setRepoFilter(null);
+                    } else {
+                      setRepoFilter(repo);
+                    }
+                    setBranchFilter(null);
+                    setBranchInput('');
+                  }}
+                >
+                  {displayName}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Branch autocomplete — only visible when a repo is selected and it has multiple branches */}
+        {repoFilter && uniqueBranchesForRepo.length > 1 && (
+          <div className="auth-sidebar__branch-filter">
+            <div className="auth-sidebar__branch-filter-row">
+              <input
+                type="text"
+                className="auth-sidebar__branch-input"
+                placeholder="Filter by branch…"
+                value={branchInput}
+                list="auth-branch-list"
+                onInput={(e) => {
+                  const val = (e.target as HTMLInputElement).value;
+                  setBranchInput(val);
+                  // Commit filter when typed value exactly matches a known branch
+                  if (uniqueBranchesForRepo.includes(val)) {
+                    setBranchFilter(val);
+                  } else {
+                    setBranchFilter(null);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setBranchInput('');
+                    setBranchFilter(null);
+                  }
+                }}
+              />
+              {branchInput && (
+                <button
+                  type="button"
+                  className="auth-sidebar__branch-clear"
+                  onClick={() => {
+                    setBranchInput('');
+                    setBranchFilter(null);
+                  }}
+                  aria-label="Clear branch filter"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <datalist id="auth-branch-list">
+              {uniqueBranchesForRepo.map((branch) => (
+                <option key={branch} value={branch} />
+              ))}
+            </datalist>
+            {/* Tag pills for quick selection of recent branches (up to 5) */}
+            <div className="auth-sidebar__branch-tags">
+              {uniqueBranchesForRepo.slice(0, 5).map((branch) => (
+                <button
+                  key={branch}
+                  type="button"
+                  className={`auth-sidebar__branch-tag${branchFilter === branch ? ' auth-sidebar__branch-tag--active' : ''}`}
+                  onClick={() => {
+                    if (branchFilter === branch) {
+                      setBranchFilter(null);
+                      setBranchInput('');
+                    } else {
+                      setBranchFilter(branch);
+                      setBranchInput(branch);
+                    }
+                  }}
+                  title={branch}
+                >
+                  {branch.split('/').pop() ?? branch}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
         <div className="auth-sidebar__list">
           {filteredSidebarItems.length === 0 ? (
             <div className="auth-sidebar__empty">
-              {repoFilter
-                ? `No requests for ${repoFilter}.`
-                : filterMode === 'active'
-                  ? 'No active requests.'
-                  : filterMode === 'historical'
-                    ? 'No historical requests.'
-                    : 'No auth requests.'}
+              {branchFilter
+                ? `No requests for branch ${branchFilter.split('/').pop() ?? branchFilter}.`
+                : repoFilter
+                  ? `No requests for ${repoFilter.includes('/') ? repoFilter.split('/')[1] : repoFilter}.`
+                  : filterMode === 'active'
+                    ? 'No active requests.'
+                    : filterMode === 'historical'
+                      ? 'No historical requests.'
+                      : 'No auth requests.'}
             </div>
           ) : (
             filteredSidebarItems.map((request) => (
