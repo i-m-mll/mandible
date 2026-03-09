@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 
 export type AuthRequest = {
   id?: string;
@@ -913,6 +914,12 @@ export function AuthQueueView({
   onDismiss,
   onUpdateField,
 }: AuthQueueViewProps): JSX.Element {
+  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
+    defaultWidth: 320,
+    minWidth: 190,
+    storageKey: 'sidebar-width:auth',
+  });
+
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
 
@@ -1507,7 +1514,7 @@ export function AuthQueueView({
       )}
 
       {/* LEFT sidebar */}
-      <div className="auth-sidebar">
+      <div className="auth-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
         <div className="auth-sidebar__header">
           <div className="auth-sidebar__filters">
             <button
@@ -1591,6 +1598,9 @@ export function AuthQueueView({
           )}
         </div>
       </div>
+
+      {/* Drag handle */}
+      <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
 
       {/* RIGHT detail panel */}
       <div className="auth-detail">

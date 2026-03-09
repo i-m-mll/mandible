@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { findIssue, getIssueDetail, getIssueSessions, issueAction, scanIssueRepo } from '../api';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 
 // --- Types ---
 
@@ -444,10 +445,16 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     [issueDetail],
   );
 
+  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
+    defaultWidth: 280,
+    minWidth: 190,
+    storageKey: 'sidebar-width:issues',
+  });
+
   return (
     <div className="issues-view">
       {/* Left tree panel */}
-      <div className="issues-tree">
+      <div className="issues-tree" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
         <div className="issues-filter">
           <input
             type="search"
@@ -544,6 +551,9 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           })
         )}
       </div>
+
+      {/* Drag handle */}
+      <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
 
       {/* Right detail panel */}
       <div className="issues-detail">
