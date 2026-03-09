@@ -353,12 +353,13 @@ function App(): JSX.Element {
     };
     // SSE handler for console stream events — dispatches a CustomEvent so TerminalPane
     // components can subscribe per-session without needing to go through global state.
-    // Bug: b949700 — console rich view SSE bridge
+    // Bug: b949700 — console rich view SSE bridge; fix: f2e6a46
     const consoleStreamHandler = (payload: SSEPayload) => {
-      // Bug: 13e621e — payload fields are spread at top level; there is no payload.data wrapper.
-      // The broadcast sends { console_session_id, event } which arrives as direct payload fields.
+      // Bug: f2e6a46 — payload.data contains { console_session_id, event }; spread that, not payload.
+      // The SSE broadcast wraps data in a 'data' field: { type, data: {...}, timestamp }.
+      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
       window.dispatchEvent(
-        new CustomEvent('console:stream_event', { detail: { ...payload } }),
+        new CustomEvent('console:stream_event', { detail: data }),
       );
     };
 
@@ -932,31 +933,6 @@ function App(): JSX.Element {
               )}
             </a>
           </div>
-          <a
-            href="#/graph"
-            className={route.tab === 'graph' ? 'active' : ''}
-            aria-label="Graph"
-            title="Graph"
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 16 16"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-              aria-hidden="true"
-              style={{ verticalAlign: 'middle', display: 'inline-block' }}
-            >
-              {/* Three nodes as circles */}
-              <circle cx="8" cy="3" r="2" stroke="currentColor" strokeWidth="1.3" />
-              <circle cx="2.5" cy="12" r="2" stroke="currentColor" strokeWidth="1.3" />
-              <circle cx="13.5" cy="12" r="2" stroke="currentColor" strokeWidth="1.3" />
-              {/* Edges connecting them */}
-              <line x1="8" y1="5" x2="2.5" y2="10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-              <line x1="8" y1="5" x2="13.5" y2="10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-              <line x1="4.5" y1="12" x2="11.5" y2="12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-            </svg>
-          </a>
           <a href="#/settings" className={route.tab === 'settings' ? 'active' : ''} aria-label="Settings" title="Settings">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{verticalAlign: 'middle', display: 'inline-block'}}>
               <path d="M6.5 1.5l-.5 1.5A4.5 4.5 0 0 0 4.5 4l-1.5-.5L1.5 6l1.2.9A4.5 4.5 0 0 0 2.5 8a4.5 4.5 0 0 0 .2 1.1L1.5 10l1.5 2.5 1.5-.5a4.5 4.5 0 0 0 1.5 1l.5 1.5h3l.5-1.5a4.5 4.5 0 0 0 1.5-1l1.5.5 1.5-2.5-1.2-.9A4.5 4.5 0 0 0 13.5 8a4.5 4.5 0 0 0-.2-1.1L14.5 6 13 3.5l-1.5.5A4.5 4.5 0 0 0 10 3L9.5 1.5h-3Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
@@ -966,7 +942,7 @@ function App(): JSX.Element {
           <div className="tab-overflow" ref={overflowRef}>
             <button
               type="button"
-              className={`tab-overflow__btn${['work', 'review', 'logs', 'switchboard'].includes(route.tab) ? ' tab-overflow__btn--active' : ''}`}
+              className={`tab-overflow__btn${['work', 'review', 'logs', 'switchboard', 'graph'].includes(route.tab) ? ' tab-overflow__btn--active' : ''}`}
               onClick={() => setShowOverflow((v) => !v)}
               aria-label="More tabs"
             >
@@ -974,6 +950,13 @@ function App(): JSX.Element {
             </button>
             {showOverflow && (
               <div className="tab-overflow__menu">
+                <a
+                  href="#/graph"
+                  className={route.tab === 'graph' ? 'active' : ''}
+                  onClick={() => setShowOverflow(false)}
+                >
+                  Graph
+                </a>
                 <a
                   href="#/work"
                   className={route.tab === 'work' ? 'active' : ''}
