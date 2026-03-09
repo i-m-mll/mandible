@@ -275,8 +275,11 @@ export function GraphCanvas({ nodes, edges, onNavigate }: GraphCanvasProps): JSX
           node.vy = 0;
         }
       }
-      // Low alpha (0.1 vs prior 0.4): existing nodes barely move; new nodes settle.
-      simRef.current.alpha(0.1).restart();
+      // Conditional alpha: if new nodes arrived, give them energy to settle (0.1).
+      // If it's a pure data update (no new nodes), use minimal alpha (0.01) so
+      // existing layout is essentially frozen. Bug: 98cc82a
+      const hasNewNodes = nodesRef.current.some((n) => !existing.has(n.id));
+      simRef.current.alpha(hasNewNodes ? 0.1 : 0.01).restart();
     } else {
       const sim = d3
         .forceSimulation<SimGraphNode, SimGraphEdge>(nodesRef.current)
