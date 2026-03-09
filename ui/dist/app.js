@@ -10686,7 +10686,8 @@ function useSidebarResize(options2 = {}) {
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
   }, [minWidth]);
-  return { width, handleMouseDown };
+  const effectiveWidth = typeof window !== "undefined" && window.innerWidth <= 700 ? null : width;
+  return { width: effectiveWidth, handleMouseDown };
 }
 
 // node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
@@ -10851,12 +10852,23 @@ function renderMarkdown(src) {
   const result = marked.parse(src, { async: false });
   return typeof result === "string" ? result : "";
 }
+function sanitizeInlineHtml(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
 function renderInlineMarkdown(src) {
   if (!src)
     return "";
   const result = marked.parse(src, { async: false });
   const html3 = typeof result === "string" ? result : "";
-  return html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml(stripped);
 }
 function parseDiffSections(raw) {
   const sections = [];
@@ -11833,7 +11845,7 @@ function AuthQueueView({
   };
   return /* @__PURE__ */ u3("div", { className: "auth-sidebar-layout", children: [
     toastMessage && /* @__PURE__ */ u3("div", { className: "auth-toast auth-toast--floating", role: "status", children: toastMessage }),
-    /* @__PURE__ */ u3("div", { className: "auth-sidebar", style: { width: `${sidebarWidth}px`, flexShrink: 0 }, children: [
+    /* @__PURE__ */ u3("div", { className: "auth-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
       /* @__PURE__ */ u3("div", { className: "auth-sidebar__header", children: [
         /* @__PURE__ */ u3("div", { className: "auth-sidebar__filters", children: [
           /* @__PURE__ */ u3(
@@ -11938,6 +11950,25 @@ function AuthQueueView({
 }
 
 // ui/src/views/inbox.tsx
+marked.setOptions({ async: false, gfm: true, breaks: false });
+function sanitizeInlineHtml2(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
+function renderInlineMarkdown2(src) {
+  if (!src)
+    return "";
+  const result = marked.parse(src, { async: false });
+  const html3 = typeof result === "string" ? result : "";
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml2(stripped);
+}
 function formatRelativeTime2(value) {
   if (value === null || value === void 0)
     return "";
@@ -12171,7 +12202,13 @@ function InboxSidebarItem({
           ),
           item.time !== null && /* @__PURE__ */ u3("span", { className: "inbox-sidebar-item__time", children: formatRelativeTime2(item.time) })
         ] }),
-        /* @__PURE__ */ u3("div", { className: "inbox-sidebar-item__title", children: item.title }),
+        /* @__PURE__ */ u3(
+          "div",
+          {
+            className: "inbox-sidebar-item__title",
+            dangerouslySetInnerHTML: { __html: renderInlineMarkdown2(item.title) }
+          }
+        ),
         /* @__PURE__ */ u3("div", { className: "inbox-sidebar-item__meta", children: [
           item.repo && /* @__PURE__ */ u3("span", { className: "inbox-sidebar-item__repo", children: item.repo }),
           item.branch && /* @__PURE__ */ u3("span", { className: "inbox-sidebar-item__branch", children: item.branch })
@@ -12367,7 +12404,7 @@ function InboxView({
   };
   if (loading && !data) {
     return /* @__PURE__ */ u3("div", { className: "inbox-sidebar-layout", children: [
-      /* @__PURE__ */ u3("div", { className: "inbox-sidebar", style: { width: `${sidebarWidth}px`, flexShrink: 0 }, children: /* @__PURE__ */ u3("div", { className: "inbox-sidebar__header", children: /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "13px", padding: "14px" }, children: "Loading\u2026" }) }) }),
+      /* @__PURE__ */ u3("div", { className: "inbox-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: /* @__PURE__ */ u3("div", { className: "inbox-sidebar__header", children: /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "13px", padding: "14px" }, children: "Loading\u2026" }) }) }),
       /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
       /* @__PURE__ */ u3("div", { className: "inbox-detail", children: /* @__PURE__ */ u3("div", { className: "inbox-detail__empty", children: /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading inbox\u2026" }) }) })
     ] });
@@ -12450,12 +12487,23 @@ function renderMarkdown2(src) {
   const result = marked.parse(src, { async: false });
   return typeof result === "string" ? result : "";
 }
-function renderInlineMarkdown2(src) {
+function sanitizeInlineHtml3(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
+function renderInlineMarkdown3(src) {
   if (!src)
     return "";
   const result = marked.parse(src, { async: false });
   const html3 = typeof result === "string" ? result : "";
-  return html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml3(stripped);
 }
 function formatRelativeTime3(value) {
   if (!value)
@@ -12545,6 +12593,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [showCommentBox, setShowCommentBox] = d2(false);
   const [actionInFlight, setActionInFlight] = d2(false);
   const [linkedSessions, setLinkedSessions] = d2([]);
+  const lastAppliedDeepLinkRef = A2(null);
   const resolveRepoId = q2((rawRepoId) => {
     if (!rawRepoId)
       return null;
@@ -12590,6 +12639,10 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   y2(() => {
     if (!initialIssueId)
       return;
+    const deepLinkKey = `${initialRepoId ?? ""}:${initialIssueId}`;
+    if (lastAppliedDeepLinkRef.current === deepLinkKey)
+      return;
+    lastAppliedDeepLinkRef.current = deepLinkKey;
     if (initialRepoId) {
       const canonicalRepoId = resolveRepoId(initialRepoId) ?? initialRepoId;
       const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
@@ -12657,7 +12710,9 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
     const issueId = resolveIssueId(repoId, selectedIssueId);
     let cancelled = false;
-    setDetailLoading(true);
+    if (!issueDetail) {
+      setDetailLoading(true);
+    }
     const fetchDetail = (rId, iId) => getIssueDetail(rId, iId).then((data) => {
       if (!cancelled) {
         if (rId !== selectedRepoId)
@@ -12778,7 +12833,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     storageKey: "sidebar-width:issues"
   });
   return /* @__PURE__ */ u3("div", { className: "issues-view", children: [
-    /* @__PURE__ */ u3("div", { className: "issues-tree", style: { width: `${sidebarWidth}px`, flexShrink: 0 }, children: [
+    /* @__PURE__ */ u3("div", { className: "issues-tree", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
       /* @__PURE__ */ u3("div", { className: "issues-filter", children: /* @__PURE__ */ u3(
         "input",
         {
@@ -12864,7 +12919,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
                     "span",
                     {
                       className: "issues-item__title",
-                      dangerouslySetInnerHTML: { __html: renderInlineMarkdown2(issue.title) }
+                      dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(issue.title) }
                     }
                   )
                 ]
@@ -12881,7 +12936,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
         "h2",
         {
           className: "issues-detail__title",
-          dangerouslySetInnerHTML: { __html: renderInlineMarkdown2(issueDetail.title) }
+          dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(issueDetail.title) }
         }
       ),
       /* @__PURE__ */ u3("div", { className: "issues-detail__meta", children: [
@@ -13294,11 +13349,22 @@ function ReviewView({ params, loaders }) {
 
 // ui/src/views/sessions.tsx
 marked.setOptions({ async: false, gfm: true, breaks: false });
-function renderInlineMarkdown3(src) {
+function sanitizeInlineHtml4(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
+function renderInlineMarkdown4(src) {
   if (!src)
     return "";
   const html3 = marked.parse(src, { async: false });
-  return html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml4(stripped);
 }
 var TEN_MINUTES = 10 * 60 * 1e3;
 var REAP_THRESHOLD_MINUTES = 30;
@@ -13552,11 +13618,13 @@ function IssuePills({
     displayed.map((link2) => (
       // Bug: 387ae46 — include repo param so IssuesView can select directly
       // without the slow async cross-repo find path.
+      // Guard: if repo_id is absent, fall back to cross-repo find path
+      // (avoids #/issues?repo=undefined&issue=<id> in the URL).
       /* @__PURE__ */ u3(
         "a",
         {
           className: "linked-issue-chip",
-          href: `#/issues?repo=${encodeURIComponent(link2.repo_id)}&issue=${encodeURIComponent(link2.issue_id)}`,
+          href: link2.repo_id ? `#/issues?repo=${encodeURIComponent(link2.repo_id)}&issue=${encodeURIComponent(link2.issue_id)}` : `#/issues?issue=${encodeURIComponent(link2.issue_id)}`,
           children: link2.issue_id.slice(0, 8)
         },
         `${link2.repo_id}-${link2.issue_id}`
@@ -13779,7 +13847,7 @@ function SessionsView({
                 return /* @__PURE__ */ u3(
                   "span",
                   {
-                    dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(task) }
+                    dangerouslySetInnerHTML: { __html: renderInlineMarkdown4(task) }
                   }
                 );
               }
@@ -13929,11 +13997,22 @@ function MarkdownContent({ content }) {
     }
   );
 }
-function renderInlineMarkdown4(src) {
+function sanitizeInlineHtml5(html3) {
+  let out = html3.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    ""
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
+  return out;
+}
+function renderInlineMarkdown5(src) {
   if (!src)
     return "";
   const html3 = marked.parse(src, { async: false });
-  return html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  const stripped = html3.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
+  return sanitizeInlineHtml5(stripped);
 }
 function CopyButton({ content }) {
   const [copied, setCopied] = d2(false);
@@ -14512,7 +14591,7 @@ function ConversationDetail({
             "span",
             {
               dangerouslySetInnerHTML: {
-                __html: renderInlineMarkdown4(conversation.title || "Untitled")
+                __html: renderInlineMarkdown5(conversation.title || "Untitled")
               }
             }
           )
@@ -14694,7 +14773,7 @@ function ChatHistoryItem({
             "span",
             {
               dangerouslySetInnerHTML: {
-                __html: renderInlineMarkdown4(truncate(conversation.title || "Untitled", 55))
+                __html: renderInlineMarkdown5(truncate(conversation.title || "Untitled", 55))
               }
             }
           )
@@ -14801,7 +14880,7 @@ function ConversationsView({ conversations: initialConversations }) {
     );
   }, [conversations, hideEmpty, search, searchMode]);
   return /* @__PURE__ */ u3("div", { className: "chat-history-view", children: [
-    /* @__PURE__ */ u3("div", { className: "chat-history-sidebar", style: { width: `${sidebarWidth}px`, flexShrink: 0 }, children: [
+    /* @__PURE__ */ u3("div", { className: "chat-history-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
       /* @__PURE__ */ u3("div", { className: "chat-history-search-row", children: [
         /* @__PURE__ */ u3(
           "input",
@@ -15587,6 +15666,11 @@ function SwitchboardView({
   onSync,
   onSaveTemplate
 }) {
+  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
+    defaultWidth: 280,
+    minWidth: 180,
+    storageKey: "switchboard-sidebar-width"
+  });
   const [formName, setFormName] = d2("");
   const [formSource, setFormSource] = d2("");
   const [formTarget, setFormTarget] = d2("");
@@ -15739,13 +15823,14 @@ function SwitchboardView({
     acc[item.state] = (acc[item.state] ?? 0) + 1;
     return acc;
   }, {});
-  return /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "24px", height: "calc(100vh - 140px)" }, children: [
+  return /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "0", height: "calc(100vh - 140px)" }, children: [
     /* @__PURE__ */ u3("div", { style: {
-      width: "280px",
+      ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {},
       flexShrink: 0,
       display: "flex",
       flexDirection: "column",
-      gap: "8px"
+      gap: "8px",
+      paddingRight: "16px"
     }, children: [
       /* @__PURE__ */ u3("div", { className: "view-header", style: { marginBottom: "8px" }, children: /* @__PURE__ */ u3("h2", { style: { margin: 0, fontSize: "18px" }, children: "Switchboard" }) }),
       /* @__PURE__ */ u3("div", { style: {
@@ -16084,6 +16169,7 @@ function SwitchboardView({
         ] })
       ] })
     ] }),
+    /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleSidebarMouseDown }),
     /* @__PURE__ */ u3("div", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "12px" }, children: !selectedPairing ? /* @__PURE__ */ u3("div", { style: {
       flex: 1,
       display: "flex",
@@ -19428,10 +19514,12 @@ function useStreamState(events) {
   return T2(() => {
     const turns = [];
     const syntheticPrompts = [];
+    const streamUserMessages = [];
     let initEvent = null;
     let resultEvent = null;
     let pendingAssistant = null;
     const pendingResults = /* @__PURE__ */ new Map();
+    let userMsgIdx = 0;
     for (const event of events) {
       if (event.type === "system" && event.subtype === "init") {
         initEvent = event;
@@ -19443,10 +19531,22 @@ function useStreamState(events) {
         pendingAssistant = event;
       } else if (event.type === "user") {
         const userEvent = event;
+        let hasText = false;
+        const textParts = [];
         for (const block2 of userEvent.message.content) {
           if (block2.type === "tool_result") {
             pendingResults.set(block2.tool_use_id, block2);
+          } else if (block2.type === "text" && block2.text) {
+            textParts.push(block2.text);
+            hasText = true;
           }
+        }
+        if (hasText) {
+          streamUserMessages.push({
+            id: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+            text: textParts.join("\n"),
+            insertionIdx: turns.length
+          });
         }
       } else if (event.type === "result") {
         resultEvent = event;
@@ -19458,7 +19558,7 @@ function useStreamState(events) {
     if (pendingAssistant) {
       turns.push(buildTurn(pendingAssistant, pendingResults));
     }
-    return { turns, initEvent, resultEvent, syntheticPrompts };
+    return { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages };
   }, [events]);
 }
 function deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo) {
@@ -19487,7 +19587,7 @@ function StreamRenderer({
   streaming,
   sessionInfo
 }) {
-  const { turns, initEvent, resultEvent, syntheticPrompts } = useStreamState(events);
+  const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages } = useStreamState(events);
   const scrollRef = A2(null);
   const [userScrolled, setUserScrolled] = d2(false);
   y2(() => {
@@ -19515,7 +19615,7 @@ function StreamRenderer({
     setUserScrolled(false);
   }
   const statusBarProps = deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo);
-  const hasContent = events.length > 0 || syntheticPrompts.length > 0;
+  const hasContent = events.length > 0 || syntheticPrompts.length > 0 || streamUserMessages.length > 0;
   if (!hasContent) {
     return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
       /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: streaming ? "Waiting for events\u2026" : "No events" }),
@@ -19524,7 +19624,18 @@ function StreamRenderer({
   }
   const nodes = [];
   let spIdx = 0;
+  let umIdx = 0;
   for (let i4 = 0; i4 <= turns.length; i4++) {
+    while (umIdx < streamUserMessages.length && streamUserMessages[umIdx].insertionIdx === i4) {
+      const um = streamUserMessages[umIdx];
+      nodes.push(
+        /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: [
+          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__label", children: "You" }),
+          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: um.text })
+        ] }, `um-${um.id}`)
+      );
+      umIdx++;
+    }
     while (spIdx < syntheticPrompts.length && syntheticPrompts[spIdx].insertionIdx === i4) {
       const sp = syntheticPrompts[spIdx];
       nodes.push(
