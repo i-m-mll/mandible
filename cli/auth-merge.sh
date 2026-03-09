@@ -728,7 +728,7 @@ main() {
       err "Merge conflict detected."
       if auto_resolve_dist_conflicts; then
         err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
-        if git merge --continue -S; then
+        if git -c commit.gpgsign=true merge --continue; then
           verify_merge_not_empty
           auto_close_issues "$target" "$pre_merge_head"
           cleanup_merged_worktrees "$source"
@@ -760,7 +760,7 @@ main() {
       err "Merge conflict detected while merging $source."
       if auto_resolve_dist_conflicts; then
         err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
-        if git merge --continue -S; then
+        if git -c commit.gpgsign=true merge --continue; then
           verify_merge_not_empty
           succeeded+=("$source")
           continue
