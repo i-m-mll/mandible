@@ -1,5 +1,6 @@
 // Bug: aa35aeb — Console tab renderer: root component with event parsing and auto-scroll
 
+import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type {
   AssistantEvent,
@@ -7,6 +8,7 @@ import type {
   ResultEvent,
   StreamEvent,
   StreamRendererProps,
+  SyntheticPromptEvent,
   SystemInitEvent,
   ToolResultContentBlock,
   UserEvent,
@@ -20,6 +22,8 @@ type StreamState = {
   turns: RenderedTurn[];
   initEvent: SystemInitEvent | null;
   resultEvent: ResultEvent | null;
+  /** Synthetic user prompts, in-order, interleaved with turns by insertionIdx. */
+  syntheticPrompts: Array<{ localId: string; text: string; insertionIdx: number }>;
 };
 
 function buildTurn(
@@ -36,6 +40,7 @@ function buildTurn(
 function useStreamState(events: StreamEvent[]): StreamState {
   return useMemo(() => {
     const turns: RenderedTurn[] = [];
+    const syntheticPrompts: StreamState['syntheticPrompts'] = [];
     let initEvent: SystemInitEvent | null = null;
     let resultEvent: ResultEvent | null = null;
     let pendingAssistant: AssistantEvent | null = null;
@@ -61,6 +66,11 @@ function useStreamState(events: StreamEvent[]): StreamState {
         }
       } else if (event.type === 'result') {
         resultEvent = event as ResultEvent;
+      } else if (event.type === 'synthetic_prompt') {
+        // Bug: db5e986 — optimistic user prompt display: record insertion point so
+        // the bubble is rendered just before the next assistant turn.
+        const sp = event as SyntheticPromptEvent;
+        syntheticPrompts.push({ localId: sp.localId, text: sp.text, insertionIdx: turns.length });
       }
       // Unknown event types (stream_event, system:compact_boundary, etc.) are silently ignored
     }
@@ -70,7 +80,7 @@ function useStreamState(events: StreamEvent[]): StreamState {
       turns.push(buildTurn(pendingAssistant, pendingResults));
     }
 
-    return { turns, initEvent, resultEvent };
+    return { turns, initEvent, resultEvent, syntheticPrompts };
   }, [events]);
 }
 
@@ -119,7 +129,7 @@ export function StreamRenderer({
   streaming,
   sessionInfo,
 }: StreamRendererProps): JSX.Element {
-  const { turns, initEvent, resultEvent } = useStreamState(events);
+  const { turns, initEvent, resultEvent, syntheticPrompts } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [userScrolled, setUserScrolled] = useState(false);
 
@@ -153,7 +163,11 @@ export function StreamRenderer({
 
   const statusBarProps = deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo);
 
-  if (events.length === 0) {
+  // Bug: db5e986 — treat synthetic prompts as real content so "No events" is
+  // not shown after the user submits a message but before the assistant replies.
+  const hasContent = events.length > 0 || syntheticPrompts.length > 0;
+
+  if (!hasContent) {
     return (
       <div className="stream-renderer">
         <div className="stream-renderer__empty">
@@ -164,6 +178,35 @@ export function StreamRenderer({
     );
   }
 
+  // Build an interleaved list of nodes: synthetic user bubbles inserted at
+  // their recorded position (just before the assistant turn they precede).
+  const nodes: JSX.Element[] = [];
+  // Track which synthetic prompts have already been emitted
+  let spIdx = 0;
+  for (let i = 0; i <= turns.length; i++) {
+    // Emit all synthetic prompts whose insertionIdx === i
+    while (spIdx < syntheticPrompts.length && syntheticPrompts[spIdx].insertionIdx === i) {
+      const sp = syntheticPrompts[spIdx];
+      nodes.push(
+        <div key={`sp-${sp.localId}`} className="user-prompt-bubble">
+          <div className="user-prompt-bubble__label">You</div>
+          <div className="user-prompt-bubble__text">{sp.text}</div>
+        </div>,
+      );
+      spIdx++;
+    }
+    if (i < turns.length) {
+      const turn = turns[i];
+      nodes.push(
+        <MessageGroup
+          key={turn.id}
+          turn={turn}
+          isStreaming={streaming && i === turns.length - 1}
+        />,
+      );
+    }
+  }
+
   return (
     <div className="stream-renderer">
       <div
@@ -171,13 +214,7 @@ export function StreamRenderer({
         className="stream-renderer__scroll"
         onScroll={handleScroll}
       >
-        {turns.map((turn, i) => (
-          <MessageGroup
-            key={turn.id}
-            turn={turn}
-            isStreaming={streaming && i === turns.length - 1}
-          />
-        ))}
+        {nodes}
       </div>
       {userScrolled && streaming && (
         <button

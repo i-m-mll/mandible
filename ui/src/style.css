@@ -4858,6 +4858,35 @@ tr:hover .work-actions__trigger {
   background: rgba(77, 163, 255, 0.25);
 }
 
+/* Bug: db5e986 — optimistic user prompt bubble shown immediately after submission */
+.user-prompt-bubble {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.user-prompt-bubble__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.user-prompt-bubble__text {
+  background: rgba(77, 163, 255, 0.1);
+  border: 1px solid rgba(77, 163, 255, 0.2);
+  border-radius: 12px 12px 2px 12px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--fg-default);
+  max-width: 80%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Message group — one per assistant turn */
 .message-group {
   margin-bottom: 16px;
