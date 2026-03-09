@@ -425,28 +425,55 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     setCommentText('');
   }, []);
 
-  // Bug: cce48c1 — scroll selected issue into view. Two scroll containers:
-  // 1. .issues-tree (sidebar): needs to scroll so the repo group is visible
-  // 2. .issues-repo-list (inner list, 25vh max): needs to scroll so the item is visible
-  // scrollIntoView on the button only reaches the inner container (nearest scrollable ancestor).
-  // We must also call scrollIntoView on the repo group to scroll the outer sidebar.
-  // 150ms: allows expand state update + Preact re-render to flush before querying DOM.
+  // Bug: cce48c1 — scroll selected issue into view. Two scroll containers need scrolling:
+  // 1. .issues-tree (outer sidebar): scrollIntoView on the repo group handles this
+  // 2. .issues-repo-list (inner, 25vh): explicit getBoundingClientRect scroll handles this
+  // Use double-rAF to wait for Preact to commit the expand state update before querying DOM.
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) return;
-    const timer = setTimeout(() => {
-      const issueEl = document.querySelector<HTMLElement>(
-        `[data-issue-key="${selectedRepoId}:${selectedIssueId}"]`
-      );
-      if (!issueEl) return;
-      // Scroll inner list so item is visible within its 25vh container
-      issueEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      // Scroll outer sidebar so the repo group header is also visible
-      const repoGroupEl = issueEl.closest('.issues-repo-group');
-      if (repoGroupEl) {
-        repoGroupEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
-    }, 150);
-    return () => clearTimeout(timer);
+    // Ensure the repo is expanded before attempting DOM query
+    setExpandedRepos((prev) => {
+      if (prev.has(selectedRepoId)) return prev;
+      const next = new Set(prev);
+      next.add(selectedRepoId);
+      return next;
+    });
+    let rafId1: ReturnType<typeof requestAnimationFrame>;
+    let rafId2: ReturnType<typeof requestAnimationFrame>;
+    rafId1 = requestAnimationFrame(() => {
+      rafId2 = requestAnimationFrame(() => {
+        const issueEl = document.querySelector<HTMLElement>(
+          `[data-issue-key="${selectedRepoId}:${selectedIssueId}"]`
+        );
+        if (!issueEl) return;
+        // Scroll outer sidebar so repo group is visible
+        const repoGroupEl = issueEl.closest('.issues-repo-group');
+        if (repoGroupEl) {
+          repoGroupEl.scrollIntoView({ block: 'nearest' });
+        }
+        // Explicitly scroll the inner .issues-repo-list container using getBoundingClientRect
+        const scrollParent = issueEl.closest<HTMLElement>('.issues-repo-list');
+        if (scrollParent) {
+          const elRect = issueEl.getBoundingClientRect();
+          const parentRect = scrollParent.getBoundingClientRect();
+          const relTop = elRect.top - parentRect.top + scrollParent.scrollTop;
+          const relBottom = relTop + issueEl.offsetHeight;
+          const viewTop = scrollParent.scrollTop;
+          const viewBottom = viewTop + scrollParent.clientHeight;
+          if (relTop < viewTop) {
+            scrollParent.scrollTop = relTop;
+          } else if (relBottom > viewBottom) {
+            scrollParent.scrollTop = relBottom - scrollParent.clientHeight;
+          }
+        } else {
+          issueEl.scrollIntoView({ block: 'nearest' });
+        }
+      });
+    });
+    return () => {
+      cancelAnimationFrame(rafId1);
+      cancelAnimationFrame(rafId2);
+    };
   }, [selectedRepoId, selectedIssueId]);
 
   // Close issue (manual close — no "merged" label)
