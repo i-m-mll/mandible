@@ -104,7 +104,7 @@ function dualWriteDotfilesConf(envVar: string, value: string): void {
  * If the `export VAR=` line exists, replace its value; otherwise append it.
  * Creates the directory and file if they don't exist.
  */
-function dualWriteReaperConf(envVar: string, value: string): void {
+export function dualWriteReaperConf(envVar: string, value: string): void {
   try {
     const dir = path.dirname(REAPER_CONF_PATH);
     if (!fs.existsSync(dir)) {
@@ -114,7 +114,7 @@ function dualWriteReaperConf(envVar: string, value: string): void {
     if (fs.existsSync(REAPER_CONF_PATH)) {
       content = fs.readFileSync(REAPER_CONF_PATH, "utf-8");
     }
-    const pattern = new RegExp(`^(export\\s+${envVar}=).*$`, "m");
+    const pattern = new RegExp(`^(?:export\\s+)?${envVar}=.*$`, "m");
     const newLine = `export ${envVar}="${value}"`;
     if (pattern.test(content)) {
       content = content.replace(pattern, newLine);
@@ -124,6 +124,26 @@ function dualWriteReaperConf(envVar: string, value: string): void {
     fs.writeFileSync(REAPER_CONF_PATH, content, "utf-8");
   } catch {
     // Non-fatal: log but don't fail the API response
+  }
+}
+
+/** Sync all reaper_* settings from DB to config file on startup. */
+export function syncReaperSettingsToConfigFile(): void {
+  const REAPER_SETTING_MAP: Record<string, string[]> = {
+    reaper_enabled: ["CLAUDE_ENABLED", "CODEX_ENABLED"],
+    reaper_claude_idle_minutes: ["CLAUDE_IDLE_THRESHOLD_MINUTES"],
+    reaper_codex_idle_minutes: ["CODEX_IDLE_THRESHOLD_MINUTES"],
+    reaper_dry_run: ["DRY_RUN"],
+    reaper_cleanup_orphan_mcps: ["CLEANUP_ORPHAN_MCPS"],
+  };
+  const db = getDb();
+  for (const [key, envVars] of Object.entries(REAPER_SETTING_MAP)) {
+    const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
+    if (row) {
+      for (const envVar of envVars) {
+        dualWriteReaperConf(envVar, row.value);
+      }
+    }
   }
 }
 
