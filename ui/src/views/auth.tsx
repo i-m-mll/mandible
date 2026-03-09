@@ -215,6 +215,22 @@ function renderMarkdown(src: string): string {
 }
 
 /**
+ * Strip dangerous tags and attributes from HTML produced by marked.
+ * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
+ * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
+ */
+function sanitizeInlineHtml(html: string): string {
+  let out = html.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    '',
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
+  return out;
+}
+
+/**
  * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
  * input so text flows inline in compact contexts (sidebar titles, card headers).
  * Bug: a44fd6a — markdown rendering in auth sidebar and card titles
@@ -223,7 +239,8 @@ function renderInlineMarkdown(src: string): string {
   if (!src) return '';
   const result = marked.parse(src, { async: false });
   const html = typeof result === 'string' ? result : '';
-  return html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  return sanitizeInlineHtml(stripped);
 }
 
 type DiffFileSection = { filename: string; hunks: string };
@@ -1514,7 +1531,7 @@ export function AuthQueueView({
       )}
 
       {/* LEFT sidebar */}
-      <div className="auth-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
+      <div className="auth-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
         <div className="auth-sidebar__header">
           <div className="auth-sidebar__filters">
             <button

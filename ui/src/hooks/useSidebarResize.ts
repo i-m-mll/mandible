@@ -12,7 +12,8 @@ export type SidebarResizeOptions = {
 };
 
 export type SidebarResizeResult = {
-  width: number;
+  /** Current sidebar width in px, or null on small screens (let CSS media queries take over). */
+  width: number | null;
   handleMouseDown: (e: MouseEvent) => void;
 };
 
@@ -94,5 +95,10 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
     document.addEventListener('mouseup', onMouseUp);
   }, [minWidth]);
 
-  return { width, handleMouseDown };
+  // Bug: d472f7f — on small screens the inline width overrides CSS media queries
+  // (e.g. width: 100%). Return null on mobile so the inline style is omitted and
+  // CSS takes over. Mobile breakpoint matches the app's @media (max-width: 700px).
+  const effectiveWidth = typeof window !== 'undefined' && window.innerWidth <= 700 ? null : width;
+
+  return { width: effectiveWidth, handleMouseDown };
 }

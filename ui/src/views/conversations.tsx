@@ -124,6 +124,26 @@ function MarkdownContent({ content }: { content: string }): JSX.Element {
 }
 
 /**
+ * Strip dangerous tags and attributes from HTML produced by marked.
+ * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
+ * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
+ */
+function sanitizeInlineHtml(html: string): string {
+  // Remove dangerous block-level and executable tags (including their content)
+  let out = html.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    '',
+  );
+  // Also strip self-closing variants (e.g. <script />, <iframe />)
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
+  // Strip on* event handler attributes (onclick, onload, onerror, etc.)
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  // Strip javascript: href/src values
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
+  return out;
+}
+
+/**
  * Render inline markdown — strips the outer <p>…</p> wrapper that marked adds
  * for single-line input so the text flows inline without extra block spacing.
  * Used for titles and short prose displayed in compact contexts (sidebar items,
@@ -134,7 +154,8 @@ function renderInlineMarkdown(src: string): string {
   if (!src) return '';
   const html = marked.parse(src, { async: false }) as string;
   // Strip a single wrapping <p>…</p> (marked emits this for one-liner input)
-  return html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  return sanitizeInlineHtml(stripped);
 }
 
 // ── Copy-markdown button ──
@@ -1190,7 +1211,7 @@ export function ConversationsView({ conversations: initialConversations }: Conve
   return (
     <div className="chat-history-view">
       {/* Sidebar */}
-      <div className="chat-history-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
+      <div className="chat-history-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
         {/* Search row */}
         <div className="chat-history-search-row">
           <input

@@ -65,7 +65,8 @@ export type UserEvent = {
   parent_tool_use_id: string | null;
   message: {
     role: 'user';
-    content: ToolResultContentBlock[];
+    /** Content blocks — may be tool results (mid-turn) or text blocks (initial prompt). */
+    content: Array<ToolResultContentBlock | TextContentBlock | { type: string; [key: string]: unknown }>;
   };
   isSynthetic?: boolean;
 };

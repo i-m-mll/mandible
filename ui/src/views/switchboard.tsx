@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 
 // --- Types ---
 
@@ -105,6 +106,13 @@ export function SwitchboardView({
   onSync,
   onSaveTemplate,
 }: SwitchboardViewProps): JSX.Element {
+  // Bug: d472f7f — drag-to-resize left panel
+  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
+    defaultWidth: 280,
+    minWidth: 180,
+    storageKey: 'switchboard-sidebar-width',
+  });
+
   // Form state — used for both Add and Edit modes
   const [formName, setFormName] = useState('');
   const [formSource, setFormSource] = useState('');
@@ -269,14 +277,15 @@ export function SwitchboardView({
   }, {});
 
   return (
-    <div style={{ display: 'flex', gap: '24px', height: 'calc(100vh - 140px)' }}>
+    <div style={{ display: 'flex', gap: '0', height: 'calc(100vh - 140px)' }}>
       {/* Left panel: pairings list */}
       <div style={{
-        width: '280px',
+        ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}),
         flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
         gap: '8px',
+        paddingRight: '16px',
       }}>
         <div className="view-header" style={{ marginBottom: '8px' }}>
           <h2 style={{ margin: 0, fontSize: '18px' }}>Switchboard</h2>
@@ -614,6 +623,9 @@ export function SwitchboardView({
           </div>
         </div>
       </div>
+
+      {/* Bug: d472f7f — drag handle for resizing the left panel */}
+      <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
 
       {/* Right panel: items */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '12px' }}>

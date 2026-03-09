@@ -63,6 +63,22 @@ function renderMarkdown(src: string): string {
 }
 
 /**
+ * Strip dangerous tags and attributes from HTML produced by marked.
+ * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
+ * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
+ */
+function sanitizeInlineHtml(html: string): string {
+  let out = html.replace(
+    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
+    '',
+  );
+  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
+  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
+  return out;
+}
+
+/**
  * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
  * input so text flows inline in compact contexts (sidebar titles, list items).
  * Bug: a44fd6a — markdown rendering in issues sidebar titles
@@ -71,7 +87,8 @@ function renderInlineMarkdown(src: string): string {
   if (!src) return '';
   const result = marked.parse(src, { async: false });
   const html = typeof result === 'string' ? result : '';
-  return html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
+  return sanitizeInlineHtml(stripped);
 }
 
 function formatRelativeTime(value?: string): string {
@@ -172,6 +189,9 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   const [actionInFlight, setActionInFlight] = useState(false);
   const [linkedSessions, setLinkedSessions] = useState<Array<{session_id: string; created_at: number}>>([]);
 
+  // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
+  const lastAppliedDeepLinkRef = useRef<string | null>(null);
+
   const resolveRepoId = useCallback((rawRepoId: string | null | undefined): string | null => {
     if (!rawRepoId) return null;
     const trimmed = rawRepoId.trim();
@@ -214,8 +234,14 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   // Supports two forms:
   //   #/issues?repo=<repoId>&issue=<issueId>  — legacy, requires known repo
   //   #/issues?issue=<issueId>                — cross-repo find via /api/issues/find/:id
+  //
+  // Bug: a44fd6a — gate to one-time per route change so repos list updates
+  // (e.g. after rescan) don't re-apply the deep-link and clobber user selection.
   useEffect(() => {
     if (!initialIssueId) return;
+    const deepLinkKey = `${initialRepoId ?? ''}:${initialIssueId}`;
+    if (lastAppliedDeepLinkRef.current === deepLinkKey) return;
+    lastAppliedDeepLinkRef.current = deepLinkKey;
 
     if (initialRepoId) {
       // Legacy path: repo provided, resolve directly
@@ -309,7 +335,12 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
     const issueId = resolveIssueId(repoId, selectedIssueId);
     let cancelled = false;
-    setDetailLoading(true);
+    // Bug: a44fd6a — only show loading spinner when the detail pane is empty.
+    // If we already have content (switching between issues), keep the old content
+    // visible until the new fetch completes to avoid a flash to blank/spinner.
+    if (!issueDetail) {
+      setDetailLoading(true);
+    }
     const fetchDetail = (rId: string, iId: string) =>
       getIssueDetail(rId, iId).then((data) => {
         if (!cancelled) {
@@ -454,7 +485,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   return (
     <div className="issues-view">
       {/* Left tree panel */}
-      <div className="issues-tree" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
+      <div className="issues-tree" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
         <div className="issues-filter">
           <input
             type="search"
