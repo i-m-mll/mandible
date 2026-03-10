@@ -260,9 +260,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           issues = issues.filter((issue) => issue.labels.includes(internalLabel));
         }
         if (parentFilter) {
-          issues = issues.filter((issue) =>
-            issue.labels.some((l) => l.startsWith('parent:') && l.slice(7).startsWith(parentFilter))
-          );
+          issues = issues.filter((issue) => issue.parent_id === parentFilter);
         }
         return { ...repo, issues };
       })
