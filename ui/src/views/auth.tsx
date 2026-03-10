@@ -446,7 +446,7 @@ function AuthCard({
   const repoName = repoId.includes('/') && !looksLikeBranchName(repoId) && repoId.split('/').length === 2
     ? repoId.split('/')[1]
     : repoId;
-  const hasTags = Boolean(commitBranch || attemptLabel || branchMerged || (headBranch && baseBranch));
+  const hasTags = Boolean(commitBranch || attemptLabel || (headBranch && baseBranch));
 
   // Session & issue links
   const sessionId = request.session_id;
@@ -524,9 +524,7 @@ function AuthCard({
           {attemptLabel && (
             <span className="attempt-tag">{attemptLabel}</span>
           )}
-          {branchMerged && (
-            <span className="branch-merged-tag">Branch merged — safe to dismiss</span>
-          )}
+
           {headBranch && baseBranch && (
             <span className="branch-flow">
               <span className="branch-name">{headBranch}</span>
