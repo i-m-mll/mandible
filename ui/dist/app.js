@@ -8169,12 +8169,6 @@ async function getConsoleStreamEvents(sessionId, limit = 500) {
     return payload;
   return payload.events ?? [];
 }
-async function sendConsolePrompt(sessionId, prompt) {
-  await apiPost(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/prompt`,
-    { prompt }
-  );
-}
 async function getBackupStatus() {
   const response = await apiGet("/api/backup/status");
   return await parseMaybeJson(response);
@@ -11033,7 +11027,7 @@ function AuthCard({
   const headBranch = request.head_branch ?? request.head;
   const repoId = request.repo ?? "";
   const repoName = repoId.includes("/") && !looksLikeBranchName(repoId) && repoId.split("/").length === 2 ? repoId.split("/")[1] : repoId;
-  const hasTags = Boolean(commitBranch || attemptLabel || branchMerged || headBranch && baseBranch);
+  const hasTags = Boolean(commitBranch || attemptLabel || headBranch && baseBranch);
   const sessionId = request.session_id;
   const bugRefs = T2(() => extractBugRefs(commitMsg), [commitMsg]);
   const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
@@ -11098,7 +11092,6 @@ function AuthCard({
     hasTags && /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--tags", children: [
       commitBranch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: commitBranch }),
       attemptLabel && /* @__PURE__ */ u3("span", { className: "attempt-tag", children: attemptLabel }),
-      branchMerged && /* @__PURE__ */ u3("span", { className: "branch-merged-tag", children: "Branch merged \u2014 safe to dismiss" }),
       headBranch && baseBranch && /* @__PURE__ */ u3("span", { className: "branch-flow", children: [
         /* @__PURE__ */ u3("span", { className: "branch-name", children: headBranch }),
         " \u2192 ",
@@ -20193,8 +20186,10 @@ function TerminalPane({
       };
       setStreamEvents((prev) => [...prev, syntheticEvent]);
       setStreaming(true);
-      sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
-      });
+      const ws2 = wsRef.current;
+      if (ws2 && ws2.readyState === WebSocket.OPEN) {
+        ws2.send(new TextEncoder().encode(submittedPrompt + "\r"));
+      }
       return;
     }
     const ws = wsRef.current;
