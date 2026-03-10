@@ -215,7 +215,7 @@ fi
 # Bug: 8b0b5e2 — COMMIT_MSG.txt removed; auto-generate from git log instead.
 
 if [[ -z "$commit_message" ]]; then
-  commit_message=$(git log --format="%s" "${base_branch}..${branch}" 2>/dev/null | head -20)
+  commit_message=$(git log --format="- %s" "${base_branch}..${branch}" 2>/dev/null | head -20)
   if [[ -z "$commit_message" ]]; then
     commit_message="Merge ${branch}"
   fi
