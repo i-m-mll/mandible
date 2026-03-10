@@ -9,7 +9,7 @@ import type { ConsoleSession } from '../../state';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
 import type { StreamEvent, SyntheticPromptEvent } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
-import { getConsoleStreamEvents, restartConsoleSession, sendConsolePrompt } from '../../api';
+import { getConsoleStreamEvents, restartConsoleSession } from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
 
@@ -327,12 +327,12 @@ export function TerminalPane({
     e.preventDefault();
     if (!prompt.trim()) return;
 
-    // Bug: a97f54b — rich view uses a separate non-PTY subprocess for stream-json events.
-    // --output-format stream-json only works with -p (non-interactive); the PTY runs
-    // Claude in TUI mode and emits no parseable JSON to stdout.
-    // In rich view: call the /prompt API endpoint which spawns `claude -p --continue
-    // --output-format stream-json` and feeds events through the SSE pipeline.
-    // In terminal view: fall through to the PTY write path as before.
+    // Rich view: write directly to PTY WebSocket (same as terminal view).
+    // The PTY runs claude --output-format stream-json; its stream-json events
+    // flow through handleData → feedLineParser → broadcast("console:stream_event")
+    // → SSE → handleStreamEvent → streamEvents → StreamRenderer.
+    // Bug: 48cf5c8 — previous approach called sendConsolePrompt which spawned
+    // a separate subprocess that raced with the PTY for conversation state.
     if (viewMode === 'rich') {
       const submittedPrompt = prompt.trim();
       setPrompt('');
@@ -344,11 +344,11 @@ export function TerminalPane({
       };
       setStreamEvents((prev) => [...prev, syntheticEvent]);
       setStreaming(true);
-      // Fire and forget; stream events arrive asynchronously via SSE
-      sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
-        // Non-fatal: if the API call fails the user sees no response but the
-        // synthetic event is already displayed. A future retry UX can be added.
-      });
+      // Write to PTY WebSocket; stream-json events arrive asynchronously via SSE
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode(submittedPrompt + '\r'));
+      }
       return;
     }
 

@@ -4,6 +4,7 @@
  */
 import { spawn } from "node:child_process";
 import { getDb } from "../db.js";
+import { broadcast } from "../sse.js";
 function sendJson(res, code, payload) {
     res.status(code).json(payload);
 }
@@ -189,9 +190,14 @@ export function registerConsoleRoutes(server, manager) {
     //
     // Bug: a97f54b — --output-format stream-json only works with -p (non-interactive).
     // The PTY session runs Claude in full TUI mode and emits no JSON to stdout.
-    // This endpoint spawns a separate `claude -p --continue --output-format stream-json`
+    // This endpoint spawns a separate `claude -p --output-format stream-json`
     // subprocess to capture structured stream events for the rich view, while the
     // PTY session continues providing the terminal view unchanged.
+    //
+    // Bug: f2e6a46 — use --resume <session_id> instead of --continue. The old
+    // --continue flag races with the running PTY process for directory-based session
+    // detection. We extract the session_id from prior stream events and use
+    // --resume for precise continuation; fall back to no continuation flag if none found.
     //
     // The subprocess stdout is fed through PtySession.ingestText() which runs the
     // same line parser and broadcasts console:stream_event via SSE.
@@ -227,8 +233,22 @@ export function registerConsoleRoutes(server, manager) {
         }
         // Merge session-level env overrides
         Object.assign(env, ptySession.meta.env ?? {});
-        // Spawn non-PTY subprocess: claude -p --continue --output-format stream-json
-        const child = spawn(ptySession.meta.command === "claude" ? ptySession.meta.command : "claude", ["-p", prompt, "--continue", "--output-format", "stream-json", "--dangerously-skip-permissions"], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+        // Get the most recent session_id from stream events (from 'system', 'assistant', 'result' events)
+        const streamEvents = ptySession.getStreamEvents();
+        let claudeSessionId = null;
+        for (let i = streamEvents.length - 1; i >= 0; i--) {
+            const ev = streamEvents[i];
+            if (ev.session_id) {
+                claudeSessionId = ev.session_id;
+                break;
+            }
+        }
+        // Bug: f2e6a46 — use --resume <session_id> instead of --continue to avoid
+        // racing with the running PTY process for directory-based session detection.
+        const claudeArgs = claudeSessionId
+            ? ["-p", prompt, "--resume", claudeSessionId, "--output-format", "stream-json", "--dangerously-skip-permissions"]
+            : ["-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions"];
+        const child = spawn(ptySession.meta.command === "claude" ? ptySession.meta.command : "claude", claudeArgs, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
         let lineBuffer = "";
         child.stdout.on("data", (chunk) => {
             lineBuffer += chunk.toString("utf8");
@@ -240,14 +260,33 @@ export function registerConsoleRoutes(server, manager) {
                 }
             }
         });
-        // stderr is discarded (Claude's TUI diagnostics are not stream-json)
-        child.stderr.on("data", () => { });
-        child.on("close", () => {
+        let stderrBuf = '';
+        child.stderr.on('data', (chunk) => {
+            stderrBuf += chunk.toString('utf8');
+        });
+        child.on("close", (code) => {
             // Flush any remaining partial line
             if (lineBuffer.trim()) {
                 ptySession.ingestText(lineBuffer + "\n");
             }
             lineBuffer = "";
+            // If subprocess failed and produced no stream events, emit a synthetic error
+            if (code !== 0 && stderrBuf.trim()) {
+                const errMsg = stderrBuf.trim().slice(0, 500);
+                broadcast("console:stream_event", {
+                    console_session_id: id,
+                    event: {
+                        type: "result",
+                        subtype: "error_during_execution",
+                        is_error: true,
+                        errors: [errMsg],
+                        session_id: claudeSessionId ?? "",
+                        duration_ms: 0,
+                        num_turns: 0,
+                        total_cost_usd: 0,
+                    },
+                });
+            }
         });
         child.on("error", () => {
             // Best-effort: subprocess failed (e.g. claude not in PATH). Nothing to emit.
