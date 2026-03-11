@@ -124,6 +124,7 @@ export interface GitBugIssue {
     author: string;
     created_at: string;
     description: string;
+    parent_id?: string;
 }
 export interface GitBugIssueDetail extends GitBugIssue {
     comments: GitBugComment[];

@@ -15,6 +15,7 @@ export type GitBugIssue = {
   author: string;
   created_at: string;
   description: string;
+  parent_id?: string;  // derived from parent:<human_id> label
 };
 
 export type GitBugComment = {
@@ -40,7 +41,7 @@ export type IssueRepoSummary = {
 
 export type IssuesViewProps = {
   repos: IssueRepoSummary[];
-  onRescan: () => void;
+  onRescan: () => Promise<void>;
   initialRepoId?: string;
   initialIssueId?: string;
 };
@@ -134,53 +135,23 @@ const LABEL_DISPLAY_NAMES: Record<string, string> = {
   umbrella: 'umbrella',
 };
 
+// Reverse map: display name → internal label (for filter pills)
+const LABEL_INTERNAL_NAMES: Record<string, string> = {
+  bug: 'error',
+  umbrella: 'umbrella',
+  feature: 'feature',
+  deferred: 'deferred',
+};
+
+// --- Flat list item types ---
+
+type ListItem =
+  | { kind: 'header'; repo: IssueRepoSummary }
+  | { kind: 'issue'; issue: GitBugIssue; repo: IssueRepoSummary };
+
 // --- Components ---
 
 type StatusFilter = 'all' | 'open' | 'merged' | 'closed';
-
-/** Scrollable issue list with bottom fade that disappears at scroll end. */
-function ScrollableIssueList({ children, totalCount }: { children: preact.ComponentChildren; totalCount: number }): JSX.Element {
-  const listRef = useRef<HTMLDivElement>(null);
-  const [needsFade, setNeedsFade] = useState(true);
-
-  const checkFade = useCallback(() => {
-    const el = listRef.current;
-    if (!el) return;
-    // No fade if content doesn't overflow, or scrolled near bottom (2px tolerance)
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 3;
-    const noOverflow = el.scrollHeight <= el.clientHeight;
-    setNeedsFade(!noOverflow && !atBottom);
-  }, []);
-
-  useEffect(() => {
-    checkFade();
-    // Re-check if children change (e.g. filter applied)
-  }, [children, checkFade]);
-
-  useEffect(() => {
-    const el = listRef.current;
-    if (!el) return;
-    // Also check after images/fonts settle
-    const observer = new ResizeObserver(() => checkFade());
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [checkFade]);
-
-  return (
-    <div className="issues-repo-list-wrapper">
-      <div
-        ref={listRef}
-        className={`issues-repo-list${needsFade ? '' : ' issues-repo-list--no-fade'}`}
-        onScroll={checkFade}
-      >
-        {children}
-      </div>
-      {needsFade && totalCount > 0 && (
-        <div className="issues-repo-list__count">{totalCount} issues</div>
-      )}
-    </div>
-  );
-}
 
 export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: IssuesViewProps): JSX.Element {
   // Local state
@@ -188,7 +159,9 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('open');
-  const [expandedRepos, setExpandedRepos] = useState<Set<string>>(() => new Set());
+  const [repoFilter, setRepoFilter] = useState<string | null>(initialRepoId ?? null);
+  const [labelFilter, setLabelFilter] = useState<string | null>(null);
+  const [parentFilter, setParentFilter] = useState<string | null>(null);
   const [issueDetail, setIssueDetail] = useState<GitBugIssueDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [commentText, setCommentText] = useState('');
@@ -222,28 +195,9 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     return rawIssueId;
   }, [repos]);
 
-  // Auto-expand repos that have issues
-  useEffect(() => {
-    if (expandedRepos.size === 0 && repos.length > 0) {
-      const initial = new Set<string>();
-      for (const repo of repos) {
-        if (repo.open_count > 0) {
-          initial.add(repo.repo_id);
-        }
-      }
-      if (initial.size > 0) {
-        setExpandedRepos(initial);
-      }
-    }
-  }, [repos]);
-
   // Deep-link: auto-select issue from URL params.
-  // Supports two forms:
-  //   #/issues?repo=<repoId>&issue=<issueId>  — legacy, requires known repo
-  //   #/issues?issue=<issueId>                — cross-repo find via /api/issues/find/:id
-  //
-  // Bug: a44fd6a — gate to one-time per route change so repos list updates
-  // (e.g. after rescan) don't re-apply the deep-link and clobber user selection.
+  // When initialRepoId is present, set repoFilter to narrow the list.
+  // When initialIssueId is present, select it.
   useEffect(() => {
     if (!initialIssueId) return;
     const deepLinkKey = `${initialRepoId ?? ''}:${initialIssueId}`;
@@ -251,16 +205,11 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     lastAppliedDeepLinkRef.current = deepLinkKey;
 
     if (initialRepoId) {
-      // Legacy path: repo provided, resolve directly
       const canonicalRepoId = resolveRepoId(initialRepoId) ?? initialRepoId;
       const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
       setSelectedRepoId(canonicalRepoId);
       setSelectedIssueId(canonicalIssueId);
-      setExpandedRepos((prev) => {
-        const next = new Set(prev);
-        next.add(canonicalRepoId);
-        return next;
-      });
+      setRepoFilter(canonicalRepoId);
     } else {
       // No repo: search all scanned repos for this issue ID
       findIssue(initialIssueId).then((detail) => {
@@ -268,25 +217,17 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
         if (d?.repo_id && d?.id) {
           setSelectedRepoId(d.repo_id);
           setSelectedIssueId(d.id);
-          setExpandedRepos((prev) => {
-            const next = new Set(prev);
-            next.add(d.repo_id!);
-            return next;
-          });
+          setRepoFilter(d.repo_id);
         }
       }).catch(() => {
         // Bug: aee671a — cold scanner cache: trigger global scan and retry once
-        onRescan?.().then(() => findIssue(initialIssueId))
+        onRescan().then(() => findIssue(initialIssueId))
           .then((retried) => {
             const r = retried as { repo_id?: string; id?: string } | null;
             if (r?.repo_id && r?.id) {
               setSelectedRepoId(r.repo_id);
               setSelectedIssueId(r.id);
-              setExpandedRepos((prev) => {
-                const next = new Set(prev);
-                next.add(r.repo_id!);
-                return next;
-              });
+              setRepoFilter(r.repo_id);
             }
           })
           .catch(() => {
@@ -298,9 +239,10 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
 
   const normalizedFilter = useMemo(() => filter.trim().toLowerCase(), [filter]);
 
-  // Filter issues within repos — three-state aware
+  // Filter issues within repos — three-state aware, plus repo/label/parent filters
   const filteredRepos = useMemo(() => {
     return repos
+      .filter((repo) => !repoFilter || repo.repo_id === repoFilter)
       .map((repo) => {
         let issues = repo.issues;
         if (statusFilter !== 'all') {
@@ -313,10 +255,33 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
               issue.id.toLowerCase().includes(normalizedFilter),
           );
         }
+        if (labelFilter) {
+          const internalLabel = LABEL_INTERNAL_NAMES[labelFilter] ?? labelFilter;
+          issues = issues.filter((issue) => issue.labels.includes(internalLabel));
+        }
+        if (parentFilter) {
+          issues = issues.filter((issue) => issue.parent_id === parentFilter);
+        }
         return { ...repo, issues };
       })
       .filter((repo) => repo.issues.length > 0);
-  }, [repos, statusFilter, normalizedFilter]);
+  }, [repos, statusFilter, normalizedFilter, repoFilter, labelFilter, parentFilter]);
+
+  // Build flat list items: one header per repo + its issues
+  // Suppress header if only one repo visible (repoFilter set)
+  const items = useMemo<ListItem[]>(() => {
+    const result: ListItem[] = [];
+    const showHeaders = !repoFilter || filteredRepos.length > 1;
+    for (const repo of filteredRepos) {
+      if (showHeaders) {
+        result.push({ kind: 'header', repo });
+      }
+      for (const issue of repo.issues) {
+        result.push({ kind: 'issue', issue, repo });
+      }
+    }
+    return result;
+  }, [filteredRepos, repoFilter]);
 
   // Total issue count for badge
   const totalOpen = useMemo(
@@ -325,14 +290,6 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   );
 
   // Fetch detail when selection changes.
-  // If the first attempt fails (e.g. daemon just reloaded and hasn't scanned
-  // this repo yet), trigger a per-repo scan and retry once before giving up.
-  //
-  // Bug: 5183781 — do NOT call setSelectedRepoId/setSelectedIssueId inside this
-  // effect. Those setState calls cause the effect to re-run (since selectedRepoId
-  // and selectedIssueId are in the dep array), triggering a second fetch and
-  // visible flicker. Instead, resolve the canonical IDs locally and use them
-  // for fetching; update state only after the fetch completes successfully.
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) {
       setIssueDetail(null);
@@ -343,39 +300,28 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     const issueId = resolveIssueId(repoId, selectedIssueId);
     let cancelled = false;
     // Bug: a44fd6a — only show loading spinner when the detail pane is empty.
-    // If we already have content (switching between issues), keep the old content
-    // visible until the new fetch completes to avoid a flash to blank/spinner.
     if (!issueDetail) {
       setDetailLoading(true);
     }
     const fetchDetail = (rId: string, iId: string) =>
       getIssueDetail(rId, iId).then((data) => {
         if (!cancelled) {
-          // Normalise state to canonical IDs only after a successful fetch so
-          // we don't trigger a mid-flight effect re-run (Bug: 5183781).
           if (rId !== selectedRepoId) setSelectedRepoId(rId);
           if (iId !== selectedIssueId) setSelectedIssueId(iId);
           setIssueDetail(data as GitBugIssueDetail);
           setDetailLoading(false);
         }
       });
-    // Bug: 88d3b1d — defensive fallback chain:
-    // 1. Try getIssueDetail(repoId, issueId) directly
-    // 2. On failure, trigger a targeted repo scan and retry once
-    // 3. If still failing (e.g. repoId or issueId format mismatch), try
-    //    findIssue(issueId) cross-repo — avoids "Failed to load" for valid issues
-    //    whose repoId was passed in a non-canonical format from the Monitor tab.
+    // Bug: 88d3b1d — defensive fallback chain
     fetchDetail(repoId, issueId).catch(() => {
       scanIssueRepo(repoId)
         .then(() => fetchDetail(repoId, issueId))
         .catch(() => {
-          // Targeted scan + retry still failed — fall back to cross-repo find.
           findIssue(issueId)
             .then((found) => {
               if (cancelled) return;
               const d = found as { repo_id?: string; id?: string } | null;
               if (d?.repo_id && d?.id) {
-                // Update state to canonical IDs so subsequent actions work correctly.
                 setSelectedRepoId(d.repo_id);
                 setSelectedIssueId(d.id);
                 setIssueDetail(found as GitBugIssueDetail);
@@ -406,75 +352,12 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     };
   }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
 
-  const toggleRepo = useCallback((repoId: string) => {
-    setExpandedRepos((prev) => {
-      const next = new Set(prev);
-      if (next.has(repoId)) {
-        next.delete(repoId);
-      } else {
-        next.add(repoId);
-      }
-      return next;
-    });
-  }, []);
-
   const selectIssue = useCallback((repoId: string, issueId: string) => {
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
     setShowCommentBox(false);
     setCommentText('');
   }, []);
-
-  // Bug: cce48c1 — scroll selected issue into view. Two scroll containers need scrolling:
-  // 1. .issues-tree (outer sidebar): scrollIntoView on the repo group handles this
-  // 2. .issues-repo-list (inner, 25vh): explicit getBoundingClientRect scroll handles this
-  // Use double-rAF to wait for Preact to commit the expand state update before querying DOM.
-  useEffect(() => {
-    if (!selectedRepoId || !selectedIssueId) return;
-    // Ensure the repo is expanded before attempting DOM query
-    setExpandedRepos((prev) => {
-      if (prev.has(selectedRepoId)) return prev;
-      const next = new Set(prev);
-      next.add(selectedRepoId);
-      return next;
-    });
-    let rafId1: ReturnType<typeof requestAnimationFrame>;
-    let rafId2: ReturnType<typeof requestAnimationFrame>;
-    rafId1 = requestAnimationFrame(() => {
-      rafId2 = requestAnimationFrame(() => {
-        const issueEl = document.querySelector<HTMLElement>(
-          `[data-issue-key="${selectedRepoId}:${selectedIssueId}"]`
-        );
-        if (!issueEl) return;
-        // Scroll outer sidebar so repo group is visible
-        const repoGroupEl = issueEl.closest('.issues-repo-group');
-        if (repoGroupEl) {
-          repoGroupEl.scrollIntoView({ block: 'nearest' });
-        }
-        // Explicitly scroll the inner .issues-repo-list container using getBoundingClientRect
-        const scrollParent = issueEl.closest<HTMLElement>('.issues-repo-list');
-        if (scrollParent) {
-          const elRect = issueEl.getBoundingClientRect();
-          const parentRect = scrollParent.getBoundingClientRect();
-          const relTop = elRect.top - parentRect.top + scrollParent.scrollTop;
-          const relBottom = relTop + issueEl.offsetHeight;
-          const viewTop = scrollParent.scrollTop;
-          const viewBottom = viewTop + scrollParent.clientHeight;
-          if (relTop < viewTop) {
-            scrollParent.scrollTop = relTop;
-          } else if (relBottom > viewBottom) {
-            scrollParent.scrollTop = relBottom - scrollParent.clientHeight;
-          }
-        } else {
-          issueEl.scrollIntoView({ block: 'nearest' });
-        }
-      });
-    });
-    return () => {
-      cancelAnimationFrame(rafId1);
-      cancelAnimationFrame(rafId2);
-    };
-  }, [selectedRepoId, selectedIssueId]);
 
   // Close issue (manual close — no "merged" label)
   const handleCloseIssue = useCallback(async () => {
@@ -564,7 +447,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
 
   return (
     <div className="issues-view">
-      {/* Left tree panel */}
+      {/* Left sidebar panel */}
       <div className="issues-tree" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
         <div className="issues-filter">
           <input
@@ -575,6 +458,19 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
             onInput={(e) => setFilter(e.currentTarget.value)}
           />
         </div>
+
+        {/* Repo filter */}
+        <select
+          className="issues-repo-select"
+          value={repoFilter ?? ''}
+          onChange={(e) => setRepoFilter(e.currentTarget.value || null)}
+        >
+          <option value="">All repos</option>
+          {repos.map((r) => (
+            <option key={r.repo_id} value={r.repo_id}>{r.repo_name}</option>
+          ))}
+        </select>
+
         <div className="issues-status-filters">
           <button
             type="button"
@@ -606,61 +502,72 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           </button>
         </div>
 
-        {filteredRepos.length === 0 ? (
+        {/* Label filter pills */}
+        <div className="issues-label-filters">
+          {(['umbrella', 'feature', 'bug', 'deferred'] as const).map((lbl) => (
+            <button
+              key={lbl}
+              type="button"
+              className={`issues-label-pill${labelFilter === lbl ? ' issues-label-pill--active' : ''}`}
+              onClick={() => setLabelFilter((prev) => prev === lbl ? null : lbl)}
+            >
+              {lbl}
+            </button>
+          ))}
+        </div>
+
+        {/* Parent filter indicator */}
+        {parentFilter && (
+          <div className="issues-parent-filter">
+            <span className="issues-parent-filter__label">
+              Children of {parentFilter}
+            </span>
+            <button
+              type="button"
+              className="issues-parent-filter__clear"
+              onClick={() => setParentFilter(null)}
+            >
+              Clear
+            </button>
+          </div>
+        )}
+
+        {/* Flat issue list */}
+        {items.length === 0 ? (
           <div className="issues-tree__empty">
             {repos.length === 0
               ? 'No repos with git-bug issues found.'
               : 'No issues match the current filter.'}
           </div>
         ) : (
-          filteredRepos.map((repo) => {
-            const isExpanded = expandedRepos.has(repo.repo_id);
-            const openCount = repo.issues.filter((i) => i.status === 'open').length;
-            return (
-              <div key={repo.repo_id} className={`issues-repo-group${isExpanded ? ' issues-repo-group--expanded' : ''}`}>
+          <div className="issues-list">
+            {items.map((item) =>
+              item.kind === 'header' ? (
+                <div key={`h:${item.repo.repo_id}`} className="issues-section-header">
+                  {item.repo.repo_name}
+                </div>
+              ) : (
                 <button
+                  key={item.issue.id}
                   type="button"
-                  className="issues-repo-header"
-                  onClick={() => toggleRepo(repo.repo_id)}
+                  className={`issues-item${
+                    selectedRepoId === item.repo.repo_id && selectedIssueId === item.issue.id
+                      ? ' issues-item--selected'
+                      : ''
+                  }`}
+                  onClick={() => selectIssue(item.repo.repo_id, item.issue.id)}
                 >
-                  <span className="issues-repo-header__chevron">
-                    {isExpanded ? '\u25BE' : '\u25B8'}
-                  </span>
-                  <span className="issues-repo-header__name">{repo.repo_name}</span>
-                  {openCount > 0 && (
-                    <span className="issues-repo-header__badge">{openCount}</span>
-                  )}
+                  <span
+                    className={`issue-status-dot issue-status-dot--${getVisualState(item.issue)}`}
+                  />
+                  <span
+                    className="issues-item__title"
+                    dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.issue.title) }}
+                  />
                 </button>
-                {isExpanded && (
-                  <ScrollableIssueList totalCount={repo.issues.length}>
-                    {repo.issues.map((issue) => {
-                      const isSelected =
-                        selectedRepoId === repo.repo_id && selectedIssueId === issue.id;
-                      const vs = getVisualState(issue);
-                      return (
-                        <button
-                          key={issue.id}
-                          type="button"
-                          className={`issues-item${isSelected ? ' issues-item--selected' : ''}`}
-                          data-issue-key={`${repo.repo_id}:${issue.id}`}
-                          onClick={() => selectIssue(repo.repo_id, issue.id)}
-                        >
-                          <span
-                            className={`issue-status-dot issue-status-dot--${vs}`}
-                          />
-                          {/* Bug: a44fd6a — render issue sidebar titles as inline markdown */}
-                          <span
-                            className="issues-item__title"
-                            dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issue.title) }}
-                          />
-                        </button>
-                      );
-                    })}
-                  </ScrollableIssueList>
-                )}
-              </div>
-            );
-          })
+              ),
+            )}
+          </div>
         )}
       </div>
 
@@ -714,6 +621,19 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
                   </span>
                 );
               })}
+              {/* Umbrella: show children button */}
+              {issueDetail.labels.includes('umbrella') && (
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => {
+                    setRepoFilter(issueDetail.repo_id);
+                    setParentFilter(issueDetail.id.slice(0, 8));
+                  }}
+                >
+                  Show children
+                </button>
+              )}
             </div>
             <div className="issues-detail__info text-muted">
               <span>{issueDetail.author}</span>

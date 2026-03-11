@@ -469,6 +469,7 @@ export class IssueScanner {
         author: entry.actors?.[0]?.name ?? "",
         created_at: entry.create_time?.time ?? "",
         description: "",
+        parent_id: labels.find((l: string) => l.startsWith('parent:'))?.slice(7),
       };
       issues.push(issue);
       if (status === "open") {
@@ -541,6 +542,7 @@ export class IssueScanner {
         author: entry.actors?.[0]?.name ?? "",
         created_at: entry.create_time?.time ?? "",
         description: "",
+        parent_id: labels.find((l: string) => l.startsWith('parent:'))?.slice(7),
       };
       issues.push(issue);
       if (status === "open") {

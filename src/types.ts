@@ -154,6 +154,7 @@ export interface GitBugIssue {
   author: string;
   created_at: string;
   description: string;
+  parent_id?: string;  // derived from parent:<human_id> label
 }
 
 export interface GitBugIssueDetail extends GitBugIssue {

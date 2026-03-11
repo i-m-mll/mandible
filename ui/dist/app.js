@@ -12673,50 +12673,20 @@ var LABEL_DISPLAY_NAMES = {
   error: "bug",
   umbrella: "umbrella"
 };
-function ScrollableIssueList({ children: children2, totalCount }) {
-  const listRef = A2(null);
-  const [needsFade, setNeedsFade] = d2(true);
-  const checkFade = q2(() => {
-    const el = listRef.current;
-    if (!el)
-      return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 3;
-    const noOverflow = el.scrollHeight <= el.clientHeight;
-    setNeedsFade(!noOverflow && !atBottom);
-  }, []);
-  y2(() => {
-    checkFade();
-  }, [children2, checkFade]);
-  y2(() => {
-    const el = listRef.current;
-    if (!el)
-      return;
-    const observer = new ResizeObserver(() => checkFade());
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [checkFade]);
-  return /* @__PURE__ */ u3("div", { className: "issues-repo-list-wrapper", children: [
-    /* @__PURE__ */ u3(
-      "div",
-      {
-        ref: listRef,
-        className: `issues-repo-list${needsFade ? "" : " issues-repo-list--no-fade"}`,
-        onScroll: checkFade,
-        children: children2
-      }
-    ),
-    needsFade && totalCount > 0 && /* @__PURE__ */ u3("div", { className: "issues-repo-list__count", children: [
-      totalCount,
-      " issues"
-    ] })
-  ] });
-}
+var LABEL_INTERNAL_NAMES = {
+  bug: "error",
+  umbrella: "umbrella",
+  feature: "feature",
+  deferred: "deferred"
+};
 function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [selectedRepoId, setSelectedRepoId] = d2(null);
   const [selectedIssueId, setSelectedIssueId] = d2(null);
   const [filter2, setFilter] = d2("");
   const [statusFilter, setStatusFilter] = d2("open");
-  const [expandedRepos, setExpandedRepos] = d2(() => /* @__PURE__ */ new Set());
+  const [repoFilter, setRepoFilter] = d2(initialRepoId ?? null);
+  const [labelFilter, setLabelFilter] = d2(null);
+  const [parentFilter, setParentFilter] = d2(null);
   const [issueDetail, setIssueDetail] = d2(null);
   const [detailLoading, setDetailLoading] = d2(false);
   const [commentText, setCommentText] = d2("");
@@ -12754,19 +12724,6 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     return rawIssueId;
   }, [repos]);
   y2(() => {
-    if (expandedRepos.size === 0 && repos.length > 0) {
-      const initial = /* @__PURE__ */ new Set();
-      for (const repo of repos) {
-        if (repo.open_count > 0) {
-          initial.add(repo.repo_id);
-        }
-      }
-      if (initial.size > 0) {
-        setExpandedRepos(initial);
-      }
-    }
-  }, [repos]);
-  y2(() => {
     if (!initialIssueId)
       return;
     const deepLinkKey = `${initialRepoId ?? ""}:${initialIssueId}`;
@@ -12778,34 +12735,22 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
       setSelectedRepoId(canonicalRepoId);
       setSelectedIssueId(canonicalIssueId);
-      setExpandedRepos((prev) => {
-        const next = new Set(prev);
-        next.add(canonicalRepoId);
-        return next;
-      });
+      setRepoFilter(canonicalRepoId);
     } else {
       findIssue(initialIssueId).then((detail) => {
         const d3 = detail;
         if (d3?.repo_id && d3?.id) {
           setSelectedRepoId(d3.repo_id);
           setSelectedIssueId(d3.id);
-          setExpandedRepos((prev) => {
-            const next = new Set(prev);
-            next.add(d3.repo_id);
-            return next;
-          });
+          setRepoFilter(d3.repo_id);
         }
       }).catch(() => {
-        onRescan?.().then(() => findIssue(initialIssueId)).then((retried) => {
+        onRescan().then(() => findIssue(initialIssueId)).then((retried) => {
           const r3 = retried;
           if (r3?.repo_id && r3?.id) {
             setSelectedRepoId(r3.repo_id);
             setSelectedIssueId(r3.id);
-            setExpandedRepos((prev) => {
-              const next = new Set(prev);
-              next.add(r3.repo_id);
-              return next;
-            });
+            setRepoFilter(r3.repo_id);
           }
         }).catch(() => {
         });
@@ -12814,7 +12759,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
   const normalizedFilter = T2(() => filter2.trim().toLowerCase(), [filter2]);
   const filteredRepos = T2(() => {
-    return repos.map((repo) => {
+    return repos.filter((repo) => !repoFilter || repo.repo_id === repoFilter).map((repo) => {
       let issues = repo.issues;
       if (statusFilter !== "all") {
         issues = issues.filter((issue) => getVisualState(issue) === statusFilter);
@@ -12824,9 +12769,29 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           (issue) => issue.title.toLowerCase().includes(normalizedFilter) || issue.id.toLowerCase().includes(normalizedFilter)
         );
       }
+      if (labelFilter) {
+        const internalLabel = LABEL_INTERNAL_NAMES[labelFilter] ?? labelFilter;
+        issues = issues.filter((issue) => issue.labels.includes(internalLabel));
+      }
+      if (parentFilter) {
+        issues = issues.filter((issue) => issue.parent_id === parentFilter);
+      }
       return { ...repo, issues };
     }).filter((repo) => repo.issues.length > 0);
-  }, [repos, statusFilter, normalizedFilter]);
+  }, [repos, statusFilter, normalizedFilter, repoFilter, labelFilter, parentFilter]);
+  const items = T2(() => {
+    const result = [];
+    const showHeaders = !repoFilter || filteredRepos.length > 1;
+    for (const repo of filteredRepos) {
+      if (showHeaders) {
+        result.push({ kind: "header", repo });
+      }
+      for (const issue of repo.issues) {
+        result.push({ kind: "issue", issue, repo });
+      }
+    }
+    return result;
+  }, [filteredRepos, repoFilter]);
   const totalOpen = T2(
     () => repos.reduce((acc, r3) => acc + r3.open_count, 0),
     [repos]
@@ -12887,69 +12852,12 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       cancelled = true;
     };
   }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
-  const toggleRepo = q2((repoId) => {
-    setExpandedRepos((prev) => {
-      const next = new Set(prev);
-      if (next.has(repoId)) {
-        next.delete(repoId);
-      } else {
-        next.add(repoId);
-      }
-      return next;
-    });
-  }, []);
   const selectIssue = q2((repoId, issueId) => {
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
     setShowCommentBox(false);
     setCommentText("");
   }, []);
-  y2(() => {
-    if (!selectedRepoId || !selectedIssueId)
-      return;
-    setExpandedRepos((prev) => {
-      if (prev.has(selectedRepoId))
-        return prev;
-      const next = new Set(prev);
-      next.add(selectedRepoId);
-      return next;
-    });
-    let rafId1;
-    let rafId2;
-    rafId1 = requestAnimationFrame(() => {
-      rafId2 = requestAnimationFrame(() => {
-        const issueEl = document.querySelector(
-          `[data-issue-key="${selectedRepoId}:${selectedIssueId}"]`
-        );
-        if (!issueEl)
-          return;
-        const repoGroupEl = issueEl.closest(".issues-repo-group");
-        if (repoGroupEl) {
-          repoGroupEl.scrollIntoView({ block: "nearest" });
-        }
-        const scrollParent = issueEl.closest(".issues-repo-list");
-        if (scrollParent) {
-          const elRect = issueEl.getBoundingClientRect();
-          const parentRect = scrollParent.getBoundingClientRect();
-          const relTop = elRect.top - parentRect.top + scrollParent.scrollTop;
-          const relBottom = relTop + issueEl.offsetHeight;
-          const viewTop = scrollParent.scrollTop;
-          const viewBottom = viewTop + scrollParent.clientHeight;
-          if (relTop < viewTop) {
-            scrollParent.scrollTop = relTop;
-          } else if (relBottom > viewBottom) {
-            scrollParent.scrollTop = relBottom - scrollParent.clientHeight;
-          }
-        } else {
-          issueEl.scrollIntoView({ block: "nearest" });
-        }
-      });
-    });
-    return () => {
-      cancelAnimationFrame(rafId1);
-      cancelAnimationFrame(rafId2);
-    };
-  }, [selectedRepoId, selectedIssueId]);
   const handleCloseIssue = q2(async () => {
     if (!selectedRepoId || !selectedIssueId || actionInFlight)
       return;
@@ -13034,6 +12942,18 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           onInput: (e3) => setFilter(e3.currentTarget.value)
         }
       ) }),
+      /* @__PURE__ */ u3(
+        "select",
+        {
+          className: "issues-repo-select",
+          value: repoFilter ?? "",
+          onChange: (e3) => setRepoFilter(e3.currentTarget.value || null),
+          children: [
+            /* @__PURE__ */ u3("option", { value: "", children: "All repos" }),
+            repos.map((r3) => /* @__PURE__ */ u3("option", { value: r3.repo_id, children: r3.repo_name }, r3.repo_id))
+          ]
+        }
+      ),
       /* @__PURE__ */ u3("div", { className: "issues-status-filters", children: [
         /* @__PURE__ */ u3(
           "button",
@@ -13072,54 +12992,57 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           }
         )
       ] }),
-      filteredRepos.length === 0 ? /* @__PURE__ */ u3("div", { className: "issues-tree__empty", children: repos.length === 0 ? "No repos with git-bug issues found." : "No issues match the current filter." }) : filteredRepos.map((repo) => {
-        const isExpanded = expandedRepos.has(repo.repo_id);
-        const openCount = repo.issues.filter((i4) => i4.status === "open").length;
-        return /* @__PURE__ */ u3("div", { className: `issues-repo-group${isExpanded ? " issues-repo-group--expanded" : ""}`, children: [
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: "issues-repo-header",
-              onClick: () => toggleRepo(repo.repo_id),
-              children: [
-                /* @__PURE__ */ u3("span", { className: "issues-repo-header__chevron", children: isExpanded ? "\u25BE" : "\u25B8" }),
-                /* @__PURE__ */ u3("span", { className: "issues-repo-header__name", children: repo.repo_name }),
-                openCount > 0 && /* @__PURE__ */ u3("span", { className: "issues-repo-header__badge", children: openCount })
-              ]
-            }
-          ),
-          isExpanded && /* @__PURE__ */ u3(ScrollableIssueList, { totalCount: repo.issues.length, children: repo.issues.map((issue) => {
-            const isSelected = selectedRepoId === repo.repo_id && selectedIssueId === issue.id;
-            const vs = getVisualState(issue);
-            return /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                className: `issues-item${isSelected ? " issues-item--selected" : ""}`,
-                "data-issue-key": `${repo.repo_id}:${issue.id}`,
-                onClick: () => selectIssue(repo.repo_id, issue.id),
-                children: [
-                  /* @__PURE__ */ u3(
-                    "span",
-                    {
-                      className: `issue-status-dot issue-status-dot--${vs}`
-                    }
-                  ),
-                  /* @__PURE__ */ u3(
-                    "span",
-                    {
-                      className: "issues-item__title",
-                      dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(issue.title) }
-                    }
-                  )
-                ]
-              },
-              issue.id
-            );
-          }) })
-        ] }, repo.repo_id);
-      })
+      /* @__PURE__ */ u3("div", { className: "issues-label-filters", children: ["umbrella", "feature", "bug", "deferred"].map((lbl) => /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `issues-label-pill${labelFilter === lbl ? " issues-label-pill--active" : ""}`,
+          onClick: () => setLabelFilter((prev) => prev === lbl ? null : lbl),
+          children: lbl
+        },
+        lbl
+      )) }),
+      parentFilter && /* @__PURE__ */ u3("div", { className: "issues-parent-filter", children: [
+        /* @__PURE__ */ u3("span", { className: "issues-parent-filter__label", children: [
+          "Children of ",
+          parentFilter
+        ] }),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "issues-parent-filter__clear",
+            onClick: () => setParentFilter(null),
+            children: "Clear"
+          }
+        )
+      ] }),
+      items.length === 0 ? /* @__PURE__ */ u3("div", { className: "issues-tree__empty", children: repos.length === 0 ? "No repos with git-bug issues found." : "No issues match the current filter." }) : /* @__PURE__ */ u3("div", { className: "issues-list", children: items.map(
+        (item) => item.kind === "header" ? /* @__PURE__ */ u3("div", { className: "issues-section-header", children: item.repo.repo_name }, `h:${item.repo.repo_id}`) : /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `issues-item${selectedRepoId === item.repo.repo_id && selectedIssueId === item.issue.id ? " issues-item--selected" : ""}`,
+            onClick: () => selectIssue(item.repo.repo_id, item.issue.id),
+            children: [
+              /* @__PURE__ */ u3(
+                "span",
+                {
+                  className: `issue-status-dot issue-status-dot--${getVisualState(item.issue)}`
+                }
+              ),
+              /* @__PURE__ */ u3(
+                "span",
+                {
+                  className: "issues-item__title",
+                  dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(item.issue.title) }
+                }
+              )
+            ]
+          },
+          item.issue.id
+        )
+      ) })
     ] }),
     /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
     /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : !issueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: [
@@ -13151,7 +13074,19 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
             },
             lbl
           );
-        })
+        }),
+        issueDetail.labels.includes("umbrella") && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--ghost btn--sm",
+            onClick: () => {
+              setRepoFilter(issueDetail.repo_id);
+              setParentFilter(issueDetail.id.slice(0, 8));
+            },
+            children: "Show children"
+          }
+        )
       ] }),
       /* @__PURE__ */ u3("div", { className: "issues-detail__info text-muted", children: [
         /* @__PURE__ */ u3("span", { children: issueDetail.author }),
