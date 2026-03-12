@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1772651035,"nonce":"zV5B53vNhSEvRThfHHEX6BsitFU=","added":["error"],"removed":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339311,"nonce":"Ep1zOdZscpCOKlL2jRsyAxDG6ww=","message":"Resolved by commit 5c85783 — ported auth-request.sh shebang fix from dotfiles to use bash 4+ syntax compatible with macOS homebrew bash.","files":null}]}
