@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1772651042,"nonce":"u9ZenEEdCC3wEiK/dOxmiLf538I=","added":["error"],"removed":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339323,"nonce":"be8n62l+mz96eMC5mhkYqktEi7g=","message":"Resolved by commit 5c85783 — ported auto_resolve_dist_conflicts function from dotfiles that safely resolves merge conflicts in generated files without deleting user content.","files":null}]}
