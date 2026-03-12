@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339319,"nonce":"3b3jq2Tjv9cWjk+V1C7FtBj4qNM=","message":"Resolved by commit 5c85783 — ported SSE pipefail fix from dotfiles (Bug: 2fa626e) that disables pipefail for curl pipeline to prevent false exit 23 failures.","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":4,"timestamp":1773339319,"nonce":"BYdVl9IPSTooBeVx/n+E3nn1okw=","status":2}]}
