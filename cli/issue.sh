@@ -3,6 +3,10 @@
 set -u
 set -o pipefail
 
+# TODO: Add to ~/.dotfiles/bin/mandible dispatcher:
+#   issue) shift; exec "$MANDIBLE_CLI_DIR/issue.sh" "$@" ;;
+# This requires a dotfiles feature branch (see issue c934e60).
+
 # Bug: fa1ac4c — CLI wrapper for manual issue operations.
 # Enforces the resolving-commit convention when closing issues.
 
@@ -85,6 +89,15 @@ cmd_close() {
   else
     die "${RED}Failed to close issue ${id}${RESET}" 1
   fi
+
+  # Bug: c934e60 — record resolution in Mandible DB (non-fatal if daemon is down)
+  MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
+  repo_id=$(git rev-parse --show-toplevel 2>/dev/null | xargs basename)
+  curl -sf --max-time 5 \
+    "http://127.0.0.1:${MANDIBLE_PORT}/api/issues/resolutions" \
+    -H 'Content-Type: application/json' \
+    -d "{\"issue_id\":\"${id}\",\"commit_sha\":\"${sha}\",\"repo_id\":\"${repo_id}\"}" \
+    >/dev/null 2>&1 || true
 }
 
 cmd_comment() {

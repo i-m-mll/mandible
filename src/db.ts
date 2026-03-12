@@ -440,6 +440,22 @@ const MIGRATIONS: Migration[] = [
       `CREATE UNIQUE INDEX IF NOT EXISTS work_repos_id_idx ON work_repos(id)`,
       `CREATE INDEX IF NOT EXISTS work_repos_excluded_idx ON work_repos(excluded)`
     ]
+  },
+  {
+    version: 28,
+    name: "issue_resolutions",
+    // Bug: c934e60 — track which commits resolved which issues
+    statements: [
+      `CREATE TABLE IF NOT EXISTS issue_resolutions (
+        issue_id    TEXT NOT NULL,
+        commit_sha  TEXT NOT NULL,
+        repo_id     TEXT NOT NULL,
+        resolved_at INTEGER NOT NULL,
+        PRIMARY KEY (issue_id, commit_sha)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_issue_resolutions_issue
+        ON issue_resolutions(issue_id)`
+    ]
   }
 ];
 
