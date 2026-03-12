@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1772651030,"nonce":"BHbqj5Y5cjJV4zG+yDcWTsc0pbI=","added":["error"],"removed":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339317,"nonce":"O7KnZZihC+BIvPL4/KkvYpGD4Ug=","message":"Resolved by commit 5c85783 — ported auth-request.sh Zellij fallback fix from dotfiles with updated --pinned flag syntax.","files":null}]}
