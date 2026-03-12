@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1772651042,"nonce":"3y5izoIQKIA+Fh7AykJfGAy3z7c=","added":["error"],"removed":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339308,"nonce":"5raE0aRtTsp0zYgOjJg48b4SeR8=","message":"Resolved by commit 5c85783 — ported MERGE_HEAD resume logic from dotfiles auth-merge, detects in-progress merge and resumes with --continue.","files":null}]}
