@@ -29,6 +29,8 @@ export type AuthRequest = {
   commit_message?: string;
   spec_content?: string;
   diff_summary?: string;
+  post_merge_handoff?: string | null;
+  issue_ids?: string[] | null;
   created_at?: string | number;
   last_executed_at?: string | number | null;
   resolved_at?: number | string | null;
@@ -450,7 +452,12 @@ function AuthCard({
 
   // Session & issue links
   const sessionId = request.session_id;
-  const bugRefs = useMemo(() => extractBugRefs(commitMsg), [commitMsg]);
+  // Bug: ba9687f — prefer structured issue_ids when available, fall back to parsing commitMsg
+  const structuredIds = request.issue_ids;
+  const bugRefs = useMemo(
+    () => (Array.isArray(structuredIds) && structuredIds.length > 0) ? structuredIds : extractBugRefs(commitMsg),
+    [structuredIds, commitMsg]
+  );
   const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
   const hasLinks = Boolean(sessionId) || (bugRefs.length > 0 && canIssueLink);
 

@@ -440,6 +440,16 @@ const MIGRATIONS: Migration[] = [
       `CREATE UNIQUE INDEX IF NOT EXISTS work_repos_id_idx ON work_repos(id)`,
       `CREATE INDEX IF NOT EXISTS work_repos_excluded_idx ON work_repos(excluded)`
     ]
+  },
+  {
+    version: 28,
+    name: "auth_request_metadata_enrichment",
+    // Bug: 2bce9cb — post_merge_handoff for session context handoff
+    // Bug: ba9687f — structured issue_ids extracted from Bug: trailers
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN post_merge_handoff TEXT`,
+      `ALTER TABLE auth_requests ADD COLUMN issue_ids TEXT`
+    ]
   }
 ];
 
@@ -513,6 +523,10 @@ export function migrate(db: Db): void {
   // Bug: 59492fd — v24 used wrong join condition; v25 corrects remaining rows
   if (pending.some((m) => m.version === 25)) {
     backfillProjectRepoNamesV2(db);
+  }
+  // Bug: ba9687f — backfill issue_ids from commit_message Bug: trailers
+  if (pending.some((m) => m.version === 28)) {
+    backfillIssueIds(db);
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
   if (pending.some((m) => m.version === 26)) {
@@ -672,6 +686,47 @@ function backfillProjectRepoNamesV2(db: Db): void {
 
   run();
   console.error(`[db] v25: backfilled repo names for ${rows.length} session_projects rows`);
+}
+
+/**
+ * Backfill issue_ids from commit_message Bug: trailers for existing auth requests.
+ * Bug: ba9687f — structured issue_ids extracted at submission time; this
+ * retroactively populates the column for pre-existing rows.
+ */
+function backfillIssueIds(db: Db): void {
+  const rows = db.prepare(
+    "SELECT id, commit_message FROM auth_requests WHERE issue_ids IS NULL AND commit_message IS NOT NULL"
+  ).all() as Array<{ id: string; commit_message: string }>;
+
+  if (rows.length === 0) return;
+
+  const update = db.prepare(
+    "UPDATE auth_requests SET issue_ids = ? WHERE id = ?"
+  );
+
+  const regex = /^Bug:\s+(\S+)/gm;
+  const run = db.transaction(() => {
+    for (const row of rows) {
+      const refs: string[] = [];
+      let m;
+      regex.lastIndex = 0;
+      while ((m = regex.exec(row.commit_message)) !== null) {
+        refs.push(m[1]);
+      }
+      if (refs.length > 0) {
+        update.run(JSON.stringify(refs), row.id);
+      }
+    }
+  });
+
+  run();
+  const filled = rows.filter((r) => {
+    regex.lastIndex = 0;
+    return regex.test(r.commit_message);
+  }).length;
+  if (filled > 0) {
+    console.error(`[db] Backfilled issue_ids for ${filled} auth_requests rows`);
+  }
 }
 
 function getSchemaVersion(db: Db): number {
