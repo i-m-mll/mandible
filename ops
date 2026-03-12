@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339310,"nonce":"kC+JWfMZHJJdUjScEeYOrEwaOOU=","message":"Resolved by commit 5c85783 — ported auth-merge pre-auth-check fixes from dotfiles which properly filter untracked files from dirty tree detection.","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":4,"timestamp":1773339310,"nonce":"17BDi92LbEj/fgYQnccHNVAXRCY=","status":2}]}
