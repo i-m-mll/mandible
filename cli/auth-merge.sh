@@ -388,12 +388,23 @@ auto_close_issues() {
     if git-bug bug status close "$id" 2>/dev/null; then
       # Bug: e32ee8b — mark as "merged" (closed + merged label = three-state lifecycle)
       git-bug bug label new "$id" merged 2>/dev/null || true
+
+      # Bug: fa1ac4c — record resolving commit SHA for traceability
+      local merge_sha
+      merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+      git-bug bug comment new "$id" -m "Resolved by merge ${merge_sha:0:12}" --non-interactive 2>/dev/null || true
+      git notes append -m "closes: ${id:0:8}" HEAD 2>/dev/null || true
+
       err "${DIM_WHITE}[auto-close] merged issue ${id}${RESET}"
       closed=$((closed + 1))
     fi
   done
 
   if [[ "$closed" -gt 0 ]]; then
+    # Bug: fa1ac4c — ensure git notes get pushed with normal pushes
+    if ! git config --local push.notesRef >/dev/null 2>&1; then
+      git config --local push.notesRef "refs/notes/commits" 2>/dev/null || true
+    fi
     err "${GREEN}[auto-close] merged ${closed} issue(s)${RESET}"
   fi
 }
