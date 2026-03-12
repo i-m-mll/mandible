@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339332,"nonce":"HeZmU21NuCva9lblq7s5ghQhxpw=","message":"Resolved by commit 86c71a8 — added /api/graph endpoint with full Bug: trailer parsing and umbrella inference, providing structured diff data and issue linking for auth queue UX improvements.","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":4,"timestamp":1773339332,"nonce":"Vq7bT4QPk3m4P4KWTQwDcb3txqE=","status":2}]}
