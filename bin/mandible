@@ -1,0 +1,55 @@
+#!/usr/bin/env zsh
+# mandible — unified CLI for the Mandible daemon
+#
+# Usage: mandible <command> [args...]
+#
+# Commands:
+#   wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
+#   task <description>               Set session task status
+#   inbox [check|ack|watch|add]      Manage session inbox
+#   issue <subcommand>               Issue operations (close, comment, show)
+#   auth request <branch> [opts]     Submit auth merge request
+#   auth merge <branch> [opts]       Execute authenticated merge
+#   help                             Show this help
+
+set -euo pipefail
+
+export MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
+export MANDIBLE_BASE="http://127.0.0.1:${MANDIBLE_PORT}"
+
+# Resolve script's own directory robustly — no realpath (not standard on macOS)
+MANDIBLE_BIN_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+export MANDIBLE_CLI_DIR="$(cd "$MANDIBLE_BIN_DIR/../cli" && pwd -P)"
+
+usage() {
+  cat <<'EOF'
+Usage: mandible <command> [args...]
+
+Commands:
+  wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
+  task <description>               Set session task status
+  inbox [check|ack|watch|add]      Manage session inbox
+  issue <subcommand>               Issue operations (close, comment, show)
+  auth request <branch> [opts]     Submit auth merge request
+  auth merge <branch> [opts]       Execute authenticated merge
+  help                             Show this help
+EOF
+}
+
+case "${1:-}" in
+  wrap)    shift; exec "$MANDIBLE_CLI_DIR/wrap.sh" "$@" ;;
+  task)    shift; exec "$MANDIBLE_CLI_DIR/task.sh" "$@" ;;
+  inbox)   shift; exec "$MANDIBLE_CLI_DIR/inbox.sh" "$@" ;;
+  issue)   shift; exec "$MANDIBLE_CLI_DIR/issue.sh" "$@" ;;
+  auth)
+    shift
+    case "${1:-}" in
+      request) shift; exec "$MANDIBLE_CLI_DIR/auth-request.sh" "$@" ;;
+      merge)   shift; exec "$MANDIBLE_CLI_DIR/auth-merge.sh" "$@" ;;
+      *) echo "Unknown auth subcommand: ${1:-}" >&2; usage >&2; exit 1 ;;
+    esac
+    ;;
+  help|-h|--help) usage ;;
+  "") usage >&2; exit 1 ;;
+  *) echo "Unknown command: $1" >&2; usage >&2; exit 1 ;;
+esac
