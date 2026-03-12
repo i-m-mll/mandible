@@ -80,6 +80,7 @@ export interface AuthRequest {
     deletions?: number;
     post_merge_handoff?: string | null;
     issue_ids?: string[] | null;
+    depends_on_id?: string | null;
     execution_mode: AuthExecutionMode;
     status: AuthRequestStatus;
     created_at: number;
@@ -109,6 +110,7 @@ export interface AuthRequestInput {
     additions?: number;
     deletions?: number;
     post_merge_handoff?: string | null;
+    depends_on_id?: string | null;
     execution_mode?: AuthExecutionMode;
 }
 export interface AuthOutputChunk {
