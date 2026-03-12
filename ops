@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339313,"nonce":"aV4wUNgDreef/GJ9YAtABjm1N30=","message":"Resolved by commit 5c85783 — ported --target flag to auth-request.sh allowing explicit override of auto-detected protected branch (Bug: c6bd770).","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":4,"timestamp":1773339313,"nonce":"cnUJgTWlqgMbqzk63fVaODcKh/s=","status":2}]}
