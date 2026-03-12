@@ -466,6 +466,14 @@ const MIGRATIONS: Migration[] = [
       `ALTER TABLE auth_requests ADD COLUMN post_merge_handoff TEXT`,
       `ALTER TABLE auth_requests ADD COLUMN issue_ids TEXT`
     ]
+  },
+  {
+    version: 30,
+    name: "auth_request_depends_on",
+    // Bug: 0b83252 — auth request dependency chain support
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN depends_on_id TEXT`
+    ]
   }
 ];
 

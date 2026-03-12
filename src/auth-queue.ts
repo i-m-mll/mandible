@@ -195,6 +195,7 @@ export class AuthQueue {
       deletions: payload.deletions ?? 0,
       post_merge_handoff: payload.post_merge_handoff ?? null,
       issue_ids: extractIssueIdsFromCommitMessage(payload.commit_message),
+      depends_on_id: payload.depends_on_id ?? null,
       execution_mode: payload.execution_mode ?? "daemon",
       status: "pending",
       created_at: now,
@@ -228,6 +229,7 @@ export class AuthQueue {
         deletions,
         post_merge_handoff,
         issue_ids,
+        depends_on_id,
         execution_mode,
         status,
         created_at,
@@ -258,6 +260,7 @@ export class AuthQueue {
         @deletions,
         @post_merge_handoff,
         @issue_ids,
+        @depends_on_id,
         @execution_mode,
         @status,
         @created_at,
@@ -340,7 +343,8 @@ export class AuthQueue {
       "additions",
       "deletions",
       "command",
-      "cwd"
+      "cwd",
+      "depends_on_id"
     ];
     const updates: string[] = [];
     const values: unknown[] = [];
@@ -923,6 +927,7 @@ export class AuthQueue {
         deletions INTEGER DEFAULT 0,
         post_merge_handoff TEXT,
         issue_ids TEXT,
+        depends_on_id TEXT,
         execution_mode TEXT NOT NULL DEFAULT 'daemon',
         status TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -985,6 +990,7 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     deletions: row.deletions == null ? undefined : Number(row.deletions),
     post_merge_handoff: row.post_merge_handoff == null ? null : String(row.post_merge_handoff),
     issue_ids: issueIds,
+    depends_on_id: row.depends_on_id == null ? null : String(row.depends_on_id),
     execution_mode:
       row.execution_mode === "remote" || row.execution_mode === "daemon"
         ? (row.execution_mode as "remote" | "daemon")

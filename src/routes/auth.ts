@@ -67,6 +67,13 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       return;
     }
 
+    // Bug: 0b83252 — resolve dependency status to avoid a second round-trip from the UI
+    let dependsOnStatus: string | null = null;
+    if (request.depends_on_id) {
+      const dep = queue.getRequest(request.depends_on_id);
+      dependsOnStatus = dep ? dep.status : null;
+    }
+
     res.json({
       request_id: request.id,
       status: request.status,
@@ -84,6 +91,8 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       spec_content: request.spec_content ?? null,
       post_merge_handoff: request.post_merge_handoff ?? null,
       issue_ids: request.issue_ids ?? null,
+      depends_on_id: request.depends_on_id ?? null,
+      depends_on_status: dependsOnStatus,
       execution_mode: request.execution_mode
     });
   });
@@ -123,7 +132,13 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
 
   app.get("/api/auth/queue", (_req, res) => {
     const requests = queue.listActive();
-    res.json({ requests });
+    // Bug: 0b83252 — resolve depends_on_status for each request with a dependency
+    const enriched = requests.map((r) => {
+      if (!r.depends_on_id) return { ...r, depends_on_status: null };
+      const dep = queue.getRequest(r.depends_on_id);
+      return { ...r, depends_on_status: dep ? dep.status : null };
+    });
+    res.json({ requests: enriched });
   });
 
   app.get("/api/auth/history", (req, res) => {
@@ -273,6 +288,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     additions,
     deletions,
     post_merge_handoff: typeof body.post_merge_handoff === "string" ? body.post_merge_handoff : (body.post_merge_handoff === null ? null : undefined),
+    depends_on_id: typeof body.depends_on_id === "string" ? body.depends_on_id : (body.depends_on_id === null ? null : undefined),
     execution_mode: executionMode
   };
 }
@@ -393,6 +409,14 @@ function parseAuthRequestUpdatePayload(
       payload.post_merge_handoff = body.post_merge_handoff as string | null;
     } else {
       return { ok: false, error: "Invalid 'post_merge_handoff' — must be a string or null" };
+    }
+  }
+
+  if (hasKey("depends_on_id")) {
+    if (body.depends_on_id === null || typeof body.depends_on_id === "string") {
+      payload.depends_on_id = body.depends_on_id as string | null;
+    } else {
+      return { ok: false, error: "Invalid 'depends_on_id' — must be a string or null" };
     }
   }
 
