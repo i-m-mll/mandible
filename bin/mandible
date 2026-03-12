@@ -10,6 +10,7 @@
 #   issue <subcommand>               Issue operations (close, comment, show)
 #   auth request <branch> [opts]     Submit auth merge request
 #   auth merge <branch> [opts]       Execute authenticated merge
+#   search "<query>" [opts]          Search chat history across providers
 #   help                             Show this help
 
 set -euo pipefail
@@ -32,6 +33,7 @@ Commands:
   issue <subcommand>               Issue operations (close, comment, show)
   auth request <branch> [opts]     Submit auth merge request
   auth merge <branch> [opts]       Execute authenticated merge
+  search "<query>" [opts]          Search chat history across providers
   help                             Show this help
 EOF
 }
@@ -49,6 +51,7 @@ case "${1:-}" in
       *) echo "Unknown auth subcommand: ${1:-}" >&2; usage >&2; exit 1 ;;
     esac
     ;;
+  search)  shift; exec "$MANDIBLE_CLI_DIR/search.sh" "$@" ;;
   help|-h|--help) usage ;;
   "") usage >&2; exit 1 ;;
   *) echo "Unknown command: $1" >&2; usage >&2; exit 1 ;;
