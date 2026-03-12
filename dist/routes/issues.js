@@ -117,6 +117,38 @@ export function registerIssueRoutes(server, workScanner) {
         }
         sendJson(res, 200, detail);
     });
+    // POST /api/issues/resolutions — record a commit that resolved an issue
+    // Registered before /:repoId/:issueId to avoid "resolutions" being treated as repoId.
+    // Bug: c934e60 — issue lifecycle tracking
+    server.post("/api/issues/resolutions", (req, res) => {
+        const body = getBody(req);
+        const issue_id = typeof body?.issue_id === "string" ? body.issue_id : "";
+        const commit_sha = typeof body?.commit_sha === "string" ? body.commit_sha : "";
+        const repo_id = typeof body?.repo_id === "string" ? body.repo_id : "";
+        if (!issue_id || !commit_sha || !repo_id) {
+            sendJson(res, 400, { error: "issue_id, commit_sha, and repo_id are required" });
+            return;
+        }
+        const db = getDb();
+        db.prepare(`INSERT OR IGNORE INTO issue_resolutions (issue_id, commit_sha, repo_id, resolved_at)
+       VALUES (?, ?, ?, ?)`).run(issue_id, commit_sha, repo_id, Date.now());
+        sendJson(res, 200, { ok: true });
+    });
+    // GET /api/issues/resolutions/:issueId — get resolutions for an issue
+    // Bug: c934e60 — issue lifecycle tracking
+    server.get("/api/issues/resolutions/:issueId", (req, res) => {
+        const issueId = getParam(req, "issueId");
+        if (!issueId) {
+            sendJson(res, 400, { error: "missing issueId" });
+            return;
+        }
+        const db = getDb();
+        const rows = db.prepare(`SELECT commit_sha, repo_id, resolved_at
+       FROM issue_resolutions
+       WHERE issue_id = ?
+       ORDER BY resolved_at ASC`).all(issueId);
+        sendJson(res, 200, rows);
+    });
     // GET /api/issues/:repoId/:issueId — issue detail with comments
     server.get("/api/issues/:repoId/:issueId", (req, res) => {
         const repoIdParam = getParam(req, "repoId");

@@ -15,7 +15,9 @@
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
 #   --cwd <path>            Override auto-detected protected branch worktree path
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
+#   --handoff <text>        Post-merge handoff note for next session
 #   --timeout <seconds>     SSE listen timeout (default: 14400 / 4 hours)
+#   --force / -f             Skip CWD validation checks
 #   --no-watch              Submit only, don't poll
 #
 # Bug: c23f479 -- unified auth request submission + polling
@@ -41,11 +43,13 @@ title=""
 commit_message=""
 diff_summary=""
 spec_content=""
+post_merge_handoff=""
 repo=""
 cwd_override=""
 target_override=""
 timeout=14400
 no_watch=0
+force=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,11 +57,13 @@ while [[ $# -gt 0 ]]; do
     --commit-message) commit_message="$2"; shift 2 ;;
     --diff-summary)   diff_summary="$2"; shift 2 ;;
     --spec)           spec_content="$2"; shift 2 ;;
+    --handoff)        post_merge_handoff="$2"; shift 2 ;;
     --repo)           repo="$2"; shift 2 ;;
     --cwd)            cwd_override="$2"; shift 2 ;;
     --target)         target_override="$2"; shift 2 ;;
     --timeout)        timeout="$2"; shift 2 ;;
     --no-watch)       no_watch=1; shift ;;
+    --force|-f)       force=true; shift ;;
     -h|--help)        usage; exit 0 ;;
     -*)               echo "Unknown option: $1" >&2; exit 2 ;;
     *)
@@ -117,6 +123,32 @@ else
 
   if [[ -z "$target_cwd" ]]; then
     echo "Error: cannot find worktree for protected branch '${base_branch}'" >&2
+    exit 1
+  fi
+fi
+
+# --- Validate CWD and branch ---
+# Bug: 4594641 — validate target_cwd is on the protected branch and that the
+# source branch exists in the repo, before submitting. Catches misconfigured
+# --cwd overrides and cross-repo submission mistakes.
+
+RED='\033[0;31m'
+RESET='\033[0m'
+
+if [[ "$force" != "true" ]]; then
+  # Validation 1: Confirm target_cwd is on the protected branch
+  cwd_branch=$(git -C "$target_cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  if [[ "$cwd_branch" != "$base_branch" ]]; then
+    echo -e "${RED}Error: target CWD '$target_cwd' is on branch '$cwd_branch', expected '$base_branch'${RESET}" >&2
+    echo "The CWD for auth merge must be the worktree tracking the protected branch." >&2
+    echo "Use --cwd to specify the correct protected branch worktree, or --force to skip this check." >&2
+    exit 1
+  fi
+
+  # Validation 2: Confirm the source branch exists in that repo
+  if ! git -C "$target_cwd" rev-parse --verify "refs/heads/$branch" >/dev/null 2>&1; then
+    echo -e "${RED}Error: branch '$branch' not found in repo at '$target_cwd'${RESET}" >&2
+    echo "Ensure you are submitting from the correct repository." >&2
     exit 1
   fi
 fi
@@ -243,6 +275,7 @@ payload=$(jq -nc \
   --arg diff_summary "$diff_summary" \
   --arg commit_message "$commit_message" \
   --arg spec_content "$spec_content" \
+  --arg post_merge_handoff "$post_merge_handoff" \
   '{
     command: $command,
     cwd: $cwd,
@@ -256,7 +289,8 @@ payload=$(jq -nc \
     deletions: $deletions,
     diff_summary: $diff_summary,
     commit_message: $commit_message,
-    spec_content: $spec_content
+    spec_content: $spec_content,
+    post_merge_handoff: (if $post_merge_handoff == "" then null else $post_merge_handoff end)
   }')
 
 # Bug: de8d29c — use -w to capture HTTP status separately so we can distinguish

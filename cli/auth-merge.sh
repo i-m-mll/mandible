@@ -388,12 +388,23 @@ auto_close_issues() {
     if git-bug bug status close "$id" 2>/dev/null; then
       # Bug: e32ee8b — mark as "merged" (closed + merged label = three-state lifecycle)
       git-bug bug label new "$id" merged 2>/dev/null || true
+
+      # Bug: fa1ac4c — record resolving commit SHA for traceability
+      local merge_sha
+      merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+      git-bug bug comment new "$id" -m "Resolved by merge ${merge_sha:0:12}" --non-interactive 2>/dev/null || true
+      git notes append -m "closes: ${id:0:8}" HEAD 2>/dev/null || true
+
       err "${DIM_WHITE}[auto-close] merged issue ${id}${RESET}"
       closed=$((closed + 1))
     fi
   done
 
   if [[ "$closed" -gt 0 ]]; then
+    # Bug: fa1ac4c — ensure git notes get pushed with normal pushes
+    if ! git config --local push.notesRef >/dev/null 2>&1; then
+      git config --local push.notesRef "refs/notes/commits" 2>/dev/null || true
+    fi
     err "${GREEN}[auto-close] merged ${closed} issue(s)${RESET}"
   fi
 }
@@ -477,9 +488,29 @@ restart_mandible_if_dist_changed() {
     uid=$(id -u)
     # Bug: 4980617 — background restart so auth-merge exits first, giving
     # the executor time to run storeExecutionResult() before daemon dies.
-    (sleep 3 && launchctl kickstart -k "gui/${uid}/com.mll.mandible") &
+    # Bug: 72e9f96 — but poll health synchronously so restart failures are
+    # captured in executor output rather than silently lost.
+    (launchctl kickstart -k "gui/${uid}/com.mll.mandible" </dev/null >/dev/null 2>&1) &
     disown $! 2>/dev/null || true
-    err "${GREEN}[post-merge] scheduled com.mll.mandible restart in 3s (dist/ changed)${RESET}"
+    err "${DIM_WHITE}[post-merge] triggered com.mll.mandible restart (dist/ changed)${RESET}"
+
+    # Wait for old daemon to die, then poll health endpoint
+    sleep 3
+    local health_ok=false
+    local attempt
+    for attempt in $(seq 1 15); do
+      if curl -sf --max-time 2 "http://127.0.0.1:${port}/api/health" >/dev/null 2>&1; then
+        health_ok=true
+        break
+      fi
+      sleep 1
+    done
+
+    if [[ "$health_ok" == "true" ]]; then
+      err "${GREEN}[post-merge] Mandible restarted successfully${RESET}"
+    else
+      err "${BOLD_YELLOW}[post-merge] WARNING: Mandible health check failed after 15s — daemon may not have restarted${RESET}"
+    fi
   else
     err "${DIM_WHITE}[post-merge] ui/dist/ changed only — no restart needed, browser will reload${RESET}"
   fi

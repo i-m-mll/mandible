@@ -6,3 +6,4 @@ vendor/
 *.db-shm
 target/
 worktrees/
+AGENT_HANDOFF.md

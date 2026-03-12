@@ -11029,7 +11029,11 @@ function AuthCard({
   const repoName = repoId.includes("/") && !looksLikeBranchName(repoId) && repoId.split("/").length === 2 ? repoId.split("/")[1] : repoId;
   const hasTags = Boolean(commitBranch || attemptLabel || headBranch && baseBranch);
   const sessionId = request.session_id;
-  const bugRefs = T2(() => extractBugRefs(commitMsg), [commitMsg]);
+  const structuredIds = request.issue_ids;
+  const bugRefs = T2(
+    () => Array.isArray(structuredIds) && structuredIds.length > 0 ? structuredIds : extractBugRefs(commitMsg),
+    [structuredIds, commitMsg]
+  );
   const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
   const hasLinks = Boolean(sessionId) || bugRefs.length > 0 && canIssueLink;
   y2(() => {
