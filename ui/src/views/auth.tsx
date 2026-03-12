@@ -34,6 +34,8 @@ export type AuthRequest = {
   created_at?: string | number;
   last_executed_at?: string | number | null;
   resolved_at?: number | string | null;
+  depends_on_id?: string | null;
+  depends_on_status?: string | null;
   [key: string]: unknown;
 };
 
@@ -1315,6 +1317,10 @@ export function AuthQueueView({
     [dismissConfirmId, handleDismiss],
   );
 
+  // Bug: 544ce35 — dependency warning modal state: tracks the request ID
+  // we're about to approve when it has an incomplete dependency.
+  const [pendingApproveId, setPendingApproveId] = useState<string | null>(null);
+
   const [rejectConfirmId, setRejectConfirmId] = useState<string | null>(null);
   const rejectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1576,12 +1582,24 @@ export function AuthQueueView({
       );
     }
 
+    // Bug: 544ce35 — check dependency before approving; show warning modal if incomplete
+    const handleApproveClick = () => {
+      if (
+        request.depends_on_id &&
+        request.depends_on_status !== 'completed'
+      ) {
+        setPendingApproveId(id);
+        return;
+      }
+      handleApprove(id);
+    };
+
     return (
       <div className="auth-actions">
         <button
           type="button"
           className="btn btn--success"
-          onClick={() => handleApprove(id)}
+          onClick={handleApproveClick}
           disabled={actionDisabled}
         >
           Approve
@@ -1797,7 +1815,7 @@ export function AuthQueueView({
       <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
 
       {/* RIGHT detail panel */}
-      <div className="auth-detail">
+      <div className="auth-detail" style={{ position: 'relative' }}>
         {!selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">Select a request to view details</p>
@@ -1824,6 +1842,67 @@ export function AuthQueueView({
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}
             />
+          );
+        })()}
+
+        {/* Bug: 544ce35 — Dependency warning modal overlay (scoped to detail panel) */}
+        {pendingApproveId && (() => {
+          const pendingRequest = queue.find((r) => getAuthId(r) === pendingApproveId)
+            ?? (historyQueue ?? []).find((r) => getAuthId(r) === pendingApproveId);
+          if (!pendingRequest) return null;
+          const depId = pendingRequest.depends_on_id;
+          const depStatus = pendingRequest.depends_on_status ?? 'unknown';
+          const depHash = depId ? depId.slice(0, 8) : '';
+          return (
+            <div className="auth-dep-modal-overlay" onClick={() => setPendingApproveId(null)}>
+              <div className="auth-dep-modal" onClick={(e) => e.stopPropagation()}>
+                <h3 className="auth-dep-modal__title">Dependency not completed</h3>
+                <p className="auth-dep-modal__body">
+                  This request depends on <span className="auth-dep-modal__hash">{depHash}</span>{' '}
+                  which is currently <span className={`auth-dep-modal__status auth-dep-modal__status--${depStatus}`}>{depStatus}</span>.
+                  Approving out of order may cause merge conflicts or broken builds.
+                </p>
+                <div className="auth-dep-modal__actions">
+                  <button
+                    type="button"
+                    className="btn btn--warning"
+                    onClick={() => {
+                      const id = pendingApproveId;
+                      setPendingApproveId(null);
+                      handleApprove(id);
+                    }}
+                  >
+                    Approve anyway
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--ghost"
+                    onClick={() => {
+                      if (depId) {
+                        handleSelect(depId);
+                        // Scroll to the dependency in the sidebar
+                        setTimeout(() => {
+                          const el = document.querySelector(`[data-request-id="${depId}"]`);
+                          if (el) {
+                            el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                          }
+                        }, 100);
+                      }
+                      setPendingApproveId(null);
+                    }}
+                  >
+                    Go to dependency
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--ghost"
+                    onClick={() => setPendingApproveId(null)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
           );
         })()}
       </div>
