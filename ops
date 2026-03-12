@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1773097571,"nonce":"uDQBD/g2W2U+1+AvmnNdZ6Qu7ng=","added":["error"],"removed":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339325,"nonce":"d9CoOIcFOW/HADB7lvFE+8U6xgM=","message":"Resolved by commit 1fc4b45 — fixed kickstart race by backgrounding the daemon restart with 3s delay (Bug: 4980617).","files":null}]}
