@@ -1,6 +1,6 @@
 @import "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600&display=swap";
 
-/* node_modules/@xterm/xterm/css/xterm.css */
+/* ../../node_modules/@xterm/xterm/css/xterm.css */
 .xterm {
   cursor: text;
   position: relative;
@@ -165,7 +165,7 @@
   position: relative;
 }
 
-/* node_modules/diff2html/bundles/css/diff2html.min.css */
+/* ../../node_modules/diff2html/bundles/css/diff2html.min.css */
 :host,
 :root {
   --d2h-bg-color:#fff;
@@ -2444,6 +2444,69 @@ tr:last-child td {
   right: 32px;
   z-index: 100;
   margin-bottom: 0;
+}
+.auth-dep-modal-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  backdrop-filter: blur(2px);
+  border-radius: 12px;
+}
+.auth-dep-modal {
+  background: var(--bg-card);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 24px 28px;
+  max-width: 420px;
+  width: 90%;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+}
+.auth-dep-modal__title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent-yellow);
+}
+.auth-dep-modal__body {
+  margin: 0 0 20px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.auth-dep-modal__hash {
+  font-family: var(--font-mono);
+  color: var(--accent-blue);
+  font-size: 12px;
+}
+.auth-dep-modal__status {
+  font-weight: 500;
+  text-transform: capitalize;
+}
+.auth-dep-modal__status--pending {
+  color: var(--accent-yellow);
+}
+.auth-dep-modal__status--approved {
+  color: var(--accent-blue);
+}
+.auth-dep-modal__status--unknown {
+  color: var(--text-muted);
+}
+.auth-dep-modal__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.auth-dep-modal__actions .btn--warning {
+  background: rgba(245, 194, 92, 0.15);
+  color: var(--accent-yellow);
+  border: 1px solid rgba(245, 194, 92, 0.3);
+}
+.auth-dep-modal__actions .btn--warning:hover {
+  background: rgba(245, 194, 92, 0.25);
 }
 @media (max-width: 700px) {
   .auth-sidebar-layout {
