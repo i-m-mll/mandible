@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1772651042,"nonce":"bLGWanI3uPjRrPYt67dv5ao+cLY=","added":["error"],"removed":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":3,"timestamp":1773339328,"nonce":"K3xVLXbqXKAmOFyrMmivNZNTvg0=","message":"Resolved by commit 5c85783 — ported server.ts fix (Bug: a21979a) to include DELETE in body-parsing method check so body.reason is parsed for DELETE /api/auth/request/:id.","files":null}]}
