@@ -83,13 +83,13 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
         // Auth results: resolved auth requests for this branch, unacknowledged
         const authResults = branch
             ? db
-                .prepare(`SELECT id, title, status, exit_code, error, head_branch, resolved_at FROM auth_requests
+                .prepare(`SELECT id, title, status, exit_code, error, head_branch, resolved_at, post_merge_handoff, issue_ids FROM auth_requests
              WHERE head_branch = ? AND status IN ('completed', 'rejected', 'expired', 'dismissed')
                AND acknowledged_by IS NULL
              ORDER BY resolved_at DESC`)
                 .all(branch)
             : db
-                .prepare(`SELECT id, title, status, exit_code, error, head_branch, resolved_at FROM auth_requests
+                .prepare(`SELECT id, title, status, exit_code, error, head_branch, resolved_at, post_merge_handoff, issue_ids FROM auth_requests
              WHERE status IN ('completed', 'rejected', 'expired', 'dismissed')
                AND acknowledged_by IS NULL
              ORDER BY resolved_at DESC`)
@@ -127,6 +127,8 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
                 error: row.error,
                 head_branch: row.head_branch,
                 resolved_at: row.resolved_at,
+                post_merge_handoff: row.post_merge_handoff ?? null,
+                issue_ids: row.issue_ids ? JSON.parse(row.issue_ids) : null,
             })),
             open_issues: openIssues,
             total,
@@ -143,7 +145,7 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
             .all();
         // Auth results: all unacknowledged
         const authResults = db
-            .prepare(`SELECT id, title, status, exit_code, error, head_branch, resolved_at, repo, base_branch FROM auth_requests
+            .prepare(`SELECT id, title, status, exit_code, error, head_branch, resolved_at, repo, base_branch, post_merge_handoff, issue_ids FROM auth_requests
          WHERE status IN ('completed', 'rejected', 'expired', 'dismissed')
            AND acknowledged_by IS NULL
          ORDER BY resolved_at DESC`)
@@ -182,6 +184,8 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
                 resolved_at: row.resolved_at,
                 repo: row.repo ?? null,
                 base_branch: row.base_branch ?? null,
+                post_merge_handoff: row.post_merge_handoff ?? null,
+                issue_ids: row.issue_ids ? JSON.parse(row.issue_ids) : null,
             })),
             open_issues: openIssues,
             total,

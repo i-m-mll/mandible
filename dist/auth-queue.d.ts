@@ -65,6 +65,15 @@ export declare class AuthQueue {
     appendOutput(id: string, chunk: string): AuthRequest;
     setResult(id: string, exitCode: number, output: string, error?: string): AuthRequest;
     expireStale(): AuthRequest[];
+    /**
+     * Recover requests stuck in 'approved'/'executing' with no output for >10 min.
+     * Called periodically from expireStale() so stuck requests are recovered at
+     * runtime, not only at startup. Uses the same logic as recoverStuckRequests()
+     * Case 2 but with a longer threshold (10 min vs 5 min at startup) since the
+     * daemon is known to be running.
+     * Bug: 831cb3e
+     */
+    private recoverStuckApproved;
     private executeInBackground;
     private handleOutput;
     private storeExecutionResult;

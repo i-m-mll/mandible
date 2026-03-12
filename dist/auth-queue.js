@@ -138,6 +138,8 @@ export class AuthQueue {
             files_changed: payload.files_changed ?? 0,
             additions: payload.additions ?? 0,
             deletions: payload.deletions ?? 0,
+            post_merge_handoff: payload.post_merge_handoff ?? null,
+            issue_ids: extractIssueIdsFromCommitMessage(payload.commit_message),
             execution_mode: payload.execution_mode ?? "daemon",
             status: "pending",
             created_at: now,
@@ -167,6 +169,8 @@ export class AuthQueue {
         files_changed,
         additions,
         deletions,
+        post_merge_handoff,
+        issue_ids,
         execution_mode,
         status,
         created_at,
@@ -195,6 +199,8 @@ export class AuthQueue {
         @files_changed,
         @additions,
         @deletions,
+        @post_merge_handoff,
+        @issue_ids,
         @execution_mode,
         @status,
         @created_at,
@@ -213,7 +219,9 @@ export class AuthQueue {
             ...request,
             repo: request.repo ?? null,
             base_branch: request.base_branch ?? null,
-            head_branch: request.head_branch ?? null
+            head_branch: request.head_branch ?? null,
+            post_merge_handoff: request.post_merge_handoff ?? null,
+            issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null
         });
         this.broadcast({
             event: "auth:new",
@@ -255,6 +263,7 @@ export class AuthQueue {
             "diff_summary",
             "commit_message",
             "spec_content",
+            "post_merge_handoff",
             "repo",
             "base_branch",
             "head_branch",
@@ -488,6 +497,8 @@ export class AuthQueue {
             .prepare("SELECT * FROM auth_requests WHERE status = 'pending' AND expires_at <= ?")
             .all(now);
         if (rows.length === 0) {
+            // Still run the stuck-approved check even when nothing expired
+            this.recoverStuckApproved();
             return [];
         }
         const update = this.db.prepare("UPDATE auth_requests SET status = 'expired', resolved_at = expires_at, updated_at = ?, error = ? WHERE id = ?");
@@ -510,7 +521,42 @@ export class AuthQueue {
                 data: this.buildResolvedPayload(expired)
             });
         }
+        // Bug: 831cb3e — periodic stuck-approved recovery (same logic as
+        // recoverStuckRequests Case 2, but runs every 30s during daemon lifetime)
+        this.recoverStuckApproved();
         return expiredRequests;
+    }
+    /**
+     * Recover requests stuck in 'approved'/'executing' with no output for >10 min.
+     * Called periodically from expireStale() so stuck requests are recovered at
+     * runtime, not only at startup. Uses the same logic as recoverStuckRequests()
+     * Case 2 but with a longer threshold (10 min vs 5 min at startup) since the
+     * daemon is known to be running.
+     * Bug: 831cb3e
+     */
+    recoverStuckApproved() {
+        const now = this.now();
+        const STUCK_RUNTIME_THRESHOLD_MS = 10 * 60 * 1000;
+        const cutoff = now - STUCK_RUNTIME_THRESHOLD_MS;
+        const stuckRows = this.db
+            .prepare("SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') " +
+            "AND (output IS NULL OR output = '') AND exit_code IS NULL AND approved_at < ?")
+            .all(cutoff);
+        if (stuckRows.length === 0) {
+            return;
+        }
+        const failUpdate = this.db.prepare("UPDATE auth_requests SET status = 'completed', exit_code = 1, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?");
+        for (const row of stuckRows) {
+            failUpdate.run(now, now, "Stuck in approved state for >10 minutes — execution interrupted (periodic recovery)", row.id);
+            const recovered = this.getRequest(String(row.id));
+            if (recovered) {
+                this.broadcast({
+                    event: "auth:resolved",
+                    data: this.buildResolvedPayload(recovered)
+                });
+            }
+            console.log(`[auth-queue] periodic recovery: stuck request ${row.id} approved >10min with no output — marking as interrupted`);
+        }
     }
     executeInBackground(request) {
         // Remote-mode requests are executed by an external process — the daemon
@@ -658,6 +704,8 @@ export class AuthQueue {
         files_changed INTEGER DEFAULT 0,
         additions INTEGER DEFAULT 0,
         deletions INTEGER DEFAULT 0,
+        post_merge_handoff TEXT,
+        issue_ids TEXT,
         execution_mode TEXT NOT NULL DEFAULT 'daemon',
         status TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -681,7 +729,28 @@ export class AuthQueue {
     `);
     }
 }
+// Bug: ba9687f — extract issue IDs from Bug: trailers in commit messages
+function extractIssueIdsFromCommitMessage(commitMessage) {
+    if (!commitMessage)
+        return null;
+    const refs = [];
+    const regex = /^Bug:\s+(\S+)/gm;
+    let m;
+    while ((m = regex.exec(commitMessage)) !== null)
+        refs.push(m[1]);
+    return refs.length > 0 ? refs : null;
+}
 function mapRow(row) {
+    // Bug: ba9687f — parse issue_ids JSON array from DB
+    let issueIds = null;
+    if (row.issue_ids != null) {
+        try {
+            issueIds = JSON.parse(String(row.issue_ids));
+        }
+        catch {
+            issueIds = null;
+        }
+    }
     return {
         id: String(row.id),
         session_id: row.session_id == null ? null : String(row.session_id),
@@ -697,6 +766,8 @@ function mapRow(row) {
         files_changed: row.files_changed == null ? undefined : Number(row.files_changed),
         additions: row.additions == null ? undefined : Number(row.additions),
         deletions: row.deletions == null ? undefined : Number(row.deletions),
+        post_merge_handoff: row.post_merge_handoff == null ? null : String(row.post_merge_handoff),
+        issue_ids: issueIds,
         execution_mode: row.execution_mode === "remote" || row.execution_mode === "daemon"
             ? row.execution_mode
             : "daemon",
