@@ -643,6 +643,8 @@ export class AuthQueue {
       .all(now) as Record<string, unknown>[];
 
     if (rows.length === 0) {
+      // Still run the stuck-approved check even when nothing expired
+      this.recoverStuckApproved();
       return [];
     }
 
@@ -672,7 +674,59 @@ export class AuthQueue {
       });
     }
 
+    // Bug: 831cb3e — periodic stuck-approved recovery (same logic as
+    // recoverStuckRequests Case 2, but runs every 30s during daemon lifetime)
+    this.recoverStuckApproved();
+
     return expiredRequests;
+  }
+
+  /**
+   * Recover requests stuck in 'approved'/'executing' with no output for >10 min.
+   * Called periodically from expireStale() so stuck requests are recovered at
+   * runtime, not only at startup. Uses the same logic as recoverStuckRequests()
+   * Case 2 but with a longer threshold (10 min vs 5 min at startup) since the
+   * daemon is known to be running.
+   * Bug: 831cb3e
+   */
+  private recoverStuckApproved(): void {
+    const now = this.now();
+    const STUCK_RUNTIME_THRESHOLD_MS = 10 * 60 * 1000;
+    const cutoff = now - STUCK_RUNTIME_THRESHOLD_MS;
+
+    const stuckRows = this.db
+      .prepare(
+        "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') " +
+          "AND (output IS NULL OR output = '') AND exit_code IS NULL AND approved_at < ?"
+      )
+      .all(cutoff) as Record<string, unknown>[];
+
+    if (stuckRows.length === 0) {
+      return;
+    }
+
+    const failUpdate = this.db.prepare(
+      "UPDATE auth_requests SET status = 'completed', exit_code = 1, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
+    );
+
+    for (const row of stuckRows) {
+      failUpdate.run(
+        now,
+        now,
+        "Stuck in approved state for >10 minutes — execution interrupted (periodic recovery)",
+        row.id
+      );
+      const recovered = this.getRequest(String(row.id));
+      if (recovered) {
+        this.broadcast({
+          event: "auth:resolved",
+          data: this.buildResolvedPayload(recovered)
+        });
+      }
+      console.log(
+        `[auth-queue] periodic recovery: stuck request ${row.id} approved >10min with no output — marking as interrupted`
+      );
+    }
   }
 
   private executeInBackground(request: AuthRequest): void {
