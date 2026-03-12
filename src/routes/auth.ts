@@ -82,6 +82,8 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       diff_summary: request.diff_summary ?? null,
       commit_message: request.commit_message ?? null,
       spec_content: request.spec_content ?? null,
+      post_merge_handoff: request.post_merge_handoff ?? null,
+      issue_ids: request.issue_ids ?? null,
       execution_mode: request.execution_mode
     });
   });
@@ -270,6 +272,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     files_changed: filesChanged,
     additions,
     deletions,
+    post_merge_handoff: typeof body.post_merge_handoff === "string" ? body.post_merge_handoff : (body.post_merge_handoff === null ? null : undefined),
     execution_mode: executionMode
   };
 }
@@ -383,6 +386,14 @@ function parseAuthRequestUpdatePayload(
       return { ok: false, error: "Invalid 'deletions' — must be a finite number" };
     }
     payload.deletions = body.deletions;
+  }
+
+  if (hasKey("post_merge_handoff")) {
+    if (body.post_merge_handoff === null || typeof body.post_merge_handoff === "string") {
+      payload.post_merge_handoff = body.post_merge_handoff as string | null;
+    } else {
+      return { ok: false, error: "Invalid 'post_merge_handoff' — must be a string or null" };
+    }
   }
 
   return { ok: true, payload };

@@ -103,6 +103,8 @@ export interface AuthRequest {
   files_changed?: number;
   additions?: number;
   deletions?: number;
+  post_merge_handoff?: string | null;
+  issue_ids?: string[] | null;
   execution_mode: AuthExecutionMode;
   status: AuthRequestStatus;
   created_at: number;
@@ -132,6 +134,7 @@ export interface AuthRequestInput {
   files_changed?: number;
   additions?: number;
   deletions?: number;
+  post_merge_handoff?: string | null;
   execution_mode?: AuthExecutionMode;
 }
 

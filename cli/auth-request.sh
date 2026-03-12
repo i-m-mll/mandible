@@ -15,6 +15,7 @@
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
 #   --cwd <path>            Override auto-detected protected branch worktree path
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
+#   --handoff <text>        Post-merge handoff note for next session
 #   --timeout <seconds>     SSE listen timeout (default: 14400 / 4 hours)
 #   --force / -f             Skip CWD validation checks
 #   --no-watch              Submit only, don't poll
@@ -42,6 +43,7 @@ title=""
 commit_message=""
 diff_summary=""
 spec_content=""
+post_merge_handoff=""
 repo=""
 cwd_override=""
 target_override=""
@@ -55,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --commit-message) commit_message="$2"; shift 2 ;;
     --diff-summary)   diff_summary="$2"; shift 2 ;;
     --spec)           spec_content="$2"; shift 2 ;;
+    --handoff)        post_merge_handoff="$2"; shift 2 ;;
     --repo)           repo="$2"; shift 2 ;;
     --cwd)            cwd_override="$2"; shift 2 ;;
     --target)         target_override="$2"; shift 2 ;;
@@ -272,6 +275,7 @@ payload=$(jq -nc \
   --arg diff_summary "$diff_summary" \
   --arg commit_message "$commit_message" \
   --arg spec_content "$spec_content" \
+  --arg post_merge_handoff "$post_merge_handoff" \
   '{
     command: $command,
     cwd: $cwd,
@@ -285,7 +289,8 @@ payload=$(jq -nc \
     deletions: $deletions,
     diff_summary: $diff_summary,
     commit_message: $commit_message,
-    spec_content: $spec_content
+    spec_content: $spec_content,
+    post_merge_handoff: (if $post_merge_handoff == "" then null else $post_merge_handoff end)
   }')
 
 # Bug: de8d29c — use -w to capture HTTP status separately so we can distinguish

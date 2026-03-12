@@ -193,6 +193,8 @@ export class AuthQueue {
       files_changed: payload.files_changed ?? 0,
       additions: payload.additions ?? 0,
       deletions: payload.deletions ?? 0,
+      post_merge_handoff: payload.post_merge_handoff ?? null,
+      issue_ids: extractIssueIdsFromCommitMessage(payload.commit_message),
       execution_mode: payload.execution_mode ?? "daemon",
       status: "pending",
       created_at: now,
@@ -224,6 +226,8 @@ export class AuthQueue {
         files_changed,
         additions,
         deletions,
+        post_merge_handoff,
+        issue_ids,
         execution_mode,
         status,
         created_at,
@@ -252,6 +256,8 @@ export class AuthQueue {
         @files_changed,
         @additions,
         @deletions,
+        @post_merge_handoff,
+        @issue_ids,
         @execution_mode,
         @status,
         @created_at,
@@ -272,7 +278,9 @@ export class AuthQueue {
       ...request,
       repo: request.repo ?? null,
       base_branch: request.base_branch ?? null,
-      head_branch: request.head_branch ?? null
+      head_branch: request.head_branch ?? null,
+      post_merge_handoff: request.post_merge_handoff ?? null,
+      issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null
     });
 
     this.broadcast({
@@ -324,6 +332,7 @@ export class AuthQueue {
       "diff_summary",
       "commit_message",
       "spec_content",
+      "post_merge_handoff",
       "repo",
       "base_branch",
       "head_branch",
@@ -912,6 +921,8 @@ export class AuthQueue {
         files_changed INTEGER DEFAULT 0,
         additions INTEGER DEFAULT 0,
         deletions INTEGER DEFAULT 0,
+        post_merge_handoff TEXT,
+        issue_ids TEXT,
         execution_mode TEXT NOT NULL DEFAULT 'daemon',
         status TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -936,7 +947,27 @@ export class AuthQueue {
   }
 }
 
+// Bug: ba9687f — extract issue IDs from Bug: trailers in commit messages
+function extractIssueIdsFromCommitMessage(commitMessage: string | null | undefined): string[] | null {
+  if (!commitMessage) return null;
+  const refs: string[] = [];
+  const regex = /^Bug:\s+(\S+)/gm;
+  let m;
+  while ((m = regex.exec(commitMessage)) !== null) refs.push(m[1]);
+  return refs.length > 0 ? refs : null;
+}
+
 function mapRow(row: Record<string, unknown>): AuthRequest {
+  // Bug: ba9687f — parse issue_ids JSON array from DB
+  let issueIds: string[] | null = null;
+  if (row.issue_ids != null) {
+    try {
+      issueIds = JSON.parse(String(row.issue_ids));
+    } catch {
+      issueIds = null;
+    }
+  }
+
   return {
     id: String(row.id),
     session_id: row.session_id == null ? null : String(row.session_id),
@@ -952,6 +983,8 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     files_changed: row.files_changed == null ? undefined : Number(row.files_changed),
     additions: row.additions == null ? undefined : Number(row.additions),
     deletions: row.deletions == null ? undefined : Number(row.deletions),
+    post_merge_handoff: row.post_merge_handoff == null ? null : String(row.post_merge_handoff),
+    issue_ids: issueIds,
     execution_mode:
       row.execution_mode === "remote" || row.execution_mode === "daemon"
         ? (row.execution_mode as "remote" | "daemon")
