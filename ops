@@ -1,0 +1,1 @@
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":1,"timestamp":1773363061,"nonce":"OBbBlLrKh65nXQgm1DpL9Vv6aC8=","title":"push-manager: backend push logic + API routes","message":"Implement src/push-manager.ts and new routes in src/routes/work.ts for the Projects tab sync feature. Part of umbrella e057f8b.","files":null}]}
