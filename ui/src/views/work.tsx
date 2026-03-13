@@ -705,8 +705,8 @@ export function WorkOverviewView({
           <div className="work-push-actions">
             <button
               type="button"
-              className={`btn btn--ghost btn--sm${pushState.active ? ' btn--disabled' : ''}`}
-              disabled={pushState.active}
+              className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
+              disabled={pushState.active || pushState.authPending}
               onClick={() => pushRepos('current').catch(() => {})}
               title="Push current branches + git-bug refs + notes for all repos"
             >
@@ -718,8 +718,8 @@ export function WorkOverviewView({
             </button>
             <button
               type="button"
-              className={`btn btn--ghost btn--sm${pushState.active ? ' btn--disabled' : ''}`}
-              disabled={pushState.active}
+              className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
+              disabled={pushState.active || pushState.authPending}
               onClick={() => pushRepos('all_ahead').catch(() => {})}
               title="Push all ahead branches + git-bug refs + notes for all repos"
             >
@@ -729,7 +729,10 @@ export function WorkOverviewView({
             </button>
           </div>
           {pushState.authPending && (
-            <div style={{
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
               display: 'flex', alignItems: 'center', gap: '8px',
               padding: '8px 12px',
               background: 'rgba(245,194,92,0.12)',
@@ -739,8 +742,8 @@ export function WorkOverviewView({
               color: 'var(--accent-yellow, #f5c25c)',
               marginTop: '8px',
             }}>
-              <span>{'🔐'}</span>
-              <span>Touch your YubiKey to authenticate the push connection…</span>
+              <span aria-hidden="true">{'🔐'}</span>
+              <span>Please authenticate via your security key or check your SSH agent…</span>
             </div>
           )}
           <label style={{ fontSize: '0.85em', color: 'var(--text-muted, #888)', cursor: 'pointer' }}>
