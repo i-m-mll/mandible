@@ -35,7 +35,7 @@ function buildControlMasterEnv(socketPath: string): NodeJS.ProcessEnv {
   const gitSshCommand = [
     "ssh",
     "-o ControlMaster=auto",
-    `-o ControlPath=${socketPath}`,
+    `-o ControlPath=${socketPath}-%h`,
     "-o ControlPersist=600",
     "-o StrictHostKeyChecking=accept-new",
   ].join(" ");
@@ -47,14 +47,19 @@ function buildControlMasterEnv(socketPath: string): NodeJS.ProcessEnv {
 }
 
 async function cleanupControlMaster(socketPath: string): Promise<void> {
-  await runGitAsync(
-    ["ssh", "-O", "exit", "-o", `ControlPath=${socketPath}`, "placeholder_host"],
-    "/tmp",
-    process.env,
-    5_000
-  ).catch(() => {});
   try {
-    fs.rmSync(socketPath, { force: true });
+    const dir = path.dirname(socketPath);
+    const prefix = path.basename(socketPath) + "-";
+    const files = fs.readdirSync(dir);
+    for (const file of files) {
+      if (file.startsWith(prefix)) {
+        try {
+          fs.rmSync(path.join(dir, file), { force: true });
+        } catch {
+          // best effort
+        }
+      }
+    }
   } catch {
     // best effort
   }
@@ -344,7 +349,7 @@ async function runPushSession(
   scanner: WorkScanner,
   startedAt: string
 ): Promise<void> {
-  const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}.sock`);
+  const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const gitSshEnv = buildControlMasterEnv(socketPath);
   const sessionStart = Date.now();
 
@@ -413,7 +418,7 @@ export async function pushSingleRepo(
   scope: PushScope,
   scanner: WorkScanner
 ): Promise<PushRepoResult> {
-  const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}.sock`);
+  const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const gitSshEnv = buildControlMasterEnv(socketPath);
 
   try {
