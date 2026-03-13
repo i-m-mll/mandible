@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":1,"timestamp":1773363061,"nonce":"3goNiHbHbJ+nQrwa/buOBWuLBco=","title":"Projects tab UI: push buttons, progress display, remote ahead/behind","message":"Add push/sync UI to ui/src/views/work.tsx. Part of umbrella e057f8b.","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1773363065,"nonce":"QOgUd8ug76FasO1MiEJQljde1tQ=","added":["feature"],"removed":null}]}
