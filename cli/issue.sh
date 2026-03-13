@@ -27,9 +27,14 @@ die() {
 usage() {
   cat <<'USAGE'
 Usage:
-  mandible issue close <id> [--commit <sha>]   Close issue, recording resolving commit
-  mandible issue comment <id> -m <text>         Add a comment
-  mandible issue show <id>                      Show issue details
+  mandible issue new -t <title> -m <body> [--label <label>]...   Create a new issue
+  mandible issue list [--status open|closed|all]                  List issues (default: open)
+  mandible issue show <id>                                        Show issue details
+  mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
+  mandible issue open <id>                                        Reopen a closed issue
+  mandible issue comment <id> -m <text>                           Add a comment
+  mandible issue label add <id> <label>                           Add a label
+  mandible issue label rm <id> <label>                            Remove a label
 USAGE
 }
 
@@ -152,6 +157,176 @@ cmd_show() {
   git-bug bug show "$id"
 }
 
+cmd_new() {
+  local title=""
+  local body=""
+  local -a labels=()
+
+  while (( $# > 0 )); do
+    case "$1" in
+      -t)
+        if (( $# < 2 )); then
+          die "Missing value for -t." 2
+        fi
+        title="$2"
+        shift 2
+        ;;
+      -m)
+        if (( $# < 2 )); then
+          die "Missing value for -m." 2
+        fi
+        body="$2"
+        shift 2
+        ;;
+      --label)
+        if (( $# < 2 )); then
+          die "Missing value for --label." 2
+        fi
+        labels+=("$2")
+        shift 2
+        ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        die "Unexpected argument: $1" 2
+        ;;
+    esac
+  done
+
+  if [[ -z "$title" || -z "$body" ]]; then
+    die "Usage: mandible issue new -t <title> -m <body> [--label <label>]..." 2
+  fi
+
+  if ! command -v git-bug >/dev/null 2>&1; then
+    die "git-bug not found." 1
+  fi
+
+  local output
+  output=$(git-bug bug new -t "$title" -m "$body" --non-interactive 2>&1) || die "${RED}Failed to create issue${RESET}: $output" 1
+
+  # Extract the issue ID from git-bug output
+  local id
+  id=$(printf '%s' "$output" | grep -oE '[0-9a-f]{7,}' | head -1)
+
+  # Apply labels
+  local label
+  for label in "${labels[@]+"${labels[@]}"}"; do
+    git-bug bug label new "$id" "$label" --non-interactive 2>/dev/null || err "${RED}Failed to add label: ${label}${RESET}"
+  done
+
+  err "${GREEN}Created issue ${id}${RESET}"
+}
+
+cmd_list() {
+  local status="open"
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --status)
+        if (( $# < 2 )); then
+          die "Missing value for --status." 2
+        fi
+        status="$2"
+        shift 2
+        ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        die "Unexpected argument: $1" 2
+        ;;
+    esac
+  done
+
+  if ! command -v git-bug >/dev/null 2>&1; then
+    die "git-bug not found." 1
+  fi
+
+  case "$status" in
+    open)   git-bug bug --status open ;;
+    closed) git-bug bug --status closed ;;
+    all)    git-bug bug ;;
+    *)      die "Unknown status: $status (expected open, closed, or all)" 2 ;;
+  esac
+}
+
+cmd_label() {
+  if (( $# < 1 )); then
+    cat <<'LABEL_USAGE' >&2
+Usage:
+  mandible issue label add <id> <label>   Add a label to an issue
+  mandible issue label rm <id> <label>    Remove a label from an issue
+LABEL_USAGE
+    exit 2
+  fi
+
+  local action="$1"
+  shift
+
+  case "$action" in
+    add) cmd_label_add "$@" ;;
+    rm)  cmd_label_rm "$@" ;;
+    *)   die "Unknown label action: $action (expected add or rm)" 2 ;;
+  esac
+}
+
+cmd_label_add() {
+  if (( $# < 2 )); then
+    die "Usage: mandible issue label add <id> <label>" 2
+  fi
+
+  local id="$1"
+  local label="$2"
+
+  if ! command -v git-bug >/dev/null 2>&1; then
+    die "git-bug not found." 1
+  fi
+
+  if git-bug bug label new "$id" "$label" --non-interactive 2>/dev/null; then
+    err "${GREEN}Added label '${label}' to ${id}${RESET}"
+  else
+    die "${RED}Failed to add label '${label}' to ${id}${RESET}" 1
+  fi
+}
+
+cmd_label_rm() {
+  if (( $# < 2 )); then
+    die "Usage: mandible issue label rm <id> <label>" 2
+  fi
+
+  local id="$1"
+  local label="$2"
+
+  if ! command -v git-bug >/dev/null 2>&1; then
+    die "git-bug not found." 1
+  fi
+
+  if git-bug bug label rm "$id" "$label" --non-interactive 2>/dev/null; then
+    err "${GREEN}Removed label '${label}' from ${id}${RESET}"
+  else
+    die "${RED}Failed to remove label '${label}' from ${id}${RESET}" 1
+  fi
+}
+
+cmd_open() {
+  local id="${1:-}"
+
+  if [[ -z "$id" ]]; then
+    die "Usage: mandible issue open <id>" 2
+  fi
+
+  if ! command -v git-bug >/dev/null 2>&1; then
+    die "git-bug not found." 1
+  fi
+
+  if git-bug bug status open "$id" 2>/dev/null; then
+    err "${GREEN}Reopened issue ${id}${RESET}"
+  else
+    die "${RED}Failed to reopen issue ${id}${RESET}" 1
+  fi
+}
+
 # --- Main ---
 
 if (( $# < 1 )); then
@@ -163,9 +338,13 @@ subcmd="$1"
 shift
 
 case "$subcmd" in
-  close)   cmd_close "$@" ;;
-  comment) cmd_comment "$@" ;;
+  new)     cmd_new "$@" ;;
+  list)    cmd_list "$@" ;;
   show)    cmd_show "${1:-}" ;;
+  close)   cmd_close "$@" ;;
+  open)    cmd_open "${1:-}" ;;
+  comment) cmd_comment "$@" ;;
+  label)   cmd_label "$@" ;;
   -h|--help) usage ;;
   *)       die "Unknown subcommand: $subcmd" 2 ;;
 esac
