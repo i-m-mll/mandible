@@ -216,6 +216,10 @@ export function registerConversationRoutes(server) {
             conditions.push("c.title LIKE ?");
             params.push(`%${query.search}%`);
         }
+        if (query.session_id) {
+            conditions.push("c.session_id = ?");
+            params.push(query.session_id);
+        }
         // Filter by branch
         if (query.branch) {
             conditions.push("c.branch = ?");

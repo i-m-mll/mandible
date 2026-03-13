@@ -42,9 +42,9 @@ var __privateMethod = (obj, member, method) => {
   return method;
 };
 
-// ../../node_modules/@xterm/xterm/lib/xterm.js
+// node_modules/@xterm/xterm/lib/xterm.js
 var require_xterm = __commonJS({
-  "../../node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
+  "node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
     !function(e3, t3) {
       if ("object" == typeof exports && "object" == typeof module)
         module.exports = t3();
@@ -6664,9 +6664,9 @@ WARNING: This link could potentially be dangerous`)) {
   }
 });
 
-// ../../node_modules/@xterm/addon-fit/lib/addon-fit.js
+// node_modules/@xterm/addon-fit/lib/addon-fit.js
 var require_addon_fit = __commonJS({
-  "../../node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
+  "node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
     !function(e3, t3) {
       "object" == typeof exports && "object" == typeof module ? module.exports = t3() : "function" == typeof define && define.amd ? define([], t3) : "object" == typeof exports ? exports.FitAddon = t3() : e3.FitAddon = t3();
     }(self, () => (() => {
@@ -6704,9 +6704,9 @@ var require_addon_fit = __commonJS({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/compiler.js
+// node_modules/@profoundlogic/hogan/lib/compiler.js
 var require_compiler = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
+  "node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
     (function(Hogan4) {
       var rIsWhitespace = /\S/, rQuot = /\"/g, rNewline = /\n/g, rCr = /\r/g, rSlash = /\\/g, rLineSep = /\u2028/, rParagraphSep = /\u2029/;
       Hogan4.tags = {
@@ -7032,9 +7032,9 @@ var require_compiler = __commonJS({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/template.js
+// node_modules/@profoundlogic/hogan/lib/template.js
 var require_template = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
+  "node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
     var Hogan4 = {};
     (function(Hogan5) {
       Hogan5.Template = function(codeObj, text, compiler, options2) {
@@ -7297,9 +7297,9 @@ var require_template = __commonJS({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/hogan.js
+// node_modules/@profoundlogic/hogan/lib/hogan.js
 var require_hogan = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
+  "node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
     var Hogan4 = require_compiler();
     Hogan4.Template = require_template().Template;
     Hogan4.template = Hogan4.Template;
@@ -7307,7 +7307,7 @@ var require_hogan = __commonJS({
   }
 });
 
-// ../../node_modules/preact/dist/preact.module.js
+// node_modules/preact/dist/preact.module.js
 var n;
 var l;
 var u;
@@ -7627,7 +7627,7 @@ n = v.slice, l = { __e: function(n2, l3, u4, t3) {
   return n2.__v.__b - l3.__v.__b;
 }, $.__r = 0, f = /(PointerCapture)$|Capture$/i, c = 0, s = F(false), a = F(true), h = 0;
 
-// ../../node_modules/preact/hooks/dist/hooks.module.js
+// node_modules/preact/hooks/dist/hooks.module.js
 var t2;
 var r2;
 var u2;
@@ -8143,22 +8143,24 @@ async function getConsoleSessions() {
 async function restartConsoleSession(sessionId) {
   await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/restart`);
 }
-async function createConsoleSession(label, agentType) {
+async function startConsoleSession(sessionId) {
+  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
+}
+async function createConsoleSession(label, backend, kind) {
   const body = { label, command: "", args: [] };
-  if (agentType === "operator") {
+  if (kind === "operator") {
     body.command = "claude";
-    body.args = ["--dangerously-skip-permissions", "--output-format", "stream-json"];
+    body.args = ["--dangerously-skip-permissions"];
     body.auto_restart = true;
     body.is_operator = true;
-  } else if (agentType === "claude") {
+  } else if (backend === "claude") {
     body.command = "claude";
-    body.args = ["--dangerously-skip-permissions", "--output-format", "stream-json"];
-  } else if (agentType === "codex") {
+    body.args = ["--dangerously-skip-permissions"];
+  } else if (backend === "codex") {
     body.command = "codex";
     body.args = [];
   } else {
-    body.command = "bash";
-    body.args = [];
+    throw new Error(`Unsupported backend: ${backend}`);
   }
   const response = await apiPost("/api/console/sessions", body);
   const json = await parseMaybeJson(response);
@@ -8176,6 +8178,12 @@ async function getConsoleStreamEvents(sessionId, limit = 500) {
   if (Array.isArray(payload))
     return payload;
   return payload.events ?? [];
+}
+async function sendConsolePrompt(sessionId, prompt) {
+  await apiPost(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/prompt`,
+    { prompt }
+  );
 }
 async function getBackupStatus() {
   const response = await apiGet("/api/backup/status");
@@ -8218,6 +8226,8 @@ async function getConversations(params) {
     query.set("exclude_subagents", "true");
   if (params?.parent_id)
     query.set("parent_id", params.parent_id);
+  if (params?.session_id)
+    query.set("session_id", params.session_id);
   const qs = query.toString();
   const resp = await apiGet(`/api/conversations${qs ? "?" + qs : ""}`);
   return await parseMaybeJson(resp);
@@ -8384,7 +8394,7 @@ function createSSEClient(options2) {
   return new SSEClient(options2);
 }
 
-// ../../node_modules/marked/lib/marked.esm.js
+// node_modules/marked/lib/marked.esm.js
 function _getDefaults() {
   return {
     async: false,
@@ -10698,7 +10708,7 @@ function useSidebarResize(options2 = {}) {
   return { width: effectiveWidth, handleMouseDown };
 }
 
-// ../../node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
+// node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 var f3 = 0;
 var i3 = Array.isArray;
 function u3(e3, t3, n2, o3, i4, u4) {
@@ -14242,6 +14252,67 @@ function parseMetadata(json) {
     return {};
   }
 }
+function isCollapsibleBlock(type2) {
+  return type2 === "thinking" || type2 === "tool_use" || type2 === "tool_result" || type2 === "system" || type2 === "event";
+}
+function getBlockHeaderLabel(block2, metadata) {
+  switch (block2.type) {
+    case "user_message":
+      return null;
+    case "assistant_message": {
+      const model = metadata.model;
+      return model ? `Assistant (${model})` : "Assistant";
+    }
+    case "thinking": {
+      const duration = metadata.duration_ms;
+      return duration ? `Thinking (${(duration / 1e3).toFixed(1)}s)` : "Thinking";
+    }
+    case "tool_use": {
+      const toolName = metadata.tool_name;
+      return toolName ? `Tool: ${toolName}` : "Tool Use";
+    }
+    case "tool_result":
+      return "Tool Result";
+    case "system":
+      return "System";
+    case "event": {
+      const eventType = metadata.event_type;
+      const isError = metadata.is_error === true || metadata.level === "error";
+      const prefix = isError ? "Error" : "Event";
+      return eventType ? `${prefix}: ${eventType}` : prefix;
+    }
+    default:
+      return block2.type;
+  }
+}
+function speakerForBlock(block2) {
+  if (block2.type === "user_message") {
+    return "user";
+  }
+  if (block2.type === "assistant_message" || block2.type === "thinking" || block2.type === "tool_use" || block2.type === "tool_result") {
+    return "assistant";
+  }
+  return "system";
+}
+function buildTranscriptTurns(blocks) {
+  const turns = [];
+  let current = null;
+  for (const block2 of blocks) {
+    const speaker = speakerForBlock(block2);
+    if (speaker === "system") {
+      current = null;
+      turns.push({ id: `turn-${block2.id}`, speaker, blocks: [block2] });
+      continue;
+    }
+    if (!current || current.speaker !== speaker) {
+      current = { id: `turn-${block2.id}`, speaker, blocks: [block2] };
+      turns.push(current);
+      continue;
+    }
+    current.blocks.push(block2);
+  }
+  return turns;
+}
 function MarkdownContent({ content }) {
   const html3 = marked.parse(content);
   return /* @__PURE__ */ u3(
@@ -14354,6 +14425,21 @@ function ToolUseCard({
     expanded && /* @__PURE__ */ u3("pre", { className: "block-pre tool-use-card__full", children: fullContent })
   ] });
 }
+function renderConversationBlockBody(block2, collapsed) {
+  if (collapsed)
+    return null;
+  const metadata = parseMetadata(block2.metadata_json);
+  if (block2.type === "assistant_message" || block2.type === "user_message") {
+    return /* @__PURE__ */ u3("div", { className: "block-content", children: /* @__PURE__ */ u3(MarkdownContent, { content: block2.content }) });
+  }
+  if (block2.type === "tool_use") {
+    const toolName = metadata.tool_name;
+    const toolInput = metadata.tool_input ?? null;
+    return /* @__PURE__ */ u3("div", { className: "block-content block-content--mono", children: /* @__PURE__ */ u3(ToolUseCard, { toolName, toolInput, fullContent: block2.content }) });
+  }
+  const showExpandButton = isCollapsibleBlock(block2.type) && block2.content.length > 200;
+  return /* @__PURE__ */ u3("div", { className: `block-content${block2.type === "tool_result" ? " block-content--mono" : ""}`, children: showExpandButton ? /* @__PURE__ */ u3(ContentWithExpand, { content: block2.content }) : /* @__PURE__ */ u3("pre", { className: "block-pre", children: block2.content }) });
+}
 function BlockRenderer({
   block: block2,
   isSelected,
@@ -14364,7 +14450,7 @@ function BlockRenderer({
   collapsed
 }) {
   const metadata = parseMetadata(block2.metadata_json);
-  const isCollapsible = block2.type === "thinking" || block2.type === "tool_use" || block2.type === "tool_result" || block2.type === "system" || block2.type === "event";
+  const isCollapsible = isCollapsibleBlock(block2.type);
   const showHeader = block2.type !== "user_message";
   const isErrorEvent = block2.type === "event" && (metadata.is_error === true || metadata.level === "error");
   const typeClass = [
@@ -14384,50 +14470,7 @@ function BlockRenderer({
       }
     }
   };
-  const headerLabel = (() => {
-    switch (block2.type) {
-      case "user_message":
-        return null;
-      case "assistant_message": {
-        const model = metadata.model;
-        return model ? `Assistant (${model})` : "Assistant";
-      }
-      case "thinking": {
-        const duration = metadata.duration_ms;
-        return duration ? `Thinking (${(duration / 1e3).toFixed(1)}s)` : "Thinking";
-      }
-      case "tool_use": {
-        const toolName = metadata.tool_name;
-        return toolName ? `Tool: ${toolName}` : "Tool Use";
-      }
-      case "tool_result":
-        return "Tool Result";
-      case "system":
-        return "System";
-      case "event": {
-        const eventType = metadata.event_type;
-        const isError = metadata.is_error === true || metadata.level === "error";
-        const prefix = isError ? "Error" : "Event";
-        return eventType ? `${prefix}: ${eventType}` : prefix;
-      }
-      default:
-        return block2.type;
-    }
-  })();
-  const renderContent = () => {
-    if (collapsed)
-      return null;
-    if (block2.type === "assistant_message" || block2.type === "user_message") {
-      return /* @__PURE__ */ u3("div", { className: "block-content", children: /* @__PURE__ */ u3(MarkdownContent, { content: block2.content }) });
-    }
-    if (block2.type === "tool_use") {
-      const toolName = metadata.tool_name;
-      const toolInput = metadata.tool_input ?? null;
-      return /* @__PURE__ */ u3("div", { className: "block-content block-content--mono", children: /* @__PURE__ */ u3(ToolUseCard, { toolName, toolInput, fullContent: block2.content }) });
-    }
-    const showExpandButton = isCollapsible && block2.content.length > 200;
-    return /* @__PURE__ */ u3("div", { className: `block-content${block2.type === "tool_result" ? " block-content--mono" : ""}`, children: showExpandButton ? /* @__PURE__ */ u3(ContentWithExpand, { content: block2.content }) : /* @__PURE__ */ u3("pre", { className: "block-pre", children: block2.content }) });
-  };
+  const headerLabel = getBlockHeaderLabel(block2, metadata);
   return /* @__PURE__ */ u3("div", { className: typeClass, onClick: handleClick, "data-block-id": block2.id, children: [
     showHeader && /* @__PURE__ */ u3("div", { className: "block-header", children: [
       /* @__PURE__ */ u3("div", { className: "block-header__left", children: [
@@ -14476,7 +14519,98 @@ function BlockRenderer({
         /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
       ] })
     ] }),
-    renderContent()
+    renderConversationBlockBody(block2, collapsed)
+  ] });
+}
+function TranscriptBlockItem({
+  block: block2,
+  isSelected,
+  selectMode,
+  onToggleSelect,
+  onShiftSelect,
+  onToggleCollapse,
+  collapsed
+}) {
+  const metadata = parseMetadata(block2.metadata_json);
+  const isCollapsible = isCollapsibleBlock(block2.type);
+  const headerLabel = getBlockHeaderLabel(block2, metadata);
+  const isErrorEvent = block2.type === "event" && (metadata.is_error === true || metadata.level === "error");
+  const className = [
+    "transcript-item",
+    `transcript-item--${block2.type.replace("_", "-")}`,
+    isSelected ? "transcript-item--selected" : "",
+    isErrorEvent ? "transcript-item--error" : "",
+    selectMode ? "transcript-item--selectable" : ""
+  ].filter(Boolean).join(" ");
+  const handleClick = (e3) => {
+    if (!selectMode)
+      return;
+    if (e3.shiftKey) {
+      onShiftSelect();
+    } else {
+      onToggleSelect();
+    }
+  };
+  return /* @__PURE__ */ u3("div", { className, onClick: handleClick, "data-block-id": block2.id, children: [
+    /* @__PURE__ */ u3("div", { className: "transcript-item__meta", children: [
+      /* @__PURE__ */ u3("div", { className: "transcript-item__meta-left", children: [
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "checkbox",
+            checked: isSelected,
+            onChange: onToggleSelect,
+            onClick: (e3) => e3.stopPropagation(),
+            className: `block-checkbox${selectMode || isSelected ? " block-checkbox--visible" : ""}`
+          }
+        ),
+        isCollapsible && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "block-collapse-toggle",
+            onClick: (e3) => {
+              e3.stopPropagation();
+              onToggleCollapse();
+            },
+            children: collapsed ? "\u25B8" : "\u25BE"
+          }
+        ),
+        headerLabel && /* @__PURE__ */ u3("span", { className: "transcript-item__label", children: headerLabel })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "transcript-item__meta-right", children: [
+        /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
+        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
+      ] })
+    ] }),
+    renderConversationBlockBody(block2, collapsed)
+  ] });
+}
+function TranscriptTurnRenderer({
+  turn,
+  selected,
+  selectMode,
+  collapsedBlocks,
+  onToggleSelect,
+  onShiftSelect,
+  onToggleCollapse
+}) {
+  const speakerLabel = turn.speaker === "user" ? "You" : turn.speaker === "assistant" ? "Assistant" : "System";
+  return /* @__PURE__ */ u3("div", { className: `transcript-turn transcript-turn--${turn.speaker}`, children: [
+    /* @__PURE__ */ u3("div", { className: "transcript-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "transcript-turn__badge", children: speakerLabel }) }),
+    /* @__PURE__ */ u3("div", { className: "transcript-turn__body", children: turn.blocks.map((block2) => /* @__PURE__ */ u3(
+      TranscriptBlockItem,
+      {
+        block: block2,
+        isSelected: selected.has(block2.id),
+        selectMode,
+        onToggleSelect: () => onToggleSelect(block2.id),
+        onShiftSelect: () => onShiftSelect(block2.id),
+        onToggleCollapse: () => onToggleCollapse(block2.id),
+        collapsed: collapsedBlocks.has(block2.id)
+      },
+      block2.id
+    )) })
   ] });
 }
 function ContentWithExpand({ content }) {
@@ -14648,17 +14782,20 @@ function SubAgentsList({
 }
 function ConversationDetail({
   conversationId,
-  onNavigate
+  onNavigate,
+  consoleSessions
 }) {
   const [conversation, setConversation] = d2(null);
   const [loading, setLoading] = d2(true);
   const [error, setError] = d2(null);
+  const [loadNonce, setLoadNonce] = d2(0);
   const [selectMode, setSelectMode] = d2(false);
   const [selected, setSelected] = d2(/* @__PURE__ */ new Set());
   const [lastSelectedId, setLastSelectedId] = d2(null);
   const [visibleTypes, setVisibleTypes] = d2(new Set(ALL_BLOCK_TYPES));
   const [collapsedBlocks, setCollapsedBlocks] = d2(/* @__PURE__ */ new Set());
   const [showExport, setShowExport] = d2(false);
+  const [renderMode, setRenderMode] = d2("transcript");
   const scrollContainerRef = A2(null);
   const [scrollTop, setScrollTop] = d2(0);
   const [containerHeight, setContainerHeight] = d2(800);
@@ -14667,27 +14804,27 @@ function ConversationDetail({
     setLoading(true);
     setError(null);
     getConversation(conversationId).then((conv) => {
-      if (active) {
-        setConversation(conv);
-        const defaultCollapsed = /* @__PURE__ */ new Set();
-        for (const block2 of conv.blocks) {
-          if (block2.type === "thinking" || block2.type === "system") {
-            defaultCollapsed.add(block2.id);
-          }
+      if (!active)
+        return;
+      setConversation(conv);
+      const defaultCollapsed = /* @__PURE__ */ new Set();
+      for (const block2 of conv.blocks) {
+        if (block2.type === "thinking" || block2.type === "system") {
+          defaultCollapsed.add(block2.id);
         }
-        setCollapsedBlocks(defaultCollapsed);
-        setLoading(false);
       }
+      setCollapsedBlocks(defaultCollapsed);
+      setLoading(false);
     }).catch((err) => {
-      if (active) {
-        setError(String(err));
-        setLoading(false);
-      }
+      if (!active)
+        return;
+      setError(err instanceof Error ? err.message : String(err));
+      setLoading(false);
     });
     return () => {
       active = false;
     };
-  }, [conversationId]);
+  }, [conversationId, loadNonce]);
   y2(() => {
     const el = scrollContainerRef.current;
     if (!el)
@@ -14705,6 +14842,7 @@ function ConversationDetail({
     () => blocks.filter((b) => visibleTypes.has(b.type)),
     [blocks, visibleTypes]
   );
+  const transcriptTurns = T2(() => buildTranscriptTurns(visibleBlocks), [visibleBlocks]);
   const exportableBlocks = T2(
     () => visibleBlocks.filter((b) => selected.has(b.id)),
     [visibleBlocks, selected]
@@ -14822,11 +14960,27 @@ function ConversationDetail({
     } catch {
     }
   };
+  const linkedConsoleSession = T2(() => {
+    if (!conversation?.session_id)
+      return null;
+    return consoleSessions.find((session) => session.provider_session_id === conversation.session_id) ?? null;
+  }, [consoleSessions, conversation?.session_id]);
   if (loading) {
     return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: "Loading conversation..." }) });
   }
   if (error || !conversation) {
-    return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: error || "Conversation not found." }) });
+    return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: [
+      /* @__PURE__ */ u3("div", { children: error || "Conversation not found." }),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--ghost btn--sm",
+          onClick: () => setLoadNonce((prev) => prev + 1),
+          children: "Retry"
+        }
+      )
+    ] }) });
   }
   return /* @__PURE__ */ u3("div", { className: "conv-detail", children: [
     conversation.parent_conversation_id && /* @__PURE__ */ u3("div", { className: "conv-parent-link", children: /* @__PURE__ */ u3(
@@ -14858,16 +15012,29 @@ function ConversationDetail({
           conversation.model && /* @__PURE__ */ u3("span", { className: "text-muted", children: conversation.model })
         ] })
       ] }),
-      /* @__PURE__ */ u3("div", { className: "conv-detail__header-right", children: /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: `btn btn--ghost btn--sm conv-star-btn${conversation.starred ? " conv-star-btn--active" : ""}`,
-          onClick: handleStarToggle,
-          title: conversation.starred ? "Unstar" : "Star",
-          children: conversation.starred ? "\u2605" : "\u2606"
-        }
-      ) })
+      /* @__PURE__ */ u3("div", { className: "conv-detail__header-right", children: [
+        linkedConsoleSession && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--ghost btn--sm",
+            onClick: () => {
+              window.location.hash = `#/console?session=${encodeURIComponent(linkedConsoleSession.id)}`;
+            },
+            children: "Open live chat"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: `btn btn--ghost btn--sm conv-star-btn${conversation.starred ? " conv-star-btn--active" : ""}`,
+            onClick: handleStarToggle,
+            title: conversation.starred ? "Unstar" : "Star",
+            children: conversation.starred ? "\u2605" : "\u2606"
+          }
+        )
+      ] })
     ] }),
     conversation.children && conversation.children.length > 0 && /* @__PURE__ */ u3(SubAgentsList, { children: conversation.children, onNavigate }),
     /* @__PURE__ */ u3("div", { className: "conv-filter-bar", children: [
@@ -14885,6 +15052,26 @@ function ConversationDetail({
         type2
       )) }),
       /* @__PURE__ */ u3("div", { className: "conv-filter-bar__actions", children: [
+        /* @__PURE__ */ u3("div", { className: "toggle-group", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `btn btn--sm${renderMode === "transcript" ? " btn--active" : " btn--ghost"}`,
+              onClick: () => setRenderMode("transcript"),
+              children: "Transcript"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: `btn btn--sm${renderMode === "raw" ? " btn--active" : " btn--ghost"}`,
+              onClick: () => setRenderMode("raw"),
+              children: "Inspect raw"
+            }
+          )
+        ] }),
         /* @__PURE__ */ u3(
           "button",
           {
@@ -14961,7 +15148,22 @@ function ConversationDetail({
         onClose: () => setShowExport(false)
       }
     ),
-    /* @__PURE__ */ u3(
+    renderMode === "transcript" ? /* @__PURE__ */ u3("div", { className: "conv-transcript", children: [
+      transcriptTurns.map((turn) => /* @__PURE__ */ u3(
+        TranscriptTurnRenderer,
+        {
+          turn,
+          selected,
+          selectMode,
+          collapsedBlocks,
+          onToggleSelect: toggleSelect,
+          onShiftSelect: handleShiftSelect,
+          onToggleCollapse: toggleCollapse
+        },
+        turn.id
+      )),
+      transcriptTurns.length === 0 && /* @__PURE__ */ u3("div", { className: "empty-state", children: "No blocks match the current filters." })
+    ] }) : /* @__PURE__ */ u3(
       "div",
       {
         className: "conv-blocks",
@@ -15044,7 +15246,12 @@ function ChatHistoryItem({
     }
   );
 }
-function ConversationsView({ conversations: initialConversations }) {
+function ConversationsView({
+  conversations: initialConversations,
+  consoleSessions,
+  initialConversationId,
+  initialSessionId
+}) {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 320,
     minWidth: 190,
@@ -15065,6 +15272,47 @@ function ConversationsView({ conversations: initialConversations }) {
   const searchTimer = A2(null);
   const conversationsRef = A2(conversations);
   conversationsRef.current = conversations;
+  y2(() => {
+    if (!initialConversationId)
+      return;
+    setSelectedId(initialConversationId);
+  }, [initialConversationId]);
+  y2(() => {
+    let active = true;
+    let retryTimer = null;
+    if (initialConversationId || !initialSessionId) {
+      return () => {
+        active = false;
+      };
+    }
+    const resolveConversation = (attemptsRemaining) => {
+      void getConversations({ session_id: initialSessionId, limit: 1 }).then((result) => {
+        if (!active)
+          return;
+        const resolvedId = result.conversations[0]?.id ?? null;
+        if (resolvedId) {
+          setSelectedId(resolvedId);
+          return;
+        }
+        if (attemptsRemaining > 0) {
+          retryTimer = window.setTimeout(() => resolveConversation(attemptsRemaining - 1), 1500);
+        }
+      }).catch(() => {
+        if (!active)
+          return;
+        if (attemptsRemaining > 0) {
+          retryTimer = window.setTimeout(() => resolveConversation(attemptsRemaining - 1), 1500);
+        }
+      });
+    };
+    resolveConversation(5);
+    return () => {
+      active = false;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
+    };
+  }, [initialConversationId, initialSessionId]);
   const fetchConversations = q2(async (reset = true) => {
     setLoading(true);
     try {
@@ -15247,7 +15495,8 @@ function ConversationsView({ conversations: initialConversations }) {
       ConversationDetail,
       {
         conversationId: selectedId,
-        onNavigate: (id2) => setSelectedId(id2)
+        onNavigate: (id2) => setSelectedId(id2),
+        consoleSessions
       }
     ) : /* @__PURE__ */ u3("div", { className: "chat-history-detail__empty", children: "Select a conversation to view it" }) })
   ] });
@@ -17620,7 +17869,7 @@ function ThinkingBlock({ thinking, defaultExpanded = false }) {
   ] });
 }
 
-// ../../node_modules/diff2html/lib-esm/types.js
+// node_modules/diff2html/lib-esm/types.js
 var LineType;
 (function(LineType2) {
   LineType2["INSERT"] = "insert";
@@ -17647,7 +17896,7 @@ var ColorSchemeType;
   ColorSchemeType2["LIGHT"] = "light";
 })(ColorSchemeType || (ColorSchemeType = {}));
 
-// ../../node_modules/diff2html/lib-esm/utils.js
+// node_modules/diff2html/lib-esm/utils.js
 var specials = [
   "-",
   "[",
@@ -17692,7 +17941,7 @@ function max(arr) {
   return max3;
 }
 
-// ../../node_modules/diff2html/lib-esm/diff-parser.js
+// node_modules/diff2html/lib-esm/diff-parser.js
 function getExtension(filename, language) {
   const filenameParts = filename.split(".");
   return filenameParts.length > 1 ? filenameParts[filenameParts.length - 1] : language;
@@ -17984,7 +18233,7 @@ function parse(diffInput, config = {}) {
   return files;
 }
 
-// ../../node_modules/diff/libesm/diff/base.js
+// node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options2 = {}) {
     let callback;
@@ -18186,7 +18435,7 @@ var Diff = class {
   }
 };
 
-// ../../node_modules/diff/libesm/diff/character.js
+// node_modules/diff/libesm/diff/character.js
 var CharacterDiff = class extends Diff {
 };
 var characterDiff = new CharacterDiff();
@@ -18194,7 +18443,7 @@ function diffChars(oldStr, newStr, options2) {
   return characterDiff.diff(oldStr, newStr, options2);
 }
 
-// ../../node_modules/diff/libesm/util/string.js
+// node_modules/diff/libesm/util/string.js
 function longestCommonPrefix(str1, str2) {
   let i4;
   for (i4 = 0; i4 < str1.length && i4 < str2.length; i4++) {
@@ -18290,7 +18539,7 @@ function leadingWs(string) {
   return match ? match[0] : "";
 }
 
-// ../../node_modules/diff/libesm/diff/word.js
+// node_modules/diff/libesm/diff/word.js
 var extendedWordChars = "a-zA-Z0-9_\\u{AD}\\u{C0}-\\u{D6}\\u{D8}-\\u{F6}\\u{F8}-\\u{2C6}\\u{2C8}-\\u{2D7}\\u{2DE}-\\u{2FF}\\u{1E00}-\\u{1EFF}";
 var tokenizeIncludingWhitespace = new RegExp(`[${extendedWordChars}]+|\\s+|[^${extendedWordChars}]`, "ug");
 var WordDiff = class extends Diff {
@@ -18437,7 +18686,7 @@ function diffWordsWithSpace(oldStr, newStr, options2) {
   return wordsWithSpaceDiff.diff(oldStr, newStr, options2);
 }
 
-// ../../node_modules/diff2html/lib-esm/rematch.js
+// node_modules/diff2html/lib-esm/rematch.js
 function levenshtein(a4, b) {
   if (a4.length === 0) {
     return b.length;
@@ -18521,7 +18770,7 @@ function newMatcherFn(distance2) {
   return group;
 }
 
-// ../../node_modules/diff2html/lib-esm/render-utils.js
+// node_modules/diff2html/lib-esm/render-utils.js
 var CSSLineClass = {
   INSERTS: "d2h-ins",
   DELETES: "d2h-del",
@@ -18699,7 +18948,7 @@ function diffHighlight(diffLine1, diffLine2, isCombined, config = {}) {
   };
 }
 
-// ../../node_modules/diff2html/lib-esm/file-list-renderer.js
+// node_modules/diff2html/lib-esm/file-list-renderer.js
 var baseTemplatesPath = "file-summary";
 var iconsBaseTemplatesPath = "icon";
 var defaultFileListRendererConfig = {
@@ -18729,7 +18978,7 @@ var FileListRenderer = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/line-by-line-renderer.js
+// node_modules/diff2html/lib-esm/line-by-line-renderer.js
 var defaultLineByLineRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath = "generic";
 var baseTemplatesPath2 = "line-by-line";
@@ -18904,7 +19153,7 @@ var LineByLineRenderer = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/side-by-side-renderer.js
+// node_modules/diff2html/lib-esm/side-by-side-renderer.js
 var defaultSideBySideRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath2 = "generic";
 var baseTemplatesPath3 = "side-by-side";
@@ -19090,10 +19339,10 @@ var SideBySideRenderer = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
+// node_modules/diff2html/lib-esm/hoganjs-utils.js
 var Hogan3 = __toESM(require_hogan());
 
-// ../../node_modules/diff2html/lib-esm/diff2html-templates.js
+// node_modules/diff2html/lib-esm/diff2html-templates.js
 var Hogan2 = __toESM(require_hogan());
 var defaultTemplates = {};
 defaultTemplates["file-summary-line"] = new Hogan2.Template({ code: function(c4, p3, i4) {
@@ -19501,7 +19750,7 @@ defaultTemplates["tag-file-renamed"] = new Hogan2.Template({ code: function(c4, 
   return t3.fl();
 }, partials: {}, subs: {} });
 
-// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
+// node_modules/diff2html/lib-esm/hoganjs-utils.js
 var HoganJsUtils = class {
   constructor({ compiledTemplates = {}, rawTemplates = {} }) {
     const compiledRawTemplates = Object.entries(rawTemplates).reduce((previousTemplates, [name, templateString]) => {
@@ -19530,7 +19779,7 @@ var HoganJsUtils = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/diff2html.js
+// node_modules/diff2html/lib-esm/diff2html.js
 var defaultDiff2HtmlConfig = Object.assign(Object.assign(Object.assign({}, defaultLineByLineRendererConfig), defaultSideBySideRendererConfig), { outputFormat: OutputFormatType.LINE_BY_LINE, drawFileList: true });
 function html2(diffInput, configuration = {}) {
   const config = Object.assign(Object.assign({}, defaultDiff2HtmlConfig), configuration);
@@ -19843,9 +20092,9 @@ function MessageGroup({ turn, isStreaming, isThinking }) {
 // ui/src/components/stream-renderer/StatusBar.tsx
 function formatCost(usd) {
   if (usd < 1e-3) {
-    return "<$0.001";
+    return "est. <$0.001";
   }
-  return `$${usd.toFixed(4)}`;
+  return `est. $${usd.toFixed(4)}`;
 }
 function formatDuration2(ms) {
   if (ms < 1e3) {
@@ -19860,7 +20109,8 @@ function StatusBar({
   numTurns,
   durationMs,
   error,
-  elapsedSeconds
+  elapsedSeconds,
+  liveLabel
 }) {
   const dotClass = error ? "status-bar__dot status-bar__dot--error" : streaming ? "status-bar__dot status-bar__dot--streaming" : "status-bar__dot status-bar__dot--done";
   const centerParts = [];
@@ -19884,7 +20134,7 @@ function StatusBar({
   if (error) {
     labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__error", children: error });
   } else if (streaming) {
-    labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Streaming\u2026" });
+    labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__label", children: liveLabel ?? "Working" });
   } else {
     labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Complete" });
   }
@@ -19955,10 +20205,10 @@ function useStreamState(events) {
     return { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages };
   }, [events]);
 }
-function deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo) {
+function deriveStatusBarProps(streaming, initEvent, resultEvent, liveLabel, sessionInfo) {
   const model = sessionInfo?.model ?? initEvent?.model;
   if (!resultEvent) {
-    return { model };
+    return { model, liveLabel };
   }
   if (resultEvent.is_error) {
     return {
@@ -19966,15 +20216,37 @@ function deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo) {
       totalCostUsd: resultEvent.total_cost_usd,
       numTurns: resultEvent.num_turns,
       durationMs: resultEvent.duration_ms,
-      error: resultEvent.errors?.join("; ")
+      error: resultEvent.errors?.join("; "),
+      liveLabel
     };
   }
   return {
     model,
     totalCostUsd: resultEvent.total_cost_usd,
     numTurns: resultEvent.num_turns,
-    durationMs: resultEvent.duration_ms
+    durationMs: resultEvent.duration_ms,
+    liveLabel
   };
+}
+function deriveLiveLabel(turns, streaming) {
+  if (!streaming) {
+    return void 0;
+  }
+  const lastTurn = turns[turns.length - 1];
+  if (!lastTurn) {
+    return "Waiting for reply";
+  }
+  const blocks = lastTurn.assistantEvent.message.content;
+  if (blocks.some((block2) => block2.type === "thinking" && block2.thinking.trim())) {
+    return "Thinking";
+  }
+  if (blocks.some((block2) => block2.type === "tool_use")) {
+    return "Using tools";
+  }
+  if (blocks.some((block2) => block2.type === "text" && block2.text.trim())) {
+    return "Responding";
+  }
+  return "Working";
 }
 function StreamRenderer({
   events,
@@ -20026,7 +20298,14 @@ function StreamRenderer({
     }
     setUserScrolled(false);
   }
-  const statusBarProps = deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo);
+  const liveLabel = deriveLiveLabel(turns, streaming);
+  const statusBarProps = deriveStatusBarProps(
+    streaming,
+    initEvent,
+    resultEvent,
+    liveLabel,
+    sessionInfo
+  );
   const hasContent = events.length > 0 || syntheticPrompts.length > 0 || streamUserMessages.length > 0;
   if (!hasContent) {
     return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
@@ -20082,7 +20361,16 @@ function StreamRenderer({
         ref: scrollRef,
         className: "stream-renderer__scroll",
         onScroll: handleScroll,
-        children: nodes
+        children: [
+          nodes,
+          streaming && /* @__PURE__ */ u3("div", { className: "stream-live-indicator", "aria-live": "polite", children: [
+            /* @__PURE__ */ u3("span", { className: "stream-live-indicator__dot", "aria-hidden": "true" }),
+            /* @__PURE__ */ u3("span", { className: "stream-live-indicator__label", children: [
+              liveLabel ?? "Working",
+              elapsedSeconds !== void 0 ? ` ${elapsedSeconds}s` : ""
+            ] })
+          ] })
+        ]
       }
     ),
     userScrolled && streaming && /* @__PURE__ */ u3(
@@ -20105,18 +20393,18 @@ function ViewToggle({ current, onChange }) {
       "button",
       {
         type: "button",
-        className: `view-toggle__btn${current === "terminal" ? " view-toggle__btn--active" : ""}`,
-        onClick: () => onChange("terminal"),
-        children: "Terminal"
+        className: `view-toggle__btn${current === "rich" ? " view-toggle__btn--active" : ""}`,
+        onClick: () => onChange("rich"),
+        children: "Chat"
       }
     ),
     /* @__PURE__ */ u3(
       "button",
       {
         type: "button",
-        className: `view-toggle__btn${current === "rich" ? " view-toggle__btn--active" : ""}`,
-        onClick: () => onChange("rich"),
-        children: "Rich"
+        className: `view-toggle__btn${current === "terminal" ? " view-toggle__btn--active" : ""}`,
+        onClick: () => onChange("terminal"),
+        children: "Debug Terminal"
       }
     )
   ] });
@@ -20125,7 +20413,10 @@ function ViewToggle({ current, onChange }) {
 // ui/src/components/console/TerminalPane.tsx
 function TerminalPane({
   sessionId,
+  agentType,
   interactionMode,
+  sessionStatus,
+  providerSessionId,
   isVisible,
   viewMode,
   onViewModeChange
@@ -20142,6 +20433,7 @@ function TerminalPane({
   const [reconnectNonce, setReconnectNonce] = d2(0);
   const [streamEvents, setStreamEvents] = d2([]);
   const [streaming, setStreaming] = d2(false);
+  const supportsStructuredChat = agentType === "claude" || agentType === "operator";
   y2(() => {
     isVisibleRef.current = isVisible;
   }, [isVisible]);
@@ -20348,6 +20640,8 @@ function TerminalPane({
   }, [sessionId]);
   const handleReconnect = async () => {
     setWsStatus("connecting");
+    termRef.current?.reset();
+    pendingWritesRef.current = [];
     try {
       await restartConsoleSession(sessionId);
       setReconnectNonce((n2) => n2 + 1);
@@ -20370,9 +20664,17 @@ function TerminalPane({
       };
       setStreamEvents((prev) => [...prev, syntheticEvent]);
       setStreaming(true);
-      const ws2 = wsRef.current;
-      if (ws2 && ws2.readyState === WebSocket.OPEN) {
-        ws2.send(new TextEncoder().encode(submittedPrompt + "\r"));
+      if (supportsStructuredChat) {
+        void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
+          setStreaming(false);
+        });
+      } else {
+        const ws2 = wsRef.current;
+        if (ws2 && ws2.readyState === WebSocket.OPEN) {
+          ws2.send(new TextEncoder().encode(submittedPrompt + "\r"));
+        } else {
+          setStreaming(false);
+        }
       }
       return;
     }
@@ -20383,33 +20685,59 @@ function TerminalPane({
     }
   };
   const showReconnectOverlay = wsStatus === "closed" || wsStatus === "error";
+  const showDebugStart = viewMode === "terminal" && sessionStatus !== "running";
+  const debugTerminalLabel = providerSessionId ? "Resume debug terminal" : "Start debug terminal";
+  const debugTerminalDescription = providerSessionId ? "Resume this same chat in the provider terminal for raw inspection or recovery." : supportsStructuredChat ? "Open the provider terminal for this chat. Once a provider session exists, it will resume here." : "Open the terminal fallback for this session.";
+  const handleStartDebugTerminal = async () => {
+    termRef.current?.reset();
+    pendingWritesRef.current = [];
+    try {
+      await startConsoleSession(sessionId);
+      setReconnectNonce((n2) => n2 + 1);
+    } catch {
+      setWsStatus("error");
+    }
+  };
   return /* @__PURE__ */ u3(
     "div",
     {
       className: "terminal-pane",
       style: { display: isVisible ? "flex" : "none" },
       children: [
-        /* @__PURE__ */ u3("div", { className: "terminal-pane__header", children: /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: [
-          interactionMode === "both" && /* @__PURE__ */ u3(
-            "span",
+        /* @__PURE__ */ u3("div", { className: "terminal-pane__header", children: [
+          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: [
+            interactionMode === "both" && /* @__PURE__ */ u3(
+              "span",
+              {
+                style: {
+                  background: "rgba(77,163,255,0.12)",
+                  color: "var(--accent-blue)",
+                  padding: "2px 8px",
+                  borderRadius: "999px",
+                  fontSize: "11px",
+                  cursor: "pointer"
+                },
+                onClick: () => {
+                  window.location.hash = "#/inbox";
+                },
+                title: "View inbox",
+                children: "Inbox"
+              }
+            ),
+            /* @__PURE__ */ u3(ViewToggle, { current: viewMode, onChange: onViewModeChange })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "terminal-pane__header-actions", children: providerSessionId && /* @__PURE__ */ u3(
+            "button",
             {
-              style: {
-                background: "rgba(77,163,255,0.12)",
-                color: "var(--accent-blue)",
-                padding: "2px 8px",
-                borderRadius: "999px",
-                fontSize: "11px",
-                cursor: "pointer"
-              },
+              type: "button",
+              className: "terminal-pane__link-btn",
               onClick: () => {
-                window.location.hash = "#/inbox";
+                window.location.hash = `#/chat-history?session=${encodeURIComponent(providerSessionId)}`;
               },
-              title: "View inbox",
-              children: "Inbox"
+              children: "View history"
             }
-          ),
-          /* @__PURE__ */ u3(ViewToggle, { current: viewMode, onChange: onViewModeChange })
-        ] }) }),
+          ) })
+        ] }),
         interactionMode === "inbox_only" && /* @__PURE__ */ u3("div", { className: "terminal-pane__inbox-banner", children: "Operator receives inbox items. Direct input is disabled." }),
         /* @__PURE__ */ u3("div", { className: "terminal-pane__body", children: [
           /* @__PURE__ */ u3(
@@ -20420,8 +20748,8 @@ function TerminalPane({
               style: { display: viewMode === "terminal" ? "flex" : "none", flex: 1 }
             }
           ),
-          showReconnectOverlay && viewMode === "terminal" && /* @__PURE__ */ u3("div", { className: "terminal-pane__reconnect-overlay", children: [
-            /* @__PURE__ */ u3("span", { children: wsStatus === "error" ? "Connection error" : "Disconnected" }),
+          showReconnectOverlay && viewMode === "terminal" && !showDebugStart && /* @__PURE__ */ u3("div", { className: "terminal-pane__reconnect-overlay", children: [
+            /* @__PURE__ */ u3("span", { children: wsStatus === "error" ? "Debug terminal connection error" : "Debug terminal disconnected" }),
             /* @__PURE__ */ u3(
               "button",
               {
@@ -20439,7 +20767,30 @@ function TerminalPane({
                   fontSize: "14px",
                   fontFamily: "var(--font-sans)"
                 },
-                children: "Reconnect"
+                children: "Reconnect terminal"
+              }
+            )
+          ] }),
+          showDebugStart && /* @__PURE__ */ u3("div", { className: "terminal-pane__reconnect-overlay", children: [
+            /* @__PURE__ */ u3("span", { children: debugTerminalDescription }),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                onClick: () => {
+                  void handleStartDebugTerminal();
+                },
+                style: {
+                  padding: "8px 20px",
+                  borderRadius: "8px",
+                  background: "var(--accent-blue)",
+                  border: "none",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                  fontFamily: "var(--font-sans)"
+                },
+                children: debugTerminalLabel
               }
             )
           ] }),
@@ -20508,31 +20859,8 @@ function TerminalPane({
                   )
                 ]
               }
-            )
-          ] }),
-          viewMode === "rich" && showReconnectOverlay && /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-disconnected", children: [
-            "Session disconnected \u2014",
-            " ",
-            /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                onClick: () => {
-                  void handleReconnect();
-                },
-                style: {
-                  background: "none",
-                  border: "none",
-                  color: "var(--accent-blue)",
-                  cursor: "pointer",
-                  padding: 0,
-                  fontSize: "inherit",
-                  fontFamily: "inherit",
-                  textDecoration: "underline"
-                },
-                children: "Restart"
-              }
-            )
+            ),
+            !supportsStructuredChat && /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-disconnected", children: "This agent still renders here from terminal output. The Chat view becomes first-class once its structured stream is available." })
           ] })
         ] })
       ]
@@ -20541,24 +20869,77 @@ function TerminalPane({
 }
 
 // ui/src/components/console/NewSessionDialog.tsx
-var AGENT_TYPE_OPTIONS = [
-  { value: "operator", label: "Operator (Claude agent, auto-restart)" },
-  { value: "claude", label: "Claude (Claude agent)" },
-  { value: "codex", label: "Codex" },
-  { value: "shell", label: "Shell (bash)" }
+var KIND_OPTIONS = [
+  {
+    value: "agent",
+    title: "Chat agent",
+    description: "Normal ongoing chat. Rich chat is primary, debug terminal stays optional."
+  },
+  {
+    value: "operator",
+    title: "Operator",
+    description: "Pinned Claude router that auto-starts and stays available across the app."
+  }
 ];
-function NewSessionDialog({ open, onClose, onSubmit }) {
+var BACKEND_OPTIONS = [
+  {
+    value: "claude",
+    title: "Claude Code",
+    description: "First-class chat with native Claude history and resumable debug terminal."
+  },
+  {
+    value: "codex",
+    title: "Codex",
+    description: "Terminal-first today. Rich chat rendering still trails Claude.",
+    note: "Operator mode is not available for Codex yet."
+  }
+];
+function OptionCard({
+  title,
+  description,
+  selected,
+  disabled = false,
+  onClick,
+  note
+}) {
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: `new-session-option${selected ? " new-session-option--selected" : ""}${disabled ? " new-session-option--disabled" : ""}`,
+      onClick,
+      disabled,
+      children: [
+        /* @__PURE__ */ u3("span", { className: "new-session-option__title", children: title }),
+        /* @__PURE__ */ u3("span", { className: "new-session-option__description", children: description }),
+        note && /* @__PURE__ */ u3("span", { className: "new-session-option__note", children: note })
+      ]
+    }
+  );
+}
+function NewSessionDialog({
+  open,
+  onClose,
+  onSubmit
+}) {
   const [label, setLabel] = d2("");
-  const [agentType, setAgentType] = d2("shell");
+  const [kind, setKind] = d2("agent");
+  const [backend, setBackend] = d2("claude");
+  y2(() => {
+    if (kind === "operator" && backend !== "claude") {
+      setBackend("claude");
+    }
+  }, [backend, kind]);
   if (!open)
     return null;
   const handleSubmit = (e3) => {
     e3.preventDefault();
     if (!label.trim())
       return;
-    onSubmit(label.trim(), agentType);
+    onSubmit({ label: label.trim(), backend, kind });
     setLabel("");
-    setAgentType("shell");
+    setKind("agent");
+    setBackend("claude");
     onClose();
   };
   const handleOverlayClick = (e3) => {
@@ -20567,17 +20948,11 @@ function NewSessionDialog({ open, onClose, onSubmit }) {
     }
   };
   return /* @__PURE__ */ u3("div", { className: "new-session-dialog-overlay", onClick: handleOverlayClick, children: /* @__PURE__ */ u3("div", { className: "new-session-dialog", children: [
-    /* @__PURE__ */ u3("h3", { children: "New Console Session" }),
-    /* @__PURE__ */ u3("form", { onSubmit: handleSubmit, style: { display: "flex", flexDirection: "column", gap: "12px" }, children: [
-      /* @__PURE__ */ u3("div", { style: { display: "flex", flexDirection: "column", gap: "6px" }, children: [
-        /* @__PURE__ */ u3(
-          "label",
-          {
-            htmlFor: "console-session-label",
-            style: { fontSize: "13px", color: "var(--text-muted)" },
-            children: "Name"
-          }
-        ),
+    /* @__PURE__ */ u3("h3", { children: "New Agent Chat" }),
+    /* @__PURE__ */ u3("p", { className: "new-session-dialog__intro", children: "Choose the chat role first, then the backend that will power it." }),
+    /* @__PURE__ */ u3("form", { className: "new-session-dialog__form", onSubmit: handleSubmit, children: [
+      /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+        /* @__PURE__ */ u3("label", { htmlFor: "console-session-label", className: "new-session-dialog__label", children: "Name" }),
         /* @__PURE__ */ u3(
           "input",
           {
@@ -20585,89 +20960,47 @@ function NewSessionDialog({ open, onClose, onSubmit }) {
             type: "text",
             value: label,
             onInput: (e3) => setLabel(e3.target.value),
-            placeholder: "e.g. Operator, My Shell",
+            placeholder: "e.g. Research thread, Operator",
             required: true,
             autoFocus: true,
-            style: {
-              background: "var(--bg-secondary)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              borderRadius: "8px",
-              padding: "8px 12px",
-              color: "var(--text-primary)",
-              fontSize: "14px",
-              fontFamily: "var(--font-sans)",
-              outline: "none"
-            }
+            className: "new-session-dialog__input"
           }
         )
       ] }),
-      /* @__PURE__ */ u3("div", { style: { display: "flex", flexDirection: "column", gap: "6px" }, children: [
-        /* @__PURE__ */ u3(
-          "label",
+      /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Kind" }),
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: KIND_OPTIONS.map((option) => /* @__PURE__ */ u3(
+          OptionCard,
           {
-            htmlFor: "console-agent-type",
-            style: { fontSize: "13px", color: "var(--text-muted)" },
-            children: "Agent Type"
-          }
-        ),
-        /* @__PURE__ */ u3(
-          "select",
-          {
-            id: "console-agent-type",
-            value: agentType,
-            onChange: (e3) => setAgentType(e3.target.value),
-            style: {
-              background: "var(--bg-secondary)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              borderRadius: "8px",
-              padding: "8px 12px",
-              color: "var(--text-primary)",
-              fontSize: "14px",
-              fontFamily: "var(--font-sans)",
-              outline: "none",
-              cursor: "pointer"
-            },
-            children: AGENT_TYPE_OPTIONS.map((opt) => /* @__PURE__ */ u3("option", { value: opt.value, children: opt.label }, opt.value))
-          }
-        )
+            title: option.title,
+            description: option.description,
+            selected: kind === option.value,
+            onClick: () => setKind(option.value)
+          },
+          option.value
+        )) })
       ] }),
-      /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end", marginTop: "4px" }, children: [
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            onClick: onClose,
-            style: {
-              padding: "8px 16px",
-              borderRadius: "8px",
-              background: "transparent",
-              border: "1px solid rgba(255,255,255,0.1)",
-              color: "var(--text-muted)",
-              cursor: "pointer",
-              fontSize: "14px",
-              fontFamily: "var(--font-sans)"
+      /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Backend" }),
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: BACKEND_OPTIONS.map((option) => {
+          const disabled = kind === "operator" && option.value !== "claude";
+          return /* @__PURE__ */ u3(
+            OptionCard,
+            {
+              title: option.title,
+              description: option.description,
+              note: disabled ? option.note : void 0,
+              selected: backend === option.value,
+              disabled,
+              onClick: () => setBackend(option.value)
             },
-            children: "Cancel"
-          }
-        ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "submit",
-            style: {
-              padding: "8px 16px",
-              borderRadius: "8px",
-              background: "var(--accent-blue)",
-              border: "none",
-              color: "#fff",
-              cursor: "pointer",
-              fontSize: "14px",
-              fontFamily: "var(--font-sans)",
-              fontWeight: 600
-            },
-            children: "Start"
-          }
-        )
+            option.value
+          );
+        }) })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "new-session-dialog__actions", children: [
+        /* @__PURE__ */ u3("button", { type: "button", onClick: onClose, className: "new-session-dialog__button new-session-dialog__button--ghost", children: "Cancel" }),
+        /* @__PURE__ */ u3("button", { type: "submit", className: "new-session-dialog__button new-session-dialog__button--primary", children: "Create chat" })
       ] })
     ] })
   ] }) });
@@ -20680,11 +21013,23 @@ function ConsoleView({
   onSelectSession,
   onCloseSession,
   onNewSession,
-  isActive
+  isActive,
+  initialSessionId
 }) {
   const [dialogOpen, setDialogOpen] = d2(false);
   const [viewModes, setViewModes] = d2({});
   y2(() => {
+    if (!initialSessionId)
+      return;
+    if (!sessions.some((session) => session.id === initialSessionId))
+      return;
+    if (activeSessionId === initialSessionId)
+      return;
+    onSelectSession(initialSessionId);
+  }, [activeSessionId, initialSessionId, onSelectSession, sessions]);
+  y2(() => {
+    if (initialSessionId)
+      return;
     if (activeSessionId === null && sessions.length > 0) {
       const operatorSession = sessions.find(
         (s3) => s3.agent_type === "operator" && s3.pinned
@@ -20697,12 +21042,11 @@ function ConsoleView({
       }
     }
   }, [activeSessionId, sessions, onSelectSession]);
-  const activeSession = sessions.find((s3) => s3.id === activeSessionId) ?? null;
   const getViewMode = (sessionId) => {
     if (sessionId in viewModes)
       return viewModes[sessionId];
     const session = sessions.find((s3) => s3.id === sessionId);
-    if (session && session.agent_type !== "shell") {
+    if (session && (session.agent_type === "claude" || session.agent_type === "operator")) {
       return "rich";
     }
     return "terminal";
@@ -20761,7 +21105,10 @@ function ConsoleView({
       TerminalPane,
       {
         sessionId: session.id,
+        agentType: session.agent_type,
         interactionMode: session.interaction_mode,
+        sessionStatus: session.status,
+        providerSessionId: session.provider_session_id,
         isVisible: session.id === activeSessionId,
         viewMode: getViewMode(session.id),
         onViewModeChange: (mode) => handleViewModeChange(session.id, mode)
@@ -20944,7 +21291,7 @@ function LogsView() {
   ] });
 }
 
-// ../../node_modules/d3-dispatch/src/dispatch.js
+// node_modules/d3-dispatch/src/dispatch.js
 var noop = { value: () => {
 } };
 function dispatch() {
@@ -21031,7 +21378,7 @@ function set(type2, name, callback) {
 }
 var dispatch_default = dispatch;
 
-// ../../node_modules/d3-selection/src/namespaces.js
+// node_modules/d3-selection/src/namespaces.js
 var xhtml = "http://www.w3.org/1999/xhtml";
 var namespaces_default = {
   svg: "http://www.w3.org/2000/svg",
@@ -21041,7 +21388,7 @@ var namespaces_default = {
   xmlns: "http://www.w3.org/2000/xmlns/"
 };
 
-// ../../node_modules/d3-selection/src/namespace.js
+// node_modules/d3-selection/src/namespace.js
 function namespace_default(name) {
   var prefix = name += "", i4 = prefix.indexOf(":");
   if (i4 >= 0 && (prefix = name.slice(0, i4)) !== "xmlns")
@@ -21049,7 +21396,7 @@ function namespace_default(name) {
   return namespaces_default.hasOwnProperty(prefix) ? { space: namespaces_default[prefix], local: name } : name;
 }
 
-// ../../node_modules/d3-selection/src/creator.js
+// node_modules/d3-selection/src/creator.js
 function creatorInherit(name) {
   return function() {
     var document2 = this.ownerDocument, uri = this.namespaceURI;
@@ -21066,7 +21413,7 @@ function creator_default(name) {
   return (fullname.local ? creatorFixed : creatorInherit)(fullname);
 }
 
-// ../../node_modules/d3-selection/src/selector.js
+// node_modules/d3-selection/src/selector.js
 function none() {
 }
 function selector_default(selector) {
@@ -21075,7 +21422,7 @@ function selector_default(selector) {
   };
 }
 
-// ../../node_modules/d3-selection/src/selection/select.js
+// node_modules/d3-selection/src/selection/select.js
 function select_default(select) {
   if (typeof select !== "function")
     select = selector_default(select);
@@ -21091,12 +21438,12 @@ function select_default(select) {
   return new Selection(subgroups, this._parents);
 }
 
-// ../../node_modules/d3-selection/src/array.js
+// node_modules/d3-selection/src/array.js
 function array(x4) {
   return x4 == null ? [] : Array.isArray(x4) ? x4 : Array.from(x4);
 }
 
-// ../../node_modules/d3-selection/src/selectorAll.js
+// node_modules/d3-selection/src/selectorAll.js
 function empty() {
   return [];
 }
@@ -21106,7 +21453,7 @@ function selectorAll_default(selector) {
   };
 }
 
-// ../../node_modules/d3-selection/src/selection/selectAll.js
+// node_modules/d3-selection/src/selection/selectAll.js
 function arrayAll(select) {
   return function() {
     return array(select.apply(this, arguments));
@@ -21128,7 +21475,7 @@ function selectAll_default(select) {
   return new Selection(subgroups, parents);
 }
 
-// ../../node_modules/d3-selection/src/matcher.js
+// node_modules/d3-selection/src/matcher.js
 function matcher_default(selector) {
   return function() {
     return this.matches(selector);
@@ -21140,7 +21487,7 @@ function childMatcher(selector) {
   };
 }
 
-// ../../node_modules/d3-selection/src/selection/selectChild.js
+// node_modules/d3-selection/src/selection/selectChild.js
 var find = Array.prototype.find;
 function childFind(match) {
   return function() {
@@ -21154,7 +21501,7 @@ function selectChild_default(match) {
   return this.select(match == null ? childFirst : childFind(typeof match === "function" ? match : childMatcher(match)));
 }
 
-// ../../node_modules/d3-selection/src/selection/selectChildren.js
+// node_modules/d3-selection/src/selection/selectChildren.js
 var filter = Array.prototype.filter;
 function children() {
   return Array.from(this.children);
@@ -21168,7 +21515,7 @@ function selectChildren_default(match) {
   return this.selectAll(match == null ? children : childrenFilter(typeof match === "function" ? match : childMatcher(match)));
 }
 
-// ../../node_modules/d3-selection/src/selection/filter.js
+// node_modules/d3-selection/src/selection/filter.js
 function filter_default(match) {
   if (typeof match !== "function")
     match = matcher_default(match);
@@ -21182,12 +21529,12 @@ function filter_default(match) {
   return new Selection(subgroups, this._parents);
 }
 
-// ../../node_modules/d3-selection/src/selection/sparse.js
+// node_modules/d3-selection/src/selection/sparse.js
 function sparse_default(update) {
   return new Array(update.length);
 }
 
-// ../../node_modules/d3-selection/src/selection/enter.js
+// node_modules/d3-selection/src/selection/enter.js
 function enter_default() {
   return new Selection(this._enter || this._groups.map(sparse_default), this._parents);
 }
@@ -21214,14 +21561,14 @@ EnterNode.prototype = {
   }
 };
 
-// ../../node_modules/d3-selection/src/constant.js
+// node_modules/d3-selection/src/constant.js
 function constant_default(x4) {
   return function() {
     return x4;
   };
 }
 
-// ../../node_modules/d3-selection/src/selection/data.js
+// node_modules/d3-selection/src/selection/data.js
 function bindIndex(parent, group, enter, update, exit, data) {
   var i4 = 0, node, groupLength = group.length, dataLength = data.length;
   for (; i4 < dataLength; ++i4) {
@@ -21297,12 +21644,12 @@ function arraylike(data) {
   return typeof data === "object" && "length" in data ? data : Array.from(data);
 }
 
-// ../../node_modules/d3-selection/src/selection/exit.js
+// node_modules/d3-selection/src/selection/exit.js
 function exit_default() {
   return new Selection(this._exit || this._groups.map(sparse_default), this._parents);
 }
 
-// ../../node_modules/d3-selection/src/selection/join.js
+// node_modules/d3-selection/src/selection/join.js
 function join_default(onenter, onupdate, onexit) {
   var enter = this.enter(), update = this, exit = this.exit();
   if (typeof onenter === "function") {
@@ -21324,7 +21671,7 @@ function join_default(onenter, onupdate, onexit) {
   return enter && update ? enter.merge(update).order() : update;
 }
 
-// ../../node_modules/d3-selection/src/selection/merge.js
+// node_modules/d3-selection/src/selection/merge.js
 function merge_default(context) {
   var selection2 = context.selection ? context.selection() : context;
   for (var groups0 = this._groups, groups1 = selection2._groups, m0 = groups0.length, m1 = groups1.length, m4 = Math.min(m0, m1), merges = new Array(m0), j3 = 0; j3 < m4; ++j3) {
@@ -21340,7 +21687,7 @@ function merge_default(context) {
   return new Selection(merges, this._parents);
 }
 
-// ../../node_modules/d3-selection/src/selection/order.js
+// node_modules/d3-selection/src/selection/order.js
 function order_default() {
   for (var groups = this._groups, j3 = -1, m4 = groups.length; ++j3 < m4; ) {
     for (var group = groups[j3], i4 = group.length - 1, next = group[i4], node; --i4 >= 0; ) {
@@ -21354,7 +21701,7 @@ function order_default() {
   return this;
 }
 
-// ../../node_modules/d3-selection/src/selection/sort.js
+// node_modules/d3-selection/src/selection/sort.js
 function sort_default(compare) {
   if (!compare)
     compare = ascending;
@@ -21375,7 +21722,7 @@ function ascending(a4, b) {
   return a4 < b ? -1 : a4 > b ? 1 : a4 >= b ? 0 : NaN;
 }
 
-// ../../node_modules/d3-selection/src/selection/call.js
+// node_modules/d3-selection/src/selection/call.js
 function call_default() {
   var callback = arguments[0];
   arguments[0] = this;
@@ -21383,12 +21730,12 @@ function call_default() {
   return this;
 }
 
-// ../../node_modules/d3-selection/src/selection/nodes.js
+// node_modules/d3-selection/src/selection/nodes.js
 function nodes_default() {
   return Array.from(this);
 }
 
-// ../../node_modules/d3-selection/src/selection/node.js
+// node_modules/d3-selection/src/selection/node.js
 function node_default() {
   for (var groups = this._groups, j3 = 0, m4 = groups.length; j3 < m4; ++j3) {
     for (var group = groups[j3], i4 = 0, n2 = group.length; i4 < n2; ++i4) {
@@ -21400,7 +21747,7 @@ function node_default() {
   return null;
 }
 
-// ../../node_modules/d3-selection/src/selection/size.js
+// node_modules/d3-selection/src/selection/size.js
 function size_default() {
   let size = 0;
   for (const node of this)
@@ -21408,12 +21755,12 @@ function size_default() {
   return size;
 }
 
-// ../../node_modules/d3-selection/src/selection/empty.js
+// node_modules/d3-selection/src/selection/empty.js
 function empty_default() {
   return !this.node();
 }
 
-// ../../node_modules/d3-selection/src/selection/each.js
+// node_modules/d3-selection/src/selection/each.js
 function each_default(callback) {
   for (var groups = this._groups, j3 = 0, m4 = groups.length; j3 < m4; ++j3) {
     for (var group = groups[j3], i4 = 0, n2 = group.length, node; i4 < n2; ++i4) {
@@ -21424,7 +21771,7 @@ function each_default(callback) {
   return this;
 }
 
-// ../../node_modules/d3-selection/src/selection/attr.js
+// node_modules/d3-selection/src/selection/attr.js
 function attrRemove(name) {
   return function() {
     this.removeAttribute(name);
@@ -21472,12 +21819,12 @@ function attr_default(name, value) {
   return this.each((value == null ? fullname.local ? attrRemoveNS : attrRemove : typeof value === "function" ? fullname.local ? attrFunctionNS : attrFunction : fullname.local ? attrConstantNS : attrConstant)(fullname, value));
 }
 
-// ../../node_modules/d3-selection/src/window.js
+// node_modules/d3-selection/src/window.js
 function window_default(node) {
   return node.ownerDocument && node.ownerDocument.defaultView || node.document && node || node.defaultView;
 }
 
-// ../../node_modules/d3-selection/src/selection/style.js
+// node_modules/d3-selection/src/selection/style.js
 function styleRemove(name) {
   return function() {
     this.style.removeProperty(name);
@@ -21504,7 +21851,7 @@ function styleValue(node, name) {
   return node.style.getPropertyValue(name) || window_default(node).getComputedStyle(node, null).getPropertyValue(name);
 }
 
-// ../../node_modules/d3-selection/src/selection/property.js
+// node_modules/d3-selection/src/selection/property.js
 function propertyRemove(name) {
   return function() {
     delete this[name];
@@ -21528,7 +21875,7 @@ function property_default(name, value) {
   return arguments.length > 1 ? this.each((value == null ? propertyRemove : typeof value === "function" ? propertyFunction : propertyConstant)(name, value)) : this.node()[name];
 }
 
-// ../../node_modules/d3-selection/src/selection/classed.js
+// node_modules/d3-selection/src/selection/classed.js
 function classArray(string) {
   return string.trim().split(/^|\s+/);
 }
@@ -21595,7 +21942,7 @@ function classed_default(name, value) {
   return this.each((typeof value === "function" ? classedFunction : value ? classedTrue : classedFalse)(names, value));
 }
 
-// ../../node_modules/d3-selection/src/selection/text.js
+// node_modules/d3-selection/src/selection/text.js
 function textRemove() {
   this.textContent = "";
 }
@@ -21614,7 +21961,7 @@ function text_default(value) {
   return arguments.length ? this.each(value == null ? textRemove : (typeof value === "function" ? textFunction : textConstant)(value)) : this.node().textContent;
 }
 
-// ../../node_modules/d3-selection/src/selection/html.js
+// node_modules/d3-selection/src/selection/html.js
 function htmlRemove() {
   this.innerHTML = "";
 }
@@ -21633,7 +21980,7 @@ function html_default(value) {
   return arguments.length ? this.each(value == null ? htmlRemove : (typeof value === "function" ? htmlFunction : htmlConstant)(value)) : this.node().innerHTML;
 }
 
-// ../../node_modules/d3-selection/src/selection/raise.js
+// node_modules/d3-selection/src/selection/raise.js
 function raise() {
   if (this.nextSibling)
     this.parentNode.appendChild(this);
@@ -21642,7 +21989,7 @@ function raise_default() {
   return this.each(raise);
 }
 
-// ../../node_modules/d3-selection/src/selection/lower.js
+// node_modules/d3-selection/src/selection/lower.js
 function lower() {
   if (this.previousSibling)
     this.parentNode.insertBefore(this, this.parentNode.firstChild);
@@ -21651,7 +21998,7 @@ function lower_default() {
   return this.each(lower);
 }
 
-// ../../node_modules/d3-selection/src/selection/append.js
+// node_modules/d3-selection/src/selection/append.js
 function append_default(name) {
   var create2 = typeof name === "function" ? name : creator_default(name);
   return this.select(function() {
@@ -21659,7 +22006,7 @@ function append_default(name) {
   });
 }
 
-// ../../node_modules/d3-selection/src/selection/insert.js
+// node_modules/d3-selection/src/selection/insert.js
 function constantNull() {
   return null;
 }
@@ -21670,7 +22017,7 @@ function insert_default(name, before) {
   });
 }
 
-// ../../node_modules/d3-selection/src/selection/remove.js
+// node_modules/d3-selection/src/selection/remove.js
 function remove() {
   var parent = this.parentNode;
   if (parent)
@@ -21680,7 +22027,7 @@ function remove_default() {
   return this.each(remove);
 }
 
-// ../../node_modules/d3-selection/src/selection/clone.js
+// node_modules/d3-selection/src/selection/clone.js
 function selection_cloneShallow() {
   var clone = this.cloneNode(false), parent = this.parentNode;
   return parent ? parent.insertBefore(clone, this.nextSibling) : clone;
@@ -21693,12 +22040,12 @@ function clone_default(deep) {
   return this.select(deep ? selection_cloneDeep : selection_cloneShallow);
 }
 
-// ../../node_modules/d3-selection/src/selection/datum.js
+// node_modules/d3-selection/src/selection/datum.js
 function datum_default(value) {
   return arguments.length ? this.property("__data__", value) : this.node().__data__;
 }
 
-// ../../node_modules/d3-selection/src/selection/on.js
+// node_modules/d3-selection/src/selection/on.js
 function contextListener(listener) {
   return function(event) {
     listener.call(this, event, this.__data__);
@@ -21770,7 +22117,7 @@ function on_default(typename, value, options2) {
   return this;
 }
 
-// ../../node_modules/d3-selection/src/selection/dispatch.js
+// node_modules/d3-selection/src/selection/dispatch.js
 function dispatchEvent(node, type2, params) {
   var window2 = window_default(node), event = window2.CustomEvent;
   if (typeof event === "function") {
@@ -21798,7 +22145,7 @@ function dispatch_default2(type2, params) {
   return this.each((typeof params === "function" ? dispatchFunction : dispatchConstant)(type2, params));
 }
 
-// ../../node_modules/d3-selection/src/selection/iterator.js
+// node_modules/d3-selection/src/selection/iterator.js
 function* iterator_default() {
   for (var groups = this._groups, j3 = 0, m4 = groups.length; j3 < m4; ++j3) {
     for (var group = groups[j3], i4 = 0, n2 = group.length, node; i4 < n2; ++i4) {
@@ -21808,7 +22155,7 @@ function* iterator_default() {
   }
 }
 
-// ../../node_modules/d3-selection/src/selection/index.js
+// node_modules/d3-selection/src/selection/index.js
 var root = [null];
 function Selection(groups, parents) {
   this._groups = groups;
@@ -21860,12 +22207,12 @@ Selection.prototype = selection.prototype = {
 };
 var selection_default = selection;
 
-// ../../node_modules/d3-selection/src/select.js
+// node_modules/d3-selection/src/select.js
 function select_default2(selector) {
   return typeof selector === "string" ? new Selection([[document.querySelector(selector)]], [document.documentElement]) : new Selection([[selector]], root);
 }
 
-// ../../node_modules/d3-selection/src/sourceEvent.js
+// node_modules/d3-selection/src/sourceEvent.js
 function sourceEvent_default(event) {
   let sourceEvent;
   while (sourceEvent = event.sourceEvent)
@@ -21873,7 +22220,7 @@ function sourceEvent_default(event) {
   return event;
 }
 
-// ../../node_modules/d3-selection/src/pointer.js
+// node_modules/d3-selection/src/pointer.js
 function pointer_default(event, node) {
   event = sourceEvent_default(event);
   if (node === void 0)
@@ -21894,14 +22241,14 @@ function pointer_default(event, node) {
   return [event.pageX, event.pageY];
 }
 
-// ../../node_modules/d3-drag/src/noevent.js
+// node_modules/d3-drag/src/noevent.js
 var nonpassivecapture = { capture: true, passive: false };
 function noevent_default(event) {
   event.preventDefault();
   event.stopImmediatePropagation();
 }
 
-// ../../node_modules/d3-drag/src/nodrag.js
+// node_modules/d3-drag/src/nodrag.js
 function nodrag_default(view) {
   var root2 = view.document.documentElement, selection2 = select_default2(view).on("dragstart.drag", noevent_default, nonpassivecapture);
   if ("onselectstart" in root2) {
@@ -21927,7 +22274,7 @@ function yesdrag(view, noclick) {
   }
 }
 
-// ../../node_modules/d3-color/src/define.js
+// node_modules/d3-color/src/define.js
 function define_default(constructor, factory, prototype) {
   constructor.prototype = factory.prototype = prototype;
   prototype.constructor = constructor;
@@ -21939,7 +22286,7 @@ function extend(parent, definition) {
   return prototype;
 }
 
-// ../../node_modules/d3-color/src/color.js
+// node_modules/d3-color/src/color.js
 function Color() {
 }
 var darker = 0.7;
@@ -22289,7 +22636,7 @@ function hsl2rgb(h3, m1, m22) {
   return (h3 < 60 ? m1 + (m22 - m1) * h3 / 60 : h3 < 180 ? m22 : h3 < 240 ? m1 + (m22 - m1) * (240 - h3) / 60 : m1) * 255;
 }
 
-// ../../node_modules/d3-interpolate/src/basis.js
+// node_modules/d3-interpolate/src/basis.js
 function basis(t1, v0, v1, v22, v3) {
   var t22 = t1 * t1, t3 = t22 * t1;
   return ((1 - 3 * t1 + 3 * t22 - t3) * v0 + (4 - 6 * t22 + 3 * t3) * v1 + (1 + 3 * t1 + 3 * t22 - 3 * t3) * v22 + t3 * v3) / 6;
@@ -22302,7 +22649,7 @@ function basis_default(values) {
   };
 }
 
-// ../../node_modules/d3-interpolate/src/basisClosed.js
+// node_modules/d3-interpolate/src/basisClosed.js
 function basisClosed_default(values) {
   var n2 = values.length;
   return function(t3) {
@@ -22311,10 +22658,10 @@ function basisClosed_default(values) {
   };
 }
 
-// ../../node_modules/d3-interpolate/src/constant.js
+// node_modules/d3-interpolate/src/constant.js
 var constant_default2 = (x4) => () => x4;
 
-// ../../node_modules/d3-interpolate/src/color.js
+// node_modules/d3-interpolate/src/color.js
 function linear(a4, d3) {
   return function(t3) {
     return a4 + t3 * d3;
@@ -22335,7 +22682,7 @@ function nogamma(a4, b) {
   return d3 ? linear(a4, d3) : constant_default2(isNaN(a4) ? b : a4);
 }
 
-// ../../node_modules/d3-interpolate/src/rgb.js
+// node_modules/d3-interpolate/src/rgb.js
 var rgb_default = function rgbGamma(y5) {
   var color2 = gamma(y5);
   function rgb2(start2, end) {
@@ -22375,14 +22722,14 @@ function rgbSpline(spline) {
 var rgbBasis = rgbSpline(basis_default);
 var rgbBasisClosed = rgbSpline(basisClosed_default);
 
-// ../../node_modules/d3-interpolate/src/number.js
+// node_modules/d3-interpolate/src/number.js
 function number_default(a4, b) {
   return a4 = +a4, b = +b, function(t3) {
     return a4 * (1 - t3) + b * t3;
   };
 }
 
-// ../../node_modules/d3-interpolate/src/string.js
+// node_modules/d3-interpolate/src/string.js
 var reA = /[-+]?(?:\d+\.?\d*|\.?\d+)(?:[eE][-+]?\d+)?/g;
 var reB = new RegExp(reA.source, "g");
 function zero(b) {
@@ -22431,7 +22778,7 @@ function string_default(a4, b) {
   });
 }
 
-// ../../node_modules/d3-interpolate/src/transform/decompose.js
+// node_modules/d3-interpolate/src/transform/decompose.js
 var degrees = 180 / Math.PI;
 var identity = {
   translateX: 0,
@@ -22461,7 +22808,7 @@ function decompose_default(a4, b, c4, d3, e3, f4) {
   };
 }
 
-// ../../node_modules/d3-interpolate/src/transform/parse.js
+// node_modules/d3-interpolate/src/transform/parse.js
 var svgNode;
 function parseCss(value) {
   const m4 = new (typeof DOMMatrix === "function" ? DOMMatrix : WebKitCSSMatrix)(value + "");
@@ -22479,7 +22826,7 @@ function parseSvg(value) {
   return decompose_default(value.a, value.b, value.c, value.d, value.e, value.f);
 }
 
-// ../../node_modules/d3-interpolate/src/transform/index.js
+// node_modules/d3-interpolate/src/transform/index.js
 function interpolateTransform(parse2, pxComma, pxParen, degParen) {
   function pop(s3) {
     return s3.length ? s3.pop() + " " : "";
@@ -22537,7 +22884,7 @@ function interpolateTransform(parse2, pxComma, pxParen, degParen) {
 var interpolateTransformCss = interpolateTransform(parseCss, "px, ", "px)", "deg)");
 var interpolateTransformSvg = interpolateTransform(parseSvg, ", ", ")", ")");
 
-// ../../node_modules/d3-interpolate/src/zoom.js
+// node_modules/d3-interpolate/src/zoom.js
 var epsilon2 = 1e-12;
 function cosh(x4) {
   return ((x4 = Math.exp(x4)) + 1 / x4) / 2;
@@ -22582,7 +22929,7 @@ var zoom_default = function zoomRho(rho, rho2, rho4) {
   return zoom;
 }(Math.SQRT2, 2, 4);
 
-// ../../node_modules/d3-timer/src/timer.js
+// node_modules/d3-timer/src/timer.js
 var frame = 0;
 var timeout = 0;
 var interval = 0;
@@ -22695,7 +23042,7 @@ function sleep(time) {
   }
 }
 
-// ../../node_modules/d3-timer/src/timeout.js
+// node_modules/d3-timer/src/timeout.js
 function timeout_default(callback, delay, time) {
   var t3 = new Timer();
   delay = delay == null ? 0 : +delay;
@@ -22706,7 +23053,7 @@ function timeout_default(callback, delay, time) {
   return t3;
 }
 
-// ../../node_modules/d3-transition/src/transition/schedule.js
+// node_modules/d3-transition/src/transition/schedule.js
 var emptyOn = dispatch_default("start", "end", "cancel", "interrupt");
 var emptyTween = [];
 var CREATED = 0;
@@ -22828,7 +23175,7 @@ function create(node, id2, self2) {
   }
 }
 
-// ../../node_modules/d3-transition/src/interrupt.js
+// node_modules/d3-transition/src/interrupt.js
 function interrupt_default(node, name) {
   var schedules = node.__transition, schedule, active, empty2 = true, i4;
   if (!schedules)
@@ -22849,14 +23196,14 @@ function interrupt_default(node, name) {
     delete node.__transition;
 }
 
-// ../../node_modules/d3-transition/src/selection/interrupt.js
+// node_modules/d3-transition/src/selection/interrupt.js
 function interrupt_default2(name) {
   return this.each(function() {
     interrupt_default(this, name);
   });
 }
 
-// ../../node_modules/d3-transition/src/transition/tween.js
+// node_modules/d3-transition/src/transition/tween.js
 function tweenRemove(id2, name) {
   var tween0, tween1;
   return function() {
@@ -22919,13 +23266,13 @@ function tweenValue(transition2, name, value) {
   };
 }
 
-// ../../node_modules/d3-transition/src/transition/interpolate.js
+// node_modules/d3-transition/src/transition/interpolate.js
 function interpolate_default(a4, b) {
   var c4;
   return (typeof b === "number" ? number_default : b instanceof color ? rgb_default : (c4 = color(b)) ? (b = c4, rgb_default) : string_default)(a4, b);
 }
 
-// ../../node_modules/d3-transition/src/transition/attr.js
+// node_modules/d3-transition/src/transition/attr.js
 function attrRemove2(name) {
   return function() {
     this.removeAttribute(name);
@@ -22977,7 +23324,7 @@ function attr_default2(name, value) {
   return this.attrTween(name, typeof value === "function" ? (fullname.local ? attrFunctionNS2 : attrFunction2)(fullname, i4, tweenValue(this, "attr." + name, value)) : value == null ? (fullname.local ? attrRemoveNS2 : attrRemove2)(fullname) : (fullname.local ? attrConstantNS2 : attrConstant2)(fullname, i4, value));
 }
 
-// ../../node_modules/d3-transition/src/transition/attrTween.js
+// node_modules/d3-transition/src/transition/attrTween.js
 function attrInterpolate(name, i4) {
   return function(t3) {
     this.setAttribute(name, i4.call(this, t3));
@@ -23022,7 +23369,7 @@ function attrTween_default(name, value) {
   return this.tween(key2, (fullname.local ? attrTweenNS : attrTween)(fullname, value));
 }
 
-// ../../node_modules/d3-transition/src/transition/delay.js
+// node_modules/d3-transition/src/transition/delay.js
 function delayFunction(id2, value) {
   return function() {
     init(this, id2).delay = +value.apply(this, arguments);
@@ -23038,7 +23385,7 @@ function delay_default(value) {
   return arguments.length ? this.each((typeof value === "function" ? delayFunction : delayConstant)(id2, value)) : get2(this.node(), id2).delay;
 }
 
-// ../../node_modules/d3-transition/src/transition/duration.js
+// node_modules/d3-transition/src/transition/duration.js
 function durationFunction(id2, value) {
   return function() {
     set2(this, id2).duration = +value.apply(this, arguments);
@@ -23054,7 +23401,7 @@ function duration_default(value) {
   return arguments.length ? this.each((typeof value === "function" ? durationFunction : durationConstant)(id2, value)) : get2(this.node(), id2).duration;
 }
 
-// ../../node_modules/d3-transition/src/transition/ease.js
+// node_modules/d3-transition/src/transition/ease.js
 function easeConstant(id2, value) {
   if (typeof value !== "function")
     throw new Error();
@@ -23067,7 +23414,7 @@ function ease_default(value) {
   return arguments.length ? this.each(easeConstant(id2, value)) : get2(this.node(), id2).ease;
 }
 
-// ../../node_modules/d3-transition/src/transition/easeVarying.js
+// node_modules/d3-transition/src/transition/easeVarying.js
 function easeVarying(id2, value) {
   return function() {
     var v3 = value.apply(this, arguments);
@@ -23082,7 +23429,7 @@ function easeVarying_default(value) {
   return this.each(easeVarying(this._id, value));
 }
 
-// ../../node_modules/d3-transition/src/transition/filter.js
+// node_modules/d3-transition/src/transition/filter.js
 function filter_default2(match) {
   if (typeof match !== "function")
     match = matcher_default(match);
@@ -23096,7 +23443,7 @@ function filter_default2(match) {
   return new Transition(subgroups, this._parents, this._name, this._id);
 }
 
-// ../../node_modules/d3-transition/src/transition/merge.js
+// node_modules/d3-transition/src/transition/merge.js
 function merge_default2(transition2) {
   if (transition2._id !== this._id)
     throw new Error();
@@ -23113,7 +23460,7 @@ function merge_default2(transition2) {
   return new Transition(merges, this._parents, this._name, this._id);
 }
 
-// ../../node_modules/d3-transition/src/transition/on.js
+// node_modules/d3-transition/src/transition/on.js
 function start(name) {
   return (name + "").trim().split(/^|\s+/).every(function(t3) {
     var i4 = t3.indexOf(".");
@@ -23136,7 +23483,7 @@ function on_default2(name, listener) {
   return arguments.length < 2 ? get2(this.node(), id2).on.on(name) : this.each(onFunction(id2, name, listener));
 }
 
-// ../../node_modules/d3-transition/src/transition/remove.js
+// node_modules/d3-transition/src/transition/remove.js
 function removeFunction(id2) {
   return function() {
     var parent = this.parentNode;
@@ -23151,7 +23498,7 @@ function remove_default2() {
   return this.on("end.remove", removeFunction(this._id));
 }
 
-// ../../node_modules/d3-transition/src/transition/select.js
+// node_modules/d3-transition/src/transition/select.js
 function select_default3(select) {
   var name = this._name, id2 = this._id;
   if (typeof select !== "function")
@@ -23169,7 +23516,7 @@ function select_default3(select) {
   return new Transition(subgroups, this._parents, name, id2);
 }
 
-// ../../node_modules/d3-transition/src/transition/selectAll.js
+// node_modules/d3-transition/src/transition/selectAll.js
 function selectAll_default2(select) {
   var name = this._name, id2 = this._id;
   if (typeof select !== "function")
@@ -23190,13 +23537,13 @@ function selectAll_default2(select) {
   return new Transition(subgroups, parents, name, id2);
 }
 
-// ../../node_modules/d3-transition/src/transition/selection.js
+// node_modules/d3-transition/src/transition/selection.js
 var Selection2 = selection_default.prototype.constructor;
 function selection_default2() {
   return new Selection2(this._groups, this._parents);
 }
 
-// ../../node_modules/d3-transition/src/transition/style.js
+// node_modules/d3-transition/src/transition/style.js
 function styleNull(name, interpolate) {
   var string00, string10, interpolate0;
   return function() {
@@ -23239,7 +23586,7 @@ function style_default2(name, value, priority) {
   return value == null ? this.styleTween(name, styleNull(name, i4)).on("end.style." + name, styleRemove2(name)) : typeof value === "function" ? this.styleTween(name, styleFunction2(name, i4, tweenValue(this, "style." + name, value))).each(styleMaybeRemove(this._id, name)) : this.styleTween(name, styleConstant2(name, i4, value), priority).on("end.style." + name, null);
 }
 
-// ../../node_modules/d3-transition/src/transition/styleTween.js
+// node_modules/d3-transition/src/transition/styleTween.js
 function styleInterpolate(name, i4, priority) {
   return function(t3) {
     this.style.setProperty(name, i4.call(this, t3), priority);
@@ -23267,7 +23614,7 @@ function styleTween_default(name, value, priority) {
   return this.tween(key2, styleTween(name, value, priority == null ? "" : priority));
 }
 
-// ../../node_modules/d3-transition/src/transition/text.js
+// node_modules/d3-transition/src/transition/text.js
 function textConstant2(value) {
   return function() {
     this.textContent = value;
@@ -23283,7 +23630,7 @@ function text_default2(value) {
   return this.tween("text", typeof value === "function" ? textFunction2(tweenValue(this, "text", value)) : textConstant2(value == null ? "" : value + ""));
 }
 
-// ../../node_modules/d3-transition/src/transition/textTween.js
+// node_modules/d3-transition/src/transition/textTween.js
 function textInterpolate(i4) {
   return function(t3) {
     this.textContent = i4.call(this, t3);
@@ -23311,7 +23658,7 @@ function textTween_default(value) {
   return this.tween(key2, textTween(value));
 }
 
-// ../../node_modules/d3-transition/src/transition/transition.js
+// node_modules/d3-transition/src/transition/transition.js
 function transition_default() {
   var name = this._name, id0 = this._id, id1 = newId();
   for (var groups = this._groups, m4 = groups.length, j3 = 0; j3 < m4; ++j3) {
@@ -23330,7 +23677,7 @@ function transition_default() {
   return new Transition(groups, this._parents, name, id1);
 }
 
-// ../../node_modules/d3-transition/src/transition/end.js
+// node_modules/d3-transition/src/transition/end.js
 function end_default() {
   var on0, on1, that = this, id2 = that._id, size = that.size();
   return new Promise(function(resolve, reject) {
@@ -23353,7 +23700,7 @@ function end_default() {
   });
 }
 
-// ../../node_modules/d3-transition/src/transition/index.js
+// node_modules/d3-transition/src/transition/index.js
 var id = 0;
 function Transition(groups, parents, name, id2) {
   this._groups = groups;
@@ -23401,12 +23748,12 @@ Transition.prototype = transition.prototype = {
   [Symbol.iterator]: selection_prototype[Symbol.iterator]
 };
 
-// ../../node_modules/d3-ease/src/cubic.js
+// node_modules/d3-ease/src/cubic.js
 function cubicInOut(t3) {
   return ((t3 *= 2) <= 1 ? t3 * t3 * t3 : (t3 -= 2) * t3 * t3 + 2) / 2;
 }
 
-// ../../node_modules/d3-transition/src/selection/transition.js
+// node_modules/d3-transition/src/selection/transition.js
 var defaultTiming = {
   time: null,
   // Set on use.
@@ -23440,11 +23787,11 @@ function transition_default2(name) {
   return new Transition(groups, this._parents, name, id2);
 }
 
-// ../../node_modules/d3-transition/src/selection/index.js
+// node_modules/d3-transition/src/selection/index.js
 selection_default.prototype.interrupt = interrupt_default2;
 selection_default.prototype.transition = transition_default2;
 
-// ../../node_modules/d3-brush/src/brush.js
+// node_modules/d3-brush/src/brush.js
 var { abs, max: max2, min } = Math;
 function number1(e3) {
   return [+e3[0], +e3[1]];
@@ -23486,7 +23833,7 @@ function type(t3) {
   return { type: t3 };
 }
 
-// ../../node_modules/d3-force/src/center.js
+// node_modules/d3-force/src/center.js
 function center_default(x4, y5) {
   var nodes, strength = 1;
   if (x4 == null)
@@ -23517,7 +23864,7 @@ function center_default(x4, y5) {
   return force;
 }
 
-// ../../node_modules/d3-quadtree/src/add.js
+// node_modules/d3-quadtree/src/add.js
 function add_default(d3) {
   const x4 = +this._x.call(null, d3), y5 = +this._y.call(null, d3);
   return add(this.cover(x4, y5), x4, y5, d3);
@@ -23582,7 +23929,7 @@ function addAll(data) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/cover.js
+// node_modules/d3-quadtree/src/cover.js
 function cover_default(x4, y5) {
   if (isNaN(x4 = +x4) || isNaN(y5 = +y5))
     return this;
@@ -23620,7 +23967,7 @@ function cover_default(x4, y5) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/data.js
+// node_modules/d3-quadtree/src/data.js
 function data_default2() {
   var data = [];
   this.visit(function(node) {
@@ -23632,12 +23979,12 @@ function data_default2() {
   return data;
 }
 
-// ../../node_modules/d3-quadtree/src/extent.js
+// node_modules/d3-quadtree/src/extent.js
 function extent_default(_2) {
   return arguments.length ? this.cover(+_2[0][0], +_2[0][1]).cover(+_2[1][0], +_2[1][1]) : isNaN(this._x0) ? void 0 : [[this._x0, this._y0], [this._x1, this._y1]];
 }
 
-// ../../node_modules/d3-quadtree/src/quad.js
+// node_modules/d3-quadtree/src/quad.js
 function quad_default(node, x0, y0, x1, y1) {
   this.node = node;
   this.x0 = x0;
@@ -23646,7 +23993,7 @@ function quad_default(node, x0, y0, x1, y1) {
   this.y1 = y1;
 }
 
-// ../../node_modules/d3-quadtree/src/find.js
+// node_modules/d3-quadtree/src/find.js
 function find_default(x4, y5, radius) {
   var data, x0 = this._x0, y0 = this._y0, x1, y1, x22, y22, x32 = this._x1, y32 = this._y1, quads = [], node = this._root, q3, i4;
   if (node)
@@ -23687,7 +24034,7 @@ function find_default(x4, y5, radius) {
   return data;
 }
 
-// ../../node_modules/d3-quadtree/src/remove.js
+// node_modules/d3-quadtree/src/remove.js
 function remove_default3(d3) {
   if (isNaN(x4 = +this._x.call(null, d3)) || isNaN(y5 = +this._y.call(null, d3)))
     return this;
@@ -23735,12 +24082,12 @@ function removeAll(data) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/root.js
+// node_modules/d3-quadtree/src/root.js
 function root_default() {
   return this._root;
 }
 
-// ../../node_modules/d3-quadtree/src/size.js
+// node_modules/d3-quadtree/src/size.js
 function size_default2() {
   var size = 0;
   this.visit(function(node) {
@@ -23752,7 +24099,7 @@ function size_default2() {
   return size;
 }
 
-// ../../node_modules/d3-quadtree/src/visit.js
+// node_modules/d3-quadtree/src/visit.js
 function visit_default(callback) {
   var quads = [], q3, node = this._root, child, x0, y0, x1, y1;
   if (node)
@@ -23773,7 +24120,7 @@ function visit_default(callback) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/visitAfter.js
+// node_modules/d3-quadtree/src/visitAfter.js
 function visitAfter_default(callback) {
   var quads = [], next = [], q3;
   if (this._root)
@@ -23799,7 +24146,7 @@ function visitAfter_default(callback) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/x.js
+// node_modules/d3-quadtree/src/x.js
 function defaultX(d3) {
   return d3[0];
 }
@@ -23807,7 +24154,7 @@ function x_default(_2) {
   return arguments.length ? (this._x = _2, this) : this._x;
 }
 
-// ../../node_modules/d3-quadtree/src/y.js
+// node_modules/d3-quadtree/src/y.js
 function defaultY(d3) {
   return d3[1];
 }
@@ -23815,7 +24162,7 @@ function y_default(_2) {
   return arguments.length ? (this._y = _2, this) : this._y;
 }
 
-// ../../node_modules/d3-quadtree/src/quadtree.js
+// node_modules/d3-quadtree/src/quadtree.js
 function quadtree(nodes, x4, y5) {
   var tree = new Quadtree(x4 == null ? defaultX : x4, y5 == null ? defaultY : y5, NaN, NaN, NaN, NaN);
   return nodes == null ? tree : tree.addAll(nodes);
@@ -23870,19 +24217,19 @@ treeProto.visitAfter = visitAfter_default;
 treeProto.x = x_default;
 treeProto.y = y_default;
 
-// ../../node_modules/d3-force/src/constant.js
+// node_modules/d3-force/src/constant.js
 function constant_default4(x4) {
   return function() {
     return x4;
   };
 }
 
-// ../../node_modules/d3-force/src/jiggle.js
+// node_modules/d3-force/src/jiggle.js
 function jiggle_default(random) {
   return (random() - 0.5) * 1e-6;
 }
 
-// ../../node_modules/d3-force/src/collide.js
+// node_modules/d3-force/src/collide.js
 function x2(d3) {
   return d3.x + d3.vx;
 }
@@ -23961,7 +24308,7 @@ function collide_default(radius) {
   return force;
 }
 
-// ../../node_modules/d3-force/src/link.js
+// node_modules/d3-force/src/link.js
 function index(d3) {
   return d3.index;
 }
@@ -24050,7 +24397,7 @@ function link_default(links) {
   return force;
 }
 
-// ../../node_modules/d3-force/src/lcg.js
+// node_modules/d3-force/src/lcg.js
 var a3 = 1664525;
 var c3 = 1013904223;
 var m3 = 4294967296;
@@ -24059,7 +24406,7 @@ function lcg_default() {
   return () => (s3 = (a3 * s3 + c3) % m3) / m3;
 }
 
-// ../../node_modules/d3-force/src/simulation.js
+// node_modules/d3-force/src/simulation.js
 function x3(d3) {
   return d3.x;
 }
@@ -24180,7 +24527,7 @@ function simulation_default(nodes) {
   };
 }
 
-// ../../node_modules/d3-force/src/manyBody.js
+// node_modules/d3-force/src/manyBody.js
 function manyBody_default() {
   var nodes, node, random, alpha, strength = constant_default4(-30), strengths, distanceMin2 = 1, distanceMax2 = Infinity, theta2 = 0.81;
   function force(_2) {
@@ -24270,10 +24617,10 @@ function manyBody_default() {
   return force;
 }
 
-// ../../node_modules/d3-zoom/src/constant.js
+// node_modules/d3-zoom/src/constant.js
 var constant_default5 = (x4) => () => x4;
 
-// ../../node_modules/d3-zoom/src/event.js
+// node_modules/d3-zoom/src/event.js
 function ZoomEvent(type2, {
   sourceEvent,
   target,
@@ -24289,7 +24636,7 @@ function ZoomEvent(type2, {
   });
 }
 
-// ../../node_modules/d3-zoom/src/transform.js
+// node_modules/d3-zoom/src/transform.js
 function Transform(k3, x4, y5) {
   this.k = k3;
   this.x = x4;
@@ -24340,7 +24687,7 @@ function transform(node) {
   return node.__zoom;
 }
 
-// ../../node_modules/d3-zoom/src/noevent.js
+// node_modules/d3-zoom/src/noevent.js
 function nopropagation2(event) {
   event.stopImmediatePropagation();
 }
@@ -24349,7 +24696,7 @@ function noevent_default3(event) {
   event.stopImmediatePropagation();
 }
 
-// ../../node_modules/d3-zoom/src/zoom.js
+// node_modules/d3-zoom/src/zoom.js
 function defaultFilter(event) {
   return (!event.ctrlKey || event.type === "wheel") && !event.button;
 }
@@ -26360,13 +26707,19 @@ function App() {
       return;
     }
   };
-  const handleConsoleNewSession = async (label, agentType) => {
+  const handleConsoleNewSession = async ({
+    label,
+    backend,
+    kind
+  }) => {
     try {
-      const result = await createConsoleSession(label, agentType);
+      const result = await createConsoleSession(label, backend, kind);
       const rawResult = result;
       const id2 = rawResult.id ?? rawResult.session?.id ?? "";
       if (!id2)
         return;
+      const agentType = kind === "operator" ? "operator" : backend;
+      const autoStarts = kind === "operator" || backend !== "claude";
       dispatch2({
         type: "upsertConsoleSession",
         session: {
@@ -26375,11 +26728,12 @@ function App() {
           agent_type: agentType,
           interaction_mode: "both",
           pinned: false,
-          status: "running",
-          is_operator: agentType === "operator",
+          status: autoStarts ? "running" : "stopped",
+          is_operator: kind === "operator",
+          provider_session_id: null,
           unread_count: 0,
           created_at: Date.now(),
-          started_at: Date.now(),
+          started_at: autoStarts ? Date.now() : null,
           stopped_at: null
         }
       });
@@ -26626,7 +26980,10 @@ function App() {
       route.tab === "chat-history" && /* @__PURE__ */ u3(
         ConversationsView,
         {
-          conversations: state.conversations
+          conversations: state.conversations,
+          consoleSessions: state.consoleSessions,
+          initialConversationId: route.params.conversation ?? null,
+          initialSessionId: route.params.session ?? null
         }
       ),
       route.tab === "work" && /* @__PURE__ */ u3(
@@ -26695,7 +27052,8 @@ function App() {
           onSelectSession: handleConsoleSelectSession,
           onCloseSession: handleConsoleCloseSession,
           onNewSession: handleConsoleNewSession,
-          isActive: route.tab === "console"
+          isActive: route.tab === "console",
+          initialSessionId: route.params.session ?? null
         }
       ),
       route.tab === "settings" && /* @__PURE__ */ u3(
