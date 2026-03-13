@@ -12762,8 +12762,10 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [filter2, setFilter] = d2("");
   const [statusFilter, setStatusFilter] = d2("open");
   const [repoFilter, setRepoFilter] = d2(initialRepoId ?? null);
+  const [repoInput, setRepoInput] = d2("");
   const [labelFilter, setLabelFilter] = d2(null);
   const [parentFilter, setParentFilter] = d2(null);
+  const [sortField] = d2("created_at");
   const [issueDetail, setIssueDetail] = d2(null);
   const [detailLoading, setDetailLoading] = d2(false);
   const [commentText, setCommentText] = d2("");
@@ -12834,6 +12836,15 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       });
     }
   }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
+  y2(() => {
+    if (repoFilter) {
+      const repo = repos.find((r3) => r3.repo_id === repoFilter);
+      if (repo)
+        setRepoInput(repo.repo_name);
+    } else {
+      setRepoInput("");
+    }
+  }, [repoFilter, repos]);
   const normalizedFilter = T2(() => filter2.trim().toLowerCase(), [filter2]);
   const filteredRepos = T2(() => {
     return repos.filter((repo) => !repoFilter || repo.repo_id === repoFilter).map((repo) => {
@@ -12857,18 +12868,19 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     }).filter((repo) => repo.issues.length > 0);
   }, [repos, statusFilter, normalizedFilter, repoFilter, labelFilter, parentFilter]);
   const items = T2(() => {
-    const result = [];
-    const showHeaders = !repoFilter || filteredRepos.length > 1;
+    const all = [];
     for (const repo of filteredRepos) {
-      if (showHeaders) {
-        result.push({ kind: "header", repo });
-      }
       for (const issue of repo.issues) {
-        result.push({ kind: "issue", issue, repo });
+        all.push({ kind: "issue", issue, repo });
       }
     }
-    return result;
-  }, [filteredRepos, repoFilter]);
+    all.sort((a4, b) => {
+      const ta = a4.issue.created_at ? Date.parse(a4.issue.created_at) : 0;
+      const tb = b.issue.created_at ? Date.parse(b.issue.created_at) : 0;
+      return tb - ta;
+    });
+    return all;
+  }, [filteredRepos, sortField]);
   const totalOpen = T2(
     () => repos.reduce((acc, r3) => acc + r3.open_count, 0),
     [repos]
@@ -13019,18 +13031,49 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           onInput: (e3) => setFilter(e3.currentTarget.value)
         }
       ) }),
-      /* @__PURE__ */ u3(
-        "select",
-        {
-          className: "issues-repo-select",
-          value: repoFilter ?? "",
-          onChange: (e3) => setRepoFilter(e3.currentTarget.value || null),
-          children: [
-            /* @__PURE__ */ u3("option", { value: "", children: "All repos" }),
-            repos.map((r3) => /* @__PURE__ */ u3("option", { value: r3.repo_id, children: r3.repo_name }, r3.repo_id))
-          ]
-        }
-      ),
+      /* @__PURE__ */ u3("div", { className: "issues-repo-filter", children: [
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "search",
+            list: "issues-repo-list",
+            className: "issues-filter__input issues-repo-filter__input",
+            placeholder: "Filter by repo...",
+            value: repoInput,
+            onInput: (e3) => {
+              const val = e3.currentTarget.value;
+              setRepoInput(val);
+              if (!val) {
+                setRepoFilter(null);
+              }
+            },
+            onChange: (e3) => {
+              const val = e3.currentTarget.value;
+              const matched = repos.find(
+                (r3) => r3.repo_name === val || r3.repo_id === val
+              );
+              if (matched) {
+                setRepoFilter(matched.repo_id);
+                setRepoInput(matched.repo_name);
+              }
+            }
+          }
+        ),
+        repoInput && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "issues-repo-filter__clear",
+            onClick: () => {
+              setRepoInput("");
+              setRepoFilter(null);
+            },
+            "aria-label": "Clear repo filter",
+            children: "\xD7"
+          }
+        ),
+        /* @__PURE__ */ u3("datalist", { id: "issues-repo-list", children: repos.map((r3) => /* @__PURE__ */ u3("option", { value: r3.repo_name }, r3.repo_id)) })
+      ] }),
       /* @__PURE__ */ u3("div", { className: "issues-status-filters", children: [
         /* @__PURE__ */ u3(
           "button",
@@ -13094,32 +13137,31 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           }
         )
       ] }),
-      items.length === 0 ? /* @__PURE__ */ u3("div", { className: "issues-tree__empty", children: repos.length === 0 ? "No repos with git-bug issues found." : "No issues match the current filter." }) : /* @__PURE__ */ u3("div", { className: "issues-list", children: items.map(
-        (item) => item.kind === "header" ? /* @__PURE__ */ u3("div", { className: "issues-section-header", children: item.repo.repo_name }, `h:${item.repo.repo_id}`) : /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: `issues-item${selectedRepoId === item.repo.repo_id && selectedIssueId === item.issue.id ? " issues-item--selected" : ""}`,
-            onClick: () => selectIssue(item.repo.repo_id, item.issue.id),
-            children: [
-              /* @__PURE__ */ u3(
-                "span",
-                {
-                  className: `issue-status-dot issue-status-dot--${getVisualState(item.issue)}`
-                }
-              ),
-              /* @__PURE__ */ u3(
-                "span",
-                {
-                  className: "issues-item__title",
-                  dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(item.issue.title) }
-                }
-              )
-            ]
-          },
-          item.issue.id
-        )
-      ) })
+      items.length === 0 ? /* @__PURE__ */ u3("div", { className: "issues-tree__empty", children: repos.length === 0 ? "No repos with git-bug issues found." : "No issues match the current filter." }) : /* @__PURE__ */ u3("div", { className: "issues-list", children: items.map((item) => /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `issues-item${selectedRepoId === item.repo.repo_id && selectedIssueId === item.issue.id ? " issues-item--selected" : ""}`,
+          onClick: () => selectIssue(item.repo.repo_id, item.issue.id),
+          children: [
+            /* @__PURE__ */ u3(
+              "span",
+              {
+                className: `issue-status-dot issue-status-dot--${getVisualState(item.issue)}`
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "span",
+              {
+                className: "issues-item__title",
+                dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(item.issue.title) }
+              }
+            ),
+            filteredRepos.length > 1 && /* @__PURE__ */ u3("span", { className: "issues-item__repo", children: item.repo.repo_name })
+          ]
+        },
+        item.issue.id
+      )) })
     ] }),
     /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
     /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : !issueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: [
