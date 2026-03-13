@@ -2843,21 +2843,6 @@ tr:hover .work-actions__trigger {
   flex: 1;
 }
 
-/* Section header (repo name) in flat list */
-.issues-section-header {
-  padding: 8px 4px 4px;
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--bg-primary);
-}
-
 /* Small button variant for inline use */
 .btn--sm {
   padding: 2px 8px;
@@ -2900,6 +2885,16 @@ tr:hover .work-actions__trigger {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.issues-item__repo {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
 }
 
 /* Status dots */
