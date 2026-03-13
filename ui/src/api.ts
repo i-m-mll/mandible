@@ -324,6 +324,23 @@ export async function openPath(targetPath: string): Promise<void> {
 
 export { buildQuery };
 
+// ── Push/Sync API ── Bug: b5abaea
+
+export async function pushRepos(scope: "current" | "all_ahead", repoIds?: string[]): Promise<unknown> {
+  const response = await apiPost("/api/work/push", { scope, repo_ids: repoIds });
+  return parseMaybeJson(response);
+}
+
+export async function pushRepo(repoId: string, scope: "current" | "all_ahead"): Promise<unknown> {
+  const response = await apiPost(`/api/work/repos/${encodeURIComponent(repoId)}/push`, { scope });
+  return parseMaybeJson(response);
+}
+
+export async function getPushStatus(): Promise<unknown> {
+  const response = await apiGet("/api/work/push/status");
+  return parseMaybeJson(response);
+}
+
 // ── Switchboard API ──
 
 export async function getSwitchboardPairings<T>(): Promise<T[]> {
