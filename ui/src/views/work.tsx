@@ -58,6 +58,7 @@ type PushRepoResult = {
 
 type PushState = {
   active: boolean;
+  authPending: boolean;
   sessionId?: string;
   repoCount?: number;
   completedCount?: number;
@@ -512,7 +513,7 @@ export function WorkOverviewView({
   const [editName, setEditName] = useState<Record<string, string>>({});
 
   // Bug: b5abaea — Push/sync state
-  const [pushState, setPushState] = useState<PushState>({ active: false, repoProgress: new Map() });
+  const [pushState, setPushState] = useState<PushState>({ active: false, authPending: false, repoProgress: new Map() });
 
   // Sync repos when initialRepos changes (external updates)
   useEffect(() => {
@@ -546,6 +547,7 @@ export function WorkOverviewView({
           setPushState(s => ({
             ...s,
             active: true,
+            authPending: false,
             sessionId: data.session_id as string | undefined,
             repoCount: data.repo_count as number | undefined,
             completedCount: 0,
@@ -571,11 +573,18 @@ export function WorkOverviewView({
           setPushState(s => ({
             ...s,
             active: false,
+            authPending: false,
             lastResult: data as unknown as PushState['lastResult'],
           }));
           break;
         case 'push:error':
-          setPushState(s => ({ ...s, active: false }));
+          setPushState(s => ({ ...s, active: false, authPending: false }));
+          break;
+        case 'push:auth:pending':
+          setPushState(s => ({ ...s, authPending: true }));
+          break;
+        case 'push:auth:complete':
+          setPushState(s => ({ ...s, authPending: false }));
           break;
       }
     };
@@ -696,25 +705,47 @@ export function WorkOverviewView({
           <div className="work-push-actions">
             <button
               type="button"
-              className={`btn btn--ghost btn--sm${pushState.active ? ' btn--disabled' : ''}`}
-              disabled={pushState.active}
+              className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
+              disabled={pushState.active || pushState.authPending}
               onClick={() => pushRepos('current').catch(() => {})}
               title="Push current branches + git-bug refs + notes for all repos"
             >
-              {pushState.active
-                ? `Pushing\u2026 (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
-                : '\u2191 Push'}
+              {pushState.authPending
+                ? 'Authenticating\u2026'
+                : pushState.active
+                  ? `Pushing\u2026 (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
+                  : '\u2191 Push'}
             </button>
             <button
               type="button"
-              className={`btn btn--ghost btn--sm${pushState.active ? ' btn--disabled' : ''}`}
-              disabled={pushState.active}
+              className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
+              disabled={pushState.active || pushState.authPending}
               onClick={() => pushRepos('all_ahead').catch(() => {})}
               title="Push all ahead branches + git-bug refs + notes for all repos"
             >
-              {'\u2191\u2191 Push All'}
+              {pushState.authPending
+                ? 'Authenticating\u2026'
+                : '\u2191\u2191 Push All'}
             </button>
           </div>
+          {pushState.authPending && (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              padding: '8px 12px',
+              background: 'rgba(245,194,92,0.12)',
+              border: '1px solid rgba(245,194,92,0.3)',
+              borderRadius: '8px',
+              fontSize: '0.9em',
+              color: 'var(--accent-yellow, #f5c25c)',
+              marginTop: '8px',
+            }}>
+              <span aria-hidden="true">{'🔐'}</span>
+              <span>Please authenticate via your security key or check your SSH agent…</span>
+            </div>
+          )}
           <label style={{ fontSize: '0.85em', color: 'var(--text-muted, #888)', cursor: 'pointer' }}>
             <input
               type="checkbox"

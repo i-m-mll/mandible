@@ -415,6 +415,8 @@ function App(): JSX.Element {
       client.on('push:repo:complete', pushEventHandler),
       client.on('push:complete', pushEventHandler),
       client.on('push:error', pushEventHandler),
+      client.on('push:auth:pending', pushEventHandler),
+      client.on('push:auth:complete', pushEventHandler),
     ];
 
     // Connect AFTER all handlers are registered
