@@ -170,6 +170,7 @@ export interface StatusBarProps {
   error?: string;
   /** Elapsed seconds since streaming started — shown live while streaming=true. */
   elapsedSeconds?: number;
+  liveLabel?: string;
 }
 
 export interface StreamRendererProps {

@@ -104,6 +104,17 @@ function extractResponseItemText(payload: CodexResponsePayload): string {
   return "";
 }
 
+function parseToolArguments(argumentsText: string | undefined): unknown {
+  if (!argumentsText) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(argumentsText);
+  } catch {
+    return argumentsText;
+  }
+}
+
 // --- Parser ---
 
 export class CodexParser implements ConversationParser {
@@ -231,7 +242,20 @@ export class CodexParser implements ConversationParser {
           if (!text) continue;
 
           const role = payload.role;
-          if (role === "developer" || role === "user") {
+          if (role === "developer") {
+            blocks.push({
+              type: "system",
+              role: "system",
+              content: text,
+              position: position++,
+              timestamp: ts,
+              parent_id: null,
+              metadata: {
+                source_event_type: "developer",
+                visibility: "default_hidden",
+              },
+            });
+          } else if (role === "user") {
             blocks.push({
               type: "user_message",
               role: "user",
@@ -239,7 +263,7 @@ export class CodexParser implements ConversationParser {
               position: position++,
               timestamp: ts,
               parent_id: null,
-              metadata: { source_event_type: role === "developer" ? "developer" : "user" },
+              metadata: { source_event_type: "user" },
             });
           } else if (role === "assistant") {
             blocks.push({
@@ -253,7 +277,8 @@ export class CodexParser implements ConversationParser {
             });
           }
         } else if (payload.type === "reasoning") {
-          const text = payload.summary || "";
+          const text = typeof payload.summary === "string" ? payload.summary.trim() : "";
+          if (!text) continue;
           blocks.push({
             type: "thinking",
             role: "assistant",
@@ -277,17 +302,17 @@ export class CodexParser implements ConversationParser {
           blocks.push({
             type: "tool_use",
             role: "assistant",
-            content,
-            position: position++,
-            timestamp: ts,
-            parent_id: null,
-            metadata: {
-              tool_name: payload.name || undefined,
-              tool_id: payload.call_id || undefined,
-              tool_input: payload.arguments,
-              visibility: "default_hidden",
-            },
-          });
+              content,
+              position: position++,
+              timestamp: ts,
+              parent_id: null,
+              metadata: {
+                tool_name: payload.name || undefined,
+                tool_id: payload.call_id || undefined,
+                tool_input: parseToolArguments(payload.arguments),
+                visibility: "default_hidden",
+              },
+            });
         } else if (payload.type === "function_call_output") {
           const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
           blocks.push({
@@ -309,17 +334,17 @@ export class CodexParser implements ConversationParser {
           blocks.push({
             type: "tool_use",
             role: "assistant",
-            content: payload.name || "custom_tool",
-            position: position++,
-            timestamp: ts,
-            parent_id: null,
-            metadata: {
-              tool_name: payload.name || undefined,
-              tool_id: payload.call_id || undefined,
-              tool_input: payload.arguments,
-              visibility: "default_hidden",
-            },
-          });
+              content: payload.name || "custom_tool",
+              position: position++,
+              timestamp: ts,
+              parent_id: null,
+              metadata: {
+                tool_name: payload.name || undefined,
+                tool_id: payload.call_id || undefined,
+                tool_input: parseToolArguments(payload.arguments),
+                visibility: "default_hidden",
+              },
+            });
         } else if (payload.type === "custom_tool_call_output") {
           const parentPos = payload.call_id ? callMap.get(payload.call_id) : undefined;
           blocks.push({

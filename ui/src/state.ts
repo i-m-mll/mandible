@@ -31,6 +31,7 @@ type ConsoleSession = {
   pinned: boolean;
   status: 'running' | 'stopped' | 'crashed';
   is_operator: boolean;
+  provider_session_id: string | null;
   unread_count: number;
   created_at: number;
   started_at: number | null;

@@ -9,13 +9,21 @@ import type { ConsoleSession } from '../../state';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
 import type { StreamEvent, SyntheticPromptEvent } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
-import { getConsoleStreamEvents, restartConsoleSession } from '../../api';
+import {
+  getConsoleStreamEvents,
+  restartConsoleSession,
+  sendConsolePrompt,
+  startConsoleSession,
+} from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
 
 type TerminalPaneProps = {
   sessionId: string;
+  agentType: ConsoleSession['agent_type'];
   interactionMode: ConsoleSession['interaction_mode'];
+  sessionStatus: ConsoleSession['status'];
+  providerSessionId: string | null;
   isVisible: boolean;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
@@ -23,7 +31,10 @@ type TerminalPaneProps = {
 
 export function TerminalPane({
   sessionId,
+  agentType,
   interactionMode,
+  sessionStatus,
+  providerSessionId,
   isVisible,
   viewMode,
   onViewModeChange,
@@ -48,6 +59,7 @@ export function TerminalPane({
   // SSE stream events for rich view (accumulated)
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const supportsStructuredChat = agentType === 'claude' || agentType === 'operator';
 
   // Keep visibility/viewMode refs current so ResizeObserver callback doesn't see stale values
   useEffect(() => { isVisibleRef.current = isVisible; }, [isVisible]);
@@ -312,6 +324,8 @@ export function TerminalPane({
   // so reconnect always got immediately rejected by the backend.
   const handleReconnect = async () => {
     setWsStatus('connecting');
+    termRef.current?.reset();
+    pendingWritesRef.current = [];
     try {
       await restartConsoleSession(sessionId);
       // Incrementing the nonce re-triggers the WS useEffect to open a fresh connection
@@ -327,16 +341,9 @@ export function TerminalPane({
     e.preventDefault();
     if (!prompt.trim()) return;
 
-    // Rich view: write directly to PTY WebSocket (same as terminal view).
-    // The PTY runs claude --output-format stream-json; its stream-json events
-    // flow through handleData → feedLineParser → broadcast("console:stream_event")
-    // → SSE → handleStreamEvent → streamEvents → StreamRenderer.
-    // Bug: 48cf5c8 — previous approach called sendConsolePrompt which spawned
-    // a separate subprocess that raced with the PTY for conversation state.
     if (viewMode === 'rich') {
       const submittedPrompt = prompt.trim();
       setPrompt('');
-      // Optimistic display: append synthetic event immediately before SSE events arrive
       const syntheticEvent: SyntheticPromptEvent = {
         type: 'synthetic_prompt',
         text: submittedPrompt,
@@ -344,10 +351,17 @@ export function TerminalPane({
       };
       setStreamEvents((prev) => [...prev, syntheticEvent]);
       setStreaming(true);
-      // Write to PTY WebSocket; stream-json events arrive asynchronously via SSE
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(new TextEncoder().encode(submittedPrompt + '\r'));
+      if (supportsStructuredChat) {
+        void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
+          setStreaming(false);
+        });
+      } else {
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(new TextEncoder().encode(submittedPrompt + '\r'));
+        } else {
+          setStreaming(false);
+        }
       }
       return;
     }
@@ -363,6 +377,24 @@ export function TerminalPane({
   };
 
   const showReconnectOverlay = wsStatus === 'closed' || wsStatus === 'error';
+  const showDebugStart = viewMode === 'terminal' && sessionStatus !== 'running';
+  const debugTerminalLabel = providerSessionId ? 'Resume debug terminal' : 'Start debug terminal';
+  const debugTerminalDescription = providerSessionId
+    ? 'Resume this same chat in the provider terminal for raw inspection or recovery.'
+    : supportsStructuredChat
+      ? 'Open the provider terminal for this chat. Once a provider session exists, it will resume here.'
+      : 'Open the terminal fallback for this session.';
+
+  const handleStartDebugTerminal = async () => {
+    termRef.current?.reset();
+    pendingWritesRef.current = [];
+    try {
+      await startConsoleSession(sessionId);
+      setReconnectNonce((n) => n + 1);
+    } catch {
+      setWsStatus('error');
+    }
+  };
 
   return (
     <div
@@ -392,6 +424,17 @@ export function TerminalPane({
           )}
           <ViewToggle current={viewMode} onChange={onViewModeChange} />
         </div>
+        <div className="terminal-pane__header-actions">
+          {providerSessionId && (
+            <button
+              type="button"
+              className="terminal-pane__link-btn"
+              onClick={() => { window.location.hash = `#/chat-history?session=${encodeURIComponent(providerSessionId)}`; }}
+            >
+              View history
+            </button>
+          )}
+        </div>
       </div>
 
       {/* inbox_only mode: yellow banner */}
@@ -412,10 +455,10 @@ export function TerminalPane({
         />
 
         {/* Reconnect overlay — only covers the body area, not the header */}
-        {showReconnectOverlay && viewMode === 'terminal' && (
+        {showReconnectOverlay && viewMode === 'terminal' && !showDebugStart && (
           <div className="terminal-pane__reconnect-overlay">
             <span>
-              {wsStatus === 'error' ? 'Connection error' : 'Disconnected'}
+              {wsStatus === 'error' ? 'Debug terminal connection error' : 'Debug terminal disconnected'}
             </span>
             <button
               type="button"
@@ -431,7 +474,29 @@ export function TerminalPane({
                 fontFamily: 'var(--font-sans)',
               }}
             >
-              Reconnect
+              Reconnect terminal
+            </button>
+          </div>
+        )}
+
+        {showDebugStart && (
+          <div className="terminal-pane__reconnect-overlay">
+            <span>{debugTerminalDescription}</span>
+            <button
+              type="button"
+              onClick={() => { void handleStartDebugTerminal(); }}
+              style={{
+                padding: '8px 20px',
+                borderRadius: '8px',
+                background: 'var(--accent-blue)',
+                border: 'none',
+                color: '#fff',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontFamily: 'var(--font-sans)',
+              }}
+            >
+              {debugTerminalLabel}
             </button>
           </div>
         )}
@@ -499,29 +564,12 @@ export function TerminalPane({
                 Send
               </button>
             </form>
-          </div>
-        )}
-
-        {/* Rich view disconnected banner */}
-        {viewMode === 'rich' && showReconnectOverlay && (
-          <div className="terminal-pane__rich-disconnected">
-            Session disconnected —{' '}
-            <button
-              type="button"
-              onClick={() => { void handleReconnect(); }}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--accent-blue)',
-                cursor: 'pointer',
-                padding: 0,
-                fontSize: 'inherit',
-                fontFamily: 'inherit',
-                textDecoration: 'underline',
-              }}
-            >
-              Restart
-            </button>
+            {!supportsStructuredChat && (
+              <div className="terminal-pane__rich-disconnected">
+                This agent still renders here from terminal output. The Chat view becomes first-class
+                once its structured stream is available.
+              </div>
+            )}
           </div>
         )}
       </div>

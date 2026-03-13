@@ -116,6 +116,36 @@ function computeAgentType(
   return "shell";
 }
 
+function sanitizeClaudeArgs(args: string[]): string[] {
+  const sanitized: string[] = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "-p" || arg === "--print" || arg === "--resume" || arg === "--output-format") {
+      i += 1;
+      continue;
+    }
+    if (arg === "--verbose") {
+      continue;
+    }
+    sanitized.push(arg);
+  }
+
+  return sanitized;
+}
+
+function buildLaunchArgs(meta: ConsoleSession): string[] {
+  if (meta.command !== "claude") {
+    return meta.args;
+  }
+
+  const args = sanitizeClaudeArgs(meta.args);
+  if (meta.provider_session_id) {
+    args.push("--resume", meta.provider_session_id);
+  }
+  return args;
+}
+
 /** Build a clean environment for PTY children. */
 function buildPtyEnv(extraEnv: Record<string, string>): Record<string, string> {
   const cleaned: Record<string, string> = {};
@@ -139,6 +169,7 @@ interface ConsoleSessionRow {
   label: string;
   command: string;
   args_json: string;
+  provider_session_id: string | null;
   cwd: string | null;
   env_json: string;
   cols: number;
@@ -162,6 +193,7 @@ function rowToSession(row: ConsoleSessionRow): ConsoleSession {
     label: row.label,
     command: row.command,
     args: JSON.parse(row.args_json) as string[],
+    provider_session_id: row.provider_session_id ?? null,
     cwd: row.cwd,
     env: JSON.parse(row.env_json) as Record<string, string>,
     cols: row.cols,
@@ -214,7 +246,7 @@ export class PtySession {
     const env = buildPtyEnv(this.meta.env);
 
     try {
-      this.ptyProc = pty.spawn(this.meta.command, this.meta.args, {
+      this.ptyProc = pty.spawn(this.meta.command, buildLaunchArgs(this.meta), {
         name: "xterm-256color",
         cols: this.meta.cols,
         rows: this.meta.rows,
@@ -479,6 +511,21 @@ export class PtySession {
       this.streamEvents = this.streamEvents.slice(this.streamEvents.length - STREAM_EVENTS_LIMIT);
     }
 
+    const providerSessionId =
+      "session_id" in event && typeof event.session_id === "string" && event.session_id.trim()
+        ? event.session_id.trim()
+        : null;
+    if (providerSessionId && providerSessionId !== this.meta.provider_session_id) {
+      const updatedAt = Date.now();
+      this.meta = {
+        ...this.meta,
+        provider_session_id: providerSessionId,
+        updated_at: updatedAt,
+      };
+      this.dbUpdate({ provider_session_id: providerSessionId, updated_at: updatedAt });
+      broadcast("console:session:updated", { session: this.meta });
+    }
+
     broadcast("console:stream_event", {
       console_session_id: this.id,
       event,
@@ -567,6 +614,7 @@ export class PtySession {
     updated_at: number;
     cols: number;
     rows: number;
+    provider_session_id: string | null;
   }>): void {
     const db = getDb();
     const assignments: string[] = [];
@@ -597,7 +645,7 @@ export class PtySession {
 /** Default operator session configuration. */
 const OPERATOR_DEFAULTS: Omit<ConsoleSessionInput, "label"> = {
   command: "claude",
-  args: ["--dangerously-skip-permissions", "--output-format", "stream-json"],
+  args: ["--dangerously-skip-permissions"],
   cwd: process.env.HOME ?? "/tmp",
   env: {},
   cols: 220,
@@ -678,14 +726,15 @@ export class PtyManager {
 
     db.prepare(
       `INSERT INTO console_sessions
-         (id, label, command, args_json, cwd, env_json, cols, rows,
+         (id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
           status, auto_restart, is_operator, interaction_mode, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?)`
     ).run(
       id,
       input.label,
       input.command,
       JSON.stringify(args),
+      null,
       input.cwd ?? null,
       JSON.stringify(env),
       cols,
@@ -702,6 +751,7 @@ export class PtyManager {
       label: input.label,
       command: input.command,
       args_json: JSON.stringify(args),
+      provider_session_id: null,
       cwd: input.cwd ?? null,
       env_json: JSON.stringify(env),
       cols,

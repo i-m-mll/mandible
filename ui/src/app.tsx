@@ -774,13 +774,24 @@ function App(): JSX.Element {
     }
   };
 
-  const handleConsoleNewSession = async (label: string, agentType: string) => {
+  const handleConsoleNewSession = async ({
+    label,
+    backend,
+    kind,
+  }: {
+    label: string;
+    backend: string;
+    kind: string;
+  }) => {
     try {
-      const result = await createConsoleSession(label, agentType);
+      const result = await createConsoleSession(label, backend, kind);
       // createConsoleSession returns { id } — extract from session wrapper if needed
       const rawResult = result as unknown as { id?: string; session?: { id: string } };
       const id = rawResult.id ?? rawResult.session?.id ?? '';
       if (!id) return;
+
+      const agentType = kind === 'operator' ? 'operator' : backend;
+      const autoStarts = kind === 'operator' || backend !== 'claude';
 
       // Optimistic upsert: add the session immediately so the tab appears
       // without waiting for the SSE console:session:created event to arrive.
@@ -793,11 +804,12 @@ function App(): JSX.Element {
           agent_type: agentType as ConsoleSession['agent_type'],
           interaction_mode: 'both',
           pinned: false,
-          status: 'running',
-          is_operator: agentType === 'operator',
+          status: autoStarts ? 'running' : 'stopped',
+          is_operator: kind === 'operator',
+          provider_session_id: null,
           unread_count: 0,
           created_at: Date.now(),
-          started_at: Date.now(),
+          started_at: autoStarts ? Date.now() : null,
           stopped_at: null,
         },
       });
@@ -1039,6 +1051,9 @@ function App(): JSX.Element {
         {route.tab === 'chat-history' && (
           <ConversationsView
             conversations={state.conversations}
+            consoleSessions={state.consoleSessions}
+            initialConversationId={route.params.conversation ?? null}
+            initialSessionId={route.params.session ?? null}
           />
         )}
         {route.tab === 'work' && (
@@ -1102,6 +1117,7 @@ function App(): JSX.Element {
             onCloseSession={handleConsoleCloseSession}
             onNewSession={handleConsoleNewSession}
             isActive={route.tab === 'console'}
+            initialSessionId={route.params.session ?? null}
           />
         )}
         {route.tab === 'settings' && (

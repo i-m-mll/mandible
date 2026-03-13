@@ -28,7 +28,7 @@ export function registerConsoleRoutes(
   });
 
   // ------------------------------------------------------------------
-  // POST /api/console/sessions — create and start a new session
+  // POST /api/console/sessions — create a new session
   // ------------------------------------------------------------------
   server.post("/api/console/sessions", (req, res) => {
     const body = (req.body ?? {}) as Partial<ConsoleSessionInput & { interaction_mode?: string }>;
@@ -46,7 +46,7 @@ export function registerConsoleRoutes(
       label: body.label,
       command: body.command,
       args: Array.isArray(body.args) ? body.args as string[] : [],
-      cwd: typeof body.cwd === "string" ? body.cwd : (process.env.HOME ?? null),
+      cwd: typeof body.cwd === "string" ? body.cwd : process.cwd(),
       env: body.env && typeof body.env === "object" ? body.env as Record<string, string> : {},
       cols: typeof body.cols === "number" ? body.cols : 120,
       rows: typeof body.rows === "number" ? body.rows : 30,
@@ -58,8 +58,9 @@ export function registerConsoleRoutes(
     };
 
     const session = manager.create(input);
-    manager.start(session.id);
-    // Refresh meta after start
+    if (input.is_operator || input.command !== "claude") {
+      manager.start(session.id);
+    }
     const ptySession = manager.get(session.id);
     res.status(201).json({ session: ptySession?.meta ?? session });
   });
@@ -257,22 +258,24 @@ export function registerConsoleRoutes(
     // Merge session-level env overrides
     Object.assign(env, ptySession.meta.env ?? {});
 
-    // Get the most recent session_id from stream events (from 'system', 'assistant', 'result' events)
-    const streamEvents = ptySession.getStreamEvents();
-    let claudeSessionId: string | null = null;
-    for (let i = streamEvents.length - 1; i >= 0; i--) {
-      const ev = streamEvents[i] as { session_id?: string | null };
-      if (ev.session_id) {
-        claudeSessionId = ev.session_id;
-        break;
+    let claudeSessionId = ptySession.meta.provider_session_id ?? null;
+    if (!claudeSessionId) {
+      const streamEvents = ptySession.getStreamEvents();
+      for (let i = streamEvents.length - 1; i >= 0; i -= 1) {
+        const ev = streamEvents[i] as { session_id?: string | null };
+        if (ev.session_id) {
+          claudeSessionId = ev.session_id;
+          break;
+        }
       }
     }
 
     // Bug: f2e6a46 — use --resume <session_id> instead of --continue to avoid
     // racing with the running PTY process for directory-based session detection.
+    // Newer Claude builds require --verbose together with --output-format stream-json.
     const claudeArgs = claudeSessionId
-      ? ["-p", prompt, "--resume", claudeSessionId, "--output-format", "stream-json", "--dangerously-skip-permissions"]
-      : ["-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions"];
+      ? ["-p", prompt, "--resume", claudeSessionId, "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"]
+      : ["-p", prompt, "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"];
 
     const child = spawn(
       ptySession.meta.command === "claude" ? ptySession.meta.command : "claude",
