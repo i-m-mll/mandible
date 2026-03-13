@@ -145,9 +145,7 @@ const LABEL_INTERNAL_NAMES: Record<string, string> = {
 
 // --- Flat list item types ---
 
-type ListItem =
-  | { kind: 'header'; repo: IssueRepoSummary }
-  | { kind: 'issue'; issue: GitBugIssue; repo: IssueRepoSummary };
+type ListItem = { kind: 'issue'; issue: GitBugIssue; repo: IssueRepoSummary };
 
 // --- Components ---
 
@@ -160,8 +158,11 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('open');
   const [repoFilter, setRepoFilter] = useState<string | null>(initialRepoId ?? null);
+  const [repoInput, setRepoInput] = useState('');
   const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const [parentFilter, setParentFilter] = useState<string | null>(null);
+  type SortField = 'created_at';
+  const [sortField] = useState<SortField>('created_at');
   const [issueDetail, setIssueDetail] = useState<GitBugIssueDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [commentText, setCommentText] = useState('');
@@ -237,6 +238,16 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     }
   }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
 
+  // Sync repoInput display name when repoFilter is set externally (e.g. deep-link or "Show children")
+  useEffect(() => {
+    if (repoFilter) {
+      const repo = repos.find((r) => r.repo_id === repoFilter);
+      if (repo) setRepoInput(repo.repo_name);
+    } else {
+      setRepoInput('');
+    }
+  }, [repoFilter, repos]);
+
   const normalizedFilter = useMemo(() => filter.trim().toLowerCase(), [filter]);
 
   // Filter issues within repos — three-state aware, plus repo/label/parent filters
@@ -267,21 +278,22 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
       .filter((repo) => repo.issues.length > 0);
   }, [repos, statusFilter, normalizedFilter, repoFilter, labelFilter, parentFilter]);
 
-  // Build flat list items: one header per repo + its issues
-  // Suppress header if only one repo visible (repoFilter set)
+  // Build flat list items: all issues sorted by created_at descending (newest first)
   const items = useMemo<ListItem[]>(() => {
-    const result: ListItem[] = [];
-    const showHeaders = !repoFilter || filteredRepos.length > 1;
+    const all: ListItem[] = [];
     for (const repo of filteredRepos) {
-      if (showHeaders) {
-        result.push({ kind: 'header', repo });
-      }
       for (const issue of repo.issues) {
-        result.push({ kind: 'issue', issue, repo });
+        all.push({ kind: 'issue', issue, repo });
       }
     }
-    return result;
-  }, [filteredRepos, repoFilter]);
+    // Sort by created_at descending (newest first)
+    all.sort((a, b) => {
+      const ta = a.issue.created_at ? Date.parse(a.issue.created_at) : 0;
+      const tb = b.issue.created_at ? Date.parse(b.issue.created_at) : 0;
+      return tb - ta;
+    });
+    return all;
+  }, [filteredRepos, sortField]);
 
   // Total issue count for badge
   const totalOpen = useMemo(
@@ -460,16 +472,51 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
         </div>
 
         {/* Repo filter */}
-        <select
-          className="issues-repo-select"
-          value={repoFilter ?? ''}
-          onChange={(e) => setRepoFilter(e.currentTarget.value || null)}
-        >
-          <option value="">All repos</option>
-          {repos.map((r) => (
-            <option key={r.repo_id} value={r.repo_id}>{r.repo_name}</option>
-          ))}
-        </select>
+        <div className="issues-repo-filter">
+          <input
+            type="search"
+            list="issues-repo-list"
+            className="issues-filter__input issues-repo-filter__input"
+            placeholder="Filter by repo..."
+            value={repoInput}
+            onInput={(e) => {
+              const val = e.currentTarget.value;
+              setRepoInput(val);
+              if (!val) {
+                setRepoFilter(null);
+              }
+            }}
+            onChange={(e) => {
+              const val = e.currentTarget.value;
+              // When user selects from datalist, the value is repo_name; resolve to repo_id
+              const matched = repos.find(
+                (r) => r.repo_name === val || r.repo_id === val
+              );
+              if (matched) {
+                setRepoFilter(matched.repo_id);
+                setRepoInput(matched.repo_name);
+              }
+            }}
+          />
+          {repoInput && (
+            <button
+              type="button"
+              className="issues-repo-filter__clear"
+              onClick={() => {
+                setRepoInput('');
+                setRepoFilter(null);
+              }}
+              aria-label="Clear repo filter"
+            >
+              ×
+            </button>
+          )}
+          <datalist id="issues-repo-list">
+            {repos.map((r) => (
+              <option key={r.repo_id} value={r.repo_name} />
+            ))}
+          </datalist>
+        </div>
 
         <div className="issues-status-filters">
           <button
@@ -541,32 +588,29 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           </div>
         ) : (
           <div className="issues-list">
-            {items.map((item) =>
-              item.kind === 'header' ? (
-                <div key={`h:${item.repo.repo_id}`} className="issues-section-header">
-                  {item.repo.repo_name}
-                </div>
-              ) : (
-                <button
-                  key={item.issue.id}
-                  type="button"
-                  className={`issues-item${
-                    selectedRepoId === item.repo.repo_id && selectedIssueId === item.issue.id
-                      ? ' issues-item--selected'
-                      : ''
-                  }`}
-                  onClick={() => selectIssue(item.repo.repo_id, item.issue.id)}
-                >
-                  <span
-                    className={`issue-status-dot issue-status-dot--${getVisualState(item.issue)}`}
-                  />
-                  <span
-                    className="issues-item__title"
-                    dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.issue.title) }}
-                  />
-                </button>
-              ),
-            )}
+            {items.map((item) => (
+              <button
+                key={item.issue.id}
+                type="button"
+                className={`issues-item${
+                  selectedRepoId === item.repo.repo_id && selectedIssueId === item.issue.id
+                    ? ' issues-item--selected'
+                    : ''
+                }`}
+                onClick={() => selectIssue(item.repo.repo_id, item.issue.id)}
+              >
+                <span
+                  className={`issue-status-dot issue-status-dot--${getVisualState(item.issue)}`}
+                />
+                <span
+                  className="issues-item__title"
+                  dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.issue.title) }}
+                />
+                {filteredRepos.length > 1 && (
+                  <span className="issues-item__repo">{item.repo.repo_name}</span>
+                )}
+              </button>
+            ))}
           </div>
         )}
       </div>
