@@ -16887,7 +16887,7 @@ function WorkOverviewView({
   const [showExcluded, setShowExcluded] = d2(false);
   const [confirmRemove, setConfirmRemove] = d2(null);
   const [editName, setEditName] = d2({});
-  const [pushState, setPushState] = d2({ active: false, repoProgress: /* @__PURE__ */ new Map() });
+  const [pushState, setPushState] = d2({ active: false, authPending: false, repoProgress: /* @__PURE__ */ new Map() });
   y2(() => {
     setRepos(initialRepos);
   }, [initialRepos]);
@@ -16913,6 +16913,7 @@ function WorkOverviewView({
           setPushState((s3) => ({
             ...s3,
             active: true,
+            authPending: false,
             sessionId: data.session_id,
             repoCount: data.repo_count,
             completedCount: 0,
@@ -16938,11 +16939,18 @@ function WorkOverviewView({
           setPushState((s3) => ({
             ...s3,
             active: false,
+            authPending: false,
             lastResult: data
           }));
           break;
         case "push:error":
-          setPushState((s3) => ({ ...s3, active: false }));
+          setPushState((s3) => ({ ...s3, active: false, authPending: false }));
+          break;
+        case "push:auth:pending":
+          setPushState((s3) => ({ ...s3, authPending: true }));
+          break;
+        case "push:auth:complete":
+          setPushState((s3) => ({ ...s3, authPending: false }));
           break;
       }
     };
@@ -17053,27 +17061,50 @@ function WorkOverviewView({
             "button",
             {
               type: "button",
-              className: `btn btn--ghost btn--sm${pushState.active ? " btn--disabled" : ""}`,
-              disabled: pushState.active,
+              className: `btn btn--ghost btn--sm${pushState.active || pushState.authPending ? " btn--disabled" : ""}`,
+              disabled: pushState.active || pushState.authPending,
               onClick: () => pushRepos("current").catch(() => {
               }),
               title: "Push current branches + git-bug refs + notes for all repos",
-              children: pushState.active ? `Pushing\u2026 (${pushState.completedCount ?? 0}/${pushState.repoCount ?? "?"})` : "\u2191 Push"
+              children: pushState.authPending ? "Authenticating\u2026" : pushState.active ? `Pushing\u2026 (${pushState.completedCount ?? 0}/${pushState.repoCount ?? "?"})` : "\u2191 Push"
             }
           ),
           /* @__PURE__ */ u3(
             "button",
             {
               type: "button",
-              className: `btn btn--ghost btn--sm${pushState.active ? " btn--disabled" : ""}`,
-              disabled: pushState.active,
+              className: `btn btn--ghost btn--sm${pushState.active || pushState.authPending ? " btn--disabled" : ""}`,
+              disabled: pushState.active || pushState.authPending,
               onClick: () => pushRepos("all_ahead").catch(() => {
               }),
               title: "Push all ahead branches + git-bug refs + notes for all repos",
-              children: "\u2191\u2191 Push All"
+              children: pushState.authPending ? "Authenticating\u2026" : "\u2191\u2191 Push All"
             }
           )
         ] }),
+        pushState.authPending && /* @__PURE__ */ u3(
+          "div",
+          {
+            role: "status",
+            "aria-live": "polite",
+            style: {
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              padding: "8px 12px",
+              background: "rgba(245,194,92,0.12)",
+              border: "1px solid rgba(245,194,92,0.3)",
+              borderRadius: "8px",
+              fontSize: "0.9em",
+              color: "var(--accent-yellow, #f5c25c)",
+              marginTop: "8px"
+            },
+            children: [
+              /* @__PURE__ */ u3("span", { "aria-hidden": "true", children: "\u{1F510}" }),
+              /* @__PURE__ */ u3("span", { children: "Please authenticate via your security key or check your SSH agent\u2026" })
+            ]
+          }
+        ),
         /* @__PURE__ */ u3("label", { style: { fontSize: "0.85em", color: "var(--text-muted, #888)", cursor: "pointer" }, children: [
           /* @__PURE__ */ u3(
             "input",
@@ -26048,7 +26079,9 @@ function App() {
       client.on("push:repo:progress", pushEventHandler),
       client.on("push:repo:complete", pushEventHandler),
       client.on("push:complete", pushEventHandler),
-      client.on("push:error", pushEventHandler)
+      client.on("push:error", pushEventHandler),
+      client.on("push:auth:pending", pushEventHandler),
+      client.on("push:auth:complete", pushEventHandler)
     ];
     client.connect();
     return () => {
