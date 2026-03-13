@@ -12,7 +12,7 @@ function buildControlMasterEnv(socketPath) {
     const gitSshCommand = [
         "ssh",
         "-o ControlMaster=auto",
-        `-o ControlPath=${socketPath}`,
+        `-o ControlPath=${socketPath}-%h`,
         "-o ControlPersist=600",
         "-o StrictHostKeyChecking=accept-new",
     ].join(" ");
@@ -22,9 +22,20 @@ function buildControlMasterEnv(socketPath) {
     };
 }
 async function cleanupControlMaster(socketPath) {
-    await runGitAsync(["ssh", "-O", "exit", "-o", `ControlPath=${socketPath}`, "placeholder_host"], "/tmp", process.env, 5_000).catch(() => { });
     try {
-        fs.rmSync(socketPath, { force: true });
+        const dir = path.dirname(socketPath);
+        const prefix = path.basename(socketPath) + "-";
+        const files = fs.readdirSync(dir);
+        for (const file of files) {
+            if (file.startsWith(prefix)) {
+                try {
+                    fs.rmSync(path.join(dir, file), { force: true });
+                }
+                catch {
+                    // best effort
+                }
+            }
+        }
     }
     catch {
         // best effort
@@ -253,7 +264,7 @@ export function startPushSession(repos, scope, scanner) {
     return { session_id: sessionId, started_at: startedAt };
 }
 async function runPushSession(sessionId, repos, scope, scanner, startedAt) {
-    const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}.sock`);
+    const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
     const gitSshEnv = buildControlMasterEnv(socketPath);
     const sessionStart = Date.now();
     try {
@@ -310,7 +321,7 @@ async function runPushSession(sessionId, repos, scope, scanner, startedAt) {
  * Used by the single-repo push endpoint.
  */
 export async function pushSingleRepo(repo, scope, scanner) {
-    const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}.sock`);
+    const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
     const gitSshEnv = buildControlMasterEnv(socketPath);
     try {
         const result = await pushRepo(repo, scope, gitSshEnv, scanner);
