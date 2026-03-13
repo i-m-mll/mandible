@@ -1,8 +1,34 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { getDb } from "../db.js";
+
+const execFileAsync = promisify(execFile);
+
+const REAPER_PLIST_PATH = path.join(
+  os.homedir(),
+  "Library/LaunchAgents/com.mll.claude-reaper.plist"
+);
+
+/**
+ * Load or unload the reaper launchd job.
+ * This is the authoritative on/off switch — the job should not be running
+ * when the user has disabled the reaper.
+ * Bug: 372981c
+ */
+async function manageReaperLaunchd(enabled: boolean): Promise<void> {
+  if (!fs.existsSync(REAPER_PLIST_PATH)) return;
+  const action = enabled ? "load" : "unload";
+  try {
+    await execFileAsync("launchctl", [action, REAPER_PLIST_PATH]);
+  } catch {
+    // Non-fatal: launchctl may fail if job is already in desired state
+    // (e.g. unloading an already-unloaded job returns an error)
+  }
+}
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 
 const DEFAULT_PROTECTED_BRANCHES = ["main", "develop"];
@@ -145,6 +171,13 @@ export function syncReaperSettingsToConfigFile(): void {
       }
     }
   }
+
+  // Re-establish launchd state on startup to match stored setting
+  // Bug: 372981c — Mandible restart must restore correct launchd state
+  const reaperEnabledRow = db.prepare("SELECT value FROM settings WHERE key = 'reaper_enabled'").get() as { value: string } | undefined;
+  if (reaperEnabledRow) {
+    manageReaperLaunchd(reaperEnabledRow.value === "true").catch(() => {});
+  }
 }
 
 export function registerSettingsRoutes(server: RouteRegistrar): void {
@@ -219,6 +252,11 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       for (const envVar of REAPER_MAP[key]) {
         dualWriteReaperConf(envVar, body.value);
       }
+    }
+
+    // Manage launchd job for reaper on/off toggle
+    if (key === "reaper_enabled") {
+      manageReaperLaunchd(body.value === "true").catch(() => {});
     }
 
     sendJson(res, 200, { ok: true, key, value: body.value });
