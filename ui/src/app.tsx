@@ -363,6 +363,14 @@ function App(): JSX.Element {
       );
     };
 
+    // Bug: b5abaea — forward push SSE events to window so WorkOverviewView can subscribe
+    const pushEventHandler = (payload: SSEPayload) => {
+      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
+      window.dispatchEvent(
+        new CustomEvent('work:push', { detail: { type: payload.type, data } }),
+      );
+    };
+
     // Bug: 326a3e2 — show full-page splash when daemon is about to restart
     const rebuildingHandler = () => {
       setRebuilding(true);
@@ -401,6 +409,12 @@ function App(): JSX.Element {
       client.on('auth:resolved', graphRefreshHandler),
       client.on('work:branch:updated', graphRefreshHandler),
       client.on('mandible:rebuilding', rebuildingHandler),
+      // Bug: b5abaea — push/sync SSE events forwarded to window for WorkOverviewView
+      client.on('push:started', pushEventHandler),
+      client.on('push:repo:progress', pushEventHandler),
+      client.on('push:repo:complete', pushEventHandler),
+      client.on('push:complete', pushEventHandler),
+      client.on('push:error', pushEventHandler),
     ];
 
     // Connect AFTER all handlers are registered

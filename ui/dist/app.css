@@ -1,6 +1,6 @@
 @import "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600&display=swap";
 
-/* node_modules/@xterm/xterm/css/xterm.css */
+/* ../../node_modules/@xterm/xterm/css/xterm.css */
 .xterm {
   cursor: text;
   position: relative;
@@ -165,7 +165,7 @@
   position: relative;
 }
 
-/* node_modules/diff2html/bundles/css/diff2html.min.css */
+/* ../../node_modules/diff2html/bundles/css/diff2html.min.css */
 :host,
 :root {
   --d2h-bg-color:#fff;
@@ -5879,6 +5879,61 @@ tr:hover .work-actions__trigger {
 }
 .graph-node--pulse {
   animation: graph-pulse 2s ease-in-out infinite;
+}
+.work-push-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.work-repo-push-btn {
+  opacity: 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: opacity 0.15s, color 0.15s;
+}
+.work-repo-push-btn:hover {
+  color: var(--accent-blue);
+}
+.repo-card__summary:hover .work-repo-push-btn {
+  opacity: 1;
+}
+@keyframes work-push-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.work-push-spinner {
+  display: inline-block;
+  animation: work-push-spin 1s linear infinite;
+  color: var(--accent-blue);
+  font-size: 12px;
+}
+.work-push-done {
+  color: var(--accent-green);
+  font-size: 11px;
+}
+.work-push-error {
+  color: var(--accent-red, #f26b6b);
+  font-size: 11px;
+}
+.remote-ahead-badge {
+  font-size: 10px;
+  color: var(--accent-blue);
+  opacity: 0.8;
+  margin-right: 4px;
+}
+.remote-behind-badge {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.8;
 }
 /*! Bundled license information:
 
