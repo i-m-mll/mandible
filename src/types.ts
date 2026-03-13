@@ -210,6 +210,7 @@ export interface ConsoleSession {
   label: string;
   command: string;
   args: string[];
+  provider_session_id: string | null;
   cwd: string | null;
   env: Record<string, string>;
   cols: number;

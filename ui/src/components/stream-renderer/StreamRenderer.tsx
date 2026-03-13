@@ -109,6 +109,7 @@ function deriveStatusBarProps(
   streaming: boolean,
   initEvent: SystemInitEvent | null,
   resultEvent: ResultEvent | null,
+  liveLabel: string | undefined,
   sessionInfo?: StreamRendererProps['sessionInfo'],
 ): {
   model?: string;
@@ -116,11 +117,12 @@ function deriveStatusBarProps(
   numTurns?: number;
   durationMs?: number;
   error?: string;
+  liveLabel?: string;
 } {
   const model = sessionInfo?.model ?? initEvent?.model;
 
   if (!resultEvent) {
-    return { model };
+    return { model, liveLabel };
   }
 
   if (resultEvent.is_error) {
@@ -130,6 +132,7 @@ function deriveStatusBarProps(
       numTurns: resultEvent.num_turns,
       durationMs: resultEvent.duration_ms,
       error: resultEvent.errors?.join('; '),
+      liveLabel,
     };
   }
 
@@ -138,7 +141,29 @@ function deriveStatusBarProps(
     totalCostUsd: resultEvent.total_cost_usd,
     numTurns: resultEvent.num_turns,
     durationMs: resultEvent.duration_ms,
+    liveLabel,
   };
+}
+
+function deriveLiveLabel(turns: RenderedTurn[], streaming: boolean): string | undefined {
+  if (!streaming) {
+    return undefined;
+  }
+  const lastTurn = turns[turns.length - 1];
+  if (!lastTurn) {
+    return 'Waiting for reply';
+  }
+  const blocks = lastTurn.assistantEvent.message.content;
+  if (blocks.some((block) => block.type === 'thinking' && block.thinking.trim())) {
+    return 'Thinking';
+  }
+  if (blocks.some((block) => block.type === 'tool_use')) {
+    return 'Using tools';
+  }
+  if (blocks.some((block) => block.type === 'text' && block.text.trim())) {
+    return 'Responding';
+  }
+  return 'Working';
 }
 
 // ---- Root component ----
@@ -206,7 +231,14 @@ export function StreamRenderer({
     setUserScrolled(false);
   }
 
-  const statusBarProps = deriveStatusBarProps(streaming, initEvent, resultEvent, sessionInfo);
+  const liveLabel = deriveLiveLabel(turns, streaming);
+  const statusBarProps = deriveStatusBarProps(
+    streaming,
+    initEvent,
+    resultEvent,
+    liveLabel,
+    sessionInfo,
+  );
 
   // Bug: db5e986 — treat synthetic prompts as real content so "No events" is
   // not shown after the user submits a message but before the assistant replies.
@@ -279,6 +311,15 @@ export function StreamRenderer({
         onScroll={handleScroll}
       >
         {nodes}
+        {streaming && (
+          <div className="stream-live-indicator" aria-live="polite">
+            <span className="stream-live-indicator__dot" aria-hidden="true" />
+            <span className="stream-live-indicator__label">
+              {liveLabel ?? 'Working'}
+              {elapsedSeconds !== undefined ? ` ${elapsedSeconds}s` : ''}
+            </span>
+          </div>
+        )}
       </div>
       {userScrolled && streaming && (
         <button

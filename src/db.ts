@@ -496,6 +496,15 @@ const MIGRATIONS: Migration[] = [
        VALUES ('push_same_name_upstream', 'true',
                CAST(strftime('%s','now') * 1000 AS INTEGER))`
     ]
+  },
+  {
+    version: 32,
+    name: "console_provider_session_id",
+    // Bug: d947752 — persist provider-native conversation ids so live chat,
+    // history, and debug terminal can target the same underlying session.
+    statements: [
+      `ALTER TABLE console_sessions ADD COLUMN provider_session_id TEXT`
+    ]
   }
 ];
 

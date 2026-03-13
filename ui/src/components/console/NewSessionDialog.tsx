@@ -1,32 +1,104 @@
-// Bug: b949700 — Console tab: modal dialog to start a new PTY session
 import type { JSX } from 'preact/jsx-runtime';
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
+
+type AgentKind = 'agent' | 'operator';
+type Backend = 'claude' | 'codex';
 
 type NewSessionDialogProps = {
   open: boolean;
   onClose: () => void;
-  onSubmit: (label: string, agentType: string) => void;
+  onSubmit: (input: { label: string; backend: Backend; kind: AgentKind }) => void;
 };
 
-const AGENT_TYPE_OPTIONS = [
-  { value: 'operator', label: 'Operator (Claude agent, auto-restart)' },
-  { value: 'claude', label: 'Claude (Claude agent)' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'shell', label: 'Shell (bash)' },
-] as const;
+const KIND_OPTIONS: Array<{
+  value: AgentKind;
+  title: string;
+  description: string;
+}> = [
+  {
+    value: 'agent',
+    title: 'Chat agent',
+    description: 'Normal ongoing chat. Rich chat is primary, debug terminal stays optional.',
+  },
+  {
+    value: 'operator',
+    title: 'Operator',
+    description: 'Pinned Claude router that auto-starts and stays available across the app.',
+  },
+];
 
-export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogProps): JSX.Element | null {
+const BACKEND_OPTIONS: Array<{
+  value: Backend;
+  title: string;
+  description: string;
+  note?: string;
+}> = [
+  {
+    value: 'claude',
+    title: 'Claude Code',
+    description: 'First-class chat with native Claude history and resumable debug terminal.',
+  },
+  {
+    value: 'codex',
+    title: 'Codex',
+    description: 'Terminal-first today. Rich chat rendering still trails Claude.',
+    note: 'Operator mode is not available for Codex yet.',
+  },
+];
+
+function OptionCard({
+  title,
+  description,
+  selected,
+  disabled = false,
+  onClick,
+  note,
+}: {
+  title: string;
+  description: string;
+  selected: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  note?: string;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      className={`new-session-option${selected ? ' new-session-option--selected' : ''}${disabled ? ' new-session-option--disabled' : ''}`}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      <span className="new-session-option__title">{title}</span>
+      <span className="new-session-option__description">{description}</span>
+      {note && <span className="new-session-option__note">{note}</span>}
+    </button>
+  );
+}
+
+export function NewSessionDialog({
+  open,
+  onClose,
+  onSubmit,
+}: NewSessionDialogProps): JSX.Element | null {
   const [label, setLabel] = useState('');
-  const [agentType, setAgentType] = useState<string>('shell');
+  const [kind, setKind] = useState<AgentKind>('agent');
+  const [backend, setBackend] = useState<Backend>('claude');
+
+  useEffect(() => {
+    if (kind === 'operator' && backend !== 'claude') {
+      setBackend('claude');
+    }
+  }, [backend, kind]);
 
   if (!open) return null;
 
   const handleSubmit = (e: Event) => {
     e.preventDefault();
     if (!label.trim()) return;
-    onSubmit(label.trim(), agentType);
+    onSubmit({ label: label.trim(), backend, kind });
     setLabel('');
-    setAgentType('shell');
+    setKind('agent');
+    setBackend('claude');
     onClose();
   };
 
@@ -39,13 +111,13 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
   return (
     <div className="new-session-dialog-overlay" onClick={handleOverlayClick}>
       <div className="new-session-dialog">
-        <h3>New Console Session</h3>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label
-              htmlFor="console-session-label"
-              style={{ fontSize: '13px', color: 'var(--text-muted)' }}
-            >
+        <h3>New Agent Chat</h3>
+        <p className="new-session-dialog__intro">
+          Choose the chat role first, then the backend that will power it.
+        </p>
+        <form className="new-session-dialog__form" onSubmit={handleSubmit}>
+          <div className="new-session-dialog__field">
+            <label htmlFor="console-session-label" className="new-session-dialog__label">
               Name
             </label>
             <input
@@ -53,83 +125,54 @@ export function NewSessionDialog({ open, onClose, onSubmit }: NewSessionDialogPr
               type="text"
               value={label}
               onInput={(e) => setLabel((e.target as HTMLInputElement).value)}
-              placeholder="e.g. Operator, My Shell"
+              placeholder="e.g. Research thread, Operator"
               required
               autoFocus
-              style={{
-                background: 'var(--bg-secondary)',
-                border: '1px solid rgba(255,255,255,0.1)',
-                borderRadius: '8px',
-                padding: '8px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '14px',
-                fontFamily: 'var(--font-sans)',
-                outline: 'none',
-              }}
+              className="new-session-dialog__input"
             />
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label
-              htmlFor="console-agent-type"
-              style={{ fontSize: '13px', color: 'var(--text-muted)' }}
-            >
-              Agent Type
-            </label>
-            <select
-              id="console-agent-type"
-              value={agentType}
-              onChange={(e) => setAgentType((e.target as HTMLSelectElement).value)}
-              style={{
-                background: 'var(--bg-secondary)',
-                border: '1px solid rgba(255,255,255,0.1)',
-                borderRadius: '8px',
-                padding: '8px 12px',
-                color: 'var(--text-primary)',
-                fontSize: '14px',
-                fontFamily: 'var(--font-sans)',
-                outline: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              {AGENT_TYPE_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
+
+          <div className="new-session-dialog__field">
+            <div className="new-session-dialog__label">Kind</div>
+            <div className="new-session-dialog__options">
+              {KIND_OPTIONS.map((option) => (
+                <OptionCard
+                  key={option.value}
+                  title={option.title}
+                  description={option.description}
+                  selected={kind === option.value}
+                  onClick={() => setKind(option.value)}
+                />
               ))}
-            </select>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '4px' }}>
-            <button
-              type="button"
-              onClick={onClose}
-              style={{
-                padding: '8px 16px',
-                borderRadius: '8px',
-                background: 'transparent',
-                border: '1px solid rgba(255,255,255,0.1)',
-                color: 'var(--text-muted)',
-                cursor: 'pointer',
-                fontSize: '14px',
-                fontFamily: 'var(--font-sans)',
-              }}
-            >
+
+          <div className="new-session-dialog__field">
+            <div className="new-session-dialog__label">Backend</div>
+            <div className="new-session-dialog__options">
+              {BACKEND_OPTIONS.map((option) => {
+                const disabled = kind === 'operator' && option.value !== 'claude';
+                return (
+                  <OptionCard
+                    key={option.value}
+                    title={option.title}
+                    description={option.description}
+                    note={disabled ? option.note : undefined}
+                    selected={backend === option.value}
+                    disabled={disabled}
+                    onClick={() => setBackend(option.value)}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="new-session-dialog__actions">
+            <button type="button" onClick={onClose} className="new-session-dialog__button new-session-dialog__button--ghost">
               Cancel
             </button>
-            <button
-              type="submit"
-              style={{
-                padding: '8px 16px',
-                borderRadius: '8px',
-                background: 'var(--accent-blue)',
-                border: 'none',
-                color: '#fff',
-                cursor: 'pointer',
-                fontSize: '14px',
-                fontFamily: 'var(--font-sans)',
-                fontWeight: 600,
-              }}
-            >
-              Start
+            <button type="submit" className="new-session-dialog__button new-session-dialog__button--primary">
+              Create chat
             </button>
           </div>
         </form>

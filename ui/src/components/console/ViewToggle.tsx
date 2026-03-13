@@ -1,4 +1,4 @@
-// Bug: b949700 — Console tab: view mode toggle (Terminal / Rich)
+// Bug: b949700 — Console tab: view mode toggle (Chat / Debug terminal)
 import type { JSX } from 'preact/jsx-runtime';
 
 type ViewToggleProps = {
@@ -11,17 +11,17 @@ export function ViewToggle({ current, onChange }: ViewToggleProps): JSX.Element 
     <div className="view-toggle">
       <button
         type="button"
-        className={`view-toggle__btn${current === 'terminal' ? ' view-toggle__btn--active' : ''}`}
-        onClick={() => onChange('terminal')}
-      >
-        Terminal
-      </button>
-      <button
-        type="button"
         className={`view-toggle__btn${current === 'rich' ? ' view-toggle__btn--active' : ''}`}
         onClick={() => onChange('rich')}
       >
-        Rich
+        Chat
+      </button>
+      <button
+        type="button"
+        className={`view-toggle__btn${current === 'terminal' ? ' view-toggle__btn--active' : ''}`}
+        onClick={() => onChange('terminal')}
+      >
+        Debug Terminal
       </button>
     </div>
   );

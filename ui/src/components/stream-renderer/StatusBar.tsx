@@ -5,9 +5,9 @@ import type { StatusBarProps } from './types';
 
 function formatCost(usd: number): string {
   if (usd < 0.001) {
-    return '<$0.001';
+    return 'est. <$0.001';
   }
-  return `$${usd.toFixed(4)}`;
+  return `est. $${usd.toFixed(4)}`;
 }
 
 function formatDuration(ms: number): string {
@@ -25,6 +25,7 @@ export function StatusBar({
   durationMs,
   error,
   elapsedSeconds,
+  liveLabel,
 }: StatusBarProps): JSX.Element {
   const dotClass = error
     ? 'status-bar__dot status-bar__dot--error'
@@ -61,7 +62,7 @@ export function StatusBar({
   } else if (streaming) {
     labelContent = (
       <span className="status-bar__label">
-        Streaming…
+        {liveLabel ?? 'Working'}
       </span>
     );
   } else {

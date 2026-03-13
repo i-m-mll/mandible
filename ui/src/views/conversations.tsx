@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
+import type { ConsoleSession } from '../state';
 import type {
   BlockType,
   Conversation,
@@ -96,10 +97,101 @@ function parseMetadata(json: string): Record<string, unknown> {
   }
 }
 
+function isCollapsibleBlock(type: BlockType): boolean {
+  return (
+    type === 'thinking' ||
+    type === 'tool_use' ||
+    type === 'tool_result' ||
+    type === 'system' ||
+    type === 'event'
+  );
+}
+
+function getBlockHeaderLabel(
+  block: ConversationBlock,
+  metadata: Record<string, unknown>,
+): string | null {
+  switch (block.type) {
+    case 'user_message':
+      return null;
+    case 'assistant_message': {
+      const model = metadata.model as string | undefined;
+      return model ? `Assistant (${model})` : 'Assistant';
+    }
+    case 'thinking': {
+      const duration = metadata.duration_ms as number | undefined;
+      return duration ? `Thinking (${(duration / 1000).toFixed(1)}s)` : 'Thinking';
+    }
+    case 'tool_use': {
+      const toolName = metadata.tool_name as string | undefined;
+      return toolName ? `Tool: ${toolName}` : 'Tool Use';
+    }
+    case 'tool_result':
+      return 'Tool Result';
+    case 'system':
+      return 'System';
+    case 'event': {
+      const eventType = metadata.event_type as string | undefined;
+      const isError = metadata.is_error === true || metadata.level === 'error';
+      const prefix = isError ? 'Error' : 'Event';
+      return eventType ? `${prefix}: ${eventType}` : prefix;
+    }
+    default:
+      return block.type;
+  }
+}
+
+type TranscriptSpeaker = 'user' | 'assistant' | 'system';
+type TranscriptTurn = {
+  id: string;
+  speaker: TranscriptSpeaker;
+  blocks: ConversationBlock[];
+};
+
+function speakerForBlock(block: ConversationBlock): TranscriptSpeaker {
+  if (block.type === 'user_message') {
+    return 'user';
+  }
+  if (
+    block.type === 'assistant_message' ||
+    block.type === 'thinking' ||
+    block.type === 'tool_use' ||
+    block.type === 'tool_result'
+  ) {
+    return 'assistant';
+  }
+  return 'system';
+}
+
+function buildTranscriptTurns(blocks: ConversationBlock[]): TranscriptTurn[] {
+  const turns: TranscriptTurn[] = [];
+  let current: TranscriptTurn | null = null;
+
+  for (const block of blocks) {
+    const speaker = speakerForBlock(block);
+    if (speaker === 'system') {
+      current = null;
+      turns.push({ id: `turn-${block.id}`, speaker, blocks: [block] });
+      continue;
+    }
+    if (!current || current.speaker !== speaker) {
+      current = { id: `turn-${block.id}`, speaker, blocks: [block] };
+      turns.push(current);
+      continue;
+    }
+    current.blocks.push(block);
+  }
+
+  return turns;
+}
+
 // ── Props ──
 
 export type ConversationsViewProps = {
   conversations: Conversation[];
+  consoleSessions: ConsoleSession[];
+  initialConversationId: string | null;
+  initialSessionId: string | null;
 };
 
 // ── Markdown renderer ──
@@ -253,6 +345,43 @@ function ToolUseCard({
   );
 }
 
+function renderConversationBlockBody(
+  block: ConversationBlock,
+  collapsed: boolean,
+): JSX.Element | null {
+  if (collapsed) return null;
+  const metadata = parseMetadata(block.metadata_json);
+
+  if (block.type === 'assistant_message' || block.type === 'user_message') {
+    return (
+      <div className="block-content">
+        <MarkdownContent content={block.content} />
+      </div>
+    );
+  }
+
+  if (block.type === 'tool_use') {
+    const toolName = metadata.tool_name as string | undefined;
+    const toolInput = (metadata.tool_input ?? null) as unknown;
+    return (
+      <div className="block-content block-content--mono">
+        <ToolUseCard toolName={toolName} toolInput={toolInput} fullContent={block.content} />
+      </div>
+    );
+  }
+
+  const showExpandButton = isCollapsibleBlock(block.type) && block.content.length > 200;
+  return (
+    <div className={`block-content${block.type === 'tool_result' ? ' block-content--mono' : ''}`}>
+      {showExpandButton ? (
+        <ContentWithExpand content={block.content} />
+      ) : (
+        <pre className="block-pre">{block.content}</pre>
+      )}
+    </div>
+  );
+}
+
 // ── Block Renderer ──
 
 function BlockRenderer({
@@ -273,12 +402,7 @@ function BlockRenderer({
   collapsed: boolean;
 }): JSX.Element {
   const metadata = parseMetadata(block.metadata_json);
-  const isCollapsible =
-    block.type === 'thinking' ||
-    block.type === 'tool_use' ||
-    block.type === 'tool_result' ||
-    block.type === 'system' ||
-    block.type === 'event';
+  const isCollapsible = isCollapsibleBlock(block.type);
 
   // User message: no header label (the box style is sufficient to distinguish it)
   // Bug: 372edcb — remove redundant "User" header from user message blocks
@@ -304,70 +428,7 @@ function BlockRenderer({
     }
   };
 
-  const headerLabel = (() => {
-    switch (block.type) {
-      case 'user_message':
-        return null; // no header label for user messages
-      case 'assistant_message': {
-        const model = metadata.model as string | undefined;
-        return model ? `Assistant (${model})` : 'Assistant';
-      }
-      case 'thinking': {
-        const duration = metadata.duration_ms as number | undefined;
-        return duration ? `Thinking (${(duration / 1000).toFixed(1)}s)` : 'Thinking';
-      }
-      case 'tool_use': {
-        const toolName = metadata.tool_name as string | undefined;
-        return toolName ? `Tool: ${toolName}` : 'Tool Use';
-      }
-      case 'tool_result':
-        return 'Tool Result';
-      case 'system':
-        return 'System';
-      case 'event': {
-        const eventType = metadata.event_type as string | undefined;
-        const isError = metadata.is_error === true || metadata.level === 'error';
-        const prefix = isError ? 'Error' : 'Event';
-        return eventType ? `${prefix}: ${eventType}` : prefix;
-      }
-      default:
-        return block.type;
-    }
-  })();
-
-  // Render markdown for assistant and user messages; mono pre for everything else
-  const renderContent = () => {
-    if (collapsed) return null;
-
-    if (block.type === 'assistant_message' || block.type === 'user_message') {
-      return (
-        <div className="block-content">
-          <MarkdownContent content={block.content} />
-        </div>
-      );
-    }
-
-    if (block.type === 'tool_use') {
-      const toolName = metadata.tool_name as string | undefined;
-      const toolInput = (metadata.tool_input ?? null) as unknown;
-      return (
-        <div className="block-content block-content--mono">
-          <ToolUseCard toolName={toolName} toolInput={toolInput} fullContent={block.content} />
-        </div>
-      );
-    }
-
-    const showExpandButton = isCollapsible && block.content.length > 200;
-    return (
-      <div className={`block-content${block.type === 'tool_result' ? ' block-content--mono' : ''}`}>
-        {showExpandButton ? (
-          <ContentWithExpand content={block.content} />
-        ) : (
-          <pre className="block-pre">{block.content}</pre>
-        )}
-      </div>
-    );
-  };
+  const headerLabel = getBlockHeaderLabel(block, metadata);
 
   return (
     <div className={typeClass} onClick={handleClick} data-block-id={block.id}>
@@ -423,7 +484,128 @@ function BlockRenderer({
           </div>
         </div>
       )}
-      {renderContent()}
+      {renderConversationBlockBody(block, collapsed)}
+    </div>
+  );
+}
+
+function TranscriptBlockItem({
+  block,
+  isSelected,
+  selectMode,
+  onToggleSelect,
+  onShiftSelect,
+  onToggleCollapse,
+  collapsed,
+}: {
+  block: ConversationBlock;
+  isSelected: boolean;
+  selectMode: boolean;
+  onToggleSelect: () => void;
+  onShiftSelect: () => void;
+  onToggleCollapse: () => void;
+  collapsed: boolean;
+}): JSX.Element {
+  const metadata = parseMetadata(block.metadata_json);
+  const isCollapsible = isCollapsibleBlock(block.type);
+  const headerLabel = getBlockHeaderLabel(block, metadata);
+  const isErrorEvent = block.type === 'event' && (metadata.is_error === true || metadata.level === 'error');
+  const className = [
+    'transcript-item',
+    `transcript-item--${block.type.replace('_', '-')}`,
+    isSelected ? 'transcript-item--selected' : '',
+    isErrorEvent ? 'transcript-item--error' : '',
+    selectMode ? 'transcript-item--selectable' : '',
+  ].filter(Boolean).join(' ');
+
+  const handleClick = (e: MouseEvent) => {
+    if (!selectMode) return;
+    if (e.shiftKey) {
+      onShiftSelect();
+    } else {
+      onToggleSelect();
+    }
+  };
+
+  return (
+    <div className={className} onClick={handleClick} data-block-id={block.id}>
+      <div className="transcript-item__meta">
+        <div className="transcript-item__meta-left">
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={onToggleSelect}
+            onClick={(e) => e.stopPropagation()}
+            className={`block-checkbox${selectMode || isSelected ? ' block-checkbox--visible' : ''}`}
+          />
+          {isCollapsible && (
+            <button
+              type="button"
+              className="block-collapse-toggle"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleCollapse();
+              }}
+            >
+              {collapsed ? '\u25B8' : '\u25BE'}
+            </button>
+          )}
+          {headerLabel && <span className="transcript-item__label">{headerLabel}</span>}
+        </div>
+        <div className="transcript-item__meta-right">
+          <CopyButton content={block.content} />
+          <span className="block-timestamp" title={formatAbsoluteTime(block.timestamp)}>
+            {formatRelativeTime(block.timestamp)}
+          </span>
+        </div>
+      </div>
+      {renderConversationBlockBody(block, collapsed)}
+    </div>
+  );
+}
+
+function TranscriptTurnRenderer({
+  turn,
+  selected,
+  selectMode,
+  collapsedBlocks,
+  onToggleSelect,
+  onShiftSelect,
+  onToggleCollapse,
+}: {
+  turn: TranscriptTurn;
+  selected: Set<string>;
+  selectMode: boolean;
+  collapsedBlocks: Set<string>;
+  onToggleSelect: (blockId: string) => void;
+  onShiftSelect: (blockId: string) => void;
+  onToggleCollapse: (blockId: string) => void;
+}): JSX.Element {
+  const speakerLabel = turn.speaker === 'user'
+    ? 'You'
+    : turn.speaker === 'assistant'
+      ? 'Assistant'
+      : 'System';
+
+  return (
+    <div className={`transcript-turn transcript-turn--${turn.speaker}`}>
+      <div className="transcript-turn__speaker">
+        <span className="transcript-turn__badge">{speakerLabel}</span>
+      </div>
+      <div className="transcript-turn__body">
+        {turn.blocks.map((block) => (
+          <TranscriptBlockItem
+            key={block.id}
+            block={block}
+            isSelected={selected.has(block.id)}
+            selectMode={selectMode}
+            onToggleSelect={() => onToggleSelect(block.id)}
+            onShiftSelect={() => onShiftSelect(block.id)}
+            onToggleCollapse={() => onToggleCollapse(block.id)}
+            collapsed={collapsedBlocks.has(block.id)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -632,13 +814,16 @@ function SubAgentsList({
 function ConversationDetail({
   conversationId,
   onNavigate,
+  consoleSessions,
 }: {
   conversationId: string;
   onNavigate: (id: string) => void;
+  consoleSessions: ConsoleSession[];
 }): JSX.Element {
   const [conversation, setConversation] = useState<(Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [loadNonce, setLoadNonce] = useState(0);
 
   // Selection state
   const [selectMode, setSelectMode] = useState(false);
@@ -647,6 +832,7 @@ function ConversationDetail({
   const [visibleTypes, setVisibleTypes] = useState<Set<BlockType>>(new Set(ALL_BLOCK_TYPES));
   const [collapsedBlocks, setCollapsedBlocks] = useState<Set<string>>(new Set());
   const [showExport, setShowExport] = useState(false);
+  const [renderMode, setRenderMode] = useState<'transcript' | 'raw'>('transcript');
 
   // Virtual scroll state
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -659,27 +845,24 @@ function ConversationDetail({
     setError(null);
     getConversation(conversationId)
       .then((conv) => {
-        if (active) {
-          setConversation(conv);
-          // Collapse thinking and system blocks by default
-          const defaultCollapsed = new Set<string>();
-          for (const block of conv.blocks) {
-            if (block.type === 'thinking' || block.type === 'system') {
-              defaultCollapsed.add(block.id);
-            }
+        if (!active) return;
+        setConversation(conv);
+        const defaultCollapsed = new Set<string>();
+        for (const block of conv.blocks) {
+          if (block.type === 'thinking' || block.type === 'system') {
+            defaultCollapsed.add(block.id);
           }
-          setCollapsedBlocks(defaultCollapsed);
-          setLoading(false);
         }
+        setCollapsedBlocks(defaultCollapsed);
+        setLoading(false);
       })
       .catch((err) => {
-        if (active) {
-          setError(String(err));
-          setLoading(false);
-        }
+        if (!active) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
       });
     return () => { active = false; };
-  }, [conversationId]);
+  }, [conversationId, loadNonce]);
 
   // Observe container resize
   useEffect(() => {
@@ -700,6 +883,7 @@ function ConversationDetail({
     () => blocks.filter((b) => visibleTypes.has(b.type)),
     [blocks, visibleTypes],
   );
+  const transcriptTurns = useMemo(() => buildTranscriptTurns(visibleBlocks), [visibleBlocks]);
 
   const exportableBlocks = useMemo(
     () => visibleBlocks.filter((b) => selected.has(b.id)),
@@ -833,6 +1017,11 @@ function ConversationDetail({
     }
   };
 
+  const linkedConsoleSession = useMemo(() => {
+    if (!conversation?.session_id) return null;
+    return consoleSessions.find((session) => session.provider_session_id === conversation.session_id) ?? null;
+  }, [consoleSessions, conversation?.session_id]);
+
   if (loading) {
     return (
       <div className="conv-detail">
@@ -844,7 +1033,16 @@ function ConversationDetail({
   if (error || !conversation) {
     return (
       <div className="conv-detail">
-        <div className="empty-state">{error || 'Conversation not found.'}</div>
+        <div className="empty-state">
+          <div>{error || 'Conversation not found.'}</div>
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            onClick={() => setLoadNonce((prev) => prev + 1)}
+          >
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
@@ -894,6 +1092,17 @@ function ConversationDetail({
           </div>
         </div>
         <div className="conv-detail__header-right">
+          {linkedConsoleSession && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => {
+                window.location.hash = `#/console?session=${encodeURIComponent(linkedConsoleSession.id)}`;
+              }}
+            >
+              Open live chat
+            </button>
+          )}
           <button
             type="button"
             className={`btn btn--ghost btn--sm conv-star-btn${conversation.starred ? ' conv-star-btn--active' : ''}`}
@@ -926,6 +1135,22 @@ function ConversationDetail({
           ))}
         </div>
         <div className="conv-filter-bar__actions">
+          <div className="toggle-group">
+            <button
+              type="button"
+              className={`btn btn--sm${renderMode === 'transcript' ? ' btn--active' : ' btn--ghost'}`}
+              onClick={() => setRenderMode('transcript')}
+            >
+              Transcript
+            </button>
+            <button
+              type="button"
+              className={`btn btn--sm${renderMode === 'raw' ? ' btn--active' : ' btn--ghost'}`}
+              onClick={() => setRenderMode('raw')}
+            >
+              Inspect raw
+            </button>
+          </div>
           <button
             type="button"
             className="btn btn--ghost btn--sm"
@@ -1001,47 +1226,66 @@ function ConversationDetail({
         />
       )}
 
-      {/* Block list */}
-      <div
-        className="conv-blocks"
-        ref={scrollContainerRef}
-        onScroll={handleScroll}
-      >
-        {shouldVirtualize ? (
-          <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
-            <div style={{ position: 'absolute', top: `${startIndex * ESTIMATED_BLOCK_HEIGHT}px`, left: 0, right: 0 }}>
-              {renderedBlocks.map((block) => (
-                <BlockRenderer
-                  key={block.id}
-                  block={block}
-                  isSelected={selected.has(block.id)}
-                  selectMode={selectMode}
-                  onToggleSelect={() => toggleSelect(block.id)}
-                  onShiftSelect={() => handleShiftSelect(block.id)}
-                  onToggleCollapse={() => toggleCollapse(block.id)}
-                  collapsed={collapsedBlocks.has(block.id)}
-                />
-              ))}
-            </div>
-          </div>
-        ) : (
-          renderedBlocks.map((block) => (
-            <BlockRenderer
-              key={block.id}
-              block={block}
-              isSelected={selected.has(block.id)}
+      {renderMode === 'transcript' ? (
+        <div className="conv-transcript">
+          {transcriptTurns.map((turn) => (
+            <TranscriptTurnRenderer
+              key={turn.id}
+              turn={turn}
+              selected={selected}
               selectMode={selectMode}
-              onToggleSelect={() => toggleSelect(block.id)}
-              onShiftSelect={() => handleShiftSelect(block.id)}
-              onToggleCollapse={() => toggleCollapse(block.id)}
-              collapsed={collapsedBlocks.has(block.id)}
+              collapsedBlocks={collapsedBlocks}
+              onToggleSelect={toggleSelect}
+              onShiftSelect={handleShiftSelect}
+              onToggleCollapse={toggleCollapse}
             />
-          ))
-        )}
-        {visibleBlocks.length === 0 && (
-          <div className="empty-state">No blocks match the current filters.</div>
-        )}
-      </div>
+          ))}
+          {transcriptTurns.length === 0 && (
+            <div className="empty-state">No blocks match the current filters.</div>
+          )}
+        </div>
+      ) : (
+        <div
+          className="conv-blocks"
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+        >
+          {shouldVirtualize ? (
+            <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
+              <div style={{ position: 'absolute', top: `${startIndex * ESTIMATED_BLOCK_HEIGHT}px`, left: 0, right: 0 }}>
+                {renderedBlocks.map((block) => (
+                  <BlockRenderer
+                    key={block.id}
+                    block={block}
+                    isSelected={selected.has(block.id)}
+                    selectMode={selectMode}
+                    onToggleSelect={() => toggleSelect(block.id)}
+                    onShiftSelect={() => handleShiftSelect(block.id)}
+                    onToggleCollapse={() => toggleCollapse(block.id)}
+                    collapsed={collapsedBlocks.has(block.id)}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : (
+            renderedBlocks.map((block) => (
+              <BlockRenderer
+                key={block.id}
+                block={block}
+                isSelected={selected.has(block.id)}
+                selectMode={selectMode}
+                onToggleSelect={() => toggleSelect(block.id)}
+                onShiftSelect={() => handleShiftSelect(block.id)}
+                onToggleCollapse={() => toggleCollapse(block.id)}
+                collapsed={collapsedBlocks.has(block.id)}
+              />
+            ))
+          )}
+          {visibleBlocks.length === 0 && (
+            <div className="empty-state">No blocks match the current filters.</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1097,7 +1341,12 @@ function ChatHistoryItem({
 
 // ── Main View ──
 
-export function ConversationsView({ conversations: initialConversations }: ConversationsViewProps): JSX.Element {
+export function ConversationsView({
+  conversations: initialConversations,
+  consoleSessions,
+  initialConversationId,
+  initialSessionId,
+}: ConversationsViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 320,
     minWidth: 190,
@@ -1119,6 +1368,52 @@ export function ConversationsView({ conversations: initialConversations }: Conve
   const searchTimer = useRef<number | null>(null);
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
+
+  useEffect(() => {
+    if (!initialConversationId) return;
+    setSelectedId(initialConversationId);
+  }, [initialConversationId]);
+
+  useEffect(() => {
+    let active = true;
+    let retryTimer: number | null = null;
+
+    if (initialConversationId || !initialSessionId) {
+      return () => {
+        active = false;
+      };
+    }
+
+    const resolveConversation = (attemptsRemaining: number) => {
+      void getConversations({ session_id: initialSessionId, limit: 1 })
+        .then((result) => {
+          if (!active) return;
+          const resolvedId = result.conversations[0]?.id ?? null;
+          if (resolvedId) {
+            setSelectedId(resolvedId);
+            return;
+          }
+          if (attemptsRemaining > 0) {
+            retryTimer = window.setTimeout(() => resolveConversation(attemptsRemaining - 1), 1500);
+          }
+        })
+        .catch(() => {
+          if (!active) return;
+          if (attemptsRemaining > 0) {
+            retryTimer = window.setTimeout(() => resolveConversation(attemptsRemaining - 1), 1500);
+          }
+        });
+    };
+
+    resolveConversation(5);
+
+    return () => {
+      active = false;
+      if (retryTimer !== null) {
+        window.clearTimeout(retryTimer);
+      }
+    };
+  }, [initialConversationId, initialSessionId]);
 
   // Fetch conversations. Uses ref for offset to avoid stale closure.
   const fetchConversations = useCallback(async (reset = true) => {
@@ -1323,6 +1618,7 @@ export function ConversationsView({ conversations: initialConversations }: Conve
           <ConversationDetail
             conversationId={selectedId}
             onNavigate={(id) => setSelectedId(id)}
+            consoleSessions={consoleSessions}
           />
         ) : (
           <div className="chat-history-detail__empty">

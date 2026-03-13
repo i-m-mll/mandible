@@ -13,8 +13,9 @@ type ConsoleViewProps = {
   activeSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
-  onNewSession: (label: string, agentType: string) => void;
+  onNewSession: (input: { label: string; backend: string; kind: string }) => void;
   isActive: boolean;
+  initialSessionId: string | null;
 };
 
 export function ConsoleView({
@@ -24,13 +25,22 @@ export function ConsoleView({
   onCloseSession,
   onNewSession,
   isActive,
+  initialSessionId,
 }: ConsoleViewProps): JSX.Element {
   const [dialogOpen, setDialogOpen] = useState(false);
   // Per-session view mode stored locally: Record<sessionId, ViewMode>
   const [viewModes, setViewModes] = useState<Record<string, ViewMode>>({});
 
+  useEffect(() => {
+    if (!initialSessionId) return;
+    if (!sessions.some((session) => session.id === initialSessionId)) return;
+    if (activeSessionId === initialSessionId) return;
+    onSelectSession(initialSessionId);
+  }, [activeSessionId, initialSessionId, onSelectSession, sessions]);
+
   // Auto-select the operator/pinned session on first open if nothing is active
   useEffect(() => {
+    if (initialSessionId) return;
     if (activeSessionId === null && sessions.length > 0) {
       // Prefer operator session first, then first pinned, then first by created_at
       const operatorSession = sessions.find(
@@ -45,16 +55,12 @@ export function ConsoleView({
     }
   }, [activeSessionId, sessions, onSelectSession]);
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
-
-  // CL/CX/operator sessions (stream-json output) default to 'rich' view so the
-  // conversation stream is shown immediately. SH (shell) sessions default to
-  // 'terminal' since they produce raw PTY output only. The user can switch
-  // via the ViewToggle at any time.
+  // Claude-backed chat sessions get the chat view by default. Other agents stay
+  // terminal-first until they emit a reliable structured stream for the renderer.
   const getViewMode = (sessionId: string): ViewMode => {
     if (sessionId in viewModes) return viewModes[sessionId];
     const session = sessions.find((s) => s.id === sessionId);
-    if (session && session.agent_type !== 'shell') {
+    if (session && (session.agent_type === 'claude' || session.agent_type === 'operator')) {
       return 'rich';
     }
     return 'terminal';
@@ -113,7 +119,10 @@ export function ConsoleView({
             <TerminalPane
               key={session.id}
               sessionId={session.id}
+              agentType={session.agent_type}
               interactionMode={session.interaction_mode}
+              sessionStatus={session.status}
+              providerSessionId={session.provider_session_id}
               isVisible={session.id === activeSessionId}
               viewMode={getViewMode(session.id)}
               onViewModeChange={(mode) => handleViewModeChange(session.id, mode)}

@@ -559,7 +559,8 @@ export async function startConsoleSession(sessionId: string): Promise<void> {
 
 export async function createConsoleSession(
   label: string,
-  agentType: string,
+  backend: string,
+  kind: string,
 ): Promise<{ id: string }> {
   // Bug: b949700 — translate agent_type to command+args as required by backend
   type SessionBody = {
@@ -571,21 +572,19 @@ export async function createConsoleSession(
     is_operator?: boolean;
   };
   const body: SessionBody = { label, command: '', args: [] };
-  if (agentType === 'operator') {
+  if (kind === 'operator') {
     body.command = 'claude';
-    body.args = ['--dangerously-skip-permissions', '--output-format', 'stream-json'];
+    body.args = ['--dangerously-skip-permissions'];
     body.auto_restart = true;
     body.is_operator = true;
-  } else if (agentType === 'claude') {
+  } else if (backend === 'claude') {
     body.command = 'claude';
-    body.args = ['--dangerously-skip-permissions', '--output-format', 'stream-json'];
-  } else if (agentType === 'codex') {
+    body.args = ['--dangerously-skip-permissions'];
+  } else if (backend === 'codex') {
     body.command = 'codex';
     body.args = [];
   } else {
-    // shell / fallback
-    body.command = 'bash';
-    body.args = [];
+    throw new Error(`Unsupported backend: ${backend}`);
   }
   const response = await apiPost('/api/console/sessions', body);
   const json = await parseMaybeJson(response);
@@ -677,6 +676,7 @@ export async function getConversations(params?: {
   group?: boolean;
   exclude_subagents?: boolean;
   parent_id?: string;
+  session_id?: string;
 }): Promise<{ conversations: Conversation[]; total: number }> {
   const query = new URLSearchParams();
   if (params?.source) query.set('source', params.source);
@@ -688,6 +688,7 @@ export async function getConversations(params?: {
   if (params?.group) query.set('group', 'true');
   if (params?.exclude_subagents) query.set('exclude_subagents', 'true');
   if (params?.parent_id) query.set('parent_id', params.parent_id);
+  if (params?.session_id) query.set('session_id', params.session_id);
   const qs = query.toString();
   const resp = await apiGet(`/api/conversations${qs ? '?' + qs : ''}`);
   return (await parseMaybeJson(resp)) as { conversations: Conversation[]; total: number };
