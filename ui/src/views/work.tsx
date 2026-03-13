@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { openPath } from '../api';
+import { openPath, pushRepos, pushRepo } from '../api';
 
 export type WorkRepo = {
   id?: string;
@@ -44,6 +44,25 @@ export type WorkOverviewProps = {
   branchesByRepo: Record<string, WorkBranch[]>;
   onRescan: () => void;
   onReposChanged?: (repos: WorkRepo[]) => void;
+};
+
+// Bug: b5abaea — Push/sync state types
+type PushRepoResult = {
+  repoId: string;
+  repoName: string;
+  branches_pushed: number;
+  refs_pushed: number;
+  skipped: boolean;
+  error?: string;
+};
+
+type PushState = {
+  active: boolean;
+  sessionId?: string;
+  repoCount?: number;
+  completedCount?: number;
+  repoProgress: Map<string, "pending" | "pushing" | "done" | "error">;
+  lastResult?: { repos: PushRepoResult[]; duration_ms: number } | null;
 };
 
 const PROTECTED_BRANCHES = new Set(['main', 'develop']);
@@ -350,8 +369,9 @@ function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, on
         <td>
           {hasUpstream ? (
             <span className="ahead-behind" title={upstreamTitle}>
-              <span className="ahead">&uarr;{ahead}</span>
-              <span className="behind">&darr;{behind}</span>
+              {ahead > 0 && <span className="remote-ahead-badge" title="Ahead of remote">{'\u2601\u2191'}{ahead}</span>}
+              {behind > 0 && <span className="remote-behind-badge" title="Behind remote">{'\u2601\u2193'}{behind}</span>}
+              {ahead === 0 && behind === 0 && <span className="text-muted">even</span>}
             </span>
           ) : (
             <span className="no-upstream">no upstream</span>
@@ -491,6 +511,9 @@ export function WorkOverviewView({
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [editName, setEditName] = useState<Record<string, string>>({});
 
+  // Bug: b5abaea — Push/sync state
+  const [pushState, setPushState] = useState<PushState>({ active: false, repoProgress: new Map() });
+
   // Sync repos when initialRepos changes (external updates)
   useEffect(() => {
     setRepos(initialRepos);
@@ -513,6 +536,52 @@ export function WorkOverviewView({
   useEffect(() => {
     void fetchRepos(showExcluded);
   }, [showExcluded]);
+
+  // Bug: b5abaea — Subscribe to push SSE events forwarded via window CustomEvents
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { type, data } = (e as CustomEvent).detail as { type: string; data: Record<string, unknown> };
+      switch (type) {
+        case 'push:started':
+          setPushState(s => ({
+            ...s,
+            active: true,
+            sessionId: data.session_id as string | undefined,
+            repoCount: data.repo_count as number | undefined,
+            completedCount: 0,
+            repoProgress: new Map(),
+            lastResult: null,
+          }));
+          break;
+        case 'push:repo:progress':
+          setPushState(s => {
+            const m = new Map(s.repoProgress);
+            m.set(data.repo_id as string, 'pushing');
+            return { ...s, repoProgress: m };
+          });
+          break;
+        case 'push:repo:complete':
+          setPushState(s => {
+            const m = new Map(s.repoProgress);
+            m.set(data.repoId as string, data.error ? 'error' : 'done');
+            return { ...s, completedCount: (s.completedCount ?? 0) + 1, repoProgress: m };
+          });
+          break;
+        case 'push:complete':
+          setPushState(s => ({
+            ...s,
+            active: false,
+            lastResult: data as unknown as PushState['lastResult'],
+          }));
+          break;
+        case 'push:error':
+          setPushState(s => ({ ...s, active: false }));
+          break;
+      }
+    };
+    window.addEventListener('work:push', handler);
+    return () => window.removeEventListener('work:push', handler);
+  }, []);
 
   const repoRows = useMemo(() => {
     return repos
@@ -624,6 +693,28 @@ export function WorkOverviewView({
           <p className="text-muted">Branch and worktree status across repos.</p>
         </div>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div className="work-push-actions">
+            <button
+              type="button"
+              className={`btn btn--ghost btn--sm${pushState.active ? ' btn--disabled' : ''}`}
+              disabled={pushState.active}
+              onClick={() => pushRepos('current').catch(() => {})}
+              title="Push current branches + git-bug refs + notes for all repos"
+            >
+              {pushState.active
+                ? `Pushing\u2026 (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
+                : '\u2191 Push'}
+            </button>
+            <button
+              type="button"
+              className={`btn btn--ghost btn--sm${pushState.active ? ' btn--disabled' : ''}`}
+              disabled={pushState.active}
+              onClick={() => pushRepos('all_ahead').catch(() => {})}
+              title="Push all ahead branches + git-bug refs + notes for all repos"
+            >
+              {'\u2191\u2191 Push All'}
+            </button>
+          </div>
           <label style={{ fontSize: '0.85em', color: 'var(--text-muted, #888)', cursor: 'pointer' }}>
             <input
               type="checkbox"
@@ -729,6 +820,28 @@ export function WorkOverviewView({
                     {showPath ? <span className="text-muted">{repoPath}</span> : null}
                   </div>
                   <div className="repo-card__header-actions">
+                    {pushState.repoProgress.get(repoId) === 'pushing' && (
+                      <span className="work-push-spinner">{'\u27F3'}</span>
+                    )}
+                    {pushState.repoProgress.get(repoId) === 'done' && (
+                      <span className="work-push-done" title="Push complete">{'\u2713'}</span>
+                    )}
+                    {pushState.repoProgress.get(repoId) === 'error' && (
+                      <span className="work-push-error" title="Push failed">{'\u2717'}</span>
+                    )}
+                    <button
+                      type="button"
+                      className="work-repo-push-btn"
+                      disabled={pushState.active}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        pushRepo(repoId, 'all_ahead').catch(() => {});
+                      }}
+                      title="Push this repo"
+                    >
+                      {'\u2191'}
+                    </button>
                     {isExcluded && (
                       <button
                         type="button"
