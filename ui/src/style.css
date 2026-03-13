@@ -2747,23 +2747,33 @@ tr:hover .work-actions__trigger {
   color: #bb86fc;
 }
 
-/* Repo filter select */
-.issues-repo-select {
-  width: 100%;
-  padding: 6px 8px;
-  margin-bottom: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: 12px;
-  cursor: pointer;
-  outline: none;
+/* Repo filter input + datalist */
+.issues-repo-filter {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 6px;
 }
 
-.issues-repo-select:focus {
-  border-color: var(--accent-blue);
+.issues-repo-filter__input {
+  flex: 1;
+  padding-right: 24px;
+}
+
+.issues-repo-filter__clear {
+  position: absolute;
+  right: 12px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.issues-repo-filter__clear:hover {
+  color: var(--text-primary);
 }
 
 /* Label filter pills */
