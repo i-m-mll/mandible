@@ -31,14 +31,21 @@ const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
 // Bug: ea3102a — SSH ControlMaster approach: open one SSH connection per host
 // (one YubiKey touch) and reuse for all subsequent git pushes via GIT_SSH_COMMAND.
 
-function buildControlMasterEnv(socketPath: string): NodeJS.ProcessEnv {
-  const gitSshCommand = [
+function buildControlMasterEnv(socketPath: string, identityFile: string | null = null): NodeJS.ProcessEnv {
+  const gitSshCommandParts = [
     "ssh",
     "-o ControlMaster=auto",
     `-o ControlPath=${socketPath}-%h`,
     "-o ControlPersist=600",
     "-o StrictHostKeyChecking=accept-new",
-  ].join(" ");
+  ];
+
+  if (identityFile) {
+    gitSshCommandParts.push(`-i ${identityFile}`);
+    gitSshCommandParts.push("-o IdentitiesOnly=yes");
+  }
+
+  const gitSshCommand = gitSshCommandParts.join(" ");
 
   return {
     ...process.env,
@@ -150,6 +157,106 @@ function getSetting(key: string, defaultValue: string): string {
   } catch {
     return defaultValue;
   }
+}
+
+/**
+ * Extract the SSH hostname from a git remote URL.
+ * Returns null for HTTPS URLs or unparseable URLs.
+ *
+ * Handles:
+ *   git@github.com:user/repo.git       → github.com
+ *   ssh://git@github.com/user/repo.git → github.com
+ *   https://github.com/user/repo.git   → null (skip)
+ */
+function extractSshHost(remoteUrl: string): string | null {
+  const trimmed = remoteUrl.trim();
+
+  // Skip HTTPS remotes
+  if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
+    return null;
+  }
+
+  // ssh:// scheme
+  if (trimmed.startsWith("ssh://")) {
+    try {
+      const url = new URL(trimmed);
+      return url.hostname || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // SCP-style: [user@]host:path
+  const scpMatch = trimmed.match(/^(?:[^@/]+@)?([^:/]+):/);
+  if (scpMatch) {
+    return scpMatch[1];
+  }
+
+  return null;
+}
+
+/**
+ * Pre-authenticate SSH ControlMaster connections to all unique SSH hosts
+ * across the given repos. Broadcasts push:auth:pending before starting
+ * and push:auth:complete after all hosts are authed.
+ *
+ * Returns early (no-op) if no SSH hosts are found.
+ * Throws if pre-auth fails for any host.
+ */
+async function preAuthSshHosts(
+  repos: RepoInfo[],
+  socketPath: string,
+  identityFile: string | null
+): Promise<void> {
+  // Collect unique SSH hosts from all repo remotes
+  const hosts = new Set<string>();
+
+  for (const repo of repos) {
+    try {
+      const remoteUrl = await runGitAsync(
+        ["remote", "get-url", "origin"],
+        repo.root,
+        process.env
+      );
+      const host = extractSshHost(remoteUrl);
+      if (host) {
+        hosts.add(host);
+      }
+    } catch {
+      // No remote or remote fetch failed — skip this repo
+    }
+  }
+
+  if (hosts.size === 0) {
+    // All HTTPS or no remotes — nothing to pre-auth
+    return;
+  }
+
+  const hostList = Array.from(hosts);
+  broadcast({ type: "push:auth:pending", event: "push:auth:pending", data: { hosts: hostList } });
+
+  for (const host of hostList) {
+    const sshArgs: string[] = [
+      "ssh",
+      "-f",
+      "-N",
+      "-o", "ControlMaster=yes",
+      "-o", `ControlPath=${socketPath}-${host}`,
+      "-o", "ControlPersist=600",
+      "-o", "StrictHostKeyChecking=accept-new",
+    ];
+
+    if (identityFile) {
+      sshArgs.push("-i", identityFile, "-o", "IdentitiesOnly=yes");
+    }
+
+    sshArgs.push(host);
+
+    // Use a longer timeout to allow time for YubiKey touch
+    await runGitAsync(sshArgs, os.tmpdir(), process.env, 120_000);
+  }
+
+  broadcast({ type: "push:auth:complete", event: "push:auth:complete", data: {} });
 }
 
 async function pushRepo(
@@ -350,8 +457,27 @@ async function runPushSession(
   startedAt: string
 ): Promise<void> {
   const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-  const gitSshEnv = buildControlMasterEnv(socketPath);
   const sessionStart = Date.now();
+
+  // Read identity setting (empty string = no override)
+  const identityFile = getSetting("push_ssh_identity", "") || null;
+
+  // Pre-auth: establish ControlMaster connections to all SSH hosts before any git push.
+  // This ensures YubiKey touch happens once up front rather than silently using the agent key.
+  try {
+    await preAuthSshHosts(repos, socketPath, identityFile);
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    if (activePushSession) {
+      activePushSession.error = errorMsg;
+      activePushSession.done = true;
+    }
+    broadcast({ type: "push:error", event: "push:error", data: { error: `SSH pre-auth failed: ${errorMsg}` } });
+    await cleanupControlMaster(socketPath);
+    return;
+  }
+
+  const gitSshEnv = buildControlMasterEnv(socketPath, identityFile);
 
   try {
     for (const repo of repos) {
@@ -374,15 +500,12 @@ async function runPushSession(
       }
 
       broadcast({ type: "push:repo:complete", event: "push:repo:complete", data: result });
-
-      // Trigger a rescan of this repo to refresh ahead/behind counts
-      // Bug: ea3102a — after pushing, the ahead count should go to 0
-      try {
-        await scanner.scanAll();
-      } catch {
-        // Non-fatal: scan failure shouldn't block push progress
-      }
     }
+
+    // Trigger a single rescan after all repos complete to refresh ahead/behind counts.
+    // Bug: ea3102a — after pushing, the ahead count should go to 0.
+    // (Moved out of per-repo loop to eliminate inter-push spinner delay.)
+    void scanner.scanAll().catch(() => {});
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     if (activePushSession) {
