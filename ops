@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":1,"timestamp":1773424473,"nonce":"hRm/6emK+PIp3eojakpzZ/O0uj4=","title":"Create README and getting-started documentation","message":"Mandible currently lacks a README. Need comprehensive docs covering: feature highlights, installation, getting started, and key feature usage.","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":4,"timestamp":1773425023,"nonce":"Tw/jjXLcZSyappPBRiVR7Vt0fDA=","status":2}]}
