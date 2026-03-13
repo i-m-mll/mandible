@@ -1,4 +1,5 @@
 import { WorkScanner } from "../work-scanner.js";
+import { startPushSession, pushSingleRepo, getPushStatus } from "../push-manager.js";
 function getParam(req, key) {
     if (!req) {
         return undefined;
@@ -203,6 +204,51 @@ export function registerWorkRoutes(server, scanner) {
     server.post("/api/work/scan", async (_req, res) => {
         const summary = await workScanner.scanAll();
         sendJson(res, 200, summary);
+    });
+    // --- Push routes (Bug: ea3102a) ---
+    server.post("/api/work/push", (req, res) => {
+        const body = req.body;
+        const scope = body?.scope === "all_ahead" ? "all_ahead" : "current";
+        try {
+            let repos = workScanner.getRepos().filter((r) => !r.excluded && r.exists);
+            if (body?.repo_ids && body.repo_ids.length > 0) {
+                const idSet = new Set(body.repo_ids);
+                repos = repos.filter((r) => idSet.has(r.id));
+            }
+            if (repos.length === 0) {
+                sendJson(res, 400, { error: "no repos to push" });
+                return;
+            }
+            const session = startPushSession(repos, scope, workScanner);
+            sendJson(res, 202, session);
+        }
+        catch (err) {
+            sendJson(res, 409, { error: err.message });
+        }
+    });
+    server.post("/api/work/repos/:id/push", async (req, res) => {
+        const repoId = getParam(req, "id");
+        if (!repoId) {
+            sendJson(res, 400, { error: "missing repo id" });
+            return;
+        }
+        const repo = resolveRepo(repoId);
+        if (!repo) {
+            sendJson(res, 404, { error: "repo not found" });
+            return;
+        }
+        const body = req.body;
+        const scope = body?.scope === "all_ahead" ? "all_ahead" : "current";
+        try {
+            const result = await pushSingleRepo(repo, scope, workScanner);
+            sendJson(res, 200, result);
+        }
+        catch (err) {
+            sendJson(res, 500, { error: err.message });
+        }
+    });
+    server.get("/api/work/push/status", (_req, res) => {
+        sendJson(res, 200, getPushStatus());
     });
     return workScanner;
 }

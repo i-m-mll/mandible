@@ -464,6 +464,28 @@ const MIGRATIONS = [
         statements: [
             `ALTER TABLE auth_requests ADD COLUMN depends_on_id TEXT`
         ]
+    },
+    {
+        version: 31,
+        name: "push_history_and_setting",
+        // Bug: ea3102a — push/sync feature: history table + default setting
+        statements: [
+            `CREATE TABLE IF NOT EXISTS push_history (
+        id TEXT PRIMARY KEY,
+        repo_id TEXT NOT NULL,
+        repo_root TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
+        result_json TEXT,
+        started_at INTEGER NOT NULL,
+        completed_at INTEGER
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_push_history_repo ON push_history(repo_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_push_history_status ON push_history(status)`,
+            `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('push_same_name_upstream', 'true',
+               CAST(strftime('%s','now') * 1000 AS INTEGER))`
+        ]
     }
 ];
 export function getDbPath() {
