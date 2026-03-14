@@ -38,7 +38,7 @@ interface GeminiMessage {
   id: string;
   timestamp?: string;
   type: string; // "user" | "gemini"
-  content?: string;
+  content?: unknown;
   thoughts?: GeminiThought[];
   tokens?: GeminiTokens;
   model?: string;
@@ -51,6 +51,36 @@ interface GeminiSession {
   startTime?: string;
   lastUpdated?: string;
   messages: GeminiMessage[];
+}
+
+function renderGeminiContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => renderGeminiContent(item))
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (content && typeof content === "object") {
+    const record = content as Record<string, unknown>;
+    if (typeof record.text === "string") {
+      return record.text;
+    }
+    if (typeof record.content === "string") {
+      return record.content;
+    }
+    if (Array.isArray(record.parts)) {
+      return renderGeminiContent(record.parts);
+    }
+    try {
+      return JSON.stringify(record);
+    } catch {
+      return "";
+    }
+  }
+  return "";
 }
 
 // --- Parser ---
@@ -88,8 +118,9 @@ export class GeminiParser implements ConversationParser {
     // Title from first user message
     let title = "";
     for (const msg of session.messages) {
-      if (msg.type === "user" && msg.content) {
-        title = msg.content.slice(0, 100).trim();
+      const rendered = renderGeminiContent(msg.content).trim();
+      if (msg.type === "user" && rendered) {
+        title = rendered.slice(0, 100).trim();
         break;
       }
     }
@@ -103,10 +134,11 @@ export class GeminiParser implements ConversationParser {
       const ts = msg.timestamp || startedAt;
 
       if (msg.type === "user") {
+        const rendered = renderGeminiContent(msg.content);
         blocks.push({
           type: "user_message",
           role: "user",
-          content: msg.content || "",
+          content: rendered,
           position: position++,
           timestamp: ts,
           parent_id: null,
@@ -182,7 +214,8 @@ export class GeminiParser implements ConversationParser {
         }
 
         // Main assistant message
-        if (msg.content) {
+        const rendered = renderGeminiContent(msg.content);
+        if (rendered) {
           const tokenUsage = msg.tokens
             ? {
                 input: msg.tokens.input ?? 0,
@@ -194,7 +227,7 @@ export class GeminiParser implements ConversationParser {
           blocks.push({
             type: "assistant_message",
             role: "assistant",
-            content: msg.content,
+            content: rendered,
             position: position++,
             timestamp: ts,
             parent_id: null,

@@ -26,12 +26,14 @@ export type { BugRef };
 type ConsoleSession = {
   id: string;
   label: string;           // display name — use this, NOT 'name'
-  agent_type: 'operator' | 'claude' | 'codex' | 'shell' | string;
+  agent_type: 'operator' | 'claude' | 'codex' | 'gemini' | 'shell' | string;
   interaction_mode: 'inbox_only' | 'direct' | 'both';
   pinned: boolean;
   status: 'running' | 'stopped' | 'crashed';
   is_operator: boolean;
   provider_session_id: string | null;
+  command?: string;
+  args?: string[];
   unread_count: number;
   created_at: number;
   started_at: number | null;

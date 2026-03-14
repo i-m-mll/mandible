@@ -17,6 +17,7 @@ const AGENT_ABBREV: Record<string, string> = {
   operator: 'OP',
   claude: 'CL',
   codex: 'CX',
+  gemini: 'GM',
   shell: 'SH',
 };
 
@@ -25,6 +26,7 @@ const AGENT_COLOR: Record<string, string> = {
   operator: 'var(--accent-yellow)',
   claude: 'var(--accent-yellow)',
   codex: 'var(--accent-green)',
+  gemini: 'var(--accent-blue)',
   shell: 'var(--text-muted)',
 };
 

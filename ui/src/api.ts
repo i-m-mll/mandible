@@ -561,7 +561,22 @@ export async function createConsoleSession(
   label: string,
   backend: string,
   kind: string,
-): Promise<{ id: string }> {
+): Promise<{ session: {
+  id: string;
+  label: string;
+  agent_type: string;
+  interaction_mode: 'inbox_only' | 'direct' | 'both';
+  pinned: boolean;
+  status: 'running' | 'stopped' | 'crashed';
+  is_operator: boolean;
+  provider_session_id: string | null;
+  unread_count: number;
+  created_at: number;
+  started_at: number | null;
+  stopped_at: number | null;
+  command: string;
+  args: string[];
+} }> {
   // Bug: b949700 — translate agent_type to command+args as required by backend
   type SessionBody = {
     label: string;
@@ -583,14 +598,32 @@ export async function createConsoleSession(
   } else if (backend === 'codex') {
     body.command = 'codex';
     body.args = [];
+  } else if (backend === 'gemini') {
+    body.command = 'gemini';
+    body.args = ['-y'];
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
   const response = await apiPost('/api/console/sessions', body);
   const json = await parseMaybeJson(response);
-  // Backend returns { session: { id, ... } }; handle both shapes for safety
-  const data = json as { session?: { id: string }; id?: string };
-  return { id: data.session?.id ?? data.id ?? '' };
+  return json as {
+    session: {
+      id: string;
+      label: string;
+      agent_type: string;
+      interaction_mode: 'inbox_only' | 'direct' | 'both';
+      pinned: boolean;
+      status: 'running' | 'stopped' | 'crashed';
+      is_operator: boolean;
+      provider_session_id: string | null;
+      unread_count: number;
+      created_at: number;
+      started_at: number | null;
+      stopped_at: number | null;
+      command: string;
+      args: string[];
+    };
+  };
 }
 
 export async function closeConsoleSession(sessionId: string): Promise<void> {
@@ -624,6 +657,14 @@ export async function sendConsolePrompt(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/prompt`,
     { prompt },
   );
+}
+
+export async function updateConsoleSession(
+  sessionId: string,
+  body: { model?: string; label?: string },
+): Promise<unknown> {
+  const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}`, body);
+  return parseMaybeJson(response);
 }
 
 // ── Backup API ──
