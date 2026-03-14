@@ -4,11 +4,11 @@
   "identifier": "bio.mll.mandible",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:19420",
-    "beforeDevCommand": "",
+    "beforeDevCommand": "scripts/make-dist.sh",
     "beforeBuildCommand": "scripts/make-dist.sh"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Mandible",
