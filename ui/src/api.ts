@@ -815,6 +815,73 @@ export async function getLogs(params?: {
   return (await parseMaybeJson(resp)) as LogsResponse;
 }
 
+export type DesktopDaemonLaunchMode = 'on_demand' | 'manual';
+export type DesktopDaemonState = 'running' | 'starting' | 'stopped' | 'stale_pid' | 'port_conflict';
+
+export type DesktopDaemonStatus = {
+  state: DesktopDaemonState;
+  launch_mode: DesktopDaemonLaunchMode;
+  port: number;
+  pid: number | null;
+  pid_file: string;
+  log_file: string;
+  detail: string | null;
+  healthy: boolean;
+};
+
+function hasTauriRuntime(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  const tauriWindow = window as Window & { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown };
+  return Boolean(tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__);
+}
+
+export function isDesktopShell(): boolean {
+  return hasTauriRuntime();
+}
+
+async function invokeDesktop<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!hasTauriRuntime()) {
+    throw new Error('Desktop daemon controls are only available in the Tauri app.');
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<T>(command, args);
+}
+
+export async function getDesktopDaemonStatus(): Promise<DesktopDaemonStatus | null> {
+  if (!hasTauriRuntime()) {
+    return null;
+  }
+  return invokeDesktop<DesktopDaemonStatus>('daemon_status');
+}
+
+export async function setDesktopDaemonLaunchMode(
+  launchMode: DesktopDaemonLaunchMode,
+): Promise<DesktopDaemonStatus> {
+  return invokeDesktop<DesktopDaemonStatus>('daemon_set_launch_mode', { launchMode });
+}
+
+export async function startDesktopDaemon(): Promise<DesktopDaemonStatus> {
+  return invokeDesktop<DesktopDaemonStatus>('daemon_start');
+}
+
+export async function stopDesktopDaemon(): Promise<DesktopDaemonStatus> {
+  return invokeDesktop<DesktopDaemonStatus>('daemon_stop');
+}
+
+export async function restartDesktopDaemon(): Promise<DesktopDaemonStatus> {
+  return invokeDesktop<DesktopDaemonStatus>('daemon_restart');
+}
+
+export async function navigateToDesktopBootstrap(): Promise<void> {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+  const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+  await getCurrentWebview().navigate('/index.html');
+}
+
 // ── Conversation types ──
 
 export type BlockType = 'user_message' | 'assistant_message' | 'thinking' | 'tool_use' | 'tool_result' | 'system' | 'event';

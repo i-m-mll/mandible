@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mandible</title>
+  <link rel="stylesheet" href="./bootstrap.css">
+</head>
+<body>
+  <main class="bootstrap-shell">
+    <section class="bootstrap-card">
+      <div class="bootstrap-kicker">Mandible Desktop</div>
+      <h1 class="bootstrap-title">Connecting to the daemon</h1>
+      <p class="bootstrap-copy" id="status-copy">
+        Checking whether the local Mandible daemon is already running.
+      </p>
+      <div class="bootstrap-badge-row">
+        <span class="bootstrap-badge" id="status-badge">checking</span>
+        <span class="bootstrap-meta" id="status-meta">port 19420</span>
+      </div>
+      <div class="bootstrap-actions">
+        <button type="button" class="bootstrap-btn bootstrap-btn--primary" id="start-btn">
+          Start daemon
+        </button>
+        <button type="button" class="bootstrap-btn" id="retry-btn">
+          Retry
+        </button>
+      </div>
+      <dl class="bootstrap-details">
+        <div>
+          <dt>Launch mode</dt>
+          <dd id="launch-mode">on_demand</dd>
+        </div>
+        <div>
+          <dt>PID file</dt>
+          <dd id="pid-file">-</dd>
+        </div>
+        <div>
+          <dt>Log file</dt>
+          <dd id="log-file">-</dd>
+        </div>
+      </dl>
+    </section>
+  </main>
+  <script src="./bootstrap.js"></script>
+</body>
+</html>

@@ -1,5 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { getBackupStatus, runBackupNow, updateBackupSettings, type BackupStatus } from '../api';
+import {
+  getBackupStatus,
+  getDesktopDaemonStatus,
+  isDesktopShell,
+  navigateToDesktopBootstrap,
+  restartDesktopDaemon,
+  runBackupNow,
+  setDesktopDaemonLaunchMode,
+  startDesktopDaemon,
+  stopDesktopDaemon,
+  updateBackupSettings,
+  type BackupStatus,
+  type DesktopDaemonLaunchMode,
+  type DesktopDaemonStatus,
+} from '../api';
 
 export type SettingsViewProps = {
   settings: Record<string, string>;
@@ -23,6 +37,7 @@ const THEMES = [
 ];
 const PROMPTS = ['powerlevel10k', 'starship'];
 const MULTIPLEXERS = ['zellij', 'tmux', 'both', 'none'];
+const DESKTOP_DAEMON_MODES: DesktopDaemonLaunchMode[] = ['on_demand', 'manual'];
 
 function Toggle(props: {
   enabled: boolean;
@@ -230,6 +245,234 @@ function formatBytes(bytes: number): string {
   if (kb < 1024) return `${kb.toFixed(1)} KB`;
   const mb = kb / 1024;
   return `${mb.toFixed(1)} MB`;
+}
+
+function formatDaemonState(state: DesktopDaemonStatus['state']): string {
+  switch (state) {
+    case 'running':
+      return 'Running';
+    case 'starting':
+      return 'Starting';
+    case 'stale_pid':
+      return 'Stale PID';
+    case 'port_conflict':
+      return 'Port conflict';
+    default:
+      return 'Stopped';
+  }
+}
+
+function DesktopDaemonSection(): JSX.Element | null {
+  const desktopShell = isDesktopShell();
+  const [status, setStatus] = useState<DesktopDaemonStatus | null>(null);
+  const [loading, setLoading] = useState(desktopShell);
+  const [action, setAction] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshStatus = useCallback(async () => {
+    if (!desktopShell) {
+      return;
+    }
+    try {
+      const next = await getDesktopDaemonStatus();
+      setStatus(next);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load daemon status');
+    } finally {
+      setLoading(false);
+    }
+  }, [desktopShell]);
+
+  useEffect(() => {
+    if (!desktopShell) {
+      return;
+    }
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const next = await getDesktopDaemonStatus();
+        if (!cancelled) {
+          setStatus(next);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load daemon status');
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void load();
+    const timer = window.setInterval(() => {
+      void load();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [desktopShell]);
+
+  const handleLaunchModeChange = useCallback(async (e: Event) => {
+    const value = (e.target as HTMLSelectElement).value as DesktopDaemonLaunchMode;
+    setAction('mode');
+    try {
+      const next = await setDesktopDaemonLaunchMode(value);
+      setStatus(next);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update launch mode');
+    } finally {
+      setAction(null);
+    }
+  }, []);
+
+  const handleStart = useCallback(async () => {
+    setAction('start');
+    try {
+      const next = await startDesktopDaemon();
+      setStatus(next);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start daemon');
+    } finally {
+      setAction(null);
+    }
+  }, []);
+
+  const handleStop = useCallback(async () => {
+    setAction('stop');
+    try {
+      await stopDesktopDaemon();
+      await navigateToDesktopBootstrap();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to stop daemon');
+      setAction(null);
+    }
+  }, []);
+
+  const handleRestart = useCallback(async () => {
+    setAction('restart');
+    try {
+      await restartDesktopDaemon();
+      await navigateToDesktopBootstrap();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to restart daemon');
+      setAction(null);
+    }
+  }, []);
+
+  if (!desktopShell) {
+    return null;
+  }
+
+  return (
+    <div className="settings-view__section">
+      <div className="settings-view__section-header">
+        <h3 className="settings-view__section-title">Mandible Daemon</h3>
+        <p className="settings-view__section-desc">
+          Desktop shell lifecycle controls for the local Mandible daemon.
+        </p>
+      </div>
+
+      <div className="settings-view__section-body">
+        <div className="settings-view__select-row">
+          <div className="settings-view__select-info">
+            <span className="settings-view__select-label">Launch mode</span>
+            <span className="settings-view__select-desc">
+              Choose whether opening the desktop app should start Mandible automatically.
+            </span>
+          </div>
+          <select
+            className="settings-view__select"
+            value={status?.launch_mode ?? 'on_demand'}
+            onChange={handleLaunchModeChange}
+            disabled={action === 'mode' || loading}
+          >
+            {DESKTOP_DAEMON_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {mode === 'on_demand' ? 'on demand' : 'manual'}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="settings-view__daemon-card">
+          <div className="settings-view__daemon-status-row">
+            <div>
+              <div className="settings-view__daemon-title">
+                Status
+                {status && (
+                  <span className={`settings-view__daemon-badge settings-view__daemon-badge--${status.state}`}>
+                    {formatDaemonState(status.state)}
+                  </span>
+                )}
+              </div>
+              <div className="settings-view__daemon-meta">
+                {loading ? 'Checking daemon health…' : `Port ${status?.port ?? 19420}`}
+                {status?.pid ? ` • PID ${status.pid}` : ''}
+              </div>
+            </div>
+            <div className="settings-view__daemon-actions">
+              <button
+                type="button"
+                className="btn btn--active btn--sm"
+                onClick={handleStart}
+                disabled={loading || action != null || status?.healthy === true}
+              >
+                {action === 'start' ? '...' : 'Start'}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={handleRestart}
+                disabled={loading || action != null || !status}
+              >
+                {action === 'restart' ? '...' : 'Restart'}
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={handleStop}
+                disabled={loading || action != null || !status || status.state === 'stopped'}
+              >
+                {action === 'stop' ? '...' : 'Stop'}
+              </button>
+              <a href="#/logs" className="btn btn--sm">
+                View logs
+              </a>
+            </div>
+          </div>
+          {status?.detail && (
+            <div className="settings-view__daemon-detail">{status.detail}</div>
+          )}
+          {status && (
+            <div className="settings-view__daemon-paths">
+              <span>PID file: {status.pid_file}</span>
+              <span>Log file: {status.log_file}</span>
+            </div>
+          )}
+          {error && (
+            <div className="settings-view__daemon-error">{error}</div>
+          )}
+          <div className="settings-view__daemon-footer">
+            {status?.launch_mode === 'manual'
+              ? 'Manual mode leaves the daemon stopped until you start it explicitly from the desktop shell.'
+              : 'On-demand mode starts Mandible automatically when the desktop shell opens and the daemon is absent.'}
+          </div>
+          <button type="button" className="btn btn--sm" onClick={refreshStatus} disabled={loading || action != null}>
+            Refresh status
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function BackupSection(): JSX.Element {
@@ -506,6 +749,8 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       </div>
 
       {/* ── Section 2: Process Management ── */}
+      <DesktopDaemonSection />
+
       <div className="settings-view__section">
         <div className="settings-view__section-header">
           <h3 className="settings-view__section-title">Process Management</h3>

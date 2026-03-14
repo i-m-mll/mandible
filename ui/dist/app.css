@@ -3831,6 +3831,88 @@ tr:hover .work-actions__trigger {
 .settings-view__input--narrow {
   width: 140px;
 }
+.settings-view__daemon-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.settings-view__daemon-status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.settings-view__daemon-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.settings-view__daemon-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+.settings-view__daemon-badge--running {
+  background: rgba(50, 210, 150, 0.16);
+  color: #76e0b4;
+}
+.settings-view__daemon-badge--starting {
+  background: rgba(245, 194, 92, 0.16);
+  color: #f5c25c;
+}
+.settings-view__daemon-badge--port_conflict,
+.settings-view__daemon-badge--stale_pid {
+  background: rgba(242, 107, 107, 0.16);
+  color: #f48f8f;
+}
+.settings-view__daemon-badge--stopped {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+}
+.settings-view__daemon-meta {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.settings-view__daemon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.settings-view__daemon-detail {
+  color: #f5c25c;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.settings-view__daemon-paths {
+  display: grid;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+.settings-view__daemon-error {
+  color: #f48f8f;
+  font-size: 13px;
+}
+.settings-view__daemon-footer {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
 .session-project-pills {
   display: flex;
   flex-wrap: wrap;
