@@ -4,9 +4,10 @@ import type { JSX } from 'preact/jsx-runtime';
 type ViewToggleProps = {
   current: 'terminal' | 'rich';
   onChange: (mode: 'terminal' | 'rich') => void;
+  showTerminal?: boolean;
 };
 
-export function ViewToggle({ current, onChange }: ViewToggleProps): JSX.Element {
+export function ViewToggle({ current, onChange, showTerminal = true }: ViewToggleProps): JSX.Element {
   return (
     <div className="view-toggle">
       <button
@@ -16,13 +17,15 @@ export function ViewToggle({ current, onChange }: ViewToggleProps): JSX.Element 
       >
         Chat
       </button>
-      <button
-        type="button"
-        className={`view-toggle__btn${current === 'terminal' ? ' view-toggle__btn--active' : ''}`}
-        onClick={() => onChange('terminal')}
-      >
-        Debug Terminal
-      </button>
+      {showTerminal && (
+        <button
+          type="button"
+          className={`view-toggle__btn${current === 'terminal' ? ' view-toggle__btn--active' : ''}`}
+          onClick={() => onChange('terminal')}
+        >
+          Debug Terminal
+        </button>
+      )}
     </div>
   );
 }

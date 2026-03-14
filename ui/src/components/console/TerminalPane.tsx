@@ -7,13 +7,16 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { ConsoleSession } from '../../state';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
-import type { StreamEvent, SyntheticPromptEvent } from '../stream-renderer/types';
+import type { StreamEvent, ToolResultContentBlock } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
 import {
+  getConversation,
+  getConversations,
   getConsoleStreamEvents,
   restartConsoleSession,
   sendConsolePrompt,
   startConsoleSession,
+  updateConsoleSession,
 } from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
@@ -21,6 +24,9 @@ type ViewMode = 'terminal' | 'rich';
 type TerminalPaneProps = {
   sessionId: string;
   agentType: ConsoleSession['agent_type'];
+  command: string;
+  sessionArgs: string[];
+  isOperator: boolean;
   interactionMode: ConsoleSession['interaction_mode'];
   sessionStatus: ConsoleSession['status'];
   providerSessionId: string | null;
@@ -29,9 +35,141 @@ type TerminalPaneProps = {
   onViewModeChange: (mode: ViewMode) => void;
 };
 
+const MODEL_OPTIONS: Record<string, string[]> = {
+  claude: ['sonnet', 'opus', 'haiku', 'sonnet[1m]', 'opusplan'],
+  gemini: [
+    'auto',
+    'pro',
+    'flash',
+    'flash-lite',
+    'gemini-3.1-pro-preview',
+    'gemini-3-flash-preview',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+  ],
+};
+
+function parseModelFromArgs(args: string[]): string | undefined {
+  for (let i = args.length - 2; i >= 0; i -= 1) {
+    const arg = args[i];
+    if ((arg === '--model' || arg === '-m') && args[i + 1]?.trim()) {
+      return args[i + 1].trim();
+    }
+  }
+  return undefined;
+}
+
+function hasRenderableEvents(events: StreamEvent[]): boolean {
+  return events.some((event) => {
+    if (event.type === 'assistant' || event.type === 'user' || event.type === 'synthetic_prompt') {
+      return true;
+    }
+    if (event.type === 'result' && event.is_error) {
+      return true;
+    }
+    return false;
+  });
+}
+
+function conversationBlocksToStreamEvents(
+  providerSessionId: string,
+  blocks: Array<{
+    type: string;
+    content: string;
+    metadata_json: string;
+  }>,
+): StreamEvent[] {
+  const events: StreamEvent[] = [];
+  let assistantBlocks: Array<Record<string, unknown>> = [];
+
+  const flushAssistant = () => {
+    if (assistantBlocks.length === 0) return;
+    events.push({
+      type: 'assistant',
+      session_id: providerSessionId,
+      parent_tool_use_id: null,
+      message: {
+        role: 'assistant',
+        content: assistantBlocks as Array<{ type: string; [key: string]: unknown }>,
+      },
+    });
+    assistantBlocks = [];
+  };
+
+  for (const block of blocks) {
+    const metadata = (() => {
+      try {
+        return JSON.parse(block.metadata_json || '{}') as Record<string, unknown>;
+      } catch {
+        return {};
+      }
+    })();
+
+    if (block.type === 'user_message') {
+      flushAssistant();
+      events.push({
+        type: 'user',
+        session_id: providerSessionId,
+        parent_tool_use_id: null,
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: block.content }],
+        },
+      });
+      continue;
+    }
+
+    if (block.type === 'assistant_message') {
+      assistantBlocks.push({ type: 'text', text: block.content });
+      continue;
+    }
+
+    if (block.type === 'thinking') {
+      assistantBlocks.push({ type: 'thinking', thinking: block.content });
+      continue;
+    }
+
+    if (block.type === 'tool_use') {
+      assistantBlocks.push({
+        type: 'tool_use',
+        id: String(metadata.tool_id ?? `tool-${events.length}`),
+        name: String(metadata.tool_name ?? 'tool'),
+        input: (metadata.tool_input as Record<string, unknown> | undefined) ?? {},
+      });
+      continue;
+    }
+
+    if (block.type === 'tool_result') {
+      const toolResult: ToolResultContentBlock = {
+        type: 'tool_result',
+        tool_use_id: String(metadata.tool_id ?? ''),
+        content: block.content,
+      };
+      events.push({
+        type: 'user',
+        session_id: providerSessionId,
+        parent_tool_use_id: null,
+        message: {
+          role: 'user',
+          content: [toolResult],
+        },
+      });
+      continue;
+    }
+  }
+
+  flushAssistant();
+  return events;
+}
+
 export function TerminalPane({
   sessionId,
   agentType,
+  command,
+  sessionArgs,
+  isOperator,
   interactionMode,
   sessionStatus,
   providerSessionId,
@@ -59,14 +197,21 @@ export function TerminalPane({
   // SSE stream events for rich view (accumulated)
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([]);
   const [streaming, setStreaming] = useState(false);
-  const supportsStructuredChat = agentType === 'claude' || agentType === 'operator';
+  const [hydratingHistory, setHydratingHistory] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState<number | undefined>(undefined);
+  const streamStartAtRef = useRef<number | null>(null);
+  const [model, setModel] = useState<string | undefined>(() => parseModelFromArgs(sessionArgs));
+  const showDebugTerminal = isOperator;
+  const providerFamily = isOperator ? 'claude' : command;
 
   // Keep visibility/viewMode refs current so ResizeObserver callback doesn't see stale values
   useEffect(() => { isVisibleRef.current = isVisible; }, [isVisible]);
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
+  useEffect(() => { setModel(parseModelFromArgs(sessionArgs)); }, [sessionArgs]);
 
   // Initialize xterm.js terminal
   useEffect(() => {
+    if (!showDebugTerminal) return;
     if (!containerRef.current) return;
 
     const term = new Terminal({
@@ -119,10 +264,14 @@ export function TerminalPane({
       fitAddonRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [sessionId, showDebugTerminal]);
 
   // Open WebSocket for PTY — re-runs on sessionId change or manual reconnect (reconnectNonce)
   useEffect(() => {
+    if (!showDebugTerminal) {
+      setWsStatus('closed');
+      return;
+    }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/terminal/${encodeURIComponent(sessionId)}`;
     const ws = new WebSocket(wsUrl);
@@ -195,13 +344,14 @@ export function TerminalPane({
     };
     // reconnectNonce is intentional: incrementing it re-runs this effect to reconnect
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, reconnectNonce]);
+  }, [sessionId, reconnectNonce, showDebugTerminal]);
 
   // Forward keyboard input to WebSocket.
   // Input is sent as binary (Uint8Array) so the server's isBinary check routes
   // it to the PTY. Text frames are reserved for JSON control messages (resize).
   // Bug: 6a47cec — text frames were silently dropped by the backend JSON parser
   useEffect(() => {
+    if (!showDebugTerminal) return;
     const term = termRef.current;
     if (!term) return;
 
@@ -216,12 +366,13 @@ export function TerminalPane({
     return () => {
       disposable.dispose();
     };
-  }, [sessionId, interactionMode]);
+  }, [sessionId, interactionMode, showDebugTerminal]);
 
   // When view mode switches back to terminal and pane becomes visible, refit.
   // Use requestAnimationFrame so CSS display:flex has taken effect before we
   // measure — otherwise offsetWidth is still 0 and xterm measures 0 columns.
   useEffect(() => {
+    if (!showDebugTerminal) return;
     if (isVisible && viewMode === 'terminal') {
       const rafId = requestAnimationFrame(() => {
         const fitAddon = fitAddonRef.current;
@@ -263,17 +414,47 @@ export function TerminalPane({
       });
       return () => cancelAnimationFrame(rafId);
     }
-  }, [isVisible, viewMode, sessionId]);
+  }, [isVisible, viewMode, sessionId, showDebugTerminal]);
 
   // Hydrate rich view with recent stream-json history on mount/session change.
   useEffect(() => {
     let cancelled = false;
     getConsoleStreamEvents<StreamEvent>(sessionId, 500)
-      .then((events) => {
+      .then(async (events) => {
         if (cancelled) return;
-        setStreamEvents(events);
-        const last = events[events.length - 1];
-        setStreaming(Boolean(last && last.type !== 'result'));
+        if (hasRenderableEvents(events) || !providerSessionId) {
+          setStreamEvents(events);
+          const last = events[events.length - 1];
+          const isStreaming = Boolean(last && last.type !== 'result');
+          setStreaming(isStreaming);
+          if (isStreaming && streamStartAtRef.current === null) {
+            streamStartAtRef.current = Date.now();
+          }
+          return;
+        }
+
+        setHydratingHistory(true);
+        try {
+          const { conversations } = await getConversations({ session_id: providerSessionId, limit: 1 });
+          const conversation = conversations[0];
+          if (!conversation) {
+            setStreamEvents(events);
+            setStreaming(false);
+            return;
+          }
+          const detail = await getConversation(conversation.id);
+          if (cancelled) return;
+          setStreamEvents(conversationBlocksToStreamEvents(providerSessionId, detail.blocks));
+          setStreaming(false);
+        } catch {
+          if (cancelled) return;
+          setStreamEvents(events);
+          setStreaming(false);
+        } finally {
+          if (!cancelled) {
+            setHydratingHistory(false);
+          }
+        }
       })
       .catch(() => {
         if (cancelled) return;
@@ -283,7 +464,7 @@ export function TerminalPane({
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [providerSessionId, sessionId]);
 
   // SSE: subscribe to console:stream_event for the rich view.
   // The server broadcasts: { console_session_id, event: StreamEvent }
@@ -319,6 +500,23 @@ export function TerminalPane({
     };
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!streaming) {
+      streamStartAtRef.current = null;
+      return;
+    }
+    if (streamStartAtRef.current === null) {
+      streamStartAtRef.current = Date.now();
+    }
+    setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1000));
+    const interval = window.setInterval(() => {
+      if (streamStartAtRef.current !== null) {
+        setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1000));
+      }
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [streaming]);
+
   // Bug: 1d286c1 — handleReconnect now calls backend restart API before opening WS.
   // The previous version only opened a new WS but never restarted the PTY process,
   // so reconnect always got immediately rejected by the backend.
@@ -336,6 +534,17 @@ export function TerminalPane({
   };
 
   const [prompt, setPrompt] = useState('');
+  const [modelSaving, setModelSaving] = useState(false);
+
+  const handleModelChange = async (nextModel: string) => {
+    setModelSaving(true);
+    try {
+      await updateConsoleSession(sessionId, { model: nextModel });
+      setModel(nextModel || undefined);
+    } finally {
+      setModelSaving(false);
+    }
+  };
 
   const handlePromptSubmit = (e: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     e.preventDefault();
@@ -344,25 +553,12 @@ export function TerminalPane({
     if (viewMode === 'rich') {
       const submittedPrompt = prompt.trim();
       setPrompt('');
-      const syntheticEvent: SyntheticPromptEvent = {
-        type: 'synthetic_prompt',
-        text: submittedPrompt,
-        localId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      };
-      setStreamEvents((prev) => [...prev, syntheticEvent]);
+      setElapsedSeconds(0);
+      streamStartAtRef.current = Date.now();
       setStreaming(true);
-      if (supportsStructuredChat) {
-        void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
-          setStreaming(false);
-        });
-      } else {
-        const ws = wsRef.current;
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(new TextEncoder().encode(submittedPrompt + '\r'));
-        } else {
-          setStreaming(false);
-        }
-      }
+      void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
+        setStreaming(false);
+      });
       return;
     }
 
@@ -376,14 +572,12 @@ export function TerminalPane({
     }
   };
 
-  const showReconnectOverlay = wsStatus === 'closed' || wsStatus === 'error';
-  const showDebugStart = viewMode === 'terminal' && sessionStatus !== 'running';
+  const showReconnectOverlay = showDebugTerminal && (wsStatus === 'closed' || wsStatus === 'error');
+  const showDebugStart = showDebugTerminal && viewMode === 'terminal' && sessionStatus !== 'running';
   const debugTerminalLabel = providerSessionId ? 'Resume debug terminal' : 'Start debug terminal';
   const debugTerminalDescription = providerSessionId
     ? 'Resume this same chat in the provider terminal for raw inspection or recovery.'
-    : supportsStructuredChat
-      ? 'Open the provider terminal for this chat. Once a provider session exists, it will resume here.'
-      : 'Open the terminal fallback for this session.';
+    : 'Open the provider terminal for this chat. Once a provider session exists, it will resume here.';
 
   const handleStartDebugTerminal = async () => {
     termRef.current?.reset();
@@ -422,7 +616,7 @@ export function TerminalPane({
               Inbox
             </span>
           )}
-          <ViewToggle current={viewMode} onChange={onViewModeChange} />
+          <ViewToggle current={viewMode} onChange={onViewModeChange} showTerminal={showDebugTerminal} />
         </div>
         <div className="terminal-pane__header-actions">
           {providerSessionId && (
@@ -448,11 +642,13 @@ export function TerminalPane({
           so it cannot cover the header/ViewToggle. */}
       <div className="terminal-pane__body">
         {/* Terminal container — always mounted, hidden when rich view is active */}
-        <div
-          className="terminal-pane__container"
-          ref={containerRef}
-          style={{ display: viewMode === 'terminal' ? 'flex' : 'none', flex: 1 }}
-        />
+        {showDebugTerminal && (
+          <div
+            className="terminal-pane__container"
+            ref={containerRef}
+            style={{ display: viewMode === 'terminal' ? 'flex' : 'none', flex: 1 }}
+          />
+        )}
 
         {/* Reconnect overlay — only covers the body area, not the header */}
         {showReconnectOverlay && viewMode === 'terminal' && !showDebugStart && (
@@ -512,7 +708,16 @@ export function TerminalPane({
               <StreamRenderer
                 events={streamEvents}
                 streaming={streaming}
-                sessionInfo={{ sessionId }}
+                elapsedSeconds={elapsedSeconds}
+                emptyLabel={hydratingHistory ? 'Loading prior messages…' : undefined}
+                sessionInfo={{
+                  sessionId,
+                  backend: providerFamily,
+                  model,
+                  modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
+                  modelSaving,
+                  onChangeModel: handleModelChange,
+                }}
               />
             </div>
             {/* Bug: aea2c67 — prompt input bar in rich view */}
@@ -564,12 +769,6 @@ export function TerminalPane({
                 Send
               </button>
             </form>
-            {!supportsStructuredChat && (
-              <div className="terminal-pane__rich-disconnected">
-                This agent still renders here from terminal output. The Chat view becomes first-class
-                once its structured stream is available.
-              </div>
-            )}
           </div>
         )}
       </div>

@@ -7,11 +7,212 @@ import { spawn } from "node:child_process";
 import { getDb } from "../db.js";
 import { PtyManager } from "../pty-manager.js";
 import type { RouteRegistrar } from "../server.js";
-import type { ConsoleSessionInput, ConsoleInteractionMode } from "../types.js";
+import type { ConsoleSession, ConsoleSessionInput, ConsoleInteractionMode, ConsoleStreamEvent } from "../types.js";
 import { broadcast } from "../sse.js";
 
 function sendJson(res: { status(c: number): { json(p: unknown): void }; json(p: unknown): void }, code: number, payload: unknown): void {
   res.status(code).json(payload);
+}
+
+function extractModelArg(args: string[]): string | null {
+  for (let i = args.length - 2; i >= 0; i -= 1) {
+    const arg = args[i];
+    if ((arg === "--model" || arg === "-m") && typeof args[i + 1] === "string" && args[i + 1].trim()) {
+      return args[i + 1].trim();
+    }
+  }
+  return null;
+}
+
+function stripModelArgs(args: string[]): string[] {
+  const next: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--model" || args[i] === "-m") {
+      i += 1;
+      continue;
+    }
+    next.push(args[i]);
+  }
+  return next;
+}
+
+function makeUserEvent(prompt: string, sessionId: string): ConsoleStreamEvent {
+  return {
+    type: "user",
+    session_id: sessionId,
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: [{ type: "text", text: prompt }],
+    },
+  };
+}
+
+function buildPromptInvocation(meta: ConsoleSession, prompt: string, cwd: string): {
+  command: string;
+  args: string[];
+  injectUserEvent: boolean;
+  normalize: "claude" | "codex" | "gemini";
+} | null {
+  const model = extractModelArg(meta.args);
+
+  if (meta.command === "claude") {
+    const args = ["-p", prompt, "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"];
+    if (meta.provider_session_id) {
+      args.splice(2, 0, "--resume", meta.provider_session_id);
+    }
+    if (model) {
+      args.push("--model", model);
+    }
+    return { command: "claude", args, injectUserEvent: true, normalize: "claude" };
+  }
+
+  if (meta.command === "gemini") {
+    const args = ["-p", prompt, "--output-format", "stream-json", "-y"];
+    if (meta.provider_session_id) {
+      args.push("--resume", meta.provider_session_id);
+    }
+    if (model) {
+      args.push("--model", model);
+    }
+    return { command: "gemini", args, injectUserEvent: false, normalize: "gemini" };
+  }
+
+  if (meta.command === "codex") {
+    const args = meta.provider_session_id
+      ? ["exec", "resume", meta.provider_session_id, prompt]
+      : ["exec", prompt];
+    args.push("--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-C", cwd);
+    if (model) {
+      args.push("--model", model);
+    }
+    return { command: "codex", args, injectUserEvent: true, normalize: "codex" };
+  }
+
+  return null;
+}
+
+function normalizeGeminiStreamLine(
+  line: string,
+): ConsoleStreamEvent | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  const type = typeof parsed.type === "string" ? parsed.type : "";
+  const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : "";
+  if (type === "init") {
+    return {
+      type: "system",
+      subtype: "init",
+      session_id: sessionId,
+      model: typeof parsed.model === "string" ? parsed.model : undefined,
+    };
+  }
+  if (type === "message") {
+    const role = parsed.role === "assistant" ? "assistant" : "user";
+    return {
+      type: role,
+      session_id: sessionId,
+      parent_tool_use_id: null,
+      message: {
+        role,
+        content: [{ type: "text", text: typeof parsed.content === "string" ? parsed.content : "" }],
+        ...(role === "assistant" && typeof parsed.model === "string" ? { model: parsed.model } : {}),
+      },
+    };
+  }
+  if (type === "result") {
+    const stats = (parsed.stats && typeof parsed.stats === "object") ? parsed.stats as Record<string, unknown> : {};
+    const status = parsed.status === "success" ? "success" : "error_during_execution";
+    return {
+      type: "result",
+      subtype: status,
+      session_id: sessionId,
+      duration_ms: typeof stats.duration_ms === "number" ? stats.duration_ms : 0,
+      num_turns: 1,
+      total_cost_usd: 0,
+      is_error: status !== "success",
+      ...(status !== "success" ? { errors: [typeof parsed.status === "string" ? parsed.status : "Gemini request failed"] } : {}),
+    };
+  }
+  return null;
+}
+
+function normalizeCodexStreamLine(
+  line: string,
+  state: { threadId: string | null; turnCount: number; model: string | null },
+): ConsoleStreamEvent | null {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  const type = typeof parsed.type === "string" ? parsed.type : "";
+  if (type === "thread.started") {
+    state.threadId = typeof parsed.thread_id === "string" ? parsed.thread_id : state.threadId;
+    return {
+      type: "system",
+      subtype: "init",
+      session_id: state.threadId ?? "",
+      ...(state.model ? { model: state.model } : {}),
+    };
+  }
+  if (type === "item.completed") {
+    const item = (parsed.item && typeof parsed.item === "object") ? parsed.item as Record<string, unknown> : null;
+    if (!item) return null;
+    const itemType = typeof item.type === "string" ? item.type : "";
+    if (itemType === "agent_message") {
+      return {
+        type: "assistant",
+        session_id: state.threadId ?? "",
+        parent_tool_use_id: null,
+        message: {
+          role: "assistant",
+          ...(state.model ? { model: state.model } : {}),
+          content: [{ type: "text", text: typeof item.text === "string" ? item.text : "" }],
+        },
+      };
+    }
+    return null;
+  }
+  if (type === "turn.completed") {
+    state.turnCount += 1;
+    const usage = (parsed.usage && typeof parsed.usage === "object") ? parsed.usage as Record<string, unknown> : {};
+    return {
+      type: "result",
+      subtype: "success",
+      session_id: state.threadId ?? "",
+      duration_ms: 0,
+      num_turns: state.turnCount,
+      total_cost_usd: 0,
+      is_error: false,
+      usage,
+    };
+  }
+  if (type === "error" || type === "turn.failed") {
+    const error = parsed.error && typeof parsed.error === "object" ? parsed.error as Record<string, unknown> : null;
+    const message =
+      typeof parsed.message === "string" ? parsed.message
+        : typeof error?.message === "string" ? error.message
+          : "Codex request failed";
+    return {
+      type: "result",
+      subtype: "error_during_execution",
+      session_id: state.threadId ?? "",
+      duration_ms: 0,
+      num_turns: state.turnCount,
+      total_cost_usd: 0,
+      is_error: true,
+      errors: [message],
+    };
+  }
+  return null;
 }
 
 export function registerConsoleRoutes(
@@ -58,7 +259,8 @@ export function registerConsoleRoutes(
     };
 
     const session = manager.create(input);
-    if (input.is_operator || input.command !== "claude") {
+    const structuredChat = input.command === "claude" || input.command === "codex" || input.command === "gemini";
+    if (input.is_operator || !structuredChat) {
       manager.start(session.id);
     }
     const ptySession = manager.get(session.id);
@@ -75,6 +277,32 @@ export function registerConsoleRoutes(
       return;
     }
     res.status(200).json({ session: ptySession.meta });
+  });
+
+  server.patch("/api/console/sessions/:id", (req, res) => {
+    const id = req.params.id;
+    const ptySession = manager.get(id);
+    if (!ptySession) {
+      sendJson(res, 404, { error: "not_found" });
+      return;
+    }
+
+    const body = (req.body ?? {}) as { model?: unknown; label?: unknown };
+    const patch: Partial<Pick<ConsoleSession, "label" | "args">> = {};
+    if (typeof body.label === "string" && body.label.trim()) {
+      patch.label = body.label.trim();
+    }
+    if (typeof body.model === "string") {
+      const nextArgs = stripModelArgs(ptySession.meta.args);
+      const model = body.model.trim();
+      if (model) {
+        nextArgs.push("--model", model);
+      }
+      patch.args = nextArgs;
+    }
+
+    const session = manager.updateConfig(id, patch);
+    res.status(200).json({ session });
   });
 
   // ------------------------------------------------------------------
@@ -244,6 +472,11 @@ export function registerConsoleRoutes(
 
     const prompt = body.prompt.trim();
     const cwd = ptySession.meta.cwd ?? process.env.HOME ?? "/tmp";
+    const invocation = buildPromptInvocation(ptySession.meta, prompt, cwd);
+    if (!invocation) {
+      sendJson(res, 400, { error: "unsupported_prompt_backend" });
+      return;
+    }
 
     // Clean env: strip agent signing keys just like buildPtyEnv does for PTY
     const POLLUTED_EXACT = new Set(["CLAUDECODE", "GIT_CONFIG_COUNT"]);
@@ -258,32 +491,24 @@ export function registerConsoleRoutes(
     // Merge session-level env overrides
     Object.assign(env, ptySession.meta.env ?? {});
 
-    let claudeSessionId = ptySession.meta.provider_session_id ?? null;
-    if (!claudeSessionId) {
-      const streamEvents = ptySession.getStreamEvents();
-      for (let i = streamEvents.length - 1; i >= 0; i -= 1) {
-        const ev = streamEvents[i] as { session_id?: string | null };
-        if (ev.session_id) {
-          claudeSessionId = ev.session_id;
-          break;
-        }
-      }
+    const existingSessionId = ptySession.meta.provider_session_id ?? ptySession.meta.id;
+    if (invocation.injectUserEvent) {
+      ptySession.ingestStructuredEvent(makeUserEvent(prompt, existingSessionId));
     }
 
-    // Bug: f2e6a46 — use --resume <session_id> instead of --continue to avoid
-    // racing with the running PTY process for directory-based session detection.
-    // Newer Claude builds require --verbose together with --output-format stream-json.
-    const claudeArgs = claudeSessionId
-      ? ["-p", prompt, "--resume", claudeSessionId, "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"]
-      : ["-p", prompt, "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"];
-
-    const child = spawn(
-      ptySession.meta.command === "claude" ? ptySession.meta.command : "claude",
-      claudeArgs,
-      { cwd, env, stdio: ["ignore", "pipe", "pipe"] }
-    );
+    const child = spawn(invocation.command, invocation.args, {
+      cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
 
     let lineBuffer = "";
+    let sawResult = false;
+    const codexState = {
+      threadId: ptySession.meta.provider_session_id,
+      turnCount: 0,
+      model: extractModelArg(ptySession.meta.args),
+    };
 
     child.stdout.on("data", (chunk: Buffer) => {
       lineBuffer += chunk.toString("utf8");
@@ -291,7 +516,31 @@ export function registerConsoleRoutes(
       lineBuffer = lines.pop() ?? "";
       for (const line of lines) {
         if (line.trim()) {
-          ptySession.ingestText(line + "\n");
+          if (invocation.normalize === "claude") {
+            ptySession.ingestText(line + "\n");
+            if (line.includes("\"type\":\"result\"")) {
+              sawResult = true;
+            }
+          } else if (invocation.normalize === "gemini") {
+            const event = normalizeGeminiStreamLine(line);
+            if (event) {
+              if (event.type === "result") {
+                sawResult = true;
+              }
+              ptySession.ingestStructuredEvent(event);
+            }
+          } else {
+            const event = normalizeCodexStreamLine(line, codexState);
+            if (event) {
+              if (event.type === "result") {
+                sawResult = true;
+              }
+              ptySession.ingestStructuredEvent(event);
+              if (codexState.threadId && codexState.threadId !== ptySession.meta.provider_session_id) {
+                manager.updateConfig(ptySession.id, { provider_session_id: codexState.threadId });
+              }
+            }
+          }
         }
       }
     });
@@ -304,24 +553,39 @@ export function registerConsoleRoutes(
     child.on("close", (code) => {
       // Flush any remaining partial line
       if (lineBuffer.trim()) {
-        ptySession.ingestText(lineBuffer + "\n");
+        if (invocation.normalize === "claude") {
+          ptySession.ingestText(lineBuffer + "\n");
+        } else if (invocation.normalize === "gemini") {
+          const event = normalizeGeminiStreamLine(lineBuffer);
+          if (event) {
+            if (event.type === "result") {
+              sawResult = true;
+            }
+            ptySession.ingestStructuredEvent(event);
+          }
+        } else {
+          const event = normalizeCodexStreamLine(lineBuffer, codexState);
+          if (event) {
+            if (event.type === "result") {
+              sawResult = true;
+            }
+            ptySession.ingestStructuredEvent(event);
+          }
+        }
       }
       lineBuffer = "";
       // If subprocess failed and produced no stream events, emit a synthetic error
-      if (code !== 0 && stderrBuf.trim()) {
+      if (code !== 0 && stderrBuf.trim() && !sawResult) {
         const errMsg = stderrBuf.trim().slice(0, 500);
-        broadcast("console:stream_event", {
-          console_session_id: id,
-          event: {
-            type: "result",
-            subtype: "error_during_execution",
-            is_error: true,
-            errors: [errMsg],
-            session_id: claudeSessionId ?? "",
-            duration_ms: 0,
-            num_turns: 0,
-            total_cost_usd: 0,
-          },
+        ptySession.ingestStructuredEvent({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [errMsg],
+          session_id: ptySession.meta.provider_session_id ?? codexState.threadId ?? existingSessionId,
+          duration_ms: 0,
+          num_turns: 0,
+          total_cost_usd: 0,
         });
       }
     });

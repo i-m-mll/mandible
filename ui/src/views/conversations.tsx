@@ -272,10 +272,92 @@ function CopyButton({ content }: { content: string }): JSX.Element {
       className="block-copy-btn"
       onClick={handleCopy}
       title="Copy raw markdown"
+      aria-label={copied ? 'Copied' : 'Copy raw markdown'}
     >
-      {copied ? 'Copied' : 'Copy'}
+      {copied ? (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M3 8.5 6.2 11.6 13 4.8"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <rect
+            x="5.5"
+            y="4.5"
+            width="7"
+            height="8"
+            rx="1.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.2"
+          />
+          <path
+            d="M3.5 9.5h-1V3.5A1.5 1.5 0 0 1 4 2h6v1.2H4.7a1.2 1.2 0 0 0-1.2 1.2Z"
+            fill="currentColor"
+          />
+        </svg>
+      )}
     </button>
   );
+}
+
+function BlockTypeIcon({ type }: { type: BlockType }): JSX.Element | null {
+  if (type === 'thinking') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="M5.1 12.8c.3.8 1.2 1.2 2.1 1.2h1.6c.9 0 1.8-.4 2.1-1.2M5.8 11.4h4.4M5.3 10.2c-.9-.8-1.6-2-1.6-3.3C3.7 4.2 5.7 2 8 2s4.3 2.2 4.3 4.9c0 1.3-.7 2.5-1.6 3.3-.3.3-.5.7-.5 1.1v.1H5.8v-.1c0-.4-.2-.8-.5-1.1Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  if (type === 'tool_use' || type === 'tool_result') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="m9.9 2.4 1.8 1.8-2 2 1.9 1.9 2-2 1.8 1.8-.8 2.6-2.2 2.1-2.7.9-1.8-1.9.8-2.6-2.1-2.1-2.6.8L3 6.6l.9-2.7 2.1-2.1 2.6-.8Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.1"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  if (type === 'system' || type === 'event') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle
+          cx="8"
+          cy="8"
+          r="5.4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+        />
+        <path
+          d="M8 7.2v3.2M8 5.1h.01"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+  return null;
 }
 
 // ── Tool use card ──
@@ -506,60 +588,75 @@ function TranscriptBlockItem({
   onToggleCollapse: () => void;
   collapsed: boolean;
 }): JSX.Element {
-  const metadata = parseMetadata(block.metadata_json);
   const isCollapsible = isCollapsibleBlock(block.type);
-  const headerLabel = getBlockHeaderLabel(block, metadata);
+  const metadata = parseMetadata(block.metadata_json);
   const isErrorEvent = block.type === 'event' && (metadata.is_error === true || metadata.level === 'error');
+  const typeIcon = BlockTypeIcon({ type: block.type });
+  const hasTypeIcon = typeIcon !== null;
   const className = [
     'transcript-item',
     `transcript-item--${block.type.replace('_', '-')}`,
+    hasTypeIcon ? 'transcript-item--with-gutter' : '',
+    collapsed ? 'transcript-item--collapsed' : '',
     isSelected ? 'transcript-item--selected' : '',
     isErrorEvent ? 'transcript-item--error' : '',
     selectMode ? 'transcript-item--selectable' : '',
   ].filter(Boolean).join(' ');
 
   const handleClick = (e: MouseEvent) => {
-    if (!selectMode) return;
-    if (e.shiftKey) {
-      onShiftSelect();
-    } else {
-      onToggleSelect();
+    if (selectMode) {
+      if (e.shiftKey) {
+        onShiftSelect();
+      } else {
+        onToggleSelect();
+      }
+      return;
+    }
+    if (isCollapsible) {
+      onToggleCollapse();
     }
   };
 
   return (
     <div className={className} onClick={handleClick} data-block-id={block.id}>
-      <div className="transcript-item__meta">
-        <div className="transcript-item__meta-left">
+      <div className="transcript-item__frame">
+        {hasTypeIcon ? (
+          <div className="transcript-item__gutter" aria-hidden="true">
+            {typeIcon}
+          </div>
+        ) : null}
+        <div className="transcript-item__bubble">
+          {collapsed ? (
+            <div className="transcript-item__collapsed-preview" aria-label="Collapsed block">
+              …
+            </div>
+          ) : (
+            renderConversationBlockBody(block, collapsed)
+          )}
+        </div>
+      </div>
+      <span
+        className="transcript-item__timestamp"
+        title={formatAbsoluteTime(block.timestamp)}
+      >
+        {formatRelativeTime(block.timestamp)}
+      </span>
+      <div className="transcript-item__actions">
+        <CopyButton content={block.content} />
+        <label
+          className={`transcript-item__select${selectMode || isSelected ? ' transcript-item__select--visible' : ''}`}
+          title={isSelected ? 'Deselect block' : 'Select block'}
+          onClick={(e) => e.stopPropagation()}
+        >
           <input
             type="checkbox"
             checked={isSelected}
             onChange={onToggleSelect}
-            onClick={(e) => e.stopPropagation()}
-            className={`block-checkbox${selectMode || isSelected ? ' block-checkbox--visible' : ''}`}
+            className="block-checkbox"
+            aria-label={isSelected ? 'Deselect block' : 'Select block'}
           />
-          {isCollapsible && (
-            <button
-              type="button"
-              className="block-collapse-toggle"
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleCollapse();
-              }}
-            >
-              {collapsed ? '\u25B8' : '\u25BE'}
-            </button>
-          )}
-          {headerLabel && <span className="transcript-item__label">{headerLabel}</span>}
-        </div>
-        <div className="transcript-item__meta-right">
-          <CopyButton content={block.content} />
-          <span className="block-timestamp" title={formatAbsoluteTime(block.timestamp)}>
-            {formatRelativeTime(block.timestamp)}
-          </span>
-        </div>
+        </label>
       </div>
-      {renderConversationBlockBody(block, collapsed)}
     </div>
   );
 }

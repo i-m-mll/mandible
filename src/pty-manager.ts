@@ -15,7 +15,7 @@ import type {
   ConsoleSessionInput,
   ConsoleSessionStatus,
   ConsoleInteractionMode,
-  ClaudeStreamLine,
+  ConsoleStreamEvent,
 } from "./types.js";
 
 // -----------------------------------------------------------------------
@@ -113,19 +113,17 @@ function computeAgentType(
   if (is_operator) return "operator";
   if (command === "claude") return "claude";
   if (command === "codex") return "codex";
+  if (command === "gemini") return "gemini";
   return "shell";
 }
 
-function sanitizeClaudeArgs(args: string[]): string[] {
+function stripArgValue(args: string[], flags: string[]): string[] {
   const sanitized: string[] = [];
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if (arg === "-p" || arg === "--print" || arg === "--resume" || arg === "--output-format") {
+    if (flags.includes(arg)) {
       i += 1;
-      continue;
-    }
-    if (arg === "--verbose") {
       continue;
     }
     sanitized.push(arg);
@@ -135,15 +133,55 @@ function sanitizeClaudeArgs(args: string[]): string[] {
 }
 
 function buildLaunchArgs(meta: ConsoleSession): string[] {
-  if (meta.command !== "claude") {
-    return meta.args;
+  if (meta.command === "claude") {
+    const args = stripArgValue(meta.args, ["-p", "--print", "--resume", "--output-format", "--model"]);
+    const sanitized = args.filter((arg) => arg !== "--verbose");
+    const model = extractModel(meta.args);
+    if (model) {
+      sanitized.push("--model", model);
+    }
+    if (meta.provider_session_id) {
+      sanitized.push("--resume", meta.provider_session_id);
+    }
+    return sanitized;
   }
+  if (meta.command === "gemini") {
+    const args = stripArgValue(meta.args, ["-p", "--prompt", "--resume", "--output-format", "--model"]);
+    const model = extractModel(meta.args);
+    if (model) {
+      args.push("--model", model);
+    }
+    if (meta.provider_session_id) {
+      args.push("--resume", meta.provider_session_id);
+    }
+    return args;
+  }
+  if (meta.command === "codex") {
+    const args = stripArgValue(meta.args, ["-m", "--model"]);
+    const model = extractModel(meta.args);
+    if (meta.provider_session_id) {
+      const resumeArgs = ["resume", meta.provider_session_id, ...args];
+      if (model) {
+        resumeArgs.push("--model", model);
+      }
+      return resumeArgs;
+    }
+    if (model) {
+      args.push("--model", model);
+    }
+    return args;
+  }
+  return meta.args;
+}
 
-  const args = sanitizeClaudeArgs(meta.args);
-  if (meta.provider_session_id) {
-    args.push("--resume", meta.provider_session_id);
+function extractModel(args: string[]): string | null {
+  for (let i = args.length - 2; i >= 0; i -= 1) {
+    const arg = args[i];
+    if ((arg === "--model" || arg === "-m") && typeof args[i + 1] === "string" && args[i + 1].trim()) {
+      return args[i + 1].trim();
+    }
   }
-  return args;
+  return null;
 }
 
 /** Build a clean environment for PTY children. */
@@ -222,7 +260,7 @@ export class PtySession {
 
   private ptyProc: IPty | null = null;
   private ringBuffer: RingBuffer;
-  private streamEvents: ClaudeStreamLine[] = [];
+  private streamEvents: ConsoleStreamEvent[] = [];
   private wsClients: Set<WebSocket> = new Set();
   private lineBuffer = "";
   private onDataDisposable: IDisposable | null = null;
@@ -433,8 +471,12 @@ export class PtySession {
   }
 
   /** Return the history of structured stream events for the rich view. */
-  getStreamEvents(): ClaudeStreamLine[] {
+  getStreamEvents(): ConsoleStreamEvent[] {
     return [...this.streamEvents];
+  }
+
+  ingestStructuredEvent(event: ConsoleStreamEvent): void {
+    this.storeStructuredEvent(event);
   }
 
   /**
@@ -505,7 +547,11 @@ export class PtySession {
       return;
     }
 
-    const event = parsed as ClaudeStreamLine;
+    const event = parsed as ConsoleStreamEvent;
+    this.storeStructuredEvent(event);
+  }
+
+  private storeStructuredEvent(event: ConsoleStreamEvent): void {
     this.streamEvents.push(event);
     if (this.streamEvents.length > STREAM_EVENTS_LIMIT) {
       this.streamEvents = this.streamEvents.slice(this.streamEvents.length - STREAM_EVENTS_LIMIT);
@@ -839,6 +885,41 @@ export class PtyManager {
     if (!session) return false;
     session.addWsClient(ws);
     return true;
+  }
+
+  updateConfig(
+    id: string,
+    patch: Partial<Pick<ConsoleSession, "label" | "args" | "cwd" | "provider_session_id">>,
+  ): ConsoleSession {
+    const session = this.sessions.get(id);
+    if (!session) throw new Error(`session not found: ${id}`);
+
+    const nextMeta: ConsoleSession = {
+      ...session.meta,
+      ...(patch.label !== undefined ? { label: patch.label } : {}),
+      ...(patch.args !== undefined ? { args: patch.args } : {}),
+      ...(patch.cwd !== undefined ? { cwd: patch.cwd } : {}),
+      ...(patch.provider_session_id !== undefined ? { provider_session_id: patch.provider_session_id } : {}),
+      updated_at: Date.now(),
+    };
+    session.meta = nextMeta;
+
+    const db = getDb();
+    db.prepare(
+      `UPDATE console_sessions
+         SET label = ?, args_json = ?, cwd = ?, provider_session_id = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(
+      nextMeta.label,
+      JSON.stringify(nextMeta.args),
+      nextMeta.cwd,
+      nextMeta.provider_session_id,
+      nextMeta.updated_at,
+      id,
+    );
+
+    broadcast("console:session:updated", { session: nextMeta });
+    return nextMeta;
   }
 
   /**

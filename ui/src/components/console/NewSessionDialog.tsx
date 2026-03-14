@@ -2,7 +2,7 @@ import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useState } from 'preact/hooks';
 
 type AgentKind = 'agent' | 'operator';
-type Backend = 'claude' | 'codex';
+type Backend = 'claude' | 'codex' | 'gemini';
 
 type NewSessionDialogProps = {
   open: boolean;
@@ -18,7 +18,7 @@ const KIND_OPTIONS: Array<{
   {
     value: 'agent',
     title: 'Chat agent',
-    description: 'Normal ongoing chat. Rich chat is primary, debug terminal stays optional.',
+    description: 'Normal ongoing chat. Rich chat is the primary interface.',
   },
   {
     value: 'operator',
@@ -36,13 +36,19 @@ const BACKEND_OPTIONS: Array<{
   {
     value: 'claude',
     title: 'Claude Code',
-    description: 'First-class chat with native Claude history and resumable debug terminal.',
+    description: 'First-class chat with native Claude history.',
   },
   {
     value: 'codex',
     title: 'Codex',
-    description: 'Terminal-first today. Rich chat rendering still trails Claude.',
+    description: 'First-class chat backed by Codex exec JSON events and native Codex history.',
     note: 'Operator mode is not available for Codex yet.',
+  },
+  {
+    value: 'gemini',
+    title: 'Gemini',
+    description: 'First-class chat backed by Gemini stream-json and native Gemini history.',
+    note: 'Operator mode is not available for Gemini yet.',
   },
 ];
 

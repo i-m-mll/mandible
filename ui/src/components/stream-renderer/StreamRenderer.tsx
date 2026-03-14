@@ -118,11 +118,22 @@ function deriveStatusBarProps(
   durationMs?: number;
   error?: string;
   liveLabel?: string;
+  backend?: string;
+  modelOptions?: string[];
+  modelSaving?: boolean;
+  onChangeModel?: (model: string) => void | Promise<void>;
 } {
   const model = sessionInfo?.model ?? initEvent?.model;
+  const backend = sessionInfo?.backend;
+  const shared = {
+    backend,
+    modelOptions: sessionInfo?.modelOptions,
+    modelSaving: sessionInfo?.modelSaving,
+    onChangeModel: sessionInfo?.onChangeModel,
+  };
 
   if (!resultEvent) {
-    return { model, liveLabel };
+    return { model, liveLabel, ...shared };
   }
 
   if (resultEvent.is_error) {
@@ -133,6 +144,7 @@ function deriveStatusBarProps(
       durationMs: resultEvent.duration_ms,
       error: resultEvent.errors?.join('; '),
       liveLabel,
+      ...shared,
     };
   }
 
@@ -142,6 +154,7 @@ function deriveStatusBarProps(
     numTurns: resultEvent.num_turns,
     durationMs: resultEvent.duration_ms,
     liveLabel,
+    ...shared,
   };
 }
 
@@ -171,37 +184,13 @@ function deriveLiveLabel(turns: RenderedTurn[], streaming: boolean): string | un
 export function StreamRenderer({
   events,
   streaming,
+  elapsedSeconds,
+  emptyLabel,
   sessionInfo,
 }: StreamRendererProps): JSX.Element {
   const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [userScrolled, setUserScrolled] = useState(false);
-
-  // Track when streaming started so we can show elapsed time in the StatusBar.
-  // streamStartTimeRef records the wall-clock ms when streaming first became active.
-  const streamStartTimeRef = useRef<number | null>(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState<number | undefined>(undefined);
-
-  // When streaming begins, record start time; clear on completion.
-  useEffect(() => {
-    if (streaming) {
-      if (streamStartTimeRef.current === null) {
-        streamStartTimeRef.current = Date.now();
-      }
-      // Tick every second to update the displayed elapsed time.
-      const interval = setInterval(() => {
-        if (streamStartTimeRef.current !== null) {
-          setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1000));
-        }
-      }, 1000);
-      // Compute immediately so the first render shows 0s rather than undefined.
-      setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1000));
-      return () => clearInterval(interval);
-    } else {
-      // Streaming ended — keep the final elapsed snapshot but stop ticking.
-      streamStartTimeRef.current = null;
-    }
-  }, [streaming]);
 
   // Auto-scroll to bottom when new events arrive while streaming
   useEffect(() => {
@@ -248,7 +237,7 @@ export function StreamRenderer({
     return (
       <div className="stream-renderer">
         <div className="stream-renderer__empty">
-          {streaming ? 'Starting…' : 'No events'}
+          {emptyLabel ?? (streaming ? 'Starting…' : 'No events')}
         </div>
         <StatusBar streaming={streaming} elapsedSeconds={elapsedSeconds} {...statusBarProps} />
       </div>
@@ -267,9 +256,15 @@ export function StreamRenderer({
     while (umIdx < streamUserMessages.length && streamUserMessages[umIdx].insertionIdx === i) {
       const um = streamUserMessages[umIdx];
       nodes.push(
-        <div key={`um-${um.id}`} className="user-prompt-bubble">
-          <div className="user-prompt-bubble__label">You</div>
-          <div className="user-prompt-bubble__text">{um.text}</div>
+        <div key={`um-${um.id}`} className="stream-turn stream-turn--user">
+          <div className="stream-turn__speaker">
+            <span className="stream-turn__badge">You</span>
+          </div>
+          <div className="stream-turn__body">
+            <div className="user-prompt-bubble">
+              <div className="user-prompt-bubble__text">{um.text}</div>
+            </div>
+          </div>
         </div>,
       );
       umIdx++;
@@ -278,9 +273,15 @@ export function StreamRenderer({
     while (spIdx < syntheticPrompts.length && syntheticPrompts[spIdx].insertionIdx === i) {
       const sp = syntheticPrompts[spIdx];
       nodes.push(
-        <div key={`sp-${sp.localId}`} className="user-prompt-bubble">
-          <div className="user-prompt-bubble__label">You</div>
-          <div className="user-prompt-bubble__text">{sp.text}</div>
+        <div key={`sp-${sp.localId}`} className="stream-turn stream-turn--user">
+          <div className="stream-turn__speaker">
+            <span className="stream-turn__badge">You</span>
+          </div>
+          <div className="stream-turn__body">
+            <div className="user-prompt-bubble">
+              <div className="user-prompt-bubble__text">{sp.text}</div>
+            </div>
+          </div>
         </div>,
       );
       spIdx++;
@@ -293,12 +294,18 @@ export function StreamRenderer({
         isLastStreamingTurn &&
         turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
       nodes.push(
-        <MessageGroup
-          key={turn.id}
-          turn={turn}
-          isStreaming={isLastStreamingTurn}
-          isThinking={isThinking}
-        />,
+        <div key={turn.id} className="stream-turn stream-turn--assistant">
+          <div className="stream-turn__speaker">
+            <span className="stream-turn__badge">Assistant</span>
+          </div>
+          <div className="stream-turn__body">
+            <MessageGroup
+              turn={turn}
+              isStreaming={isLastStreamingTurn}
+              isThinking={isThinking}
+            />
+          </div>
+        </div>,
       );
     }
   }

@@ -297,7 +297,16 @@ function App(): JSX.Element {
     // Load initial console sessions list
     getConsoleSessions<ConsoleSession>()
       .then((sessions) => {
-        if (active) dispatch({ type: 'setConsoleSessions', sessions });
+        if (active) {
+          dispatch({
+            type: 'setConsoleSessions',
+            sessions: sessions.map((session) => ({
+              pinned: false,
+              unread_count: 0,
+              ...session,
+            })),
+          });
+        }
       })
       .catch(() => undefined);
 
@@ -785,33 +794,21 @@ function App(): JSX.Element {
   }) => {
     try {
       const result = await createConsoleSession(label, backend, kind);
-      // createConsoleSession returns { id } — extract from session wrapper if needed
-      const rawResult = result as unknown as { id?: string; session?: { id: string } };
-      const id = rawResult.id ?? rawResult.session?.id ?? '';
+      const session = {
+        pinned: false,
+        unread_count: 0,
+        ...result.session,
+        agent_type: (kind === 'operator' ? 'operator' : backend) as ConsoleSession['agent_type'],
+      } as ConsoleSession;
+      const id = session.id;
       if (!id) return;
-
-      const agentType = kind === 'operator' ? 'operator' : backend;
-      const autoStarts = kind === 'operator' || backend !== 'claude';
 
       // Optimistic upsert: add the session immediately so the tab appears
       // without waiting for the SSE console:session:created event to arrive.
       // The SSE event will upsert again (idempotent) with the authoritative data.
       dispatch({
         type: 'upsertConsoleSession',
-        session: {
-          id,
-          label,
-          agent_type: agentType as ConsoleSession['agent_type'],
-          interaction_mode: 'both',
-          pinned: false,
-          status: autoStarts ? 'running' : 'stopped',
-          is_operator: kind === 'operator',
-          provider_session_id: null,
-          unread_count: 0,
-          created_at: Date.now(),
-          started_at: autoStarts ? Date.now() : null,
-          stopped_at: null,
-        },
+        session,
       });
       dispatch({ type: 'setConsoleActiveSessionId', sessionId: id });
     } catch {

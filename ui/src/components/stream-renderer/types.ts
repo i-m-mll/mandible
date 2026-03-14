@@ -164,6 +164,7 @@ export interface MessageGroupProps {
 export interface StatusBarProps {
   streaming: boolean;
   model?: string;
+  backend?: string;
   totalCostUsd?: number;
   numTurns?: number;
   durationMs?: number;
@@ -171,6 +172,9 @@ export interface StatusBarProps {
   /** Elapsed seconds since streaming started — shown live while streaming=true. */
   elapsedSeconds?: number;
   liveLabel?: string;
+  modelOptions?: string[];
+  modelSaving?: boolean;
+  onChangeModel?: (model: string) => void | Promise<void>;
 }
 
 export interface StreamRendererProps {
@@ -178,9 +182,15 @@ export interface StreamRendererProps {
   events: StreamEvent[];
   /** True while the transport is open and data may still arrive. */
   streaming: boolean;
+  elapsedSeconds?: number;
+  emptyLabel?: string;
   /** Optional session metadata for the status bar. */
   sessionInfo?: {
     sessionId: string;
+    backend?: string;
     model?: string;
+    modelOptions?: string[];
+    modelSaving?: boolean;
+    onChangeModel?: (model: string) => void | Promise<void>;
   };
 }

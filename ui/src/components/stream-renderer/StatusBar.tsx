@@ -20,12 +20,16 @@ function formatDuration(ms: number): string {
 export function StatusBar({
   streaming,
   model,
+  backend,
   totalCostUsd,
   numTurns,
   durationMs,
   error,
   elapsedSeconds,
   liveLabel,
+  modelOptions,
+  modelSaving,
+  onChangeModel,
 }: StatusBarProps): JSX.Element {
   const dotClass = error
     ? 'status-bar__dot status-bar__dot--error'
@@ -40,9 +44,6 @@ export function StatusBar({
   }
   if (totalCostUsd !== undefined) {
     centerParts.push(formatCost(totalCostUsd));
-  }
-  if (model) {
-    centerParts.push(model);
   }
 
   const centerText = centerParts.join(' · ');
@@ -73,6 +74,35 @@ export function StatusBar({
     <div className="status-bar">
       <span className={dotClass} aria-hidden="true" />
       {labelContent}
+      {onChangeModel && backend === 'codex' ? (
+        <button
+          type="button"
+          className="status-bar__model-button"
+          onClick={() => {
+            const next = window.prompt('Set model', model ?? '');
+            if (next !== null) {
+              void onChangeModel(next.trim());
+            }
+          }}
+          disabled={modelSaving}
+        >
+          {modelSaving ? 'Saving…' : (model ?? 'default')}
+        </button>
+      ) : onChangeModel && modelOptions && modelOptions.length > 0 ? (
+        <select
+          className="status-bar__model-select"
+          value={model ?? ''}
+          onChange={(e) => { void onChangeModel(e.currentTarget.value); }}
+          disabled={modelSaving}
+        >
+          <option value="">default</option>
+          {modelOptions.map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+      ) : model ? (
+        <span className="status-bar__center">{model}</span>
+      ) : null}
       {centerText && (
         <span className="status-bar__center">{centerText}</span>
       )}

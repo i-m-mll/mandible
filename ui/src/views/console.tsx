@@ -56,14 +56,10 @@ export function ConsoleView({
   }, [activeSessionId, sessions, onSelectSession]);
 
   // Claude-backed chat sessions get the chat view by default. Other agents stay
-  // terminal-first until they emit a reliable structured stream for the renderer.
+  // rich-first by default. Operator sessions may still expose a debug terminal.
   const getViewMode = (sessionId: string): ViewMode => {
     if (sessionId in viewModes) return viewModes[sessionId];
-    const session = sessions.find((s) => s.id === sessionId);
-    if (session && (session.agent_type === 'claude' || session.agent_type === 'operator')) {
-      return 'rich';
-    }
-    return 'terminal';
+    return 'rich';
   };
 
   const handleViewModeChange = (sessionId: string, mode: ViewMode) => {
@@ -120,6 +116,9 @@ export function ConsoleView({
               key={session.id}
               sessionId={session.id}
               agentType={session.agent_type}
+              command={session.command ?? session.agent_type}
+              sessionArgs={session.args ?? []}
+              isOperator={session.is_operator}
               interactionMode={session.interaction_mode}
               sessionStatus={session.status}
               providerSessionId={session.provider_session_id}

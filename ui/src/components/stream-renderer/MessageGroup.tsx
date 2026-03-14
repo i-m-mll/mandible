@@ -50,17 +50,14 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
 
   return (
     <div className="message-group">
-      <div className="message-group__role" aria-label="Role">
-        Assistant
-        {isThinking && (
-          <span className="message-group__thinking-indicator" aria-label="Thinking">
-            thinking…
-          </span>
-        )}
-      </div>
       <div className="message-group__content">
         {blocks.map((block, i) => renderBlock(block, i))}
       </div>
+      {isThinking && (
+        <div className="message-group__thinking-indicator" aria-label="Thinking">
+          thinking…
+        </div>
+      )}
     </div>
   );
 }
