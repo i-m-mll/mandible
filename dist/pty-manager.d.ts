@@ -3,7 +3,7 @@
  * Bug: e980dd8
  */
 import type { WebSocket } from "ws";
-import type { Logger, ConsoleSession, ConsoleSessionInput, ClaudeStreamLine } from "./types.js";
+import type { Logger, ConsoleSession, ConsoleSessionInput, ConsoleStreamEvent } from "./types.js";
 export declare class RingBuffer {
     private buf;
     private head;
@@ -58,7 +58,8 @@ export declare class PtySession {
     /** Return a snapshot of the ring buffer for HTTP-based replay. */
     getBufferSnapshot(): Buffer;
     /** Return the history of structured stream events for the rich view. */
-    getStreamEvents(): ClaudeStreamLine[];
+    getStreamEvents(): ConsoleStreamEvent[];
+    ingestStructuredEvent(event: ConsoleStreamEvent): void;
     /**
      * Feed raw text through the stream-json line parser without writing to
      * the ring buffer or broadcasting raw PTY bytes.
@@ -70,6 +71,7 @@ export declare class PtySession {
     private handleData;
     private feedLineParser;
     private parseStreamJsonLine;
+    private storeStructuredEvent;
     private handleExit;
     private broadcastWsStatus;
     private dbUpdate;
@@ -108,6 +110,7 @@ export declare class PtyManager {
      * Returns false if session not found.
      */
     addWsClient(id: string, ws: WebSocket): boolean;
+    updateConfig(id: string, patch: Partial<Pick<ConsoleSession, "label" | "args" | "cwd" | "provider_session_id">>): ConsoleSession;
     /**
      * Start or create the Operator session.
      * - Reads console_operator_session_id from settings

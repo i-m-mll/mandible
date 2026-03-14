@@ -86,17 +86,16 @@ function computeAgentType(command, is_operator) {
         return "claude";
     if (command === "codex")
         return "codex";
+    if (command === "gemini")
+        return "gemini";
     return "shell";
 }
-function sanitizeClaudeArgs(args) {
+function stripArgValue(args, flags) {
     const sanitized = [];
     for (let i = 0; i < args.length; i += 1) {
         const arg = args[i];
-        if (arg === "-p" || arg === "--print" || arg === "--resume" || arg === "--output-format") {
+        if (flags.includes(arg)) {
             i += 1;
-            continue;
-        }
-        if (arg === "--verbose") {
             continue;
         }
         sanitized.push(arg);
@@ -104,14 +103,54 @@ function sanitizeClaudeArgs(args) {
     return sanitized;
 }
 function buildLaunchArgs(meta) {
-    if (meta.command !== "claude") {
-        return meta.args;
+    if (meta.command === "claude") {
+        const args = stripArgValue(meta.args, ["-p", "--print", "--resume", "--output-format", "--model"]);
+        const sanitized = args.filter((arg) => arg !== "--verbose");
+        const model = extractModel(meta.args);
+        if (model) {
+            sanitized.push("--model", model);
+        }
+        if (meta.provider_session_id) {
+            sanitized.push("--resume", meta.provider_session_id);
+        }
+        return sanitized;
     }
-    const args = sanitizeClaudeArgs(meta.args);
-    if (meta.provider_session_id) {
-        args.push("--resume", meta.provider_session_id);
+    if (meta.command === "gemini") {
+        const args = stripArgValue(meta.args, ["-p", "--prompt", "--resume", "--output-format", "--model"]);
+        const model = extractModel(meta.args);
+        if (model) {
+            args.push("--model", model);
+        }
+        if (meta.provider_session_id) {
+            args.push("--resume", meta.provider_session_id);
+        }
+        return args;
     }
-    return args;
+    if (meta.command === "codex") {
+        const args = stripArgValue(meta.args, ["-m", "--model"]);
+        const model = extractModel(meta.args);
+        if (meta.provider_session_id) {
+            const resumeArgs = ["resume", meta.provider_session_id, ...args];
+            if (model) {
+                resumeArgs.push("--model", model);
+            }
+            return resumeArgs;
+        }
+        if (model) {
+            args.push("--model", model);
+        }
+        return args;
+    }
+    return meta.args;
+}
+function extractModel(args) {
+    for (let i = args.length - 2; i >= 0; i -= 1) {
+        const arg = args[i];
+        if ((arg === "--model" || arg === "-m") && typeof args[i + 1] === "string" && args[i + 1].trim()) {
+            return args[i + 1].trim();
+        }
+    }
+    return null;
 }
 /** Build a clean environment for PTY children. */
 function buildPtyEnv(extraEnv) {
@@ -354,6 +393,9 @@ export class PtySession {
     getStreamEvents() {
         return [...this.streamEvents];
     }
+    ingestStructuredEvent(event) {
+        this.storeStructuredEvent(event);
+    }
     /**
      * Feed raw text through the stream-json line parser without writing to
      * the ring buffer or broadcasting raw PTY bytes.
@@ -415,6 +457,9 @@ export class PtySession {
             return;
         }
         const event = parsed;
+        this.storeStructuredEvent(event);
+    }
+    storeStructuredEvent(event) {
         this.streamEvents.push(event);
         if (this.streamEvents.length > STREAM_EVENTS_LIMIT) {
             this.streamEvents = this.streamEvents.slice(this.streamEvents.length - STREAM_EVENTS_LIMIT);
@@ -682,6 +727,26 @@ export class PtyManager {
             return false;
         session.addWsClient(ws);
         return true;
+    }
+    updateConfig(id, patch) {
+        const session = this.sessions.get(id);
+        if (!session)
+            throw new Error(`session not found: ${id}`);
+        const nextMeta = {
+            ...session.meta,
+            ...(patch.label !== undefined ? { label: patch.label } : {}),
+            ...(patch.args !== undefined ? { args: patch.args } : {}),
+            ...(patch.cwd !== undefined ? { cwd: patch.cwd } : {}),
+            ...(patch.provider_session_id !== undefined ? { provider_session_id: patch.provider_session_id } : {}),
+            updated_at: Date.now(),
+        };
+        session.meta = nextMeta;
+        const db = getDb();
+        db.prepare(`UPDATE console_sessions
+         SET label = ?, args_json = ?, cwd = ?, provider_session_id = ?, updated_at = ?
+       WHERE id = ?`).run(nextMeta.label, JSON.stringify(nextMeta.args), nextMeta.cwd, nextMeta.provider_session_id, nextMeta.updated_at, id);
+        broadcast("console:session:updated", { session: nextMeta });
+        return nextMeta;
     }
     /**
      * Start or create the Operator session.

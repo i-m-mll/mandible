@@ -183,7 +183,7 @@ export interface ConsoleSession {
     started_at: number | null;
     stopped_at: number | null;
     /** Derived from command and is_operator. Not stored in DB. */
-    agent_type: 'claude' | 'codex' | 'operator' | 'shell';
+    agent_type: 'claude' | 'codex' | 'gemini' | 'operator' | 'shell';
 }
 export interface ConsoleSessionInput {
     label: string;
@@ -197,79 +197,47 @@ export interface ConsoleSessionInput {
     is_operator?: boolean;
     interaction_mode?: ConsoleInteractionMode;
 }
-export interface ClaudeStreamSystemInit {
-    type: 'system';
-    subtype: 'init';
-    session_id: string;
-    tools: string[];
-    model?: string;
-}
-export interface ClaudeStreamAssistant {
-    type: 'assistant';
-    message: {
-        id: string;
-        role: 'assistant';
-        model: string;
-        content: ClaudeContentBlock[];
-        stop_reason: string | null;
-        usage: ClaudeUsage;
-    };
-    session_id: string;
-    parent_tool_use_id: string | null;
-}
-export interface ClaudeStreamUser {
-    type: 'user';
-    message: {
-        role: 'user';
-        content: ClaudeContentBlock[];
-    };
-    session_id: string;
-    parent_tool_use_id: string | null;
-}
-export interface ClaudeStreamResult {
-    type: 'result';
-    subtype: 'success' | 'error';
-    session_id: string;
-    result: string;
-    is_error: boolean;
-    duration_ms: number;
-    num_turns: number;
-    cost_usd: number;
-}
-export interface ClaudeStreamEvent {
-    type: 'stream_event';
-    event: {
-        type: string;
-        index?: number;
-        delta?: {
-            type: string;
-            text?: string;
-            partial_json?: string;
-        };
-        content_block?: {
-            type: string;
-            id?: string;
-            name?: string;
-        };
-    };
-    session_id: string;
-}
-export type ClaudeStreamLine = ClaudeStreamSystemInit | ClaudeStreamAssistant | ClaudeStreamUser | ClaudeStreamResult | ClaudeStreamEvent;
-export interface ClaudeContentBlock {
+export interface ConsoleContentBlock {
     type: 'text' | 'tool_use' | 'tool_result';
     text?: string;
     id?: string;
     name?: string;
     input?: unknown;
     tool_use_id?: string;
-    content?: string | ClaudeContentBlock[];
+    content?: string | ConsoleContentBlock[];
 }
-export interface ClaudeUsage {
+export interface ConsoleUsage {
     input_tokens: number;
     cache_creation_input_tokens: number;
     cache_read_input_tokens: number;
     output_tokens: number;
 }
+export type ConsoleStreamEvent = {
+    type: string;
+    session_id?: string;
+    subtype?: string;
+    parent_tool_use_id?: string | null;
+    message?: {
+        id?: string;
+        role?: string;
+        model?: string;
+        content?: ConsoleContentBlock[];
+        stop_reason?: string | null;
+        usage?: ConsoleUsage;
+    };
+    tools?: string[];
+    model?: string;
+    result?: string;
+    is_error?: boolean;
+    duration_ms?: number;
+    num_turns?: number;
+    cost_usd?: number;
+    total_cost_usd?: number;
+    errors?: string[];
+    usage?: Record<string, unknown>;
+    event?: Record<string, unknown>;
+    [key: string]: unknown;
+};
 export type GraphNodeType = "issue" | "session" | "auth_request";
 export type GraphEdgeType = "session_issue" | "session_parent" | "auth_issue" | "umbrella_child";
 export interface GraphNode {

@@ -8159,13 +8159,15 @@ async function createConsoleSession(label, backend, kind) {
   } else if (backend === "codex") {
     body.command = "codex";
     body.args = [];
+  } else if (backend === "gemini") {
+    body.command = "gemini";
+    body.args = ["-y"];
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
   const response = await apiPost("/api/console/sessions", body);
   const json = await parseMaybeJson(response);
-  const data = json;
-  return { id: data.session?.id ?? data.id ?? "" };
+  return json;
 }
 async function closeConsoleSession(sessionId) {
   await apiDelete(`/api/console/sessions/${encodeURIComponent(sessionId)}`);
@@ -8184,6 +8186,10 @@ async function sendConsolePrompt(sessionId, prompt) {
     `/api/console/sessions/${encodeURIComponent(sessionId)}/prompt`,
     { prompt }
   );
+}
+async function updateConsoleSession(sessionId, body) {
+  const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}`, body);
+  return parseMaybeJson(response);
 }
 async function getBackupStatus() {
   const response = await apiGet("/api/backup/status");
@@ -14358,9 +14364,95 @@ function CopyButton({ content }) {
       className: "block-copy-btn",
       onClick: handleCopy,
       title: "Copy raw markdown",
-      children: copied ? "Copied" : "Copy"
+      "aria-label": copied ? "Copied" : "Copy raw markdown",
+      children: copied ? /* @__PURE__ */ u3("svg", { viewBox: "0 0 16 16", "aria-hidden": "true", children: /* @__PURE__ */ u3(
+        "path",
+        {
+          d: "M3 8.5 6.2 11.6 13 4.8",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: "1.6",
+          strokeLinecap: "round",
+          strokeLinejoin: "round"
+        }
+      ) }) : /* @__PURE__ */ u3("svg", { viewBox: "0 0 16 16", "aria-hidden": "true", children: [
+        /* @__PURE__ */ u3(
+          "rect",
+          {
+            x: "5.5",
+            y: "4.5",
+            width: "7",
+            height: "8",
+            rx: "1.5",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: "1.2"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "path",
+          {
+            d: "M3.5 9.5h-1V3.5A1.5 1.5 0 0 1 4 2h6v1.2H4.7a1.2 1.2 0 0 0-1.2 1.2Z",
+            fill: "currentColor"
+          }
+        )
+      ] })
     }
   );
+}
+function BlockTypeIcon({ type: type2 }) {
+  if (type2 === "thinking") {
+    return /* @__PURE__ */ u3("svg", { viewBox: "0 0 16 16", "aria-hidden": "true", children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M5.1 12.8c.3.8 1.2 1.2 2.1 1.2h1.6c.9 0 1.8-.4 2.1-1.2M5.8 11.4h4.4M5.3 10.2c-.9-.8-1.6-2-1.6-3.3C3.7 4.2 5.7 2 8 2s4.3 2.2 4.3 4.9c0 1.3-.7 2.5-1.6 3.3-.3.3-.5.7-.5 1.1v.1H5.8v-.1c0-.4-.2-.8-.5-1.1Z",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: "1.3",
+        strokeLinecap: "round",
+        strokeLinejoin: "round"
+      }
+    ) });
+  }
+  if (type2 === "tool_use" || type2 === "tool_result") {
+    return /* @__PURE__ */ u3("svg", { viewBox: "0 0 16 16", "aria-hidden": "true", children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "m9.9 2.4 1.8 1.8-2 2 1.9 1.9 2-2 1.8 1.8-.8 2.6-2.2 2.1-2.7.9-1.8-1.9.8-2.6-2.1-2.1-2.6.8L3 6.6l.9-2.7 2.1-2.1 2.6-.8Z",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: "1.1",
+        strokeLinecap: "round",
+        strokeLinejoin: "round"
+      }
+    ) });
+  }
+  if (type2 === "system" || type2 === "event") {
+    return /* @__PURE__ */ u3("svg", { viewBox: "0 0 16 16", "aria-hidden": "true", children: [
+      /* @__PURE__ */ u3(
+        "circle",
+        {
+          cx: "8",
+          cy: "8",
+          r: "5.4",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: "1.2"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "path",
+        {
+          d: "M8 7.2v3.2M8 5.1h.01",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: "1.4",
+          strokeLinecap: "round"
+        }
+      )
+    ] });
+  }
+  return null;
 }
 function primaryToolArg(toolName, toolInput) {
   if (!toolInput || typeof toolInput !== "object")
@@ -14531,59 +14623,67 @@ function TranscriptBlockItem({
   onToggleCollapse,
   collapsed
 }) {
-  const metadata = parseMetadata(block2.metadata_json);
   const isCollapsible = isCollapsibleBlock(block2.type);
-  const headerLabel = getBlockHeaderLabel(block2, metadata);
+  const metadata = parseMetadata(block2.metadata_json);
   const isErrorEvent = block2.type === "event" && (metadata.is_error === true || metadata.level === "error");
+  const typeIcon = BlockTypeIcon({ type: block2.type });
+  const hasTypeIcon = typeIcon !== null;
   const className = [
     "transcript-item",
     `transcript-item--${block2.type.replace("_", "-")}`,
+    hasTypeIcon ? "transcript-item--with-gutter" : "",
+    collapsed ? "transcript-item--collapsed" : "",
     isSelected ? "transcript-item--selected" : "",
     isErrorEvent ? "transcript-item--error" : "",
     selectMode ? "transcript-item--selectable" : ""
   ].filter(Boolean).join(" ");
   const handleClick = (e3) => {
-    if (!selectMode)
+    if (selectMode) {
+      if (e3.shiftKey) {
+        onShiftSelect();
+      } else {
+        onToggleSelect();
+      }
       return;
-    if (e3.shiftKey) {
-      onShiftSelect();
-    } else {
-      onToggleSelect();
+    }
+    if (isCollapsible) {
+      onToggleCollapse();
     }
   };
   return /* @__PURE__ */ u3("div", { className, onClick: handleClick, "data-block-id": block2.id, children: [
-    /* @__PURE__ */ u3("div", { className: "transcript-item__meta", children: [
-      /* @__PURE__ */ u3("div", { className: "transcript-item__meta-left", children: [
-        /* @__PURE__ */ u3(
-          "input",
-          {
-            type: "checkbox",
-            checked: isSelected,
-            onChange: onToggleSelect,
-            onClick: (e3) => e3.stopPropagation(),
-            className: `block-checkbox${selectMode || isSelected ? " block-checkbox--visible" : ""}`
-          }
-        ),
-        isCollapsible && /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "block-collapse-toggle",
-            onClick: (e3) => {
-              e3.stopPropagation();
-              onToggleCollapse();
-            },
-            children: collapsed ? "\u25B8" : "\u25BE"
-          }
-        ),
-        headerLabel && /* @__PURE__ */ u3("span", { className: "transcript-item__label", children: headerLabel })
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "transcript-item__meta-right", children: [
-        /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
-        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
-      ] })
+    /* @__PURE__ */ u3("div", { className: "transcript-item__frame", children: [
+      hasTypeIcon ? /* @__PURE__ */ u3("div", { className: "transcript-item__gutter", "aria-hidden": "true", children: typeIcon }) : null,
+      /* @__PURE__ */ u3("div", { className: "transcript-item__bubble", children: collapsed ? /* @__PURE__ */ u3("div", { className: "transcript-item__collapsed-preview", "aria-label": "Collapsed block", children: "\u2026" }) : renderConversationBlockBody(block2, collapsed) })
     ] }),
-    renderConversationBlockBody(block2, collapsed)
+    /* @__PURE__ */ u3(
+      "span",
+      {
+        className: "transcript-item__timestamp",
+        title: formatAbsoluteTime(block2.timestamp),
+        children: formatRelativeTime4(block2.timestamp)
+      }
+    ),
+    /* @__PURE__ */ u3("div", { className: "transcript-item__actions", children: [
+      /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
+      /* @__PURE__ */ u3(
+        "label",
+        {
+          className: `transcript-item__select${selectMode || isSelected ? " transcript-item__select--visible" : ""}`,
+          title: isSelected ? "Deselect block" : "Select block",
+          onClick: (e3) => e3.stopPropagation(),
+          children: /* @__PURE__ */ u3(
+            "input",
+            {
+              type: "checkbox",
+              checked: isSelected,
+              onChange: onToggleSelect,
+              className: "block-checkbox",
+              "aria-label": isSelected ? "Deselect block" : "Select block"
+            }
+          )
+        }
+      )
+    ] })
   ] });
 }
 function TranscriptTurnRenderer({
@@ -17658,12 +17758,14 @@ var AGENT_ABBREV = {
   operator: "OP",
   claude: "CL",
   codex: "CX",
+  gemini: "GM",
   shell: "SH"
 };
 var AGENT_COLOR = {
   operator: "var(--accent-yellow)",
   claude: "var(--accent-yellow)",
   codex: "var(--accent-green)",
+  gemini: "var(--accent-blue)",
   shell: "var(--text-muted)"
 };
 function getAgentAbbrev(agentType) {
@@ -17852,20 +17954,28 @@ function TextBlock({ text }) {
 function ThinkingBlock({ thinking, defaultExpanded = false }) {
   const [expanded, setExpanded] = d2(defaultExpanded);
   return /* @__PURE__ */ u3("div", { className: "thinking-block", children: [
+    /* @__PURE__ */ u3("div", { className: "thinking-block__gutter", "aria-hidden": "true", children: /* @__PURE__ */ u3("svg", { viewBox: "0 0 16 16", children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M5.1 12.8c.3.8 1.2 1.2 2.1 1.2h1.6c.9 0 1.8-.4 2.1-1.2M5.8 11.4h4.4M5.3 10.2c-.9-.8-1.6-2-1.6-3.3C3.7 4.2 5.7 2 8 2s4.3 2.2 4.3 4.9c0 1.3-.7 2.5-1.6 3.3-.3.3-.5.7-.5 1.1v.1H5.8v-.1c0-.4-.2-.8-.5-1.1Z",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: "1.3",
+        strokeLinecap: "round",
+        strokeLinejoin: "round"
+      }
+    ) }) }),
     /* @__PURE__ */ u3(
       "button",
       {
         type: "button",
-        className: "thinking-block__header",
+        className: `thinking-block__bubble${expanded ? " thinking-block__bubble--expanded" : ""}`,
         onClick: () => setExpanded((prev) => !prev),
         "aria-expanded": expanded,
-        children: [
-          /* @__PURE__ */ u3("span", { className: "thinking-block__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
-          /* @__PURE__ */ u3("span", { children: "Thinking" })
-        ]
+        title: expanded ? "Collapse thinking" : "Expand thinking",
+        children: expanded ? /* @__PURE__ */ u3("div", { className: "thinking-block__body", children: /* @__PURE__ */ u3("pre", { children: thinking }) }) : /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", children: "\u2026" })
       }
-    ),
-    expanded && /* @__PURE__ */ u3("div", { className: "thinking-block__body", children: /* @__PURE__ */ u3("pre", { children: thinking }) })
+    )
   ] });
 }
 
@@ -20081,11 +20191,8 @@ function MessageGroup({ turn, isStreaming, isThinking }) {
     }
   }
   return /* @__PURE__ */ u3("div", { className: "message-group", children: [
-    /* @__PURE__ */ u3("div", { className: "message-group__role", "aria-label": "Role", children: [
-      "Assistant",
-      isThinking && /* @__PURE__ */ u3("span", { className: "message-group__thinking-indicator", "aria-label": "Thinking", children: "thinking\u2026" })
-    ] }),
-    /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) })
+    /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) }),
+    isThinking && /* @__PURE__ */ u3("div", { className: "message-group__thinking-indicator", "aria-label": "Thinking", children: "thinking\u2026" })
   ] });
 }
 
@@ -20105,12 +20212,16 @@ function formatDuration2(ms) {
 function StatusBar({
   streaming,
   model,
+  backend,
   totalCostUsd,
   numTurns,
   durationMs,
   error,
   elapsedSeconds,
-  liveLabel
+  liveLabel,
+  modelOptions,
+  modelSaving,
+  onChangeModel
 }) {
   const dotClass = error ? "status-bar__dot status-bar__dot--error" : streaming ? "status-bar__dot status-bar__dot--streaming" : "status-bar__dot status-bar__dot--done";
   const centerParts = [];
@@ -20119,9 +20230,6 @@ function StatusBar({
   }
   if (totalCostUsd !== void 0) {
     centerParts.push(formatCost(totalCostUsd));
-  }
-  if (model) {
-    centerParts.push(model);
   }
   const centerText = centerParts.join(" \xB7 ");
   let rightText = "";
@@ -20141,6 +20249,35 @@ function StatusBar({
   return /* @__PURE__ */ u3("div", { className: "status-bar", children: [
     /* @__PURE__ */ u3("span", { className: dotClass, "aria-hidden": "true" }),
     labelContent,
+    onChangeModel && backend === "codex" ? /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "status-bar__model-button",
+        onClick: () => {
+          const next = window.prompt("Set model", model ?? "");
+          if (next !== null) {
+            void onChangeModel(next.trim());
+          }
+        },
+        disabled: modelSaving,
+        children: modelSaving ? "Saving\u2026" : model ?? "default"
+      }
+    ) : onChangeModel && modelOptions && modelOptions.length > 0 ? /* @__PURE__ */ u3(
+      "select",
+      {
+        className: "status-bar__model-select",
+        value: model ?? "",
+        onChange: (e3) => {
+          void onChangeModel(e3.currentTarget.value);
+        },
+        disabled: modelSaving,
+        children: [
+          /* @__PURE__ */ u3("option", { value: "", children: "default" }),
+          modelOptions.map((option) => /* @__PURE__ */ u3("option", { value: option, children: option }, option))
+        ]
+      }
+    ) : model ? /* @__PURE__ */ u3("span", { className: "status-bar__center", children: model }) : null,
     centerText && /* @__PURE__ */ u3("span", { className: "status-bar__center", children: centerText }),
     rightText && /* @__PURE__ */ u3("span", { className: "status-bar__right", children: rightText })
   ] });
@@ -20207,8 +20344,15 @@ function useStreamState(events) {
 }
 function deriveStatusBarProps(streaming, initEvent, resultEvent, liveLabel, sessionInfo) {
   const model = sessionInfo?.model ?? initEvent?.model;
+  const backend = sessionInfo?.backend;
+  const shared = {
+    backend,
+    modelOptions: sessionInfo?.modelOptions,
+    modelSaving: sessionInfo?.modelSaving,
+    onChangeModel: sessionInfo?.onChangeModel
+  };
   if (!resultEvent) {
-    return { model, liveLabel };
+    return { model, liveLabel, ...shared };
   }
   if (resultEvent.is_error) {
     return {
@@ -20217,7 +20361,8 @@ function deriveStatusBarProps(streaming, initEvent, resultEvent, liveLabel, sess
       numTurns: resultEvent.num_turns,
       durationMs: resultEvent.duration_ms,
       error: resultEvent.errors?.join("; "),
-      liveLabel
+      liveLabel,
+      ...shared
     };
   }
   return {
@@ -20225,7 +20370,8 @@ function deriveStatusBarProps(streaming, initEvent, resultEvent, liveLabel, sess
     totalCostUsd: resultEvent.total_cost_usd,
     numTurns: resultEvent.num_turns,
     durationMs: resultEvent.duration_ms,
-    liveLabel
+    liveLabel,
+    ...shared
   };
 }
 function deriveLiveLabel(turns, streaming) {
@@ -20251,29 +20397,13 @@ function deriveLiveLabel(turns, streaming) {
 function StreamRenderer({
   events,
   streaming,
+  elapsedSeconds,
+  emptyLabel,
   sessionInfo
 }) {
   const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages } = useStreamState(events);
   const scrollRef = A2(null);
   const [userScrolled, setUserScrolled] = d2(false);
-  const streamStartTimeRef = A2(null);
-  const [elapsedSeconds, setElapsedSeconds] = d2(void 0);
-  y2(() => {
-    if (streaming) {
-      if (streamStartTimeRef.current === null) {
-        streamStartTimeRef.current = Date.now();
-      }
-      const interval2 = setInterval(() => {
-        if (streamStartTimeRef.current !== null) {
-          setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1e3));
-        }
-      }, 1e3);
-      setElapsedSeconds(Math.floor((Date.now() - streamStartTimeRef.current) / 1e3));
-      return () => clearInterval(interval2);
-    } else {
-      streamStartTimeRef.current = null;
-    }
-  }, [streaming]);
   y2(() => {
     if (!streaming || userScrolled) {
       return;
@@ -20309,7 +20439,7 @@ function StreamRenderer({
   const hasContent = events.length > 0 || syntheticPrompts.length > 0 || streamUserMessages.length > 0;
   if (!hasContent) {
     return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
-      /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: streaming ? "Starting\u2026" : "No events" }),
+      /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: emptyLabel ?? (streaming ? "Starting\u2026" : "No events") }),
       /* @__PURE__ */ u3(StatusBar, { streaming, elapsedSeconds, ...statusBarProps })
     ] });
   }
@@ -20320,9 +20450,9 @@ function StreamRenderer({
     while (umIdx < streamUserMessages.length && streamUserMessages[umIdx].insertionIdx === i4) {
       const um = streamUserMessages[umIdx];
       nodes.push(
-        /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: [
-          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__label", children: "You" }),
-          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: um.text })
+        /* @__PURE__ */ u3("div", { className: "stream-turn stream-turn--user", children: [
+          /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: "You" }) }),
+          /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: um.text }) }) })
         ] }, `um-${um.id}`)
       );
       umIdx++;
@@ -20330,9 +20460,9 @@ function StreamRenderer({
     while (spIdx < syntheticPrompts.length && syntheticPrompts[spIdx].insertionIdx === i4) {
       const sp = syntheticPrompts[spIdx];
       nodes.push(
-        /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: [
-          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__label", children: "You" }),
-          /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: sp.text })
+        /* @__PURE__ */ u3("div", { className: "stream-turn stream-turn--user", children: [
+          /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: "You" }) }),
+          /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: sp.text }) }) })
         ] }, `sp-${sp.localId}`)
       );
       spIdx++;
@@ -20342,15 +20472,17 @@ function StreamRenderer({
       const isLastStreamingTurn = streaming && i4 === turns.length - 1;
       const isThinking = isLastStreamingTurn && turn.assistantEvent.message.content.some((b) => b.type === "thinking");
       nodes.push(
-        /* @__PURE__ */ u3(
-          MessageGroup,
-          {
-            turn,
-            isStreaming: isLastStreamingTurn,
-            isThinking
-          },
-          turn.id
-        )
+        /* @__PURE__ */ u3("div", { className: "stream-turn stream-turn--assistant", children: [
+          /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: "Assistant" }) }),
+          /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: /* @__PURE__ */ u3(
+            MessageGroup,
+            {
+              turn,
+              isStreaming: isLastStreamingTurn,
+              isThinking
+            }
+          ) })
+        ] }, turn.id)
       );
     }
   }
@@ -20387,7 +20519,7 @@ function StreamRenderer({
 }
 
 // ui/src/components/console/ViewToggle.tsx
-function ViewToggle({ current, onChange }) {
+function ViewToggle({ current, onChange, showTerminal = true }) {
   return /* @__PURE__ */ u3("div", { className: "view-toggle", children: [
     /* @__PURE__ */ u3(
       "button",
@@ -20398,7 +20530,7 @@ function ViewToggle({ current, onChange }) {
         children: "Chat"
       }
     ),
-    /* @__PURE__ */ u3(
+    showTerminal && /* @__PURE__ */ u3(
       "button",
       {
         type: "button",
@@ -20411,9 +20543,123 @@ function ViewToggle({ current, onChange }) {
 }
 
 // ui/src/components/console/TerminalPane.tsx
+var MODEL_OPTIONS = {
+  claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
+  gemini: [
+    "auto",
+    "pro",
+    "flash",
+    "flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite"
+  ]
+};
+function parseModelFromArgs(args) {
+  for (let i4 = args.length - 2; i4 >= 0; i4 -= 1) {
+    const arg = args[i4];
+    if ((arg === "--model" || arg === "-m") && args[i4 + 1]?.trim()) {
+      return args[i4 + 1].trim();
+    }
+  }
+  return void 0;
+}
+function hasRenderableEvents(events) {
+  return events.some((event) => {
+    if (event.type === "assistant" || event.type === "user" || event.type === "synthetic_prompt") {
+      return true;
+    }
+    if (event.type === "result" && event.is_error) {
+      return true;
+    }
+    return false;
+  });
+}
+function conversationBlocksToStreamEvents(providerSessionId, blocks) {
+  const events = [];
+  let assistantBlocks = [];
+  const flushAssistant = () => {
+    if (assistantBlocks.length === 0)
+      return;
+    events.push({
+      type: "assistant",
+      session_id: providerSessionId,
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: assistantBlocks
+      }
+    });
+    assistantBlocks = [];
+  };
+  for (const block2 of blocks) {
+    const metadata = (() => {
+      try {
+        return JSON.parse(block2.metadata_json || "{}");
+      } catch {
+        return {};
+      }
+    })();
+    if (block2.type === "user_message") {
+      flushAssistant();
+      events.push({
+        type: "user",
+        session_id: providerSessionId,
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [{ type: "text", text: block2.content }]
+        }
+      });
+      continue;
+    }
+    if (block2.type === "assistant_message") {
+      assistantBlocks.push({ type: "text", text: block2.content });
+      continue;
+    }
+    if (block2.type === "thinking") {
+      assistantBlocks.push({ type: "thinking", thinking: block2.content });
+      continue;
+    }
+    if (block2.type === "tool_use") {
+      assistantBlocks.push({
+        type: "tool_use",
+        id: String(metadata.tool_id ?? `tool-${events.length}`),
+        name: String(metadata.tool_name ?? "tool"),
+        input: metadata.tool_input ?? {}
+      });
+      continue;
+    }
+    if (block2.type === "tool_result") {
+      const toolResult = {
+        type: "tool_result",
+        tool_use_id: String(metadata.tool_id ?? ""),
+        content: block2.content
+      };
+      events.push({
+        type: "user",
+        session_id: providerSessionId,
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [toolResult]
+        }
+      });
+      continue;
+    }
+  }
+  flushAssistant();
+  return events;
+}
 function TerminalPane({
   sessionId,
   agentType,
+  command,
+  sessionArgs,
+  isOperator,
   interactionMode,
   sessionStatus,
   providerSessionId,
@@ -20433,7 +20679,12 @@ function TerminalPane({
   const [reconnectNonce, setReconnectNonce] = d2(0);
   const [streamEvents, setStreamEvents] = d2([]);
   const [streaming, setStreaming] = d2(false);
-  const supportsStructuredChat = agentType === "claude" || agentType === "operator";
+  const [hydratingHistory, setHydratingHistory] = d2(false);
+  const [elapsedSeconds, setElapsedSeconds] = d2(void 0);
+  const streamStartAtRef = A2(null);
+  const [model, setModel] = d2(() => parseModelFromArgs(sessionArgs));
+  const showDebugTerminal = isOperator;
+  const providerFamily = isOperator ? "claude" : command;
   y2(() => {
     isVisibleRef.current = isVisible;
   }, [isVisible]);
@@ -20441,6 +20692,11 @@ function TerminalPane({
     viewModeRef.current = viewMode;
   }, [viewMode]);
   y2(() => {
+    setModel(parseModelFromArgs(sessionArgs));
+  }, [sessionArgs]);
+  y2(() => {
+    if (!showDebugTerminal)
+      return;
     if (!containerRef.current)
       return;
     const term = new import_xterm.Terminal({
@@ -20484,8 +20740,12 @@ function TerminalPane({
       termRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [sessionId]);
+  }, [sessionId, showDebugTerminal]);
   y2(() => {
+    if (!showDebugTerminal) {
+      setWsStatus("closed");
+      return;
+    }
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/terminal/${encodeURIComponent(sessionId)}`;
     const ws = new WebSocket(wsUrl);
@@ -20540,8 +20800,10 @@ function TerminalPane({
     return () => {
       ws.close();
     };
-  }, [sessionId, reconnectNonce]);
+  }, [sessionId, reconnectNonce, showDebugTerminal]);
   y2(() => {
+    if (!showDebugTerminal)
+      return;
     const term = termRef.current;
     if (!term)
       return;
@@ -20556,8 +20818,10 @@ function TerminalPane({
     return () => {
       disposable.dispose();
     };
-  }, [sessionId, interactionMode]);
+  }, [sessionId, interactionMode, showDebugTerminal]);
   y2(() => {
+    if (!showDebugTerminal)
+      return;
     if (isVisible && viewMode === "terminal") {
       const rafId = requestAnimationFrame(() => {
         const fitAddon = fitAddonRef.current;
@@ -20591,15 +20855,46 @@ function TerminalPane({
       });
       return () => cancelAnimationFrame(rafId);
     }
-  }, [isVisible, viewMode, sessionId]);
+  }, [isVisible, viewMode, sessionId, showDebugTerminal]);
   y2(() => {
     let cancelled = false;
-    getConsoleStreamEvents(sessionId, 500).then((events) => {
+    getConsoleStreamEvents(sessionId, 500).then(async (events) => {
       if (cancelled)
         return;
-      setStreamEvents(events);
-      const last = events[events.length - 1];
-      setStreaming(Boolean(last && last.type !== "result"));
+      if (hasRenderableEvents(events) || !providerSessionId) {
+        setStreamEvents(events);
+        const last = events[events.length - 1];
+        const isStreaming = Boolean(last && last.type !== "result");
+        setStreaming(isStreaming);
+        if (isStreaming && streamStartAtRef.current === null) {
+          streamStartAtRef.current = Date.now();
+        }
+        return;
+      }
+      setHydratingHistory(true);
+      try {
+        const { conversations } = await getConversations({ session_id: providerSessionId, limit: 1 });
+        const conversation = conversations[0];
+        if (!conversation) {
+          setStreamEvents(events);
+          setStreaming(false);
+          return;
+        }
+        const detail = await getConversation(conversation.id);
+        if (cancelled)
+          return;
+        setStreamEvents(conversationBlocksToStreamEvents(providerSessionId, detail.blocks));
+        setStreaming(false);
+      } catch {
+        if (cancelled)
+          return;
+        setStreamEvents(events);
+        setStreaming(false);
+      } finally {
+        if (!cancelled) {
+          setHydratingHistory(false);
+        }
+      }
     }).catch(() => {
       if (cancelled)
         return;
@@ -20609,7 +20904,7 @@ function TerminalPane({
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [providerSessionId, sessionId]);
   y2(() => {
     const handleStreamEvent = (e3) => {
       const detail = e3.detail;
@@ -20638,6 +20933,22 @@ function TerminalPane({
       setStreaming(false);
     };
   }, [sessionId]);
+  y2(() => {
+    if (!streaming) {
+      streamStartAtRef.current = null;
+      return;
+    }
+    if (streamStartAtRef.current === null) {
+      streamStartAtRef.current = Date.now();
+    }
+    setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1e3));
+    const interval2 = window.setInterval(() => {
+      if (streamStartAtRef.current !== null) {
+        setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1e3));
+      }
+    }, 1e3);
+    return () => window.clearInterval(interval2);
+  }, [streaming]);
   const handleReconnect = async () => {
     setWsStatus("connecting");
     termRef.current?.reset();
@@ -20650,6 +20961,16 @@ function TerminalPane({
     }
   };
   const [prompt, setPrompt] = d2("");
+  const [modelSaving, setModelSaving] = d2(false);
+  const handleModelChange = async (nextModel) => {
+    setModelSaving(true);
+    try {
+      await updateConsoleSession(sessionId, { model: nextModel });
+      setModel(nextModel || void 0);
+    } finally {
+      setModelSaving(false);
+    }
+  };
   const handlePromptSubmit = (e3) => {
     e3.preventDefault();
     if (!prompt.trim())
@@ -20657,25 +20978,12 @@ function TerminalPane({
     if (viewMode === "rich") {
       const submittedPrompt = prompt.trim();
       setPrompt("");
-      const syntheticEvent = {
-        type: "synthetic_prompt",
-        text: submittedPrompt,
-        localId: `${Date.now()}-${Math.random().toString(36).slice(2)}`
-      };
-      setStreamEvents((prev) => [...prev, syntheticEvent]);
+      setElapsedSeconds(0);
+      streamStartAtRef.current = Date.now();
       setStreaming(true);
-      if (supportsStructuredChat) {
-        void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
-          setStreaming(false);
-        });
-      } else {
-        const ws2 = wsRef.current;
-        if (ws2 && ws2.readyState === WebSocket.OPEN) {
-          ws2.send(new TextEncoder().encode(submittedPrompt + "\r"));
-        } else {
-          setStreaming(false);
-        }
-      }
+      void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
+        setStreaming(false);
+      });
       return;
     }
     const ws = wsRef.current;
@@ -20684,10 +20992,10 @@ function TerminalPane({
       setPrompt("");
     }
   };
-  const showReconnectOverlay = wsStatus === "closed" || wsStatus === "error";
-  const showDebugStart = viewMode === "terminal" && sessionStatus !== "running";
+  const showReconnectOverlay = showDebugTerminal && (wsStatus === "closed" || wsStatus === "error");
+  const showDebugStart = showDebugTerminal && viewMode === "terminal" && sessionStatus !== "running";
   const debugTerminalLabel = providerSessionId ? "Resume debug terminal" : "Start debug terminal";
-  const debugTerminalDescription = providerSessionId ? "Resume this same chat in the provider terminal for raw inspection or recovery." : supportsStructuredChat ? "Open the provider terminal for this chat. Once a provider session exists, it will resume here." : "Open the terminal fallback for this session.";
+  const debugTerminalDescription = providerSessionId ? "Resume this same chat in the provider terminal for raw inspection or recovery." : "Open the provider terminal for this chat. Once a provider session exists, it will resume here.";
   const handleStartDebugTerminal = async () => {
     termRef.current?.reset();
     pendingWritesRef.current = [];
@@ -20724,7 +21032,7 @@ function TerminalPane({
                 children: "Inbox"
               }
             ),
-            /* @__PURE__ */ u3(ViewToggle, { current: viewMode, onChange: onViewModeChange })
+            /* @__PURE__ */ u3(ViewToggle, { current: viewMode, onChange: onViewModeChange, showTerminal: showDebugTerminal })
           ] }),
           /* @__PURE__ */ u3("div", { className: "terminal-pane__header-actions", children: providerSessionId && /* @__PURE__ */ u3(
             "button",
@@ -20740,7 +21048,7 @@ function TerminalPane({
         ] }),
         interactionMode === "inbox_only" && /* @__PURE__ */ u3("div", { className: "terminal-pane__inbox-banner", children: "Operator receives inbox items. Direct input is disabled." }),
         /* @__PURE__ */ u3("div", { className: "terminal-pane__body", children: [
-          /* @__PURE__ */ u3(
+          showDebugTerminal && /* @__PURE__ */ u3(
             "div",
             {
               className: "terminal-pane__container",
@@ -20800,7 +21108,16 @@ function TerminalPane({
               {
                 events: streamEvents,
                 streaming,
-                sessionInfo: { sessionId }
+                elapsedSeconds,
+                emptyLabel: hydratingHistory ? "Loading prior messages\u2026" : void 0,
+                sessionInfo: {
+                  sessionId,
+                  backend: providerFamily,
+                  model,
+                  modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
+                  modelSaving,
+                  onChangeModel: handleModelChange
+                }
               }
             ) }),
             /* @__PURE__ */ u3(
@@ -20859,8 +21176,7 @@ function TerminalPane({
                   )
                 ]
               }
-            ),
-            !supportsStructuredChat && /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-disconnected", children: "This agent still renders here from terminal output. The Chat view becomes first-class once its structured stream is available." })
+            )
           ] })
         ] })
       ]
@@ -20873,7 +21189,7 @@ var KIND_OPTIONS = [
   {
     value: "agent",
     title: "Chat agent",
-    description: "Normal ongoing chat. Rich chat is primary, debug terminal stays optional."
+    description: "Normal ongoing chat. Rich chat is the primary interface."
   },
   {
     value: "operator",
@@ -20885,13 +21201,19 @@ var BACKEND_OPTIONS = [
   {
     value: "claude",
     title: "Claude Code",
-    description: "First-class chat with native Claude history and resumable debug terminal."
+    description: "First-class chat with native Claude history."
   },
   {
     value: "codex",
     title: "Codex",
-    description: "Terminal-first today. Rich chat rendering still trails Claude.",
+    description: "First-class chat backed by Codex exec JSON events and native Codex history.",
     note: "Operator mode is not available for Codex yet."
+  },
+  {
+    value: "gemini",
+    title: "Gemini",
+    description: "First-class chat backed by Gemini stream-json and native Gemini history.",
+    note: "Operator mode is not available for Gemini yet."
   }
 ];
 function OptionCard({
@@ -21045,11 +21367,7 @@ function ConsoleView({
   const getViewMode = (sessionId) => {
     if (sessionId in viewModes)
       return viewModes[sessionId];
-    const session = sessions.find((s3) => s3.id === sessionId);
-    if (session && (session.agent_type === "claude" || session.agent_type === "operator")) {
-      return "rich";
-    }
-    return "terminal";
+    return "rich";
   };
   const handleViewModeChange = (sessionId, mode) => {
     setViewModes((prev) => ({ ...prev, [sessionId]: mode }));
@@ -21106,6 +21424,9 @@ function ConsoleView({
       {
         sessionId: session.id,
         agentType: session.agent_type,
+        command: session.command ?? session.agent_type,
+        sessionArgs: session.args ?? [],
+        isOperator: session.is_operator,
         interactionMode: session.interaction_mode,
         sessionStatus: session.status,
         providerSessionId: session.provider_session_id,
@@ -26330,8 +26651,16 @@ function App() {
       }
     });
     getConsoleSessions().then((sessions) => {
-      if (active)
-        dispatch2({ type: "setConsoleSessions", sessions });
+      if (active) {
+        dispatch2({
+          type: "setConsoleSessions",
+          sessions: sessions.map((session) => ({
+            pinned: false,
+            unread_count: 0,
+            ...session
+          }))
+        });
+      }
     }).catch(() => void 0);
     return () => {
       active = false;
@@ -26714,28 +27043,18 @@ function App() {
   }) => {
     try {
       const result = await createConsoleSession(label, backend, kind);
-      const rawResult = result;
-      const id2 = rawResult.id ?? rawResult.session?.id ?? "";
+      const session = {
+        pinned: false,
+        unread_count: 0,
+        ...result.session,
+        agent_type: kind === "operator" ? "operator" : backend
+      };
+      const id2 = session.id;
       if (!id2)
         return;
-      const agentType = kind === "operator" ? "operator" : backend;
-      const autoStarts = kind === "operator" || backend !== "claude";
       dispatch2({
         type: "upsertConsoleSession",
-        session: {
-          id: id2,
-          label,
-          agent_type: agentType,
-          interaction_mode: "both",
-          pinned: false,
-          status: autoStarts ? "running" : "stopped",
-          is_operator: kind === "operator",
-          provider_session_id: null,
-          unread_count: 0,
-          created_at: Date.now(),
-          started_at: autoStarts ? Date.now() : null,
-          stopped_at: null
-        }
+        session
       });
       dispatch2({ type: "setConsoleActiveSessionId", sessionId: id2 });
     } catch {
