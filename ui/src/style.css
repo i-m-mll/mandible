@@ -118,6 +118,12 @@ a {
   z-index: 10;
 }
 
+/* Extra top padding when running inside Tauri with a hidden/transparent title
+   bar — accounts for the macOS traffic light buttons (~28px from top). */
+.tauri-window .app-header {
+  padding-top: env(titlebar-area-height, 28px);
+}
+
 .brand {
   font-size: 20px;
   font-weight: 600;

@@ -150,6 +150,14 @@ function App(): JSX.Element {
     return () => window.removeEventListener('hashchange', handleChange);
   }, []);
 
+  // Add tauri-window class to body when running inside Tauri so CSS can
+  // apply the extra top padding needed for the hidden title bar traffic lights.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && (window as Record<string, unknown>).__TAURI__) {
+      document.body.classList.add('tauri-window');
+    }
+  }, []);
+
   // Close overflow menu on click-outside
   useEffect(() => {
     if (!showOverflow) return;
@@ -903,7 +911,7 @@ function App(): JSX.Element {
           </button>
         </div>
       )}
-      <header className="app-header">
+      <header className="app-header" data-tauri-drag-region>
         <div className="brand">Mandible</div>
         <nav className="tabs">
           <div className="tab-twin">
