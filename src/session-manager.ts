@@ -48,6 +48,27 @@ interface ConsoleSessionRow {
   mandible_session_id: string | null;
 }
 
+interface ConsoleSessionUsageRow {
+  id: string;
+  console_session_id: string;
+  provider_session_id: string | null;
+  recorded_at: number;
+  input_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  output_tokens: number;
+  web_search_requests: number;
+  cost_usd: number;
+  total_cost_usd: number;
+  duration_ms: number;
+  num_turns: number;
+  is_error: number;
+  result_subtype: string | null;
+  usage_json: string;
+  model_usage_json: string;
+  errors_json: string;
+}
+
 const OPERATOR_DEFAULTS: Omit<ConsoleSessionInput, "label"> = {
   command: "claude",
   args: ["--dangerously-skip-permissions"],
@@ -135,6 +156,14 @@ function serializeSessionField(key: keyof BackendMetaUpdate, value: unknown): un
     return Array.isArray(value) ? JSON.stringify(value) : null;
   }
   return value;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
+}
+
+function readNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 export class SessionManager {
@@ -378,6 +407,37 @@ export class SessionManager {
 
   getUsage(id: string): Array<Record<string, unknown>> {
     const session = this.requireSession(id);
+    const rows = getDb()
+      .prepare(
+        `SELECT * FROM console_session_usage
+         WHERE console_session_id = ?
+         ORDER BY recorded_at DESC`
+      )
+      .all(id) as ConsoleSessionUsageRow[];
+
+    if (rows.length > 0) {
+      return rows.map((row) => ({
+        id: row.id,
+        console_session_id: row.console_session_id,
+        provider_session_id: row.provider_session_id,
+        recorded_at: row.recorded_at,
+        input_tokens: row.input_tokens,
+        cache_creation_input_tokens: row.cache_creation_input_tokens,
+        cache_read_input_tokens: row.cache_read_input_tokens,
+        output_tokens: row.output_tokens,
+        web_search_requests: row.web_search_requests,
+        cost_usd: row.cost_usd,
+        total_cost_usd: row.total_cost_usd,
+        duration_ms: row.duration_ms,
+        num_turns: row.num_turns,
+        is_error: row.is_error === 1,
+        result_subtype: row.result_subtype,
+        usage: JSON.parse(row.usage_json),
+        model_usage: JSON.parse(row.model_usage_json),
+        errors: JSON.parse(row.errors_json),
+      }));
+    }
+
     if (this.isUsageAwareBackend<Record<string, unknown>>(session)) {
       return session.getUsage();
     }
@@ -439,6 +499,7 @@ export class SessionManager {
         event: streamEvent,
       });
       if (streamEvent.type === "result") {
+        this.recordUsage(backend.id, streamEvent);
         broadcast("console:inbox:badge", { count: 1 });
       }
     });
@@ -508,6 +569,56 @@ export class SessionManager {
       signal: event.signal ?? null,
       status: event.status,
     });
+  }
+
+  private recordUsage(id: string, event: Record<string, unknown>): void {
+    const usage = asRecord(event.usage) ?? {};
+    const modelUsage = asRecord(event.modelUsage) ?? {};
+    const errors = Array.isArray(event.errors)
+      ? event.errors.filter((value): value is string => typeof value === "string")
+      : [];
+
+    getDb().prepare(
+      `INSERT INTO console_session_usage (
+        id,
+        console_session_id,
+        provider_session_id,
+        recorded_at,
+        input_tokens,
+        cache_creation_input_tokens,
+        cache_read_input_tokens,
+        output_tokens,
+        web_search_requests,
+        cost_usd,
+        total_cost_usd,
+        duration_ms,
+        num_turns,
+        is_error,
+        result_subtype,
+        usage_json,
+        model_usage_json,
+        errors_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      randomUUID(),
+      id,
+      typeof event.session_id === "string" ? event.session_id : null,
+      Date.now(),
+      readNumber(usage.input_tokens),
+      readNumber(usage.cache_creation_input_tokens),
+      readNumber(usage.cache_read_input_tokens),
+      readNumber(usage.output_tokens),
+      readNumber(usage.web_search_requests),
+      readNumber(usage.cost_usd),
+      readNumber(event.total_cost_usd),
+      readNumber(event.duration_ms),
+      readNumber(event.num_turns),
+      event.is_error === true ? 1 : 0,
+      typeof event.subtype === "string" ? event.subtype : null,
+      JSON.stringify(usage),
+      JSON.stringify(modelUsage),
+      JSON.stringify(errors),
+    );
   }
 
   private requireSession(id: string): AgenticBackend {

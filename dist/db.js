@@ -514,6 +514,35 @@ const MIGRATIONS = [
             `ALTER TABLE console_sessions ADD COLUMN allowed_tools TEXT`,
             `ALTER TABLE console_sessions ADD COLUMN mandible_session_id TEXT`
         ]
+    },
+    {
+        version: 35,
+        name: "console_session_usage",
+        statements: [
+            `CREATE TABLE IF NOT EXISTS console_session_usage (
+        id                            TEXT PRIMARY KEY,
+        console_session_id            TEXT NOT NULL,
+        provider_session_id           TEXT,
+        recorded_at                   INTEGER NOT NULL,
+        input_tokens                  INTEGER NOT NULL DEFAULT 0,
+        cache_creation_input_tokens   INTEGER NOT NULL DEFAULT 0,
+        cache_read_input_tokens       INTEGER NOT NULL DEFAULT 0,
+        output_tokens                 INTEGER NOT NULL DEFAULT 0,
+        web_search_requests           INTEGER NOT NULL DEFAULT 0,
+        cost_usd                      REAL NOT NULL DEFAULT 0,
+        total_cost_usd                REAL NOT NULL DEFAULT 0,
+        duration_ms                   INTEGER NOT NULL DEFAULT 0,
+        num_turns                     INTEGER NOT NULL DEFAULT 0,
+        is_error                      INTEGER NOT NULL DEFAULT 0,
+        result_subtype                TEXT,
+        usage_json                    TEXT NOT NULL DEFAULT '{}',
+        model_usage_json              TEXT NOT NULL DEFAULT '{}',
+        errors_json                   TEXT NOT NULL DEFAULT '[]',
+        FOREIGN KEY (console_session_id) REFERENCES console_sessions(id) ON DELETE CASCADE
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_console_session_usage_session
+        ON console_session_usage(console_session_id, recorded_at DESC)`
+        ]
     }
 ];
 export function getDbPath() {

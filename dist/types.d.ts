@@ -206,8 +206,9 @@ export interface ConsoleSessionInput {
     mandible_session_id?: string | null;
 }
 export interface ConsoleContentBlock {
-    type: 'text' | 'tool_use' | 'tool_result';
+    type: 'text' | 'thinking' | 'tool_use' | 'tool_result';
     text?: string;
+    thinking?: string;
     id?: string;
     name?: string;
     input?: unknown;

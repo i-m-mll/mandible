@@ -12,6 +12,12 @@ export interface PermissionRequest {
   tool_input: unknown;
   created_at: number;
   expires_at: number;
+  title?: string;
+  display_name?: string;
+  description?: string;
+  blocked_path?: string;
+  decision_reason?: string;
+  agent_id?: string;
 }
 
 export interface BackendStatusEvent {
