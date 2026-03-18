@@ -212,7 +212,7 @@ cmd_new() {
   # Apply labels
   local label
   for label in "${labels[@]+"${labels[@]}"}"; do
-    git-bug bug label new "$id" "$label" --non-interactive 2>/dev/null || err "${RED}Failed to add label: ${label}${RESET}"
+    git-bug bug label new "$id" "$label" 2>/dev/null || err "${RED}Failed to add label: ${label}${RESET}"
   done
 
   err "${GREEN}Created issue ${id}${RESET}"
@@ -283,7 +283,7 @@ cmd_label_add() {
     die "git-bug not found." 1
   fi
 
-  if git-bug bug label new "$id" "$label" --non-interactive 2>/dev/null; then
+  if git-bug bug label new "$id" "$label" 2>/dev/null; then
     err "${GREEN}Added label '${label}' to ${id}${RESET}"
   else
     die "${RED}Failed to add label '${label}' to ${id}${RESET}" 1
@@ -302,7 +302,7 @@ cmd_label_rm() {
     die "git-bug not found." 1
   fi
 
-  if git-bug bug label rm "$id" "$label" --non-interactive 2>/dev/null; then
+  if git-bug bug label rm "$id" "$label" 2>/dev/null; then
     err "${GREEN}Removed label '${label}' from ${id}${RESET}"
   else
     die "${RED}Failed to remove label '${label}' from ${id}${RESET}" 1
