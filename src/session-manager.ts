@@ -12,6 +12,7 @@ import type {
   UsageAwareBackend,
 } from "./agentic-backend.js";
 import { getDb } from "./db.js";
+import { SessionRegistry } from "./registry.js";
 import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend, type SDKBackendOptions } from "./backends/sdk-backend.js";
@@ -169,9 +170,11 @@ function readNumber(value: unknown): number {
 export class SessionManager {
   private sessions: Map<string, AgenticBackend> = new Map();
   private logger: Logger;
+  private sessionRegistry: SessionRegistry | null;
 
-  constructor(_db: unknown, logger: Logger) {
+  constructor(_db: unknown, logger: Logger, sessionRegistry?: SessionRegistry) {
     this.logger = logger;
+    this.sessionRegistry = sessionRegistry ?? null;
   }
 
   init(): void {
@@ -486,7 +489,7 @@ export class SessionManager {
 
   private createBackend(session: ConsoleSession, type: BackendType): AgenticBackend {
     if (type === "sdk") {
-      return new SDKBackend(session, this.logger);
+      return new SDKBackend(session, this.logger, this.sessionRegistry ?? undefined);
     }
     return new PTYBackend(session, this.logger);
   }
@@ -498,6 +501,24 @@ export class SessionManager {
         console_session_id: backend.id,
         event: streamEvent,
       });
+      if (streamEvent.type === "system" && streamEvent.subtype === "subagent_start") {
+        broadcast("console:subagent:start", {
+          console_session_id: backend.id,
+          agent_id: streamEvent.agent_id,
+          agent_type: streamEvent.agent_type,
+          session_id: streamEvent.session_id,
+          event: streamEvent,
+        });
+      }
+      if (streamEvent.type === "system" && streamEvent.subtype === "subagent_stop") {
+        broadcast("console:subagent:stop", {
+          console_session_id: backend.id,
+          agent_id: streamEvent.agent_id,
+          agent_type: streamEvent.agent_type,
+          session_id: streamEvent.session_id,
+          event: streamEvent,
+        });
+      }
       if (streamEvent.type === "result") {
         this.recordUsage(backend.id, streamEvent);
         broadcast("console:inbox:badge", { count: 1 });

@@ -10,6 +10,8 @@ type SessionControlsProps = {
   backendType: 'pty' | 'sdk';
   model: string | undefined;
   modelOptions: string[];
+  allowedTools?: string[] | null;
+  availableTools?: string[];
   onModelSaved?: (model: string | undefined) => void;
 };
 
@@ -18,18 +20,25 @@ export function SessionControls({
   backendType,
   model,
   modelOptions,
+  allowedTools,
+  availableTools = [],
   onModelSaved,
 }: SessionControlsProps): JSX.Element {
   const [draftModel, setDraftModel] = useState(model ?? '');
   const [permissionMode, setPermissionMode] = useState<'default' | 'acceptEdits' | 'bypassPermissions'>('default');
   const [maxTurns, setMaxTurns] = useState('');
   const [maxCostUsd, setMaxCostUsd] = useState('');
+  const [draftAllowedTools, setDraftAllowedTools] = useState<string[]>(allowedTools ?? []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setDraftModel(model ?? '');
   }, [model]);
+
+  useEffect(() => {
+    setDraftAllowedTools(allowedTools ?? []);
+  }, [allowedTools]);
 
   const handleModelOnlySave = async (nextModel: string) => {
     setSaving(true);
@@ -51,6 +60,7 @@ export function SessionControls({
       await updateConsoleSessionOptions(sessionId, {
         model: draftModel || undefined,
         permissionMode,
+        allowedTools: draftAllowedTools,
         maxTurns: maxTurns.trim() ? Number(maxTurns) : undefined,
         maxCostUsd: maxCostUsd.trim() ? Number(maxCostUsd) : undefined,
       });
@@ -142,6 +152,33 @@ export function SessionControls({
             >
               {saving ? 'Saving…' : 'Save'}
             </button>
+          </div>
+        </div>
+      )}
+
+      {backendType === 'sdk' && availableTools.length > 0 && (
+        <div className="session-controls__tools">
+          <div className="session-controls__label">Allowed tools</div>
+          <div className="session-controls__tool-grid">
+            {availableTools.map((tool) => {
+              const enabled = draftAllowedTools.includes(tool);
+              return (
+                <label key={tool} className="session-controls__tool-toggle">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={() => {
+                      setDraftAllowedTools((current) => (
+                        current.includes(tool)
+                          ? current.filter((entry) => entry !== tool)
+                          : [...current, tool].sort()
+                      ));
+                    }}
+                  />
+                  <span>{tool}</span>
+                </label>
+              );
+            })}
           </div>
         </div>
       )}

@@ -87,7 +87,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   registerGraphRoutes(router, issueScanner);
 
-  const sessionManager = new SessionManager(db, logger);
+  const sessionManager = new SessionManager(db, logger, sessionRegistry);
   registerConsoleRoutes(router, sessionManager);
 
   // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)

@@ -122,6 +122,7 @@ export function ConsoleView({
               sessionId={session.id}
               agentType={session.agent_type}
               backendType={session.backend_type}
+              allowedTools={session.allowed_tools}
               command={session.command ?? session.agent_type}
               sessionArgs={session.args ?? []}
               isOperator={session.is_operator}

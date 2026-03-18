@@ -20954,17 +20954,23 @@ function SessionControls({
   backendType,
   model,
   modelOptions,
+  allowedTools,
+  availableTools = [],
   onModelSaved
 }) {
   const [draftModel, setDraftModel] = d2(model ?? "");
   const [permissionMode, setPermissionMode] = d2("default");
   const [maxTurns, setMaxTurns] = d2("");
   const [maxCostUsd, setMaxCostUsd] = d2("");
+  const [draftAllowedTools, setDraftAllowedTools] = d2(allowedTools ?? []);
   const [saving, setSaving] = d2(false);
   const [error, setError] = d2(null);
   y2(() => {
     setDraftModel(model ?? "");
   }, [model]);
+  y2(() => {
+    setDraftAllowedTools(allowedTools ?? []);
+  }, [allowedTools]);
   const handleModelOnlySave = async (nextModel) => {
     setSaving(true);
     setError(null);
@@ -20984,6 +20990,7 @@ function SessionControls({
       await updateConsoleSessionOptions(sessionId, {
         model: draftModel || void 0,
         permissionMode,
+        allowedTools: draftAllowedTools,
         maxTurns: maxTurns.trim() ? Number(maxTurns) : void 0,
         maxCostUsd: maxCostUsd.trim() ? Number(maxCostUsd) : void 0
       });
@@ -21084,6 +21091,25 @@ function SessionControls({
         }
       ) })
     ] }),
+    backendType === "sdk" && availableTools.length > 0 && /* @__PURE__ */ u3("div", { className: "session-controls__tools", children: [
+      /* @__PURE__ */ u3("div", { className: "session-controls__label", children: "Allowed tools" }),
+      /* @__PURE__ */ u3("div", { className: "session-controls__tool-grid", children: availableTools.map((tool) => {
+        const enabled = draftAllowedTools.includes(tool);
+        return /* @__PURE__ */ u3("label", { className: "session-controls__tool-toggle", children: [
+          /* @__PURE__ */ u3(
+            "input",
+            {
+              type: "checkbox",
+              checked: enabled,
+              onChange: () => {
+                setDraftAllowedTools((current) => current.includes(tool) ? current.filter((entry) => entry !== tool) : [...current, tool].sort());
+              }
+            }
+          ),
+          /* @__PURE__ */ u3("span", { children: tool })
+        ] }, tool);
+      }) })
+    ] }),
     error && /* @__PURE__ */ u3("div", { className: "session-controls__error", children: error })
   ] });
 }
@@ -21123,6 +21149,66 @@ function hasRenderableEvents(events) {
     }
     return false;
   });
+}
+function collectAvailableTools(events) {
+  for (let index2 = events.length - 1; index2 >= 0; index2 -= 1) {
+    const event = events[index2];
+    if (event.type === "system" && event.subtype === "init" && Array.isArray(event.tools)) {
+      return event.tools.filter((tool) => typeof tool === "string");
+    }
+  }
+  return [];
+}
+function readParentAgentId(event) {
+  if (!event) {
+    return null;
+  }
+  const candidates = [
+    event.parent_agent_id,
+    event.parentAgentId,
+    event.parentAgentID
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+  return null;
+}
+function buildActiveSubagents(events) {
+  const active = /* @__PURE__ */ new Map();
+  for (const rawEvent of events) {
+    const event = rawEvent;
+    if (event.type !== "system") {
+      continue;
+    }
+    if (event.subtype === "subagent_start" && typeof event.agent_id === "string") {
+      active.set(event.agent_id, {
+        agent_id: event.agent_id,
+        agent_type: typeof event.agent_type === "string" ? event.agent_type : "subagent",
+        parent_agent_id: readParentAgentId(event.event),
+        started_at: active.get(event.agent_id)?.started_at ?? Date.now()
+      });
+      continue;
+    }
+    if (event.subtype === "subagent_stop" && typeof event.agent_id === "string") {
+      active.delete(event.agent_id);
+    }
+  }
+  const depthFor = (agentId, seen = /* @__PURE__ */ new Set()) => {
+    const entry = active.get(agentId);
+    if (!entry?.parent_agent_id || !active.has(entry.parent_agent_id) || seen.has(agentId)) {
+      return 0;
+    }
+    seen.add(agentId);
+    return depthFor(entry.parent_agent_id, seen) + 1;
+  };
+  return Array.from(active.values()).sort((left, right) => left.started_at - right.started_at).map((entry) => ({
+    agent_id: entry.agent_id,
+    agent_type: entry.agent_type,
+    parent_agent_id: entry.parent_agent_id,
+    depth: depthFor(entry.agent_id)
+  }));
 }
 function conversationBlocksToStreamEvents(providerSessionId, blocks) {
   const events = [];
@@ -21204,6 +21290,7 @@ function TerminalPane({
   sessionId,
   agentType,
   backendType,
+  allowedTools,
   command,
   sessionArgs,
   isOperator,
@@ -21232,8 +21319,10 @@ function TerminalPane({
   const [model, setModel] = d2(() => parseModelFromArgs(sessionArgs));
   const [permissionQueue, setPermissionQueue] = d2([]);
   const [permissionBusy, setPermissionBusy] = d2(false);
+  const [activeSubagents, setActiveSubagents] = d2([]);
   const showDebugTerminal = backendType === "pty" || isOperator;
   const providerFamily = isOperator ? "claude" : command;
+  const availableTools = collectAvailableTools(streamEvents);
   y2(() => {
     isVisibleRef.current = isVisible;
   }, [isVisible]);
@@ -21498,6 +21587,13 @@ function TerminalPane({
     }, 1e3);
     return () => window.clearInterval(interval2);
   }, [streaming]);
+  y2(() => {
+    if (backendType !== "sdk") {
+      setActiveSubagents([]);
+      return;
+    }
+    setActiveSubagents(buildActiveSubagents(streamEvents));
+  }, [backendType, streamEvents]);
   const handleReconnect = async () => {
     setWsStatus("connecting");
     termRef.current?.reset();
@@ -21691,20 +21787,37 @@ function TerminalPane({
             )
           ] }),
           viewMode === "rich" && /* @__PURE__ */ u3("div", { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }, children: [
-            /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto", minHeight: 0 }, children: /* @__PURE__ */ u3(
-              StreamRenderer,
-              {
-                events: streamEvents,
-                streaming,
-                elapsedSeconds,
-                emptyLabel: hydratingHistory ? "Loading prior messages\u2026" : void 0,
-                sessionInfo: {
-                  sessionId,
-                  backend: providerFamily,
-                  model
+            /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto", minHeight: 0 }, children: [
+              backendType === "sdk" && activeSubagents.length > 0 && /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents", children: [
+                /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-title", children: "Active subagents" }),
+                /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-list", children: activeSubagents.map((subagent) => /* @__PURE__ */ u3(
+                  "div",
+                  {
+                    className: "terminal-pane__subagent",
+                    style: { paddingLeft: `${subagent.depth * 18}px` },
+                    children: [
+                      /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-type", children: subagent.agent_type }),
+                      /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-id", children: subagent.agent_id })
+                    ]
+                  },
+                  subagent.agent_id
+                )) })
+              ] }),
+              /* @__PURE__ */ u3(
+                StreamRenderer,
+                {
+                  events: streamEvents,
+                  streaming,
+                  elapsedSeconds,
+                  emptyLabel: hydratingHistory ? "Loading prior messages\u2026" : void 0,
+                  sessionInfo: {
+                    sessionId,
+                    backend: providerFamily,
+                    model
+                  }
                 }
-              }
-            ) }),
+              )
+            ] }),
             /* @__PURE__ */ u3(
               "form",
               {
@@ -21769,6 +21882,8 @@ function TerminalPane({
                 backendType,
                 model,
                 modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
+                allowedTools,
+                availableTools,
                 onModelSaved: setModel
               }
             )
@@ -22061,6 +22176,7 @@ function ConsoleView({
         sessionId: session.id,
         agentType: session.agent_type,
         backendType: session.backend_type,
+        allowedTools: session.allowed_tools,
         command: session.command ?? session.agent_type,
         sessionArgs: session.args ?? [],
         isOperator: session.is_operator,

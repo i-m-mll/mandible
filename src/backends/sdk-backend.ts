@@ -34,6 +34,7 @@ import type {
   ConsoleStreamEvent,
   Logger,
 } from "../types.js";
+import { SessionRegistry } from "../registry.js";
 
 const EVENT_LOG_LIMIT = 2000;
 const PERMISSION_TIMEOUT_MS = 120_000;
@@ -72,6 +73,7 @@ implements
   meta: ConsoleSession;
 
   private logger: Logger;
+  private sessionRegistry?: SessionRegistry;
   private wsClients: Set<WebSocket> = new Set();
   private eventLog: ConsoleStreamEvent[] = [];
   private usageLog: UsageRow[] = [];
@@ -85,11 +87,12 @@ implements
   private abortController: AbortController | null = null;
   private destroyed = false;
 
-  constructor(meta: ConsoleSession, logger: Logger) {
+  constructor(meta: ConsoleSession, logger: Logger, sessionRegistry?: SessionRegistry) {
     super();
     this.id = meta.id;
     this.meta = meta;
     this.logger = logger;
+    this.sessionRegistry = sessionRegistry;
     this.autoAllowedTools = new Set(meta.allowed_tools ?? []);
     this.options = {
       model: this.extractModel(meta.args) ?? undefined,
@@ -438,13 +441,16 @@ implements
       SessionStart: [{
         hooks: [async (input) => {
           const now = Date.now();
+          const mandibleSessionId = this.ensureMandibleSession(input.session_id);
           this.meta = {
             ...this.meta,
             provider_session_id: input.session_id,
+            mandible_session_id: mandibleSessionId,
             updated_at: now,
           };
           this.emitMetaUpdate({
             provider_session_id: input.session_id,
+            mandible_session_id: mandibleSessionId,
             updated_at: now,
           });
           this.storeAndBroadcast({
@@ -962,6 +968,36 @@ implements
 
   private emitStatus(event: BackendStatusEvent): void {
     this.emit("status", event);
+  }
+
+  private ensureMandibleSession(providerSessionId: string): string | null {
+    if (!this.sessionRegistry || !providerSessionId) {
+      return this.meta.mandible_session_id ?? null;
+    }
+
+    try {
+      const existing = this.sessionRegistry.getSession(providerSessionId);
+      if (existing) {
+        return existing.id;
+      }
+
+      const session = this.sessionRegistry.registerSession({
+        id: providerSessionId,
+        app: "claude-sdk",
+        cwd: this.meta.cwd,
+        status: "active",
+        agent_type: "claude",
+        description: this.meta.label,
+      });
+      return session.id;
+    } catch (error) {
+      this.logger("warn", "sdk_registry_link_failed", {
+        id: this.id,
+        provider_session_id: providerSessionId,
+        error: String(error),
+      });
+      return this.meta.mandible_session_id ?? null;
+    }
   }
 
   private extractModel(args: string[]): string | null {

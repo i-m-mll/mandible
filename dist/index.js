@@ -62,7 +62,7 @@ export async function startDaemon(options = {}) {
     const reaperTimer = new ReaperTimer(sessionDiscovery, logger);
     registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner);
     registerGraphRoutes(router, issueScanner);
-    const sessionManager = new SessionManager(db, logger);
+    const sessionManager = new SessionManager(db, logger, sessionRegistry);
     registerConsoleRoutes(router, sessionManager);
     // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)
     router.get("/api/reaper/status", (_req, res) => {
