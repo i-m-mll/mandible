@@ -13,6 +13,7 @@ const buildOptions = {
   target: 'es2020',
   jsx: 'automatic',
   jsxImportSource: 'preact',
+  external: ['@tauri-apps/api/core', '@tauri-apps/api/webview'],
   loader: {
     '.css': 'css',
   },

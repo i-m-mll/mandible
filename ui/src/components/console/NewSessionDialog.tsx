@@ -3,11 +3,17 @@ import { useEffect, useState } from 'preact/hooks';
 
 type AgentKind = 'agent' | 'operator';
 type Backend = 'claude' | 'codex' | 'gemini';
+type Transport = 'pty' | 'sdk';
 
 type NewSessionDialogProps = {
   open: boolean;
   onClose: () => void;
-  onSubmit: (input: { label: string; backend: Backend; kind: AgentKind }) => void;
+  onSubmit: (input: {
+    label: string;
+    backend: Backend;
+    kind: AgentKind;
+    backend_type: Transport;
+  }) => void;
 };
 
 const KIND_OPTIONS: Array<{
@@ -89,22 +95,31 @@ export function NewSessionDialog({
   const [label, setLabel] = useState('');
   const [kind, setKind] = useState<AgentKind>('agent');
   const [backend, setBackend] = useState<Backend>('claude');
+  const [transport, setTransport] = useState<Transport>('sdk');
 
   useEffect(() => {
     if (kind === 'operator' && backend !== 'claude') {
       setBackend('claude');
+      setTransport('sdk');
     }
   }, [backend, kind]);
+
+  useEffect(() => {
+    if (backend !== 'claude' && transport !== 'pty') {
+      setTransport('pty');
+    }
+  }, [backend, transport]);
 
   if (!open) return null;
 
   const handleSubmit = (e: Event) => {
     e.preventDefault();
     if (!label.trim()) return;
-    onSubmit({ label: label.trim(), backend, kind });
+    onSubmit({ label: label.trim(), backend, kind, backend_type: transport });
     setLabel('');
     setKind('agent');
     setBackend('claude');
+    setTransport('sdk');
     onClose();
   };
 
@@ -166,12 +181,35 @@ export function NewSessionDialog({
                     note={disabled ? option.note : undefined}
                     selected={backend === option.value}
                     disabled={disabled}
-                    onClick={() => setBackend(option.value)}
+                    onClick={() => {
+                      setBackend(option.value);
+                      setTransport(option.value === 'claude' ? 'sdk' : 'pty');
+                    }}
                   />
                 );
               })}
             </div>
           </div>
+
+          {backend === 'claude' && (
+            <div className="new-session-dialog__field">
+              <div className="new-session-dialog__label">Transport</div>
+              <div className="new-session-dialog__options">
+                <OptionCard
+                  title="Claude SDK"
+                  description="Structured events, Mandible permissions, and SDK-native session control."
+                  selected={transport === 'sdk'}
+                  onClick={() => setTransport('sdk')}
+                />
+                <OptionCard
+                  title="PTY"
+                  description="Classic terminal transport with a raw debug terminal fallback."
+                  selected={transport === 'pty'}
+                  onClick={() => setTransport('pty')}
+                />
+              </div>
+            </div>
+          )}
 
           <div className="new-session-dialog__actions">
             <button type="button" onClick={onClose} className="new-session-dialog__button new-session-dialog__button--ghost">

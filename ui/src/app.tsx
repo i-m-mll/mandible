@@ -795,13 +795,15 @@ function App(): JSX.Element {
     label,
     backend,
     kind,
+    backend_type,
   }: {
     label: string;
     backend: string;
     kind: string;
+    backend_type: 'pty' | 'sdk';
   }) => {
     try {
-      const result = await createConsoleSession(label, backend, kind);
+      const result = await createConsoleSession(label, backend, kind, backend_type);
       const session = {
         pinned: false,
         unread_count: 0,

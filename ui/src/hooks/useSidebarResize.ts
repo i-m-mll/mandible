@@ -34,7 +34,7 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
   } = options;
 
   const [width, setWidth] = useState<number>(() => {
-    if (storageKey) {
+    if (storageKey && typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function') {
       const stored = localStorage.getItem(storageKey);
       if (stored) {
         const parsed = parseInt(stored, 10);
@@ -59,7 +59,7 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
 
   // Persist on change
   useEffect(() => {
-    if (storageKey) {
+    if (storageKey && typeof localStorage !== 'undefined' && typeof localStorage.setItem === 'function') {
       localStorage.setItem(storageKey, String(width));
     }
   }, [width, storageKey]);

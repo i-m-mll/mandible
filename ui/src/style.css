@@ -5514,6 +5514,283 @@ tr:hover .work-actions__trigger {
   font-weight: 600;
 }
 
+.permission-dialog-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(5, 9, 14, 0.72);
+  z-index: 30;
+}
+
+.permission-dialog {
+  width: min(720px, calc(100vw - 48px));
+  max-height: min(80vh, 720px);
+  overflow: auto;
+  background: var(--bg-card);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  box-shadow: var(--shadow-soft);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.permission-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.permission-dialog__eyebrow {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent-yellow);
+  margin-bottom: 6px;
+}
+
+.permission-dialog__header h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.permission-dialog__countdown {
+  border-radius: 999px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-muted);
+  padding: 6px 10px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.permission-dialog__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.permission-dialog__chip {
+  border-radius: 999px;
+  background: rgba(77,163,255,0.12);
+  color: var(--accent-blue);
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.permission-dialog__description,
+.permission-dialog__reason {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.permission-dialog__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permission-dialog__section-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.permission-dialog__input {
+  margin: 0;
+  padding: 14px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+
+.permission-dialog__toggle {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.08);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.permission-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.permission-dialog__button {
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 10px 14px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.permission-dialog__button--deny {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-muted);
+}
+
+.permission-dialog__button--allow {
+  background: rgba(77,163,255,0.14);
+  border-color: rgba(77,163,255,0.24);
+  color: var(--accent-blue);
+}
+
+.permission-dialog__button--always {
+  background: rgba(83, 180, 115, 0.14);
+  border-color: rgba(83, 180, 115, 0.24);
+  color: #72d08f;
+}
+
+.session-controls {
+  border-top: 1px solid var(--border-subtle);
+  background: rgba(255,255,255,0.02);
+  padding: 12px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.session-controls__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+
+.session-controls__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+  flex: 1;
+}
+
+.session-controls__label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.session-controls__select,
+.session-controls__input {
+  min-height: 38px;
+  background: var(--bg-page);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  color: var(--fg-default);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: var(--font-sans);
+}
+
+.session-controls__actions {
+  display: flex;
+  align-items: end;
+}
+
+.session-controls__button {
+  min-height: 38px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent-blue);
+  color: #fff;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+.session-controls__error {
+  color: #ff8b8b;
+  font-size: 12px;
+}
+
+.session-controls__tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session-controls__tool-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.session-controls__tool-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.session-controls__tool-toggle input {
+  margin: 0;
+}
+
+.terminal-pane__subagents {
+  margin: 12px 16px 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+.terminal-pane__subagents-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.terminal-pane__subagents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.terminal-pane__subagent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.terminal-pane__subagent-type {
+  color: var(--accent-blue);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.terminal-pane__subagent-id {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
 
 /* ============================================================
    Stream Renderer — console tab rich event display

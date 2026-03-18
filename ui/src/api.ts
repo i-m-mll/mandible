@@ -557,10 +557,38 @@ export async function startConsoleSession(sessionId: string): Promise<void> {
   await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
 }
 
+export type ConsoleBackendType = 'pty' | 'sdk';
+export type ConsolePermissionDecision = 'deny' | 'allow' | 'allow_always';
+
+export type ConsolePermissionRequest = {
+  id: string;
+  session_id: string;
+  tool_name: string;
+  tool_input: unknown;
+  created_at: number;
+  expires_at: number;
+  title?: string;
+  display_name?: string;
+  description?: string;
+  blocked_path?: string;
+  decision_reason?: string;
+  agent_id?: string;
+};
+
+export type ConsoleSessionOptions = {
+  model?: string;
+  systemPrompt?: string;
+  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions';
+  allowedTools?: string[];
+  maxTurns?: number;
+  maxCostUsd?: number;
+};
+
 export async function createConsoleSession(
   label: string,
   backend: string,
   kind: string,
+  backendType?: ConsoleBackendType,
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -576,6 +604,9 @@ export async function createConsoleSession(
   stopped_at: number | null;
   command: string;
   args: string[];
+  backend_type: ConsoleBackendType;
+  allowed_tools: string[] | null;
+  mandible_session_id: string | null;
 } }> {
   // Bug: b949700 — translate agent_type to command+args as required by backend
   type SessionBody = {
@@ -585,22 +616,27 @@ export async function createConsoleSession(
     cwd?: string;
     auto_restart?: boolean;
     is_operator?: boolean;
+    backend_type?: ConsoleBackendType;
   };
   const body: SessionBody = { label, command: '', args: [] };
   if (kind === 'operator') {
     body.command = 'claude';
-    body.args = ['--dangerously-skip-permissions'];
+    body.args = backendType === 'sdk' ? [] : ['--dangerously-skip-permissions'];
     body.auto_restart = true;
     body.is_operator = true;
+    body.backend_type = backendType ?? 'sdk';
   } else if (backend === 'claude') {
     body.command = 'claude';
-    body.args = ['--dangerously-skip-permissions'];
+    body.args = backendType === 'sdk' ? [] : ['--dangerously-skip-permissions'];
+    body.backend_type = backendType ?? 'sdk';
   } else if (backend === 'codex') {
     body.command = 'codex';
     body.args = [];
+    body.backend_type = 'pty';
   } else if (backend === 'gemini') {
     body.command = 'gemini';
     body.args = ['-y'];
+    body.backend_type = 'pty';
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
@@ -622,6 +658,9 @@ export async function createConsoleSession(
       stopped_at: number | null;
       command: string;
       args: string[];
+      backend_type: ConsoleBackendType;
+      allowed_tools: string[] | null;
+      mandible_session_id: string | null;
     };
   };
 }
@@ -665,6 +704,49 @@ export async function updateConsoleSession(
 ): Promise<unknown> {
   const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}`, body);
   return parseMaybeJson(response);
+}
+
+export async function getConsolePermissions(
+  sessionId: string,
+): Promise<ConsolePermissionRequest[]> {
+  const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/permissions`);
+  const payload = await parseMaybeJson(response) as {
+    requests?: ConsolePermissionRequest[];
+  } | ConsolePermissionRequest[];
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  return payload.requests ?? [];
+}
+
+export async function respondToConsolePermission(
+  sessionId: string,
+  requestId: string,
+  decision: ConsolePermissionDecision,
+): Promise<void> {
+  await apiPost(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(requestId)}`,
+    { decision },
+  );
+}
+
+export async function updateConsoleSessionOptions(
+  sessionId: string,
+  body: ConsoleSessionOptions,
+): Promise<unknown> {
+  const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}/options`, body);
+  return parseMaybeJson(response);
+}
+
+export async function getConsoleSessionUsage<T = Record<string, unknown>>(
+  sessionId: string,
+): Promise<T[]> {
+  const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/usage`);
+  const payload = await parseMaybeJson(response) as { usage?: T[] } | T[];
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  return payload.usage ?? [];
 }
 
 // ── Backup API ──
@@ -845,7 +927,8 @@ async function invokeDesktop<T>(command: string, args?: Record<string, unknown>)
   if (!hasTauriRuntime()) {
     throw new Error('Desktop daemon controls are only available in the Tauri app.');
   }
-  const { invoke } = await import('@tauri-apps/api/core');
+  const tauriCoreModule = '@tauri-apps/api/core';
+  const { invoke } = await import(/* @vite-ignore */ tauriCoreModule);
   return invoke<T>(command, args);
 }
 
@@ -878,7 +961,8 @@ export async function navigateToDesktopBootstrap(): Promise<void> {
   if (!hasTauriRuntime()) {
     return;
   }
-  const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+  const tauriWebviewModule = '@tauri-apps/api/webview';
+  const { getCurrentWebview } = await import(/* @vite-ignore */ tauriWebviewModule);
   await getCurrentWebview().navigate('/index.html');
 }
 

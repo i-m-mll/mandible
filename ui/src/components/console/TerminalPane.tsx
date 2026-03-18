@@ -6,24 +6,36 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { ConsoleSession } from '../../state';
+import type { ConsolePermissionRequest } from '../../api';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
 import type { StreamEvent, ToolResultContentBlock } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
+import { PermissionDialog } from './PermissionDialog';
+import { SessionControls } from './SessionControls';
 import {
   getConversation,
   getConversations,
+  getConsolePermissions,
   getConsoleStreamEvents,
   restartConsoleSession,
+  respondToConsolePermission,
   sendConsolePrompt,
   startConsoleSession,
-  updateConsoleSession,
 } from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
+type ActiveSubagent = {
+  agent_id: string;
+  agent_type: string;
+  parent_agent_id: string | null;
+  depth: number;
+};
 
 type TerminalPaneProps = {
   sessionId: string;
   agentType: ConsoleSession['agent_type'];
+  backendType: ConsoleSession['backend_type'];
+  allowedTools?: string[] | null;
   command: string;
   sessionArgs: string[];
   isOperator: boolean;
@@ -71,6 +83,78 @@ function hasRenderableEvents(events: StreamEvent[]): boolean {
     }
     return false;
   });
+}
+
+function collectAvailableTools(events: StreamEvent[]): string[] {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index] as StreamEvent & { tools?: unknown };
+    if (event.type === 'system' && event.subtype === 'init' && Array.isArray(event.tools)) {
+      return event.tools.filter((tool): tool is string => typeof tool === 'string');
+    }
+  }
+  return [];
+}
+
+function readParentAgentId(event: Record<string, unknown> | undefined): string | null {
+  if (!event) {
+    return null;
+  }
+  const candidates = [
+    event.parent_agent_id,
+    event.parentAgentId,
+    event.parentAgentID,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function buildActiveSubagents(events: StreamEvent[]): ActiveSubagent[] {
+  const active = new Map<string, Omit<ActiveSubagent, 'depth'> & { started_at: number }>();
+
+  for (const rawEvent of events) {
+    const event = rawEvent as StreamEvent & {
+      agent_id?: unknown;
+      agent_type?: unknown;
+      event?: Record<string, unknown>;
+    };
+    if (event.type !== 'system') {
+      continue;
+    }
+    if (event.subtype === 'subagent_start' && typeof event.agent_id === 'string') {
+      active.set(event.agent_id, {
+        agent_id: event.agent_id,
+        agent_type: typeof event.agent_type === 'string' ? event.agent_type : 'subagent',
+        parent_agent_id: readParentAgentId(event.event),
+        started_at: active.get(event.agent_id)?.started_at ?? Date.now(),
+      });
+      continue;
+    }
+    if (event.subtype === 'subagent_stop' && typeof event.agent_id === 'string') {
+      active.delete(event.agent_id);
+    }
+  }
+
+  const depthFor = (agentId: string, seen = new Set<string>()): number => {
+    const entry = active.get(agentId);
+    if (!entry?.parent_agent_id || !active.has(entry.parent_agent_id) || seen.has(agentId)) {
+      return 0;
+    }
+    seen.add(agentId);
+    return depthFor(entry.parent_agent_id, seen) + 1;
+  };
+
+  return Array.from(active.values())
+    .sort((left, right) => left.started_at - right.started_at)
+    .map((entry) => ({
+      agent_id: entry.agent_id,
+      agent_type: entry.agent_type,
+      parent_agent_id: entry.parent_agent_id,
+      depth: depthFor(entry.agent_id),
+    }));
 }
 
 function conversationBlocksToStreamEvents(
@@ -167,6 +251,8 @@ function conversationBlocksToStreamEvents(
 export function TerminalPane({
   sessionId,
   agentType,
+  backendType,
+  allowedTools,
   command,
   sessionArgs,
   isOperator,
@@ -201,8 +287,12 @@ export function TerminalPane({
   const [elapsedSeconds, setElapsedSeconds] = useState<number | undefined>(undefined);
   const streamStartAtRef = useRef<number | null>(null);
   const [model, setModel] = useState<string | undefined>(() => parseModelFromArgs(sessionArgs));
-  const showDebugTerminal = isOperator;
+  const [permissionQueue, setPermissionQueue] = useState<ConsolePermissionRequest[]>([]);
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([]);
+  const showDebugTerminal = backendType === 'pty' || isOperator;
   const providerFamily = isOperator ? 'claude' : command;
+  const availableTools = collectAvailableTools(streamEvents);
 
   // Keep visibility/viewMode refs current so ResizeObserver callback doesn't see stale values
   useEffect(() => { isVisibleRef.current = isVisible; }, [isVisible]);
@@ -517,6 +607,14 @@ export function TerminalPane({
     return () => window.clearInterval(interval);
   }, [streaming]);
 
+  useEffect(() => {
+    if (backendType !== 'sdk') {
+      setActiveSubagents([]);
+      return;
+    }
+    setActiveSubagents(buildActiveSubagents(streamEvents));
+  }, [backendType, streamEvents]);
+
   // Bug: 1d286c1 — handleReconnect now calls backend restart API before opening WS.
   // The previous version only opened a new WS but never restarted the PTY process,
   // so reconnect always got immediately rejected by the backend.
@@ -534,17 +632,6 @@ export function TerminalPane({
   };
 
   const [prompt, setPrompt] = useState('');
-  const [modelSaving, setModelSaving] = useState(false);
-
-  const handleModelChange = async (nextModel: string) => {
-    setModelSaving(true);
-    try {
-      await updateConsoleSession(sessionId, { model: nextModel });
-      setModel(nextModel || undefined);
-    } finally {
-      setModelSaving(false);
-    }
-  };
 
   const handlePromptSubmit = (e: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     e.preventDefault();
@@ -587,6 +674,72 @@ export function TerminalPane({
       setReconnectNonce((n) => n + 1);
     } catch {
       setWsStatus('error');
+    }
+  };
+
+  useEffect(() => {
+    if (backendType !== 'sdk') {
+      setPermissionQueue([]);
+      return;
+    }
+
+    let cancelled = false;
+    getConsolePermissions(sessionId)
+      .then((requests) => {
+        if (!cancelled) {
+          setPermissionQueue(requests);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPermissionQueue([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [backendType, sessionId]);
+
+  useEffect(() => {
+    if (backendType !== 'sdk') {
+      return undefined;
+    }
+
+    const handlePermissionRequest = (
+      event: Event,
+    ) => {
+      const detail = (event as CustomEvent<{
+        console_session_id: string;
+        request: ConsolePermissionRequest;
+      }>).detail;
+      if (!detail || detail.console_session_id !== sessionId || !detail.request) {
+        return;
+      }
+      setPermissionQueue((prev) => {
+        if (prev.some((request) => request.id === detail.request.id)) {
+          return prev;
+        }
+        return [...prev, detail.request];
+      });
+    };
+
+    window.addEventListener('console:permission:request', handlePermissionRequest);
+    return () => {
+      window.removeEventListener('console:permission:request', handlePermissionRequest);
+    };
+  }, [backendType, sessionId]);
+
+  const handlePermissionResponse = async (
+    requestId: string,
+    decision: 'deny' | 'allow' | 'allow_always',
+  ) => {
+    setPermissionBusy(true);
+    try {
+      await respondToConsolePermission(sessionId, requestId, decision);
+      setPermissionQueue((prev) => prev.filter((request) => request.id !== requestId));
+    } finally {
+      setPermissionBusy(false);
     }
   };
 
@@ -705,6 +858,23 @@ export function TerminalPane({
                 below the visible area. Without it, flex items default to min-height:auto
                 which lets them grow beyond the parent's bounds. */}
             <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+              {backendType === 'sdk' && activeSubagents.length > 0 && (
+                <div className="terminal-pane__subagents">
+                  <div className="terminal-pane__subagents-title">Active subagents</div>
+                  <div className="terminal-pane__subagents-list">
+                    {activeSubagents.map((subagent) => (
+                      <div
+                        key={subagent.agent_id}
+                        className="terminal-pane__subagent"
+                        style={{ paddingLeft: `${subagent.depth * 18}px` }}
+                      >
+                        <span className="terminal-pane__subagent-type">{subagent.agent_type}</span>
+                        <span className="terminal-pane__subagent-id">{subagent.agent_id}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <StreamRenderer
                 events={streamEvents}
                 streaming={streaming}
@@ -714,9 +884,6 @@ export function TerminalPane({
                   sessionId,
                   backend: providerFamily,
                   model,
-                  modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
-                  modelSaving,
-                  onChangeModel: handleModelChange,
                 }}
               />
             </div>
@@ -769,9 +936,22 @@ export function TerminalPane({
                 Send
               </button>
             </form>
+            <SessionControls
+              sessionId={sessionId}
+              backendType={backendType}
+              model={model}
+              modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
+              allowedTools={allowedTools}
+              availableTools={availableTools}
+              onModelSaved={setModel}
+            />
           </div>
         )}
       </div>
+      <PermissionDialog
+        request={backendType === 'sdk' && !permissionBusy ? permissionQueue[0] ?? null : null}
+        onRespond={handlePermissionResponse}
+      />
     </div>
   );
 }

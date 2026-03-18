@@ -227,6 +227,9 @@ export interface ConsoleSession {
   updated_at: number;
   started_at: number | null;
   stopped_at: number | null;
+  backend_type: 'pty' | 'sdk';
+  allowed_tools: string[] | null;
+  mandible_session_id: string | null;
   /** Derived from command and is_operator. Not stored in DB. */
   agent_type: 'claude' | 'codex' | 'gemini' | 'operator' | 'shell';
 }
@@ -242,13 +245,17 @@ export interface ConsoleSessionInput {
   auto_restart?: boolean;
   is_operator?: boolean;
   interaction_mode?: ConsoleInteractionMode;
+  backend_type?: 'pty' | 'sdk';
+  allowed_tools?: string[] | null;
+  mandible_session_id?: string | null;
 }
 
 // --- Structured console stream events ---
 
 export interface ConsoleContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result';
   text?: string;
+  thinking?: string;
   id?: string;
   name?: string;
   input?: unknown;
