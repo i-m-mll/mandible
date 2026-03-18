@@ -21,6 +21,7 @@ import type {
   ConsoleSession,
   ConsoleSessionInput,
   ConsoleSessionStatus,
+  ConsoleStreamEvent,
   Logger,
 } from "./types.js";
 
@@ -335,6 +336,7 @@ export class SessionManager {
         "label" | "args" | "cwd" | "provider_session_id" | "allowed_tools" | "mandible_session_id"
       >
     >,
+    { silent = false }: { silent?: boolean } = {},
   ): ConsoleSession {
     const session = this.requireSession(id);
     const nextMeta: ConsoleSession = {
@@ -364,7 +366,9 @@ export class SessionManager {
       id,
     );
 
-    broadcast("console:session:updated", { session: nextMeta });
+    if (!silent) {
+      broadcast("console:session:updated", { session: nextMeta });
+    }
     return nextMeta;
   }
 
@@ -385,7 +389,7 @@ export class SessionManager {
       patch.allowed_tools = [...options.allowedTools];
     }
 
-    const nextSession = Object.keys(patch).length > 0 ? this.updateConfig(id, patch) : session.meta;
+    const nextSession = Object.keys(patch).length > 0 ? this.updateConfig(id, patch, { silent: true }) : session.meta;
     if (this.isConfigurableBackend<SDKBackendOptions>(session)) {
       session.updateOptions(options);
     }
@@ -495,32 +499,31 @@ export class SessionManager {
   }
 
   private wireBackend(backend: AgenticBackend): void {
-    backend.on("stream_event", (event: ConsoleSession["env"] | unknown) => {
-      const streamEvent = event as Record<string, unknown>;
+    backend.on("stream_event", (event: ConsoleStreamEvent) => {
       broadcast("console:stream_event", {
         console_session_id: backend.id,
-        event: streamEvent,
+        event,
       });
-      if (streamEvent.type === "system" && streamEvent.subtype === "subagent_start") {
+      if (event.type === "system" && event.subtype === "subagent_start") {
         broadcast("console:subagent:start", {
           console_session_id: backend.id,
-          agent_id: streamEvent.agent_id,
-          agent_type: streamEvent.agent_type,
-          session_id: streamEvent.session_id,
-          event: streamEvent,
+          agent_id: event.agent_id,
+          agent_type: event.agent_type,
+          session_id: event.session_id,
+          event,
         });
       }
-      if (streamEvent.type === "system" && streamEvent.subtype === "subagent_stop") {
+      if (event.type === "system" && event.subtype === "subagent_stop") {
         broadcast("console:subagent:stop", {
           console_session_id: backend.id,
-          agent_id: streamEvent.agent_id,
-          agent_type: streamEvent.agent_type,
-          session_id: streamEvent.session_id,
-          event: streamEvent,
+          agent_id: event.agent_id,
+          agent_type: event.agent_type,
+          session_id: event.session_id,
+          event,
         });
       }
-      if (streamEvent.type === "result") {
-        this.recordUsage(backend.id, streamEvent);
+      if (event.type === "result") {
+        this.recordUsage(backend.id, event);
         broadcast("console:inbox:badge", { count: 1 });
       }
     });
@@ -592,7 +595,7 @@ export class SessionManager {
     });
   }
 
-  private recordUsage(id: string, event: Record<string, unknown>): void {
+  private recordUsage(id: string, event: ConsoleStreamEvent): void {
     const usage = asRecord(event.usage) ?? {};
     const modelUsage = asRecord(event.modelUsage) ?? {};
     const errors = Array.isArray(event.errors)

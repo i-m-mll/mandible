@@ -1,3 +1,4 @@
+// Bug: 9bf8b4c — Claude Agent SDK backend for Console
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type {
@@ -166,7 +167,15 @@ implements
     }
     this.destroyed = true;
     this.promptQueue = [];
-    this.resolveAllPendingPermissions("deny");
+
+    // Reject all pending permission promises immediately so callers don't
+    // hang for up to PERMISSION_TIMEOUT_MS after the session is gone.
+    for (const [id, pending] of this.pendingPermissions) {
+      clearTimeout(pending.timeout);
+      pending.resolve("deny");
+      this.pendingPermissions.delete(id);
+    }
+
     void this.cancelActiveQuery();
     this.wsClients.clear();
   }
@@ -352,6 +361,11 @@ implements
       }
 
       while (this.promptQueue.length > 0 && !this.destroyed) {
+        // Stop processing if the backend has entered a terminal state.
+        if (this.meta.status === "crashed" || this.meta.status === "stopped") {
+          this.promptQueue = [];
+          break;
+        }
         const prompt = this.promptQueue.shift();
         if (!prompt) {
           continue;

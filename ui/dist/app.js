@@ -5,8 +5,15 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __defNormalProp = (obj, key2, value) => key2 in obj ? __defProp(obj, key2, { enumerable: true, configurable: true, writable: true, value }) : obj[key2] = value;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -41,6 +48,2744 @@ var __privateMethod = (obj, member, method) => {
   __accessCheck(obj, member, "access private method");
   return method;
 };
+
+// node_modules/@tauri-apps/api/external/tslib/tslib.es6.js
+function __classPrivateFieldGet(receiver, state, kind, f4) {
+  if (kind === "a" && !f4)
+    throw new TypeError("Private accessor was defined without a getter");
+  if (typeof state === "function" ? receiver !== state || !f4 : !state.has(receiver))
+    throw new TypeError("Cannot read private member from an object whose class did not declare it");
+  return kind === "m" ? f4 : kind === "a" ? f4.call(receiver) : f4 ? f4.value : state.get(receiver);
+}
+function __classPrivateFieldSet(receiver, state, value, kind, f4) {
+  if (kind === "m")
+    throw new TypeError("Private method is not writable");
+  if (kind === "a" && !f4)
+    throw new TypeError("Private accessor was defined without a setter");
+  if (typeof state === "function" ? receiver !== state || !f4 : !state.has(receiver))
+    throw new TypeError("Cannot write private member to an object whose class did not declare it");
+  return kind === "a" ? f4.call(receiver, value) : f4 ? f4.value = value : state.set(receiver, value), value;
+}
+var init_tslib_es6 = __esm({
+  "node_modules/@tauri-apps/api/external/tslib/tslib.es6.js"() {
+  }
+});
+
+// node_modules/@tauri-apps/api/core.js
+var core_exports = {};
+__export(core_exports, {
+  Channel: () => Channel,
+  PluginListener: () => PluginListener,
+  Resource: () => Resource,
+  SERIALIZE_TO_IPC_FN: () => SERIALIZE_TO_IPC_FN,
+  addPluginListener: () => addPluginListener,
+  checkPermissions: () => checkPermissions,
+  convertFileSrc: () => convertFileSrc,
+  invoke: () => invoke,
+  isTauri: () => isTauri,
+  requestPermissions: () => requestPermissions,
+  transformCallback: () => transformCallback
+});
+function transformCallback(callback, once2 = false) {
+  return window.__TAURI_INTERNALS__.transformCallback(callback, once2);
+}
+async function addPluginListener(plugin, event, cb) {
+  const handler = new Channel(cb);
+  try {
+    await invoke(`plugin:${plugin}|register_listener`, {
+      event,
+      handler
+    });
+    return new PluginListener(plugin, event, handler.id);
+  } catch {
+    await invoke(`plugin:${plugin}|registerListener`, { event, handler });
+    return new PluginListener(plugin, event, handler.id);
+  }
+}
+async function checkPermissions(plugin) {
+  return invoke(`plugin:${plugin}|check_permissions`);
+}
+async function requestPermissions(plugin) {
+  return invoke(`plugin:${plugin}|request_permissions`);
+}
+async function invoke(cmd, args = {}, options2) {
+  return window.__TAURI_INTERNALS__.invoke(cmd, args, options2);
+}
+function convertFileSrc(filePath, protocol = "asset") {
+  return window.__TAURI_INTERNALS__.convertFileSrc(filePath, protocol);
+}
+function isTauri() {
+  return !!(globalThis || window).isTauri;
+}
+var _Channel_onmessage, _Channel_nextMessageIndex, _Channel_pendingMessages, _Channel_messageEndIndex, _Resource_rid, SERIALIZE_TO_IPC_FN, Channel, PluginListener, Resource;
+var init_core = __esm({
+  "node_modules/@tauri-apps/api/core.js"() {
+    init_tslib_es6();
+    SERIALIZE_TO_IPC_FN = "__TAURI_TO_IPC_KEY__";
+    Channel = class {
+      constructor(onmessage) {
+        _Channel_onmessage.set(this, void 0);
+        _Channel_nextMessageIndex.set(this, 0);
+        _Channel_pendingMessages.set(this, []);
+        _Channel_messageEndIndex.set(this, void 0);
+        __classPrivateFieldSet(this, _Channel_onmessage, onmessage || (() => {
+        }), "f");
+        this.id = transformCallback((rawMessage) => {
+          const index2 = rawMessage.index;
+          if ("end" in rawMessage) {
+            if (index2 == __classPrivateFieldGet(this, _Channel_nextMessageIndex, "f")) {
+              this.cleanupCallback();
+            } else {
+              __classPrivateFieldSet(this, _Channel_messageEndIndex, index2, "f");
+            }
+            return;
+          }
+          const message = rawMessage.message;
+          if (index2 == __classPrivateFieldGet(this, _Channel_nextMessageIndex, "f")) {
+            __classPrivateFieldGet(this, _Channel_onmessage, "f").call(this, message);
+            __classPrivateFieldSet(this, _Channel_nextMessageIndex, __classPrivateFieldGet(this, _Channel_nextMessageIndex, "f") + 1, "f");
+            while (__classPrivateFieldGet(this, _Channel_nextMessageIndex, "f") in __classPrivateFieldGet(this, _Channel_pendingMessages, "f")) {
+              const message2 = __classPrivateFieldGet(this, _Channel_pendingMessages, "f")[__classPrivateFieldGet(this, _Channel_nextMessageIndex, "f")];
+              __classPrivateFieldGet(this, _Channel_onmessage, "f").call(this, message2);
+              delete __classPrivateFieldGet(this, _Channel_pendingMessages, "f")[__classPrivateFieldGet(this, _Channel_nextMessageIndex, "f")];
+              __classPrivateFieldSet(this, _Channel_nextMessageIndex, __classPrivateFieldGet(this, _Channel_nextMessageIndex, "f") + 1, "f");
+            }
+            if (__classPrivateFieldGet(this, _Channel_nextMessageIndex, "f") === __classPrivateFieldGet(this, _Channel_messageEndIndex, "f")) {
+              this.cleanupCallback();
+            }
+          } else {
+            __classPrivateFieldGet(this, _Channel_pendingMessages, "f")[index2] = message;
+          }
+        });
+      }
+      cleanupCallback() {
+        window.__TAURI_INTERNALS__.unregisterCallback(this.id);
+      }
+      set onmessage(handler) {
+        __classPrivateFieldSet(this, _Channel_onmessage, handler, "f");
+      }
+      get onmessage() {
+        return __classPrivateFieldGet(this, _Channel_onmessage, "f");
+      }
+      [(_Channel_onmessage = /* @__PURE__ */ new WeakMap(), _Channel_nextMessageIndex = /* @__PURE__ */ new WeakMap(), _Channel_pendingMessages = /* @__PURE__ */ new WeakMap(), _Channel_messageEndIndex = /* @__PURE__ */ new WeakMap(), SERIALIZE_TO_IPC_FN)]() {
+        return `__CHANNEL__:${this.id}`;
+      }
+      toJSON() {
+        return this[SERIALIZE_TO_IPC_FN]();
+      }
+    };
+    PluginListener = class {
+      constructor(plugin, event, channelId) {
+        this.plugin = plugin;
+        this.event = event;
+        this.channelId = channelId;
+      }
+      async unregister() {
+        return invoke(`plugin:${this.plugin}|remove_listener`, {
+          event: this.event,
+          channelId: this.channelId
+        });
+      }
+    };
+    Resource = class {
+      get rid() {
+        return __classPrivateFieldGet(this, _Resource_rid, "f");
+      }
+      constructor(rid) {
+        _Resource_rid.set(this, void 0);
+        __classPrivateFieldSet(this, _Resource_rid, rid, "f");
+      }
+      /**
+       * Destroys and cleans up this resource from memory.
+       * **You should not call any method on this object anymore and should drop any reference to it.**
+       */
+      async close() {
+        return invoke("plugin:resources|close", {
+          rid: this.rid
+        });
+      }
+    };
+    _Resource_rid = /* @__PURE__ */ new WeakMap();
+  }
+});
+
+// node_modules/@tauri-apps/api/dpi.js
+var LogicalSize, PhysicalSize, Size, LogicalPosition, PhysicalPosition, Position;
+var init_dpi = __esm({
+  "node_modules/@tauri-apps/api/dpi.js"() {
+    init_core();
+    LogicalSize = class {
+      constructor(...args) {
+        this.type = "Logical";
+        if (args.length === 1) {
+          if ("Logical" in args[0]) {
+            this.width = args[0].Logical.width;
+            this.height = args[0].Logical.height;
+          } else {
+            this.width = args[0].width;
+            this.height = args[0].height;
+          }
+        } else {
+          this.width = args[0];
+          this.height = args[1];
+        }
+      }
+      /**
+       * Converts the logical size to a physical one.
+       * @example
+       * ```typescript
+       * import { LogicalSize } from '@tauri-apps/api/dpi';
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       *
+       * const appWindow = getCurrentWindow();
+       * const factor = await appWindow.scaleFactor();
+       * const size = new LogicalSize(400, 500);
+       * const physical = size.toPhysical(factor);
+       * ```
+       *
+       * @since 2.0.0
+       */
+      toPhysical(scaleFactor) {
+        return new PhysicalSize(this.width * scaleFactor, this.height * scaleFactor);
+      }
+      [SERIALIZE_TO_IPC_FN]() {
+        return {
+          width: this.width,
+          height: this.height
+        };
+      }
+      toJSON() {
+        return this[SERIALIZE_TO_IPC_FN]();
+      }
+    };
+    PhysicalSize = class {
+      constructor(...args) {
+        this.type = "Physical";
+        if (args.length === 1) {
+          if ("Physical" in args[0]) {
+            this.width = args[0].Physical.width;
+            this.height = args[0].Physical.height;
+          } else {
+            this.width = args[0].width;
+            this.height = args[0].height;
+          }
+        } else {
+          this.width = args[0];
+          this.height = args[1];
+        }
+      }
+      /**
+       * Converts the physical size to a logical one.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const appWindow = getCurrentWindow();
+       * const factor = await appWindow.scaleFactor();
+       * const size = await appWindow.innerSize(); // PhysicalSize
+       * const logical = size.toLogical(factor);
+       * ```
+       */
+      toLogical(scaleFactor) {
+        return new LogicalSize(this.width / scaleFactor, this.height / scaleFactor);
+      }
+      [SERIALIZE_TO_IPC_FN]() {
+        return {
+          width: this.width,
+          height: this.height
+        };
+      }
+      toJSON() {
+        return this[SERIALIZE_TO_IPC_FN]();
+      }
+    };
+    Size = class {
+      constructor(size) {
+        this.size = size;
+      }
+      toLogical(scaleFactor) {
+        return this.size instanceof LogicalSize ? this.size : this.size.toLogical(scaleFactor);
+      }
+      toPhysical(scaleFactor) {
+        return this.size instanceof PhysicalSize ? this.size : this.size.toPhysical(scaleFactor);
+      }
+      [SERIALIZE_TO_IPC_FN]() {
+        return {
+          [`${this.size.type}`]: {
+            width: this.size.width,
+            height: this.size.height
+          }
+        };
+      }
+      toJSON() {
+        return this[SERIALIZE_TO_IPC_FN]();
+      }
+    };
+    LogicalPosition = class {
+      constructor(...args) {
+        this.type = "Logical";
+        if (args.length === 1) {
+          if ("Logical" in args[0]) {
+            this.x = args[0].Logical.x;
+            this.y = args[0].Logical.y;
+          } else {
+            this.x = args[0].x;
+            this.y = args[0].y;
+          }
+        } else {
+          this.x = args[0];
+          this.y = args[1];
+        }
+      }
+      /**
+       * Converts the logical position to a physical one.
+       * @example
+       * ```typescript
+       * import { LogicalPosition } from '@tauri-apps/api/dpi';
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       *
+       * const appWindow = getCurrentWindow();
+       * const factor = await appWindow.scaleFactor();
+       * const position = new LogicalPosition(400, 500);
+       * const physical = position.toPhysical(factor);
+       * ```
+       *
+       * @since 2.0.0
+       */
+      toPhysical(scaleFactor) {
+        return new PhysicalPosition(this.x * scaleFactor, this.y * scaleFactor);
+      }
+      [SERIALIZE_TO_IPC_FN]() {
+        return {
+          x: this.x,
+          y: this.y
+        };
+      }
+      toJSON() {
+        return this[SERIALIZE_TO_IPC_FN]();
+      }
+    };
+    PhysicalPosition = class {
+      constructor(...args) {
+        this.type = "Physical";
+        if (args.length === 1) {
+          if ("Physical" in args[0]) {
+            this.x = args[0].Physical.x;
+            this.y = args[0].Physical.y;
+          } else {
+            this.x = args[0].x;
+            this.y = args[0].y;
+          }
+        } else {
+          this.x = args[0];
+          this.y = args[1];
+        }
+      }
+      /**
+       * Converts the physical position to a logical one.
+       * @example
+       * ```typescript
+       * import { PhysicalPosition } from '@tauri-apps/api/dpi';
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       *
+       * const appWindow = getCurrentWindow();
+       * const factor = await appWindow.scaleFactor();
+       * const position = new PhysicalPosition(400, 500);
+       * const physical = position.toLogical(factor);
+       * ```
+       *
+       * @since 2.0.0
+       */
+      toLogical(scaleFactor) {
+        return new LogicalPosition(this.x / scaleFactor, this.y / scaleFactor);
+      }
+      [SERIALIZE_TO_IPC_FN]() {
+        return {
+          x: this.x,
+          y: this.y
+        };
+      }
+      toJSON() {
+        return this[SERIALIZE_TO_IPC_FN]();
+      }
+    };
+    Position = class {
+      constructor(position) {
+        this.position = position;
+      }
+      toLogical(scaleFactor) {
+        return this.position instanceof LogicalPosition ? this.position : this.position.toLogical(scaleFactor);
+      }
+      toPhysical(scaleFactor) {
+        return this.position instanceof PhysicalPosition ? this.position : this.position.toPhysical(scaleFactor);
+      }
+      [SERIALIZE_TO_IPC_FN]() {
+        return {
+          [`${this.position.type}`]: {
+            x: this.position.x,
+            y: this.position.y
+          }
+        };
+      }
+      toJSON() {
+        return this[SERIALIZE_TO_IPC_FN]();
+      }
+    };
+  }
+});
+
+// node_modules/@tauri-apps/api/event.js
+async function _unlisten(event, eventId) {
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(event, eventId);
+  await invoke("plugin:event|unlisten", {
+    event,
+    eventId
+  });
+}
+async function listen(event, handler, options2) {
+  var _a;
+  const target = typeof (options2 === null || options2 === void 0 ? void 0 : options2.target) === "string" ? { kind: "AnyLabel", label: options2.target } : (_a = options2 === null || options2 === void 0 ? void 0 : options2.target) !== null && _a !== void 0 ? _a : { kind: "Any" };
+  return invoke("plugin:event|listen", {
+    event,
+    target,
+    handler: transformCallback(handler)
+  }).then((eventId) => {
+    return async () => _unlisten(event, eventId);
+  });
+}
+async function once(event, handler, options2) {
+  return listen(event, (eventData) => {
+    void _unlisten(event, eventData.id);
+    handler(eventData);
+  }, options2);
+}
+async function emit(event, payload) {
+  await invoke("plugin:event|emit", {
+    event,
+    payload
+  });
+}
+async function emitTo(target, event, payload) {
+  const eventTarget = typeof target === "string" ? { kind: "AnyLabel", label: target } : target;
+  await invoke("plugin:event|emit_to", {
+    target: eventTarget,
+    event,
+    payload
+  });
+}
+var TauriEvent;
+var init_event = __esm({
+  "node_modules/@tauri-apps/api/event.js"() {
+    init_core();
+    (function(TauriEvent2) {
+      TauriEvent2["WINDOW_RESIZED"] = "tauri://resize";
+      TauriEvent2["WINDOW_MOVED"] = "tauri://move";
+      TauriEvent2["WINDOW_CLOSE_REQUESTED"] = "tauri://close-requested";
+      TauriEvent2["WINDOW_DESTROYED"] = "tauri://destroyed";
+      TauriEvent2["WINDOW_FOCUS"] = "tauri://focus";
+      TauriEvent2["WINDOW_BLUR"] = "tauri://blur";
+      TauriEvent2["WINDOW_SCALE_FACTOR_CHANGED"] = "tauri://scale-change";
+      TauriEvent2["WINDOW_THEME_CHANGED"] = "tauri://theme-changed";
+      TauriEvent2["WINDOW_CREATED"] = "tauri://window-created";
+      TauriEvent2["WEBVIEW_CREATED"] = "tauri://webview-created";
+      TauriEvent2["DRAG_ENTER"] = "tauri://drag-enter";
+      TauriEvent2["DRAG_OVER"] = "tauri://drag-over";
+      TauriEvent2["DRAG_DROP"] = "tauri://drag-drop";
+      TauriEvent2["DRAG_LEAVE"] = "tauri://drag-leave";
+    })(TauriEvent || (TauriEvent = {}));
+  }
+});
+
+// node_modules/@tauri-apps/api/image.js
+function transformImage(image) {
+  const ret = image == null ? null : typeof image === "string" ? image : image instanceof Image ? image.rid : image;
+  return ret;
+}
+var Image;
+var init_image = __esm({
+  "node_modules/@tauri-apps/api/image.js"() {
+    init_core();
+    Image = class _Image extends Resource {
+      /**
+       * Creates an Image from a resource ID. For internal use only.
+       *
+       * @ignore
+       */
+      constructor(rid) {
+        super(rid);
+      }
+      /** Creates a new Image using RGBA data, in row-major order from top to bottom, and with specified width and height. */
+      static async new(rgba2, width, height) {
+        return invoke("plugin:image|new", {
+          rgba: transformImage(rgba2),
+          width,
+          height
+        }).then((rid) => new _Image(rid));
+      }
+      /**
+       * Creates a new image using the provided bytes by inferring the file format.
+       * If the format is known, prefer [@link Image.fromPngBytes] or [@link Image.fromIcoBytes].
+       *
+       * Only `ico` and `png` are supported (based on activated feature flag).
+       *
+       * Note that you need the `image-ico` or `image-png` Cargo features to use this API.
+       * To enable it, change your Cargo.toml file:
+       * ```toml
+       * [dependencies]
+       * tauri = { version = "...", features = ["...", "image-png"] }
+       * ```
+       */
+      static async fromBytes(bytes) {
+        return invoke("plugin:image|from_bytes", {
+          bytes: transformImage(bytes)
+        }).then((rid) => new _Image(rid));
+      }
+      /**
+       * Creates a new image using the provided path.
+       *
+       * Only `ico` and `png` are supported (based on activated feature flag).
+       *
+       * Note that you need the `image-ico` or `image-png` Cargo features to use this API.
+       * To enable it, change your Cargo.toml file:
+       * ```toml
+       * [dependencies]
+       * tauri = { version = "...", features = ["...", "image-png"] }
+       * ```
+       */
+      static async fromPath(path) {
+        return invoke("plugin:image|from_path", { path }).then((rid) => new _Image(rid));
+      }
+      /** Returns the RGBA data for this image, in row-major order from top to bottom.  */
+      async rgba() {
+        return invoke("plugin:image|rgba", {
+          rid: this.rid
+        }).then((buffer) => new Uint8Array(buffer));
+      }
+      /** Returns the size of this image.  */
+      async size() {
+        return invoke("plugin:image|size", { rid: this.rid });
+      }
+    };
+  }
+});
+
+// node_modules/@tauri-apps/api/window.js
+function getCurrentWindow() {
+  return new Window(window.__TAURI_INTERNALS__.metadata.currentWindow.label, {
+    // @ts-expect-error `skip` is not defined in the public API but it is handled by the constructor
+    skip: true
+  });
+}
+async function getAllWindows() {
+  return invoke("plugin:window|get_all_windows").then((windows) => windows.map((w3) => new Window(w3, {
+    // @ts-expect-error `skip` is not defined in the public API but it is handled by the constructor
+    skip: true
+  })));
+}
+var UserAttentionType, CloseRequestedEvent, ProgressBarStatus, localTauriEvents, Window, BackgroundThrottlingPolicy, ScrollBarStyle, Effect, EffectState;
+var init_window = __esm({
+  "node_modules/@tauri-apps/api/window.js"() {
+    init_dpi();
+    init_dpi();
+    init_event();
+    init_core();
+    init_image();
+    (function(UserAttentionType2) {
+      UserAttentionType2[UserAttentionType2["Critical"] = 1] = "Critical";
+      UserAttentionType2[UserAttentionType2["Informational"] = 2] = "Informational";
+    })(UserAttentionType || (UserAttentionType = {}));
+    CloseRequestedEvent = class {
+      constructor(event) {
+        this._preventDefault = false;
+        this.event = event.event;
+        this.id = event.id;
+      }
+      preventDefault() {
+        this._preventDefault = true;
+      }
+      isPreventDefault() {
+        return this._preventDefault;
+      }
+    };
+    (function(ProgressBarStatus2) {
+      ProgressBarStatus2["None"] = "none";
+      ProgressBarStatus2["Normal"] = "normal";
+      ProgressBarStatus2["Indeterminate"] = "indeterminate";
+      ProgressBarStatus2["Paused"] = "paused";
+      ProgressBarStatus2["Error"] = "error";
+    })(ProgressBarStatus || (ProgressBarStatus = {}));
+    localTauriEvents = ["tauri://created", "tauri://error"];
+    Window = class {
+      /**
+       * Creates a new Window.
+       * @example
+       * ```typescript
+       * import { Window } from '@tauri-apps/api/window';
+       * const appWindow = new Window('my-label');
+       * appWindow.once('tauri://created', function () {
+       *  // window successfully created
+       * });
+       * appWindow.once('tauri://error', function (e) {
+       *  // an error happened creating the window
+       * });
+       * ```
+       *
+       * @param label The unique window label. Must be alphanumeric: `a-zA-Z-/:_`.
+       * @returns The {@link Window} instance to communicate with the window.
+       */
+      constructor(label, options2 = {}) {
+        var _a;
+        this.label = label;
+        this.listeners = /* @__PURE__ */ Object.create(null);
+        if (!(options2 === null || options2 === void 0 ? void 0 : options2.skip)) {
+          invoke("plugin:window|create", {
+            options: {
+              ...options2,
+              parent: typeof options2.parent === "string" ? options2.parent : (_a = options2.parent) === null || _a === void 0 ? void 0 : _a.label,
+              label
+            }
+          }).then(async () => this.emit("tauri://created")).catch(async (e3) => this.emit("tauri://error", e3));
+        }
+      }
+      /**
+       * Gets the Window associated with the given label.
+       * @example
+       * ```typescript
+       * import { Window } from '@tauri-apps/api/window';
+       * const mainWindow = Window.getByLabel('main');
+       * ```
+       *
+       * @param label The window label.
+       * @returns The Window instance to communicate with the window or null if the window doesn't exist.
+       */
+      static async getByLabel(label) {
+        var _a;
+        return (_a = (await getAllWindows()).find((w3) => w3.label === label)) !== null && _a !== void 0 ? _a : null;
+      }
+      /**
+       * Get an instance of `Window` for the current window.
+       */
+      static getCurrent() {
+        return getCurrentWindow();
+      }
+      /**
+       * Gets a list of instances of `Window` for all available windows.
+       */
+      static async getAll() {
+        return getAllWindows();
+      }
+      /**
+       *  Gets the focused window.
+       * @example
+       * ```typescript
+       * import { Window } from '@tauri-apps/api/window';
+       * const focusedWindow = Window.getFocusedWindow();
+       * ```
+       *
+       * @returns The Window instance or `undefined` if there is not any focused window.
+       */
+      static async getFocusedWindow() {
+        for (const w3 of await getAllWindows()) {
+          if (await w3.isFocused()) {
+            return w3;
+          }
+        }
+        return null;
+      }
+      /**
+       * Listen to an emitted event on this window.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const unlisten = await getCurrentWindow().listen<string>('state-changed', (event) => {
+       *   console.log(`Got error: ${payload}`);
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @param event Event name. Must include only alphanumeric characters, `-`, `/`, `:` and `_`.
+       * @param handler Event handler.
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async listen(event, handler) {
+        if (this._handleTauriEvent(event, handler)) {
+          return () => {
+            const listeners = this.listeners[event];
+            listeners.splice(listeners.indexOf(handler), 1);
+          };
+        }
+        return listen(event, handler, {
+          target: { kind: "Window", label: this.label }
+        });
+      }
+      /**
+       * Listen to an emitted event on this window only once.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const unlisten = await getCurrentWindow().once<null>('initialized', (event) => {
+       *   console.log(`Window initialized!`);
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @param event Event name. Must include only alphanumeric characters, `-`, `/`, `:` and `_`.
+       * @param handler Event handler.
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async once(event, handler) {
+        if (this._handleTauriEvent(event, handler)) {
+          return () => {
+            const listeners = this.listeners[event];
+            listeners.splice(listeners.indexOf(handler), 1);
+          };
+        }
+        return once(event, handler, {
+          target: { kind: "Window", label: this.label }
+        });
+      }
+      /**
+       * Emits an event to all {@link EventTarget|targets}.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().emit('window-loaded', { loggedIn: true, token: 'authToken' });
+       * ```
+       *
+       * @param event Event name. Must include only alphanumeric characters, `-`, `/`, `:` and `_`.
+       * @param payload Event payload.
+       */
+      async emit(event, payload) {
+        if (localTauriEvents.includes(event)) {
+          for (const handler of this.listeners[event] || []) {
+            handler({
+              event,
+              id: -1,
+              payload
+            });
+          }
+          return;
+        }
+        return emit(event, payload);
+      }
+      /**
+       * Emits an event to all {@link EventTarget|targets} matching the given target.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().emit('main', 'window-loaded', { loggedIn: true, token: 'authToken' });
+       * ```
+       * @param target Label of the target Window/Webview/WebviewWindow or raw {@link EventTarget} object.
+       * @param event Event name. Must include only alphanumeric characters, `-`, `/`, `:` and `_`.
+       * @param payload Event payload.
+       */
+      async emitTo(target, event, payload) {
+        if (localTauriEvents.includes(event)) {
+          for (const handler of this.listeners[event] || []) {
+            handler({
+              event,
+              id: -1,
+              payload
+            });
+          }
+          return;
+        }
+        return emitTo(target, event, payload);
+      }
+      /** @ignore */
+      _handleTauriEvent(event, handler) {
+        if (localTauriEvents.includes(event)) {
+          if (!(event in this.listeners)) {
+            this.listeners[event] = [handler];
+          } else {
+            this.listeners[event].push(handler);
+          }
+          return true;
+        }
+        return false;
+      }
+      // Getters
+      /**
+       * The scale factor that can be used to map physical pixels to logical pixels.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const factor = await getCurrentWindow().scaleFactor();
+       * ```
+       *
+       * @returns The window's monitor scale factor.
+       */
+      async scaleFactor() {
+        return invoke("plugin:window|scale_factor", {
+          label: this.label
+        });
+      }
+      /**
+       * The position of the top-left hand corner of the window's client area relative to the top-left hand corner of the desktop.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const position = await getCurrentWindow().innerPosition();
+       * ```
+       *
+       * @returns The window's inner position.
+       */
+      async innerPosition() {
+        return invoke("plugin:window|inner_position", {
+          label: this.label
+        }).then((p3) => new PhysicalPosition(p3));
+      }
+      /**
+       * The position of the top-left hand corner of the window relative to the top-left hand corner of the desktop.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const position = await getCurrentWindow().outerPosition();
+       * ```
+       *
+       * @returns The window's outer position.
+       */
+      async outerPosition() {
+        return invoke("plugin:window|outer_position", {
+          label: this.label
+        }).then((p3) => new PhysicalPosition(p3));
+      }
+      /**
+       * The physical size of the window's client area.
+       * The client area is the content of the window, excluding the title bar and borders.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const size = await getCurrentWindow().innerSize();
+       * ```
+       *
+       * @returns The window's inner size.
+       */
+      async innerSize() {
+        return invoke("plugin:window|inner_size", {
+          label: this.label
+        }).then((s3) => new PhysicalSize(s3));
+      }
+      /**
+       * The physical size of the entire window.
+       * These dimensions include the title bar and borders. If you don't want that (and you usually don't), use inner_size instead.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const size = await getCurrentWindow().outerSize();
+       * ```
+       *
+       * @returns The window's outer size.
+       */
+      async outerSize() {
+        return invoke("plugin:window|outer_size", {
+          label: this.label
+        }).then((s3) => new PhysicalSize(s3));
+      }
+      /**
+       * Gets the window's current fullscreen state.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const fullscreen = await getCurrentWindow().isFullscreen();
+       * ```
+       *
+       * @returns Whether the window is in fullscreen mode or not.
+       */
+      async isFullscreen() {
+        return invoke("plugin:window|is_fullscreen", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's current minimized state.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const minimized = await getCurrentWindow().isMinimized();
+       * ```
+       */
+      async isMinimized() {
+        return invoke("plugin:window|is_minimized", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's current maximized state.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const maximized = await getCurrentWindow().isMaximized();
+       * ```
+       *
+       * @returns Whether the window is maximized or not.
+       */
+      async isMaximized() {
+        return invoke("plugin:window|is_maximized", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's current focus state.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const focused = await getCurrentWindow().isFocused();
+       * ```
+       *
+       * @returns Whether the window is focused or not.
+       */
+      async isFocused() {
+        return invoke("plugin:window|is_focused", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's current decorated state.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const decorated = await getCurrentWindow().isDecorated();
+       * ```
+       *
+       * @returns Whether the window is decorated or not.
+       */
+      async isDecorated() {
+        return invoke("plugin:window|is_decorated", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's current resizable state.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const resizable = await getCurrentWindow().isResizable();
+       * ```
+       *
+       * @returns Whether the window is resizable or not.
+       */
+      async isResizable() {
+        return invoke("plugin:window|is_resizable", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's native maximize button state.
+       *
+       * #### Platform-specific
+       *
+       * - **Linux / iOS / Android:** Unsupported.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const maximizable = await getCurrentWindow().isMaximizable();
+       * ```
+       *
+       * @returns Whether the window's native maximize button is enabled or not.
+       */
+      async isMaximizable() {
+        return invoke("plugin:window|is_maximizable", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's native minimize button state.
+       *
+       * #### Platform-specific
+       *
+       * - **Linux / iOS / Android:** Unsupported.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const minimizable = await getCurrentWindow().isMinimizable();
+       * ```
+       *
+       * @returns Whether the window's native minimize button is enabled or not.
+       */
+      async isMinimizable() {
+        return invoke("plugin:window|is_minimizable", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's native close button state.
+       *
+       * #### Platform-specific
+       *
+       * - **iOS / Android:** Unsupported.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const closable = await getCurrentWindow().isClosable();
+       * ```
+       *
+       * @returns Whether the window's native close button is enabled or not.
+       */
+      async isClosable() {
+        return invoke("plugin:window|is_closable", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's current visible state.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const visible = await getCurrentWindow().isVisible();
+       * ```
+       *
+       * @returns Whether the window is visible or not.
+       */
+      async isVisible() {
+        return invoke("plugin:window|is_visible", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's current title.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const title = await getCurrentWindow().title();
+       * ```
+       */
+      async title() {
+        return invoke("plugin:window|title", {
+          label: this.label
+        });
+      }
+      /**
+       * Gets the window's current theme.
+       *
+       * #### Platform-specific
+       *
+       * - **macOS:** Theme was introduced on macOS 10.14. Returns `light` on macOS 10.13 and below.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const theme = await getCurrentWindow().theme();
+       * ```
+       *
+       * @returns The window theme.
+       */
+      async theme() {
+        return invoke("plugin:window|theme", {
+          label: this.label
+        });
+      }
+      /**
+       * Whether the window is configured to be always on top of other windows or not.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * const alwaysOnTop = await getCurrentWindow().isAlwaysOnTop();
+       * ```
+       *
+       * @returns Whether the window is visible or not.
+       */
+      async isAlwaysOnTop() {
+        return invoke("plugin:window|is_always_on_top", {
+          label: this.label
+        });
+      }
+      // Setters
+      /**
+       * Centers the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().center();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async center() {
+        return invoke("plugin:window|center", {
+          label: this.label
+        });
+      }
+      /**
+       *  Requests user attention to the window, this has no effect if the application
+       * is already focused. How requesting for user attention manifests is platform dependent,
+       * see `UserAttentionType` for details.
+       *
+       * Providing `null` will unset the request for user attention. Unsetting the request for
+       * user attention might not be done automatically by the WM when the window receives input.
+       *
+       * #### Platform-specific
+       *
+       * - **macOS:** `null` has no effect.
+       * - **Linux:** Urgency levels have the same effect.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().requestUserAttention();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async requestUserAttention(requestType) {
+        let requestType_ = null;
+        if (requestType) {
+          if (requestType === UserAttentionType.Critical) {
+            requestType_ = { type: "Critical" };
+          } else {
+            requestType_ = { type: "Informational" };
+          }
+        }
+        return invoke("plugin:window|request_user_attention", {
+          label: this.label,
+          value: requestType_
+        });
+      }
+      /**
+       * Updates the window resizable flag.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setResizable(false);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setResizable(resizable) {
+        return invoke("plugin:window|set_resizable", {
+          label: this.label,
+          value: resizable
+        });
+      }
+      /**
+       * Enable or disable the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setEnabled(false);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       *
+       * @since 2.0.0
+       */
+      async setEnabled(enabled) {
+        return invoke("plugin:window|set_enabled", {
+          label: this.label,
+          value: enabled
+        });
+      }
+      /**
+       * Whether the window is enabled or disabled.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setEnabled(false);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       *
+       * @since 2.0.0
+       */
+      async isEnabled() {
+        return invoke("plugin:window|is_enabled", {
+          label: this.label
+        });
+      }
+      /**
+       * Sets whether the window's native maximize button is enabled or not.
+       * If resizable is set to false, this setting is ignored.
+       *
+       * #### Platform-specific
+       *
+       * - **macOS:** Disables the "zoom" button in the window titlebar, which is also used to enter fullscreen mode.
+       * - **Linux / iOS / Android:** Unsupported.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setMaximizable(false);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setMaximizable(maximizable) {
+        return invoke("plugin:window|set_maximizable", {
+          label: this.label,
+          value: maximizable
+        });
+      }
+      /**
+       * Sets whether the window's native minimize button is enabled or not.
+       *
+       * #### Platform-specific
+       *
+       * - **Linux / iOS / Android:** Unsupported.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setMinimizable(false);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setMinimizable(minimizable) {
+        return invoke("plugin:window|set_minimizable", {
+          label: this.label,
+          value: minimizable
+        });
+      }
+      /**
+       * Sets whether the window's native close button is enabled or not.
+       *
+       * #### Platform-specific
+       *
+       * - **Linux:** GTK+ will do its best to convince the window manager not to show a close button. Depending on the system, this function may not have any effect when called on a window that is already visible
+       * - **iOS / Android:** Unsupported.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setClosable(false);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setClosable(closable) {
+        return invoke("plugin:window|set_closable", {
+          label: this.label,
+          value: closable
+        });
+      }
+      /**
+       * Sets the window title.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setTitle('Tauri');
+       * ```
+       *
+       * @param title The new title
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setTitle(title) {
+        return invoke("plugin:window|set_title", {
+          label: this.label,
+          value: title
+        });
+      }
+      /**
+       * Maximizes the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().maximize();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async maximize() {
+        return invoke("plugin:window|maximize", {
+          label: this.label
+        });
+      }
+      /**
+       * Unmaximizes the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().unmaximize();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async unmaximize() {
+        return invoke("plugin:window|unmaximize", {
+          label: this.label
+        });
+      }
+      /**
+       * Toggles the window maximized state.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().toggleMaximize();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async toggleMaximize() {
+        return invoke("plugin:window|toggle_maximize", {
+          label: this.label
+        });
+      }
+      /**
+       * Minimizes the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().minimize();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async minimize() {
+        return invoke("plugin:window|minimize", {
+          label: this.label
+        });
+      }
+      /**
+       * Unminimizes the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().unminimize();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async unminimize() {
+        return invoke("plugin:window|unminimize", {
+          label: this.label
+        });
+      }
+      /**
+       * Sets the window visibility to true.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().show();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async show() {
+        return invoke("plugin:window|show", {
+          label: this.label
+        });
+      }
+      /**
+       * Sets the window visibility to false.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().hide();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async hide() {
+        return invoke("plugin:window|hide", {
+          label: this.label
+        });
+      }
+      /**
+       * Closes the window.
+       *
+       * Note this emits a closeRequested event so you can intercept it. To force window close, use {@link Window.destroy}.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().close();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async close() {
+        return invoke("plugin:window|close", {
+          label: this.label
+        });
+      }
+      /**
+       * Destroys the window. Behaves like {@link Window.close} but forces the window close instead of emitting a closeRequested event.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().destroy();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async destroy() {
+        return invoke("plugin:window|destroy", {
+          label: this.label
+        });
+      }
+      /**
+       * Whether the window should have borders and bars.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setDecorations(false);
+       * ```
+       *
+       * @param decorations Whether the window should have borders and bars.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setDecorations(decorations) {
+        return invoke("plugin:window|set_decorations", {
+          label: this.label,
+          value: decorations
+        });
+      }
+      /**
+       * Whether or not the window should have shadow.
+       *
+       * #### Platform-specific
+       *
+       * - **Windows:**
+       *   - `false` has no effect on decorated window, shadows are always ON.
+       *   - `true` will make undecorated window have a 1px white border,
+       * and on Windows 11, it will have a rounded corners.
+       * - **Linux:** Unsupported.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setShadow(false);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setShadow(enable) {
+        return invoke("plugin:window|set_shadow", {
+          label: this.label,
+          value: enable
+        });
+      }
+      /**
+       * Set window effects.
+       */
+      async setEffects(effects) {
+        return invoke("plugin:window|set_effects", {
+          label: this.label,
+          value: effects
+        });
+      }
+      /**
+       * Clear any applied effects if possible.
+       */
+      async clearEffects() {
+        return invoke("plugin:window|set_effects", {
+          label: this.label,
+          value: null
+        });
+      }
+      /**
+       * Whether the window should always be on top of other windows.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setAlwaysOnTop(true);
+       * ```
+       *
+       * @param alwaysOnTop Whether the window should always be on top of other windows or not.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setAlwaysOnTop(alwaysOnTop) {
+        return invoke("plugin:window|set_always_on_top", {
+          label: this.label,
+          value: alwaysOnTop
+        });
+      }
+      /**
+       * Whether the window should always be below other windows.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setAlwaysOnBottom(true);
+       * ```
+       *
+       * @param alwaysOnBottom Whether the window should always be below other windows or not.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setAlwaysOnBottom(alwaysOnBottom) {
+        return invoke("plugin:window|set_always_on_bottom", {
+          label: this.label,
+          value: alwaysOnBottom
+        });
+      }
+      /**
+       * Prevents the window contents from being captured by other apps.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setContentProtected(true);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setContentProtected(protected_) {
+        return invoke("plugin:window|set_content_protected", {
+          label: this.label,
+          value: protected_
+        });
+      }
+      /**
+       * Resizes the window with a new inner size.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setSize(new LogicalSize(600, 500));
+       * ```
+       *
+       * @param size The logical or physical inner size.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setSize(size) {
+        return invoke("plugin:window|set_size", {
+          label: this.label,
+          value: size instanceof Size ? size : new Size(size)
+        });
+      }
+      /**
+       * Sets the window minimum inner size. If the `size` argument is not provided, the constraint is unset.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow, PhysicalSize } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setMinSize(new PhysicalSize(600, 500));
+       * ```
+       *
+       * @param size The logical or physical inner size, or `null` to unset the constraint.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setMinSize(size) {
+        return invoke("plugin:window|set_min_size", {
+          label: this.label,
+          value: size instanceof Size ? size : size ? new Size(size) : null
+        });
+      }
+      /**
+       * Sets the window maximum inner size. If the `size` argument is undefined, the constraint is unset.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setMaxSize(new LogicalSize(600, 500));
+       * ```
+       *
+       * @param size The logical or physical inner size, or `null` to unset the constraint.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setMaxSize(size) {
+        return invoke("plugin:window|set_max_size", {
+          label: this.label,
+          value: size instanceof Size ? size : size ? new Size(size) : null
+        });
+      }
+      /**
+       * Sets the window inner size constraints.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setSizeConstraints({ minWidth: 300 });
+       * ```
+       *
+       * @param constraints The logical or physical inner size, or `null` to unset the constraint.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setSizeConstraints(constraints) {
+        function logical(pixel) {
+          return pixel ? { Logical: pixel } : null;
+        }
+        return invoke("plugin:window|set_size_constraints", {
+          label: this.label,
+          value: {
+            minWidth: logical(constraints === null || constraints === void 0 ? void 0 : constraints.minWidth),
+            minHeight: logical(constraints === null || constraints === void 0 ? void 0 : constraints.minHeight),
+            maxWidth: logical(constraints === null || constraints === void 0 ? void 0 : constraints.maxWidth),
+            maxHeight: logical(constraints === null || constraints === void 0 ? void 0 : constraints.maxHeight)
+          }
+        });
+      }
+      /**
+       * Sets the window outer position.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow, LogicalPosition } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setPosition(new LogicalPosition(600, 500));
+       * ```
+       *
+       * @param position The new position, in logical or physical pixels.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setPosition(position) {
+        return invoke("plugin:window|set_position", {
+          label: this.label,
+          value: position instanceof Position ? position : new Position(position)
+        });
+      }
+      /**
+       * Sets the window fullscreen state.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setFullscreen(true);
+       * ```
+       *
+       * @param fullscreen Whether the window should go to fullscreen or not.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setFullscreen(fullscreen) {
+        return invoke("plugin:window|set_fullscreen", {
+          label: this.label,
+          value: fullscreen
+        });
+      }
+      /**
+       * On macOS, Toggles a fullscreen mode that doesn’t require a new macOS space. Returns a boolean indicating whether the transition was successful (this won’t work if the window was already in the native fullscreen).
+       * This is how fullscreen used to work on macOS in versions before Lion. And allows the user to have a fullscreen window without using another space or taking control over the entire monitor.
+       *
+       * On other platforms, this is the same as {@link Window.setFullscreen}.
+       *
+       * @param fullscreen Whether the window should go to simple fullscreen or not.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setSimpleFullscreen(fullscreen) {
+        return invoke("plugin:window|set_simple_fullscreen", {
+          label: this.label,
+          value: fullscreen
+        });
+      }
+      /**
+       * Bring the window to front and focus.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setFocus();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setFocus() {
+        return invoke("plugin:window|set_focus", {
+          label: this.label
+        });
+      }
+      /**
+       * Sets whether the window can be focused.
+       *
+       * #### Platform-specific
+       *
+       * - **macOS**: If the window is already focused, it is not possible to unfocus it after calling `set_focusable(false)`.
+       *   In this case, you might consider calling {@link Window.setFocus} but it will move the window to the back i.e. at the bottom in terms of z-order.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setFocusable(true);
+       * ```
+       *
+       * @param focusable Whether the window can be focused.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setFocusable(focusable) {
+        return invoke("plugin:window|set_focusable", {
+          label: this.label,
+          value: focusable
+        });
+      }
+      /**
+       * Sets the window icon.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setIcon('/tauri/awesome.png');
+       * ```
+       *
+       * Note that you may need the `image-ico` or `image-png` Cargo features to use this API.
+       * To enable it, change your Cargo.toml file:
+       * ```toml
+       * [dependencies]
+       * tauri = { version = "...", features = ["...", "image-png"] }
+       * ```
+       *
+       * @param icon Icon bytes or path to the icon file.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setIcon(icon) {
+        return invoke("plugin:window|set_icon", {
+          label: this.label,
+          value: transformImage(icon)
+        });
+      }
+      /**
+       * Whether the window icon should be hidden from the taskbar or not.
+       *
+       * #### Platform-specific
+       *
+       * - **macOS:** Unsupported.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setSkipTaskbar(true);
+       * ```
+       *
+       * @param skip true to hide window icon, false to show it.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setSkipTaskbar(skip) {
+        return invoke("plugin:window|set_skip_taskbar", {
+          label: this.label,
+          value: skip
+        });
+      }
+      /**
+       * Grabs the cursor, preventing it from leaving the window.
+       *
+       * There's no guarantee that the cursor will be hidden. You should
+       * hide it by yourself if you want so.
+       *
+       * #### Platform-specific
+       *
+       * - **Linux:** Unsupported.
+       * - **macOS:** This locks the cursor in a fixed location, which looks visually awkward.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setCursorGrab(true);
+       * ```
+       *
+       * @param grab `true` to grab the cursor icon, `false` to release it.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setCursorGrab(grab) {
+        return invoke("plugin:window|set_cursor_grab", {
+          label: this.label,
+          value: grab
+        });
+      }
+      /**
+       * Modifies the cursor's visibility.
+       *
+       * #### Platform-specific
+       *
+       * - **Windows:** The cursor is only hidden within the confines of the window.
+       * - **macOS:** The cursor is hidden as long as the window has input focus, even if the cursor is
+       *   outside of the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setCursorVisible(false);
+       * ```
+       *
+       * @param visible If `false`, this will hide the cursor. If `true`, this will show the cursor.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setCursorVisible(visible) {
+        return invoke("plugin:window|set_cursor_visible", {
+          label: this.label,
+          value: visible
+        });
+      }
+      /**
+       * Modifies the cursor icon of the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setCursorIcon('help');
+       * ```
+       *
+       * @param icon The new cursor icon.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setCursorIcon(icon) {
+        return invoke("plugin:window|set_cursor_icon", {
+          label: this.label,
+          value: icon
+        });
+      }
+      /**
+       * Sets the window background color.
+       *
+       * #### Platform-specific:
+       *
+       * - **Windows:** alpha channel is ignored.
+       * - **iOS / Android:** Unsupported.
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       *
+       * @since 2.1.0
+       */
+      async setBackgroundColor(color2) {
+        return invoke("plugin:window|set_background_color", { color: color2 });
+      }
+      /**
+       * Changes the position of the cursor in window coordinates.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow, LogicalPosition } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setCursorPosition(new LogicalPosition(600, 300));
+       * ```
+       *
+       * @param position The new cursor position.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setCursorPosition(position) {
+        return invoke("plugin:window|set_cursor_position", {
+          label: this.label,
+          value: position instanceof Position ? position : new Position(position)
+        });
+      }
+      /**
+       * Changes the cursor events behavior.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setIgnoreCursorEvents(true);
+       * ```
+       *
+       * @param ignore `true` to ignore the cursor events; `false` to process them as usual.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setIgnoreCursorEvents(ignore) {
+        return invoke("plugin:window|set_ignore_cursor_events", {
+          label: this.label,
+          value: ignore
+        });
+      }
+      /**
+       * Starts dragging the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().startDragging();
+       * ```
+       *
+       * @return A promise indicating the success or failure of the operation.
+       */
+      async startDragging() {
+        return invoke("plugin:window|start_dragging", {
+          label: this.label
+        });
+      }
+      /**
+       * Starts resize-dragging the window.
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().startResizeDragging();
+       * ```
+       *
+       * @return A promise indicating the success or failure of the operation.
+       */
+      async startResizeDragging(direction) {
+        return invoke("plugin:window|start_resize_dragging", {
+          label: this.label,
+          value: direction
+        });
+      }
+      /**
+       * Sets the badge count. It is app wide and not specific to this window.
+       *
+       * #### Platform-specific
+       *
+       * - **Windows**: Unsupported. Use @{linkcode Window.setOverlayIcon} instead.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setBadgeCount(5);
+       * ```
+       *
+       * @param count The badge count. Use `undefined` to remove the badge.
+       * @return A promise indicating the success or failure of the operation.
+       */
+      async setBadgeCount(count) {
+        return invoke("plugin:window|set_badge_count", {
+          label: this.label,
+          value: count
+        });
+      }
+      /**
+       * Sets the badge cont **macOS only**.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setBadgeLabel("Hello");
+       * ```
+       *
+       * @param label The badge label. Use `undefined` to remove the badge.
+       * @return A promise indicating the success or failure of the operation.
+       */
+      async setBadgeLabel(label) {
+        return invoke("plugin:window|set_badge_label", {
+          label: this.label,
+          value: label
+        });
+      }
+      /**
+       * Sets the overlay icon. **Windows only**
+       * The overlay icon can be set for every window.
+       *
+       *
+       * Note that you may need the `image-ico` or `image-png` Cargo features to use this API.
+       * To enable it, change your Cargo.toml file:
+       *
+       * ```toml
+       * [dependencies]
+       * tauri = { version = "...", features = ["...", "image-png"] }
+       * ```
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setOverlayIcon("/tauri/awesome.png");
+       * ```
+       *
+       * @param icon Icon bytes or path to the icon file. Use `undefined` to remove the overlay icon.
+       * @return A promise indicating the success or failure of the operation.
+       */
+      async setOverlayIcon(icon) {
+        return invoke("plugin:window|set_overlay_icon", {
+          label: this.label,
+          value: icon ? transformImage(icon) : void 0
+        });
+      }
+      /**
+       * Sets the taskbar progress state.
+       *
+       * #### Platform-specific
+       *
+       * - **Linux / macOS**: Progress bar is app-wide and not specific to this window.
+       * - **Linux**: Only supported desktop environments with `libunity` (e.g. GNOME).
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow, ProgressBarStatus } from '@tauri-apps/api/window';
+       * await getCurrentWindow().setProgressBar({
+       *   status: ProgressBarStatus.Normal,
+       *   progress: 50,
+       * });
+       * ```
+       *
+       * @return A promise indicating the success or failure of the operation.
+       */
+      async setProgressBar(state) {
+        return invoke("plugin:window|set_progress_bar", {
+          label: this.label,
+          value: state
+        });
+      }
+      /**
+       * Sets whether the window should be visible on all workspaces or virtual desktops.
+       *
+       * #### Platform-specific
+       *
+       * - **Windows / iOS / Android:** Unsupported.
+       *
+       * @since 2.0.0
+       */
+      async setVisibleOnAllWorkspaces(visible) {
+        return invoke("plugin:window|set_visible_on_all_workspaces", {
+          label: this.label,
+          value: visible
+        });
+      }
+      /**
+       * Sets the title bar style. **macOS only**.
+       *
+       * @since 2.0.0
+       */
+      async setTitleBarStyle(style) {
+        return invoke("plugin:window|set_title_bar_style", {
+          label: this.label,
+          value: style
+        });
+      }
+      /**
+       * Set window theme, pass in `null` or `undefined` to follow system theme
+       *
+       * #### Platform-specific
+       *
+       * - **Linux / macOS**: Theme is app-wide and not specific to this window.
+       * - **iOS / Android:** Unsupported.
+       *
+       * @since 2.0.0
+       */
+      async setTheme(theme) {
+        return invoke("plugin:window|set_theme", {
+          label: this.label,
+          value: theme
+        });
+      }
+      // Listeners
+      /**
+       * Listen to window resize.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from "@tauri-apps/api/window";
+       * const unlisten = await getCurrentWindow().onResized(({ payload: size }) => {
+       *  console.log('Window resized', size);
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async onResized(handler) {
+        return this.listen(TauriEvent.WINDOW_RESIZED, (e3) => {
+          e3.payload = new PhysicalSize(e3.payload);
+          handler(e3);
+        });
+      }
+      /**
+       * Listen to window move.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from "@tauri-apps/api/window";
+       * const unlisten = await getCurrentWindow().onMoved(({ payload: position }) => {
+       *  console.log('Window moved', position);
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async onMoved(handler) {
+        return this.listen(TauriEvent.WINDOW_MOVED, (e3) => {
+          e3.payload = new PhysicalPosition(e3.payload);
+          handler(e3);
+        });
+      }
+      /**
+       * Listen to window close requested. Emitted when the user requests to closes the window.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from "@tauri-apps/api/window";
+       * import { confirm } from '@tauri-apps/api/dialog';
+       * const unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
+       *   const confirmed = await confirm('Are you sure?');
+       *   if (!confirmed) {
+       *     // user did not confirm closing the window; let's prevent it
+       *     event.preventDefault();
+       *   }
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async onCloseRequested(handler) {
+        return this.listen(TauriEvent.WINDOW_CLOSE_REQUESTED, async (event) => {
+          const evt = new CloseRequestedEvent(event);
+          await handler(evt);
+          if (!evt.isPreventDefault()) {
+            await this.destroy();
+          }
+        });
+      }
+      /**
+       * Listen to a file drop event.
+       * The listener is triggered when the user hovers the selected files on the webview,
+       * drops the files or cancels the operation.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from "@tauri-apps/api/webview";
+       * const unlisten = await getCurrentWindow().onDragDropEvent((event) => {
+       *  if (event.payload.type === 'over') {
+       *    console.log('User hovering', event.payload.position);
+       *  } else if (event.payload.type === 'drop') {
+       *    console.log('User dropped', event.payload.paths);
+       *  } else {
+       *    console.log('File drop cancelled');
+       *  }
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async onDragDropEvent(handler) {
+        const unlistenDrag = await this.listen(TauriEvent.DRAG_ENTER, (event) => {
+          handler({
+            ...event,
+            payload: {
+              type: "enter",
+              paths: event.payload.paths,
+              position: new PhysicalPosition(event.payload.position)
+            }
+          });
+        });
+        const unlistenDragOver = await this.listen(TauriEvent.DRAG_OVER, (event) => {
+          handler({
+            ...event,
+            payload: {
+              type: "over",
+              position: new PhysicalPosition(event.payload.position)
+            }
+          });
+        });
+        const unlistenDrop = await this.listen(TauriEvent.DRAG_DROP, (event) => {
+          handler({
+            ...event,
+            payload: {
+              type: "drop",
+              paths: event.payload.paths,
+              position: new PhysicalPosition(event.payload.position)
+            }
+          });
+        });
+        const unlistenCancel = await this.listen(TauriEvent.DRAG_LEAVE, (event) => {
+          handler({ ...event, payload: { type: "leave" } });
+        });
+        return () => {
+          unlistenDrag();
+          unlistenDrop();
+          unlistenDragOver();
+          unlistenCancel();
+        };
+      }
+      /**
+       * Listen to window focus change.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from "@tauri-apps/api/window";
+       * const unlisten = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+       *  console.log('Focus changed, window is focused? ' + focused);
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async onFocusChanged(handler) {
+        const unlistenFocus = await this.listen(TauriEvent.WINDOW_FOCUS, (event) => {
+          handler({ ...event, payload: true });
+        });
+        const unlistenBlur = await this.listen(TauriEvent.WINDOW_BLUR, (event) => {
+          handler({ ...event, payload: false });
+        });
+        return () => {
+          unlistenFocus();
+          unlistenBlur();
+        };
+      }
+      /**
+       * Listen to window scale change. Emitted when the window's scale factor has changed.
+       * The following user actions can cause DPI changes:
+       * - Changing the display's resolution.
+       * - Changing the display's scale factor (e.g. in Control Panel on Windows).
+       * - Moving the window to a display with a different scale factor.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from "@tauri-apps/api/window";
+       * const unlisten = await getCurrentWindow().onScaleChanged(({ payload }) => {
+       *  console.log('Scale changed', payload.scaleFactor, payload.size);
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async onScaleChanged(handler) {
+        return this.listen(TauriEvent.WINDOW_SCALE_FACTOR_CHANGED, handler);
+      }
+      /**
+       * Listen to the system theme change.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWindow } from "@tauri-apps/api/window";
+       * const unlisten = await getCurrentWindow().onThemeChanged(({ payload: theme }) => {
+       *  console.log('New theme: ' + theme);
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async onThemeChanged(handler) {
+        return this.listen(TauriEvent.WINDOW_THEME_CHANGED, handler);
+      }
+    };
+    (function(BackgroundThrottlingPolicy2) {
+      BackgroundThrottlingPolicy2["Disabled"] = "disabled";
+      BackgroundThrottlingPolicy2["Throttle"] = "throttle";
+      BackgroundThrottlingPolicy2["Suspend"] = "suspend";
+    })(BackgroundThrottlingPolicy || (BackgroundThrottlingPolicy = {}));
+    (function(ScrollBarStyle2) {
+      ScrollBarStyle2["Default"] = "default";
+      ScrollBarStyle2["FluentOverlay"] = "fluentOverlay";
+    })(ScrollBarStyle || (ScrollBarStyle = {}));
+    (function(Effect2) {
+      Effect2["AppearanceBased"] = "appearanceBased";
+      Effect2["Light"] = "light";
+      Effect2["Dark"] = "dark";
+      Effect2["MediumLight"] = "mediumLight";
+      Effect2["UltraDark"] = "ultraDark";
+      Effect2["Titlebar"] = "titlebar";
+      Effect2["Selection"] = "selection";
+      Effect2["Menu"] = "menu";
+      Effect2["Popover"] = "popover";
+      Effect2["Sidebar"] = "sidebar";
+      Effect2["HeaderView"] = "headerView";
+      Effect2["Sheet"] = "sheet";
+      Effect2["WindowBackground"] = "windowBackground";
+      Effect2["HudWindow"] = "hudWindow";
+      Effect2["FullScreenUI"] = "fullScreenUI";
+      Effect2["Tooltip"] = "tooltip";
+      Effect2["ContentBackground"] = "contentBackground";
+      Effect2["UnderWindowBackground"] = "underWindowBackground";
+      Effect2["UnderPageBackground"] = "underPageBackground";
+      Effect2["Mica"] = "mica";
+      Effect2["Blur"] = "blur";
+      Effect2["Acrylic"] = "acrylic";
+      Effect2["Tabbed"] = "tabbed";
+      Effect2["TabbedDark"] = "tabbedDark";
+      Effect2["TabbedLight"] = "tabbedLight";
+    })(Effect || (Effect = {}));
+    (function(EffectState2) {
+      EffectState2["FollowsWindowActiveState"] = "followsWindowActiveState";
+      EffectState2["Active"] = "active";
+      EffectState2["Inactive"] = "inactive";
+    })(EffectState || (EffectState = {}));
+  }
+});
+
+// node_modules/@tauri-apps/api/webview.js
+var webview_exports = {};
+__export(webview_exports, {
+  Webview: () => Webview,
+  getAllWebviews: () => getAllWebviews,
+  getCurrentWebview: () => getCurrentWebview
+});
+function getCurrentWebview() {
+  return new Webview(getCurrentWindow(), window.__TAURI_INTERNALS__.metadata.currentWebview.label, {
+    // @ts-expect-error `skip` is not defined in the public API but it is handled by the constructor
+    skip: true
+  });
+}
+async function getAllWebviews() {
+  return invoke("plugin:webview|get_all_webviews").then((webviews) => webviews.map((w3) => new Webview(new Window(w3.windowLabel, {
+    // @ts-expect-error `skip` is not defined in the public API but it is handled by the constructor
+    skip: true
+  }), w3.label, {
+    // @ts-expect-error `skip` is not defined in the public API but it is handled by the constructor
+    skip: true
+  })));
+}
+var localTauriEvents2, Webview;
+var init_webview = __esm({
+  "node_modules/@tauri-apps/api/webview.js"() {
+    init_dpi();
+    init_event();
+    init_core();
+    init_window();
+    localTauriEvents2 = ["tauri://created", "tauri://error"];
+    Webview = class {
+      /**
+       * Creates a new Webview.
+       * @example
+       * ```typescript
+       * import { Window } from '@tauri-apps/api/window'
+       * import { Webview } from '@tauri-apps/api/webview'
+       * const appWindow = new Window('my-label')
+       *
+       * appWindow.once('tauri://created', async function() {
+       *   const webview = new Webview(appWindow, 'my-label', {
+       *     url: 'https://github.com/tauri-apps/tauri',
+       *
+       *     // create a webview with specific logical position and size
+       *     x: 0,
+       *     y: 0,
+       *     width: 800,
+       *     height: 600,
+       *   });
+       *
+       *   webview.once('tauri://created', function () {
+       *     // webview successfully created
+       *   });
+       *   webview.once('tauri://error', function (e) {
+       *     // an error happened creating the webview
+       *   });
+       * });
+       * ```
+       *
+       * @param window the window to add this webview to.
+       * @param label The unique webview label. Must be alphanumeric: `a-zA-Z-/:_`.
+       * @returns The {@link Webview} instance to communicate with the webview.
+       */
+      constructor(window2, label, options2) {
+        this.window = window2;
+        this.label = label;
+        this.listeners = /* @__PURE__ */ Object.create(null);
+        if (!(options2 === null || options2 === void 0 ? void 0 : options2.skip)) {
+          invoke("plugin:webview|create_webview", {
+            windowLabel: window2.label,
+            options: {
+              ...options2,
+              label
+            }
+          }).then(async () => this.emit("tauri://created")).catch(async (e3) => this.emit("tauri://error", e3));
+        }
+      }
+      /**
+       * Gets the Webview for the webview associated with the given label.
+       * @example
+       * ```typescript
+       * import { Webview } from '@tauri-apps/api/webview';
+       * const mainWebview = Webview.getByLabel('main');
+       * ```
+       *
+       * @param label The webview label.
+       * @returns The Webview instance to communicate with the webview or null if the webview doesn't exist.
+       */
+      static async getByLabel(label) {
+        var _a;
+        return (_a = (await getAllWebviews()).find((w3) => w3.label === label)) !== null && _a !== void 0 ? _a : null;
+      }
+      /**
+       * Get an instance of `Webview` for the current webview.
+       */
+      static getCurrent() {
+        return getCurrentWebview();
+      }
+      /**
+       * Gets a list of instances of `Webview` for all available webviews.
+       */
+      static async getAll() {
+        return getAllWebviews();
+      }
+      /**
+       * Listen to an emitted event on this webview.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * const unlisten = await getCurrentWebview().listen<string>('state-changed', (event) => {
+       *   console.log(`Got error: ${payload}`);
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @param event Event name. Must include only alphanumeric characters, `-`, `/`, `:` and `_`.
+       * @param handler Event handler.
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async listen(event, handler) {
+        if (this._handleTauriEvent(event, handler)) {
+          return () => {
+            const listeners = this.listeners[event];
+            listeners.splice(listeners.indexOf(handler), 1);
+          };
+        }
+        return listen(event, handler, {
+          target: { kind: "Webview", label: this.label }
+        });
+      }
+      /**
+       * Listen to an emitted event on this webview only once.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * const unlisten = await getCurrent().once<null>('initialized', (event) => {
+       *   console.log(`Webview initialized!`);
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * @param event Event name. Must include only alphanumeric characters, `-`, `/`, `:` and `_`.
+       * @param handler Event handler.
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async once(event, handler) {
+        if (this._handleTauriEvent(event, handler)) {
+          return () => {
+            const listeners = this.listeners[event];
+            listeners.splice(listeners.indexOf(handler), 1);
+          };
+        }
+        return once(event, handler, {
+          target: { kind: "Webview", label: this.label }
+        });
+      }
+      /**
+       * Emits an event to all {@link EventTarget|targets}.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().emit('webview-loaded', { loggedIn: true, token: 'authToken' });
+       * ```
+       *
+       * @param event Event name. Must include only alphanumeric characters, `-`, `/`, `:` and `_`.
+       * @param payload Event payload.
+       */
+      async emit(event, payload) {
+        if (localTauriEvents2.includes(event)) {
+          for (const handler of this.listeners[event] || []) {
+            handler({
+              event,
+              id: -1,
+              payload
+            });
+          }
+          return;
+        }
+        return emit(event, payload);
+      }
+      /**
+       * Emits an event to all {@link EventTarget|targets} matching the given target.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().emitTo('main', 'webview-loaded', { loggedIn: true, token: 'authToken' });
+       * ```
+       *
+       * @param target Label of the target Window/Webview/WebviewWindow or raw {@link EventTarget} object.
+       * @param event Event name. Must include only alphanumeric characters, `-`, `/`, `:` and `_`.
+       * @param payload Event payload.
+       */
+      async emitTo(target, event, payload) {
+        if (localTauriEvents2.includes(event)) {
+          for (const handler of this.listeners[event] || []) {
+            handler({
+              event,
+              id: -1,
+              payload
+            });
+          }
+          return;
+        }
+        return emitTo(target, event, payload);
+      }
+      /** @ignore */
+      _handleTauriEvent(event, handler) {
+        if (localTauriEvents2.includes(event)) {
+          if (!(event in this.listeners)) {
+            this.listeners[event] = [handler];
+          } else {
+            this.listeners[event].push(handler);
+          }
+          return true;
+        }
+        return false;
+      }
+      // Getters
+      /**
+       * The position of the top-left hand corner of the webview's client area relative to the top-left hand corner of the desktop.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * const position = await getCurrentWebview().position();
+       * ```
+       *
+       * @returns The webview's position.
+       */
+      async position() {
+        return invoke("plugin:webview|webview_position", {
+          label: this.label
+        }).then((p3) => new PhysicalPosition(p3));
+      }
+      /**
+       * The physical size of the webview's client area.
+       * The client area is the content of the webview, excluding the title bar and borders.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * const size = await getCurrentWebview().size();
+       * ```
+       *
+       * @returns The webview's size.
+       */
+      async size() {
+        return invoke("plugin:webview|webview_size", {
+          label: this.label
+        }).then((s3) => new PhysicalSize(s3));
+      }
+      // Setters
+      /**
+       * Closes the webview.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().close();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async close() {
+        return invoke("plugin:webview|webview_close", {
+          label: this.label
+        });
+      }
+      /**
+       * Resizes the webview.
+       * @example
+       * ```typescript
+       * import { getCurrent, LogicalSize } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().setSize(new LogicalSize(600, 500));
+       * ```
+       *
+       * @param size The logical or physical size.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setSize(size) {
+        return invoke("plugin:webview|set_webview_size", {
+          label: this.label,
+          value: size instanceof Size ? size : new Size(size)
+        });
+      }
+      /**
+       * Sets the webview position.
+       * @example
+       * ```typescript
+       * import { getCurrent, LogicalPosition } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().setPosition(new LogicalPosition(600, 500));
+       * ```
+       *
+       * @param position The new position, in logical or physical pixels.
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setPosition(position) {
+        return invoke("plugin:webview|set_webview_position", {
+          label: this.label,
+          value: position instanceof Position ? position : new Position(position)
+        });
+      }
+      /**
+       * Bring the webview to front and focus.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().setFocus();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setFocus() {
+        return invoke("plugin:webview|set_webview_focus", {
+          label: this.label
+        });
+      }
+      /**
+       * Sets whether the webview should automatically grow and shrink its size and position when the parent window resizes.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().setAutoResize(true);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setAutoResize(autoResize) {
+        return invoke("plugin:webview|set_webview_auto_resize", {
+          label: this.label,
+          value: autoResize
+        });
+      }
+      /**
+       * Hide the webview.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().hide();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async hide() {
+        return invoke("plugin:webview|webview_hide", {
+          label: this.label
+        });
+      }
+      /**
+       * Show the webview.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().show();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async show() {
+        return invoke("plugin:webview|webview_show", {
+          label: this.label
+        });
+      }
+      /**
+       * Set webview zoom level.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().setZoom(1.5);
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async setZoom(scaleFactor) {
+        return invoke("plugin:webview|set_webview_zoom", {
+          label: this.label,
+          value: scaleFactor
+        });
+      }
+      /**
+       * Moves this webview to the given label.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().reparent('other-window');
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async reparent(window2) {
+        return invoke("plugin:webview|reparent", {
+          label: this.label,
+          window: typeof window2 === "string" ? window2 : window2.label
+        });
+      }
+      /**
+       * Clears all browsing data for this webview.
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from '@tauri-apps/api/webview';
+       * await getCurrentWebview().clearAllBrowsingData();
+       * ```
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       */
+      async clearAllBrowsingData() {
+        return invoke("plugin:webview|clear_all_browsing_data");
+      }
+      /**
+       * Specify the webview background color.
+       *
+       * #### Platfrom-specific:
+       *
+       * - **macOS / iOS**: Not implemented.
+       * - **Windows**:
+       *   - On Windows 7, transparency is not supported and the alpha value will be ignored.
+       *   - On Windows higher than 7: translucent colors are not supported so any alpha value other than `0` will be replaced by `255`
+       *
+       * @returns A promise indicating the success or failure of the operation.
+       *
+       * @since 2.1.0
+       */
+      async setBackgroundColor(color2) {
+        return invoke("plugin:webview|set_webview_background_color", { color: color2 });
+      }
+      // Listeners
+      /**
+       * Listen to a file drop event.
+       * The listener is triggered when the user hovers the selected files on the webview,
+       * drops the files or cancels the operation.
+       *
+       * @example
+       * ```typescript
+       * import { getCurrentWebview } from "@tauri-apps/api/webview";
+       * const unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+       *  if (event.payload.type === 'over') {
+       *    console.log('User hovering', event.payload.position);
+       *  } else if (event.payload.type === 'drop') {
+       *    console.log('User dropped', event.payload.paths);
+       *  } else {
+       *    console.log('File drop cancelled');
+       *  }
+       * });
+       *
+       * // you need to call unlisten if your handler goes out of scope e.g. the component is unmounted
+       * unlisten();
+       * ```
+       *
+       * When the debugger panel is open, the drop position of this event may be inaccurate due to a known limitation.
+       * To retrieve the correct drop position, please detach the debugger.
+       *
+       * @returns A promise resolving to a function to unlisten to the event.
+       * Note that removing the listener is required if your listener goes out of scope e.g. the component is unmounted.
+       */
+      async onDragDropEvent(handler) {
+        const unlistenDragEnter = await this.listen(TauriEvent.DRAG_ENTER, (event) => {
+          handler({
+            ...event,
+            payload: {
+              type: "enter",
+              paths: event.payload.paths,
+              position: new PhysicalPosition(event.payload.position)
+            }
+          });
+        });
+        const unlistenDragOver = await this.listen(TauriEvent.DRAG_OVER, (event) => {
+          handler({
+            ...event,
+            payload: {
+              type: "over",
+              position: new PhysicalPosition(event.payload.position)
+            }
+          });
+        });
+        const unlistenDragDrop = await this.listen(TauriEvent.DRAG_DROP, (event) => {
+          handler({
+            ...event,
+            payload: {
+              type: "drop",
+              paths: event.payload.paths,
+              position: new PhysicalPosition(event.payload.position)
+            }
+          });
+        });
+        const unlistenDragLeave = await this.listen(TauriEvent.DRAG_LEAVE, (event) => {
+          handler({ ...event, payload: { type: "leave" } });
+        });
+        return () => {
+          unlistenDragEnter();
+          unlistenDragDrop();
+          unlistenDragOver();
+          unlistenDragLeave();
+        };
+      }
+    };
+  }
+});
 
 // node_modules/@xterm/xterm/lib/xterm.js
 var require_xterm = __commonJS({
@@ -8146,26 +10891,22 @@ async function restartConsoleSession(sessionId) {
 async function startConsoleSession(sessionId) {
   await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
 }
-async function createConsoleSession(label, backend, kind, backendType) {
+async function createConsoleSession(label, backend, kind) {
   const body = { label, command: "", args: [] };
   if (kind === "operator") {
     body.command = "claude";
-    body.args = backendType === "sdk" ? [] : ["--dangerously-skip-permissions"];
+    body.args = ["--dangerously-skip-permissions"];
     body.auto_restart = true;
     body.is_operator = true;
-    body.backend_type = backendType ?? "sdk";
   } else if (backend === "claude") {
     body.command = "claude";
-    body.args = backendType === "sdk" ? [] : ["--dangerously-skip-permissions"];
-    body.backend_type = backendType ?? "sdk";
+    body.args = ["--dangerously-skip-permissions"];
   } else if (backend === "codex") {
     body.command = "codex";
     body.args = [];
-    body.backend_type = "pty";
   } else if (backend === "gemini") {
     body.command = "gemini";
     body.args = ["-y"];
-    body.backend_type = "pty";
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
@@ -8193,24 +10934,6 @@ async function sendConsolePrompt(sessionId, prompt) {
 }
 async function updateConsoleSession(sessionId, body) {
   const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}`, body);
-  return parseMaybeJson(response);
-}
-async function getConsolePermissions(sessionId) {
-  const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/permissions`);
-  const payload = await parseMaybeJson(response);
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-  return payload.requests ?? [];
-}
-async function respondToConsolePermission(sessionId, requestId, decision) {
-  await apiPost(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(requestId)}`,
-    { decision }
-  );
-}
-async function updateConsoleSessionOptions(sessionId, body) {
-  const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}/options`, body);
   return parseMaybeJson(response);
 }
 async function getBackupStatus() {
@@ -8307,12 +11030,8 @@ async function invokeDesktop(command, args) {
   if (!hasTauriRuntime()) {
     throw new Error("Desktop daemon controls are only available in the Tauri app.");
   }
-  const tauriCoreModule = "@tauri-apps/api/core";
-  const { invoke } = await import(
-    /* @vite-ignore */
-    tauriCoreModule
-  );
-  return invoke(command, args);
+  const { invoke: invoke2 } = await Promise.resolve().then(() => (init_core(), core_exports));
+  return invoke2(command, args);
 }
 async function getDesktopDaemonStatus() {
   if (!hasTauriRuntime()) {
@@ -8336,12 +11055,8 @@ async function navigateToDesktopBootstrap() {
   if (!hasTauriRuntime()) {
     return;
   }
-  const tauriWebviewModule = "@tauri-apps/api/webview";
-  const { getCurrentWebview } = await import(
-    /* @vite-ignore */
-    tauriWebviewModule
-  );
-  await getCurrentWebview().navigate("/index.html");
+  const { getCurrentWebview: getCurrentWebview2 } = await Promise.resolve().then(() => (init_webview(), webview_exports));
+  await getCurrentWebview2().navigate("/index.html");
 }
 
 // ui/src/sse-client.ts
@@ -10729,7 +13444,7 @@ function useSidebarResize(options2 = {}) {
     storageKey
   } = options2;
   const [width, setWidth] = d2(() => {
-    if (storageKey && typeof localStorage !== "undefined" && typeof localStorage.getItem === "function") {
+    if (storageKey) {
       const stored = localStorage.getItem(storageKey);
       if (stored) {
         const parsed = parseInt(stored, 10);
@@ -10749,7 +13464,7 @@ function useSidebarResize(options2 = {}) {
     latestWidth.current = width;
   }, [width]);
   y2(() => {
-    if (storageKey && typeof localStorage !== "undefined" && typeof localStorage.setItem === "function") {
+    if (storageKey) {
       localStorage.setItem(storageKey, String(width));
     }
   }, [width, storageKey]);
@@ -20815,305 +23530,6 @@ function ViewToggle({ current, onChange, showTerminal = true }) {
   ] });
 }
 
-// ui/src/components/console/PermissionDialog.tsx
-function formatToolInput(input) {
-  if (typeof input === "string") {
-    return input;
-  }
-  try {
-    return JSON.stringify(input, null, 2);
-  } catch {
-    return String(input ?? "");
-  }
-}
-function PermissionDialog({
-  request,
-  onRespond
-}) {
-  const [expanded, setExpanded] = d2(false);
-  const [now2, setNow] = d2(() => Date.now());
-  y2(() => {
-    setExpanded(false);
-  }, [request?.id]);
-  y2(() => {
-    if (!request) {
-      return void 0;
-    }
-    const interval2 = window.setInterval(() => {
-      setNow(Date.now());
-    }, 1e3);
-    return () => window.clearInterval(interval2);
-  }, [request]);
-  y2(() => {
-    if (!request) {
-      return void 0;
-    }
-    const onKeyDown = (event) => {
-      if (event.shiftKey && event.key === "A") {
-        event.preventDefault();
-        onRespond(request.id, "allow_always");
-        return;
-      }
-      if (event.key === "Enter" || event.key.toLowerCase() === "a") {
-        event.preventDefault();
-        onRespond(request.id, "allow");
-        return;
-      }
-      if (event.key === "Escape" || event.key.toLowerCase() === "d") {
-        event.preventDefault();
-        onRespond(request.id, "deny");
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onRespond, request]);
-  const formattedInput = T2(() => {
-    if (!request) {
-      return "";
-    }
-    return formatToolInput(request.tool_input);
-  }, [request]);
-  if (!request) {
-    return null;
-  }
-  const remainingSeconds = Math.max(
-    0,
-    Math.ceil((request.expires_at - now2) / 1e3)
-  );
-  const preview = formattedInput.length > 500 ? `${formattedInput.slice(0, 500)}\u2026` : formattedInput;
-  const toolName = request.display_name || request.tool_name;
-  return /* @__PURE__ */ u3("div", { className: "permission-dialog-overlay", children: /* @__PURE__ */ u3("div", { className: "permission-dialog", role: "dialog", "aria-modal": "true", "aria-labelledby": "permission-dialog-title", children: [
-    /* @__PURE__ */ u3("div", { className: "permission-dialog__header", children: [
-      /* @__PURE__ */ u3("div", { children: [
-        /* @__PURE__ */ u3("div", { className: "permission-dialog__eyebrow", children: "Permission required" }),
-        /* @__PURE__ */ u3("h3", { id: "permission-dialog-title", children: request.title || toolName })
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "permission-dialog__countdown", children: [
-        remainingSeconds,
-        "s"
-      ] })
-    ] }),
-    /* @__PURE__ */ u3("div", { className: "permission-dialog__meta", children: [
-      /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: toolName }),
-      request.agent_id && /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: [
-        "Agent ",
-        request.agent_id
-      ] }),
-      request.blocked_path && /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: request.blocked_path })
-    ] }),
-    request.description && /* @__PURE__ */ u3("p", { className: "permission-dialog__description", children: request.description }),
-    request.decision_reason && /* @__PURE__ */ u3("p", { className: "permission-dialog__reason", children: request.decision_reason }),
-    /* @__PURE__ */ u3("div", { className: "permission-dialog__section", children: [
-      /* @__PURE__ */ u3("div", { className: "permission-dialog__section-title", children: "Tool input" }),
-      /* @__PURE__ */ u3("pre", { className: "permission-dialog__input", children: expanded ? formattedInput : preview }),
-      formattedInput.length > 500 && /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "permission-dialog__toggle",
-          onClick: () => setExpanded((value) => !value),
-          children: expanded ? "Show less" : "Expand"
-        }
-      )
-    ] }),
-    /* @__PURE__ */ u3("div", { className: "permission-dialog__actions", children: [
-      /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "permission-dialog__button permission-dialog__button--deny",
-          onClick: () => onRespond(request.id, "deny"),
-          children: "Deny"
-        }
-      ),
-      /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "permission-dialog__button permission-dialog__button--allow",
-          onClick: () => onRespond(request.id, "allow"),
-          children: "Allow"
-        }
-      ),
-      /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "permission-dialog__button permission-dialog__button--always",
-          onClick: () => onRespond(request.id, "allow_always"),
-          children: "Always Allow"
-        }
-      )
-    ] })
-  ] }) });
-}
-
-// ui/src/components/console/SessionControls.tsx
-function SessionControls({
-  sessionId,
-  backendType,
-  model,
-  modelOptions,
-  allowedTools,
-  availableTools = [],
-  onModelSaved
-}) {
-  const [draftModel, setDraftModel] = d2(model ?? "");
-  const [permissionMode, setPermissionMode] = d2("default");
-  const [maxTurns, setMaxTurns] = d2("");
-  const [maxCostUsd, setMaxCostUsd] = d2("");
-  const [draftAllowedTools, setDraftAllowedTools] = d2(allowedTools ?? []);
-  const [saving, setSaving] = d2(false);
-  const [error, setError] = d2(null);
-  y2(() => {
-    setDraftModel(model ?? "");
-  }, [model]);
-  y2(() => {
-    setDraftAllowedTools(allowedTools ?? []);
-  }, [allowedTools]);
-  const handleModelOnlySave = async (nextModel) => {
-    setSaving(true);
-    setError(null);
-    try {
-      await updateConsoleSession(sessionId, { model: nextModel || void 0 });
-      onModelSaved?.(nextModel || void 0);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to save model");
-    } finally {
-      setSaving(false);
-    }
-  };
-  const handleSdkSave = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      await updateConsoleSessionOptions(sessionId, {
-        model: draftModel || void 0,
-        permissionMode,
-        allowedTools: draftAllowedTools,
-        maxTurns: maxTurns.trim() ? Number(maxTurns) : void 0,
-        maxCostUsd: maxCostUsd.trim() ? Number(maxCostUsd) : void 0
-      });
-      onModelSaved?.(draftModel || void 0);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to save session options");
-    } finally {
-      setSaving(false);
-    }
-  };
-  return /* @__PURE__ */ u3("div", { className: "session-controls", children: [
-    /* @__PURE__ */ u3("div", { className: "session-controls__row", children: [
-      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
-        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Model" }),
-        /* @__PURE__ */ u3(
-          "select",
-          {
-            className: "session-controls__select",
-            value: draftModel,
-            disabled: saving,
-            onChange: (event) => {
-              const nextModel = event.currentTarget.value;
-              setDraftModel(nextModel);
-              if (backendType === "pty") {
-                void handleModelOnlySave(nextModel);
-              }
-            },
-            children: [
-              /* @__PURE__ */ u3("option", { value: "", children: "default" }),
-              modelOptions.map((option) => /* @__PURE__ */ u3("option", { value: option, children: option }, option))
-            ]
-          }
-        )
-      ] }),
-      backendType === "sdk" && /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
-        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Permissions" }),
-        /* @__PURE__ */ u3(
-          "select",
-          {
-            className: "session-controls__select",
-            value: permissionMode,
-            disabled: saving,
-            onChange: (event) => setPermissionMode(
-              event.currentTarget.value
-            ),
-            children: [
-              /* @__PURE__ */ u3("option", { value: "default", children: "Ask each time" }),
-              /* @__PURE__ */ u3("option", { value: "acceptEdits", children: "Accept edits" }),
-              /* @__PURE__ */ u3("option", { value: "bypassPermissions", children: "Bypass permissions" })
-            ]
-          }
-        )
-      ] })
-    ] }),
-    backendType === "sdk" && /* @__PURE__ */ u3("div", { className: "session-controls__row", children: [
-      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
-        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Max turns" }),
-        /* @__PURE__ */ u3(
-          "input",
-          {
-            className: "session-controls__input",
-            type: "number",
-            min: "1",
-            step: "1",
-            value: maxTurns,
-            disabled: saving,
-            onInput: (event) => setMaxTurns(event.currentTarget.value),
-            placeholder: "Unlimited"
-          }
-        )
-      ] }),
-      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
-        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Max cost (USD)" }),
-        /* @__PURE__ */ u3(
-          "input",
-          {
-            className: "session-controls__input",
-            type: "number",
-            min: "0",
-            step: "0.01",
-            value: maxCostUsd,
-            disabled: saving,
-            onInput: (event) => setMaxCostUsd(event.currentTarget.value),
-            placeholder: "Unlimited"
-          }
-        )
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "session-controls__actions", children: /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "session-controls__button",
-          disabled: saving,
-          onClick: () => {
-            void handleSdkSave();
-          },
-          children: saving ? "Saving\u2026" : "Save"
-        }
-      ) })
-    ] }),
-    backendType === "sdk" && availableTools.length > 0 && /* @__PURE__ */ u3("div", { className: "session-controls__tools", children: [
-      /* @__PURE__ */ u3("div", { className: "session-controls__label", children: "Allowed tools" }),
-      /* @__PURE__ */ u3("div", { className: "session-controls__tool-grid", children: availableTools.map((tool) => {
-        const enabled = draftAllowedTools.includes(tool);
-        return /* @__PURE__ */ u3("label", { className: "session-controls__tool-toggle", children: [
-          /* @__PURE__ */ u3(
-            "input",
-            {
-              type: "checkbox",
-              checked: enabled,
-              onChange: () => {
-                setDraftAllowedTools((current) => current.includes(tool) ? current.filter((entry) => entry !== tool) : [...current, tool].sort());
-              }
-            }
-          ),
-          /* @__PURE__ */ u3("span", { children: tool })
-        ] }, tool);
-      }) })
-    ] }),
-    error && /* @__PURE__ */ u3("div", { className: "session-controls__error", children: error })
-  ] });
-}
-
 // ui/src/components/console/TerminalPane.tsx
 var MODEL_OPTIONS = {
   claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
@@ -21149,66 +23565,6 @@ function hasRenderableEvents(events) {
     }
     return false;
   });
-}
-function collectAvailableTools(events) {
-  for (let index2 = events.length - 1; index2 >= 0; index2 -= 1) {
-    const event = events[index2];
-    if (event.type === "system" && event.subtype === "init" && Array.isArray(event.tools)) {
-      return event.tools.filter((tool) => typeof tool === "string");
-    }
-  }
-  return [];
-}
-function readParentAgentId(event) {
-  if (!event) {
-    return null;
-  }
-  const candidates = [
-    event.parent_agent_id,
-    event.parentAgentId,
-    event.parentAgentID
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate;
-    }
-  }
-  return null;
-}
-function buildActiveSubagents(events) {
-  const active = /* @__PURE__ */ new Map();
-  for (const rawEvent of events) {
-    const event = rawEvent;
-    if (event.type !== "system") {
-      continue;
-    }
-    if (event.subtype === "subagent_start" && typeof event.agent_id === "string") {
-      active.set(event.agent_id, {
-        agent_id: event.agent_id,
-        agent_type: typeof event.agent_type === "string" ? event.agent_type : "subagent",
-        parent_agent_id: readParentAgentId(event.event),
-        started_at: active.get(event.agent_id)?.started_at ?? Date.now()
-      });
-      continue;
-    }
-    if (event.subtype === "subagent_stop" && typeof event.agent_id === "string") {
-      active.delete(event.agent_id);
-    }
-  }
-  const depthFor = (agentId, seen = /* @__PURE__ */ new Set()) => {
-    const entry = active.get(agentId);
-    if (!entry?.parent_agent_id || !active.has(entry.parent_agent_id) || seen.has(agentId)) {
-      return 0;
-    }
-    seen.add(agentId);
-    return depthFor(entry.parent_agent_id, seen) + 1;
-  };
-  return Array.from(active.values()).sort((left, right) => left.started_at - right.started_at).map((entry) => ({
-    agent_id: entry.agent_id,
-    agent_type: entry.agent_type,
-    parent_agent_id: entry.parent_agent_id,
-    depth: depthFor(entry.agent_id)
-  }));
 }
 function conversationBlocksToStreamEvents(providerSessionId, blocks) {
   const events = [];
@@ -21289,8 +23645,6 @@ function conversationBlocksToStreamEvents(providerSessionId, blocks) {
 function TerminalPane({
   sessionId,
   agentType,
-  backendType,
-  allowedTools,
   command,
   sessionArgs,
   isOperator,
@@ -21317,12 +23671,8 @@ function TerminalPane({
   const [elapsedSeconds, setElapsedSeconds] = d2(void 0);
   const streamStartAtRef = A2(null);
   const [model, setModel] = d2(() => parseModelFromArgs(sessionArgs));
-  const [permissionQueue, setPermissionQueue] = d2([]);
-  const [permissionBusy, setPermissionBusy] = d2(false);
-  const [activeSubagents, setActiveSubagents] = d2([]);
-  const showDebugTerminal = backendType === "pty" || isOperator;
+  const showDebugTerminal = isOperator;
   const providerFamily = isOperator ? "claude" : command;
-  const availableTools = collectAvailableTools(streamEvents);
   y2(() => {
     isVisibleRef.current = isVisible;
   }, [isVisible]);
@@ -21587,13 +23937,6 @@ function TerminalPane({
     }, 1e3);
     return () => window.clearInterval(interval2);
   }, [streaming]);
-  y2(() => {
-    if (backendType !== "sdk") {
-      setActiveSubagents([]);
-      return;
-    }
-    setActiveSubagents(buildActiveSubagents(streamEvents));
-  }, [backendType, streamEvents]);
   const handleReconnect = async () => {
     setWsStatus("connecting");
     termRef.current?.reset();
@@ -21606,6 +23949,16 @@ function TerminalPane({
     }
   };
   const [prompt, setPrompt] = d2("");
+  const [modelSaving, setModelSaving] = d2(false);
+  const handleModelChange = async (nextModel) => {
+    setModelSaving(true);
+    try {
+      await updateConsoleSession(sessionId, { model: nextModel });
+      setModel(nextModel || void 0);
+    } finally {
+      setModelSaving(false);
+    }
+  };
   const handlePromptSubmit = (e3) => {
     e3.preventDefault();
     if (!prompt.trim())
@@ -21639,55 +23992,6 @@ function TerminalPane({
       setReconnectNonce((n2) => n2 + 1);
     } catch {
       setWsStatus("error");
-    }
-  };
-  y2(() => {
-    if (backendType !== "sdk") {
-      setPermissionQueue([]);
-      return;
-    }
-    let cancelled = false;
-    getConsolePermissions(sessionId).then((requests) => {
-      if (!cancelled) {
-        setPermissionQueue(requests);
-      }
-    }).catch(() => {
-      if (!cancelled) {
-        setPermissionQueue([]);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [backendType, sessionId]);
-  y2(() => {
-    if (backendType !== "sdk") {
-      return void 0;
-    }
-    const handlePermissionRequest = (event) => {
-      const detail = event.detail;
-      if (!detail || detail.console_session_id !== sessionId || !detail.request) {
-        return;
-      }
-      setPermissionQueue((prev) => {
-        if (prev.some((request) => request.id === detail.request.id)) {
-          return prev;
-        }
-        return [...prev, detail.request];
-      });
-    };
-    window.addEventListener("console:permission:request", handlePermissionRequest);
-    return () => {
-      window.removeEventListener("console:permission:request", handlePermissionRequest);
-    };
-  }, [backendType, sessionId]);
-  const handlePermissionResponse = async (requestId, decision) => {
-    setPermissionBusy(true);
-    try {
-      await respondToConsolePermission(sessionId, requestId, decision);
-      setPermissionQueue((prev) => prev.filter((request) => request.id !== requestId));
-    } finally {
-      setPermissionBusy(false);
     }
   };
   return /* @__PURE__ */ u3(
@@ -21787,37 +24091,23 @@ function TerminalPane({
             )
           ] }),
           viewMode === "rich" && /* @__PURE__ */ u3("div", { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }, children: [
-            /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto", minHeight: 0 }, children: [
-              backendType === "sdk" && activeSubagents.length > 0 && /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents", children: [
-                /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-title", children: "Active subagents" }),
-                /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-list", children: activeSubagents.map((subagent) => /* @__PURE__ */ u3(
-                  "div",
-                  {
-                    className: "terminal-pane__subagent",
-                    style: { paddingLeft: `${subagent.depth * 18}px` },
-                    children: [
-                      /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-type", children: subagent.agent_type }),
-                      /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-id", children: subagent.agent_id })
-                    ]
-                  },
-                  subagent.agent_id
-                )) })
-              ] }),
-              /* @__PURE__ */ u3(
-                StreamRenderer,
-                {
-                  events: streamEvents,
-                  streaming,
-                  elapsedSeconds,
-                  emptyLabel: hydratingHistory ? "Loading prior messages\u2026" : void 0,
-                  sessionInfo: {
-                    sessionId,
-                    backend: providerFamily,
-                    model
-                  }
+            /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto", minHeight: 0 }, children: /* @__PURE__ */ u3(
+              StreamRenderer,
+              {
+                events: streamEvents,
+                streaming,
+                elapsedSeconds,
+                emptyLabel: hydratingHistory ? "Loading prior messages\u2026" : void 0,
+                sessionInfo: {
+                  sessionId,
+                  backend: providerFamily,
+                  model,
+                  modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
+                  modelSaving,
+                  onChangeModel: handleModelChange
                 }
-              )
-            ] }),
+              }
+            ) }),
             /* @__PURE__ */ u3(
               "form",
               {
@@ -21874,28 +24164,9 @@ function TerminalPane({
                   )
                 ]
               }
-            ),
-            /* @__PURE__ */ u3(
-              SessionControls,
-              {
-                sessionId,
-                backendType,
-                model,
-                modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
-                allowedTools,
-                availableTools,
-                onModelSaved: setModel
-              }
             )
           ] })
-        ] }),
-        /* @__PURE__ */ u3(
-          PermissionDialog,
-          {
-            request: backendType === "sdk" && !permissionBusy ? permissionQueue[0] ?? null : null,
-            onRespond: handlePermissionResponse
-          }
-        )
+        ] })
       ]
     }
   );
@@ -21964,29 +24235,21 @@ function NewSessionDialog({
   const [label, setLabel] = d2("");
   const [kind, setKind] = d2("agent");
   const [backend, setBackend] = d2("claude");
-  const [transport, setTransport] = d2("sdk");
   y2(() => {
     if (kind === "operator" && backend !== "claude") {
       setBackend("claude");
-      setTransport("sdk");
     }
   }, [backend, kind]);
-  y2(() => {
-    if (backend !== "claude" && transport !== "pty") {
-      setTransport("pty");
-    }
-  }, [backend, transport]);
   if (!open)
     return null;
   const handleSubmit = (e3) => {
     e3.preventDefault();
     if (!label.trim())
       return;
-    onSubmit({ label: label.trim(), backend, kind, backend_type: transport });
+    onSubmit({ label: label.trim(), backend, kind });
     setLabel("");
     setKind("agent");
     setBackend("claude");
-    setTransport("sdk");
     onClose();
   };
   const handleOverlayClick = (e3) => {
@@ -22039,37 +24302,11 @@ function NewSessionDialog({
               note: disabled ? option.note : void 0,
               selected: backend === option.value,
               disabled,
-              onClick: () => {
-                setBackend(option.value);
-                setTransport(option.value === "claude" ? "sdk" : "pty");
-              }
+              onClick: () => setBackend(option.value)
             },
             option.value
           );
         }) })
-      ] }),
-      backend === "claude" && /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
-        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Transport" }),
-        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: [
-          /* @__PURE__ */ u3(
-            OptionCard,
-            {
-              title: "Claude SDK",
-              description: "Structured events, Mandible permissions, and SDK-native session control.",
-              selected: transport === "sdk",
-              onClick: () => setTransport("sdk")
-            }
-          ),
-          /* @__PURE__ */ u3(
-            OptionCard,
-            {
-              title: "PTY",
-              description: "Classic terminal transport with a raw debug terminal fallback.",
-              selected: transport === "pty",
-              onClick: () => setTransport("pty")
-            }
-          )
-        ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "new-session-dialog__actions", children: [
         /* @__PURE__ */ u3("button", { type: "button", onClick: onClose, className: "new-session-dialog__button new-session-dialog__button--ghost", children: "Cancel" }),
@@ -22175,8 +24412,6 @@ function ConsoleView({
       {
         sessionId: session.id,
         agentType: session.agent_type,
-        backendType: session.backend_type,
-        allowedTools: session.allowed_tools,
         command: session.command ?? session.agent_type,
         sessionArgs: session.args ?? [],
         isOperator: session.is_operator,
@@ -27295,11 +29530,6 @@ function App() {
     return () => window.removeEventListener("hashchange", handleChange);
   }, []);
   y2(() => {
-    if (typeof window !== "undefined" && window.__TAURI__) {
-      document.body.classList.add("tauri-window");
-    }
-  }, []);
-  y2(() => {
     if (!showOverflow)
       return;
     const handleClickOutside = (e3) => {
@@ -27797,11 +30027,10 @@ function App() {
   const handleConsoleNewSession = async ({
     label,
     backend,
-    kind,
-    backend_type
+    kind
   }) => {
     try {
-      const result = await createConsoleSession(label, backend, kind, backend_type);
+      const result = await createConsoleSession(label, backend, kind);
       const session = {
         pinned: false,
         unread_count: 0,
@@ -27891,7 +30120,7 @@ function App() {
         }
       )
     ] }),
-    /* @__PURE__ */ u3("header", { className: "app-header", "data-tauri-drag-region": true, children: [
+    /* @__PURE__ */ u3("header", { className: "app-header", children: [
       /* @__PURE__ */ u3("div", { className: "brand", children: "Mandible" }),
       /* @__PURE__ */ u3("nav", { className: "tabs", children: [
         /* @__PURE__ */ u3("div", { className: "tab-twin", children: [

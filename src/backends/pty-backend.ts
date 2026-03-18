@@ -13,6 +13,8 @@ import type {
 } from "../types.js";
 
 const STREAM_EVENTS_LIMIT = 2000;
+const MAX_RESTART_ATTEMPTS = 5;
+const BASE_RESTART_DELAY_MS = 2000;
 const ANSI_STRIP_RE =
   /\x1b\[[0-9;]*[mGKHFABCDJu]|\x1b\][^\x07]*\x07|\x0f|\x1b[()][AB012]/g;
 
@@ -33,6 +35,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   private lineBuffer = "";
   private onDataDisposable: IDisposable | null = null;
   private onExitDisposable: IDisposable | null = null;
+  private restartAttempts = 0;
   private logger: Logger;
 
   constructor(meta: ConsoleSession, logger: Logger) {
@@ -98,6 +101,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       started_at: this.meta.started_at,
     });
 
+    this.restartAttempts = 0;
     this.logger("info", "pty_started", { id: this.id, pid: this.meta.pid, command: this.meta.command });
   }
 
@@ -458,13 +462,30 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.wsClients.clear();
 
     if (this.meta.auto_restart && crashed) {
-      this.logger("info", "pty_auto_restart_scheduled", { id: this.id, delay: 2000 });
+      this.restartAttempts += 1;
+      if (this.restartAttempts > MAX_RESTART_ATTEMPTS) {
+        this.logger("warn", "pty_restart_limit_reached", {
+          id: this.id,
+          attempts: this.restartAttempts - 1,
+        });
+        // Mark as failed and stop retrying.
+        const failNow = Date.now();
+        this.meta = { ...this.meta, status: "crashed", auto_restart: false, updated_at: failNow };
+        this.emitMetaUpdate({ status: "crashed", updated_at: failNow });
+        return;
+      }
+      const delay = BASE_RESTART_DELAY_MS * Math.pow(2, this.restartAttempts - 1);
+      this.logger("info", "pty_auto_restart_scheduled", {
+        id: this.id,
+        delay,
+        attempt: this.restartAttempts,
+      });
       const timer = setTimeout(() => {
         if (this.meta.auto_restart) {
-          this.logger("info", "pty_auto_restart", { id: this.id });
+          this.logger("info", "pty_auto_restart", { id: this.id, attempt: this.restartAttempts });
           this.start();
         }
-      }, 2000);
+      }, delay);
       if (timer && typeof timer === "object" && "unref" in timer) {
         (timer as NodeJS.Timeout).unref();
       }

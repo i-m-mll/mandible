@@ -495,54 +495,6 @@ const MIGRATIONS = [
         statements: [
             `ALTER TABLE console_sessions ADD COLUMN provider_session_id TEXT`
         ]
-    },
-    {
-        version: 33,
-        name: "auth_requests_closes_issues",
-        // Bug: 297677f — allow auth requests to declare issue IDs to close on merge,
-        // independent of Bug: trailers in commit messages. Enables umbrella issue
-        // auto-closure in bigbuild workflows.
-        statements: [
-            `ALTER TABLE auth_requests ADD COLUMN issues TEXT`
-        ]
-    },
-    {
-        version: 34,
-        name: "console_backend_metadata",
-        statements: [
-            `ALTER TABLE console_sessions ADD COLUMN backend_type TEXT NOT NULL DEFAULT 'pty'`,
-            `ALTER TABLE console_sessions ADD COLUMN allowed_tools TEXT`,
-            `ALTER TABLE console_sessions ADD COLUMN mandible_session_id TEXT`
-        ]
-    },
-    {
-        version: 35,
-        name: "console_session_usage",
-        statements: [
-            `CREATE TABLE IF NOT EXISTS console_session_usage (
-        id                            TEXT PRIMARY KEY,
-        console_session_id            TEXT NOT NULL,
-        provider_session_id           TEXT,
-        recorded_at                   INTEGER NOT NULL,
-        input_tokens                  INTEGER NOT NULL DEFAULT 0,
-        cache_creation_input_tokens   INTEGER NOT NULL DEFAULT 0,
-        cache_read_input_tokens       INTEGER NOT NULL DEFAULT 0,
-        output_tokens                 INTEGER NOT NULL DEFAULT 0,
-        web_search_requests           INTEGER NOT NULL DEFAULT 0,
-        cost_usd                      REAL NOT NULL DEFAULT 0,
-        total_cost_usd                REAL NOT NULL DEFAULT 0,
-        duration_ms                   INTEGER NOT NULL DEFAULT 0,
-        num_turns                     INTEGER NOT NULL DEFAULT 0,
-        is_error                      INTEGER NOT NULL DEFAULT 0,
-        result_subtype                TEXT,
-        usage_json                    TEXT NOT NULL DEFAULT '{}',
-        model_usage_json              TEXT NOT NULL DEFAULT '{}',
-        errors_json                   TEXT NOT NULL DEFAULT '[]',
-        FOREIGN KEY (console_session_id) REFERENCES console_sessions(id) ON DELETE CASCADE
-      )`,
-            `CREATE INDEX IF NOT EXISTS idx_console_session_usage_session
-        ON console_session_usage(console_session_id, recorded_at DESC)`
-        ]
     }
 ];
 export function getDbPath() {
@@ -551,8 +503,7 @@ export function getDbPath() {
 export function openDb(dbPath = getDbPath()) {
     // Bug: 727a44b — one-time migration from control-plane to mandible cache dir.
     // If the mandible DB doesn't exist yet but the old control-plane DB does, copy it.
-    const shouldAttemptLegacyCopy = !process.env.MANDIBLE_DB && dbPath === DEFAULT_DB_PATH;
-    if (!fs.existsSync(dbPath) && shouldAttemptLegacyCopy) {
+    if (!fs.existsSync(dbPath)) {
         const oldPath = path.join(os.homedir(), ".cache", "control-plane", "control-plane.db");
         if (fs.existsSync(oldPath)) {
             ensureDir(path.dirname(dbPath));
@@ -725,19 +676,12 @@ function backfillProjectRepoNamesV2(db) {
     if (rows.length === 0)
         return;
     const update = db.prepare(`UPDATE session_projects SET repo_id = ?, repo_name = ? WHERE session_id = ? AND repo_id = ?`);
-    const existingTarget = db.prepare(`SELECT 1 FROM session_projects WHERE session_id = ? AND repo_id = ? LIMIT 1`);
-    const deleteDuplicate = db.prepare(`DELETE FROM session_projects WHERE session_id = ? AND repo_id = ?`);
     const run = db.transaction(() => {
         for (const row of rows) {
             const baseName = path.basename(row.cwd);
             const repoName = baseName.replace(/^\.+/, '');
             if (!repoName || repoName === row.repo_id)
                 continue;
-            const targetExists = existingTarget.get(row.session_id, repoName);
-            if (targetExists) {
-                deleteDuplicate.run(row.session_id, row.repo_id);
-                continue;
-            }
             update.run(repoName, repoName, row.session_id, row.repo_id);
         }
     });

@@ -390,7 +390,7 @@ async function runPushSession(sessionId, repos, scope, scanner, startedAt) {
         // Trigger a single rescan after all repos complete to refresh ahead/behind counts.
         // Bug: ea3102a — after pushing, the ahead count should go to 0.
         // (Moved out of per-repo loop to eliminate inter-push spinner delay.)
-        void scanner.scanAllAsync().catch(() => { });
+        void scanner.scanAll().catch(() => { });
     }
     catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -425,7 +425,7 @@ export async function pushSingleRepo(repo, scope, scanner) {
         const result = await pushRepo(repo, scope, gitSshEnv, scanner);
         // Trigger rescan after push
         try {
-            await scanner.scanAllAsync();
+            await scanner.scanAll();
         }
         catch {
             // Non-fatal

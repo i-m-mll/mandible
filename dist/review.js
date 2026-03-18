@@ -109,7 +109,7 @@ export const getSpec = async (repoPath, branch) => {
             };
         }
     }
-    const candidates = ["COMMIT_MSG.txt", "README_COMMIT.md"];
+    const candidates = ["README_COMMIT.md"];
     for (const candidate of candidates) {
         const filePath = path.join(repoPath, candidate);
         const content = await readFileIfExists(filePath);

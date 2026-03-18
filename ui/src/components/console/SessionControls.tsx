@@ -156,9 +156,12 @@ export function SessionControls({
         </div>
       )}
 
-      {backendType === 'sdk' && availableTools.length > 0 && (
+      {backendType === 'sdk' && (
         <div className="session-controls__tools">
           <div className="session-controls__label">Allowed tools</div>
+          {availableTools.length === 0 ? (
+            <div className="session-controls__placeholder">Waiting for session…</div>
+          ) : (
           <div className="session-controls__tool-grid">
             {availableTools.map((tool) => {
               const enabled = draftAllowedTools.includes(tool);
@@ -180,6 +183,7 @@ export function SessionControls({
               );
             })}
           </div>
+          )}
         </div>
       )}
 

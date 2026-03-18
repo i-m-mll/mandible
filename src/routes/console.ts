@@ -74,7 +74,9 @@ export function registerConsoleRoutes(
 
     const session = manager.create(input);
     const structuredChat = input.command === "claude" || input.command === "codex" || input.command === "gemini";
-    if (input.is_operator || !structuredChat) {
+    // Start immediately for: operators, non-structured-chat (shell), and SDK
+    // sessions (they just wait for the first prompt — no process to allocate).
+    if (input.is_operator || !structuredChat || input.backend_type === "sdk") {
       manager.start(session.id);
     }
     const ptySession = manager.get(session.id);
