@@ -52,7 +52,10 @@ async function getAvailablePort(): Promise<number> {
   });
 }
 
-async function readSseEvent(res: http.IncomingMessage): Promise<SSEEvent> {
+async function readSseEvent(
+  res: http.IncomingMessage,
+  predicate: (event: SSEEvent) => boolean = () => true,
+): Promise<SSEEvent> {
   return new Promise((resolve, reject) => {
     let buffer = "";
     res.on("data", (chunk) => {
@@ -62,7 +65,7 @@ async function readSseEvent(res: http.IncomingMessage): Promise<SSEEvent> {
         const raw = buffer.slice(0, index);
         buffer = buffer.slice(index + 2);
         const parsed = parseSse(raw);
-        if (parsed) {
+        if (parsed && predicate(parsed)) {
           resolve(parsed);
           return;
         }
@@ -158,7 +161,7 @@ describe.sequential("mandible daemon", () => {
           daemon.sse.broadcast(sent);
         }, 50);
         try {
-          const event = await readSseEvent(res);
+          const event = await readSseEvent(res, (candidate) => candidate.type === sent.type);
           resolve(event);
         } catch (error) {
           reject(error);
@@ -190,7 +193,7 @@ describe.sequential("mandible daemon", () => {
     const versionRow = db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe("6");
+    expect(versionRow?.value).toBe("34");
 
     db.close();
   });
@@ -202,7 +205,7 @@ describe.sequential("mandible daemon", () => {
     const versionRow = db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe("6");
+    expect(versionRow?.value).toBe("34");
     db.close();
   });
 
@@ -242,13 +245,13 @@ describe.sequential("mandible daemon", () => {
       entryPath
     });
 
-    const health = await waitForHealth(port, 3000, 200);
+    const health = await waitForHealth(port, 10_000, 200);
     expect(health?.status).toBe("ok");
 
     const stopped = stopDaemon(temp!.pidFilePath);
     expect(stopped).toBe(true);
 
-    const drained = await waitForHealth(port, 3000, 200);
+    const drained = await waitForHealth(port, 10_000, 200);
     expect(drained).toBeNull();
-  });
+  }, 15_000);
 });

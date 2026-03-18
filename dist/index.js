@@ -23,7 +23,7 @@ import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerSwitchboardRoutes } from "./routes/switchboard.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerGraphRoutes } from "./routes/graph.js";
-import { PtyManager } from "./pty-manager.js";
+import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 const DEFAULT_PORT = 19420;
@@ -62,9 +62,8 @@ export async function startDaemon(options = {}) {
     const reaperTimer = new ReaperTimer(sessionDiscovery, logger);
     registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner);
     registerGraphRoutes(router, issueScanner);
-    // Console routes + PTY manager (Bug: e980dd8)
-    const ptyManager = new PtyManager(db, logger);
-    registerConsoleRoutes(router, ptyManager);
+    const sessionManager = new SessionManager(db, logger);
+    registerConsoleRoutes(router, sessionManager);
     // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)
     router.get("/api/reaper/status", (_req, res) => {
         res.json(reaperTimer.getStatus());
@@ -72,7 +71,7 @@ export async function startDaemon(options = {}) {
     const navEnricher = new NavMetadataEnricher(sessionRegistry, logger);
     navEnricher.start();
     const server = createServer({ db, sse, logger, version, router, getStartupInfo: () => startupInfo });
-    // Attach WebSocket upgrade handler for PTY terminal sessions (Bug: e980dd8)
+    // Attach WebSocket upgrade handler for console backend sessions (Bug: e980dd8)
     const wss = new WebSocketServer({ noServer: true });
     attachWebSocketUpgrade(server, (req, socket, head) => {
         const url = new URL(req.url ?? "/", "http://localhost");
@@ -80,7 +79,7 @@ export async function startDaemon(options = {}) {
         if (match) {
             wss.handleUpgrade(req, socket, head, (ws) => {
                 const sessionId = decodeURIComponent(match[1]);
-                const added = ptyManager.addWsClient(sessionId, ws);
+                const added = sessionManager.addWsClient(sessionId, ws);
                 if (!added) {
                     ws.close(1008, "session not found");
                 }
@@ -93,12 +92,12 @@ export async function startDaemon(options = {}) {
     const actualPort = await startServer(server, port, { logger });
     writePidFile(process.pid, options.pidFilePath);
     logger("info", "server_started", { port: actualPort });
-    // Initialize PTY manager: reconcile DB state, restart operator if configured (Bug: e980dd8)
+    // Initialize console session manager: reconcile DB state, restart operator if configured.
     try {
-        ptyManager.init();
+        sessionManager.init();
     }
     catch (error) {
-        logger("warn", "pty_manager_init_failed", { error: String(error) });
+        logger("warn", "session_manager_init_failed", { error: String(error) });
     }
     // Self-health-check: periodically verify the server is still accepting
     // connections. This catches the zombie state where the listen socket died
@@ -186,9 +185,8 @@ export async function startDaemon(options = {}) {
         if (typeof shutdownTimeout === "object" && "unref" in shutdownTimeout) {
             shutdownTimeout.unref();
         }
-        // Kill all PTY processes before closing SSE (Bug: e980dd8)
         try {
-            ptyManager.close();
+            sessionManager.close();
         }
         catch { /* best effort */ }
         wss.close();

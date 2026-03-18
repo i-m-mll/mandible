@@ -495,6 +495,25 @@ const MIGRATIONS = [
         statements: [
             `ALTER TABLE console_sessions ADD COLUMN provider_session_id TEXT`
         ]
+    },
+    {
+        version: 33,
+        name: "auth_requests_closes_issues",
+        // Bug: 297677f — allow auth requests to declare issue IDs to close on merge,
+        // independent of Bug: trailers in commit messages. Enables umbrella issue
+        // auto-closure in bigbuild workflows.
+        statements: [
+            `ALTER TABLE auth_requests ADD COLUMN issues TEXT`
+        ]
+    },
+    {
+        version: 34,
+        name: "console_backend_metadata",
+        statements: [
+            `ALTER TABLE console_sessions ADD COLUMN backend_type TEXT NOT NULL DEFAULT 'pty'`,
+            `ALTER TABLE console_sessions ADD COLUMN allowed_tools TEXT`,
+            `ALTER TABLE console_sessions ADD COLUMN mandible_session_id TEXT`
+        ]
     }
 ];
 export function getDbPath() {
@@ -503,7 +522,8 @@ export function getDbPath() {
 export function openDb(dbPath = getDbPath()) {
     // Bug: 727a44b — one-time migration from control-plane to mandible cache dir.
     // If the mandible DB doesn't exist yet but the old control-plane DB does, copy it.
-    if (!fs.existsSync(dbPath)) {
+    const shouldAttemptLegacyCopy = !process.env.MANDIBLE_DB && dbPath === DEFAULT_DB_PATH;
+    if (!fs.existsSync(dbPath) && shouldAttemptLegacyCopy) {
         const oldPath = path.join(os.homedir(), ".cache", "control-plane", "control-plane.db");
         if (fs.existsSync(oldPath)) {
             ensureDir(path.dirname(dbPath));
@@ -676,12 +696,19 @@ function backfillProjectRepoNamesV2(db) {
     if (rows.length === 0)
         return;
     const update = db.prepare(`UPDATE session_projects SET repo_id = ?, repo_name = ? WHERE session_id = ? AND repo_id = ?`);
+    const existingTarget = db.prepare(`SELECT 1 FROM session_projects WHERE session_id = ? AND repo_id = ? LIMIT 1`);
+    const deleteDuplicate = db.prepare(`DELETE FROM session_projects WHERE session_id = ? AND repo_id = ?`);
     const run = db.transaction(() => {
         for (const row of rows) {
             const baseName = path.basename(row.cwd);
             const repoName = baseName.replace(/^\.+/, '');
             if (!repoName || repoName === row.repo_id)
                 continue;
+            const targetExists = existingTarget.get(row.session_id, repoName);
+            if (targetExists) {
+                deleteDuplicate.run(row.session_id, row.repo_id);
+                continue;
+            }
             update.run(repoName, repoName, row.session_id, row.repo_id);
         }
     });

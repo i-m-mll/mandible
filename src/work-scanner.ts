@@ -107,6 +107,24 @@ const BRANCH_TABLE_SCHEMA = `
   );
 `;
 
+const WORK_REPO_TABLE_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS work_repos (
+    id TEXT NOT NULL,
+    root TEXT NOT NULL,
+    name TEXT NOT NULL,
+    default_branch TEXT NOT NULL DEFAULT '',
+    dir_exists INTEGER NOT NULL DEFAULT 1,
+    excluded INTEGER NOT NULL DEFAULT 0,
+    user_modified INTEGER NOT NULL DEFAULT 0,
+    last_scanned_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (root)
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS work_repos_id_idx ON work_repos(id);
+  CREATE INDEX IF NOT EXISTS work_repos_excluded_idx ON work_repos(excluded);
+`;
+
 function resolveHome(input: string): string {
   if (input.startsWith("~")) {
     return path.join(os.homedir(), input.slice(1));
@@ -360,6 +378,7 @@ function parseLastCommit(output: string | null): LastCommit | null {
 
 function ensureSchema(db: SqliteDatabase): void {
   db.exec(BRANCH_TABLE_SCHEMA);
+  db.exec(WORK_REPO_TABLE_SCHEMA);
 }
 
 function toDbBool(value: boolean): number {
@@ -553,7 +572,7 @@ export class WorkScanner {
   // server stays responsive while the branch scan runs. spawnSync calls inside
   // scanRepo block the thread; without yielding, a full scan (85+ branches) can
   // hold the event loop for 3-5s, causing issue detail fetches to hang.
-  async scanAll(): Promise<ScanSummary> {
+  scanAll(): ScanSummary {
     const start = Date.now();
     this.refreshRepoInfos();
 
@@ -596,9 +615,6 @@ export class WorkScanner {
         // Log but continue scanning remaining repos
         console.error(`[work-scanner] scanRepo failed for ${repo.root}: ${_error}`);
       }
-      // Yield the event loop between repos so HTTP requests are not starved
-      // while a large repo (many branches) is being scanned.
-      await new Promise<void>((resolve) => setImmediate(resolve));
     }
 
     const durationMs = Date.now() - start;
@@ -617,6 +633,10 @@ export class WorkScanner {
     });
 
     return summary;
+  }
+
+  async scanAllAsync(): Promise<ScanSummary> {
+    return this.scanAll();
   }
 
   updateRepo(id: string, patch: { name?: string; excluded?: boolean }): RepoInfo | null {

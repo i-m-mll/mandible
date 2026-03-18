@@ -82,7 +82,8 @@ export declare class WorkScanner {
         path: string;
         is_current: boolean;
     }>;
-    scanAll(): Promise<ScanSummary>;
+    scanAll(): ScanSummary;
+    scanAllAsync(): Promise<ScanSummary>;
     updateRepo(id: string, patch: {
         name?: string;
         excluded?: boolean;

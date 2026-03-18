@@ -845,7 +845,8 @@ async function invokeDesktop<T>(command: string, args?: Record<string, unknown>)
   if (!hasTauriRuntime()) {
     throw new Error('Desktop daemon controls are only available in the Tauri app.');
   }
-  const { invoke } = await import('@tauri-apps/api/core');
+  const tauriCoreModule = '@tauri-apps/api/core';
+  const { invoke } = await import(/* @vite-ignore */ tauriCoreModule);
   return invoke<T>(command, args);
 }
 
@@ -878,7 +879,8 @@ export async function navigateToDesktopBootstrap(): Promise<void> {
   if (!hasTauriRuntime()) {
     return;
   }
-  const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+  const tauriWebviewModule = '@tauri-apps/api/webview';
+  const { getCurrentWebview } = await import(/* @vite-ignore */ tauriWebviewModule);
   await getCurrentWebview().navigate('/index.html');
 }
 

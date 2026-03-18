@@ -1,0 +1,532 @@
+import { randomUUID } from "node:crypto";
+import type { WebSocket } from "ws";
+import type {
+  AgenticBackend,
+  BackendMetaUpdate,
+  BackendStatusEvent,
+  BackendType,
+  ConfigurableBackend,
+  PermissionAwareBackend,
+  PermissionDecision,
+  PermissionRequest,
+  UsageAwareBackend,
+} from "./agentic-backend.js";
+import { getDb } from "./db.js";
+import { broadcast } from "./sse.js";
+import { PTYBackend } from "./backends/pty-backend.js";
+import { SDKBackend, type SDKBackendOptions } from "./backends/sdk-backend.js";
+import type {
+  ConsoleInteractionMode,
+  ConsoleSession,
+  ConsoleSessionInput,
+  ConsoleSessionStatus,
+  Logger,
+} from "./types.js";
+
+interface ConsoleSessionRow {
+  id: string;
+  label: string;
+  command: string;
+  args_json: string;
+  provider_session_id: string | null;
+  cwd: string | null;
+  env_json: string;
+  cols: number;
+  rows: number;
+  status: string;
+  pid: number | null;
+  exit_code: number | null;
+  auto_restart: number;
+  is_operator: number;
+  interaction_mode: string;
+  created_at: number;
+  updated_at: number;
+  started_at: number | null;
+  stopped_at: number | null;
+  backend_type: string | null;
+  allowed_tools: string | null;
+  mandible_session_id: string | null;
+}
+
+const OPERATOR_DEFAULTS: Omit<ConsoleSessionInput, "label"> = {
+  command: "claude",
+  args: ["--dangerously-skip-permissions"],
+  cwd: process.env.HOME ?? "/tmp",
+  env: {},
+  cols: 220,
+  rows: 50,
+  auto_restart: true,
+  is_operator: true,
+  interaction_mode: "both",
+  backend_type: "sdk",
+};
+
+function computeAgentType(
+  command: string,
+  is_operator: boolean
+): ConsoleSession["agent_type"] {
+  if (is_operator) return "operator";
+  if (command === "claude") return "claude";
+  if (command === "codex") return "codex";
+  if (command === "gemini") return "gemini";
+  return "shell";
+}
+
+function defaultBackendType(command: string): BackendType {
+  return command === "claude" ? "sdk" : "pty";
+}
+
+function parseAllowedTools(raw: string | null): string[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.filter((value): value is string => typeof value === "string");
+    }
+  } catch {
+    // Ignore malformed legacy data.
+  }
+  return null;
+}
+
+function rowToSession(row: ConsoleSessionRow): ConsoleSession {
+  const is_operator = row.is_operator === 1;
+  return {
+    id: row.id,
+    label: row.label,
+    command: row.command,
+    args: JSON.parse(row.args_json) as string[],
+    provider_session_id: row.provider_session_id ?? null,
+    cwd: row.cwd,
+    env: JSON.parse(row.env_json) as Record<string, string>,
+    cols: row.cols,
+    rows: row.rows,
+    status: row.status as ConsoleSessionStatus,
+    pid: row.pid,
+    exit_code: row.exit_code,
+    auto_restart: row.auto_restart === 1,
+    is_operator,
+    interaction_mode: (row.interaction_mode ?? "both") as ConsoleInteractionMode,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    started_at: row.started_at,
+    stopped_at: row.stopped_at,
+    backend_type: (row.backend_type === "sdk" ? "sdk" : "pty") as BackendType,
+    allowed_tools: parseAllowedTools(row.allowed_tools),
+    mandible_session_id: row.mandible_session_id ?? null,
+    agent_type: computeAgentType(row.command, is_operator),
+  };
+}
+
+function stripModelArgs(args: string[]): string[] {
+  const next: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--model" || args[i] === "-m") {
+      i += 1;
+      continue;
+    }
+    next.push(args[i]);
+  }
+  return next;
+}
+
+function serializeSessionField(key: keyof BackendMetaUpdate, value: unknown): unknown {
+  if (key === "allowed_tools") {
+    return Array.isArray(value) ? JSON.stringify(value) : null;
+  }
+  return value;
+}
+
+export class SessionManager {
+  private sessions: Map<string, AgenticBackend> = new Map();
+  private logger: Logger;
+
+  constructor(_db: unknown, logger: Logger) {
+    this.logger = logger;
+  }
+
+  init(): void {
+    const db = getDb();
+    const rows = db
+      .prepare("SELECT * FROM console_sessions")
+      .all() as ConsoleSessionRow[];
+
+    for (const row of rows) {
+      const session = rowToSession(row);
+      const backend = this.createBackend(session, session.backend_type);
+      this.sessions.set(session.id, backend);
+      this.wireBackend(backend);
+
+      if (session.status === "running") {
+        db.prepare(
+          "UPDATE console_sessions SET status = 'stopped', pid = NULL, updated_at = ? WHERE id = ?"
+        ).run(Date.now(), session.id);
+        backend.meta = { ...backend.meta, status: "stopped", pid: null };
+      }
+    }
+
+    const operatorRow = db
+      .prepare("SELECT * FROM console_sessions WHERE is_operator = 1 LIMIT 1")
+      .get() as ConsoleSessionRow | undefined;
+
+    if (operatorRow && operatorRow.auto_restart === 1) {
+      const backend = this.sessions.get(operatorRow.id);
+      if (backend) {
+        this.logger("info", "operator_auto_start", { id: operatorRow.id });
+        backend.start();
+      }
+    }
+  }
+
+  create(input: ConsoleSessionInput): ConsoleSession {
+    const db = getDb();
+    const id = randomUUID();
+    const now = Date.now();
+
+    const args = input.args ?? [];
+    const env = input.env ?? {};
+    const cols = input.cols ?? 120;
+    const rows = input.rows ?? 30;
+    const auto_restart = input.auto_restart ? 1 : 0;
+    const is_operator = input.is_operator ? 1 : 0;
+    const interaction_mode = input.interaction_mode ?? "both";
+    const backend_type = input.backend_type ?? defaultBackendType(input.command);
+    const allowed_tools = input.allowed_tools ?? null;
+
+    db.prepare(
+      `INSERT INTO console_sessions
+         (id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
+          status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
+          backend_type, allowed_tools, mandible_session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      input.label,
+      input.command,
+      JSON.stringify(args),
+      null,
+      input.cwd ?? null,
+      JSON.stringify(env),
+      cols,
+      rows,
+      auto_restart,
+      is_operator,
+      interaction_mode,
+      now,
+      now,
+      backend_type,
+      allowed_tools ? JSON.stringify(allowed_tools) : null,
+      input.mandible_session_id ?? null
+    );
+
+    const session = rowToSession({
+      id,
+      label: input.label,
+      command: input.command,
+      args_json: JSON.stringify(args),
+      provider_session_id: null,
+      cwd: input.cwd ?? null,
+      env_json: JSON.stringify(env),
+      cols,
+      rows,
+      status: "stopped",
+      pid: null,
+      exit_code: null,
+      auto_restart,
+      is_operator,
+      interaction_mode,
+      created_at: now,
+      updated_at: now,
+      started_at: null,
+      stopped_at: null,
+      backend_type,
+      allowed_tools: allowed_tools ? JSON.stringify(allowed_tools) : null,
+      mandible_session_id: input.mandible_session_id ?? null,
+    });
+
+    const backend = this.createBackend(session, backend_type);
+    this.sessions.set(id, backend);
+    this.wireBackend(backend);
+
+    broadcast("console:session:created", { session });
+    return session;
+  }
+
+  get(id: string): AgenticBackend | undefined {
+    return this.sessions.get(id);
+  }
+
+  getAll(): AgenticBackend[] {
+    return Array.from(this.sessions.values());
+  }
+
+  start(id: string): void {
+    this.requireSession(id).start();
+  }
+
+  stop(id: string, signal?: string): void {
+    this.requireSession(id).stop(signal);
+  }
+
+  delete(id: string): void {
+    const session = this.requireSession(id);
+    session.destroy();
+    getDb().prepare("DELETE FROM console_sessions WHERE id = ?").run(id);
+    this.sessions.delete(id);
+    broadcast("console:session:deleted", { id });
+  }
+
+  resize(id: string, cols: number, rows: number): void {
+    this.requireSession(id).resize(cols, rows);
+  }
+
+  write(id: string, data: string): void {
+    this.requireSession(id).write(data);
+  }
+
+  sendPrompt(id: string, prompt: string): void {
+    this.requireSession(id).sendPrompt(prompt);
+  }
+
+  addWsClient(id: string, ws: WebSocket): boolean {
+    const session = this.sessions.get(id);
+    if (!session) return false;
+    session.addWsClient(ws);
+    return true;
+  }
+
+  updateConfig(
+    id: string,
+    patch: Partial<
+      Pick<
+        ConsoleSession,
+        "label" | "args" | "cwd" | "provider_session_id" | "allowed_tools" | "mandible_session_id"
+      >
+    >,
+  ): ConsoleSession {
+    const session = this.requireSession(id);
+    const nextMeta: ConsoleSession = {
+      ...session.meta,
+      ...(patch.label !== undefined ? { label: patch.label } : {}),
+      ...(patch.args !== undefined ? { args: patch.args } : {}),
+      ...(patch.cwd !== undefined ? { cwd: patch.cwd } : {}),
+      ...(patch.provider_session_id !== undefined ? { provider_session_id: patch.provider_session_id } : {}),
+      ...(patch.allowed_tools !== undefined ? { allowed_tools: patch.allowed_tools } : {}),
+      ...(patch.mandible_session_id !== undefined ? { mandible_session_id: patch.mandible_session_id } : {}),
+      updated_at: Date.now(),
+    };
+    session.meta = nextMeta;
+
+    getDb().prepare(
+      `UPDATE console_sessions
+         SET label = ?, args_json = ?, cwd = ?, provider_session_id = ?, allowed_tools = ?, mandible_session_id = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(
+      nextMeta.label,
+      JSON.stringify(nextMeta.args),
+      nextMeta.cwd,
+      nextMeta.provider_session_id,
+      nextMeta.allowed_tools ? JSON.stringify(nextMeta.allowed_tools) : null,
+      nextMeta.mandible_session_id,
+      nextMeta.updated_at,
+      id,
+    );
+
+    broadcast("console:session:updated", { session: nextMeta });
+    return nextMeta;
+  }
+
+  updateOptions(id: string, options: SDKBackendOptions): ConsoleSession {
+    const session = this.requireSession(id);
+    const patch: Partial<Pick<ConsoleSession, "args" | "allowed_tools">> = {};
+
+    if (typeof options.model === "string") {
+      const nextArgs = stripModelArgs(session.meta.args);
+      const model = options.model.trim();
+      if (model) {
+        nextArgs.push("--model", model);
+      }
+      patch.args = nextArgs;
+    }
+
+    if (options.allowedTools !== undefined) {
+      patch.allowed_tools = [...options.allowedTools];
+    }
+
+    const nextSession = Object.keys(patch).length > 0 ? this.updateConfig(id, patch) : session.meta;
+    if (this.isConfigurableBackend<SDKBackendOptions>(session)) {
+      session.updateOptions(options);
+    }
+    return nextSession;
+  }
+
+  getPermissions(id: string): PermissionRequest[] {
+    const session = this.requireSession(id);
+    if (this.isPermissionAwareBackend(session)) {
+      return session.getPendingPermissions();
+    }
+    return [];
+  }
+
+  resolvePermission(sessionId: string, requestId: string, decision: PermissionDecision): boolean {
+    const session = this.requireSession(sessionId);
+    if (!this.isPermissionAwareBackend(session)) {
+      return false;
+    }
+    return session.resolvePermission(requestId, decision);
+  }
+
+  getUsage(id: string): Array<Record<string, unknown>> {
+    const session = this.requireSession(id);
+    if (this.isUsageAwareBackend<Record<string, unknown>>(session)) {
+      return session.getUsage();
+    }
+    return [];
+  }
+
+  startOperator(): void {
+    const db = getDb();
+    const settingRow = db
+      .prepare("SELECT value FROM settings WHERE key = 'console_operator_session_id'")
+      .get() as { value: string } | undefined;
+
+    const existingId = settingRow?.value ?? "";
+    if (existingId) {
+      const session = this.sessions.get(existingId);
+      if (session) {
+        if (session.meta.status !== "running") {
+          session.start();
+        }
+        return;
+      }
+    }
+
+    const session = this.create({
+      label: "Operator",
+      ...OPERATOR_DEFAULTS,
+    });
+
+    db.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    ).run("console_operator_session_id", session.id, Date.now());
+
+    this.start(session.id);
+  }
+
+  close(): void {
+    for (const session of this.sessions.values()) {
+      try {
+        session.destroy();
+      } catch {
+        // Best effort
+      }
+    }
+  }
+
+  private createBackend(session: ConsoleSession, type: BackendType): AgenticBackend {
+    if (type === "sdk") {
+      return new SDKBackend(session, this.logger);
+    }
+    return new PTYBackend(session, this.logger);
+  }
+
+  private wireBackend(backend: AgenticBackend): void {
+    backend.on("stream_event", (event: ConsoleSession["env"] | unknown) => {
+      const streamEvent = event as Record<string, unknown>;
+      broadcast("console:stream_event", {
+        console_session_id: backend.id,
+        event: streamEvent,
+      });
+      if (streamEvent.type === "result") {
+        broadcast("console:inbox:badge", { count: 1 });
+      }
+    });
+
+    backend.on("meta_update", (fields: BackendMetaUpdate) => {
+      this.applyMetaUpdate(backend.id, fields);
+    });
+
+    backend.on("status", (event: BackendStatusEvent) => {
+      this.broadcastStatus(backend.id, event);
+    });
+
+    backend.on("permission", (request: PermissionRequest) => {
+      broadcast("console:permission:request", {
+        console_session_id: backend.id,
+        request,
+      });
+    });
+  }
+
+  private applyMetaUpdate(id: string, fields: BackendMetaUpdate): void {
+    const session = this.requireSession(id);
+    const normalized: BackendMetaUpdate = {
+      ...fields,
+      updated_at: fields.updated_at ?? Date.now(),
+    };
+
+    session.meta = {
+      ...session.meta,
+      ...normalized,
+    };
+
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, value] of Object.entries(normalized) as Array<[keyof BackendMetaUpdate, unknown]>) {
+      assignments.push(`${key} = ?`);
+      values.push(serializeSessionField(key, value));
+    }
+
+    if (assignments.length > 0) {
+      values.push(id);
+      getDb().prepare(`UPDATE console_sessions SET ${assignments.join(", ")} WHERE id = ?`).run(...values);
+    }
+
+    broadcast("console:session:updated", { session: session.meta });
+  }
+
+  private broadcastStatus(id: string, event: BackendStatusEvent): void {
+    if (event.kind === "started") {
+      broadcast("console:session:started", {
+        id,
+        pid: this.requireSession(id).meta.pid,
+        started_at: event.started_at ?? this.requireSession(id).meta.started_at,
+      });
+      return;
+    }
+    if (event.kind === "stopped") {
+      broadcast("console:session:stopped", {
+        id,
+        stopped_at: event.stopped_at ?? this.requireSession(id).meta.stopped_at,
+      });
+      return;
+    }
+    broadcast("console:session:exit", {
+      id,
+      exitCode: event.exitCode ?? null,
+      signal: event.signal ?? null,
+      status: event.status,
+    });
+  }
+
+  private requireSession(id: string): AgenticBackend {
+    const session = this.sessions.get(id);
+    if (!session) {
+      throw new Error(`session not found: ${id}`);
+    }
+    return session;
+  }
+
+  private isPermissionAwareBackend(backend: AgenticBackend): backend is AgenticBackend & PermissionAwareBackend {
+    return "getPendingPermissions" in backend && "resolvePermission" in backend;
+  }
+
+  private isConfigurableBackend<TOptions>(backend: AgenticBackend): backend is AgenticBackend & ConfigurableBackend<TOptions> {
+    return "updateOptions" in backend;
+  }
+
+  private isUsageAwareBackend<TUsage>(backend: AgenticBackend): backend is AgenticBackend & UsageAwareBackend<TUsage> {
+    return "getUsage" in backend;
+  }
+}

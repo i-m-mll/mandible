@@ -80,6 +80,7 @@ export function registerAuthRoutes(app, queue = new AuthQueue()) {
             spec_content: request.spec_content ?? null,
             post_merge_handoff: request.post_merge_handoff ?? null,
             issue_ids: request.issue_ids ?? null,
+            issues: request.issues ?? null,
             depends_on_id: request.depends_on_id ?? null,
             depends_on_status: dependsOnStatus,
             execution_mode: request.execution_mode
@@ -257,9 +258,21 @@ function parseAuthRequestPayload(body) {
         additions,
         deletions,
         post_merge_handoff: typeof body.post_merge_handoff === "string" ? body.post_merge_handoff : (body.post_merge_handoff === null ? null : undefined),
+        issues: parseStringArray(body.issues),
         depends_on_id: typeof body.depends_on_id === "string" ? body.depends_on_id : (body.depends_on_id === null ? null : undefined),
         execution_mode: executionMode
     };
+}
+// Bug: 297677f — parse a string array field (for issues)
+function parseStringArray(value) {
+    if (value === null)
+        return null;
+    if (value === undefined)
+        return undefined;
+    if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
+        return value.length > 0 ? value : null;
+    }
+    return undefined;
 }
 // Bug: 58d93ee — return typed result instead of null so callers receive
 // a descriptive error message rather than a generic 400
@@ -363,6 +376,14 @@ function parseAuthRequestUpdatePayload(body) {
         else {
             return { ok: false, error: "Invalid 'post_merge_handoff' — must be a string or null" };
         }
+    }
+    // Bug: 297677f — issues: array of issue IDs to close on merge
+    if (hasKey("issues")) {
+        const parsed = parseStringArray(body.issues);
+        if (parsed === undefined) {
+            return { ok: false, error: "Invalid 'issues' — must be an array of strings or null" };
+        }
+        payload.issues = parsed;
     }
     if (hasKey("depends_on_id")) {
         if (body.depends_on_id === null || typeof body.depends_on_id === "string") {

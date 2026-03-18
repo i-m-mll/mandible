@@ -1005,6 +1005,9 @@ a {
   top: 0;
   z-index: 10;
 }
+.tauri-window .app-header {
+  padding-top: env(titlebar-area-height, 28px);
+}
 .brand {
   font-size: 20px;
   font-weight: 600;

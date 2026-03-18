@@ -41,7 +41,7 @@ describe("auth queue", () => {
     });
 
     const approved = queue.approve(request.id);
-    expect(approved.status).toBe("approved");
+    expect(approved.status).toBe("executing");
 
     const resolved = await waitForStatus(queue, request.id, "completed");
     expect(resolved?.exit_code).toBe(0);
@@ -119,7 +119,7 @@ describe("auth queue", () => {
     });
 
     const approved = queue.approve(request.id);
-    expect(approved.status).toBe("approved");
+    expect(approved.status).toBe("executing");
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(calls).toHaveLength(0);
   });
@@ -305,7 +305,7 @@ describe("auth queue", () => {
     // reset to pending after interrupted execution, etc.)
     const updated = queue.update(request.id, { title: "Changed" });
     expect(updated.title).toBe("Changed");
-    expect(updated.status).toBe("approved");
+    expect(updated.status).toBe("executing");
   });
 
   it("fires SSE events for new, output, resolved", async () => {

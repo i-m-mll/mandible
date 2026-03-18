@@ -140,6 +140,7 @@ export class AuthQueue {
             deletions: payload.deletions ?? 0,
             post_merge_handoff: payload.post_merge_handoff ?? null,
             issue_ids: extractIssueIdsFromCommitMessage(payload.commit_message),
+            issues: payload.issues ?? null,
             depends_on_id: payload.depends_on_id ?? null,
             execution_mode: payload.execution_mode ?? "daemon",
             status: "pending",
@@ -172,6 +173,7 @@ export class AuthQueue {
         deletions,
         post_merge_handoff,
         issue_ids,
+        issues,
         depends_on_id,
         execution_mode,
         status,
@@ -203,6 +205,7 @@ export class AuthQueue {
         @deletions,
         @post_merge_handoff,
         @issue_ids,
+        @issues,
         @depends_on_id,
         @execution_mode,
         @status,
@@ -224,7 +227,8 @@ export class AuthQueue {
             base_branch: request.base_branch ?? null,
             head_branch: request.head_branch ?? null,
             post_merge_handoff: request.post_merge_handoff ?? null,
-            issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null
+            issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
+            issues: request.issues ? JSON.stringify(request.issues) : null
         });
         this.broadcast({
             event: "auth:new",
@@ -285,6 +289,12 @@ export class AuthQueue {
                 updates.push(`${field} = ?`);
                 values.push(payload[field]);
             }
+        }
+        // Bug: 297677f — issues is a JSON array, needs serialization
+        if ("issues" in payload) {
+            const ci = payload.issues;
+            updates.push("issues = ?");
+            values.push(ci && Array.isArray(ci) ? JSON.stringify(ci) : null);
         }
         // For a retry-via-update (failed/approved -> pending), reset execution state
         if (resetToPending) {
@@ -710,6 +720,7 @@ export class AuthQueue {
         deletions INTEGER DEFAULT 0,
         post_merge_handoff TEXT,
         issue_ids TEXT,
+        issues TEXT,
         depends_on_id TEXT,
         execution_mode TEXT NOT NULL DEFAULT 'daemon',
         status TEXT NOT NULL,
@@ -756,6 +767,16 @@ function mapRow(row) {
             issueIds = null;
         }
     }
+    // Bug: 297677f — parse issues JSON array from DB
+    let parsedIssues = null;
+    if (row.issues != null) {
+        try {
+            parsedIssues = JSON.parse(String(row.issues));
+        }
+        catch {
+            parsedIssues = null;
+        }
+    }
     return {
         id: String(row.id),
         session_id: row.session_id == null ? null : String(row.session_id),
@@ -773,6 +794,7 @@ function mapRow(row) {
         deletions: row.deletions == null ? undefined : Number(row.deletions),
         post_merge_handoff: row.post_merge_handoff == null ? null : String(row.post_merge_handoff),
         issue_ids: issueIds,
+        issues: parsedIssues,
         depends_on_id: row.depends_on_id == null ? null : String(row.depends_on_id),
         execution_mode: row.execution_mode === "remote" || row.execution_mode === "daemon"
             ? row.execution_mode

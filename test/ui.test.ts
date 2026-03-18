@@ -51,13 +51,14 @@ describe('SessionsView', () => {
     );
 
     expect(screen.getByText('Plan work')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Actions'));
     fireEvent.click(screen.getByText('Go to'));
     expect(onNavigate).toHaveBeenCalledWith('s1');
   });
 });
 
 describe('AuthQueueView', () => {
-  it('navigates between cards and supports skip', async () => {
+  it('navigates between sidebar items', async () => {
     stubFetch();
     render(
       h(AuthQueueView, {
@@ -71,13 +72,12 @@ describe('AuthQueueView', () => {
       }),
     );
 
-    expect(screen.getByText('Card 1 of 2')).toBeTruthy();
-    fireEvent.click(screen.getByText('Next ▶'));
-    expect(screen.getByText('Card 2 of 2')).toBeTruthy();
-    fireEvent.click(screen.getByText('Skip'));
-    expect(screen.getByText('Card 1 of 2')).toBeTruthy();
-
-    await waitFor(() => expect(screen.getByText('First auth')).toBeTruthy());
+    expect(screen.getAllByText('First auth').length).toBeGreaterThan(0);
+    const secondItem = document.querySelector('[data-request-id="a2"]');
+    expect(secondItem).toBeTruthy();
+    fireEvent.click(secondItem as Element);
+    await waitFor(() => expect(screen.getAllByText('Second auth').length).toBeGreaterThan(0));
+    expect(screen.getByText('Force Dismiss')).toBeTruthy();
   });
 });
 
