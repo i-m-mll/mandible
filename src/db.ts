@@ -505,6 +505,16 @@ const MIGRATIONS: Migration[] = [
     statements: [
       `ALTER TABLE console_sessions ADD COLUMN provider_session_id TEXT`
     ]
+  },
+  {
+    version: 33,
+    name: "auth_requests_closes_issues",
+    // Bug: 297677f — allow auth requests to declare issue IDs to close on merge,
+    // independent of Bug: trailers in commit messages. Enables umbrella issue
+    // auto-closure in bigbuild workflows.
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN closes_issues TEXT`
+    ]
   }
 ];
 

@@ -195,6 +195,7 @@ export class AuthQueue {
       deletions: payload.deletions ?? 0,
       post_merge_handoff: payload.post_merge_handoff ?? null,
       issue_ids: extractIssueIdsFromCommitMessage(payload.commit_message),
+      closes_issues: payload.closes_issues ?? null,
       depends_on_id: payload.depends_on_id ?? null,
       execution_mode: payload.execution_mode ?? "daemon",
       status: "pending",
@@ -229,6 +230,7 @@ export class AuthQueue {
         deletions,
         post_merge_handoff,
         issue_ids,
+        closes_issues,
         depends_on_id,
         execution_mode,
         status,
@@ -260,6 +262,7 @@ export class AuthQueue {
         @deletions,
         @post_merge_handoff,
         @issue_ids,
+        @closes_issues,
         @depends_on_id,
         @execution_mode,
         @status,
@@ -283,7 +286,8 @@ export class AuthQueue {
       base_branch: request.base_branch ?? null,
       head_branch: request.head_branch ?? null,
       post_merge_handoff: request.post_merge_handoff ?? null,
-      issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null
+      issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
+      closes_issues: request.closes_issues ? JSON.stringify(request.closes_issues) : null
     });
 
     this.broadcast({
@@ -355,6 +359,13 @@ export class AuthQueue {
         updates.push(`${field} = ?`);
         values.push(payload[field]);
       }
+    }
+
+    // Bug: 297677f — closes_issues is a JSON array, needs serialization
+    if ("closes_issues" in payload) {
+      const ci = payload.closes_issues as string[] | null | undefined;
+      updates.push("closes_issues = ?");
+      values.push(ci && Array.isArray(ci) ? JSON.stringify(ci) : null);
     }
 
     // For a retry-via-update (failed/approved -> pending), reset execution state
@@ -927,6 +938,7 @@ export class AuthQueue {
         deletions INTEGER DEFAULT 0,
         post_merge_handoff TEXT,
         issue_ids TEXT,
+        closes_issues TEXT,
         depends_on_id TEXT,
         execution_mode TEXT NOT NULL DEFAULT 'daemon',
         status TEXT NOT NULL,
@@ -973,6 +985,16 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     }
   }
 
+  // Bug: 297677f — parse closes_issues JSON array from DB
+  let closesIssues: string[] | null = null;
+  if (row.closes_issues != null) {
+    try {
+      closesIssues = JSON.parse(String(row.closes_issues));
+    } catch {
+      closesIssues = null;
+    }
+  }
+
   return {
     id: String(row.id),
     session_id: row.session_id == null ? null : String(row.session_id),
@@ -990,6 +1012,7 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     deletions: row.deletions == null ? undefined : Number(row.deletions),
     post_merge_handoff: row.post_merge_handoff == null ? null : String(row.post_merge_handoff),
     issue_ids: issueIds,
+    closes_issues: closesIssues,
     depends_on_id: row.depends_on_id == null ? null : String(row.depends_on_id),
     execution_mode:
       row.execution_mode === "remote" || row.execution_mode === "daemon"

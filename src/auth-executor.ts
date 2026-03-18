@@ -64,10 +64,15 @@ export async function executeAuthCommand(
     let output = "";
     let settled = false;
 
+    // Bug: 297677f — expose the auth request ID so the merge script can query
+    // the API for closes_issues and other request-specific metadata.
+    const childEnv = cleanEnvForAuth(process.env);
+    childEnv.MANDIBLE_AUTH_REQUEST_ID = options.request_id;
+
     const child = spawn("bash", ["-c", options.command], {
       cwd: options.cwd ?? undefined,
       stdio: ["ignore", "pipe", "pipe"],
-      env: cleanEnvForAuth(process.env)
+      env: childEnv
     });
 
     // Emit a synthetic start line so the UI isn't blank during execution
