@@ -6,17 +6,21 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { ConsoleSession } from '../../state';
+import type { ConsolePermissionRequest } from '../../api';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
 import type { StreamEvent, ToolResultContentBlock } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
+import { PermissionDialog } from './PermissionDialog';
+import { SessionControls } from './SessionControls';
 import {
   getConversation,
   getConversations,
+  getConsolePermissions,
   getConsoleStreamEvents,
   restartConsoleSession,
+  respondToConsolePermission,
   sendConsolePrompt,
   startConsoleSession,
-  updateConsoleSession,
 } from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
@@ -24,6 +28,7 @@ type ViewMode = 'terminal' | 'rich';
 type TerminalPaneProps = {
   sessionId: string;
   agentType: ConsoleSession['agent_type'];
+  backendType: ConsoleSession['backend_type'];
   command: string;
   sessionArgs: string[];
   isOperator: boolean;
@@ -167,6 +172,7 @@ function conversationBlocksToStreamEvents(
 export function TerminalPane({
   sessionId,
   agentType,
+  backendType,
   command,
   sessionArgs,
   isOperator,
@@ -201,7 +207,9 @@ export function TerminalPane({
   const [elapsedSeconds, setElapsedSeconds] = useState<number | undefined>(undefined);
   const streamStartAtRef = useRef<number | null>(null);
   const [model, setModel] = useState<string | undefined>(() => parseModelFromArgs(sessionArgs));
-  const showDebugTerminal = isOperator;
+  const [permissionQueue, setPermissionQueue] = useState<ConsolePermissionRequest[]>([]);
+  const [permissionBusy, setPermissionBusy] = useState(false);
+  const showDebugTerminal = backendType === 'pty' || isOperator;
   const providerFamily = isOperator ? 'claude' : command;
 
   // Keep visibility/viewMode refs current so ResizeObserver callback doesn't see stale values
@@ -534,17 +542,6 @@ export function TerminalPane({
   };
 
   const [prompt, setPrompt] = useState('');
-  const [modelSaving, setModelSaving] = useState(false);
-
-  const handleModelChange = async (nextModel: string) => {
-    setModelSaving(true);
-    try {
-      await updateConsoleSession(sessionId, { model: nextModel });
-      setModel(nextModel || undefined);
-    } finally {
-      setModelSaving(false);
-    }
-  };
 
   const handlePromptSubmit = (e: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     e.preventDefault();
@@ -587,6 +584,72 @@ export function TerminalPane({
       setReconnectNonce((n) => n + 1);
     } catch {
       setWsStatus('error');
+    }
+  };
+
+  useEffect(() => {
+    if (backendType !== 'sdk') {
+      setPermissionQueue([]);
+      return;
+    }
+
+    let cancelled = false;
+    getConsolePermissions(sessionId)
+      .then((requests) => {
+        if (!cancelled) {
+          setPermissionQueue(requests);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPermissionQueue([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [backendType, sessionId]);
+
+  useEffect(() => {
+    if (backendType !== 'sdk') {
+      return undefined;
+    }
+
+    const handlePermissionRequest = (
+      event: Event,
+    ) => {
+      const detail = (event as CustomEvent<{
+        console_session_id: string;
+        request: ConsolePermissionRequest;
+      }>).detail;
+      if (!detail || detail.console_session_id !== sessionId || !detail.request) {
+        return;
+      }
+      setPermissionQueue((prev) => {
+        if (prev.some((request) => request.id === detail.request.id)) {
+          return prev;
+        }
+        return [...prev, detail.request];
+      });
+    };
+
+    window.addEventListener('console:permission:request', handlePermissionRequest);
+    return () => {
+      window.removeEventListener('console:permission:request', handlePermissionRequest);
+    };
+  }, [backendType, sessionId]);
+
+  const handlePermissionResponse = async (
+    requestId: string,
+    decision: 'deny' | 'allow' | 'allow_always',
+  ) => {
+    setPermissionBusy(true);
+    try {
+      await respondToConsolePermission(sessionId, requestId, decision);
+      setPermissionQueue((prev) => prev.filter((request) => request.id !== requestId));
+    } finally {
+      setPermissionBusy(false);
     }
   };
 
@@ -714,9 +777,6 @@ export function TerminalPane({
                   sessionId,
                   backend: providerFamily,
                   model,
-                  modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
-                  modelSaving,
-                  onChangeModel: handleModelChange,
                 }}
               />
             </div>
@@ -769,9 +829,20 @@ export function TerminalPane({
                 Send
               </button>
             </form>
+            <SessionControls
+              sessionId={sessionId}
+              backendType={backendType}
+              model={model}
+              modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
+              onModelSaved={setModel}
+            />
           </div>
         )}
       </div>
+      <PermissionDialog
+        request={backendType === 'sdk' && !permissionBusy ? permissionQueue[0] ?? null : null}
+        onRespond={handlePermissionResponse}
+      />
     </div>
   );
 }

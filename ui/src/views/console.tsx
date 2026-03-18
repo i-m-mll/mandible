@@ -13,7 +13,12 @@ type ConsoleViewProps = {
   activeSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
   onCloseSession: (sessionId: string) => void;
-  onNewSession: (input: { label: string; backend: string; kind: string }) => void;
+  onNewSession: (input: {
+    label: string;
+    backend: string;
+    kind: string;
+    backend_type: 'pty' | 'sdk';
+  }) => void;
   isActive: boolean;
   initialSessionId: string | null;
 };
@@ -116,6 +121,7 @@ export function ConsoleView({
               key={session.id}
               sessionId={session.id}
               agentType={session.agent_type}
+              backendType={session.backend_type}
               command={session.command ?? session.agent_type}
               sessionArgs={session.args ?? []}
               isOperator={session.is_operator}

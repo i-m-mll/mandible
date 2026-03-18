@@ -8146,22 +8146,26 @@ async function restartConsoleSession(sessionId) {
 async function startConsoleSession(sessionId) {
   await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
 }
-async function createConsoleSession(label, backend, kind) {
+async function createConsoleSession(label, backend, kind, backendType) {
   const body = { label, command: "", args: [] };
   if (kind === "operator") {
     body.command = "claude";
-    body.args = ["--dangerously-skip-permissions"];
+    body.args = backendType === "sdk" ? [] : ["--dangerously-skip-permissions"];
     body.auto_restart = true;
     body.is_operator = true;
+    body.backend_type = backendType ?? "sdk";
   } else if (backend === "claude") {
     body.command = "claude";
-    body.args = ["--dangerously-skip-permissions"];
+    body.args = backendType === "sdk" ? [] : ["--dangerously-skip-permissions"];
+    body.backend_type = backendType ?? "sdk";
   } else if (backend === "codex") {
     body.command = "codex";
     body.args = [];
+    body.backend_type = "pty";
   } else if (backend === "gemini") {
     body.command = "gemini";
     body.args = ["-y"];
+    body.backend_type = "pty";
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
@@ -8189,6 +8193,24 @@ async function sendConsolePrompt(sessionId, prompt) {
 }
 async function updateConsoleSession(sessionId, body) {
   const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}`, body);
+  return parseMaybeJson(response);
+}
+async function getConsolePermissions(sessionId) {
+  const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/permissions`);
+  const payload = await parseMaybeJson(response);
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  return payload.requests ?? [];
+}
+async function respondToConsolePermission(sessionId, requestId, decision) {
+  await apiPost(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(requestId)}`,
+    { decision }
+  );
+}
+async function updateConsoleSessionOptions(sessionId, body) {
+  const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}/options`, body);
   return parseMaybeJson(response);
 }
 async function getBackupStatus() {
@@ -20793,6 +20815,279 @@ function ViewToggle({ current, onChange, showTerminal = true }) {
   ] });
 }
 
+// ui/src/components/console/PermissionDialog.tsx
+function formatToolInput(input) {
+  if (typeof input === "string") {
+    return input;
+  }
+  try {
+    return JSON.stringify(input, null, 2);
+  } catch {
+    return String(input ?? "");
+  }
+}
+function PermissionDialog({
+  request,
+  onRespond
+}) {
+  const [expanded, setExpanded] = d2(false);
+  const [now2, setNow] = d2(() => Date.now());
+  y2(() => {
+    setExpanded(false);
+  }, [request?.id]);
+  y2(() => {
+    if (!request) {
+      return void 0;
+    }
+    const interval2 = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1e3);
+    return () => window.clearInterval(interval2);
+  }, [request]);
+  y2(() => {
+    if (!request) {
+      return void 0;
+    }
+    const onKeyDown = (event) => {
+      if (event.shiftKey && event.key === "A") {
+        event.preventDefault();
+        onRespond(request.id, "allow_always");
+        return;
+      }
+      if (event.key === "Enter" || event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        onRespond(request.id, "allow");
+        return;
+      }
+      if (event.key === "Escape" || event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        onRespond(request.id, "deny");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onRespond, request]);
+  const formattedInput = T2(() => {
+    if (!request) {
+      return "";
+    }
+    return formatToolInput(request.tool_input);
+  }, [request]);
+  if (!request) {
+    return null;
+  }
+  const remainingSeconds = Math.max(
+    0,
+    Math.ceil((request.expires_at - now2) / 1e3)
+  );
+  const preview = formattedInput.length > 500 ? `${formattedInput.slice(0, 500)}\u2026` : formattedInput;
+  const toolName = request.display_name || request.tool_name;
+  return /* @__PURE__ */ u3("div", { className: "permission-dialog-overlay", children: /* @__PURE__ */ u3("div", { className: "permission-dialog", role: "dialog", "aria-modal": "true", "aria-labelledby": "permission-dialog-title", children: [
+    /* @__PURE__ */ u3("div", { className: "permission-dialog__header", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("div", { className: "permission-dialog__eyebrow", children: "Permission required" }),
+        /* @__PURE__ */ u3("h3", { id: "permission-dialog-title", children: request.title || toolName })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "permission-dialog__countdown", children: [
+        remainingSeconds,
+        "s"
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "permission-dialog__meta", children: [
+      /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: toolName }),
+      request.agent_id && /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: [
+        "Agent ",
+        request.agent_id
+      ] }),
+      request.blocked_path && /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: request.blocked_path })
+    ] }),
+    request.description && /* @__PURE__ */ u3("p", { className: "permission-dialog__description", children: request.description }),
+    request.decision_reason && /* @__PURE__ */ u3("p", { className: "permission-dialog__reason", children: request.decision_reason }),
+    /* @__PURE__ */ u3("div", { className: "permission-dialog__section", children: [
+      /* @__PURE__ */ u3("div", { className: "permission-dialog__section-title", children: "Tool input" }),
+      /* @__PURE__ */ u3("pre", { className: "permission-dialog__input", children: expanded ? formattedInput : preview }),
+      formattedInput.length > 500 && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "permission-dialog__toggle",
+          onClick: () => setExpanded((value) => !value),
+          children: expanded ? "Show less" : "Expand"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "permission-dialog__actions", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "permission-dialog__button permission-dialog__button--deny",
+          onClick: () => onRespond(request.id, "deny"),
+          children: "Deny"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "permission-dialog__button permission-dialog__button--allow",
+          onClick: () => onRespond(request.id, "allow"),
+          children: "Allow"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "permission-dialog__button permission-dialog__button--always",
+          onClick: () => onRespond(request.id, "allow_always"),
+          children: "Always Allow"
+        }
+      )
+    ] })
+  ] }) });
+}
+
+// ui/src/components/console/SessionControls.tsx
+function SessionControls({
+  sessionId,
+  backendType,
+  model,
+  modelOptions,
+  onModelSaved
+}) {
+  const [draftModel, setDraftModel] = d2(model ?? "");
+  const [permissionMode, setPermissionMode] = d2("default");
+  const [maxTurns, setMaxTurns] = d2("");
+  const [maxCostUsd, setMaxCostUsd] = d2("");
+  const [saving, setSaving] = d2(false);
+  const [error, setError] = d2(null);
+  y2(() => {
+    setDraftModel(model ?? "");
+  }, [model]);
+  const handleModelOnlySave = async (nextModel) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await updateConsoleSession(sessionId, { model: nextModel || void 0 });
+      onModelSaved?.(nextModel || void 0);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to save model");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const handleSdkSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await updateConsoleSessionOptions(sessionId, {
+        model: draftModel || void 0,
+        permissionMode,
+        maxTurns: maxTurns.trim() ? Number(maxTurns) : void 0,
+        maxCostUsd: maxCostUsd.trim() ? Number(maxCostUsd) : void 0
+      });
+      onModelSaved?.(draftModel || void 0);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to save session options");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return /* @__PURE__ */ u3("div", { className: "session-controls", children: [
+    /* @__PURE__ */ u3("div", { className: "session-controls__row", children: [
+      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
+        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Model" }),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            className: "session-controls__select",
+            value: draftModel,
+            disabled: saving,
+            onChange: (event) => {
+              const nextModel = event.currentTarget.value;
+              setDraftModel(nextModel);
+              if (backendType === "pty") {
+                void handleModelOnlySave(nextModel);
+              }
+            },
+            children: [
+              /* @__PURE__ */ u3("option", { value: "", children: "default" }),
+              modelOptions.map((option) => /* @__PURE__ */ u3("option", { value: option, children: option }, option))
+            ]
+          }
+        )
+      ] }),
+      backendType === "sdk" && /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
+        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Permissions" }),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            className: "session-controls__select",
+            value: permissionMode,
+            disabled: saving,
+            onChange: (event) => setPermissionMode(
+              event.currentTarget.value
+            ),
+            children: [
+              /* @__PURE__ */ u3("option", { value: "default", children: "Ask each time" }),
+              /* @__PURE__ */ u3("option", { value: "acceptEdits", children: "Accept edits" }),
+              /* @__PURE__ */ u3("option", { value: "bypassPermissions", children: "Bypass permissions" })
+            ]
+          }
+        )
+      ] })
+    ] }),
+    backendType === "sdk" && /* @__PURE__ */ u3("div", { className: "session-controls__row", children: [
+      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
+        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Max turns" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            className: "session-controls__input",
+            type: "number",
+            min: "1",
+            step: "1",
+            value: maxTurns,
+            disabled: saving,
+            onInput: (event) => setMaxTurns(event.currentTarget.value),
+            placeholder: "Unlimited"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
+        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Max cost (USD)" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            className: "session-controls__input",
+            type: "number",
+            min: "0",
+            step: "0.01",
+            value: maxCostUsd,
+            disabled: saving,
+            onInput: (event) => setMaxCostUsd(event.currentTarget.value),
+            placeholder: "Unlimited"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "session-controls__actions", children: /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "session-controls__button",
+          disabled: saving,
+          onClick: () => {
+            void handleSdkSave();
+          },
+          children: saving ? "Saving\u2026" : "Save"
+        }
+      ) })
+    ] }),
+    error && /* @__PURE__ */ u3("div", { className: "session-controls__error", children: error })
+  ] });
+}
+
 // ui/src/components/console/TerminalPane.tsx
 var MODEL_OPTIONS = {
   claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
@@ -20908,6 +21203,7 @@ function conversationBlocksToStreamEvents(providerSessionId, blocks) {
 function TerminalPane({
   sessionId,
   agentType,
+  backendType,
   command,
   sessionArgs,
   isOperator,
@@ -20934,7 +21230,9 @@ function TerminalPane({
   const [elapsedSeconds, setElapsedSeconds] = d2(void 0);
   const streamStartAtRef = A2(null);
   const [model, setModel] = d2(() => parseModelFromArgs(sessionArgs));
-  const showDebugTerminal = isOperator;
+  const [permissionQueue, setPermissionQueue] = d2([]);
+  const [permissionBusy, setPermissionBusy] = d2(false);
+  const showDebugTerminal = backendType === "pty" || isOperator;
   const providerFamily = isOperator ? "claude" : command;
   y2(() => {
     isVisibleRef.current = isVisible;
@@ -21212,16 +21510,6 @@ function TerminalPane({
     }
   };
   const [prompt, setPrompt] = d2("");
-  const [modelSaving, setModelSaving] = d2(false);
-  const handleModelChange = async (nextModel) => {
-    setModelSaving(true);
-    try {
-      await updateConsoleSession(sessionId, { model: nextModel });
-      setModel(nextModel || void 0);
-    } finally {
-      setModelSaving(false);
-    }
-  };
   const handlePromptSubmit = (e3) => {
     e3.preventDefault();
     if (!prompt.trim())
@@ -21255,6 +21543,55 @@ function TerminalPane({
       setReconnectNonce((n2) => n2 + 1);
     } catch {
       setWsStatus("error");
+    }
+  };
+  y2(() => {
+    if (backendType !== "sdk") {
+      setPermissionQueue([]);
+      return;
+    }
+    let cancelled = false;
+    getConsolePermissions(sessionId).then((requests) => {
+      if (!cancelled) {
+        setPermissionQueue(requests);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setPermissionQueue([]);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [backendType, sessionId]);
+  y2(() => {
+    if (backendType !== "sdk") {
+      return void 0;
+    }
+    const handlePermissionRequest = (event) => {
+      const detail = event.detail;
+      if (!detail || detail.console_session_id !== sessionId || !detail.request) {
+        return;
+      }
+      setPermissionQueue((prev) => {
+        if (prev.some((request) => request.id === detail.request.id)) {
+          return prev;
+        }
+        return [...prev, detail.request];
+      });
+    };
+    window.addEventListener("console:permission:request", handlePermissionRequest);
+    return () => {
+      window.removeEventListener("console:permission:request", handlePermissionRequest);
+    };
+  }, [backendType, sessionId]);
+  const handlePermissionResponse = async (requestId, decision) => {
+    setPermissionBusy(true);
+    try {
+      await respondToConsolePermission(sessionId, requestId, decision);
+      setPermissionQueue((prev) => prev.filter((request) => request.id !== requestId));
+    } finally {
+      setPermissionBusy(false);
     }
   };
   return /* @__PURE__ */ u3(
@@ -21364,10 +21701,7 @@ function TerminalPane({
                 sessionInfo: {
                   sessionId,
                   backend: providerFamily,
-                  model,
-                  modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
-                  modelSaving,
-                  onChangeModel: handleModelChange
+                  model
                 }
               }
             ) }),
@@ -21427,9 +21761,26 @@ function TerminalPane({
                   )
                 ]
               }
+            ),
+            /* @__PURE__ */ u3(
+              SessionControls,
+              {
+                sessionId,
+                backendType,
+                model,
+                modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
+                onModelSaved: setModel
+              }
             )
           ] })
-        ] })
+        ] }),
+        /* @__PURE__ */ u3(
+          PermissionDialog,
+          {
+            request: backendType === "sdk" && !permissionBusy ? permissionQueue[0] ?? null : null,
+            onRespond: handlePermissionResponse
+          }
+        )
       ]
     }
   );
@@ -21498,21 +21849,29 @@ function NewSessionDialog({
   const [label, setLabel] = d2("");
   const [kind, setKind] = d2("agent");
   const [backend, setBackend] = d2("claude");
+  const [transport, setTransport] = d2("sdk");
   y2(() => {
     if (kind === "operator" && backend !== "claude") {
       setBackend("claude");
+      setTransport("sdk");
     }
   }, [backend, kind]);
+  y2(() => {
+    if (backend !== "claude" && transport !== "pty") {
+      setTransport("pty");
+    }
+  }, [backend, transport]);
   if (!open)
     return null;
   const handleSubmit = (e3) => {
     e3.preventDefault();
     if (!label.trim())
       return;
-    onSubmit({ label: label.trim(), backend, kind });
+    onSubmit({ label: label.trim(), backend, kind, backend_type: transport });
     setLabel("");
     setKind("agent");
     setBackend("claude");
+    setTransport("sdk");
     onClose();
   };
   const handleOverlayClick = (e3) => {
@@ -21565,11 +21924,37 @@ function NewSessionDialog({
               note: disabled ? option.note : void 0,
               selected: backend === option.value,
               disabled,
-              onClick: () => setBackend(option.value)
+              onClick: () => {
+                setBackend(option.value);
+                setTransport(option.value === "claude" ? "sdk" : "pty");
+              }
             },
             option.value
           );
         }) })
+      ] }),
+      backend === "claude" && /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Transport" }),
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: [
+          /* @__PURE__ */ u3(
+            OptionCard,
+            {
+              title: "Claude SDK",
+              description: "Structured events, Mandible permissions, and SDK-native session control.",
+              selected: transport === "sdk",
+              onClick: () => setTransport("sdk")
+            }
+          ),
+          /* @__PURE__ */ u3(
+            OptionCard,
+            {
+              title: "PTY",
+              description: "Classic terminal transport with a raw debug terminal fallback.",
+              selected: transport === "pty",
+              onClick: () => setTransport("pty")
+            }
+          )
+        ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "new-session-dialog__actions", children: [
         /* @__PURE__ */ u3("button", { type: "button", onClick: onClose, className: "new-session-dialog__button new-session-dialog__button--ghost", children: "Cancel" }),
@@ -21675,6 +22060,7 @@ function ConsoleView({
       {
         sessionId: session.id,
         agentType: session.agent_type,
+        backendType: session.backend_type,
         command: session.command ?? session.agent_type,
         sessionArgs: session.args ?? [],
         isOperator: session.is_operator,
@@ -27295,10 +27681,11 @@ function App() {
   const handleConsoleNewSession = async ({
     label,
     backend,
-    kind
+    kind,
+    backend_type
   }) => {
     try {
-      const result = await createConsoleSession(label, backend, kind);
+      const result = await createConsoleSession(label, backend, kind, backend_type);
       const session = {
         pinned: false,
         unread_count: 0,
