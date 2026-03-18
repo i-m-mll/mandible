@@ -105,6 +105,7 @@ export interface AuthRequest {
   deletions?: number;
   post_merge_handoff?: string | null;
   issue_ids?: string[] | null;
+  issues?: string[] | null;
   depends_on_id?: string | null;
   execution_mode: AuthExecutionMode;
   status: AuthRequestStatus;
@@ -136,6 +137,7 @@ export interface AuthRequestInput {
   additions?: number;
   deletions?: number;
   post_merge_handoff?: string | null;
+  issues?: string[] | null;
   depends_on_id?: string | null;
   execution_mode?: AuthExecutionMode;
 }

@@ -329,4 +329,79 @@ describe("auth queue", () => {
     expect(events.some((event) => event.event === "auth:output")).toBe(true);
     expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
   });
+
+  // Bug: 297677f — issues field tests
+  it("stores issues on submit and retrieves them", () => {
+    const queue = createQueue();
+
+    const request = queue.submit({
+      command: "echo merge",
+      title: "Merge with closes",
+      issues: ["abc123", "def456"]
+    });
+
+    const fetched = queue.getRequest(request.id);
+    expect(fetched?.issues).toEqual(["abc123", "def456"]);
+  });
+
+  it("stores null issues when not provided", () => {
+    const queue = createQueue();
+
+    const request = queue.submit({
+      command: "echo merge",
+      title: "Merge without closes"
+    });
+
+    const fetched = queue.getRequest(request.id);
+    expect(fetched?.issues).toBeNull();
+  });
+
+  it("allows updating issues on a pending request", () => {
+    const queue = createQueue();
+
+    const request = queue.submit({
+      command: "echo merge",
+      title: "Update closes"
+    });
+
+    const updated = queue.update(request.id, {
+      issues: ["umbrella123"]
+    });
+
+    expect(updated.issues).toEqual(["umbrella123"]);
+  });
+
+  it("allows setting issues to null via update", () => {
+    const queue = createQueue();
+
+    const request = queue.submit({
+      command: "echo merge",
+      title: "Clear closes",
+      issues: ["abc123"]
+    });
+
+    const updated = queue.update(request.id, {
+      issues: null
+    });
+
+    expect(updated.issues).toBeNull();
+  });
+
+  it("preserves issues through retry-via-update", () => {
+    const queue = createQueue();
+
+    const request = queue.submit({
+      command: "echo retry",
+      title: "Retry with closes",
+      issues: ["umbrella789"]
+    });
+
+    // Simulate failed execution
+    queue.setResult(request.id, 1, "error", "failed");
+
+    // Reset to pending — issues should survive
+    const updated = queue.update(request.id, { status: "pending" });
+    expect(updated.status).toBe("pending");
+    expect(updated.issues).toEqual(["umbrella789"]);
+  });
 });

@@ -409,6 +409,61 @@ auto_close_issues() {
   fi
 }
 
+# Bug: 297677f — close issues declared in the auth request's issues field.
+# These are issue IDs explicitly listed by the submitter (e.g., umbrella issues
+# in bigbuild workflows) that should be closed on merge, independent of Bug: trailers.
+close_declared_issues() {
+  # Requires MANDIBLE_AUTH_REQUEST_ID to be set by the executor
+  local request_id="${MANDIBLE_AUTH_REQUEST_ID:-}"
+  if [[ -z "$request_id" ]]; then
+    return 0
+  fi
+
+  local port="${MANDIBLE_PORT:-19420}"
+  local base="http://127.0.0.1:${port}"
+
+  # Query the auth request for issues
+  local response
+  response=$(curl -sf --max-time 5 "${base}/api/auth/request/${request_id}" 2>/dev/null) || return 0
+
+  local issues_json
+  issues_json=$(printf '%s' "$response" | jq -r '.issues // empty' 2>/dev/null) || return 0
+  if [[ -z "$issues_json" || "$issues_json" == "null" ]]; then
+    return 0
+  fi
+
+  # Parse the JSON array into individual IDs
+  local ids
+  ids=$(printf '%s' "$issues_json" | jq -r '.[]' 2>/dev/null) || return 0
+  if [[ -z "$ids" ]]; then
+    return 0
+  fi
+
+  if ! command -v git-bug >/dev/null 2>&1; then
+    err "${DIM_WHITE}[issues] git-bug not found, skipping declared issue closure${RESET}"
+    return 0
+  fi
+
+  local id
+  local closed=0
+  for id in $ids; do
+    if git-bug bug status close "$id" 2>/dev/null; then
+      git-bug bug label new "$id" merged 2>/dev/null || true
+
+      local merge_sha
+      merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+      git-bug bug comment new "$id" -m "Resolved by merge ${merge_sha:0:12} (declared in auth request ${request_id:0:8})" --non-interactive 2>/dev/null || true
+
+      err "${DIM_WHITE}[issues] merged declared issue ${id}${RESET}"
+      closed=$((closed + 1))
+    fi
+  done
+
+  if [[ "$closed" -gt 0 ]]; then
+    err "${GREEN}[issues] merged ${closed} declared issue(s)${RESET}"
+  fi
+}
+
 # Bug: b1308c6 — auto-build dist after merge when src/ or ui/src/ changed.
 # If the merged branch contained source changes but no pre-built dist (agents
 # sometimes omit dist from feature branches), run npm run build now so the
@@ -620,6 +675,7 @@ main() {
       verify_merge_not_empty
       if [[ ${#sources[@]} -gt 0 ]]; then
         auto_close_issues "$target" "$pre_merge_head"
+        close_declared_issues
         cleanup_merged_worktrees "${sources[0]}"
       fi
       build_dist_if_src_changed "$pre_merge_head"
@@ -748,6 +804,7 @@ main() {
     if git merge --no-ff --no-edit -S "$source"; then
       verify_merge_not_empty
       auto_close_issues "$target" "$pre_merge_head"
+      close_declared_issues
       cleanup_merged_worktrees "$source"
       build_dist_if_src_changed "$pre_merge_head"
       restart_mandible_if_dist_changed "$pre_merge_head"
@@ -762,6 +819,7 @@ main() {
         if git -c commit.gpgsign=true merge --continue; then
           verify_merge_not_empty
           auto_close_issues "$target" "$pre_merge_head"
+          close_declared_issues
           cleanup_merged_worktrees "$source"
           build_dist_if_src_changed "$pre_merge_head"
           restart_mandible_if_dist_changed "$pre_merge_head"
@@ -811,6 +869,7 @@ main() {
 
   # Auto-close issues from all merged commits (hierarchical)
   auto_close_issues "$target" "$pre_merge_head"
+  close_declared_issues
 
   for source in "${succeeded[@]}"; do
     cleanup_merged_worktrees "$source"

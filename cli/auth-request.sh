@@ -16,6 +16,7 @@
 #   --cwd <path>            Override auto-detected protected branch worktree path
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
 #   --depends-on <id>       Auth request ID that must complete before this one runs
+#   --issue <id>            Issue ID to associate with this auth request (repeatable; required; all associated issues are closed on merge)
 #   --handoff <text>        Post-merge handoff note for next session
 #   --timeout <seconds>     SSE listen timeout (default: 14400 / 4 hours)
 #   --force / -f             Skip CWD validation checks
@@ -46,6 +47,7 @@ diff_summary=""
 spec_content=""
 post_merge_handoff=""
 depends_on_id=""
+ISSUES=()
 repo=""
 cwd_override=""
 target_override=""
@@ -61,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     --spec)           spec_content="$2"; shift 2 ;;
     --handoff)        post_merge_handoff="$2"; shift 2 ;;
     --depends-on)     depends_on_id="$2"; shift 2 ;;
+    --issue)          ISSUES+=("$2"); shift 2 ;;
     --repo)           repo="$2"; shift 2 ;;
     --cwd)            cwd_override="$2"; shift 2 ;;
     --target)         target_override="$2"; shift 2 ;;
@@ -87,6 +90,10 @@ fi
 if [[ -z "$title" ]]; then
   echo "Error: --title is required" >&2
   exit 2
+fi
+if [ ${#ISSUES[@]} -eq 0 ]; then
+  echo "Error: at least one --issue <id> is required" >&2
+  exit 1
 fi
 
 # --- Auto-detect protected branch ---
@@ -262,6 +269,14 @@ command="${HOME}/.dotfiles/bin/mandible auth merge ${branch} --into ${base_branc
 head_branch="$branch"
 execution_mode="daemon"
 
+# --- Build issues JSON array ---
+# Bug: 297677f — serialize --issue flags into a JSON array for the API
+
+issues_json="null"
+if [[ ${#ISSUES[@]} -gt 0 ]]; then
+  issues_json=$(printf '%s\n' "${ISSUES[@]}" | jq -R . | jq -sc .)
+fi
+
 # --- Submit to Mandible ---
 
 payload=$(jq -nc \
@@ -280,6 +295,7 @@ payload=$(jq -nc \
   --arg spec_content "$spec_content" \
   --arg post_merge_handoff "$post_merge_handoff" \
   --arg depends_on_id "$depends_on_id" \
+  --argjson issues "$issues_json" \
   '{
     command: $command,
     cwd: $cwd,
@@ -295,6 +311,7 @@ payload=$(jq -nc \
     commit_message: $commit_message,
     spec_content: $spec_content,
     post_merge_handoff: (if $post_merge_handoff == "" then null else $post_merge_handoff end),
+    issues: $issues,
     depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end)
   }')
 
