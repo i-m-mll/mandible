@@ -409,7 +409,7 @@ auto_close_issues() {
   fi
 }
 
-# Bug: 297677f — close issues declared in the auth request's closes_issues field.
+# Bug: 297677f — close issues declared in the auth request's issues field.
 # These are issue IDs explicitly listed by the submitter (e.g., umbrella issues
 # in bigbuild workflows) that should be closed on merge, independent of Bug: trailers.
 close_declared_issues() {
@@ -422,25 +422,25 @@ close_declared_issues() {
   local port="${MANDIBLE_PORT:-19420}"
   local base="http://127.0.0.1:${port}"
 
-  # Query the auth request for closes_issues
+  # Query the auth request for issues
   local response
   response=$(curl -sf --max-time 5 "${base}/api/auth/request/${request_id}" 2>/dev/null) || return 0
 
-  local closes_json
-  closes_json=$(printf '%s' "$response" | jq -r '.closes_issues // empty' 2>/dev/null) || return 0
-  if [[ -z "$closes_json" || "$closes_json" == "null" ]]; then
+  local issues_json
+  issues_json=$(printf '%s' "$response" | jq -r '.issues // empty' 2>/dev/null) || return 0
+  if [[ -z "$issues_json" || "$issues_json" == "null" ]]; then
     return 0
   fi
 
   # Parse the JSON array into individual IDs
   local ids
-  ids=$(printf '%s' "$closes_json" | jq -r '.[]' 2>/dev/null) || return 0
+  ids=$(printf '%s' "$issues_json" | jq -r '.[]' 2>/dev/null) || return 0
   if [[ -z "$ids" ]]; then
     return 0
   fi
 
   if ! command -v git-bug >/dev/null 2>&1; then
-    err "${DIM_WHITE}[closes-issues] git-bug not found, skipping declared issue closure${RESET}"
+    err "${DIM_WHITE}[issues] git-bug not found, skipping declared issue closure${RESET}"
     return 0
   fi
 
@@ -454,13 +454,13 @@ close_declared_issues() {
       merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
       git-bug bug comment new "$id" -m "Resolved by merge ${merge_sha:0:12} (declared in auth request ${request_id:0:8})" --non-interactive 2>/dev/null || true
 
-      err "${DIM_WHITE}[closes-issues] merged declared issue ${id}${RESET}"
+      err "${DIM_WHITE}[issues] merged declared issue ${id}${RESET}"
       closed=$((closed + 1))
     fi
   done
 
   if [[ "$closed" -gt 0 ]]; then
-    err "${GREEN}[closes-issues] merged ${closed} declared issue(s)${RESET}"
+    err "${GREEN}[issues] merged ${closed} declared issue(s)${RESET}"
   fi
 }
 

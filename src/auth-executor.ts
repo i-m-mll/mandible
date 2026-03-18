@@ -65,7 +65,7 @@ export async function executeAuthCommand(
     let settled = false;
 
     // Bug: 297677f — expose the auth request ID so the merge script can query
-    // the API for closes_issues and other request-specific metadata.
+    // the API for issues and other request-specific metadata.
     const childEnv = cleanEnvForAuth(process.env);
     childEnv.MANDIBLE_AUTH_REQUEST_ID = options.request_id;
 

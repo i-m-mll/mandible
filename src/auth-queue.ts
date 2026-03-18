@@ -195,7 +195,7 @@ export class AuthQueue {
       deletions: payload.deletions ?? 0,
       post_merge_handoff: payload.post_merge_handoff ?? null,
       issue_ids: extractIssueIdsFromCommitMessage(payload.commit_message),
-      closes_issues: payload.closes_issues ?? null,
+      issues: payload.issues ?? null,
       depends_on_id: payload.depends_on_id ?? null,
       execution_mode: payload.execution_mode ?? "daemon",
       status: "pending",
@@ -230,7 +230,7 @@ export class AuthQueue {
         deletions,
         post_merge_handoff,
         issue_ids,
-        closes_issues,
+        issues,
         depends_on_id,
         execution_mode,
         status,
@@ -262,7 +262,7 @@ export class AuthQueue {
         @deletions,
         @post_merge_handoff,
         @issue_ids,
-        @closes_issues,
+        @issues,
         @depends_on_id,
         @execution_mode,
         @status,
@@ -287,7 +287,7 @@ export class AuthQueue {
       head_branch: request.head_branch ?? null,
       post_merge_handoff: request.post_merge_handoff ?? null,
       issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
-      closes_issues: request.closes_issues ? JSON.stringify(request.closes_issues) : null
+      issues: request.issues ? JSON.stringify(request.issues) : null
     });
 
     this.broadcast({
@@ -361,10 +361,10 @@ export class AuthQueue {
       }
     }
 
-    // Bug: 297677f — closes_issues is a JSON array, needs serialization
-    if ("closes_issues" in payload) {
-      const ci = payload.closes_issues as string[] | null | undefined;
-      updates.push("closes_issues = ?");
+    // Bug: 297677f — issues is a JSON array, needs serialization
+    if ("issues" in payload) {
+      const ci = payload.issues as string[] | null | undefined;
+      updates.push("issues = ?");
       values.push(ci && Array.isArray(ci) ? JSON.stringify(ci) : null);
     }
 
@@ -938,7 +938,7 @@ export class AuthQueue {
         deletions INTEGER DEFAULT 0,
         post_merge_handoff TEXT,
         issue_ids TEXT,
-        closes_issues TEXT,
+        issues TEXT,
         depends_on_id TEXT,
         execution_mode TEXT NOT NULL DEFAULT 'daemon',
         status TEXT NOT NULL,
@@ -985,13 +985,13 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     }
   }
 
-  // Bug: 297677f — parse closes_issues JSON array from DB
-  let closesIssues: string[] | null = null;
-  if (row.closes_issues != null) {
+  // Bug: 297677f — parse issues JSON array from DB
+  let parsedIssues: string[] | null = null;
+  if (row.issues != null) {
     try {
-      closesIssues = JSON.parse(String(row.closes_issues));
+      parsedIssues = JSON.parse(String(row.issues));
     } catch {
-      closesIssues = null;
+      parsedIssues = null;
     }
   }
 
@@ -1012,7 +1012,7 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     deletions: row.deletions == null ? undefined : Number(row.deletions),
     post_merge_handoff: row.post_merge_handoff == null ? null : String(row.post_merge_handoff),
     issue_ids: issueIds,
-    closes_issues: closesIssues,
+    issues: parsedIssues,
     depends_on_id: row.depends_on_id == null ? null : String(row.depends_on_id),
     execution_mode:
       row.execution_mode === "remote" || row.execution_mode === "daemon"

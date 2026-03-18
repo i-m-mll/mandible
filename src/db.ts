@@ -513,7 +513,7 @@ const MIGRATIONS: Migration[] = [
     // independent of Bug: trailers in commit messages. Enables umbrella issue
     // auto-closure in bigbuild workflows.
     statements: [
-      `ALTER TABLE auth_requests ADD COLUMN closes_issues TEXT`
+      `ALTER TABLE auth_requests ADD COLUMN issues TEXT`
     ]
   }
 ];
