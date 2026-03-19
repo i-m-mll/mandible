@@ -132,6 +132,7 @@ export function ConsoleView({
               isVisible={session.id === activeSessionId}
               viewMode={getViewMode(session.id)}
               onViewModeChange={(mode) => handleViewModeChange(session.id, mode)}
+              resumeAtMessage={session.resume_at_message}
             />
           ))
         )}
