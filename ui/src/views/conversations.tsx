@@ -16,6 +16,7 @@ import {
   triggerIngestion,
   updateConversation,
 } from '../api.js';
+import { MessageActions } from '../components/shared/MessageActions';
 
 // Configure marked for safe, synchronous rendering
 marked.setOptions({ async: false, gfm: true, breaks: false });
@@ -512,8 +513,10 @@ function BlockRenderer({
 
   const headerLabel = getBlockHeaderLabel(block, metadata);
 
+  const blockDagUuid = (block as ConversationBlock & { dag_uuid?: string })?.dag_uuid;
+
   return (
-    <div className={typeClass} onClick={handleClick} data-block-id={block.id}>
+    <div className={typeClass} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
       {showHeader && (
         <div className="block-header">
           <div className="block-header__left">
@@ -567,6 +570,14 @@ function BlockRenderer({
         </div>
       )}
       {renderConversationBlockBody(block, collapsed)}
+      <MessageActions
+        onCopy={() => { navigator.clipboard.writeText(block.content).catch(() => {}); }}
+        onResume={() => {}}
+        onFork={() => {}}
+        dagUuid={blockDagUuid}
+        showResume={!!blockDagUuid}
+        showFork={!!blockDagUuid}
+      />
     </div>
   );
 }
@@ -684,12 +695,17 @@ function TranscriptTurnRenderer({
       ? 'Assistant'
       : 'System';
 
+  // Collect text content for copy action across all blocks in this turn
+  const turnText = turn.blocks.map((b) => b.content).join('\n\n');
+  // dag_uuid: use the first block's dag_uuid if available (populated after P1 merges)
+  const turnDagUuid = (turn.blocks[0] as ConversationBlock & { dag_uuid?: string })?.dag_uuid;
+
   return (
     <div className={`transcript-turn transcript-turn--${turn.speaker}`}>
       <div className="transcript-turn__speaker">
         <span className="transcript-turn__badge">{speakerLabel}</span>
       </div>
-      <div className="transcript-turn__body">
+      <div className="transcript-turn__body" style={{ position: 'relative' }}>
         {turn.blocks.map((block) => (
           <TranscriptBlockItem
             key={block.id}
@@ -702,6 +718,14 @@ function TranscriptTurnRenderer({
             collapsed={collapsedBlocks.has(block.id)}
           />
         ))}
+        <MessageActions
+          onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
+          onResume={() => {}}
+          onFork={() => {}}
+          dagUuid={turnDagUuid}
+          showResume={!!turnDagUuid}
+          showFork={!!turnDagUuid}
+        />
       </div>
     </div>
   );

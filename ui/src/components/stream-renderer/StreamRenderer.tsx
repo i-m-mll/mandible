@@ -15,6 +15,8 @@ import type {
 } from './types';
 import { MessageGroup } from './MessageGroup';
 import { StatusBar } from './StatusBar';
+import { MessageActions } from '../shared/MessageActions';
+import { BranchSelector } from '../console/BranchSelector';
 
 // ---- Event parsing hook ----
 
@@ -293,8 +295,28 @@ export function StreamRenderer({
       const isThinking =
         isLastStreamingTurn &&
         turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
+
+      // Collect text content for copy action
+      const turnTextParts: string[] = [];
+      for (const block of turn.assistantEvent.message.content) {
+        if (block.type === 'text' && block.text) turnTextParts.push(block.text);
+      }
+      const turnText = turnTextParts.join('\n\n');
+
+      // BranchSelector placeholder — renders invisible (totalBranches <= 1) until
+      // P2's DAG API populates real fork data. Bug: a0963df
       nodes.push(
-        <div key={turn.id} className="stream-turn stream-turn--assistant">
+        <BranchSelector
+          key={`branch-${turn.id}`}
+          branchPointUuid={turn.id}
+          totalBranches={1}
+          currentIndex={0}
+          onSelect={() => {}}
+        />,
+      );
+
+      nodes.push(
+        <div key={turn.id} className="stream-turn stream-turn--assistant" style={{ position: 'relative' }}>
           <div className="stream-turn__speaker">
             <span className="stream-turn__badge">Assistant</span>
           </div>
@@ -305,6 +327,11 @@ export function StreamRenderer({
               isThinking={isThinking}
             />
           </div>
+          <MessageActions
+            onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
+            onResume={() => {}}
+            onFork={() => {}}
+          />
         </div>,
       );
     }
