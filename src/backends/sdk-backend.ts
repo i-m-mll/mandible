@@ -399,6 +399,19 @@ implements
     this.abortController = abortController;
     this.activeQuery = query;
 
+    // Bug: 6634023 — The SDK event stream does not echo the user's prompt back.
+    // Synthesize a user event so the prompt appears in the event log for hydration,
+    // replay, and "View history" consistency.
+    this.storeAndBroadcast({
+      type: "user",
+      session_id: this.meta.provider_session_id ?? this.id,
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [{ type: "text", text: prompt }],
+      },
+    });
+
     try {
       for await (const message of query) {
         const events = this.normalizeSDKEvent(message);

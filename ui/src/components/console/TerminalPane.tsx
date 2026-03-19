@@ -290,6 +290,8 @@ export function TerminalPane({
   const [permissionQueue, setPermissionQueue] = useState<ConsolePermissionRequest[]>([]);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([]);
+  // Bug: 6634023 — Sidebar state for SessionControls (collapsed by default)
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const showDebugTerminal = backendType === 'pty' || isOperator;
   const providerFamily = isOperator ? 'claude' : command;
   const availableTools = collectAvailableTools(streamEvents);
@@ -663,6 +665,14 @@ export function TerminalPane({
     if (viewMode === 'rich') {
       const submittedPrompt = prompt.trim();
       setPrompt('');
+      // Bug: 6634023 — Inject a synthetic_prompt event so the user's message appears
+      // immediately in the chat view. The SDK event stream does not echo user prompts.
+      const localId = `sp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setStreamEvents(prev => [...prev, {
+        type: 'synthetic_prompt',
+        localId,
+        text: submittedPrompt,
+      }]);
       setElapsedSeconds(0);
       streamStartAtRef.current = Date.now();
       setStreaming(true);
@@ -873,101 +883,135 @@ export function TerminalPane({
           </div>
         )}
 
-        {/* Rich view: StreamRenderer */}
+        {/* Rich view: StreamRenderer + sidebar for SessionControls */}
         {viewMode === 'rich' && (
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-            {/* Bug: db5e986 — min-height:0 is required on flex column children so the
-                scrollable region doesn't overflow its container and push the input bar
-                below the visible area. Without it, flex items default to min-height:auto
-                which lets them grow beyond the parent's bounds. */}
-            <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-              {backendType === 'sdk' && activeSubagents.length > 0 && (
-                <div className="terminal-pane__subagents">
-                  <div className="terminal-pane__subagents-title">Active subagents</div>
-                  <div className="terminal-pane__subagents-list">
-                    {activeSubagents.map((subagent) => (
-                      <div
-                        key={subagent.agent_id}
-                        className="terminal-pane__subagent"
-                        style={{ paddingLeft: `${subagent.depth * 18}px` }}
-                      >
-                        <span className="terminal-pane__subagent-type">{subagent.agent_type}</span>
-                        <span className="terminal-pane__subagent-id">{subagent.agent_id}</span>
-                      </div>
-                    ))}
+          <div className="terminal-pane__rich-wrapper">
+            {/* Main content column: stream + input */}
+            <div className="terminal-pane__rich-main">
+              {/* Bug: db5e986 — min-height:0 is required on flex column children so the
+                  scrollable region doesn't overflow its container and push the input bar
+                  below the visible area. Without it, flex items default to min-height:auto
+                  which lets them grow beyond the parent's bounds. */}
+              <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+                {backendType === 'sdk' && activeSubagents.length > 0 && (
+                  <div className="terminal-pane__subagents">
+                    <div className="terminal-pane__subagents-title">Active subagents</div>
+                    <div className="terminal-pane__subagents-list">
+                      {activeSubagents.map((subagent) => (
+                        <div
+                          key={subagent.agent_id}
+                          className="terminal-pane__subagent"
+                          style={{ paddingLeft: `${subagent.depth * 18}px` }}
+                        >
+                          <span className="terminal-pane__subagent-type">{subagent.agent_type}</span>
+                          <span className="terminal-pane__subagent-id">{subagent.agent_id}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
-              <StreamRenderer
-                events={streamEvents}
-                streaming={streaming}
-                elapsedSeconds={elapsedSeconds}
-                emptyLabel={hydratingHistory ? 'Loading prior messages…' : undefined}
-                sessionInfo={{
-                  sessionId,
-                  backend: providerFamily,
-                  model,
-                }}
-              />
-            </div>
-            {/* Bug: aea2c67 — prompt input bar in rich view */}
-            <form
-              onSubmit={handlePromptSubmit}
-              style={{
-                padding: '12px 16px',
-                borderTop: '1px solid var(--border-subtle)',
-                background: 'var(--bg-inset)',
-                display: 'flex',
-                gap: '12px',
-                alignItems: 'center',
-                flexShrink: 0,
-              }}
-            >
-              <input
-                type="text"
-                value={prompt}
-                onInput={(e) => setPrompt(e.currentTarget.value)}
-                placeholder="Send a message to the agent..."
-                disabled={interactionMode === 'inbox_only'}
+                )}
+                <StreamRenderer
+                  events={streamEvents}
+                  streaming={streaming}
+                  elapsedSeconds={elapsedSeconds}
+                  emptyLabel={hydratingHistory ? 'Loading prior messages…' : undefined}
+                  sessionInfo={{
+                    sessionId,
+                    backend: providerFamily,
+                    model,
+                  }}
+                />
+              </div>
+              {/* Bug: aea2c67 — prompt input bar in rich view */}
+              <form
+                onSubmit={handlePromptSubmit}
                 style={{
-                  flex: 1,
-                  background: 'var(--bg-page)',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: '8px',
-                  padding: '10px 14px',
-                  color: 'var(--fg-default)',
-                  fontSize: '14px',
-                  fontFamily: 'var(--font-sans)',
-                  outline: 'none',
-                }}
-              />
-              <button
-                type="submit"
-                disabled={!prompt.trim() || interactionMode === 'inbox_only'}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '6px',
-                  background: prompt.trim() ? 'var(--accent-blue)' : 'var(--bg-muted)',
-                  color: '#fff',
-                  border: 'none',
-                  cursor: prompt.trim() ? 'pointer' : 'default',
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  transition: 'background 0.2s ease',
+                  padding: '12px 16px',
+                  borderTop: '1px solid var(--border-subtle)',
+                  background: 'var(--bg-inset)',
+                  display: 'flex',
+                  gap: '12px',
+                  alignItems: 'center',
+                  flexShrink: 0,
                 }}
               >
-                Send
+                <input
+                  type="text"
+                  value={prompt}
+                  onInput={(e) => setPrompt(e.currentTarget.value)}
+                  placeholder="Send a message to the agent..."
+                  disabled={interactionMode === 'inbox_only'}
+                  style={{
+                    flex: 1,
+                    background: 'var(--bg-page)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    color: 'var(--fg-default)',
+                    fontSize: '14px',
+                    fontFamily: 'var(--font-sans)',
+                    outline: 'none',
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={!prompt.trim() || interactionMode === 'inbox_only'}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    background: prompt.trim() ? 'var(--accent-blue)' : 'var(--bg-muted)',
+                    color: '#fff',
+                    border: 'none',
+                    cursor: prompt.trim() ? 'pointer' : 'default',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    transition: 'background 0.2s ease',
+                  }}
+                >
+                  Send
+                </button>
+              </form>
+            </div>
+
+            {/* Bug: 6634023 — Collapsible right sidebar for session controls */}
+            {!sidebarOpen && (
+              <button
+                type="button"
+                className="terminal-pane__sidebar-toggle"
+                onClick={() => setSidebarOpen(true)}
+                title="Session settings"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M6.5 1.75a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 .75.75v.3a5.45 5.45 0 0 1 1.28.53l.21-.21a.75.75 0 0 1 1.06 0l1.06 1.06a.75.75 0 0 1 0 1.06l-.21.21c.22.4.4.83.53 1.28h.3a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-.75.75h-.3a5.45 5.45 0 0 1-.53 1.28l.21.21a.75.75 0 0 1 0 1.06l-1.06 1.06a.75.75 0 0 1-1.06 0l-.21-.21c-.4.22-.83.4-1.28.53v.3a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1-.75-.75v-.3a5.45 5.45 0 0 1-1.28-.53l-.21.21a.75.75 0 0 1-1.06 0L2.89 11.9a.75.75 0 0 1 0-1.06l.21-.21A5.45 5.45 0 0 1 2.57 9.4h-.3a.75.75 0 0 1-.75-.75v-1.5a.75.75 0 0 1 .75-.75h.3c.13-.45.31-.88.53-1.28l-.21-.21a.75.75 0 0 1 0-1.06L3.95 2.8a.75.75 0 0 1 1.06 0l.21.21c.4-.22.83-.4 1.28-.53v-.3zM8 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z" fill="currentColor"/>
+                </svg>
               </button>
-            </form>
-            <SessionControls
-              sessionId={sessionId}
-              backendType={backendType}
-              model={model}
-              modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
-              allowedTools={allowedTools}
-              availableTools={availableTools}
-              onModelSaved={setModel}
-            />
+            )}
+            {sidebarOpen && (
+              <div className="terminal-pane__sidebar">
+                <div className="terminal-pane__sidebar-header">
+                  <span className="terminal-pane__sidebar-title">Settings</span>
+                  <button
+                    type="button"
+                    className="terminal-pane__sidebar-close"
+                    onClick={() => setSidebarOpen(false)}
+                    title="Close settings"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                      <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                </div>
+                <SessionControls
+                  sessionId={sessionId}
+                  backendType={backendType}
+                  model={model}
+                  modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
+                  allowedTools={allowedTools}
+                  availableTools={availableTools}
+                  onModelSaved={setModel}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>
