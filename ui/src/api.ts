@@ -1027,6 +1027,8 @@ export type ConversationBlock = {
   timestamp: string;
   parent_id: string | null;
   metadata_json: string;
+  dag_uuid?: string | null;
+  dag_parent_uuid?: string | null;
 };
 
 export type Conversation = {

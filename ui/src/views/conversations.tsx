@@ -588,7 +588,7 @@ function BlockRenderer({
 
   const headerLabel = getBlockHeaderLabel(block, metadata);
 
-  const blockDagUuid = (block as ConversationBlock & { dag_uuid?: string })?.dag_uuid;
+  const blockDagUuid = block.dag_uuid ?? undefined;
 
   return (
     <div className={typeClass} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
@@ -783,7 +783,7 @@ function TranscriptTurnRenderer({
   // Collect text content for copy action across all blocks in this turn
   const turnText = turn.blocks.map((b) => b.content).join('\n\n');
   // dag_uuid: use the first block's dag_uuid if available (populated after P1 merges)
-  const turnDagUuid = (turn.blocks[0] as ConversationBlock & { dag_uuid?: string })?.dag_uuid;
+  const turnDagUuid = turn.blocks[0]?.dag_uuid ?? undefined;
 
   // Branch selector data: find fork point matching this turn's dagUuid
   const forkPoint = forkData?.forks.find((fp) => fp.parent_dag_uuid === turnDagUuid);
@@ -791,7 +791,7 @@ function TranscriptTurnRenderer({
   const branchInfos: BranchInfo[] | undefined = forkPoint?.branches.map((b) => ({
     dagUuid: b.dag_uuid,
     firstText: b.first_text,
-    turnCount: b.block_count,
+    blockCount: b.block_count,
   }));
 
   return (
@@ -1136,12 +1136,11 @@ function ConversationDetail({
   // Fork/resume handlers
   const handleFork = useCallback(async (dagUuid: string) => {
     try {
-      const result = await forkConversation(conversationId, dagUuid);
-      setToast({ message: 'Conversation forked. Opening new conversation...', type: 'info' });
-      // Navigate to the new forked conversation in the History tab.
-      // The fork API returns a provider session_id; resolve to a conversation.
-      // For now, navigate to the chat history with the new session.
-      window.location.hash = `#/chat-history?session=${encodeURIComponent(result.session_id)}`;
+      await forkConversation(conversationId, dagUuid);
+      // The forked conversation won't be available until ingestion picks it up (~3s).
+      // Show a success toast and stay on the current page instead of navigating to
+      // a conversation that doesn't exist yet.
+      setToast({ message: 'Forked conversation — it will appear in History shortly.', type: 'info' });
     } catch (err) {
       setToast({ message: `Fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
     }
@@ -1150,7 +1149,7 @@ function ConversationDetail({
   const handleResume = useCallback(async (dagUuid: string) => {
     // Check conflict: is this conversation active in Console?
     const activeSession = consoleSessions.find(
-      (s) => s.provider_session_id === conversation?.session_id && s.status === 'running'
+      (s) => s.provider_session_id === conversation?.session_id && s.status !== 'stopped' && s.status !== 'crashed'
     );
 
     if (activeSession) {
@@ -1169,9 +1168,8 @@ function ConversationDetail({
       if (policy === 'auto_fork') {
         // Fork first, then resume the fork
         try {
-          const forkResult = await forkConversation(conversationId, dagUuid);
-          setToast({ message: 'Auto-forked due to active session. Opening in Console...', type: 'info' });
-          window.location.hash = `#/console?session=${encodeURIComponent(forkResult.session_id)}`;
+          await forkConversation(conversationId, dagUuid);
+          setToast({ message: 'Auto-forked due to active session — it will appear in History shortly.', type: 'info' });
         } catch (err) {
           setToast({ message: `Auto-fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
         }
@@ -1225,9 +1223,8 @@ function ConversationDetail({
       } catch { /* non-critical */ }
     }
     try {
-      const result = await forkConversation(conversationId, dagUuid);
-      setToast({ message: 'Forked conversation. Opening...', type: 'info' });
-      window.location.hash = `#/chat-history?session=${encodeURIComponent(result.session_id)}`;
+      await forkConversation(conversationId, dagUuid);
+      setToast({ message: 'Forked conversation — it will appear in History shortly.', type: 'info' });
     } catch (err) {
       setToast({ message: `Fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
     }

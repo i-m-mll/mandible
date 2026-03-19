@@ -430,6 +430,12 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       // Reverse to get root-first order, then flatten
       pathGroups.reverse();
       blocks = pathGroups.flat();
+
+      // Fallback: if the leaf dag_uuid didn't match any block (e.g., old conversation
+      // without dag_uuid data), return all blocks ordered by position.
+      if (blocks.length === 0) {
+        blocks = allBlocks;
+      }
     } else {
       blocks = db
         .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
@@ -575,14 +581,22 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
     const conv = db
       .prepare("SELECT session_id FROM conversations WHERE id = ?")
-      .get(id) as { session_id: string } | undefined;
+      .get(id) as { session_id: string | null } | undefined;
     if (!conv) {
       sendJson(res, 404, { error: "Conversation not found" });
+      return;
+    }
+    if (!conv.session_id) {
+      sendJson(res, 400, { error: "Conversation has no session_id" });
       return;
     }
 
     try {
       const sdk = await import("@anthropic-ai/claude-agent-sdk");
+      if (typeof sdk.forkSession !== "function") {
+        sendJson(res, 501, { error: "SDK does not support forkSession" });
+        return;
+      }
       const result = await sdk.forkSession(conv.session_id, {
         upToMessageId: body.message_dag_uuid,
       });

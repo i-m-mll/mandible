@@ -6,7 +6,7 @@ import { useState } from 'preact/hooks';
 export type BranchInfo = {
   dagUuid: string;
   firstText: string;   // first ~40 chars of assistant response
-  turnCount: number;
+  blockCount: number;
   isLive?: boolean;     // currently streaming
 };
 
@@ -27,9 +27,9 @@ export function BranchSelector({
 }: BranchSelectorProps): JSX.Element {
   const [expanded, setExpanded] = useState(false);
 
-  // Invisible when only one branch (or zero)
+  // No DOM output when only one branch (or zero)
   if (totalBranches <= 1) {
-    return <div className="branch-selector branch-selector--hidden" />;
+    return null;
   }
 
   const atStart = currentIndex <= 0;
@@ -83,7 +83,7 @@ export function BranchSelector({
                 {branch.isLive && <span className="branch-card__dot" aria-label="Live" />}
               </div>
               <div className="branch-card__text">{branch.firstText || '\u2014'}</div>
-              <div className="branch-card__turns">{branch.turnCount} turn{branch.turnCount !== 1 ? 's' : ''}</div>
+              <div className="branch-card__turns">{branch.blockCount} block{branch.blockCount !== 1 ? 's' : ''}</div>
             </button>
           ))}
         </div>

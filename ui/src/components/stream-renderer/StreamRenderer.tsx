@@ -16,7 +16,6 @@ import type {
 import { MessageGroup } from './MessageGroup';
 import { StatusBar } from './StatusBar';
 import { MessageActions } from '../shared/MessageActions';
-import { BranchSelector } from '../console/BranchSelector';
 
 // ---- Event parsing hook ----
 
@@ -302,18 +301,6 @@ export function StreamRenderer({
         if (block.type === 'text' && block.text) turnTextParts.push(block.text);
       }
       const turnText = turnTextParts.join('\n\n');
-
-      // BranchSelector placeholder — renders invisible (totalBranches <= 1) until
-      // P2's DAG API populates real fork data. Bug: a0963df
-      nodes.push(
-        <BranchSelector
-          key={`branch-${turn.id}`}
-          branchPointUuid={turn.id}
-          totalBranches={1}
-          currentIndex={0}
-          onSelect={() => {}}
-        />,
-      );
 
       nodes.push(
         <div key={turn.id} className="stream-turn stream-turn--assistant" style={{ position: 'relative' }}>
