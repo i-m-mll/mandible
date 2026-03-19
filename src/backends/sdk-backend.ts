@@ -374,6 +374,16 @@ implements
       }
     } finally {
       this.processing = false;
+      // Bug: 2a04856 — Transition to "stopped" when the queue is fully drained so the
+      // session status in the DB and SSE broadcasts reflects completion. The next
+      // sendPrompt() call will re-enter processPromptQueue which calls this.start(),
+      // transitioning back to "running".
+      if (!this.destroyed && this.promptQueue.length === 0 && this.meta.status === "running") {
+        const now = Date.now();
+        this.meta = { ...this.meta, status: "stopped", stopped_at: now, updated_at: now };
+        this.emitMetaUpdate({ status: "stopped", stopped_at: now, updated_at: now });
+        this.emitStatus({ kind: "stopped", status: "stopped", stopped_at: now });
+      }
     }
   }
 
