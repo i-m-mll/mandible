@@ -41,6 +41,7 @@ type ConsoleSession = {
   backend_type: 'pty' | 'sdk';
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
+  resume_at_message?: string | null;
 };
 
 export type { ConsoleSession };
