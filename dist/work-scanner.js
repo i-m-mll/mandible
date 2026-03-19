@@ -29,6 +29,23 @@ const BRANCH_TABLE_SCHEMA = `
     PRIMARY KEY (repo_root, branch)
   );
 `;
+const WORK_REPO_TABLE_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS work_repos (
+    id TEXT NOT NULL,
+    root TEXT NOT NULL,
+    name TEXT NOT NULL,
+    default_branch TEXT NOT NULL DEFAULT '',
+    dir_exists INTEGER NOT NULL DEFAULT 1,
+    excluded INTEGER NOT NULL DEFAULT 0,
+    user_modified INTEGER NOT NULL DEFAULT 0,
+    last_scanned_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (root)
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS work_repos_id_idx ON work_repos(id);
+  CREATE INDEX IF NOT EXISTS work_repos_excluded_idx ON work_repos(excluded);
+`;
 function resolveHome(input) {
     if (input.startsWith("~")) {
         return path.join(os.homedir(), input.slice(1));
@@ -269,6 +286,7 @@ function parseLastCommit(output) {
 }
 function ensureSchema(db) {
     db.exec(BRANCH_TABLE_SCHEMA);
+    db.exec(WORK_REPO_TABLE_SCHEMA);
 }
 function toDbBool(value) {
     return value ? 1 : 0;
@@ -432,7 +450,7 @@ export class WorkScanner {
     // server stays responsive while the branch scan runs. spawnSync calls inside
     // scanRepo block the thread; without yielding, a full scan (85+ branches) can
     // hold the event loop for 3-5s, causing issue detail fetches to hang.
-    async scanAll() {
+    scanAll() {
         const start = Date.now();
         this.refreshRepoInfos();
         this.emit({
@@ -471,9 +489,6 @@ export class WorkScanner {
                 // Log but continue scanning remaining repos
                 console.error(`[work-scanner] scanRepo failed for ${repo.root}: ${_error}`);
             }
-            // Yield the event loop between repos so HTTP requests are not starved
-            // while a large repo (many branches) is being scanned.
-            await new Promise((resolve) => setImmediate(resolve));
         }
         const durationMs = Date.now() - start;
         const summary = {
@@ -489,6 +504,9 @@ export class WorkScanner {
             data: summary,
         });
         return summary;
+    }
+    async scanAllAsync() {
+        return this.scanAll();
     }
     updateRepo(id, patch) {
         const row = this.db.prepare("SELECT id, root, name, default_branch, dir_exists, excluded, user_modified, last_scanned_at FROM work_repos WHERE id = ?").get(id);
