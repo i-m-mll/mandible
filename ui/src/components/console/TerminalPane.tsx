@@ -528,7 +528,9 @@ export function TerminalPane({
           const { conversations } = await getConversations({ session_id: providerSessionId, limit: 1 });
           const conversation = conversations[0];
           if (!conversation) {
-            setStreamEvents(events);
+            // Bug: 2a04856 — Do NOT call setStreamEvents(events) here. `events` is a stale
+            // closure snapshot from before the async fetch; real-time SSE events have been
+            // accumulating in state via handleStreamEvent. Overwriting would clobber them.
             setStreaming(false);
             return;
           }
@@ -538,7 +540,8 @@ export function TerminalPane({
           setStreaming(false);
         } catch {
           if (cancelled) return;
-          setStreamEvents(events);
+          // Bug: 2a04856 — Same stale-closure issue as the !conversation branch above.
+          // Preserve SSE-accumulated events; only clear streaming flag.
           setStreaming(false);
         } finally {
           if (!cancelled) {
@@ -555,6 +558,26 @@ export function TerminalPane({
       cancelled = true;
     };
   }, [providerSessionId, sessionId]);
+
+  // Bug: 2a04856 — Polling fallback: if streaming stays true for 20s (missed SSE result event,
+  // e.g. due to SSE reconnect during daemon rebuild), re-fetch events and check for completion.
+  useEffect(() => {
+    if (!streaming) return;
+    const timer = setTimeout(() => {
+      void getConsoleStreamEvents<StreamEvent>(sessionId, 500).then((events) => {
+        if (events.length > 0) {
+          const last = events[events.length - 1];
+          if (last.type === 'result') {
+            setStreamEvents(events);
+            setStreaming(false);
+          }
+        }
+      }).catch(() => {
+        // Non-fatal: will retry on next interval if still streaming
+      });
+    }, 20_000);
+    return () => clearTimeout(timer);
+  }, [streaming, sessionId]);
 
   // SSE: subscribe to console:stream_event for the rich view.
   // The server broadcasts: { console_session_id, event: StreamEvent }
