@@ -73,16 +73,86 @@ function parseModelFromArgs(args: string[]): string | undefined {
   return undefined;
 }
 
-function hasRenderableEvents(events: StreamEvent[]): boolean {
-  return events.some((event) => {
-    if (event.type === 'assistant' || event.type === 'user' || event.type === 'synthetic_prompt') {
-      return true;
-    }
-    if (event.type === 'result' && event.is_error) {
-      return true;
-    }
-    return false;
+// Bug: 309dd56 — Derive streaming state from the last event in a list.
+// Extracted helper to avoid duplicating this pattern across hydration paths.
+function deriveStreamingState(
+  events: StreamEvent[],
+  streamStartAtRef: { current: number | null },
+): boolean {
+  const last = events[events.length - 1];
+  const isStreaming = Boolean(last && last.type !== 'result');
+  if (isStreaming && streamStartAtRef.current === null) {
+    streamStartAtRef.current = Date.now();
+  }
+  return isStreaming;
+}
+
+// Bug: 309dd56 — Flush pending SSE events after hydration, deduplicating against current state.
+function flushPendingSSE(
+  pendingSSERef: { current: StreamEvent[] },
+  setStreamEvents: (fn: (prev: StreamEvent[]) => StreamEvent[]) => void,
+  setStreaming: (v: boolean) => void,
+): void {
+  const pending = pendingSSERef.current;
+  pendingSSERef.current = [];
+  if (pending.length === 0) return;
+  setStreamEvents(prev => {
+    // Deduplicate: skip pending events that match existing events in prev
+    const newEvents = pending.filter(pe => {
+      const peJson = JSON.stringify(pe);
+      return !prev.some(existing => JSON.stringify(existing) === peJson);
+    });
+    return newEvents.length > 0 ? [...prev, ...newEvents] : prev;
   });
+  const lastPending = pending[pending.length - 1];
+  if (lastPending?.type === 'result') {
+    setStreaming(false);
+  }
+}
+
+// Bug: 309dd56 — Compute the "live tail": in-memory stream events not yet persisted to
+// conversation history. Uses assistant-turn counting as the handoff point.
+function computeLiveTail(
+  historyEvents: StreamEvent[],
+  memEvents: StreamEvent[],
+): StreamEvent[] {
+  const historyAssistantCount = historyEvents.filter((e) => e.type === 'assistant').length;
+
+  if (historyAssistantCount === 0) {
+    // History has no assistant turns — all mem events are potentially new
+    return memEvents;
+  }
+
+  // Walk memEvents counting assistant events. Once we've seen historyAssistantCount
+  // assistant events, everything AFTER that point (including tool results for the
+  // last matched turn) is the live tail.
+  let assistantsSeen = 0;
+  let tailStart = memEvents.length; // default: no tail (history covers everything)
+
+  for (let i = 0; i < memEvents.length; i++) {
+    if (memEvents[i].type === 'assistant') {
+      assistantsSeen++;
+    }
+    if (assistantsSeen === historyAssistantCount) {
+      // Skip past any remaining events that belong to this last matched turn
+      // (tool_result user events that are part of the same assistant turn)
+      tailStart = i + 1;
+      while (tailStart < memEvents.length) {
+        const next = memEvents[tailStart];
+        if (next.type === 'user' && 'message' in next) {
+          const content = (next as { message: { content?: unknown[] } }).message.content;
+          if (Array.isArray(content) && content.every((b: Record<string, unknown>) => b.type === 'tool_result')) {
+            tailStart++;
+            continue;
+          }
+        }
+        break;
+      }
+      break;
+    }
+  }
+
+  return memEvents.slice(tailStart);
 }
 
 function collectAvailableTools(events: StreamEvent[]): string[] {
@@ -273,6 +343,9 @@ export function TerminalPane({
   // Refs to track current prop values inside effects/callbacks that capture stale closures
   const isVisibleRef = useRef(isVisible);
   const viewModeRef = useRef(viewMode);
+  // Bug: 309dd56 — SSE buffering during hydration: prevent clobbering freshly-set history
+  const hydratingRef = useRef(false);
+  const pendingSSERef = useRef<StreamEvent[]>([]);
 
   // WebSocket connection state
   const [wsStatus, setWsStatus] = useState<'connecting' | 'open' | 'closed' | 'error'>('connecting');
@@ -508,57 +581,85 @@ export function TerminalPane({
     }
   }, [isVisible, viewMode, sessionId, showDebugTerminal]);
 
-  // Hydrate rich view with recent stream-json history on mount/session change.
+  // Bug: 309dd56 — Hydrate rich view: conversation history is the authoritative base layer,
+  // with in-memory stream events providing only the "live tail" (events not yet persisted).
   useEffect(() => {
     let cancelled = false;
-    getConsoleStreamEvents<StreamEvent>(sessionId, 500)
-      .then(async (events) => {
-        if (cancelled) return;
-        if (hasRenderableEvents(events) || !providerSessionId) {
-          setStreamEvents(events);
-          const last = events[events.length - 1];
-          const isStreaming = Boolean(last && last.type !== 'result');
-          setStreaming(isStreaming);
-          if (isStreaming && streamStartAtRef.current === null) {
-            streamStartAtRef.current = Date.now();
-          }
-          return;
-        }
+    hydratingRef.current = true;
+    pendingSSERef.current = [];
 
-        setHydratingHistory(true);
-        try {
-          const { conversations } = await getConversations({ session_id: providerSessionId, limit: 1 });
-          const conversation = conversations[0];
-          if (!conversation) {
-            // Bug: 2a04856 — Do NOT call setStreamEvents(events) here. `events` is a stale
-            // closure snapshot from before the async fetch; real-time SSE events have been
-            // accumulating in state via handleStreamEvent. Overwriting would clobber them.
-            setStreaming(false);
-            return;
-          }
-          const detail = await getConversation(conversation.id);
+    // Case 1: No provider session — use in-memory events directly (no conversation to look up)
+    if (!providerSessionId) {
+      getConsoleStreamEvents<StreamEvent>(sessionId, 500)
+        .then((events) => {
           if (cancelled) return;
-          setStreamEvents(conversationBlocksToStreamEvents(providerSessionId, detail.blocks));
-          setStreaming(false);
-        } catch {
+          setStreamEvents(events);
+          setStreaming(deriveStreamingState(events, streamStartAtRef));
+        })
+        .catch(() => {
           if (cancelled) return;
-          // Bug: 2a04856 — Same stale-closure issue as the !conversation branch above.
-          // Preserve SSE-accumulated events; only clear streaming flag.
+          setStreamEvents([]);
           setStreaming(false);
-        } finally {
+        })
+        .finally(() => {
           if (!cancelled) {
-            setHydratingHistory(false);
+            hydratingRef.current = false;
+            flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming);
           }
+        });
+      return () => { cancelled = true; };
+    }
+
+    // Case 2: Has provider session — fetch both conversation history and in-memory events
+    setHydratingHistory(true);
+    const historyPromise = getConversations({ session_id: providerSessionId, limit: 1 })
+      .then(async ({ conversations }) => {
+        const conversation = conversations[0];
+        if (!conversation) return null;
+        const detail = await getConversation(conversation.id);
+        return conversationBlocksToStreamEvents(providerSessionId, detail.blocks);
+      })
+      .catch(() => null);
+
+    const memPromise = getConsoleStreamEvents<StreamEvent>(sessionId, 500).catch(() => [] as StreamEvent[]);
+
+    Promise.all([historyPromise, memPromise])
+      .then(([historyEvents, memEvents]) => {
+        if (cancelled) return;
+
+        if (historyEvents && historyEvents.length > 0) {
+          // History available — compute live tail from in-memory events
+          const liveTail = computeLiveTail(historyEvents, memEvents);
+          // Bug: 309dd56 — Extract system events (init, hooks, subagent events) from the
+          // portion of memEvents NOT in the live tail. conversationBlocksToStreamEvents
+          // only produces user/assistant events, so system events would otherwise be lost.
+          const tailStartIndex = memEvents.length - liveTail.length;
+          const systemEvents = memEvents
+            .slice(0, tailStartIndex)
+            .filter(e => e.type === 'system');
+          const allEvents = [...systemEvents, ...historyEvents, ...liveTail];
+          setStreamEvents(allEvents);
+          setStreaming(deriveStreamingState(allEvents, streamStartAtRef));
+        } else {
+          // No conversation history yet (new session, JSONL not written) — use mem events
+          setStreamEvents(memEvents);
+          setStreaming(deriveStreamingState(memEvents, streamStartAtRef));
         }
       })
       .catch(() => {
         if (cancelled) return;
         setStreamEvents([]);
         setStreaming(false);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setHydratingHistory(false);
+          hydratingRef.current = false;
+          flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming);
+        }
       });
-    return () => {
-      cancelled = true;
-    };
+
+    return () => { cancelled = true; };
   }, [providerSessionId, sessionId]);
 
   // Bug: 2a04856 — Polling fallback: if streaming stays true for 20s (missed SSE result event,
@@ -592,6 +693,19 @@ export function TerminalPane({
       if (!detail || detail.console_session_id !== sessionId) return;
       const streamEvent = detail.event;
       if (!streamEvent) return;
+
+      // Bug: 309dd56 — Buffer SSE events during hydration to prevent clobbering
+      if (hydratingRef.current) {
+        pendingSSERef.current.push(streamEvent);
+        // Still update streaming state for UI feedback
+        if (streamEvent.type === 'result') {
+          setStreaming(false);
+        } else {
+          setStreaming(true);
+        }
+        return;
+      }
+
       setStreamEvents((prev) => {
         const last = prev[prev.length - 1];
         if (last && JSON.stringify(last) === JSON.stringify(streamEvent)) {
