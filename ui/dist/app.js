@@ -21514,7 +21514,6 @@ function TerminalPane({
         const { conversations } = await getConversations({ session_id: providerSessionId, limit: 1 });
         const conversation = conversations[0];
         if (!conversation) {
-          setStreamEvents(events);
           setStreaming(false);
           return;
         }
@@ -21526,7 +21525,6 @@ function TerminalPane({
       } catch {
         if (cancelled)
           return;
-        setStreamEvents(events);
         setStreaming(false);
       } finally {
         if (!cancelled) {
@@ -21543,6 +21541,23 @@ function TerminalPane({
       cancelled = true;
     };
   }, [providerSessionId, sessionId]);
+  y2(() => {
+    if (!streaming)
+      return;
+    const timer2 = setTimeout(() => {
+      void getConsoleStreamEvents(sessionId, 500).then((events) => {
+        if (events.length > 0) {
+          const last = events[events.length - 1];
+          if (last.type === "result") {
+            setStreamEvents(events);
+            setStreaming(false);
+          }
+        }
+      }).catch(() => {
+      });
+    }, 2e4);
+    return () => clearTimeout(timer2);
+  }, [streaming, sessionId]);
   y2(() => {
     const handleStreamEvent = (e3) => {
       const detail = e3.detail;
