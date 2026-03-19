@@ -55,7 +55,6 @@ export async function startDaemon(options = {}) {
     // when settings were last changed.
     syncReaperSettingsToConfigFile();
     registerSystemRoutes(router, workScanner);
-    registerConversationRoutes(router);
     registerSwitchboardRoutes(router);
     registerBackupRoutes(router);
     const sessionDiscovery = new SessionDiscovery(db, sessionRegistry, workScanner, logger);
@@ -64,6 +63,8 @@ export async function startDaemon(options = {}) {
     registerGraphRoutes(router, issueScanner);
     const sessionManager = new SessionManager(db, logger, sessionRegistry);
     registerConsoleRoutes(router, sessionManager);
+    // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
+    registerConversationRoutes(router, sessionManager);
     // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)
     router.get("/api/reaper/status", (_req, res) => {
         res.json(reaperTimer.getStatus());

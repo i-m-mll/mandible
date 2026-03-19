@@ -5,8 +5,15 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __defNormalProp = (obj, key2, value) => key2 in obj ? __defProp(obj, key2, { enumerable: true, configurable: true, writable: true, value }) : obj[key2] = value;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __commonJS = (cb, mod) => function __require() {
   return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -41,6 +48,760 @@ var __privateMethod = (obj, member, method) => {
   __accessCheck(obj, member, "access private method");
   return method;
 };
+
+// ui/src/api.ts
+var api_exports = {};
+__export(api_exports, {
+  ackAllInbox: () => ackAllInbox,
+  acknowledgeInboxItem: () => acknowledgeInboxItem,
+  addSwitchboardPairing: () => addSwitchboardPairing,
+  approveAuthRequest: () => approveAuthRequest,
+  buildQuery: () => buildQuery,
+  closeConsoleSession: () => closeConsoleSession,
+  createConsoleSession: () => createConsoleSession,
+  createSwitchboardTemplate: () => createSwitchboardTemplate,
+  deleteSwitchboardPairing: () => deleteSwitchboardPairing,
+  deleteSwitchboardTemplate: () => deleteSwitchboardTemplate,
+  dismissAuthRequest: () => dismissAuthRequest,
+  exportConversationBlocks: () => exportConversationBlocks,
+  findIssue: () => findIssue,
+  forkConversation: () => forkConversation,
+  getAuthHistory: () => getAuthHistory,
+  getAuthQueue: () => getAuthQueue,
+  getBackupStatus: () => getBackupStatus,
+  getConsolePermissions: () => getConsolePermissions,
+  getConsoleSessionUsage: () => getConsoleSessionUsage,
+  getConsoleSessions: () => getConsoleSessions,
+  getConsoleStreamEvents: () => getConsoleStreamEvents,
+  getConversation: () => getConversation,
+  getConversationBlocks: () => getConversationBlocks,
+  getConversationForks: () => getConversationForks,
+  getConversations: () => getConversations,
+  getDesktopDaemonStatus: () => getDesktopDaemonStatus,
+  getGraph: () => getGraph,
+  getInboxGlobal: () => getInboxGlobal,
+  getIssueDetail: () => getIssueDetail,
+  getIssueRepos: () => getIssueRepos,
+  getIssueSessions: () => getIssueSessions,
+  getLogs: () => getLogs,
+  getPushStatus: () => getPushStatus,
+  getRepoBranches: () => getRepoBranches,
+  getReviewDiff: () => getReviewDiff,
+  getReviewSpec: () => getReviewSpec,
+  getSessionIssues: () => getSessionIssues,
+  getSessions: () => getSessions,
+  getSettings: () => getSettings,
+  getStarredChats: () => getStarredChats,
+  getSwitchboardItems: () => getSwitchboardItems,
+  getSwitchboardPairings: () => getSwitchboardPairings,
+  getSwitchboardTemplates: () => getSwitchboardTemplates,
+  getWorkRepos: () => getWorkRepos,
+  isDesktopShell: () => isDesktopShell,
+  issueAction: () => issueAction,
+  killSession: () => killSession,
+  navigateSession: () => navigateSession,
+  navigateToDesktopBootstrap: () => navigateToDesktopBootstrap,
+  openPath: () => openPath,
+  patchSession: () => patchSession,
+  pushRepo: () => pushRepo,
+  pushRepos: () => pushRepos,
+  rejectAuthRequest: () => rejectAuthRequest,
+  respondToConsolePermission: () => respondToConsolePermission,
+  restartConsoleSession: () => restartConsoleSession,
+  restartDesktopDaemon: () => restartDesktopDaemon,
+  resumeConversation: () => resumeConversation,
+  retryAuthRequest: () => retryAuthRequest,
+  runBackupNow: () => runBackupNow,
+  scanIssueRepo: () => scanIssueRepo,
+  scanIssues: () => scanIssues,
+  sendConsolePrompt: () => sendConsolePrompt,
+  setDesktopDaemonLaunchMode: () => setDesktopDaemonLaunchMode,
+  starChat: () => starChat,
+  startConsoleSession: () => startConsoleSession,
+  startDesktopDaemon: () => startDesktopDaemon,
+  stopDesktopDaemon: () => stopDesktopDaemon,
+  syncSwitchboard: () => syncSwitchboard,
+  toggleSwitchboardItem: () => toggleSwitchboardItem,
+  transformExport: () => transformExport,
+  triggerIngestion: () => triggerIngestion,
+  triggerWorkScan: () => triggerWorkScan,
+  unstarChat: () => unstarChat,
+  updateAuthRequestField: () => updateAuthRequestField,
+  updateBackupSettings: () => updateBackupSettings,
+  updateConsoleSession: () => updateConsoleSession,
+  updateConsoleSessionOptions: () => updateConsoleSessionOptions,
+  updateConversation: () => updateConversation,
+  updateSetting: () => updateSetting,
+  updateStarredChat: () => updateStarredChat,
+  updateSwitchboardPairing: () => updateSwitchboardPairing
+});
+async function apiGet(path) {
+  const response = await fetch(path, { headers: DEFAULT_HEADERS });
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+async function apiPost(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : void 0
+  });
+  if (!response.ok) {
+    throw new Error(`POST ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+async function apiPatch(path, body) {
+  const response = await fetch(path, {
+    method: "PATCH",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : void 0
+  });
+  if (!response.ok) {
+    throw new Error(`PATCH ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+async function apiPut(path, body) {
+  const response = await fetch(path, {
+    method: "PUT",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : void 0
+  });
+  if (!response.ok) {
+    throw new Error(`PUT ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+async function apiDelete(path) {
+  const response = await fetch(path, {
+    method: "DELETE",
+    headers: DEFAULT_HEADERS
+  });
+  if (!response.ok) {
+    throw new Error(`DELETE ${path} failed: ${response.status}`);
+  }
+  return response;
+}
+function normalizeList(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  return payload.items || payload.sessions || payload.queue || payload.requests || payload.repos || payload.branches || [];
+}
+function buildQuery(params) {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key2, value]) => {
+    if (value === void 0) {
+      return;
+    }
+    searchParams.set(key2, String(value));
+  });
+  const query = searchParams.toString();
+  return query ? `?${query}` : "";
+}
+async function parseMaybeJson(response) {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+  return response.text();
+}
+async function getSessions(query) {
+  const response = await apiGet(`/api/sessions${query || ""}`);
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function navigateSession(sessionId) {
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/navigate`;
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" }
+  });
+  if (!response.ok) {
+    let message = `POST ${path} failed: ${response.status}`;
+    try {
+      const body = await response.json();
+      if (body.message)
+        message = body.message;
+      else if (body.error)
+        message = body.error;
+    } catch {
+    }
+    throw new Error(message);
+  }
+}
+async function killSession(sessionId) {
+  await apiPost(`/api/sessions/${encodeURIComponent(sessionId)}/kill`);
+}
+async function patchSession(sessionId, body) {
+  const response = await apiPatch(`/api/sessions/${encodeURIComponent(sessionId)}`, body);
+  return parseMaybeJson(response);
+}
+async function getAuthQueue() {
+  const response = await apiGet("/api/auth/queue");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function getAuthHistory(limit) {
+  const query = limit != null ? `?limit=${limit}` : "";
+  const response = await apiGet(`/api/auth/history${query}`);
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function approveAuthRequest(requestId) {
+  const APPROVE_TIMEOUT_MS = 1e4;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), APPROVE_TIMEOUT_MS);
+  const path = `/api/auth/request/${encodeURIComponent(requestId)}/approve`;
+  let response;
+  try {
+    response = await fetch(path, {
+      method: "POST",
+      headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+      signal: controller.signal
+    });
+  } catch (e3) {
+    clearTimeout(timeoutId);
+    if (e3 instanceof Error && e3.name === "AbortError") {
+      throw new Error("Approve timed out \u2014 Mandible may be starting up. Try again in a moment.");
+    }
+    throw e3;
+  }
+  clearTimeout(timeoutId);
+  if (!response.ok) {
+    let message = `POST ${path} failed: ${response.status}`;
+    try {
+      const body = await response.json();
+      if (body.error)
+        message = body.error;
+      else if (body.message)
+        message = body.message;
+    } catch {
+    }
+    throw new Error(message);
+  }
+}
+async function rejectAuthRequest(requestId) {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/reject`);
+}
+async function retryAuthRequest(requestId) {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/retry`);
+}
+async function dismissAuthRequest(requestId) {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/dismiss`);
+}
+async function updateAuthRequestField(requestId, fields) {
+  await apiPut(`/api/auth/request/${encodeURIComponent(requestId)}`, fields);
+}
+async function getWorkRepos() {
+  const response = await apiGet("/api/work/repos");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function getRepoBranches(repoId) {
+  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/branches`);
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function getReviewDiff(params) {
+  const response = await apiGet(`/api/review/diff${buildQuery(params)}`);
+  const payload = await parseMaybeJson(response);
+  if (typeof payload === "string") {
+    return payload;
+  }
+  if (payload && typeof payload === "object" && "html" in payload) {
+    return String(payload.html || "");
+  }
+  return "";
+}
+async function getReviewSpec(params) {
+  const response = await apiGet(`/api/review/spec${buildQuery(params)}`);
+  const payload = await parseMaybeJson(response);
+  if (typeof payload === "string") {
+    return { markdown: payload, commits: [] };
+  }
+  if (!payload || typeof payload !== "object") {
+    return { markdown: "", commits: [] };
+  }
+  const data = payload;
+  return {
+    markdown: data.markdown || data.spec || data.content || "",
+    commits: Array.isArray(data.commits) ? data.commits : [],
+    meta: data.meta
+  };
+}
+async function getIssueRepos() {
+  const response = await apiGet("/api/issues");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function getIssueDetail(repoId, issueId) {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}`
+  );
+  return parseMaybeJson(response);
+}
+async function findIssue(issueId) {
+  const response = await apiGet(`/api/issues/find/${encodeURIComponent(issueId)}`);
+  return parseMaybeJson(response);
+}
+async function issueAction(repoId, issueId, action, body) {
+  await apiPost(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/${action}`,
+    body
+  );
+}
+async function scanIssues() {
+  const response = await apiPost("/api/issues/scan");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function scanIssueRepo(repoId) {
+  await apiPost(`/api/issues/${encodeURIComponent(repoId)}/scan`);
+}
+async function triggerWorkScan() {
+  await apiPost("/api/work/scan");
+}
+async function openPath(targetPath) {
+  await apiPost("/api/system/open-path", { path: targetPath });
+}
+async function pushRepos(scope, repoIds) {
+  const response = await apiPost("/api/work/push", { scope, repo_ids: repoIds });
+  return parseMaybeJson(response);
+}
+async function pushRepo(repoId, scope) {
+  const response = await apiPost(`/api/work/repos/${encodeURIComponent(repoId)}/push`, { scope });
+  return parseMaybeJson(response);
+}
+async function getPushStatus() {
+  const response = await apiGet("/api/work/push/status");
+  return parseMaybeJson(response);
+}
+async function getSwitchboardPairings() {
+  const response = await apiGet("/api/switchboard/pairings");
+  const payload = await parseMaybeJson(response);
+  if (Array.isArray(payload))
+    return payload;
+  return payload.pairings ?? [];
+}
+async function addSwitchboardPairing(name, source, target, hooks) {
+  const response = await fetch("/api/switchboard/pairings", {
+    method: "POST",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, source, target, ...hooks })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(payload.error ?? `POST /api/switchboard/pairings failed: ${response.status}`);
+  }
+}
+async function deleteSwitchboardPairing(name) {
+  await apiDelete(`/api/switchboard/pairings/${encodeURIComponent(name)}`);
+}
+async function updateSwitchboardPairing(name, source, target, hooks) {
+  const response = await fetch(`/api/switchboard/pairings/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ source, target, ...hooks })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(payload.error ?? `PATCH /api/switchboard/pairings/${name} failed: ${response.status}`);
+  }
+}
+async function getSwitchboardItems(name) {
+  const response = await apiGet(`/api/switchboard/pairings/${encodeURIComponent(name)}/items`);
+  return await parseMaybeJson(response);
+}
+async function toggleSwitchboardItem(pairingName, item) {
+  const response = await fetch(`/api/switchboard/pairings/${encodeURIComponent(pairingName)}/toggle`, {
+    method: "POST",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ item })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(payload.error ?? `toggle failed: ${response.status}`);
+  }
+  return await response.json();
+}
+async function syncSwitchboard(pairingName) {
+  const response = await apiPost(`/api/switchboard/pairings/${encodeURIComponent(pairingName)}/sync`);
+  return await parseMaybeJson(response);
+}
+async function getSwitchboardTemplates() {
+  const response = await apiGet("/api/switchboard/templates");
+  return await parseMaybeJson(response);
+}
+async function createSwitchboardTemplate(name, hooks) {
+  const response = await fetch("/api/switchboard/templates", {
+    method: "POST",
+    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, ...hooks })
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(payload.error ?? `POST /api/switchboard/templates failed: ${response.status}`);
+  }
+  return await response.json();
+}
+async function deleteSwitchboardTemplate(id2) {
+  const response = await fetch(`/api/switchboard/templates/${encodeURIComponent(id2)}`, {
+    method: "DELETE",
+    headers: DEFAULT_HEADERS
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(payload.error ?? `DELETE /api/switchboard/templates/${id2} failed: ${response.status}`);
+  }
+}
+async function getInboxGlobal() {
+  const res = await apiGet("/api/inbox/global");
+  return await parseMaybeJson(res);
+}
+async function acknowledgeInboxItem(type2, id2) {
+  await apiPost(`/api/inbox/${type2}/${encodeURIComponent(id2)}/ack`, {});
+}
+async function ackAllInbox() {
+  await apiPost("/api/inbox/ack-all");
+}
+async function getSessionIssues(sessionId) {
+  const response = await apiGet(`/api/sessions/${encodeURIComponent(sessionId)}/issues`);
+  const payload = await parseMaybeJson(response);
+  return Array.isArray(payload) ? payload : [];
+}
+async function getIssueSessions(repoId, issueId) {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/sessions`
+  );
+  const payload = await parseMaybeJson(response);
+  return Array.isArray(payload) ? payload : [];
+}
+async function getStarredChats() {
+  const response = await apiGet("/api/chats/starred");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function starChat(data) {
+  const response = await apiPost("/api/chats/star", data);
+  const payload = await parseMaybeJson(response);
+  if (payload && typeof payload === "object" && "id" in payload) {
+    return payload;
+  }
+  return { id: "" };
+}
+async function unstarChat(id2) {
+  await apiDelete(`/api/chats/starred/${encodeURIComponent(id2)}`);
+}
+async function updateStarredChat(id2, data) {
+  await apiPatch(`/api/chats/starred/${encodeURIComponent(id2)}`, data);
+}
+async function getSettings() {
+  const response = await apiGet("/api/settings");
+  const payload = await parseMaybeJson(response);
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    return payload;
+  }
+  return {};
+}
+async function updateSetting(key2, value) {
+  const response = await fetch(`/api/settings/${encodeURIComponent(key2)}`, {
+    method: "PUT",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ value })
+  });
+  if (!response.ok) {
+    throw new Error(`PUT /api/settings/${key2} failed: ${response.status}`);
+  }
+}
+async function getConsoleSessions() {
+  const response = await apiGet("/api/console/sessions");
+  const payload = await parseMaybeJson(response);
+  return normalizeList(payload);
+}
+async function restartConsoleSession(sessionId) {
+  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/restart`);
+}
+async function startConsoleSession(sessionId) {
+  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
+}
+async function createConsoleSession(label, backend, kind, backendType) {
+  const body = { label, command: "", args: [] };
+  if (kind === "operator") {
+    body.command = "claude";
+    body.args = backendType === "sdk" ? [] : ["--dangerously-skip-permissions"];
+    body.auto_restart = true;
+    body.is_operator = true;
+    body.backend_type = backendType ?? "sdk";
+  } else if (backend === "claude") {
+    body.command = "claude";
+    body.args = backendType === "sdk" ? [] : ["--dangerously-skip-permissions"];
+    body.backend_type = backendType ?? "sdk";
+  } else if (backend === "codex") {
+    body.command = "codex";
+    body.args = [];
+    body.backend_type = "pty";
+  } else if (backend === "gemini") {
+    body.command = "gemini";
+    body.args = ["-y"];
+    body.backend_type = "pty";
+  } else {
+    throw new Error(`Unsupported backend: ${backend}`);
+  }
+  const response = await apiPost("/api/console/sessions", body);
+  const json = await parseMaybeJson(response);
+  return json;
+}
+async function closeConsoleSession(sessionId) {
+  await apiDelete(`/api/console/sessions/${encodeURIComponent(sessionId)}`);
+}
+async function getConsoleStreamEvents(sessionId, limit = 500) {
+  const response = await apiGet(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/events?limit=${encodeURIComponent(String(limit))}`
+  );
+  const payload = await parseMaybeJson(response);
+  if (Array.isArray(payload))
+    return payload;
+  return payload.events ?? [];
+}
+async function sendConsolePrompt(sessionId, prompt) {
+  await apiPost(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/prompt`,
+    { prompt }
+  );
+}
+async function updateConsoleSession(sessionId, body) {
+  const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}`, body);
+  return parseMaybeJson(response);
+}
+async function getConsolePermissions(sessionId) {
+  const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/permissions`);
+  const payload = await parseMaybeJson(response);
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  return payload.requests ?? [];
+}
+async function respondToConsolePermission(sessionId, requestId, decision) {
+  await apiPost(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(requestId)}`,
+    { decision }
+  );
+}
+async function updateConsoleSessionOptions(sessionId, body) {
+  const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}/options`, body);
+  return parseMaybeJson(response);
+}
+async function getConsoleSessionUsage(sessionId) {
+  const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/usage`);
+  const payload = await parseMaybeJson(response);
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  return payload.usage ?? [];
+}
+async function getBackupStatus() {
+  const response = await apiGet("/api/backup/status");
+  return await parseMaybeJson(response);
+}
+async function runBackupNow() {
+  const response = await apiPost("/api/backup/run");
+  return await parseMaybeJson(response);
+}
+async function updateBackupSettings(settings) {
+  const response = await fetch("/api/backup/settings", {
+    method: "PUT",
+    headers: {
+      ...DEFAULT_HEADERS,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(settings)
+  });
+  if (!response.ok) {
+    throw new Error(`PUT /api/backup/settings failed: ${response.status}`);
+  }
+}
+async function getConversations(params) {
+  const query = new URLSearchParams();
+  if (params?.source)
+    query.set("source", params.source);
+  if (params?.starred)
+    query.set("starred", "1");
+  if (params?.search)
+    query.set("search", params.search);
+  if (params?.offset)
+    query.set("offset", String(params.offset));
+  if (params?.limit)
+    query.set("limit", String(params.limit));
+  if (params?.sort)
+    query.set("sort", params.sort);
+  if (params?.group)
+    query.set("group", "true");
+  if (params?.exclude_subagents)
+    query.set("exclude_subagents", "true");
+  if (params?.parent_id)
+    query.set("parent_id", params.parent_id);
+  if (params?.session_id)
+    query.set("session_id", params.session_id);
+  const qs = query.toString();
+  const resp = await apiGet(`/api/conversations${qs ? "?" + qs : ""}`);
+  return await parseMaybeJson(resp);
+}
+async function getConversation(id2, leaf) {
+  const query = leaf ? `?leaf=${encodeURIComponent(leaf)}` : "";
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id2)}${query}`);
+  const payload = await parseMaybeJson(resp);
+  return {
+    ...payload.conversation ?? {},
+    blocks: payload.blocks ?? [],
+    children: payload.children ?? []
+  };
+}
+async function getConversationBlocks(id2, params) {
+  const query = new URLSearchParams();
+  if (params?.types)
+    query.set("types", params.types);
+  if (params?.offset)
+    query.set("offset", String(params.offset));
+  if (params?.limit)
+    query.set("limit", String(params.limit));
+  const qs = query.toString();
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id2)}/blocks${qs ? "?" + qs : ""}`);
+  return await parseMaybeJson(resp);
+}
+async function updateConversation(id2, data) {
+  const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id2)}`, data);
+  return await parseMaybeJson(resp);
+}
+async function exportConversationBlocks(id2, data) {
+  const resp = await apiPost(`/api/conversations/${encodeURIComponent(id2)}/export`, data);
+  return await parseMaybeJson(resp);
+}
+async function transformExport(data) {
+  const resp = await apiPost("/api/conversations/export/transform", data);
+  return await parseMaybeJson(resp);
+}
+async function triggerIngestion(source) {
+  const resp = await apiPost("/api/conversations/ingest", source ? { source } : {});
+  return await parseMaybeJson(resp);
+}
+async function getConversationForks(conversationId) {
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(conversationId)}/forks`);
+  return await parseMaybeJson(resp);
+}
+async function forkConversation(conversationId, messageDagUuid) {
+  const resp = await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/fork`, {
+    message_dag_uuid: messageDagUuid
+  });
+  return await parseMaybeJson(resp);
+}
+async function resumeConversation(conversationId, messageDagUuid, label) {
+  const resp = await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/resume`, {
+    message_dag_uuid: messageDagUuid,
+    label
+  });
+  return await parseMaybeJson(resp);
+}
+async function getLogs(params) {
+  const query = new URLSearchParams();
+  if (params?.level)
+    query.set("level", params.level);
+  if (params?.limit != null)
+    query.set("limit", String(params.limit));
+  if (params?.offset != null)
+    query.set("offset", String(params.offset));
+  const qs = query.toString();
+  const resp = await apiGet(`/api/system/logs${qs ? "?" + qs : ""}`);
+  return await parseMaybeJson(resp);
+}
+function hasTauriRuntime() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const tauriWindow = window;
+  return Boolean(tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__);
+}
+function isDesktopShell() {
+  return hasTauriRuntime();
+}
+async function invokeDesktop(command, args) {
+  if (!hasTauriRuntime()) {
+    throw new Error("Desktop daemon controls are only available in the Tauri app.");
+  }
+  const tauriCoreModule = "@tauri-apps/api/core";
+  const { invoke } = await import(
+    /* @vite-ignore */
+    tauriCoreModule
+  );
+  return invoke(command, args);
+}
+async function getDesktopDaemonStatus() {
+  if (!hasTauriRuntime()) {
+    return null;
+  }
+  return invokeDesktop("daemon_status");
+}
+async function setDesktopDaemonLaunchMode(launchMode) {
+  return invokeDesktop("daemon_set_launch_mode", { launchMode });
+}
+async function startDesktopDaemon() {
+  return invokeDesktop("daemon_start");
+}
+async function stopDesktopDaemon() {
+  return invokeDesktop("daemon_stop");
+}
+async function restartDesktopDaemon() {
+  return invokeDesktop("daemon_restart");
+}
+async function navigateToDesktopBootstrap() {
+  if (!hasTauriRuntime()) {
+    return;
+  }
+  const tauriWebviewModule = "@tauri-apps/api/webview";
+  const { getCurrentWebview } = await import(
+    /* @vite-ignore */
+    tauriWebviewModule
+  );
+  await getCurrentWebview().navigate("/index.html");
+}
+async function getGraph(params = {}) {
+  const query = new URLSearchParams();
+  if (params.repo)
+    query.set("repo", params.repo);
+  if (params.since)
+    query.set("since", params.since);
+  if (params.limit != null)
+    query.set("limit", String(params.limit));
+  if (params.status)
+    query.set("status", params.status);
+  const qs = query.toString();
+  const response = await apiGet(`/api/graph${qs ? "?" + qs : ""}`);
+  return await parseMaybeJson(response);
+}
+var DEFAULT_HEADERS;
+var init_api = __esm({
+  "ui/src/api.ts"() {
+    "use strict";
+    DEFAULT_HEADERS = {
+      Accept: "application/json"
+    };
+  }
+});
 
 // node_modules/@xterm/xterm/lib/xterm.js
 var require_xterm = __commonJS({
@@ -7775,574 +8536,8 @@ function D2(n2, t3) {
   return "function" == typeof t3 ? t3(n2) : t3;
 }
 
-// ui/src/api.ts
-var DEFAULT_HEADERS = {
-  Accept: "application/json"
-};
-async function apiGet(path) {
-  const response = await fetch(path, { headers: DEFAULT_HEADERS });
-  if (!response.ok) {
-    throw new Error(`GET ${path} failed: ${response.status}`);
-  }
-  return response;
-}
-async function apiPost(path, body) {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: {
-      ...DEFAULT_HEADERS,
-      "Content-Type": "application/json"
-    },
-    body: body ? JSON.stringify(body) : void 0
-  });
-  if (!response.ok) {
-    throw new Error(`POST ${path} failed: ${response.status}`);
-  }
-  return response;
-}
-async function apiPatch(path, body) {
-  const response = await fetch(path, {
-    method: "PATCH",
-    headers: {
-      ...DEFAULT_HEADERS,
-      "Content-Type": "application/json"
-    },
-    body: body ? JSON.stringify(body) : void 0
-  });
-  if (!response.ok) {
-    throw new Error(`PATCH ${path} failed: ${response.status}`);
-  }
-  return response;
-}
-async function apiPut(path, body) {
-  const response = await fetch(path, {
-    method: "PUT",
-    headers: {
-      ...DEFAULT_HEADERS,
-      "Content-Type": "application/json"
-    },
-    body: body ? JSON.stringify(body) : void 0
-  });
-  if (!response.ok) {
-    throw new Error(`PUT ${path} failed: ${response.status}`);
-  }
-  return response;
-}
-async function apiDelete(path) {
-  const response = await fetch(path, {
-    method: "DELETE",
-    headers: DEFAULT_HEADERS
-  });
-  if (!response.ok) {
-    throw new Error(`DELETE ${path} failed: ${response.status}`);
-  }
-  return response;
-}
-function normalizeList(payload) {
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-  return payload.items || payload.sessions || payload.queue || payload.requests || payload.repos || payload.branches || [];
-}
-function buildQuery(params) {
-  const searchParams = new URLSearchParams();
-  Object.entries(params).forEach(([key2, value]) => {
-    if (value === void 0) {
-      return;
-    }
-    searchParams.set(key2, String(value));
-  });
-  const query = searchParams.toString();
-  return query ? `?${query}` : "";
-}
-async function parseMaybeJson(response) {
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    return response.json();
-  }
-  return response.text();
-}
-async function getSessions(query) {
-  const response = await apiGet(`/api/sessions${query || ""}`);
-  const payload = await parseMaybeJson(response);
-  return normalizeList(payload);
-}
-async function navigateSession(sessionId) {
-  const path = `/api/sessions/${encodeURIComponent(sessionId)}/navigate`;
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" }
-  });
-  if (!response.ok) {
-    let message = `POST ${path} failed: ${response.status}`;
-    try {
-      const body = await response.json();
-      if (body.message)
-        message = body.message;
-      else if (body.error)
-        message = body.error;
-    } catch {
-    }
-    throw new Error(message);
-  }
-}
-async function killSession(sessionId) {
-  await apiPost(`/api/sessions/${encodeURIComponent(sessionId)}/kill`);
-}
-async function patchSession(sessionId, body) {
-  const response = await apiPatch(`/api/sessions/${encodeURIComponent(sessionId)}`, body);
-  return parseMaybeJson(response);
-}
-async function getAuthQueue() {
-  const response = await apiGet("/api/auth/queue");
-  const payload = await parseMaybeJson(response);
-  return normalizeList(payload);
-}
-async function getAuthHistory(limit) {
-  const query = limit != null ? `?limit=${limit}` : "";
-  const response = await apiGet(`/api/auth/history${query}`);
-  const payload = await parseMaybeJson(response);
-  return normalizeList(payload);
-}
-async function approveAuthRequest(requestId) {
-  const APPROVE_TIMEOUT_MS = 1e4;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), APPROVE_TIMEOUT_MS);
-  const path = `/api/auth/request/${encodeURIComponent(requestId)}/approve`;
-  let response;
-  try {
-    response = await fetch(path, {
-      method: "POST",
-      headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
-      signal: controller.signal
-    });
-  } catch (e3) {
-    clearTimeout(timeoutId);
-    if (e3 instanceof Error && e3.name === "AbortError") {
-      throw new Error("Approve timed out \u2014 Mandible may be starting up. Try again in a moment.");
-    }
-    throw e3;
-  }
-  clearTimeout(timeoutId);
-  if (!response.ok) {
-    let message = `POST ${path} failed: ${response.status}`;
-    try {
-      const body = await response.json();
-      if (body.error)
-        message = body.error;
-      else if (body.message)
-        message = body.message;
-    } catch {
-    }
-    throw new Error(message);
-  }
-}
-async function rejectAuthRequest(requestId) {
-  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/reject`);
-}
-async function retryAuthRequest(requestId) {
-  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/retry`);
-}
-async function dismissAuthRequest(requestId) {
-  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/dismiss`);
-}
-async function updateAuthRequestField(requestId, fields) {
-  await apiPut(`/api/auth/request/${encodeURIComponent(requestId)}`, fields);
-}
-async function getWorkRepos() {
-  const response = await apiGet("/api/work/repos");
-  const payload = await parseMaybeJson(response);
-  return normalizeList(payload);
-}
-async function getRepoBranches(repoId) {
-  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/branches`);
-  const payload = await parseMaybeJson(response);
-  return normalizeList(payload);
-}
-async function getReviewDiff(params) {
-  const response = await apiGet(`/api/review/diff${buildQuery(params)}`);
-  const payload = await parseMaybeJson(response);
-  if (typeof payload === "string") {
-    return payload;
-  }
-  if (payload && typeof payload === "object" && "html" in payload) {
-    return String(payload.html || "");
-  }
-  return "";
-}
-async function getReviewSpec(params) {
-  const response = await apiGet(`/api/review/spec${buildQuery(params)}`);
-  const payload = await parseMaybeJson(response);
-  if (typeof payload === "string") {
-    return { markdown: payload, commits: [] };
-  }
-  if (!payload || typeof payload !== "object") {
-    return { markdown: "", commits: [] };
-  }
-  const data = payload;
-  return {
-    markdown: data.markdown || data.spec || data.content || "",
-    commits: Array.isArray(data.commits) ? data.commits : [],
-    meta: data.meta
-  };
-}
-async function getIssueRepos() {
-  const response = await apiGet("/api/issues");
-  const payload = await parseMaybeJson(response);
-  return normalizeList(payload);
-}
-async function getIssueDetail(repoId, issueId) {
-  const response = await apiGet(
-    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}`
-  );
-  return parseMaybeJson(response);
-}
-async function findIssue(issueId) {
-  const response = await apiGet(`/api/issues/find/${encodeURIComponent(issueId)}`);
-  return parseMaybeJson(response);
-}
-async function issueAction(repoId, issueId, action, body) {
-  await apiPost(
-    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/${action}`,
-    body
-  );
-}
-async function scanIssues() {
-  const response = await apiPost("/api/issues/scan");
-  const payload = await parseMaybeJson(response);
-  return normalizeList(payload);
-}
-async function scanIssueRepo(repoId) {
-  await apiPost(`/api/issues/${encodeURIComponent(repoId)}/scan`);
-}
-async function triggerWorkScan() {
-  await apiPost("/api/work/scan");
-}
-async function openPath(targetPath) {
-  await apiPost("/api/system/open-path", { path: targetPath });
-}
-async function pushRepos(scope, repoIds) {
-  const response = await apiPost("/api/work/push", { scope, repo_ids: repoIds });
-  return parseMaybeJson(response);
-}
-async function pushRepo(repoId, scope) {
-  const response = await apiPost(`/api/work/repos/${encodeURIComponent(repoId)}/push`, { scope });
-  return parseMaybeJson(response);
-}
-async function getSwitchboardPairings() {
-  const response = await apiGet("/api/switchboard/pairings");
-  const payload = await parseMaybeJson(response);
-  if (Array.isArray(payload))
-    return payload;
-  return payload.pairings ?? [];
-}
-async function addSwitchboardPairing(name, source, target, hooks) {
-  const response = await fetch("/api/switchboard/pairings", {
-    method: "POST",
-    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
-    body: JSON.stringify({ name, source, target, ...hooks })
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(payload.error ?? `POST /api/switchboard/pairings failed: ${response.status}`);
-  }
-}
-async function deleteSwitchboardPairing(name) {
-  await apiDelete(`/api/switchboard/pairings/${encodeURIComponent(name)}`);
-}
-async function updateSwitchboardPairing(name, source, target, hooks) {
-  const response = await fetch(`/api/switchboard/pairings/${encodeURIComponent(name)}`, {
-    method: "PATCH",
-    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
-    body: JSON.stringify({ source, target, ...hooks })
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(payload.error ?? `PATCH /api/switchboard/pairings/${name} failed: ${response.status}`);
-  }
-}
-async function getSwitchboardItems(name) {
-  const response = await apiGet(`/api/switchboard/pairings/${encodeURIComponent(name)}/items`);
-  return await parseMaybeJson(response);
-}
-async function toggleSwitchboardItem(pairingName, item) {
-  const response = await fetch(`/api/switchboard/pairings/${encodeURIComponent(pairingName)}/toggle`, {
-    method: "POST",
-    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
-    body: JSON.stringify({ item })
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(payload.error ?? `toggle failed: ${response.status}`);
-  }
-  return await response.json();
-}
-async function syncSwitchboard(pairingName) {
-  const response = await apiPost(`/api/switchboard/pairings/${encodeURIComponent(pairingName)}/sync`);
-  return await parseMaybeJson(response);
-}
-async function getSwitchboardTemplates() {
-  const response = await apiGet("/api/switchboard/templates");
-  return await parseMaybeJson(response);
-}
-async function createSwitchboardTemplate(name, hooks) {
-  const response = await fetch("/api/switchboard/templates", {
-    method: "POST",
-    headers: { ...DEFAULT_HEADERS, "Content-Type": "application/json" },
-    body: JSON.stringify({ name, ...hooks })
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(payload.error ?? `POST /api/switchboard/templates failed: ${response.status}`);
-  }
-  return await response.json();
-}
-async function getInboxGlobal() {
-  const res = await apiGet("/api/inbox/global");
-  return await parseMaybeJson(res);
-}
-async function acknowledgeInboxItem(type2, id2) {
-  await apiPost(`/api/inbox/${type2}/${encodeURIComponent(id2)}/ack`, {});
-}
-async function ackAllInbox() {
-  await apiPost("/api/inbox/ack-all");
-}
-async function getIssueSessions(repoId, issueId) {
-  const response = await apiGet(
-    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/sessions`
-  );
-  const payload = await parseMaybeJson(response);
-  return Array.isArray(payload) ? payload : [];
-}
-async function getSettings() {
-  const response = await apiGet("/api/settings");
-  const payload = await parseMaybeJson(response);
-  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-    return payload;
-  }
-  return {};
-}
-async function updateSetting(key2, value) {
-  const response = await fetch(`/api/settings/${encodeURIComponent(key2)}`, {
-    method: "PUT",
-    headers: {
-      ...DEFAULT_HEADERS,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ value })
-  });
-  if (!response.ok) {
-    throw new Error(`PUT /api/settings/${key2} failed: ${response.status}`);
-  }
-}
-async function getConsoleSessions() {
-  const response = await apiGet("/api/console/sessions");
-  const payload = await parseMaybeJson(response);
-  return normalizeList(payload);
-}
-async function restartConsoleSession(sessionId) {
-  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/restart`);
-}
-async function startConsoleSession(sessionId) {
-  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
-}
-async function createConsoleSession(label, backend, kind, backendType) {
-  const body = { label, command: "", args: [] };
-  if (kind === "operator") {
-    body.command = "claude";
-    body.args = backendType === "sdk" ? [] : ["--dangerously-skip-permissions"];
-    body.auto_restart = true;
-    body.is_operator = true;
-    body.backend_type = backendType ?? "sdk";
-  } else if (backend === "claude") {
-    body.command = "claude";
-    body.args = backendType === "sdk" ? [] : ["--dangerously-skip-permissions"];
-    body.backend_type = backendType ?? "sdk";
-  } else if (backend === "codex") {
-    body.command = "codex";
-    body.args = [];
-    body.backend_type = "pty";
-  } else if (backend === "gemini") {
-    body.command = "gemini";
-    body.args = ["-y"];
-    body.backend_type = "pty";
-  } else {
-    throw new Error(`Unsupported backend: ${backend}`);
-  }
-  const response = await apiPost("/api/console/sessions", body);
-  const json = await parseMaybeJson(response);
-  return json;
-}
-async function closeConsoleSession(sessionId) {
-  await apiDelete(`/api/console/sessions/${encodeURIComponent(sessionId)}`);
-}
-async function getConsoleStreamEvents(sessionId, limit = 500) {
-  const response = await apiGet(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/events?limit=${encodeURIComponent(String(limit))}`
-  );
-  const payload = await parseMaybeJson(response);
-  if (Array.isArray(payload))
-    return payload;
-  return payload.events ?? [];
-}
-async function sendConsolePrompt(sessionId, prompt) {
-  await apiPost(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/prompt`,
-    { prompt }
-  );
-}
-async function updateConsoleSession(sessionId, body) {
-  const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}`, body);
-  return parseMaybeJson(response);
-}
-async function getConsolePermissions(sessionId) {
-  const response = await apiGet(`/api/console/sessions/${encodeURIComponent(sessionId)}/permissions`);
-  const payload = await parseMaybeJson(response);
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-  return payload.requests ?? [];
-}
-async function respondToConsolePermission(sessionId, requestId, decision) {
-  await apiPost(
-    `/api/console/sessions/${encodeURIComponent(sessionId)}/permission/${encodeURIComponent(requestId)}`,
-    { decision }
-  );
-}
-async function updateConsoleSessionOptions(sessionId, body) {
-  const response = await apiPatch(`/api/console/sessions/${encodeURIComponent(sessionId)}/options`, body);
-  return parseMaybeJson(response);
-}
-async function getBackupStatus() {
-  const response = await apiGet("/api/backup/status");
-  return await parseMaybeJson(response);
-}
-async function runBackupNow() {
-  const response = await apiPost("/api/backup/run");
-  return await parseMaybeJson(response);
-}
-async function updateBackupSettings(settings) {
-  const response = await fetch("/api/backup/settings", {
-    method: "PUT",
-    headers: {
-      ...DEFAULT_HEADERS,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(settings)
-  });
-  if (!response.ok) {
-    throw new Error(`PUT /api/backup/settings failed: ${response.status}`);
-  }
-}
-async function getConversations(params) {
-  const query = new URLSearchParams();
-  if (params?.source)
-    query.set("source", params.source);
-  if (params?.starred)
-    query.set("starred", "1");
-  if (params?.search)
-    query.set("search", params.search);
-  if (params?.offset)
-    query.set("offset", String(params.offset));
-  if (params?.limit)
-    query.set("limit", String(params.limit));
-  if (params?.sort)
-    query.set("sort", params.sort);
-  if (params?.group)
-    query.set("group", "true");
-  if (params?.exclude_subagents)
-    query.set("exclude_subagents", "true");
-  if (params?.parent_id)
-    query.set("parent_id", params.parent_id);
-  if (params?.session_id)
-    query.set("session_id", params.session_id);
-  const qs = query.toString();
-  const resp = await apiGet(`/api/conversations${qs ? "?" + qs : ""}`);
-  return await parseMaybeJson(resp);
-}
-async function getConversation(id2) {
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id2)}`);
-  const payload = await parseMaybeJson(resp);
-  return {
-    ...payload.conversation ?? {},
-    blocks: payload.blocks ?? [],
-    children: payload.children ?? []
-  };
-}
-async function updateConversation(id2, data) {
-  const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id2)}`, data);
-  return await parseMaybeJson(resp);
-}
-async function exportConversationBlocks(id2, data) {
-  const resp = await apiPost(`/api/conversations/${encodeURIComponent(id2)}/export`, data);
-  return await parseMaybeJson(resp);
-}
-async function triggerIngestion(source) {
-  const resp = await apiPost("/api/conversations/ingest", source ? { source } : {});
-  return await parseMaybeJson(resp);
-}
-async function getLogs(params) {
-  const query = new URLSearchParams();
-  if (params?.level)
-    query.set("level", params.level);
-  if (params?.limit != null)
-    query.set("limit", String(params.limit));
-  if (params?.offset != null)
-    query.set("offset", String(params.offset));
-  const qs = query.toString();
-  const resp = await apiGet(`/api/system/logs${qs ? "?" + qs : ""}`);
-  return await parseMaybeJson(resp);
-}
-function hasTauriRuntime() {
-  if (typeof window === "undefined") {
-    return false;
-  }
-  const tauriWindow = window;
-  return Boolean(tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__);
-}
-function isDesktopShell() {
-  return hasTauriRuntime();
-}
-async function invokeDesktop(command, args) {
-  if (!hasTauriRuntime()) {
-    throw new Error("Desktop daemon controls are only available in the Tauri app.");
-  }
-  const tauriCoreModule = "@tauri-apps/api/core";
-  const { invoke } = await import(
-    /* @vite-ignore */
-    tauriCoreModule
-  );
-  return invoke(command, args);
-}
-async function getDesktopDaemonStatus() {
-  if (!hasTauriRuntime()) {
-    return null;
-  }
-  return invokeDesktop("daemon_status");
-}
-async function setDesktopDaemonLaunchMode(launchMode) {
-  return invokeDesktop("daemon_set_launch_mode", { launchMode });
-}
-async function startDesktopDaemon() {
-  return invokeDesktop("daemon_start");
-}
-async function stopDesktopDaemon() {
-  return invokeDesktop("daemon_stop");
-}
-async function restartDesktopDaemon() {
-  return invokeDesktop("daemon_restart");
-}
-async function navigateToDesktopBootstrap() {
-  if (!hasTauriRuntime()) {
-    return;
-  }
-  const tauriWebviewModule = "@tauri-apps/api/webview";
-  const { getCurrentWebview } = await import(
-    /* @vite-ignore */
-    tauriWebviewModule
-  );
-  await getCurrentWebview().navigate("/index.html");
-}
+// ui/src/app.tsx
+init_api();
 
 // ui/src/sse-client.ts
 var SSEClient = class {
@@ -12773,6 +12968,7 @@ function InboxView({
 }
 
 // ui/src/views/issues.tsx
+init_api();
 function getVisualState(issue) {
   if (issue.status === "open")
     return "open";
@@ -13427,6 +13623,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
 }
 
 // ui/src/views/review.tsx
+init_api();
 var EMPTY_SPEC = { markdown: "", commits: [] };
 function getRepoId(repo) {
   return repo.id || repo.name || "";
@@ -13691,6 +13888,7 @@ function ReviewView({ params, loaders }) {
 }
 
 // ui/src/views/sessions.tsx
+init_api();
 marked.setOptions({ async: false, gfm: true, breaks: false });
 function sanitizeInlineHtml4(html3) {
   let out = html3.replace(
@@ -14255,7 +14453,215 @@ function SessionsView({
 }
 
 // ui/src/views/conversations.tsx
+init_api();
+
+// ui/src/components/shared/MessageActions.tsx
+function MessageActions({
+  onCopy,
+  onResume,
+  onFork,
+  dagUuid,
+  showResume,
+  showFork
+}) {
+  const [copiedFeedback, setCopiedFeedback] = d2(false);
+  const shouldShowResume = showResume ?? !!dagUuid;
+  const shouldShowFork = showFork ?? !!dagUuid;
+  const handleCopy = (e3) => {
+    e3.stopPropagation();
+    if (onCopy) {
+      onCopy();
+      setCopiedFeedback(true);
+      setTimeout(() => setCopiedFeedback(false), 1200);
+    }
+  };
+  const handleResume = (e3) => {
+    e3.stopPropagation();
+    if (onResume)
+      onResume();
+  };
+  const handleFork = (e3) => {
+    e3.stopPropagation();
+    if (onFork)
+      onFork();
+  };
+  return /* @__PURE__ */ u3("div", { className: "message-actions", "data-dag-uuid": dagUuid, children: [
+    onCopy && /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "message-actions__btn",
+        onClick: handleCopy,
+        title: copiedFeedback ? "Copied" : "Copy",
+        "aria-label": copiedFeedback ? "Copied" : "Copy message",
+        children: copiedFeedback ? "\u2713" : "Copy"
+      }
+    ),
+    shouldShowResume && /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "message-actions__btn",
+        onClick: handleResume,
+        title: "Resume from this message",
+        "aria-label": "Resume",
+        children: "\u21A9"
+      }
+    ),
+    shouldShowFork && /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "message-actions__btn",
+        onClick: handleFork,
+        title: "Fork a new branch from this message",
+        "aria-label": "Fork",
+        children: "\u2441"
+      }
+    )
+  ] });
+}
+
+// ui/src/components/console/BranchSelector.tsx
+function BranchSelector({
+  branchPointUuid,
+  totalBranches,
+  currentIndex,
+  onSelect,
+  branches
+}) {
+  const [expanded, setExpanded] = d2(false);
+  if (totalBranches <= 1) {
+    return null;
+  }
+  const atStart = currentIndex <= 0;
+  const atEnd = currentIndex >= totalBranches - 1;
+  return /* @__PURE__ */ u3("div", { className: "branch-selector", "data-branch-point": branchPointUuid, children: [
+    /* @__PURE__ */ u3("div", { className: "branch-selector__bar", children: /* @__PURE__ */ u3("div", { className: "branch-selector__controls", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `branch-selector__arrow${atStart ? " branch-selector__arrow--disabled" : ""}`,
+          onClick: () => {
+            if (!atStart)
+              onSelect(currentIndex - 1);
+          },
+          disabled: atStart,
+          "aria-label": "Previous branch",
+          children: "\u25C2"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "branch-selector__label",
+          onClick: () => setExpanded((prev) => !prev),
+          "aria-expanded": expanded,
+          "aria-label": `Branch ${currentIndex + 1} of ${totalBranches}. Click to ${expanded ? "collapse" : "expand"} overview.`,
+          children: [
+            "Branch ",
+            currentIndex + 1,
+            " of ",
+            totalBranches
+          ]
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `branch-selector__arrow${atEnd ? " branch-selector__arrow--disabled" : ""}`,
+          onClick: () => {
+            if (!atEnd)
+              onSelect(currentIndex + 1);
+          },
+          disabled: atEnd,
+          "aria-label": "Next branch",
+          children: "\u25B8"
+        }
+      )
+    ] }) }),
+    expanded && branches && branches.length > 0 && /* @__PURE__ */ u3("div", { className: "branch-selector__overview", children: branches.map((branch, idx) => /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: `branch-card${idx === currentIndex ? " branch-card--active" : ""}`,
+        onClick: () => {
+          onSelect(idx);
+          setExpanded(false);
+        },
+        children: [
+          /* @__PURE__ */ u3("div", { className: "branch-card__header", children: [
+            /* @__PURE__ */ u3("span", { className: "branch-card__label", children: [
+              "Branch ",
+              idx + 1
+            ] }),
+            branch.isLive && /* @__PURE__ */ u3("span", { className: "branch-card__dot", "aria-label": "Live" })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "branch-card__text", children: branch.firstText || "\u2014" }),
+          /* @__PURE__ */ u3("div", { className: "branch-card__turns", children: [
+            branch.blockCount,
+            " block",
+            branch.blockCount !== 1 ? "s" : ""
+          ] })
+        ]
+      },
+      branch.dagUuid
+    )) })
+  ] });
+}
+
+// ui/src/views/conversations.tsx
 marked.setOptions({ async: false, gfm: true, breaks: false });
+function Toast({ toast, onDismiss }) {
+  if (!toast)
+    return null;
+  return /* @__PURE__ */ u3("div", { className: `conv-toast conv-toast--${toast.type}`, onClick: onDismiss, children: toast.message });
+}
+function ResumeConflictDialog({
+  onBranch,
+  onFork,
+  onCancel
+}) {
+  const [remember, setRemember] = d2(false);
+  return /* @__PURE__ */ u3("div", { className: "conv-dialog-overlay", onClick: onCancel, children: /* @__PURE__ */ u3("div", { className: "conv-dialog", onClick: (e3) => e3.stopPropagation(), children: [
+    /* @__PURE__ */ u3("h3", { className: "conv-dialog__title", children: "This conversation is active in Console." }),
+    /* @__PURE__ */ u3("div", { className: "conv-dialog__options", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--active",
+          onClick: () => onBranch(remember),
+          children: "Branch \u2014 Continue in the same session (creates a branch point)"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--ghost",
+          onClick: () => onFork(remember),
+          children: "Fork \u2014 Create a new conversation (clean copy up to here)"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ u3("label", { className: "conv-dialog__remember", children: [
+      /* @__PURE__ */ u3(
+        "input",
+        {
+          type: "checkbox",
+          checked: remember,
+          onChange: (e3) => setRemember(e3.target.checked)
+        }
+      ),
+      "Remember my choice"
+    ] }),
+    /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm conv-dialog__cancel", onClick: onCancel, children: "Cancel" })
+  ] }) });
+}
 var ALL_BLOCK_TYPES = [
   "user_message",
   "assistant_message",
@@ -14611,7 +15017,9 @@ function BlockRenderer({
   onToggleSelect,
   onShiftSelect,
   onToggleCollapse,
-  collapsed
+  collapsed,
+  onFork,
+  onResume
 }) {
   const metadata = parseMetadata(block2.metadata_json);
   const isCollapsible = isCollapsibleBlock(block2.type);
@@ -14635,7 +15043,8 @@ function BlockRenderer({
     }
   };
   const headerLabel = getBlockHeaderLabel(block2, metadata);
-  return /* @__PURE__ */ u3("div", { className: typeClass, onClick: handleClick, "data-block-id": block2.id, children: [
+  const blockDagUuid = block2.dag_uuid ?? void 0;
+  return /* @__PURE__ */ u3("div", { className: typeClass, onClick: handleClick, "data-block-id": block2.id, style: { position: "relative" }, children: [
     showHeader && /* @__PURE__ */ u3("div", { className: "block-header", children: [
       /* @__PURE__ */ u3("div", { className: "block-header__left", children: [
         /* @__PURE__ */ u3(
@@ -14683,7 +15092,21 @@ function BlockRenderer({
         /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
       ] })
     ] }),
-    renderConversationBlockBody(block2, collapsed)
+    renderConversationBlockBody(block2, collapsed),
+    /* @__PURE__ */ u3(
+      MessageActions,
+      {
+        onCopy: () => {
+          navigator.clipboard.writeText(block2.content).catch(() => {
+          });
+        },
+        onResume: blockDagUuid && onResume ? () => onResume(blockDagUuid) : void 0,
+        onFork: blockDagUuid && onFork ? () => onFork(blockDagUuid) : void 0,
+        dagUuid: blockDagUuid,
+        showResume: !!blockDagUuid,
+        showFork: !!blockDagUuid
+      }
+    )
   ] });
 }
 function TranscriptBlockItem({
@@ -14765,24 +15188,64 @@ function TranscriptTurnRenderer({
   collapsedBlocks,
   onToggleSelect,
   onShiftSelect,
-  onToggleCollapse
+  onToggleCollapse,
+  onFork,
+  onResume,
+  forkData,
+  branchSelections,
+  onBranchSelect
 }) {
   const speakerLabel = turn.speaker === "user" ? "You" : turn.speaker === "assistant" ? "Assistant" : "System";
+  const turnText = turn.blocks.map((b) => b.content).join("\n\n");
+  const turnDagUuid = turn.blocks[0]?.dag_uuid ?? void 0;
+  const forkPoint = forkData?.forks.find((fp) => fp.parent_dag_uuid === turnDagUuid);
+  const currentBranchIdx = forkPoint && branchSelections ? branchSelections[turnDagUuid ?? ""] ?? 0 : 0;
+  const branchInfos = forkPoint?.branches.map((b) => ({
+    dagUuid: b.dag_uuid,
+    firstText: b.first_text,
+    blockCount: b.block_count
+  }));
   return /* @__PURE__ */ u3("div", { className: `transcript-turn transcript-turn--${turn.speaker}`, children: [
     /* @__PURE__ */ u3("div", { className: "transcript-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "transcript-turn__badge", children: speakerLabel }) }),
-    /* @__PURE__ */ u3("div", { className: "transcript-turn__body", children: turn.blocks.map((block2) => /* @__PURE__ */ u3(
-      TranscriptBlockItem,
-      {
-        block: block2,
-        isSelected: selected.has(block2.id),
-        selectMode,
-        onToggleSelect: () => onToggleSelect(block2.id),
-        onShiftSelect: () => onShiftSelect(block2.id),
-        onToggleCollapse: () => onToggleCollapse(block2.id),
-        collapsed: collapsedBlocks.has(block2.id)
-      },
-      block2.id
-    )) })
+    /* @__PURE__ */ u3("div", { className: "transcript-turn__body", style: { position: "relative" }, children: [
+      turn.blocks.map((block2) => /* @__PURE__ */ u3(
+        TranscriptBlockItem,
+        {
+          block: block2,
+          isSelected: selected.has(block2.id),
+          selectMode,
+          onToggleSelect: () => onToggleSelect(block2.id),
+          onShiftSelect: () => onShiftSelect(block2.id),
+          onToggleCollapse: () => onToggleCollapse(block2.id),
+          collapsed: collapsedBlocks.has(block2.id)
+        },
+        block2.id
+      )),
+      /* @__PURE__ */ u3(
+        MessageActions,
+        {
+          onCopy: () => {
+            navigator.clipboard.writeText(turnText).catch(() => {
+            });
+          },
+          onResume: turnDagUuid && onResume ? () => onResume(turnDagUuid) : void 0,
+          onFork: turnDagUuid && onFork ? () => onFork(turnDagUuid) : void 0,
+          dagUuid: turnDagUuid,
+          showResume: !!turnDagUuid,
+          showFork: !!turnDagUuid
+        }
+      ),
+      forkPoint && turnDagUuid && /* @__PURE__ */ u3(
+        BranchSelector,
+        {
+          branchPointUuid: turnDagUuid,
+          totalBranches: forkPoint.branches.length,
+          currentIndex: currentBranchIdx,
+          onSelect: (idx) => onBranchSelect?.(turnDagUuid, idx, forkPoint),
+          branches: branchInfos
+        }
+      )
+    ] })
   ] });
 }
 function ContentWithExpand({ content }) {
@@ -14968,6 +15431,11 @@ function ConversationDetail({
   const [collapsedBlocks, setCollapsedBlocks] = d2(/* @__PURE__ */ new Set());
   const [showExport, setShowExport] = d2(false);
   const [renderMode, setRenderMode] = d2("transcript");
+  const [toast, setToast] = d2(null);
+  const [conflictDialog, setConflictDialog] = d2(null);
+  const [forkData, setForkData] = d2(null);
+  const [branchSelections, setBranchSelections] = d2({});
+  const [selectedLeaf, setSelectedLeaf] = d2(null);
   const scrollContainerRef = A2(null);
   const [scrollTop, setScrollTop] = d2(0);
   const [containerHeight, setContainerHeight] = d2(800);
@@ -14997,6 +15465,132 @@ function ConversationDetail({
       active = false;
     };
   }, [conversationId, loadNonce]);
+  y2(() => {
+    let active = true;
+    getConversationForks(conversationId).then((data) => {
+      if (active)
+        setForkData(data);
+    }).catch(() => {
+    });
+    return () => {
+      active = false;
+    };
+  }, [conversationId, loadNonce]);
+  y2(() => {
+    if (!selectedLeaf)
+      return;
+    let active = true;
+    setLoading(true);
+    getConversation(conversationId, selectedLeaf).then((conv) => {
+      if (!active)
+        return;
+      setConversation(conv);
+      setLoading(false);
+    }).catch(() => {
+      if (!active)
+        return;
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [conversationId, selectedLeaf]);
+  y2(() => {
+    if (!toast)
+      return;
+    const timer2 = window.setTimeout(() => setToast(null), 4e3);
+    return () => window.clearTimeout(timer2);
+  }, [toast]);
+  const handleFork = q2(async (dagUuid) => {
+    try {
+      await forkConversation(conversationId, dagUuid);
+      setToast({ message: "Forked conversation \u2014 it will appear in History shortly.", type: "info" });
+    } catch (err) {
+      setToast({ message: `Fork failed: ${err instanceof Error ? err.message : String(err)}`, type: "error" });
+    }
+  }, [conversationId]);
+  const handleResume = q2(async (dagUuid) => {
+    const activeSession = consoleSessions.find(
+      (s3) => s3.provider_session_id === conversation?.session_id && s3.status !== "stopped" && s3.status !== "crashed"
+    );
+    if (activeSession) {
+      let policy = "prompt";
+      try {
+        const settings = await getSettings();
+        const stored = settings.resume_conflict_policy;
+        if (stored === "auto_fork" || stored === "prompt" || stored === "allow_concurrent") {
+          policy = stored;
+        }
+      } catch {
+      }
+      if (policy === "auto_fork") {
+        try {
+          await forkConversation(conversationId, dagUuid);
+          setToast({ message: "Auto-forked due to active session \u2014 it will appear in History shortly.", type: "info" });
+        } catch (err) {
+          setToast({ message: `Auto-fork failed: ${err instanceof Error ? err.message : String(err)}`, type: "error" });
+        }
+        return;
+      }
+      if (policy === "prompt") {
+        setConflictDialog({ dagUuid });
+        return;
+      }
+    }
+    try {
+      const result = await resumeConversation(conversationId, dagUuid);
+      setToast({ message: "Resuming conversation in Console...", type: "info" });
+      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+    } catch (err) {
+      setToast({ message: `Resume failed: ${err instanceof Error ? err.message : String(err)}`, type: "error" });
+    }
+  }, [conversationId, consoleSessions, conversation?.session_id]);
+  const handleConflictBranch = q2(async (remember) => {
+    if (!conflictDialog)
+      return;
+    const dagUuid = conflictDialog.dagUuid;
+    setConflictDialog(null);
+    if (remember) {
+      try {
+        const { updateSetting: updateSetting2 } = await Promise.resolve().then(() => (init_api(), api_exports));
+        await updateSetting2("resume_conflict_policy", "allow_concurrent");
+      } catch {
+      }
+    }
+    try {
+      const result = await resumeConversation(conversationId, dagUuid);
+      setToast({ message: "Resuming conversation in Console...", type: "info" });
+      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+    } catch (err) {
+      setToast({ message: `Resume failed: ${err instanceof Error ? err.message : String(err)}`, type: "error" });
+    }
+  }, [conflictDialog, conversationId]);
+  const handleConflictFork = q2(async (remember) => {
+    if (!conflictDialog)
+      return;
+    const dagUuid = conflictDialog.dagUuid;
+    setConflictDialog(null);
+    if (remember) {
+      try {
+        const { updateSetting: updateSetting2 } = await Promise.resolve().then(() => (init_api(), api_exports));
+        await updateSetting2("resume_conflict_policy", "auto_fork");
+      } catch {
+      }
+    }
+    try {
+      await forkConversation(conversationId, dagUuid);
+      setToast({ message: "Forked conversation \u2014 it will appear in History shortly.", type: "info" });
+    } catch (err) {
+      setToast({ message: `Fork failed: ${err instanceof Error ? err.message : String(err)}`, type: "error" });
+    }
+  }, [conflictDialog, conversationId]);
+  const handleBranchSelect = q2((forkPointUuid, index2, forkPoint) => {
+    setBranchSelections((prev) => ({ ...prev, [forkPointUuid]: index2 }));
+    const branch = forkPoint.branches[index2];
+    if (branch) {
+      setSelectedLeaf(branch.dag_uuid);
+    }
+  }, []);
   y2(() => {
     const el = scrollContainerRef.current;
     if (!el)
@@ -15330,7 +15924,12 @@ function ConversationDetail({
           collapsedBlocks,
           onToggleSelect: toggleSelect,
           onShiftSelect: handleShiftSelect,
-          onToggleCollapse: toggleCollapse
+          onToggleCollapse: toggleCollapse,
+          onFork: handleFork,
+          onResume: handleResume,
+          forkData,
+          branchSelections,
+          onBranchSelect: handleBranchSelect
         },
         turn.id
       )),
@@ -15351,7 +15950,9 @@ function ConversationDetail({
               onToggleSelect: () => toggleSelect(block2.id),
               onShiftSelect: () => handleShiftSelect(block2.id),
               onToggleCollapse: () => toggleCollapse(block2.id),
-              collapsed: collapsedBlocks.has(block2.id)
+              collapsed: collapsedBlocks.has(block2.id),
+              onFork: handleFork,
+              onResume: handleResume
             },
             block2.id
           )) }) }) : renderedBlocks.map((block2) => /* @__PURE__ */ u3(
@@ -15363,12 +15964,23 @@ function ConversationDetail({
               onToggleSelect: () => toggleSelect(block2.id),
               onShiftSelect: () => handleShiftSelect(block2.id),
               onToggleCollapse: () => toggleCollapse(block2.id),
-              collapsed: collapsedBlocks.has(block2.id)
+              collapsed: collapsedBlocks.has(block2.id),
+              onFork: handleFork,
+              onResume: handleResume
             },
             block2.id
           )),
           visibleBlocks.length === 0 && /* @__PURE__ */ u3("div", { className: "empty-state", children: "No blocks match the current filters." })
         ]
+      }
+    ),
+    /* @__PURE__ */ u3(Toast, { toast, onDismiss: () => setToast(null) }),
+    conflictDialog && /* @__PURE__ */ u3(
+      ResumeConflictDialog,
+      {
+        onBranch: handleConflictBranch,
+        onFork: handleConflictFork,
+        onCancel: () => setConflictDialog(null)
       }
     )
   ] });
@@ -15675,6 +16287,7 @@ function ConversationsView({
 }
 
 // ui/src/views/settings.tsx
+init_api();
 var SOUNDS = ["Blow", "Glass", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"];
 var THEMES = [
   "catppuccin-mocha",
@@ -15687,6 +16300,12 @@ var THEMES = [
 ];
 var PROMPTS = ["powerlevel10k", "starship"];
 var MULTIPLEXERS = ["zellij", "tmux", "both", "none"];
+var RESUME_CONFLICT_POLICIES = ["prompt", "auto_fork", "allow_concurrent"];
+var RESUME_CONFLICT_LABELS = {
+  prompt: "Ask me each time",
+  auto_fork: "Auto-fork (create new conversation)",
+  allow_concurrent: "Allow concurrent (resume in-place)"
+};
 var DESKTOP_DAEMON_MODES = ["on_demand", "manual"];
 function Toggle(props) {
   return /* @__PURE__ */ u3(
@@ -16377,6 +16996,32 @@ function SettingsView(props) {
           }
         )
       ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+        /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Conversation Branching" }),
+        /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "How to handle resume when the conversation is already active in Console." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: /* @__PURE__ */ u3("div", { className: "settings-view__select-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__select-info", children: [
+          /* @__PURE__ */ u3("span", { className: "settings-view__select-label", children: "Resume conflict policy" }),
+          /* @__PURE__ */ u3("span", { className: "settings-view__select-desc", children: "What to do when resuming a conversation that is already active in Console." })
+        ] }),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            className: "settings-view__select",
+            value: settings.resume_conflict_policy ?? "prompt",
+            onChange: async (e3) => {
+              try {
+                await onSave("resume_conflict_policy", e3.target.value);
+              } catch {
+              }
+            },
+            children: RESUME_CONFLICT_POLICIES.map((p3) => /* @__PURE__ */ u3("option", { value: p3, children: RESUME_CONFLICT_LABELS[p3] ?? p3 }, p3))
+          }
+        )
+      ] }) })
     ] }),
     /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
       /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
@@ -17177,6 +17822,7 @@ function SwitchboardView({
 }
 
 // ui/src/views/work.tsx
+init_api();
 var PROTECTED_BRANCHES = /* @__PURE__ */ new Set(["main", "develop"]);
 function getRepoId2(repo) {
   return repo.id || repo.name || "";
@@ -20744,8 +21390,14 @@ function StreamRenderer({
       const turn = turns[i4];
       const isLastStreamingTurn = streaming && i4 === turns.length - 1;
       const isThinking = isLastStreamingTurn && turn.assistantEvent.message.content.some((b) => b.type === "thinking");
+      const turnTextParts = [];
+      for (const block2 of turn.assistantEvent.message.content) {
+        if (block2.type === "text" && block2.text)
+          turnTextParts.push(block2.text);
+      }
+      const turnText = turnTextParts.join("\n\n");
       nodes.push(
-        /* @__PURE__ */ u3("div", { className: "stream-turn stream-turn--assistant", children: [
+        /* @__PURE__ */ u3("div", { className: "stream-turn stream-turn--assistant", style: { position: "relative" }, children: [
           /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: "Assistant" }) }),
           /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: /* @__PURE__ */ u3(
             MessageGroup,
@@ -20754,7 +21406,16 @@ function StreamRenderer({
               isStreaming: isLastStreamingTurn,
               isThinking
             }
-          ) })
+          ) }),
+          /* @__PURE__ */ u3(
+            MessageActions,
+            {
+              onCopy: () => {
+                navigator.clipboard.writeText(turnText).catch(() => {
+                });
+              }
+            }
+          )
         ] }, turn.id)
       );
     }
@@ -20952,6 +21613,7 @@ function PermissionDialog({
 }
 
 // ui/src/components/console/SessionControls.tsx
+init_api();
 function SessionControls({
   sessionId,
   backendType,
@@ -21118,6 +21780,7 @@ function SessionControls({
 }
 
 // ui/src/components/console/TerminalPane.tsx
+init_api();
 var MODEL_OPTIONS = {
   claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
   gemini: [
@@ -21345,7 +22008,8 @@ function TerminalPane({
   providerSessionId,
   isVisible,
   viewMode,
-  onViewModeChange
+  onViewModeChange,
+  resumeAtMessage
 }) {
   const containerRef = A2(null);
   const termRef = A2(null);
@@ -21573,7 +22237,7 @@ function TerminalPane({
       const conversation = conversations[0];
       if (!conversation)
         return null;
-      const detail = await getConversation(conversation.id);
+      const detail = await getConversation(conversation.id, resumeAtMessage || void 0);
       return conversationBlocksToStreamEvents(providerSessionId, detail.blocks);
     }).catch(() => null);
     const memPromise = getConsoleStreamEvents(sessionId, 500).catch(() => []);
@@ -21606,7 +22270,7 @@ function TerminalPane({
     return () => {
       cancelled = true;
     };
-  }, [providerSessionId, sessionId]);
+  }, [providerSessionId, sessionId, resumeAtMessage]);
   y2(() => {
     if (!streaming)
       return;
@@ -22308,7 +22972,8 @@ function ConsoleView({
         providerSessionId: session.provider_session_id,
         isVisible: session.id === activeSessionId,
         viewMode: getViewMode(session.id),
-        onViewModeChange: (mode) => handleViewModeChange(session.id, mode)
+        onViewModeChange: (mode) => handleViewModeChange(session.id, mode),
+        resumeAtMessage: session.resume_at_message
       },
       session.id
     )) }),
@@ -22324,6 +22989,7 @@ function ConsoleView({
 }
 
 // ui/src/views/logs.tsx
+init_api();
 var LEVEL_ORDER = {
   debug: 0,
   info: 1,
@@ -26594,7 +27260,7 @@ function GraphCanvas({ nodes, edges, onNavigate }) {
 }
 
 // ui/src/views/graph.tsx
-async function getGraph(params) {
+async function getGraph2(params) {
   const q3 = new URLSearchParams();
   if (params?.since)
     q3.set("since", params.since);
@@ -26660,7 +27326,7 @@ function GraphView({ onNavigate, refreshToken }) {
     let active = true;
     setLoading(true);
     setError(null);
-    getGraph({
+    getGraph2({
       since: sinceFilter === "all" ? void 0 : sinceFilter,
       status: statusFilter === "all" ? "all" : void 0,
       repo: repoFilter ?? void 0,

@@ -28,6 +28,8 @@ export interface ConversationBlock {
     timestamp: string;
     parent_id: string | null;
     metadata: BlockMetadata;
+    dag_uuid?: string | null;
+    dag_parent_uuid?: string | null;
 }
 export interface Conversation {
     id: string;

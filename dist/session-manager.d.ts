@@ -1,0 +1,40 @@
+import type { WebSocket } from "ws";
+import type { AgenticBackend, PermissionDecision, PermissionRequest } from "./agentic-backend.js";
+import { SessionRegistry } from "./registry.js";
+import { type SDKBackendOptions } from "./backends/sdk-backend.js";
+import type { ConsoleSession, ConsoleSessionInput, Logger } from "./types.js";
+export declare class SessionManager {
+    private sessions;
+    private logger;
+    private sessionRegistry;
+    constructor(_db: unknown, logger: Logger, sessionRegistry?: SessionRegistry);
+    init(): void;
+    create(input: ConsoleSessionInput): ConsoleSession;
+    get(id: string): AgenticBackend | undefined;
+    getAll(): AgenticBackend[];
+    start(id: string): void;
+    stop(id: string, signal?: string): void;
+    delete(id: string): void;
+    resize(id: string, cols: number, rows: number): void;
+    write(id: string, data: string): void;
+    sendPrompt(id: string, prompt: string): void;
+    addWsClient(id: string, ws: WebSocket): boolean;
+    updateConfig(id: string, patch: Partial<Pick<ConsoleSession, "label" | "args" | "cwd" | "provider_session_id" | "allowed_tools" | "mandible_session_id">>, { silent }?: {
+        silent?: boolean;
+    }): ConsoleSession;
+    updateOptions(id: string, options: SDKBackendOptions): ConsoleSession;
+    getPermissions(id: string): PermissionRequest[];
+    resolvePermission(sessionId: string, requestId: string, decision: PermissionDecision): boolean;
+    getUsage(id: string): Array<Record<string, unknown>>;
+    startOperator(): void;
+    close(): void;
+    private createBackend;
+    private wireBackend;
+    private applyMetaUpdate;
+    private broadcastStatus;
+    private recordUsage;
+    private requireSession;
+    private isPermissionAwareBackend;
+    private isConfigurableBackend;
+    private isUsageAwareBackend;
+}
