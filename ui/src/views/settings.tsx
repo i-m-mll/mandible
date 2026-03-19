@@ -37,6 +37,12 @@ const THEMES = [
 ];
 const PROMPTS = ['powerlevel10k', 'starship'];
 const MULTIPLEXERS = ['zellij', 'tmux', 'both', 'none'];
+const RESUME_CONFLICT_POLICIES = ['prompt', 'auto_fork', 'allow_concurrent'];
+const RESUME_CONFLICT_LABELS: Record<string, string> = {
+  prompt: 'Ask me each time',
+  auto_fork: 'Auto-fork (create new conversation)',
+  allow_concurrent: 'Allow concurrent (resume in-place)',
+};
 const DESKTOP_DAEMON_MODES: DesktopDaemonLaunchMode[] = ['on_demand', 'manual'];
 
 function Toggle(props: {
@@ -829,6 +835,40 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             settings={settings}
             onSave={onSave}
           />
+        </div>
+      </div>
+
+      {/* ── Section: Conversation Branching ── */}
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Conversation Branching</h3>
+          <p className="settings-view__section-desc">
+            How to handle resume when the conversation is already active in Console.
+          </p>
+        </div>
+
+        <div className="settings-view__section-body">
+          <div className="settings-view__select-row">
+            <div className="settings-view__select-info">
+              <span className="settings-view__select-label">Resume conflict policy</span>
+              <span className="settings-view__select-desc">
+                What to do when resuming a conversation that is already active in Console.
+              </span>
+            </div>
+            <select
+              className="settings-view__select"
+              value={settings.resume_conflict_policy ?? 'prompt'}
+              onChange={async (e) => {
+                try {
+                  await onSave('resume_conflict_policy', (e.target as HTMLSelectElement).value);
+                } catch { /* ignore */ }
+              }}
+            >
+              {RESUME_CONFLICT_POLICIES.map((p) => (
+                <option key={p} value={p}>{RESUME_CONFLICT_LABELS[p] ?? p}</option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 

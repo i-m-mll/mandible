@@ -46,6 +46,7 @@ export type BackendMetaUpdate = Partial<
     | "updated_at"
     | "allowed_tools"
     | "mandible_session_id"
+    | "resume_at_message"
   >
 >;
 

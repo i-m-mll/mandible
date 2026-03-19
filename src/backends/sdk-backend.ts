@@ -435,6 +435,14 @@ implements
     } finally {
       this.activeQuery = null;
       this.abortController = null;
+
+      // Bug: 73c06e8 — Clear resume_at_message after first prompt so subsequent
+      // prompts don't re-use the resume point.
+      if (this.meta.resume_at_message) {
+        this.meta = { ...this.meta, resume_at_message: null };
+        this.emitMetaUpdate({ resume_at_message: null });
+      }
+
       try {
         query.close();
       } catch {
@@ -448,6 +456,13 @@ implements
     const permissionMode = this.options.permissionMode ?? "default";
     const allowedTools = [...this.autoAllowedTools];
     const hooks = this.buildHooks();
+
+    // Bug: 73c06e8 — Thread resume_at_message to SDK for DAG branching
+    const resumeOpts: Record<string, unknown> = {};
+    if (this.meta.resume_at_message && this.meta.provider_session_id) {
+      resumeOpts.resume = this.meta.provider_session_id;
+      resumeOpts.resumeSessionAt = this.meta.resume_at_message;
+    }
 
     return {
       abortController,
@@ -470,6 +485,7 @@ implements
       canUseTool: this.handleToolPermission,
       hooks,
       agentProgressSummaries: true,
+      ...resumeOpts,
     };
   }
 

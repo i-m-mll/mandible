@@ -329,8 +329,6 @@ export function StreamRenderer({
           </div>
           <MessageActions
             onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
-            onResume={() => {}}
-            onFork={() => {}}
           />
         </div>,
       );
