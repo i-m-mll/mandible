@@ -21142,16 +21142,59 @@ function parseModelFromArgs(args) {
   }
   return void 0;
 }
-function hasRenderableEvents(events) {
-  return events.some((event) => {
-    if (event.type === "assistant" || event.type === "user" || event.type === "synthetic_prompt") {
-      return true;
-    }
-    if (event.type === "result" && event.is_error) {
-      return true;
-    }
-    return false;
+function deriveStreamingState(events, streamStartAtRef) {
+  const last = events[events.length - 1];
+  const isStreaming = Boolean(last && last.type !== "result");
+  if (isStreaming && streamStartAtRef.current === null) {
+    streamStartAtRef.current = Date.now();
+  }
+  return isStreaming;
+}
+function flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming) {
+  const pending = pendingSSERef.current;
+  pendingSSERef.current = [];
+  if (pending.length === 0)
+    return;
+  setStreamEvents((prev) => {
+    const newEvents = pending.filter((pe) => {
+      const peJson = JSON.stringify(pe);
+      return !prev.some((existing) => JSON.stringify(existing) === peJson);
+    });
+    return newEvents.length > 0 ? [...prev, ...newEvents] : prev;
   });
+  const lastPending = pending[pending.length - 1];
+  if (lastPending?.type === "result") {
+    setStreaming(false);
+  }
+}
+function computeLiveTail(historyEvents, memEvents) {
+  const historyAssistantCount = historyEvents.filter((e3) => e3.type === "assistant").length;
+  if (historyAssistantCount === 0) {
+    return memEvents;
+  }
+  let assistantsSeen = 0;
+  let tailStart = memEvents.length;
+  for (let i4 = 0; i4 < memEvents.length; i4++) {
+    if (memEvents[i4].type === "assistant") {
+      assistantsSeen++;
+    }
+    if (assistantsSeen === historyAssistantCount) {
+      tailStart = i4 + 1;
+      while (tailStart < memEvents.length) {
+        const next = memEvents[tailStart];
+        if (next.type === "user" && "message" in next) {
+          const content = next.message.content;
+          if (Array.isArray(content) && content.every((b) => b.type === "tool_result")) {
+            tailStart++;
+            continue;
+          }
+        }
+        break;
+      }
+      break;
+    }
+  }
+  return memEvents.slice(tailStart);
 }
 function collectAvailableTools(events) {
   for (let index2 = events.length - 1; index2 >= 0; index2 -= 1) {
@@ -21312,6 +21355,8 @@ function TerminalPane({
   const pendingWritesRef = A2([]);
   const isVisibleRef = A2(isVisible);
   const viewModeRef = A2(viewMode);
+  const hydratingRef = A2(false);
+  const pendingSSERef = A2([]);
   const [wsStatus, setWsStatus] = d2("connecting");
   const [reconnectNonce, setReconnectNonce] = d2(0);
   const [streamEvents, setStreamEvents] = d2([]);
@@ -21500,46 +21545,63 @@ function TerminalPane({
   }, [isVisible, viewMode, sessionId, showDebugTerminal]);
   y2(() => {
     let cancelled = false;
-    getConsoleStreamEvents(sessionId, 500).then(async (events) => {
+    hydratingRef.current = true;
+    pendingSSERef.current = [];
+    if (!providerSessionId) {
+      getConsoleStreamEvents(sessionId, 500).then((events) => {
+        if (cancelled)
+          return;
+        setStreamEvents(events);
+        setStreaming(deriveStreamingState(events, streamStartAtRef));
+      }).catch(() => {
+        if (cancelled)
+          return;
+        setStreamEvents([]);
+        setStreaming(false);
+      }).finally(() => {
+        if (!cancelled) {
+          hydratingRef.current = false;
+          flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    setHydratingHistory(true);
+    const historyPromise = getConversations({ session_id: providerSessionId, limit: 1 }).then(async ({ conversations }) => {
+      const conversation = conversations[0];
+      if (!conversation)
+        return null;
+      const detail = await getConversation(conversation.id);
+      return conversationBlocksToStreamEvents(providerSessionId, detail.blocks);
+    }).catch(() => null);
+    const memPromise = getConsoleStreamEvents(sessionId, 500).catch(() => []);
+    Promise.all([historyPromise, memPromise]).then(([historyEvents, memEvents]) => {
       if (cancelled)
         return;
-      if (hasRenderableEvents(events) || !providerSessionId) {
-        setStreamEvents(events);
-        const last = events[events.length - 1];
-        const isStreaming = Boolean(last && last.type !== "result");
-        setStreaming(isStreaming);
-        if (isStreaming && streamStartAtRef.current === null) {
-          streamStartAtRef.current = Date.now();
-        }
-        return;
-      }
-      setHydratingHistory(true);
-      try {
-        const { conversations } = await getConversations({ session_id: providerSessionId, limit: 1 });
-        const conversation = conversations[0];
-        if (!conversation) {
-          setStreaming(false);
-          return;
-        }
-        const detail = await getConversation(conversation.id);
-        if (cancelled)
-          return;
-        setStreamEvents(conversationBlocksToStreamEvents(providerSessionId, detail.blocks));
-        setStreaming(false);
-      } catch {
-        if (cancelled)
-          return;
-        setStreaming(false);
-      } finally {
-        if (!cancelled) {
-          setHydratingHistory(false);
-        }
+      if (historyEvents && historyEvents.length > 0) {
+        const liveTail = computeLiveTail(historyEvents, memEvents);
+        const tailStartIndex = memEvents.length - liveTail.length;
+        const systemEvents = memEvents.slice(0, tailStartIndex).filter((e3) => e3.type === "system");
+        const allEvents = [...systemEvents, ...historyEvents, ...liveTail];
+        setStreamEvents(allEvents);
+        setStreaming(deriveStreamingState(allEvents, streamStartAtRef));
+      } else {
+        setStreamEvents(memEvents);
+        setStreaming(deriveStreamingState(memEvents, streamStartAtRef));
       }
     }).catch(() => {
       if (cancelled)
         return;
       setStreamEvents([]);
       setStreaming(false);
+    }).finally(() => {
+      if (!cancelled) {
+        setHydratingHistory(false);
+        hydratingRef.current = false;
+        flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming);
+      }
     });
     return () => {
       cancelled = true;
@@ -21570,6 +21632,15 @@ function TerminalPane({
       const streamEvent = detail.event;
       if (!streamEvent)
         return;
+      if (hydratingRef.current) {
+        pendingSSERef.current.push(streamEvent);
+        if (streamEvent.type === "result") {
+          setStreaming(false);
+        } else {
+          setStreaming(true);
+        }
+        return;
+      }
       setStreamEvents((prev) => {
         const last = prev[prev.length - 1];
         if (last && JSON.stringify(last) === JSON.stringify(streamEvent)) {
