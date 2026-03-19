@@ -565,6 +565,14 @@ const MIGRATIONS: Migration[] = [
       `ALTER TABLE conversation_blocks ADD COLUMN dag_parent_uuid TEXT`,
       `CREATE INDEX idx_blocks_dag_parent ON conversation_blocks(conversation_id, dag_parent_uuid) WHERE dag_parent_uuid IS NOT NULL`,
     ]
+  },
+  {
+    version: 37,
+    name: "console_sessions_resume_at_message",
+    // Bug: 40f0298 — DAG branching: track which message a resumed console session should start from
+    statements: [
+      `ALTER TABLE console_sessions ADD COLUMN resume_at_message TEXT`,
+    ]
   }
 ];
 
