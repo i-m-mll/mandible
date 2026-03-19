@@ -295,6 +295,8 @@ const MIGRATIONS: Migration[] = [
         timestamp TEXT,
         parent_id TEXT,
         metadata_json TEXT NOT NULL DEFAULT '{}',
+        dag_uuid TEXT,
+        dag_parent_uuid TEXT,
         UNIQUE(conversation_id, position)
       )`,
       `CREATE INDEX IF NOT EXISTS idx_blocks_conv ON conversation_blocks(conversation_id)`,
@@ -552,6 +554,16 @@ const MIGRATIONS: Migration[] = [
       )`,
       `CREATE INDEX IF NOT EXISTS idx_console_session_usage_session
         ON console_session_usage(console_session_id, recorded_at DESC)`
+    ]
+  },
+  {
+    version: 36,
+    name: "conversation_blocks_dag_uuid",
+    // Bug: 72751b7 — DAG branching: track JSONL uuid/parentUuid on conversation blocks
+    statements: [
+      `ALTER TABLE conversation_blocks ADD COLUMN dag_uuid TEXT`,
+      `ALTER TABLE conversation_blocks ADD COLUMN dag_parent_uuid TEXT`,
+      `CREATE INDEX idx_blocks_dag_parent ON conversation_blocks(conversation_id, dag_parent_uuid) WHERE dag_parent_uuid IS NOT NULL`,
     ]
   }
 ];

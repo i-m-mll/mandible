@@ -55,6 +55,8 @@ interface BlockRow {
   timestamp: string | null;
   parent_id: string | null;
   metadata_json: string;
+  dag_uuid: string | null;
+  dag_parent_uuid: string | null;
 }
 
 function mapConversation(row: ConversationRow) {
@@ -84,6 +86,8 @@ function mapBlock(row: BlockRow) {
     timestamp: row.timestamp,
     parent_id: row.parent_id,
     metadata,
+    dag_uuid: row.dag_uuid ?? null,
+    dag_parent_uuid: row.dag_parent_uuid ?? null,
   };
 }
 
