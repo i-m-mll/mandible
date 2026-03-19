@@ -20793,6 +20793,9 @@ function StreamRenderer({
 
 // ui/src/components/console/ViewToggle.tsx
 function ViewToggle({ current, onChange, showTerminal = true }) {
+  if (!showTerminal) {
+    return null;
+  }
   return /* @__PURE__ */ u3("div", { className: "view-toggle", children: [
     /* @__PURE__ */ u3(
       "button",
@@ -20803,7 +20806,7 @@ function ViewToggle({ current, onChange, showTerminal = true }) {
         children: "Chat"
       }
     ),
-    showTerminal && /* @__PURE__ */ u3(
+    /* @__PURE__ */ u3(
       "button",
       {
         type: "button",
@@ -21320,6 +21323,7 @@ function TerminalPane({
   const [permissionQueue, setPermissionQueue] = d2([]);
   const [permissionBusy, setPermissionBusy] = d2(false);
   const [activeSubagents, setActiveSubagents] = d2([]);
+  const [sidebarOpen, setSidebarOpen] = d2(false);
   const showDebugTerminal = backendType === "pty" || isOperator;
   const providerFamily = isOperator ? "claude" : command;
   const availableTools = collectAvailableTools(streamEvents);
@@ -21628,6 +21632,12 @@ function TerminalPane({
     if (viewMode === "rich") {
       const submittedPrompt = prompt.trim();
       setPrompt("");
+      const localId = `sp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setStreamEvents((prev) => [...prev, {
+        type: "synthetic_prompt",
+        localId,
+        text: submittedPrompt
+      }]);
       setElapsedSeconds(0);
       streamStartAtRef.current = Date.now();
       setStreaming(true);
@@ -21801,107 +21811,134 @@ function TerminalPane({
               }
             )
           ] }),
-          viewMode === "rich" && /* @__PURE__ */ u3("div", { style: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }, children: [
-            /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto", minHeight: 0 }, children: [
-              backendType === "sdk" && activeSubagents.length > 0 && /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents", children: [
-                /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-title", children: "Active subagents" }),
-                /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-list", children: activeSubagents.map((subagent) => /* @__PURE__ */ u3(
-                  "div",
+          viewMode === "rich" && /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-wrapper", children: [
+            /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-main", children: [
+              /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto", minHeight: 0 }, children: [
+                backendType === "sdk" && activeSubagents.length > 0 && /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents", children: [
+                  /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-title", children: "Active subagents" }),
+                  /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-list", children: activeSubagents.map((subagent) => /* @__PURE__ */ u3(
+                    "div",
+                    {
+                      className: "terminal-pane__subagent",
+                      style: { paddingLeft: `${subagent.depth * 18}px` },
+                      children: [
+                        /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-type", children: subagent.agent_type }),
+                        /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-id", children: subagent.agent_id })
+                      ]
+                    },
+                    subagent.agent_id
+                  )) })
+                ] }),
+                /* @__PURE__ */ u3(
+                  StreamRenderer,
                   {
-                    className: "terminal-pane__subagent",
-                    style: { paddingLeft: `${subagent.depth * 18}px` },
-                    children: [
-                      /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-type", children: subagent.agent_type }),
-                      /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-id", children: subagent.agent_id })
-                    ]
-                  },
-                  subagent.agent_id
-                )) })
+                    events: streamEvents,
+                    streaming,
+                    elapsedSeconds,
+                    emptyLabel: hydratingHistory ? "Loading prior messages\u2026" : void 0,
+                    sessionInfo: {
+                      sessionId,
+                      backend: providerFamily,
+                      model
+                    }
+                  }
+                )
               ] }),
               /* @__PURE__ */ u3(
-                StreamRenderer,
+                "form",
                 {
-                  events: streamEvents,
-                  streaming,
-                  elapsedSeconds,
-                  emptyLabel: hydratingHistory ? "Loading prior messages\u2026" : void 0,
-                  sessionInfo: {
-                    sessionId,
-                    backend: providerFamily,
-                    model
-                  }
+                  onSubmit: handlePromptSubmit,
+                  style: {
+                    padding: "12px 16px",
+                    borderTop: "1px solid var(--border-subtle)",
+                    background: "var(--bg-inset)",
+                    display: "flex",
+                    gap: "12px",
+                    alignItems: "center",
+                    flexShrink: 0
+                  },
+                  children: [
+                    /* @__PURE__ */ u3(
+                      "input",
+                      {
+                        type: "text",
+                        value: prompt,
+                        onInput: (e3) => setPrompt(e3.currentTarget.value),
+                        placeholder: "Send a message to the agent...",
+                        disabled: interactionMode === "inbox_only",
+                        style: {
+                          flex: 1,
+                          background: "var(--bg-page)",
+                          border: "1px solid var(--border-subtle)",
+                          borderRadius: "8px",
+                          padding: "10px 14px",
+                          color: "var(--fg-default)",
+                          fontSize: "14px",
+                          fontFamily: "var(--font-sans)",
+                          outline: "none"
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ u3(
+                      "button",
+                      {
+                        type: "submit",
+                        disabled: !prompt.trim() || interactionMode === "inbox_only",
+                        style: {
+                          padding: "8px 16px",
+                          borderRadius: "6px",
+                          background: prompt.trim() ? "var(--accent-blue)" : "var(--bg-muted)",
+                          color: "#fff",
+                          border: "none",
+                          cursor: prompt.trim() ? "pointer" : "default",
+                          fontSize: "13px",
+                          fontWeight: 600,
+                          transition: "background 0.2s ease"
+                        },
+                        children: "Send"
+                      }
+                    )
+                  ]
                 }
               )
             ] }),
-            /* @__PURE__ */ u3(
-              "form",
+            !sidebarOpen && /* @__PURE__ */ u3(
+              "button",
               {
-                onSubmit: handlePromptSubmit,
-                style: {
-                  padding: "12px 16px",
-                  borderTop: "1px solid var(--border-subtle)",
-                  background: "var(--bg-inset)",
-                  display: "flex",
-                  gap: "12px",
-                  alignItems: "center",
-                  flexShrink: 0
-                },
-                children: [
-                  /* @__PURE__ */ u3(
-                    "input",
-                    {
-                      type: "text",
-                      value: prompt,
-                      onInput: (e3) => setPrompt(e3.currentTarget.value),
-                      placeholder: "Send a message to the agent...",
-                      disabled: interactionMode === "inbox_only",
-                      style: {
-                        flex: 1,
-                        background: "var(--bg-page)",
-                        border: "1px solid var(--border-subtle)",
-                        borderRadius: "8px",
-                        padding: "10px 14px",
-                        color: "var(--fg-default)",
-                        fontSize: "14px",
-                        fontFamily: "var(--font-sans)",
-                        outline: "none"
-                      }
-                    }
-                  ),
-                  /* @__PURE__ */ u3(
-                    "button",
-                    {
-                      type: "submit",
-                      disabled: !prompt.trim() || interactionMode === "inbox_only",
-                      style: {
-                        padding: "8px 16px",
-                        borderRadius: "6px",
-                        background: prompt.trim() ? "var(--accent-blue)" : "var(--bg-muted)",
-                        color: "#fff",
-                        border: "none",
-                        cursor: prompt.trim() ? "pointer" : "default",
-                        fontSize: "13px",
-                        fontWeight: 600,
-                        transition: "background 0.2s ease"
-                      },
-                      children: "Send"
-                    }
-                  )
-                ]
+                type: "button",
+                className: "terminal-pane__sidebar-toggle",
+                onClick: () => setSidebarOpen(true),
+                title: "Session settings",
+                children: /* @__PURE__ */ u3("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M6.5 1.75a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 .75.75v.3a5.45 5.45 0 0 1 1.28.53l.21-.21a.75.75 0 0 1 1.06 0l1.06 1.06a.75.75 0 0 1 0 1.06l-.21.21c.22.4.4.83.53 1.28h.3a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-.75.75h-.3a5.45 5.45 0 0 1-.53 1.28l.21.21a.75.75 0 0 1 0 1.06l-1.06 1.06a.75.75 0 0 1-1.06 0l-.21-.21c-.4.22-.83.4-1.28.53v.3a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1-.75-.75v-.3a5.45 5.45 0 0 1-1.28-.53l-.21.21a.75.75 0 0 1-1.06 0L2.89 11.9a.75.75 0 0 1 0-1.06l.21-.21A5.45 5.45 0 0 1 2.57 9.4h-.3a.75.75 0 0 1-.75-.75v-1.5a.75.75 0 0 1 .75-.75h.3c.13-.45.31-.88.53-1.28l-.21-.21a.75.75 0 0 1 0-1.06L3.95 2.8a.75.75 0 0 1 1.06 0l.21.21c.4-.22.83-.4 1.28-.53v-.3zM8 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z", fill: "currentColor" }) })
               }
             ),
-            /* @__PURE__ */ u3(
-              SessionControls,
-              {
-                sessionId,
-                backendType,
-                model,
-                modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
-                allowedTools,
-                availableTools,
-                onModelSaved: setModel
-              }
-            )
+            sidebarOpen && /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar", children: [
+              /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar-header", children: [
+                /* @__PURE__ */ u3("span", { className: "terminal-pane__sidebar-title", children: "Settings" }),
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "terminal-pane__sidebar-close",
+                    onClick: () => setSidebarOpen(false),
+                    title: "Close settings",
+                    children: /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 14 14", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M3 3l8 8M11 3l-8 8", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round" }) })
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ u3(
+                SessionControls,
+                {
+                  sessionId,
+                  backendType,
+                  model,
+                  modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
+                  allowedTools,
+                  availableTools,
+                  onModelSaved: setModel
+                }
+              )
+            ] })
           ] })
         ] }),
         /* @__PURE__ */ u3(
