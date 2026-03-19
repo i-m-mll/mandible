@@ -187,6 +187,8 @@ export interface ConsoleSession {
     backend_type: 'pty' | 'sdk';
     allowed_tools: string[] | null;
     mandible_session_id: string | null;
+    /** Bug: 40f0298 — DAG branching: message UUID to resume conversation from. */
+    resume_at_message: string | null;
     /** Derived from command and is_operator. Not stored in DB. */
     agent_type: 'claude' | 'codex' | 'gemini' | 'operator' | 'shell';
 }
@@ -204,6 +206,8 @@ export interface ConsoleSessionInput {
     backend_type?: 'pty' | 'sdk';
     allowed_tools?: string[] | null;
     mandible_session_id?: string | null;
+    provider_session_id?: string | null;
+    resume_at_message?: string | null;
 }
 export interface ConsoleContentBlock {
     type: 'text' | 'thinking' | 'tool_use' | 'tool_result';

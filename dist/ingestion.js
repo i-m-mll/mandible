@@ -336,8 +336,9 @@ async function ingestFile(filePath) {
         const insertBlock = db.prepare(`
       INSERT INTO conversation_blocks (
         id, conversation_id, type, role, content, position,
-        timestamp, parent_id, metadata_json, compressed
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        timestamp, parent_id, metadata_json, compressed,
+        dag_uuid, dag_parent_uuid
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
     `);
         for (let i = 0; i < newBlocks.length; i++) {
             const block = newBlocks[i];
@@ -352,7 +353,7 @@ async function ingestFile(filePath) {
                 .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
                 .digest("hex")
                 .slice(0, 16);
-            insertBlock.run(blockHash, conversationId, block.type, block.role, compressedContents[i], block.position, block.timestamp, block.parent_id, JSON.stringify(block.metadata));
+            insertBlock.run(blockHash, conversationId, block.type, block.role, compressedContents[i], block.position, block.timestamp, block.parent_id, JSON.stringify(block.metadata), block.dag_uuid ?? null, block.dag_parent_uuid ?? null);
         }
     });
     try {
@@ -404,8 +405,9 @@ async function ingestFile(filePath) {
                     const insertBlock2 = db.prepare(`
             INSERT INTO conversation_blocks (
               id, conversation_id, type, role, content, position,
-              timestamp, parent_id, metadata_json, compressed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+              timestamp, parent_id, metadata_json, compressed,
+              dag_uuid, dag_parent_uuid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
           `);
                     for (let i = 0; i < result.blocks.length; i++) {
                         const block = result.blocks[i];
@@ -414,7 +416,7 @@ async function ingestFile(filePath) {
                             .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
                             .digest("hex")
                             .slice(0, 16);
-                        insertBlock2.run(blockHash, conversationId, block.type, block.role, recoveryCompressedContents[i], block.position, block.timestamp, block.parent_id, JSON.stringify(block.metadata));
+                        insertBlock2.run(blockHash, conversationId, block.type, block.role, recoveryCompressedContents[i], block.position, block.timestamp, block.parent_id, JSON.stringify(block.metadata), block.dag_uuid ?? null, block.dag_parent_uuid ?? null);
                     }
                 });
                 recoveryUpsert();

@@ -45,6 +45,8 @@ type TerminalPaneProps = {
   isVisible: boolean;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
+  // Bug: e4845f6 — DAG leaf for history-first hydration path filtering
+  resumeAtMessage?: string | null;
 };
 
 const MODEL_OPTIONS: Record<string, string[]> = {
@@ -332,6 +334,7 @@ export function TerminalPane({
   isVisible,
   viewMode,
   onViewModeChange,
+  resumeAtMessage,
 }: TerminalPaneProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -616,7 +619,8 @@ export function TerminalPane({
       .then(async ({ conversations }) => {
         const conversation = conversations[0];
         if (!conversation) return null;
-        const detail = await getConversation(conversation.id);
+        // Bug: e4845f6 — Pass leaf (resume_at_message) for DAG path filtering
+        const detail = await getConversation(conversation.id, resumeAtMessage || undefined);
         return conversationBlocksToStreamEvents(providerSessionId, detail.blocks);
       })
       .catch(() => null);
@@ -660,7 +664,7 @@ export function TerminalPane({
       });
 
     return () => { cancelled = true; };
-  }, [providerSessionId, sessionId]);
+  }, [providerSessionId, sessionId, resumeAtMessage]);
 
   // Bug: 2a04856 — Polling fallback: if streaming stays true for 20s (missed SSE result event,
   // e.g. due to SSE reconnect during daemon rebuild), re-fetch events and check for completion.

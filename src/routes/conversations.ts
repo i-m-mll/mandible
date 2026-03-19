@@ -6,6 +6,7 @@ import { broadcast } from "../sse.js";
 import { decompressContent } from "../compression.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
+import type { SessionManager } from "../session-manager.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 
 function readBody<T>(req: RequestLike): T {
@@ -55,6 +56,8 @@ interface BlockRow {
   timestamp: string | null;
   parent_id: string | null;
   metadata_json: string;
+  dag_uuid: string | null;
+  dag_parent_uuid: string | null;
 }
 
 function mapConversation(row: ConversationRow) {
@@ -84,6 +87,8 @@ function mapBlock(row: BlockRow) {
     timestamp: row.timestamp,
     parent_id: row.parent_id,
     metadata,
+    dag_uuid: row.dag_uuid ?? null,
+    dag_parent_uuid: row.dag_parent_uuid ?? null,
   };
 }
 
@@ -196,7 +201,7 @@ function exportToJson(
 
 // --- Route registration ---
 
-export function registerConversationRoutes(server: RouteRegistrar): void {
+export function registerConversationRoutes(server: RouteRegistrar, sessionManager?: SessionManager): void {
   const db = getDb();
 
   // --- Static routes MUST be registered before parameterized :id routes ---
@@ -368,6 +373,7 @@ export function registerConversationRoutes(server: RouteRegistrar): void {
   });
 
   // GET /api/conversations/:id — Full conversation with blocks + children summary
+  // Bug: 40f0298 — optional ?leaf=<dag_uuid> param for DAG path resolution
   server.get("/api/conversations/:id", (req, res) => {
     const id = req.params.id;
     if (!id) {
@@ -383,9 +389,58 @@ export function registerConversationRoutes(server: RouteRegistrar): void {
       return;
     }
 
-    const blocks = db
-      .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
-      .all(id) as BlockRow[];
+    const query = req.query ?? {};
+    const leafDagUuid = query.leaf || null;
+
+    let blocks: BlockRow[];
+
+    if (leafDagUuid) {
+      // DAG path resolution: walk backward from leaf to root via dag_parent_uuid
+      const allBlocks = db
+        .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
+        .all(id) as BlockRow[];
+
+      // Index blocks by dag_uuid for efficient lookup
+      const blocksByDagUuid = new Map<string, BlockRow[]>();
+      for (const block of allBlocks) {
+        if (block.dag_uuid) {
+          const group = blocksByDagUuid.get(block.dag_uuid);
+          if (group) {
+            group.push(block);
+          } else {
+            blocksByDagUuid.set(block.dag_uuid, [block]);
+          }
+        }
+      }
+
+      // Walk backward from leaf
+      const pathGroups: BlockRow[][] = [];
+      let currentUuid: string | null = leafDagUuid;
+      const visited = new Set<string>();
+
+      while (currentUuid && !visited.has(currentUuid)) {
+        visited.add(currentUuid);
+        const group = blocksByDagUuid.get(currentUuid);
+        if (!group || group.length === 0) break;
+        pathGroups.push(group);
+        // All blocks in a dag_uuid group share the same dag_parent_uuid
+        currentUuid = group[0].dag_parent_uuid;
+      }
+
+      // Reverse to get root-first order, then flatten
+      pathGroups.reverse();
+      blocks = pathGroups.flat();
+
+      // Fallback: if the leaf dag_uuid didn't match any block (e.g., old conversation
+      // without dag_uuid data), return all blocks ordered by position.
+      if (blocks.length === 0) {
+        blocks = allBlocks;
+      }
+    } else {
+      blocks = db
+        .prepare("SELECT * FROM conversation_blocks WHERE conversation_id = ? ORDER BY position ASC")
+        .all(id) as BlockRow[];
+    }
 
     // Fetch sub-agent (child) conversations — Bug: d0759d1
     const children = db
@@ -426,6 +481,178 @@ export function registerConversationRoutes(server: RouteRegistrar): void {
       blocks: blocks.map(mapBlock),
       children: childrenWithDuration,
     });
+  });
+
+  // GET /api/conversations/:id/forks — Fork points in the conversation DAG
+  // Bug: 40f0298 — DAG branching: identify points where the conversation branches
+  server.get("/api/conversations/:id/forks", (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      sendJson(res, 400, { error: "Missing conversation id" });
+      return;
+    }
+
+    const conv = db
+      .prepare("SELECT id FROM conversations WHERE id = ?")
+      .get(id) as { id: string } | undefined;
+    if (!conv) {
+      sendJson(res, 404, { error: "Conversation not found" });
+      return;
+    }
+
+    // Find fork points: dag_parent_uuid values with multiple distinct dag_uuid children
+    const forkPoints = db
+      .prepare(
+        `SELECT dag_parent_uuid, COUNT(DISTINCT dag_uuid) as branch_count
+         FROM conversation_blocks
+         WHERE conversation_id = ? AND dag_parent_uuid IS NOT NULL
+         GROUP BY dag_parent_uuid
+         HAVING COUNT(DISTINCT dag_uuid) > 1`
+      )
+      .all(id) as Array<{ dag_parent_uuid: string; branch_count: number }>;
+
+    const forks = forkPoints.map((fp) => {
+      // Get distinct child dag_uuids for this fork point
+      const childUuids = db
+        .prepare(
+          `SELECT DISTINCT dag_uuid
+           FROM conversation_blocks
+           WHERE conversation_id = ? AND dag_parent_uuid = ?`
+        )
+        .all(id, fp.dag_parent_uuid) as Array<{ dag_uuid: string }>;
+
+      const branches = childUuids.map((child) => {
+        // Get first assistant_message or assistant-type block for preview text
+        const previewBlock = db
+          .prepare(
+            `SELECT content, compressed
+             FROM conversation_blocks
+             WHERE conversation_id = ? AND dag_uuid = ? AND type IN ('assistant_message', 'assistant')
+             ORDER BY position ASC
+             LIMIT 1`
+          )
+          .get(id, child.dag_uuid) as { content: Buffer | string; compressed: number } | undefined;
+
+        let first_text = "";
+        if (previewBlock) {
+          const text = decompressContent(previewBlock.content, previewBlock.compressed === 1);
+          first_text = text.slice(0, 60);
+        }
+
+        // Count blocks with this dag_uuid (simple approximation of branch size)
+        const countRow = db
+          .prepare(
+            `SELECT COUNT(*) as cnt
+             FROM conversation_blocks
+             WHERE conversation_id = ? AND dag_uuid = ?`
+          )
+          .get(id, child.dag_uuid) as { cnt: number };
+
+        return {
+          dag_uuid: child.dag_uuid,
+          first_text,
+          block_count: countRow.cnt,
+        };
+      });
+
+      return {
+        parent_dag_uuid: fp.dag_parent_uuid,
+        branches,
+      };
+    });
+
+    sendJson(res, 200, { forks });
+  });
+
+  // POST /api/conversations/:id/fork — Fork a conversation at a specific message
+  // Bug: 40f0298 — DAG branching: create a new session by forking at a message
+  server.post("/api/conversations/:id/fork", async (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      sendJson(res, 400, { error: "Missing conversation id" });
+      return;
+    }
+
+    const body = readBody<{ message_dag_uuid: string }>(req);
+    if (!body.message_dag_uuid) {
+      sendJson(res, 400, { error: "Missing message_dag_uuid" });
+      return;
+    }
+
+    const conv = db
+      .prepare("SELECT session_id FROM conversations WHERE id = ?")
+      .get(id) as { session_id: string | null } | undefined;
+    if (!conv) {
+      sendJson(res, 404, { error: "Conversation not found" });
+      return;
+    }
+    if (!conv.session_id) {
+      sendJson(res, 400, { error: "Conversation has no session_id" });
+      return;
+    }
+
+    try {
+      const sdk = await import("@anthropic-ai/claude-agent-sdk");
+      if (typeof sdk.forkSession !== "function") {
+        sendJson(res, 501, { error: "SDK does not support forkSession" });
+        return;
+      }
+      const result = await sdk.forkSession(conv.session_id, {
+        upToMessageId: body.message_dag_uuid,
+      });
+      sendJson(res, 200, { session_id: result.sessionId });
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "Fork failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  // POST /api/conversations/:id/resume — Resume a conversation from a specific message
+  // Bug: 40f0298 — DAG branching: create a Console session resuming at a message
+  server.post("/api/conversations/:id/resume", (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      sendJson(res, 400, { error: "Missing conversation id" });
+      return;
+    }
+
+    const body = readBody<{ message_dag_uuid: string; label?: string }>(req);
+    if (!body.message_dag_uuid) {
+      sendJson(res, 400, { error: "Missing message_dag_uuid" });
+      return;
+    }
+
+    const conv = db
+      .prepare("SELECT session_id, title FROM conversations WHERE id = ?")
+      .get(id) as { session_id: string; title: string } | undefined;
+    if (!conv) {
+      sendJson(res, 404, { error: "Conversation not found" });
+      return;
+    }
+
+    try {
+      if (!sessionManager) {
+        sendJson(res, 501, { error: "SessionManager not available" });
+        return;
+      }
+
+      const newSession = sessionManager.create({
+        label: body.label || conv.title || "Resumed conversation",
+        command: "claude",
+        backend_type: "sdk",
+        provider_session_id: conv.session_id,
+        resume_at_message: body.message_dag_uuid,
+      });
+
+      sendJson(res, 200, { console_session_id: newSession.id });
+    } catch (error) {
+      sendJson(res, 500, {
+        error: "Resume failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   });
 
   // GET /api/conversations/:id/blocks — Blocks with type filtering and pagination

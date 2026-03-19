@@ -15,6 +15,7 @@ import type {
 } from './types';
 import { MessageGroup } from './MessageGroup';
 import { StatusBar } from './StatusBar';
+import { MessageActions } from '../shared/MessageActions';
 
 // ---- Event parsing hook ----
 
@@ -293,8 +294,16 @@ export function StreamRenderer({
       const isThinking =
         isLastStreamingTurn &&
         turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
+
+      // Collect text content for copy action
+      const turnTextParts: string[] = [];
+      for (const block of turn.assistantEvent.message.content) {
+        if (block.type === 'text' && block.text) turnTextParts.push(block.text);
+      }
+      const turnText = turnTextParts.join('\n\n');
+
       nodes.push(
-        <div key={turn.id} className="stream-turn stream-turn--assistant">
+        <div key={turn.id} className="stream-turn stream-turn--assistant" style={{ position: 'relative' }}>
           <div className="stream-turn__speaker">
             <span className="stream-turn__badge">Assistant</span>
           </div>
@@ -305,6 +314,9 @@ export function StreamRenderer({
               isThinking={isThinking}
             />
           </div>
+          <MessageActions
+            onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
+          />
         </div>,
       );
     }

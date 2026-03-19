@@ -424,8 +424,9 @@ async function ingestFile(filePath: string): Promise<void> {
     const insertBlock = db.prepare(`
       INSERT INTO conversation_blocks (
         id, conversation_id, type, role, content, position,
-        timestamp, parent_id, metadata_json, compressed
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        timestamp, parent_id, metadata_json, compressed,
+        dag_uuid, dag_parent_uuid
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
     `);
 
     for (let i = 0; i < newBlocks.length; i++) {
@@ -452,6 +453,8 @@ async function ingestFile(filePath: string): Promise<void> {
         block.timestamp,
         block.parent_id,
         JSON.stringify(block.metadata),
+        block.dag_uuid ?? null,
+        block.dag_parent_uuid ?? null,
       );
     }
   });
@@ -528,8 +531,9 @@ async function ingestFile(filePath: string): Promise<void> {
           const insertBlock2 = db.prepare(`
             INSERT INTO conversation_blocks (
               id, conversation_id, type, role, content, position,
-              timestamp, parent_id, metadata_json, compressed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+              timestamp, parent_id, metadata_json, compressed,
+              dag_uuid, dag_parent_uuid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
           `);
           for (let i = 0; i < result.blocks.length; i++) {
             const block = result.blocks[i];
@@ -542,6 +546,7 @@ async function ingestFile(filePath: string): Promise<void> {
               blockHash, conversationId, block.type, block.role,
               recoveryCompressedContents[i], block.position,
               block.timestamp, block.parent_id, JSON.stringify(block.metadata),
+              block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
             );
           }
         });

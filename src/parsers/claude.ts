@@ -217,6 +217,8 @@ export class ClaudeParser implements ConversationParser {
               timestamp: ts,
               parent_id: null,
               metadata: { source_event_type: "user_meta", visibility: "default_hidden" },
+              dag_uuid: rec.uuid,
+              dag_parent_uuid: rec.parentUuid ?? null,
             });
           } else {
             blocks.push({
@@ -227,6 +229,8 @@ export class ClaudeParser implements ConversationParser {
               timestamp: ts,
               parent_id: null,
               metadata: {},
+              dag_uuid: rec.uuid,
+              dag_parent_uuid: rec.parentUuid ?? null,
             });
           }
         } else if (Array.isArray(content)) {
@@ -252,6 +256,8 @@ export class ClaudeParser implements ConversationParser {
                   tool_output: toolOutput.length > 1000 ? undefined : toolOutput,
                   visibility: "default_hidden",
                 },
+                dag_uuid: rec.uuid,
+                dag_parent_uuid: rec.parentUuid ?? null,
               });
             } else if (block.type === "text" && block.text) {
               blocks.push({
@@ -262,6 +268,8 @@ export class ClaudeParser implements ConversationParser {
                 timestamp: ts,
                 parent_id: null,
                 metadata: {},
+                dag_uuid: rec.uuid,
+                dag_parent_uuid: rec.parentUuid ?? null,
               });
             }
           }
@@ -279,6 +287,8 @@ export class ClaudeParser implements ConversationParser {
               timestamp: ts,
               parent_id: null,
               metadata: buildAssistantMetadata(rec),
+              dag_uuid: rec.uuid,
+              dag_parent_uuid: rec.parentUuid ?? null,
             });
           }
           continue;
@@ -299,6 +309,8 @@ export class ClaudeParser implements ConversationParser {
                 signature: block.signature || undefined,
                 visibility: "default_hidden",
               },
+              dag_uuid: rec.uuid,
+              dag_parent_uuid: rec.parentUuid ?? null,
             });
           } else if (block.type === "text" && block.text) {
             blocks.push({
@@ -309,6 +321,8 @@ export class ClaudeParser implements ConversationParser {
               timestamp: ts,
               parent_id: null,
               metadata: buildAssistantMetadata(rec),
+              dag_uuid: rec.uuid,
+              dag_parent_uuid: rec.parentUuid ?? null,
             });
           } else if (block.type === "tool_use") {
             const toolPos = position;
@@ -327,6 +341,8 @@ export class ClaudeParser implements ConversationParser {
                 visibility: "default_hidden",
                 ...buildAssistantMetadata(rec),
               },
+              dag_uuid: rec.uuid,
+              dag_parent_uuid: rec.parentUuid ?? null,
             });
           }
         }
@@ -341,6 +357,8 @@ export class ClaudeParser implements ConversationParser {
             timestamp: ts,
             parent_id: null,
             metadata: { source_event_type: "system", visibility: "default_hidden" },
+            dag_uuid: rec.uuid,
+            dag_parent_uuid: rec.parentUuid ?? null,
           });
         }
       }

@@ -817,8 +817,9 @@ export async function getConversations(params?: {
   return (await parseMaybeJson(resp)) as { conversations: Conversation[]; total: number };
 }
 
-export async function getConversation(id: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] }> {
-  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}`);
+export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] }> {
+  const query = leaf ? `?leaf=${encodeURIComponent(leaf)}` : '';
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${query}`);
   const payload = (await parseMaybeJson(resp)) as {
     conversation?: Conversation;
     blocks?: ConversationBlock[];
@@ -870,6 +871,50 @@ export async function transformExport(data: {
 export async function triggerIngestion(source?: string): Promise<{ ingested: number; updated: number; errors: string[] }> {
   const resp = await apiPost('/api/conversations/ingest', source ? { source } : {});
   return (await parseMaybeJson(resp)) as { ingested: number; updated: number; errors: string[] };
+}
+
+// Bug: 40f0298 — DAG branching: fork points, fork, and resume API
+
+export type ForkBranch = {
+  dag_uuid: string;
+  first_text: string;
+  block_count: number;
+};
+
+export type ForkPoint = {
+  parent_dag_uuid: string;
+  branches: ForkBranch[];
+};
+
+export type ForkData = {
+  forks: ForkPoint[];
+};
+
+export async function getConversationForks(conversationId: string): Promise<ForkData> {
+  const resp = await apiGet(`/api/conversations/${encodeURIComponent(conversationId)}/forks`);
+  return (await parseMaybeJson(resp)) as ForkData;
+}
+
+export async function forkConversation(
+  conversationId: string,
+  messageDagUuid: string,
+): Promise<{ session_id: string }> {
+  const resp = await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/fork`, {
+    message_dag_uuid: messageDagUuid,
+  });
+  return (await parseMaybeJson(resp)) as { session_id: string };
+}
+
+export async function resumeConversation(
+  conversationId: string,
+  messageDagUuid: string,
+  label?: string,
+): Promise<{ console_session_id: string }> {
+  const resp = await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/resume`, {
+    message_dag_uuid: messageDagUuid,
+    label,
+  });
+  return (await parseMaybeJson(resp)) as { console_session_id: string };
 }
 
 // ── Logs API — Bug: af91bdd ──
@@ -982,6 +1027,8 @@ export type ConversationBlock = {
   timestamp: string;
   parent_id: string | null;
   metadata_json: string;
+  dag_uuid?: string | null;
+  dag_parent_uuid?: string | null;
 };
 
 export type Conversation = {

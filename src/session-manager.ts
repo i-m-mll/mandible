@@ -48,6 +48,7 @@ interface ConsoleSessionRow {
   backend_type: string | null;
   allowed_tools: string | null;
   mandible_session_id: string | null;
+  resume_at_message: string | null;
 }
 
 interface ConsoleSessionUsageRow {
@@ -137,6 +138,7 @@ function rowToSession(row: ConsoleSessionRow): ConsoleSession {
     backend_type: (row.backend_type === "sdk" ? "sdk" : "pty") as BackendType,
     allowed_tools: parseAllowedTools(row.allowed_tools),
     mandible_session_id: row.mandible_session_id ?? null,
+    resume_at_message: row.resume_at_message ?? null,
     agent_type: computeAgentType(row.command, is_operator),
   };
 }
@@ -226,18 +228,21 @@ export class SessionManager {
     const backend_type = input.backend_type ?? defaultBackendType(input.command);
     const allowed_tools = input.allowed_tools ?? null;
 
+    const provider_session_id = input.provider_session_id ?? null;
+    const resume_at_message = input.resume_at_message ?? null;
+
     db.prepare(
       `INSERT INTO console_sessions
          (id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
           status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
-          backend_type, allowed_tools, mandible_session_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?)`
+          backend_type, allowed_tools, mandible_session_id, resume_at_message)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       input.label,
       input.command,
       JSON.stringify(args),
-      null,
+      provider_session_id,
       input.cwd ?? null,
       JSON.stringify(env),
       cols,
@@ -249,7 +254,8 @@ export class SessionManager {
       now,
       backend_type,
       allowed_tools ? JSON.stringify(allowed_tools) : null,
-      input.mandible_session_id ?? null
+      input.mandible_session_id ?? null,
+      resume_at_message
     );
 
     const session = rowToSession({
@@ -257,7 +263,7 @@ export class SessionManager {
       label: input.label,
       command: input.command,
       args_json: JSON.stringify(args),
-      provider_session_id: null,
+      provider_session_id,
       cwd: input.cwd ?? null,
       env_json: JSON.stringify(env),
       cols,
@@ -275,6 +281,7 @@ export class SessionManager {
       backend_type,
       allowed_tools: allowed_tools ? JSON.stringify(allowed_tools) : null,
       mandible_session_id: input.mandible_session_id ?? null,
+      resume_at_message,
     });
 
     const backend = this.createBackend(session, backend_type);

@@ -11,14 +11,86 @@ import type {
 } from '../api.js';
 import {
   exportConversationBlocks,
+  forkConversation,
   getConversation,
+  getConversationForks,
   getConversations,
+  getSettings,
+  resumeConversation,
   triggerIngestion,
   updateConversation,
+  type ForkData,
+  type ForkPoint,
 } from '../api.js';
+import { MessageActions } from '../components/shared/MessageActions';
+import { BranchSelector, type BranchInfo } from '../components/console/BranchSelector';
 
 // Configure marked for safe, synchronous rendering
 marked.setOptions({ async: false, gfm: true, breaks: false });
+
+// ── Toast notification ──
+
+type ToastState = { message: string; type: 'info' | 'error' } | null;
+
+function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }): JSX.Element | null {
+  if (!toast) return null;
+  return (
+    <div className={`conv-toast conv-toast--${toast.type}`} onClick={onDismiss}>
+      {toast.message}
+    </div>
+  );
+}
+
+// ── Resume conflict dialog ──
+
+type ResumeConflictPolicy = 'auto_fork' | 'prompt' | 'allow_concurrent';
+
+function ResumeConflictDialog({
+  onBranch,
+  onFork,
+  onCancel,
+}: {
+  onBranch: (remember: boolean) => void;
+  onFork: (remember: boolean) => void;
+  onCancel: () => void;
+}): JSX.Element {
+  const [remember, setRemember] = useState(false);
+
+  return (
+    <div className="conv-dialog-overlay" onClick={onCancel}>
+      <div className="conv-dialog" onClick={(e) => e.stopPropagation()}>
+        <h3 className="conv-dialog__title">This conversation is active in Console.</h3>
+        <div className="conv-dialog__options">
+          <button
+            type="button"
+            className="btn btn--active"
+            onClick={() => onBranch(remember)}
+          >
+            Branch &mdash; Continue in the same session (creates a branch point)
+          </button>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => onFork(remember)}
+          >
+            Fork &mdash; Create a new conversation (clean copy up to here)
+          </button>
+        </div>
+        <label className="conv-dialog__remember">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember((e.target as HTMLInputElement).checked)}
+          />
+          Remember my choice
+        </label>
+        <button type="button" className="btn btn--ghost btn--sm conv-dialog__cancel" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // ── Constants ──
 
@@ -474,6 +546,8 @@ function BlockRenderer({
   onShiftSelect,
   onToggleCollapse,
   collapsed,
+  onFork,
+  onResume,
 }: {
   block: ConversationBlock;
   isSelected: boolean;
@@ -482,6 +556,8 @@ function BlockRenderer({
   onShiftSelect: () => void;
   onToggleCollapse: () => void;
   collapsed: boolean;
+  onFork?: (dagUuid: string) => void;
+  onResume?: (dagUuid: string) => void;
 }): JSX.Element {
   const metadata = parseMetadata(block.metadata_json);
   const isCollapsible = isCollapsibleBlock(block.type);
@@ -512,8 +588,10 @@ function BlockRenderer({
 
   const headerLabel = getBlockHeaderLabel(block, metadata);
 
+  const blockDagUuid = block.dag_uuid ?? undefined;
+
   return (
-    <div className={typeClass} onClick={handleClick} data-block-id={block.id}>
+    <div className={typeClass} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
       {showHeader && (
         <div className="block-header">
           <div className="block-header__left">
@@ -567,6 +645,14 @@ function BlockRenderer({
         </div>
       )}
       {renderConversationBlockBody(block, collapsed)}
+      <MessageActions
+        onCopy={() => { navigator.clipboard.writeText(block.content).catch(() => {}); }}
+        onResume={blockDagUuid && onResume ? () => onResume(blockDagUuid) : undefined}
+        onFork={blockDagUuid && onFork ? () => onFork(blockDagUuid) : undefined}
+        dagUuid={blockDagUuid}
+        showResume={!!blockDagUuid}
+        showFork={!!blockDagUuid}
+      />
     </div>
   );
 }
@@ -669,6 +755,11 @@ function TranscriptTurnRenderer({
   onToggleSelect,
   onShiftSelect,
   onToggleCollapse,
+  onFork,
+  onResume,
+  forkData,
+  branchSelections,
+  onBranchSelect,
 }: {
   turn: TranscriptTurn;
   selected: Set<string>;
@@ -677,6 +768,11 @@ function TranscriptTurnRenderer({
   onToggleSelect: (blockId: string) => void;
   onShiftSelect: (blockId: string) => void;
   onToggleCollapse: (blockId: string) => void;
+  onFork?: (dagUuid: string) => void;
+  onResume?: (dagUuid: string) => void;
+  forkData?: ForkData | null;
+  branchSelections?: Record<string, number>;
+  onBranchSelect?: (forkPointUuid: string, index: number, forkPoint: ForkPoint) => void;
 }): JSX.Element {
   const speakerLabel = turn.speaker === 'user'
     ? 'You'
@@ -684,12 +780,26 @@ function TranscriptTurnRenderer({
       ? 'Assistant'
       : 'System';
 
+  // Collect text content for copy action across all blocks in this turn
+  const turnText = turn.blocks.map((b) => b.content).join('\n\n');
+  // dag_uuid: use the first block's dag_uuid if available (populated after P1 merges)
+  const turnDagUuid = turn.blocks[0]?.dag_uuid ?? undefined;
+
+  // Branch selector data: find fork point matching this turn's dagUuid
+  const forkPoint = forkData?.forks.find((fp) => fp.parent_dag_uuid === turnDagUuid);
+  const currentBranchIdx = forkPoint && branchSelections ? (branchSelections[turnDagUuid ?? ''] ?? 0) : 0;
+  const branchInfos: BranchInfo[] | undefined = forkPoint?.branches.map((b) => ({
+    dagUuid: b.dag_uuid,
+    firstText: b.first_text,
+    blockCount: b.block_count,
+  }));
+
   return (
     <div className={`transcript-turn transcript-turn--${turn.speaker}`}>
       <div className="transcript-turn__speaker">
         <span className="transcript-turn__badge">{speakerLabel}</span>
       </div>
-      <div className="transcript-turn__body">
+      <div className="transcript-turn__body" style={{ position: 'relative' }}>
         {turn.blocks.map((block) => (
           <TranscriptBlockItem
             key={block.id}
@@ -702,6 +812,23 @@ function TranscriptTurnRenderer({
             collapsed={collapsedBlocks.has(block.id)}
           />
         ))}
+        <MessageActions
+          onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
+          onResume={turnDagUuid && onResume ? () => onResume(turnDagUuid) : undefined}
+          onFork={turnDagUuid && onFork ? () => onFork(turnDagUuid) : undefined}
+          dagUuid={turnDagUuid}
+          showResume={!!turnDagUuid}
+          showFork={!!turnDagUuid}
+        />
+        {forkPoint && turnDagUuid && (
+          <BranchSelector
+            branchPointUuid={turnDagUuid}
+            totalBranches={forkPoint.branches.length}
+            currentIndex={currentBranchIdx}
+            onSelect={(idx) => onBranchSelect?.(turnDagUuid, idx, forkPoint)}
+            branches={branchInfos}
+          />
+        )}
       </div>
     </div>
   );
@@ -931,6 +1058,13 @@ function ConversationDetail({
   const [showExport, setShowExport] = useState(false);
   const [renderMode, setRenderMode] = useState<'transcript' | 'raw'>('transcript');
 
+  // Fork/resume state
+  const [toast, setToast] = useState<ToastState>(null);
+  const [conflictDialog, setConflictDialog] = useState<{ dagUuid: string } | null>(null);
+  const [forkData, setForkData] = useState<ForkData | null>(null);
+  const [branchSelections, setBranchSelections] = useState<Record<string, number>>({});
+  const [selectedLeaf, setSelectedLeaf] = useState<string | null>(null);
+
   // Virtual scroll state
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -960,6 +1094,150 @@ function ConversationDetail({
       });
     return () => { active = false; };
   }, [conversationId, loadNonce]);
+
+  // Fetch fork data for branch selector
+  useEffect(() => {
+    let active = true;
+    getConversationForks(conversationId)
+      .then((data) => {
+        if (active) setForkData(data);
+      })
+      .catch(() => {
+        // Non-critical — branch selector will just not show
+      });
+    return () => { active = false; };
+  }, [conversationId, loadNonce]);
+
+  // Reload conversation when a leaf branch is selected
+  useEffect(() => {
+    if (!selectedLeaf) return;
+    let active = true;
+    setLoading(true);
+    getConversation(conversationId, selectedLeaf)
+      .then((conv) => {
+        if (!active) return;
+        setConversation(conv);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!active) return;
+        setLoading(false);
+      });
+    return () => { active = false; };
+  }, [conversationId, selectedLeaf]);
+
+  // Toast auto-dismiss
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  // Fork/resume handlers
+  const handleFork = useCallback(async (dagUuid: string) => {
+    try {
+      await forkConversation(conversationId, dagUuid);
+      // The forked conversation won't be available until ingestion picks it up (~3s).
+      // Show a success toast and stay on the current page instead of navigating to
+      // a conversation that doesn't exist yet.
+      setToast({ message: 'Forked conversation — it will appear in History shortly.', type: 'info' });
+    } catch (err) {
+      setToast({ message: `Fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
+    }
+  }, [conversationId]);
+
+  const handleResume = useCallback(async (dagUuid: string) => {
+    // Check conflict: is this conversation active in Console?
+    const activeSession = consoleSessions.find(
+      (s) => s.provider_session_id === conversation?.session_id && s.status !== 'stopped' && s.status !== 'crashed'
+    );
+
+    if (activeSession) {
+      // Check auto-fork policy
+      let policy: ResumeConflictPolicy = 'prompt';
+      try {
+        const settings = await getSettings();
+        const stored = settings.resume_conflict_policy;
+        if (stored === 'auto_fork' || stored === 'prompt' || stored === 'allow_concurrent') {
+          policy = stored;
+        }
+      } catch {
+        // Default to prompt if settings unavailable
+      }
+
+      if (policy === 'auto_fork') {
+        // Fork first, then resume the fork
+        try {
+          await forkConversation(conversationId, dagUuid);
+          setToast({ message: 'Auto-forked due to active session — it will appear in History shortly.', type: 'info' });
+        } catch (err) {
+          setToast({ message: `Auto-fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
+        }
+        return;
+      }
+
+      if (policy === 'prompt') {
+        setConflictDialog({ dagUuid });
+        return;
+      }
+      // allow_concurrent — fall through to resume directly
+    }
+
+    // No conflict or allow_concurrent — resume directly
+    try {
+      const result = await resumeConversation(conversationId, dagUuid);
+      setToast({ message: 'Resuming conversation in Console...', type: 'info' });
+      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+    } catch (err) {
+      setToast({ message: `Resume failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
+    }
+  }, [conversationId, consoleSessions, conversation?.session_id]);
+
+  const handleConflictBranch = useCallback(async (remember: boolean) => {
+    if (!conflictDialog) return;
+    const dagUuid = conflictDialog.dagUuid;
+    setConflictDialog(null);
+    if (remember) {
+      try {
+        const { updateSetting } = await import('../api.js');
+        await updateSetting('resume_conflict_policy', 'allow_concurrent');
+      } catch { /* non-critical */ }
+    }
+    try {
+      const result = await resumeConversation(conversationId, dagUuid);
+      setToast({ message: 'Resuming conversation in Console...', type: 'info' });
+      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+    } catch (err) {
+      setToast({ message: `Resume failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
+    }
+  }, [conflictDialog, conversationId]);
+
+  const handleConflictFork = useCallback(async (remember: boolean) => {
+    if (!conflictDialog) return;
+    const dagUuid = conflictDialog.dagUuid;
+    setConflictDialog(null);
+    if (remember) {
+      try {
+        const { updateSetting } = await import('../api.js');
+        await updateSetting('resume_conflict_policy', 'auto_fork');
+      } catch { /* non-critical */ }
+    }
+    try {
+      await forkConversation(conversationId, dagUuid);
+      setToast({ message: 'Forked conversation — it will appear in History shortly.', type: 'info' });
+    } catch (err) {
+      setToast({ message: `Fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
+    }
+  }, [conflictDialog, conversationId]);
+
+  // Branch selection handler
+  const handleBranchSelect = useCallback((forkPointUuid: string, index: number, forkPoint: ForkPoint) => {
+    setBranchSelections((prev) => ({ ...prev, [forkPointUuid]: index }));
+    const branch = forkPoint.branches[index];
+    if (branch) {
+      setSelectedLeaf(branch.dag_uuid);
+    }
+  }, []);
 
   // Observe container resize
   useEffect(() => {
@@ -1335,6 +1613,11 @@ function ConversationDetail({
               onToggleSelect={toggleSelect}
               onShiftSelect={handleShiftSelect}
               onToggleCollapse={toggleCollapse}
+              onFork={handleFork}
+              onResume={handleResume}
+              forkData={forkData}
+              branchSelections={branchSelections}
+              onBranchSelect={handleBranchSelect}
             />
           ))}
           {transcriptTurns.length === 0 && (
@@ -1360,6 +1643,8 @@ function ConversationDetail({
                     onShiftSelect={() => handleShiftSelect(block.id)}
                     onToggleCollapse={() => toggleCollapse(block.id)}
                     collapsed={collapsedBlocks.has(block.id)}
+                    onFork={handleFork}
+                    onResume={handleResume}
                   />
                 ))}
               </div>
@@ -1375,6 +1660,8 @@ function ConversationDetail({
                 onShiftSelect={() => handleShiftSelect(block.id)}
                 onToggleCollapse={() => toggleCollapse(block.id)}
                 collapsed={collapsedBlocks.has(block.id)}
+                onFork={handleFork}
+                onResume={handleResume}
               />
             ))
           )}
@@ -1382,6 +1669,18 @@ function ConversationDetail({
             <div className="empty-state">No blocks match the current filters.</div>
           )}
         </div>
+      )}
+
+      {/* Toast notification */}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
+
+      {/* Resume conflict dialog */}
+      {conflictDialog && (
+        <ResumeConflictDialog
+          onBranch={handleConflictBranch}
+          onFork={handleConflictFork}
+          onCancel={() => setConflictDialog(null)}
+        />
       )}
     </div>
   );
