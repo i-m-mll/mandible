@@ -638,6 +638,14 @@ export class AuthQueue {
         // would waste a YubiKey tap on a branch that no longer exists.
         if (exitCode === 0) {
             this.autoDismissDuplicates(completed);
+            // Bug: 8a281b3 — resolve work units on successful auth merge (best-effort;
+            // work_units table may not exist in test DBs or fresh installs mid-migration)
+            try {
+                this.resolveWorkUnitsOnMerge(completed);
+            }
+            catch (err) {
+                console.warn(`[auth-queue] failed to resolve work units after merge: ${err instanceof Error ? err.message : String(err)}`);
+            }
         }
     }
     autoDismissDuplicates(completed) {
@@ -669,6 +677,62 @@ export class AuthQueue {
                 });
                 console.log(`[auth-queue] auto-dismissed duplicate request ${row.id} after successful merge of ${completed.head_branch}`);
             }
+        }
+    }
+    /**
+     * When an auth request completes successfully (exit_code=0), resolve
+     * associated work units:
+     * 1. Work units whose auth_request_id matches the completed request
+     * 2. Work units whose branch matches the auth request's head_branch
+     * 3. Work units linked to issue IDs found in Bug: trailers of the commit message
+     * Bug: 8a281b3
+     */
+    resolveWorkUnitsOnMerge(completed) {
+        const now = this.now();
+        const resolveStmt = this.db.prepare("UPDATE work_units SET state = 'resolved', resolved_at = ? WHERE id = ? AND state IN ('open', 'committed')");
+        const resolvedIds = new Set();
+        // 1. Match by auth_request_id
+        const byAuthId = this.db
+            .prepare("SELECT id FROM work_units WHERE auth_request_id = ? AND state IN ('open', 'committed')")
+            .all(completed.id);
+        for (const row of byAuthId) {
+            resolveStmt.run(now, row.id);
+            resolvedIds.add(row.id);
+        }
+        // 2. Match by branch
+        if (completed.head_branch) {
+            const byBranch = this.db
+                .prepare("SELECT id FROM work_units WHERE branch = ? AND state IN ('open', 'committed')")
+                .all(completed.head_branch);
+            for (const row of byBranch) {
+                if (!resolvedIds.has(row.id)) {
+                    resolveStmt.run(now, row.id);
+                    resolvedIds.add(row.id);
+                }
+            }
+        }
+        // 3. Match by Bug: trailer issue IDs
+        const issueIds = completed.issue_ids ?? [];
+        const closesIssues = completed.issues ?? [];
+        const allIssueIds = [...issueIds, ...closesIssues];
+        // Bug: f3dbb3e — bidirectional prefix match: the work unit may store a
+        // short prefix of the issue ID, or the auth request may have a short prefix.
+        // SQL LIKE only handles one direction, so we fetch all unresolved work units
+        // and filter in JS.
+        if (allIssueIds.length > 0) {
+            const allUnresolved = this.db.prepare("SELECT id, issue_id FROM work_units WHERE state IN ('open', 'committed')").all();
+            for (const issueId of allIssueIds) {
+                const matching = allUnresolved.filter(row => issueId.startsWith(row.issue_id) || row.issue_id.startsWith(issueId));
+                for (const row of matching) {
+                    if (!resolvedIds.has(row.id)) {
+                        resolveStmt.run(now, row.id);
+                        resolvedIds.add(row.id);
+                    }
+                }
+            }
+        }
+        if (resolvedIds.size > 0) {
+            console.log(`[auth-queue] resolved ${resolvedIds.size} work unit(s) after successful merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`);
         }
     }
     buildResolvedPayload(request) {

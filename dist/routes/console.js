@@ -3,6 +3,7 @@
  * Bug: e980dd8
  */
 import { getDb } from "../db.js";
+import { SDKBackend } from "../backends/sdk-backend.js";
 function sendJson(res, code, payload) {
     res.status(code).json(payload);
 }
@@ -17,12 +18,20 @@ function stripModelArgs(args) {
     }
     return next;
 }
+// Bug: 81c9d85 — enrich ConsoleSession with is_processing from SDKBackend state
+function enrichWithProcessing(backend) {
+    const meta = backend.meta;
+    if (backend instanceof SDKBackend) {
+        return { ...meta, is_processing: backend.isProcessing };
+    }
+    return { ...meta, is_processing: false };
+}
 export function registerConsoleRoutes(server, manager) {
     // ------------------------------------------------------------------
     // GET /api/console/sessions — list all sessions
     // ------------------------------------------------------------------
     server.get("/api/console/sessions", (_req, res) => {
-        const sessions = manager.getAll().map((s) => s.meta);
+        const sessions = manager.getAll().map((s) => enrichWithProcessing(s));
         res.status(200).json({ sessions });
     });
     // ------------------------------------------------------------------
@@ -74,7 +83,7 @@ export function registerConsoleRoutes(server, manager) {
             sendJson(res, 404, { error: "not_found" });
             return;
         }
-        res.status(200).json({ session: ptySession.meta });
+        res.status(200).json({ session: enrichWithProcessing(ptySession) });
     });
     server.patch("/api/console/sessions/:id", (req, res) => {
         const id = req.params.id;

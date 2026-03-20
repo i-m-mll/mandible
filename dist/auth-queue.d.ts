@@ -78,6 +78,15 @@ export declare class AuthQueue {
     private handleOutput;
     private storeExecutionResult;
     private autoDismissDuplicates;
+    /**
+     * When an auth request completes successfully (exit_code=0), resolve
+     * associated work units:
+     * 1. Work units whose auth_request_id matches the completed request
+     * 2. Work units whose branch matches the auth request's head_branch
+     * 3. Work units linked to issue IDs found in Bug: trailers of the commit message
+     * Bug: 8a281b3
+     */
+    private resolveWorkUnitsOnMerge;
     private buildResolvedPayload;
     private isFailedLike;
     private requireRequest;

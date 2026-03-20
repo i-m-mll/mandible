@@ -34,6 +34,8 @@ export declare class SDKBackend extends EventEmitter implements AgenticBackend, 
     private activeQuery;
     private abortController;
     private destroyed;
+    /** Bug: 81c9d85 — expose processing state for is_processing on ConsoleSession */
+    get isProcessing(): boolean;
     constructor(meta: ConsoleSession, logger: Logger, sessionRegistry?: SessionRegistry);
     start(): void;
     stop(_signal?: string): void;

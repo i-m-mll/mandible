@@ -80,6 +80,7 @@ __export(api_exports, {
   getDesktopDaemonStatus: () => getDesktopDaemonStatus,
   getGraph: () => getGraph,
   getInboxGlobal: () => getInboxGlobal,
+  getIssueContext: () => getIssueContext,
   getIssueDetail: () => getIssueDetail,
   getIssueRepos: () => getIssueRepos,
   getIssueSessions: () => getIssueSessions,
@@ -96,6 +97,8 @@ __export(api_exports, {
   getSwitchboardPairings: () => getSwitchboardPairings,
   getSwitchboardTemplates: () => getSwitchboardTemplates,
   getWorkRepos: () => getWorkRepos,
+  getWorkUnit: () => getWorkUnit,
+  getWorkUnits: () => getWorkUnits,
   isDesktopShell: () => isDesktopShell,
   issueAction: () => issueAction,
   killSession: () => killSession,
@@ -116,6 +119,7 @@ __export(api_exports, {
   scanIssues: () => scanIssues,
   sendConsolePrompt: () => sendConsolePrompt,
   setDesktopDaemonLaunchMode: () => setDesktopDaemonLaunchMode,
+  spawnIssueAgent: () => spawnIssueAgent,
   starChat: () => starChat,
   startConsoleSession: () => startConsoleSession,
   startDesktopDaemon: () => startDesktopDaemon,
@@ -133,7 +137,8 @@ __export(api_exports, {
   updateConversation: () => updateConversation,
   updateSetting: () => updateSetting,
   updateStarredChat: () => updateStarredChat,
-  updateSwitchboardPairing: () => updateSwitchboardPairing
+  updateSwitchboardPairing: () => updateSwitchboardPairing,
+  updateWorkUnit: () => updateWorkUnit
 });
 async function apiGet(path) {
   const response = await fetch(path, { headers: DEFAULT_HEADERS });
@@ -482,12 +487,25 @@ async function getSessionIssues(sessionId) {
   const payload = await parseMaybeJson(response);
   return Array.isArray(payload) ? payload : [];
 }
+async function getIssueContext(repoId, issueId) {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/context`
+  );
+  return await parseMaybeJson(response);
+}
 async function getIssueSessions(repoId, issueId) {
   const response = await apiGet(
     `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/sessions`
   );
   const payload = await parseMaybeJson(response);
   return Array.isArray(payload) ? payload : [];
+}
+async function spawnIssueAgent(repoId, issueId, label) {
+  const response = await apiPost(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/spawn`,
+    label ? { label } : {}
+  );
+  return await parseMaybeJson(response);
 }
 async function getStarredChats() {
   const response = await apiGet("/api/chats/starred");
@@ -716,6 +734,20 @@ async function resumeConversation(conversationId, messageDagUuid, label) {
     label
   });
   return await parseMaybeJson(resp);
+}
+async function getWorkUnits(filters) {
+  const query = filters ? buildQuery(filters) : "";
+  const response = await apiGet(`/api/work-units${query}`);
+  const payload = await parseMaybeJson(response);
+  return payload.work_units ?? [];
+}
+async function getWorkUnit(id2) {
+  const response = await apiGet(`/api/work-units/${encodeURIComponent(id2)}`);
+  return await parseMaybeJson(response);
+}
+async function updateWorkUnit(id2, patch) {
+  const response = await apiPatch(`/api/work-units/${encodeURIComponent(id2)}`, patch);
+  return await parseMaybeJson(response);
 }
 async function getLogs(params) {
   const query = new URLSearchParams();
@@ -10997,6 +11029,32 @@ function u3(e3, t3, n2, o3, i4, u4) {
   return l.vnode && l.vnode(l3), l3;
 }
 
+// ui/src/components/shared/EntityPill.tsx
+var TYPE_HREF_MAP = {
+  issue: (id2, repoId) => repoId ? `#/issues?repo=${encodeURIComponent(repoId)}&issue=${encodeURIComponent(id2)}` : `#/issues?issue=${encodeURIComponent(id2)}`,
+  session: (id2) => `#/sessions?session=${encodeURIComponent(id2)}`,
+  auth: (id2) => `#/auth?request=${encodeURIComponent(id2)}`,
+  branch: (id2, repoId) => repoId ? `#/work?repo=${encodeURIComponent(repoId)}&branch=${encodeURIComponent(id2)}` : `#/work?branch=${encodeURIComponent(id2)}`,
+  conversation: (id2) => `#/chat-history?session=${encodeURIComponent(id2)}`
+};
+function EntityPill({ type: type2, id: id2, label, href, repoId }) {
+  const resolvedHref = href ?? TYPE_HREF_MAP[type2](id2, repoId);
+  const displayLabel = label ?? id2.slice(0, 8);
+  return /* @__PURE__ */ u3(
+    "a",
+    {
+      className: `entity-pill entity-pill--${type2}`,
+      href: resolvedHref,
+      onClick: (e3) => e3.stopPropagation(),
+      title: `${type2}: ${id2}`,
+      children: displayLabel
+    }
+  );
+}
+function EntityPillList({ children: children2 }) {
+  return /* @__PURE__ */ u3("div", { className: "entity-pill-list", children: children2 });
+}
+
 // ui/src/views/auth.tsx
 function getAuthId(request) {
   return request.id || request.request_id || "";
@@ -11403,19 +11461,7 @@ function AuthCard({
           children: "Session"
         }
       ),
-      bugRefs.length > 0 && canIssueLink && bugRefs.map((ref) => /* @__PURE__ */ u3(
-        "a",
-        {
-          className: "auth-card__link auth-card__link--issue",
-          href: `#/issues?repo=${encodeURIComponent(repoId)}&issue=${encodeURIComponent(ref)}`,
-          onClick: (e3) => e3.stopPropagation(),
-          children: [
-            "Issue ",
-            ref.slice(0, 8)
-          ]
-        },
-        ref
-      ))
+      bugRefs.length > 0 && canIssueLink && bugRefs.map((ref) => /* @__PURE__ */ u3(EntityPill, { type: "issue", id: ref, repoId }, ref))
     ] })
   ] });
   return /* @__PURE__ */ u3(
@@ -12444,6 +12490,7 @@ function AuthQueueView({
 }
 
 // ui/src/views/inbox.tsx
+init_api();
 marked.setOptions({ async: false, gfm: true, breaks: false });
 function sanitizeInlineHtml2(html3) {
   let out = html3.replace(
@@ -12489,6 +12536,8 @@ function formatRelativeTime2(value) {
 function itemBorderColor(item) {
   if (item.type === "continuation")
     return "#60a5fa";
+  if (item.type === "work_unit_continuation")
+    return "#f59e0b";
   if (item.type === "issue")
     return "#a78bfa";
   const ar = item.raw;
@@ -12503,6 +12552,8 @@ function itemBorderColor(item) {
 function itemTypeBadge(item) {
   if (item.type === "continuation")
     return "Continuation";
+  if (item.type === "work_unit_continuation")
+    return "Handoff";
   if (item.type === "issue")
     return "Issue";
   const ar = item.raw;
@@ -12545,6 +12596,18 @@ function buildUnifiedItems(data) {
       branch: null,
       time: null,
       raw: issue
+    });
+  }
+  for (const wu of data.work_unit_continuations ?? []) {
+    const title = wu.continuation ? wu.continuation.slice(0, 80).replace(/\n/g, " ") : `Work unit: ${wu.issue_id.slice(0, 8)}`;
+    items.push({
+      id: `wu_continuation:${wu.id}`,
+      type: "work_unit_continuation",
+      title,
+      repo: null,
+      branch: wu.branch ?? null,
+      time: wu.continuation_at,
+      raw: wu
     });
   }
   items.sort((a4, b) => {
@@ -12817,6 +12880,71 @@ function AuthResultDetail({
     ] })
   ] });
 }
+function WorkUnitContinuationDetail({
+  item
+}) {
+  const [spawning, setSpawning] = d2(false);
+  const handleResume = async () => {
+    if (spawning)
+      return;
+    setSpawning(true);
+    try {
+      const result = await spawnIssueAgent(item.repo_id, item.issue_id);
+      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+    } catch {
+    } finally {
+      setSpawning(false);
+    }
+  };
+  return /* @__PURE__ */ u3("div", { className: "inbox-detail__content", children: [
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__header", children: [
+      /* @__PURE__ */ u3(
+        "span",
+        {
+          className: "inbox-detail__type-badge",
+          style: { color: "#f59e0b", background: "#f59e0b22" },
+          children: "Handoff"
+        }
+      ),
+      /* @__PURE__ */ u3("h2", { className: "inbox-detail__title", children: "Work Unit Continuation" })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__meta", children: [
+      item.branch && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Branch" }),
+        /* @__PURE__ */ u3("code", { className: "inbox-detail__meta-value", children: item.branch })
+      ] }),
+      item.issue_id && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Issue" }),
+        /* @__PURE__ */ u3(EntityPill, { type: "issue", id: item.issue_id, repoId: item.repo_id })
+      ] }),
+      item.continuation_at && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "Handed off" }),
+        /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-value", children: formatRelativeTime2(item.continuation_at) })
+      ] })
+    ] }),
+    item.continuation && /* @__PURE__ */ u3("pre", { className: "inbox-detail__pre", children: item.continuation }),
+    /* @__PURE__ */ u3("div", { className: "inbox-detail__actions", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--active",
+          onClick: () => void handleResume(),
+          disabled: spawning,
+          children: spawning ? "Spawning..." : "Resume"
+        }
+      ),
+      item.issue_id && item.repo_id && /* @__PURE__ */ u3(
+        "a",
+        {
+          href: `#/issues?repo=${encodeURIComponent(item.repo_id)}&issue=${encodeURIComponent(item.issue_id)}`,
+          className: "btn btn--ghost",
+          children: "View Issue"
+        }
+      )
+    ] })
+  ] });
+}
 function IssueDetail({ item }) {
   const href = item.repo_id ? `#/issues?repo=${encodeURIComponent(item.repo_id)}&issue=${encodeURIComponent(item.id)}` : "#/issues";
   return /* @__PURE__ */ u3("div", { className: "inbox-detail__content", children: [
@@ -12838,7 +12966,7 @@ function IssueDetail({ item }) {
       ] }),
       item.id && /* @__PURE__ */ u3("div", { className: "inbox-detail__meta-row", children: [
         /* @__PURE__ */ u3("span", { className: "inbox-detail__meta-label", children: "ID" }),
-        /* @__PURE__ */ u3("code", { className: "inbox-detail__meta-value", children: item.id.slice(0, 7) })
+        /* @__PURE__ */ u3(EntityPill, { type: "issue", id: item.id, repoId: item.repo_id })
       ] })
     ] }),
     item.labels.length > 0 && /* @__PURE__ */ u3("div", { className: "inbox-detail__labels", children: item.labels.map((lbl) => /* @__PURE__ */ u3("span", { className: "inbox-detail__label-pill", children: lbl }, lbl)) }),
@@ -12963,6 +13091,11 @@ function InboxView({
         item: selectedItem.raw,
         onAck: onAckAuthResult
       }
+    ) : selectedItem.type === "work_unit_continuation" ? /* @__PURE__ */ u3(
+      WorkUnitContinuationDetail,
+      {
+        item: selectedItem.raw
+      }
     ) : /* @__PURE__ */ u3(IssueDetail, { item: selectedItem.raw }) })
   ] });
 }
@@ -13064,6 +13197,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [showCommentBox, setShowCommentBox] = d2(false);
   const [actionInFlight, setActionInFlight] = d2(false);
   const [linkedSessions, setLinkedSessions] = d2([]);
+  const [issueContext, setIssueContext] = d2(null);
   const lastAppliedDeepLinkRef = A2(null);
   const resolveRepoId = q2((rawRepoId) => {
     if (!rawRepoId)
@@ -13181,6 +13315,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     if (!selectedRepoId || !selectedIssueId) {
       setIssueDetail(null);
       setLinkedSessions([]);
+      setIssueContext(null);
       return;
     }
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
@@ -13228,6 +13363,13 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     }).catch(() => {
       if (!cancelled)
         setLinkedSessions([]);
+    });
+    getIssueContext(repoId, issueId).then((ctx) => {
+      if (!cancelled)
+        setIssueContext(ctx);
+    }).catch(() => {
+      if (!cancelled)
+        setIssueContext(null);
     });
     return () => {
       cancelled = true;
@@ -13457,47 +13599,119 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     ] }),
     /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
     /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : !issueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: [
-      /* @__PURE__ */ u3(
-        "h2",
-        {
-          className: "issues-detail__title",
-          dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(issueDetail.title) }
-        }
-      ),
-      /* @__PURE__ */ u3("div", { className: "issues-detail__meta", children: [
-        /* @__PURE__ */ u3(
-          "span",
+      /* @__PURE__ */ u3("div", { className: "issue-hub__banner", children: [
+        /* @__PURE__ */ u3("div", { className: "issue-hub__banner-top", children: /* @__PURE__ */ u3(
+          "h2",
           {
-            className: `status-pill ${detailVisualState === "open" ? "status-pill--success" : detailVisualState === "merged" ? "status-pill--merged" : "status-pill--dismissed"}`,
-            children: detailVisualState
+            className: "issues-detail__title",
+            dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(issueDetail.title) }
           }
-        ),
-        displayLabels.map((lbl) => {
-          const color2 = labelColor(lbl);
-          const display = LABEL_DISPLAY_NAMES[lbl] ?? lbl;
-          return /* @__PURE__ */ u3(
+        ) }),
+        /* @__PURE__ */ u3("div", { className: "issues-detail__meta", children: [
+          /* @__PURE__ */ u3(
             "span",
             {
-              className: "issue-label-pill",
-              style: { background: color2.bg, color: color2.fg },
-              title: "label",
-              children: display
-            },
-            lbl
-          );
-        }),
-        issueDetail.labels.includes("umbrella") && /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--ghost btn--sm",
-            onClick: () => {
-              setRepoFilter(issueDetail.repo_id);
-              setParentFilter(issueDetail.id.slice(0, 8));
-            },
-            children: "Show children"
-          }
-        )
+              className: `status-pill status-pill--lg ${detailVisualState === "open" ? "status-pill--success" : detailVisualState === "merged" ? "status-pill--merged" : "status-pill--dismissed"}`,
+              children: detailVisualState
+            }
+          ),
+          displayLabels.map((lbl) => {
+            const color2 = labelColor(lbl);
+            const display = LABEL_DISPLAY_NAMES[lbl] ?? lbl;
+            return /* @__PURE__ */ u3(
+              "span",
+              {
+                className: "issue-label-pill",
+                style: { background: color2.bg, color: color2.fg },
+                title: "label",
+                children: display
+              },
+              lbl
+            );
+          }),
+          issueDetail.labels.includes("umbrella") && /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "btn btn--ghost btn--sm",
+              onClick: () => {
+                setRepoFilter(issueDetail.repo_id);
+                setParentFilter(issueDetail.id.slice(0, 8));
+              },
+              children: "Show children"
+            }
+          )
+        ] }),
+        issueContext?.work_unit && /* @__PURE__ */ u3("div", { className: "issue-hub__work-status", children: [
+          issueContext.work_unit.branch && /* @__PURE__ */ u3("span", { className: "issue-hub__branch-status", children: [
+            issueContext.work_unit.state === "committed" ? "Committed on " : "Assigned to ",
+            /* @__PURE__ */ u3(
+              EntityPill,
+              {
+                type: "branch",
+                id: issueContext.work_unit.branch,
+                label: issueContext.work_unit.branch,
+                repoId: issueDetail.repo_id
+              }
+            )
+          ] }),
+          /* @__PURE__ */ u3("span", { className: `issue-hub__liveness issue-hub__liveness--${issueContext.work_unit.liveness.has_live_agent ? issueContext.work_unit.liveness.is_processing ? "active" : "idle" : "unassigned"}`, children: [
+            /* @__PURE__ */ u3("span", { className: "issue-hub__liveness-dot" }),
+            issueContext.work_unit.liveness.has_live_agent ? issueContext.work_unit.liveness.is_processing ? "Active \u2014 SDK session running" : "Idle" : "Unassigned"
+          ] })
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "issue-hub__actions", children: [
+          issueContext?.work_unit?.liveness.has_live_agent && issueContext.work_unit.assigned_session_id && /* @__PURE__ */ u3(
+            "a",
+            {
+              className: "issue-hub__action-btn issue-hub__action-btn--primary",
+              href: `#/console?session=${encodeURIComponent(issueContext.work_unit.assigned_session_id)}`,
+              children: "Open in Console"
+            }
+          ),
+          issueContext?.work_unit?.continuation && !issueContext.work_unit.liveness.has_live_agent && /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "issue-hub__action-btn issue-hub__action-btn--secondary",
+              disabled: actionInFlight,
+              onClick: async () => {
+                if (!selectedRepoId || !selectedIssueId || actionInFlight)
+                  return;
+                setActionInFlight(true);
+                try {
+                  const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
+                  window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+                } catch {
+                } finally {
+                  setActionInFlight(false);
+                }
+              },
+              children: "Resume Work"
+            }
+          ),
+          (!issueContext?.work_unit || !issueContext.work_unit.liveness.has_live_agent && !issueContext.work_unit.continuation) && /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "issue-hub__action-btn issue-hub__action-btn--secondary",
+              disabled: actionInFlight,
+              onClick: async () => {
+                if (!selectedRepoId || !selectedIssueId || actionInFlight)
+                  return;
+                setActionInFlight(true);
+                try {
+                  const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
+                  window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+                } catch {
+                } finally {
+                  setActionInFlight(false);
+                }
+              },
+              children: "Start Agent"
+            }
+          )
+        ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "issues-detail__info text-muted", children: [
         /* @__PURE__ */ u3("span", { children: issueDetail.author }),
@@ -13517,45 +13731,121 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           dangerouslySetInnerHTML: { __html: descriptionHtml }
         }
       ) : /* @__PURE__ */ u3("div", { className: "issues-detail__body spec-panel spec-panel--empty", children: "No description." }),
-      issueDetail.comments.length > 0 && /* @__PURE__ */ u3(k, { children: [
+      /* @__PURE__ */ u3("hr", { className: "issues-detail__divider" }),
+      /* @__PURE__ */ u3("h3", { className: "issues-detail__section-title", children: "Activity" }),
+      /* @__PURE__ */ u3("div", { className: "issue-hub__timeline", children: (() => {
+        const items2 = [];
+        for (const sess of issueContext?.sessions ?? []) {
+          const ts = sess.created_at ? typeof sess.created_at === "string" ? Date.parse(sess.created_at) : Number(sess.created_at) : 0;
+          items2.push({ kind: "session", ts: Number.isNaN(ts) ? 0 : ts, sess });
+        }
+        for (const auth of issueContext?.auth_requests ?? []) {
+          const ts = auth.created_at ? Number(auth.created_at) : 0;
+          items2.push({ kind: "auth", ts: Number.isNaN(ts) ? 0 : ts, auth });
+        }
+        for (const comment of issueDetail.comments) {
+          const ts = comment.date ? Date.parse(comment.date) : 0;
+          items2.push({ kind: "comment", ts: Number.isNaN(ts) ? 0 : ts, comment });
+        }
+        if (issueContext?.work_unit?.continuation) {
+          items2.push({
+            kind: "handoff",
+            ts: Number.MAX_SAFE_INTEGER,
+            continuation: issueContext.work_unit.continuation
+          });
+        }
+        items2.sort((a4, b) => a4.ts - b.ts);
+        if (items2.length === 0) {
+          return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-empty text-muted", children: "No activity yet." });
+        }
+        return items2.map((item, idx) => {
+          if (item.kind === "session") {
+            const sess = item.sess;
+            return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-item", children: [
+              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-icon issue-hub__timeline-icon--session" }),
+              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-text", children: [
+                "Session started",
+                sess.app ? ` (${sess.app})` : "",
+                " \u2014 ",
+                /* @__PURE__ */ u3(EntityPill, { type: "session", id: sess.session_id })
+              ] }),
+              sess.created_at && /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-time text-muted", children: formatRelativeTime3(typeof sess.created_at === "string" ? sess.created_at : new Date(sess.created_at).toISOString()) })
+            ] }, `sess-${sess.session_id}`);
+          }
+          if (item.kind === "auth") {
+            const auth = item.auth;
+            return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-item", children: [
+              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-icon issue-hub__timeline-icon--auth" }),
+              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-text", children: [
+                "Auth request: ",
+                auth.status,
+                " \u2014 ",
+                /* @__PURE__ */ u3(EntityPill, { type: "auth", id: auth.id, label: auth.title?.slice(0, 30) || auth.id.slice(0, 8) })
+              ] }),
+              item.ts > 0 && /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-time text-muted", children: formatRelativeTime3(new Date(item.ts).toISOString()) })
+            ] }, `auth-${auth.id}`);
+          }
+          if (item.kind === "comment") {
+            const comment = item.comment;
+            return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-item", children: [
+              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-icon issue-hub__timeline-icon--comment" }),
+              /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-comment", children: [
+                /* @__PURE__ */ u3("div", { className: "issue-comment__header", children: [
+                  /* @__PURE__ */ u3("span", { className: "issue-comment__author", children: comment.author }),
+                  comment.date && /* @__PURE__ */ u3("span", { className: "issue-comment__date text-muted", children: formatRelativeTime3(comment.date) })
+                ] }),
+                /* @__PURE__ */ u3(
+                  "div",
+                  {
+                    className: "issue-comment__body spec-panel",
+                    dangerouslySetInnerHTML: {
+                      __html: renderMarkdown2(comment.body)
+                    }
+                  }
+                )
+              ] })
+            ] }, comment.id);
+          }
+          return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-item", children: [
+            /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-icon issue-hub__timeline-icon--handoff" }),
+            /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-comment", children: [
+              /* @__PURE__ */ u3("div", { className: "issue-comment__header", children: /* @__PURE__ */ u3("span", { className: "issue-comment__author", children: "Handoff Note" }) }),
+              /* @__PURE__ */ u3(
+                "div",
+                {
+                  className: "issue-comment__body spec-panel",
+                  dangerouslySetInnerHTML: {
+                    __html: renderMarkdown2(item.continuation)
+                  }
+                }
+              )
+            ] })
+          ] }, `handoff-${idx}`);
+        });
+      })() }),
+      ((issueContext?.sessions ?? []).length > 0 || (issueContext?.auth_requests ?? []).length > 0 || linkedSessions.length > 0) && /* @__PURE__ */ u3(k, { children: [
         /* @__PURE__ */ u3("hr", { className: "issues-detail__divider" }),
-        /* @__PURE__ */ u3("h3", { className: "issues-detail__section-title", children: [
-          "Comments (",
-          issueDetail.comments.length,
-          ")"
-        ] }),
-        /* @__PURE__ */ u3("div", { className: "issue-comments", children: issueDetail.comments.map((comment) => /* @__PURE__ */ u3("div", { className: "issue-comment", children: [
-          /* @__PURE__ */ u3("div", { className: "issue-comment__header", children: [
-            /* @__PURE__ */ u3("span", { className: "issue-comment__author", children: comment.author }),
-            comment.date && /* @__PURE__ */ u3("span", { className: "issue-comment__date text-muted", children: formatRelativeTime3(comment.date) })
+        /* @__PURE__ */ u3("h3", { className: "issues-detail__section-title", children: "Related" }),
+        /* @__PURE__ */ u3("div", { className: "issue-hub__related", children: [
+          (issueContext?.sessions ?? linkedSessions.map((l3) => ({
+            session_id: l3.session_id,
+            has_conversation: false
+          }))).length > 0 && /* @__PURE__ */ u3("div", { className: "issue-hub__related-group", children: [
+            /* @__PURE__ */ u3("span", { className: "issue-hub__related-label", children: "Sessions" }),
+            /* @__PURE__ */ u3(EntityPillList, { children: [
+              (issueContext?.sessions ?? []).map((sess) => /* @__PURE__ */ u3(EntityPill, { type: "session", id: sess.session_id }, sess.session_id)),
+              !issueContext && linkedSessions.map((link2) => /* @__PURE__ */ u3(EntityPill, { type: "session", id: link2.session_id }, link2.session_id))
+            ] })
           ] }),
-          /* @__PURE__ */ u3(
-            "div",
-            {
-              className: "issue-comment__body spec-panel",
-              dangerouslySetInnerHTML: {
-                __html: renderMarkdown2(comment.body)
-              }
-            }
-          )
-        ] }, comment.id)) })
-      ] }),
-      linkedSessions.length > 0 && /* @__PURE__ */ u3(k, { children: [
-        /* @__PURE__ */ u3("hr", { className: "issues-detail__divider" }),
-        /* @__PURE__ */ u3("h3", { className: "issues-detail__section-title", children: [
-          "Linked Sessions (",
-          linkedSessions.length,
-          ")"
-        ] }),
-        /* @__PURE__ */ u3("div", { className: "linked-chips", children: linkedSessions.map((link2) => /* @__PURE__ */ u3(
-          "a",
-          {
-            className: "linked-session-chip",
-            href: `#/sessions?session=${encodeURIComponent(link2.session_id)}`,
-            children: link2.session_id.slice(0, 8)
-          },
-          link2.session_id
-        )) })
+          (issueContext?.auth_requests ?? []).length > 0 && /* @__PURE__ */ u3("div", { className: "issue-hub__related-group", children: [
+            /* @__PURE__ */ u3("span", { className: "issue-hub__related-label", children: "Auth Requests" }),
+            /* @__PURE__ */ u3(EntityPillList, { children: (issueContext?.auth_requests ?? []).map((auth) => /* @__PURE__ */ u3(EntityPill, { type: "auth", id: auth.id, label: auth.id.slice(0, 8) }, auth.id)) })
+          ] }),
+          (issueContext?.sessions ?? []).filter((s3) => s3.has_conversation).length > 0 && /* @__PURE__ */ u3("div", { className: "issue-hub__related-group", children: [
+            /* @__PURE__ */ u3("span", { className: "issue-hub__related-label", children: "Conversations" }),
+            /* @__PURE__ */ u3(EntityPillList, { children: (issueContext?.sessions ?? []).filter((s3) => s3.has_conversation).map((s3) => /* @__PURE__ */ u3(EntityPill, { type: "conversation", id: s3.session_id }, `conv-${s3.session_id}`)) })
+          ] })
+        ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "issue-actions", children: [
         detailVisualState === "open" ? /* @__PURE__ */ u3(
@@ -13566,15 +13856,6 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
             disabled: actionInFlight,
             onClick: handleCloseIssue,
             children: "Close Issue"
-          }
-        ) : detailVisualState === "merged" ? /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--success",
-            disabled: actionInFlight,
-            onClick: handleReopenIssue,
-            children: "Reopen Issue"
           }
         ) : /* @__PURE__ */ u3(
           "button",
@@ -14158,15 +14439,13 @@ function IssuePills({
   return /* @__PURE__ */ u3("div", { className: "linked-chips", children: [
     displayed.map((link2) => (
       // Bug: 387ae46 — include repo param so IssuesView can select directly
-      // without the slow async cross-repo find path.
-      // Guard: if repo_id is absent, fall back to cross-repo find path
-      // (avoids #/issues?repo=undefined&issue=<id> in the URL).
+      // Bug: 84cd5ae — use EntityPill for cross-tab linking
       /* @__PURE__ */ u3(
-        "a",
+        EntityPill,
         {
-          className: "linked-issue-chip",
-          href: link2.repo_id ? `#/issues?repo=${encodeURIComponent(link2.repo_id)}&issue=${encodeURIComponent(link2.issue_id)}` : `#/issues?issue=${encodeURIComponent(link2.issue_id)}`,
-          children: link2.issue_id.slice(0, 8)
+          type: "issue",
+          id: link2.issue_id,
+          repoId: link2.repo_id || void 0
         },
         `${link2.repo_id}-${link2.issue_id}`
       )
@@ -15431,6 +15710,7 @@ function ConversationDetail({
   const [collapsedBlocks, setCollapsedBlocks] = d2(/* @__PURE__ */ new Set());
   const [showExport, setShowExport] = d2(false);
   const [renderMode, setRenderMode] = d2("transcript");
+  const [sessionIssueLinks, setSessionIssueLinks] = d2([]);
   const [toast, setToast] = d2(null);
   const [conflictDialog, setConflictDialog] = d2(null);
   const [forkData, setForkData] = d2(null);
@@ -15476,6 +15756,28 @@ function ConversationDetail({
       active = false;
     };
   }, [conversationId, loadNonce]);
+  y2(() => {
+    if (!conversation?.session_id) {
+      setSessionIssueLinks([]);
+      return;
+    }
+    let active = true;
+    getSessionIssues(conversation.session_id).then((data) => {
+      if (active) {
+        setSessionIssueLinks(
+          data.filter(
+            (d3) => d3.issue_id && d3.repo_id
+          )
+        );
+      }
+    }).catch(() => {
+      if (active)
+        setSessionIssueLinks([]);
+    });
+    return () => {
+      active = false;
+    };
+  }, [conversation?.session_id]);
   y2(() => {
     if (!selectedLeaf)
       return;
@@ -15775,7 +16077,16 @@ function ConversationDetail({
           /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
           /* @__PURE__ */ u3("span", { className: "text-muted", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime4(conversation.started_at) }),
           conversation.branch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: conversation.branch }),
-          conversation.model && /* @__PURE__ */ u3("span", { className: "text-muted", children: conversation.model })
+          conversation.model && /* @__PURE__ */ u3("span", { className: "text-muted", children: conversation.model }),
+          sessionIssueLinks.length > 0 && sessionIssueLinks.map((link2) => /* @__PURE__ */ u3(
+            EntityPill,
+            {
+              type: "issue",
+              id: link2.issue_id,
+              repoId: link2.repo_id
+            },
+            `${link2.repo_id}-${link2.issue_id}`
+          ))
         ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "conv-detail__header-right", children: [
@@ -16305,6 +16616,10 @@ var RESUME_CONFLICT_LABELS = {
   prompt: "Ask me each time",
   auto_fork: "Auto-fork (create new conversation)",
   allow_concurrent: "Allow concurrent (resume in-place)"
+};
+var AUTO_RESUME_POLICIES = ["manual"];
+var AUTO_RESUME_LABELS = {
+  manual: "Manual (user clicks Resume)"
 };
 var DESKTOP_DAEMON_MODES = ["on_demand", "manual"];
 function Toggle(props) {
@@ -17019,6 +17334,32 @@ function SettingsView(props) {
               }
             },
             children: RESUME_CONFLICT_POLICIES.map((p3) => /* @__PURE__ */ u3("option", { value: p3, children: RESUME_CONFLICT_LABELS[p3] ?? p3 }, p3))
+          }
+        )
+      ] }) })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+        /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Work Queue" }),
+        /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "How to handle work-unit continuations (handoff notes from ended sessions)." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: /* @__PURE__ */ u3("div", { className: "settings-view__select-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__select-info", children: [
+          /* @__PURE__ */ u3("span", { className: "settings-view__select-label", children: "Auto-resume policy" }),
+          /* @__PURE__ */ u3("span", { className: "settings-view__select-desc", children: "When a session ends with a continuation, how should the work be resumed?" })
+        ] }),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            className: "settings-view__select",
+            value: settings.auto_resume_policy ?? "manual",
+            onChange: async (e3) => {
+              try {
+                await onSave("auto_resume_policy", e3.target.value);
+              } catch {
+              }
+            },
+            children: AUTO_RESUME_POLICIES.map((p3) => /* @__PURE__ */ u3("option", { value: p3, children: AUTO_RESUME_LABELS[p3] ?? p3 }, p3))
           }
         )
       ] }) })

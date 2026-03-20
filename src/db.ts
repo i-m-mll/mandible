@@ -573,6 +573,42 @@ const MIGRATIONS: Migration[] = [
     statements: [
       `ALTER TABLE console_sessions ADD COLUMN resume_at_message TEXT`,
     ]
+  },
+  {
+    version: 38,
+    name: "work_units",
+    // Bug: a247bc3 — work-unit tracking for inbox workqueue
+    statements: [
+      `CREATE TABLE IF NOT EXISTS work_units (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        branch TEXT,
+        parent_branch TEXT,
+        kind TEXT NOT NULL DEFAULT 'solo',
+        state TEXT NOT NULL DEFAULT 'open',
+        assigned_session_id TEXT,
+        continuation TEXT,
+        continuation_by TEXT,
+        continuation_at INTEGER,
+        created_at INTEGER NOT NULL,
+        activated_at INTEGER,
+        last_commit_at INTEGER,
+        resolved_at INTEGER,
+        auth_request_id TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_work_units_repo_branch ON work_units(repo_id, branch)`,
+      `CREATE INDEX IF NOT EXISTS idx_work_units_repo_issue ON work_units(repo_id, issue_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_work_units_state ON work_units(state)`,
+    ]
+  },
+  {
+    version: 39,
+    name: "sessions_branch_index",
+    // Bug: 81c9d85 — index sessions by branch for efficient branch-scoped queries
+    statements: [
+      `CREATE INDEX IF NOT EXISTS sessions_branch_idx ON sessions(branch) WHERE branch IS NOT NULL`,
+    ]
   }
 ];
 

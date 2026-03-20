@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { openPath, patchSession } from '../api.js';
+import { EntityPill } from '../components/shared/EntityPill';
 
 // Bug: a44fd6a — render task/intent fields as inline markdown
 marked.setOptions({ async: false, gfm: true, breaks: false });
@@ -420,18 +421,13 @@ function IssuePills({
     <div className="linked-chips">
       {displayed.map((link) => (
         // Bug: 387ae46 — include repo param so IssuesView can select directly
-        // without the slow async cross-repo find path.
-        // Guard: if repo_id is absent, fall back to cross-repo find path
-        // (avoids #/issues?repo=undefined&issue=<id> in the URL).
-        <a
+        // Bug: 84cd5ae — use EntityPill for cross-tab linking
+        <EntityPill
           key={`${link.repo_id}-${link.issue_id}`}
-          className="linked-issue-chip"
-          href={link.repo_id
-            ? `#/issues?repo=${encodeURIComponent(link.repo_id)}&issue=${encodeURIComponent(link.issue_id)}`
-            : `#/issues?issue=${encodeURIComponent(link.issue_id)}`}
-        >
-          {link.issue_id.slice(0, 8)}
-        </a>
+          type="issue"
+          id={link.issue_id}
+          repoId={link.repo_id || undefined}
+        />
       ))}
       {closedCount > 0 && !showClosed && (
         <button

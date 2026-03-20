@@ -57,20 +57,24 @@ export interface ReaperStatus {
  */
 export declare class ReaperTimer {
     private timer;
+    private discoveryTimer;
     private readonly discovery;
     private readonly log;
     private readonly intervalMs;
+    private readonly discoveryIntervalMs;
+    private discovering;
     private _lastRunAt;
     private _lastRunDurationMs;
     private _lastRunReaped;
     private _totalReaped;
     private _totalRuns;
-    constructor(discovery: SessionDiscovery, logger: Logger, intervalMs?: number);
-    /** Start the periodic reaper. Safe to call multiple times. */
+    constructor(discovery: SessionDiscovery, logger: Logger, intervalMs?: number, discoveryIntervalMs?: number);
+    /** Start the periodic reaper and discovery. Safe to call multiple times. */
     start(): void;
-    /** Stop the periodic reaper. */
+    /** Stop the periodic reaper and discovery. */
     stop(): void;
     /** Get current reaper status for the API endpoint. */
     getStatus(): ReaperStatus;
     private tick;
+    private discoveryTick;
 }

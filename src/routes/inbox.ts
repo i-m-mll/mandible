@@ -2,7 +2,17 @@ import path from "node:path";
 import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionRegistry } from "../registry.js";
+import type { SessionManager } from "../session-manager.js";
 import type { AuthRequestStatus } from "../types.js";
+import {
+  mapWorkUnitRow,
+  computeLiveness,
+  type WorkUnitLiveness,
+  type WorkUnitWithLiveness,
+} from "../work-unit-utils.js";
+
+// Bug: 8a281b3 — inbox rewrite: work units replace raw open issues as the
+// primary "needs attention" signal. Auth results and continuations remain.
 
 export interface InboxRouteServer {
   get(path: string, handler: (req: unknown, res: unknown) => void): void;
@@ -87,12 +97,71 @@ interface AuthResultRow {
   issue_ids: string | null;
 }
 
+// Bug: f3dbb3e — mapWorkUnitRow and computeLiveness extracted to work-unit-utils.ts
+
 export function registerInboxRoutes(
   server: InboxRouteServer,
-  _sessionRegistry: SessionRegistry,
+  sessionRegistry: SessionRegistry,
   issueScanner: IssueScanner,
+  sessionManager?: SessionManager,
 ): void {
   const db = getDb();
+
+  // Bug: 8a281b3 — helper to get work units needing attention for inbox
+  function getWorkUnitsNeedingAttention(repoFilter?: string): WorkUnitWithLiveness[] {
+    const conditions = ["state IN ('open', 'committed')"];
+    const params: unknown[] = [];
+
+    if (repoFilter) {
+      conditions.push("repo_id = ?");
+      params.push(repoFilter);
+    }
+
+    const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+    const rows = db
+      .prepare(`SELECT * FROM work_units${where} ORDER BY created_at DESC`)
+      .all(...params) as Record<string, unknown>[];
+
+    return rows
+      .map(mapWorkUnitRow)
+      .map((wu) => {
+        const liveness = sessionManager
+          ? computeLiveness(wu, sessionRegistry, sessionManager)
+          : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
+        return { ...wu, liveness };
+      })
+      // Show work units that need attention (no live agent)
+      .filter((wu) => !wu.liveness.has_live_agent);
+  }
+
+  // Bug: 8a281b3 — helper to get work-unit continuations
+  // Bug: f3dbb3e — filter by open/committed state so resolved/abandoned units
+  // don't surface stale continuations
+  function getWorkUnitContinuations(repoFilter?: string): WorkUnitWithLiveness[] {
+    const conditions = ["continuation IS NOT NULL", "state IN ('open', 'committed')"];
+    const params: unknown[] = [];
+
+    if (repoFilter) {
+      conditions.push("repo_id = ?");
+      params.push(repoFilter);
+    }
+
+    const where = ` WHERE ${conditions.join(" AND ")}`;
+    const rows = db
+      .prepare(`SELECT * FROM work_units${where} ORDER BY continuation_at DESC`)
+      .all(...params) as Record<string, unknown>[];
+
+    return rows
+      .map(mapWorkUnitRow)
+      .map((wu) => {
+        const liveness = sessionManager
+          ? computeLiveness(wu, sessionRegistry, sessionManager)
+          : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
+        return { ...wu, liveness };
+      })
+      // Only show continuations with no live agent
+      .filter((wu) => !wu.liveness.has_live_agent);
+  }
 
   // GET /api/inbox — unified query of pending items for a branch
   server.get("/api/inbox", (req, res) => {
@@ -138,7 +207,11 @@ export function registerInboxRoutes(
           )
           .all() as AuthResultRow[]);
 
-    // Open issues: from issue scanner, filtered by repo
+    // Bug: 8a281b3 — work units replace open issues as the primary "needs attention" signal
+    const workUnits = getWorkUnitsNeedingAttention(repo ?? undefined);
+    const workUnitContinuations = getWorkUnitContinuations(repo ?? undefined);
+
+    // Open issues: from issue scanner, filtered by repo (kept for backward compat)
     let openIssues: Array<{ id: string; title: string; labels: string[] }> = [];
     if (repo) {
       const summaries = issueScanner.getRepoSummaries();
@@ -156,7 +229,8 @@ export function registerInboxRoutes(
       }
     }
 
-    const total = continuations.length + authResults.length + openIssues.length;
+    const total = continuations.length + authResults.length + openIssues.length
+      + workUnits.length + workUnitContinuations.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -177,6 +251,8 @@ export function registerInboxRoutes(
         issue_ids: row.issue_ids ? JSON.parse(row.issue_ids) : null,
       })),
       open_issues: openIssues,
+      work_units: workUnits,
+      work_unit_continuations: workUnitContinuations,
       total,
     });
   });
@@ -203,7 +279,11 @@ export function registerInboxRoutes(
       )
       .all() as AuthResultRow[];
 
-    // Open issues: all repos
+    // Bug: 8a281b3 — work units needing attention (all repos)
+    const workUnits = getWorkUnitsNeedingAttention();
+    const workUnitContinuations = getWorkUnitContinuations();
+
+    // Open issues: all repos (kept for backward compat)
     const openIssues: Array<{
       id: string;
       title: string;
@@ -225,7 +305,8 @@ export function registerInboxRoutes(
       }
     }
 
-    const total = continuations.length + authResults.length + openIssues.length;
+    const total = continuations.length + authResults.length + openIssues.length
+      + workUnits.length + workUnitContinuations.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -249,6 +330,8 @@ export function registerInboxRoutes(
         issue_ids: row.issue_ids ? JSON.parse(row.issue_ids) : null,
       })),
       open_issues: openIssues,
+      work_units: workUnits,
+      work_unit_continuations: workUnitContinuations,
       total,
     });
   });

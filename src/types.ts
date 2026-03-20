@@ -234,6 +234,8 @@ export interface ConsoleSession {
   resume_at_message: string | null;
   /** Derived from command and is_operator. Not stored in DB. */
   agent_type: 'claude' | 'codex' | 'gemini' | 'operator' | 'shell';
+  /** Bug: 81c9d85 — derived from backend.processing, not stored in DB. */
+  is_processing?: boolean;
 }
 
 export interface ConsoleSessionInput {
@@ -341,4 +343,28 @@ export interface GraphQueryParams {
   since?: string;      // ISO timestamp or relative like "3d", "1w", "2h"
   limit?: number;      // max nodes to return (default 50)
   status?: "open" | "all"; // issue filter only (default 'open')
+}
+
+// --- Work-unit types (Bug: a247bc3) ---
+
+export type WorkUnitKind = "solo" | "partition" | "integration";
+export type WorkUnitState = "open" | "committed" | "resolved" | "abandoned";
+
+export interface WorkUnit {
+  id: string;
+  issue_id: string;
+  repo_id: string;
+  branch: string | null;
+  parent_branch: string | null;
+  kind: WorkUnitKind;
+  state: WorkUnitState;
+  assigned_session_id: string | null;
+  continuation: string | null;
+  continuation_by: string | null;
+  continuation_at: number | null;
+  created_at: number;
+  activated_at: number | null;
+  last_commit_at: number | null;
+  resolved_at: number | null;
+  auth_request_id: string | null;
 }
