@@ -75,7 +75,15 @@ export declare class SessionRegistry {
      * Bug: 568eca7
      */
     getPinnedSessionIds(): string[];
+    updateLastActive(sessionId: string, timestamp?: number): void;
+    setIdle(sessionId: string): void;
+    setActive(sessionId: string): void;
     killSession(id: string): boolean;
+    /**
+     * Transfer a session's continuation to linked work units when the session ends.
+     * Bug: cbbb3d9 — session-to-work-unit continuation transfer
+     */
+    private transferContinuationToWorkUnit;
     private ensureLiveness;
 }
 export {};

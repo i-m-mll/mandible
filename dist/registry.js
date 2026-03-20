@@ -465,6 +465,8 @@ export class SessionRegistry {
         const updated = this.getSession(id);
         if (updated) {
             if (status === "ended" || status === "dead") {
+                // Bug: cbbb3d9 — transfer continuation to work unit on session end
+                this.transferContinuationToWorkUnit(updated);
                 broadcast("session:ended", updated);
             }
             else {
@@ -631,6 +633,49 @@ export class SessionRegistry {
             .all();
         return rows.map((row) => row.id);
     }
+    // Bug: 81c9d85 — update last_active timestamp on activity events
+    updateLastActive(sessionId, timestamp) {
+        const ts = timestamp
+            ? new Date(timestamp).toISOString()
+            : new Date().toISOString();
+        this.db
+            .prepare("UPDATE sessions SET last_active = ?, updated_at = ? WHERE id = ?")
+            .run(ts, ts, sessionId);
+    }
+    // Bug: 81c9d85 — transition session to idle when SDK prompt queue drains
+    setIdle(sessionId) {
+        const session = this.getSession(sessionId);
+        if (!session || session.status !== "active") {
+            return;
+        }
+        const now = new Date().toISOString();
+        this.db
+            .prepare("UPDATE sessions SET status = 'idle', updated_at = ? WHERE id = ?")
+            .run(now, sessionId);
+        const updated = this.getSession(sessionId);
+        if (updated) {
+            broadcast("session:updated", updated);
+        }
+    }
+    // Bug: 81c9d85 — transition session to active (from idle or other non-terminal state)
+    setActive(sessionId) {
+        const session = this.getSession(sessionId);
+        if (!session || session.status === "active") {
+            return;
+        }
+        // Don't resurrect ended/dead sessions
+        if (session.status === "ended" || session.status === "dead") {
+            return;
+        }
+        const now = new Date().toISOString();
+        this.db
+            .prepare("UPDATE sessions SET status = 'active', updated_at = ? WHERE id = ?")
+            .run(now, sessionId);
+        const updated = this.getSession(sessionId);
+        if (updated) {
+            broadcast("session:updated", updated);
+        }
+    }
     killSession(id) {
         const session = this.getSession(id);
         if (!session || !session.pid) {
@@ -642,6 +687,42 @@ export class SessionRegistry {
         }
         catch {
             return false;
+        }
+    }
+    /**
+     * Transfer a session's continuation to linked work units when the session ends.
+     * Bug: cbbb3d9 — session-to-work-unit continuation transfer
+     */
+    transferContinuationToWorkUnit(session) {
+        if (!session.continuation) {
+            return;
+        }
+        try {
+            // Find issues linked to this session
+            const links = this.db
+                .prepare("SELECT issue_id, repo_id FROM session_issues WHERE session_id = ?")
+                .all(session.id);
+            if (links.length === 0) {
+                return;
+            }
+            const now = Date.now();
+            for (const link of links) {
+                // Find open/committed work unit for this issue+repo
+                const wu = this.db
+                    .prepare(`SELECT id FROM work_units
+             WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')
+             ORDER BY created_at DESC LIMIT 1`)
+                    .get(link.issue_id, link.repo_id);
+                if (wu) {
+                    this.db
+                        .prepare(`UPDATE work_units SET continuation = ?, continuation_by = ?, continuation_at = ?
+               WHERE id = ? AND (continuation_at IS NULL OR continuation_at < ?)`)
+                        .run(session.continuation, session.id, now, wu.id, now);
+                }
+            }
+        }
+        catch {
+            // Non-critical — best effort transfer
         }
     }
     ensureLiveness(session) {
@@ -657,6 +738,8 @@ export class SessionRegistry {
             .prepare("UPDATE sessions SET status = ?, ended_at = ?, updated_at = ? WHERE id = ?")
             .run("dead", now, now, session.id);
         const updated = { ...session, status: "dead", ended_at: now, updated_at: now };
+        // Bug: cbbb3d9 — transfer continuation to work unit on session death
+        this.transferContinuationToWorkUnit(updated);
         broadcast("session:ended", updated);
         return updated;
     }

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { getDb, resolvePrefix } from "../db.js";
+import { mapWorkUnitRow, computeLiveness, } from "../work-unit-utils.js";
 function getQueryParam(req, key) {
     if (!req || typeof req !== "object")
         return undefined;
@@ -59,8 +60,57 @@ function sendJson(res, status, payload) {
         record.end(JSON.stringify(payload));
     }
 }
-export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
+// Bug: f3dbb3e — mapWorkUnitRow and computeLiveness extracted to work-unit-utils.ts
+export function registerInboxRoutes(server, sessionRegistry, issueScanner, sessionManager) {
     const db = getDb();
+    // Bug: 8a281b3 — helper to get work units needing attention for inbox
+    function getWorkUnitsNeedingAttention(repoFilter) {
+        const conditions = ["state IN ('open', 'committed')"];
+        const params = [];
+        if (repoFilter) {
+            conditions.push("repo_id = ?");
+            params.push(repoFilter);
+        }
+        const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+        const rows = db
+            .prepare(`SELECT * FROM work_units${where} ORDER BY created_at DESC`)
+            .all(...params);
+        return rows
+            .map(mapWorkUnitRow)
+            .map((wu) => {
+            const liveness = sessionManager
+                ? computeLiveness(wu, sessionRegistry, sessionManager)
+                : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
+            return { ...wu, liveness };
+        })
+            // Show work units that need attention (no live agent)
+            .filter((wu) => !wu.liveness.has_live_agent);
+    }
+    // Bug: 8a281b3 — helper to get work-unit continuations
+    // Bug: f3dbb3e — filter by open/committed state so resolved/abandoned units
+    // don't surface stale continuations
+    function getWorkUnitContinuations(repoFilter) {
+        const conditions = ["continuation IS NOT NULL", "state IN ('open', 'committed')"];
+        const params = [];
+        if (repoFilter) {
+            conditions.push("repo_id = ?");
+            params.push(repoFilter);
+        }
+        const where = ` WHERE ${conditions.join(" AND ")}`;
+        const rows = db
+            .prepare(`SELECT * FROM work_units${where} ORDER BY continuation_at DESC`)
+            .all(...params);
+        return rows
+            .map(mapWorkUnitRow)
+            .map((wu) => {
+            const liveness = sessionManager
+                ? computeLiveness(wu, sessionRegistry, sessionManager)
+                : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
+            return { ...wu, liveness };
+        })
+            // Only show continuations with no live agent
+            .filter((wu) => !wu.liveness.has_live_agent);
+    }
     // GET /api/inbox — unified query of pending items for a branch
     server.get("/api/inbox", (req, res) => {
         const branch = getQueryParam(req, "branch");
@@ -94,7 +144,10 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
                AND acknowledged_by IS NULL
              ORDER BY resolved_at DESC`)
                 .all();
-        // Open issues: from issue scanner, filtered by repo
+        // Bug: 8a281b3 — work units replace open issues as the primary "needs attention" signal
+        const workUnits = getWorkUnitsNeedingAttention(repo ?? undefined);
+        const workUnitContinuations = getWorkUnitContinuations(repo ?? undefined);
+        // Open issues: from issue scanner, filtered by repo (kept for backward compat)
         let openIssues = [];
         if (repo) {
             const summaries = issueScanner.getRepoSummaries();
@@ -111,7 +164,8 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
                 }
             }
         }
-        const total = continuations.length + authResults.length + openIssues.length;
+        const total = continuations.length + authResults.length + openIssues.length
+            + workUnits.length + workUnitContinuations.length;
         sendJson(res, 200, {
             continuations: continuations.map((row) => ({
                 session_id: row.id,
@@ -131,6 +185,8 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
                 issue_ids: row.issue_ids ? JSON.parse(row.issue_ids) : null,
             })),
             open_issues: openIssues,
+            work_units: workUnits,
+            work_unit_continuations: workUnitContinuations,
             total,
         });
     });
@@ -150,7 +206,10 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
            AND acknowledged_by IS NULL
          ORDER BY resolved_at DESC`)
             .all();
-        // Open issues: all repos
+        // Bug: 8a281b3 — work units needing attention (all repos)
+        const workUnits = getWorkUnitsNeedingAttention();
+        const workUnitContinuations = getWorkUnitContinuations();
+        // Open issues: all repos (kept for backward compat)
         const openIssues = [];
         for (const summary of issueScanner.getRepoSummaries()) {
             for (const issue of summary.issues) {
@@ -165,7 +224,8 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
                 }
             }
         }
-        const total = continuations.length + authResults.length + openIssues.length;
+        const total = continuations.length + authResults.length + openIssues.length
+            + workUnits.length + workUnitContinuations.length;
         sendJson(res, 200, {
             continuations: continuations.map((row) => ({
                 session_id: row.id,
@@ -188,6 +248,8 @@ export function registerInboxRoutes(server, _sessionRegistry, issueScanner) {
                 issue_ids: row.issue_ids ? JSON.parse(row.issue_ids) : null,
             })),
             open_issues: openIssues,
+            work_units: workUnits,
+            work_unit_continuations: workUnitContinuations,
             total,
         });
     });

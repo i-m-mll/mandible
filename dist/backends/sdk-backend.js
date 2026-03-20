@@ -20,6 +20,10 @@ export class SDKBackend extends EventEmitter {
     activeQuery = null;
     abortController = null;
     destroyed = false;
+    /** Bug: 81c9d85 — expose processing state for is_processing on ConsoleSession */
+    get isProcessing() {
+        return this.processing;
+    }
     constructor(meta, logger, sessionRegistry) {
         super();
         this.id = meta.id;
@@ -254,6 +258,13 @@ export class SDKBackend extends EventEmitter {
             return;
         }
         this.processing = true;
+        // Bug: 81c9d85 — set Mandible session to active when processing starts
+        if (this.sessionRegistry && this.meta.mandible_session_id) {
+            this.sessionRegistry.setActive(this.meta.mandible_session_id);
+        }
+        // Bug: 81c9d85 — broadcast is_processing change
+        this.meta = { ...this.meta, is_processing: true, updated_at: Date.now() };
+        this.emitMetaUpdate({ updated_at: this.meta.updated_at });
         try {
             if (this.meta.status !== "running") {
                 this.start();
@@ -273,6 +284,13 @@ export class SDKBackend extends EventEmitter {
         }
         finally {
             this.processing = false;
+            // Bug: 81c9d85 — set Mandible session to idle when processing finishes
+            if (this.sessionRegistry && this.meta.mandible_session_id) {
+                this.sessionRegistry.setIdle(this.meta.mandible_session_id);
+            }
+            // Bug: 81c9d85 — broadcast is_processing change
+            this.meta = { ...this.meta, is_processing: false, updated_at: Date.now() };
+            this.emitMetaUpdate({ updated_at: this.meta.updated_at });
             // Bug: 2a04856 — Transition to "stopped" when the queue is fully drained so the
             // session status in the DB and SSE broadcasts reflects completion. The next
             // sendPrompt() call will re-enter processPromptQueue which calls this.start(),
@@ -788,6 +806,12 @@ export class SDKBackend extends EventEmitter {
                 provider_session_id: event.session_id,
                 updated_at: this.meta.updated_at,
             });
+        }
+        // Bug: 81c9d85 — update last_active on assistant/tool_use activity events
+        if ((event.type === "assistant" || event.type === "tool_use") &&
+            this.sessionRegistry &&
+            this.meta.mandible_session_id) {
+            this.sessionRegistry.updateLastActive(this.meta.mandible_session_id);
         }
         if (event.type === "result") {
             const usageRow = this.buildUsageRow(event);

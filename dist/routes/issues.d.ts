@@ -8,4 +8,7 @@ export interface IssueServer {
     post(path: string, handler: RouteHandler): void;
     put?(path: string, handler: RouteHandler): void;
 }
-export declare function registerIssueRoutes(server: IssueServer, workScanner: WorkScanner): IssueScanner;
+export declare function registerIssueRoutes(server: IssueServer, workScanner: WorkScanner, deps?: {
+    sessionRegistry?: import("../registry.js").SessionRegistry;
+    sessionManager?: import("../session-manager.js").SessionManager;
+}): IssueScanner;
