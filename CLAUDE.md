@@ -32,6 +32,16 @@ Uses SQLite via better-sqlite3. Schema migrations live in `src/db.ts` in the `MI
 
 **Always add new columns/tables via a new migration entry** — never via ad-hoc `CREATE TABLE IF NOT EXISTS` in individual modules. The `ensureSchema()` functions are fallbacks for fresh databases only; they do NOT alter existing tables.
 
+## Work units
+
+The `work_units` table tracks the dispatch state of issues through their lifecycle: open → committed → merged (+ abandoned). Work units join the issue tree (git-bug), branch tree (git worktrees), and session tree (agent sessions) into a single reconciliation layer. See umbrella issue f3dbb3e for the full design.
+
+Key conventions:
+- `wt --issue <id>` registers a work unit and writes a `.issue` file for auto-discovery
+- `agent-commit` auto-discovers the issue from `.issue` if `--issue` is not passed explicitly
+- Liveness (is an agent currently working?) is derived at query time, not stored as a state
+- Continuations (handoff notes) live on the work unit, not on individual sessions
+
 ## Dist files
 
 Do **not** commit `dist/` in feature branches. Build once in the integration branch after all feature merges, then commit the dist there.
@@ -54,6 +64,18 @@ The auth queue is the mechanism for protected-branch merges. Full protocol is in
 - User approves via dashboard or terminal pane
 - `auth-merge` runs the actual `git merge --gpg-sign` with YubiKey
 - Auth results arrive in the session inbox at next session start
+
+## Agent interaction tiers
+
+Mandible interacts with agents at three tiers of integration:
+
+- **First-class (SDK)**: Agents spawned via Console using the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`). Full lifecycle control (start, stop, abort, resume), structured event stream (tool calls, thinking, content blocks), permission gating, cost tracking, conversation branching/forking. This is the intended primary workflow for Claude interactions.
+- **Second-class (PTY)**: Agents spawned via Console as PTY terminal processes. Process-level control (start, stop, signal), terminal I/O. Used for `codex`, `gemini`, shell commands, and cases where raw terminal access is needed.
+- **Third-class (External)**: Agents discovered via process scan or session registration hooks. Best-effort tracking only — Mandible monitors but does not control. Used for agents started from terminal (e.g., `claude` CLI sessions in Zellij panes).
+
+Feature design targets SDK-first: new capabilities (work-unit assignment, handoff notes, conversation branching, permission policies, cost tracking, auto-resume) are SDK-only. PTY and external agents get whatever can be inferred from their limited integration surface.
+
+"Resume Work" from the Issues tab always spawns a first-class SDK session, regardless of what tier the previous session was. This is the natural upgrade path.
 
 ## Mandible API quick reference
 
@@ -84,3 +106,14 @@ Key open issues by area:
 - Infrastructure/bugs: 6e31c5f, 215897e, 4594641, 00b046e, f8d050b, 1ed1d90
 - Tauri/desktop: fdc0e8a, dffc52f
 - Long-term/future: 0af826a, dfaf93c, 4aa3e17, 5bc113d
+
+## Architectural reflection
+
+When making architectural changes to Mandible's backend or behavior, agents MUST explicitly reflect on `~/.claude/CLAUDE.md` (the global conventions) as part of their design process. Mandible's behavior and the global workflow conventions are tightly coupled — changes to one often imply changes to the other.
+
+This goes beyond the standard "read CLAUDE.md before working": agents must actively reason about how a proposed change interacts with worktree conventions, issue tracking rules, commit workflows, merge protocols, and the auth queue. If a Mandible change would require or benefit from a corresponding CLAUDE.md update, file a git-bug issue in the dotfiles repo proposing the change.
+
+Examples:
+- Adding a new work-unit state → does CLAUDE.md's "Issue Registration" section need updating?
+- Changing how sessions are tracked → does it affect the "Mandible Operations" section in global CLAUDE.md?
+- Adding inbox behavior → does it interact with the "Session Inbox" subsection?
