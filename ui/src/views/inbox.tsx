@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
+import { spawnIssueAgent } from '../api';
 
 marked.setOptions({ async: false, gfm: true, breaks: false });
 
@@ -88,7 +89,8 @@ export interface InboxViewProps {
 
 // ── Types for unified item list ──
 
-type ItemType = 'continuation' | 'auth_result' | 'issue';
+// Bug: cbbb3d9 — added 'work_unit_continuation' type for work-unit handoff notes
+type ItemType = 'continuation' | 'auth_result' | 'issue' | 'work_unit_continuation';
 
 interface UnifiedItem {
   id: string;
@@ -97,7 +99,7 @@ interface UnifiedItem {
   repo: string | null;
   branch: string | null;
   time: number | null;
-  raw: InboxContinuation | InboxAuthResult | InboxIssue;
+  raw: InboxContinuation | InboxAuthResult | InboxIssue | import('../api').WorkUnitWithLiveness;
 }
 
 // ── Helpers ──
@@ -121,6 +123,7 @@ function formatRelativeTime(value: string | number | null): string {
 
 function itemBorderColor(item: UnifiedItem): string {
   if (item.type === 'continuation') return '#60a5fa';
+  if (item.type === 'work_unit_continuation') return '#f59e0b'; // amber for work-unit handoff
   if (item.type === 'issue') return '#a78bfa';
   const ar = item.raw as InboxAuthResult;
   if (ar.status === 'completed') return '#34d399';
@@ -131,6 +134,7 @@ function itemBorderColor(item: UnifiedItem): string {
 
 function itemTypeBadge(item: UnifiedItem): string {
   if (item.type === 'continuation') return 'Continuation';
+  if (item.type === 'work_unit_continuation') return 'Handoff';
   if (item.type === 'issue') return 'Issue';
   const ar = item.raw as InboxAuthResult;
   return ar.status.charAt(0).toUpperCase() + ar.status.slice(1);
@@ -177,6 +181,22 @@ function buildUnifiedItems(data: InboxData): UnifiedItem[] {
       branch: null,
       time: null,
       raw: issue,
+    });
+  }
+
+  // Bug: cbbb3d9 — include work-unit continuations in unified list
+  for (const wu of (data.work_unit_continuations ?? [])) {
+    const title = wu.continuation
+      ? wu.continuation.slice(0, 80).replace(/\n/g, ' ')
+      : `Work unit: ${wu.issue_id.slice(0, 8)}`;
+    items.push({
+      id: `wu_continuation:${wu.id}`,
+      type: 'work_unit_continuation',
+      title,
+      repo: null,
+      branch: wu.branch ?? null,
+      time: wu.continuation_at,
+      raw: wu,
     });
   }
 
@@ -514,6 +534,85 @@ function AuthResultDetail({
   );
 }
 
+// Bug: cbbb3d9 — work-unit continuation detail with Resume button
+function WorkUnitContinuationDetail({
+  item,
+}: {
+  item: import('../api').WorkUnitWithLiveness;
+}): JSX.Element {
+  const [spawning, setSpawning] = useState(false);
+
+  const handleResume = async () => {
+    if (spawning) return;
+    setSpawning(true);
+    try {
+      const result = await spawnIssueAgent(item.repo_id, item.issue_id);
+      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+    } catch {
+      // silently fail
+    } finally {
+      setSpawning(false);
+    }
+  };
+
+  return (
+    <div className="inbox-detail__content">
+      <div className="inbox-detail__header">
+        <span
+          className="inbox-detail__type-badge"
+          style={{ color: '#f59e0b', background: '#f59e0b22' }}
+        >
+          Handoff
+        </span>
+        <h2 className="inbox-detail__title">Work Unit Continuation</h2>
+      </div>
+      <div className="inbox-detail__meta">
+        {item.branch && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Branch</span>
+            <code className="inbox-detail__meta-value">{item.branch}</code>
+          </div>
+        )}
+        {item.issue_id && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Issue</span>
+            <EntityPill type="issue" id={item.issue_id} repoId={item.repo_id} />
+          </div>
+        )}
+        {item.continuation_at && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Handed off</span>
+            <span className="inbox-detail__meta-value">
+              {formatRelativeTime(item.continuation_at)}
+            </span>
+          </div>
+        )}
+      </div>
+      {item.continuation && (
+        <pre className="inbox-detail__pre">{item.continuation}</pre>
+      )}
+      <div className="inbox-detail__actions">
+        <button
+          type="button"
+          className="btn btn--active"
+          onClick={() => void handleResume()}
+          disabled={spawning}
+        >
+          {spawning ? 'Spawning...' : 'Resume'}
+        </button>
+        {item.issue_id && item.repo_id && (
+          <a
+            href={`#/issues?repo=${encodeURIComponent(item.repo_id)}&issue=${encodeURIComponent(item.issue_id)}`}
+            className="btn btn--ghost"
+          >
+            View Issue
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
   const href = item.repo_id
     ? `#/issues?repo=${encodeURIComponent(item.repo_id)}&issue=${encodeURIComponent(item.id)}`
@@ -726,6 +825,10 @@ export function InboxView({
           <AuthResultDetail
             item={selectedItem.raw as InboxAuthResult}
             onAck={onAckAuthResult}
+          />
+        ) : selectedItem.type === 'work_unit_continuation' ? (
+          <WorkUnitContinuationDetail
+            item={selectedItem.raw as import('../api').WorkUnitWithLiveness}
           />
         ) : (
           <IssueDetail item={selectedItem.raw as InboxIssue} />

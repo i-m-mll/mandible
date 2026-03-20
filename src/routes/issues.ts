@@ -13,6 +13,12 @@ export interface IssueServer {
   put?(path: string, handler: RouteHandler): void;
 }
 
+// Bug: cbbb3d9 — spawn-from-issue deps type
+interface SpawnDeps {
+  sessionManager?: import("../session-manager.js").SessionManager;
+  workScanner?: WorkScanner;
+}
+
 function getParam(req: unknown, key: string): string | undefined {
   if (!req || typeof req !== "object") {
     return undefined;
@@ -84,6 +90,7 @@ function sendJson(res: unknown, status: number, payload: unknown): void {
 
 // Bug: f3dbb3e — accept optional sessionRegistry + sessionManager for canonical
 // liveness computation on work units in the context endpoint.
+// Bug: cbbb3d9 — deps extended with sessionManager for spawn-from-issue endpoint.
 export function registerIssueRoutes(
   server: IssueServer,
   workScanner: WorkScanner,
@@ -525,6 +532,131 @@ export function registerIssueRoutes(
        ORDER BY created_at ASC`
     ).all(issueId, repoId);
     sendJson(res, 200, links);
+  });
+
+  // POST /api/issues/:repoId/:issueId/spawn — spawn an SDK console session for this issue
+  // Bug: cbbb3d9 — spawn agent from issue hub
+  server.post("/api/issues/:repoId/:issueId/spawn", (req, res) => {
+    const repoIdParam = getParam(req, "repoId");
+    const issueIdParam = getParam(req, "issueId");
+    if (!repoIdParam || !issueIdParam) {
+      sendJson(res, 400, { error: "missing repoId or issueId" });
+      return;
+    }
+
+    const sessionManager = deps?.sessionManager;
+    if (!sessionManager) {
+      sendJson(res, 503, { error: "session manager not available" });
+      return;
+    }
+
+    // Resolve repo ID
+    let repoId = repoIdParam;
+    const byName = issueScanner
+      .getRepoSummaries()
+      .find((s) => s.repo_name === repoIdParam || s.repo_root === repoIdParam);
+    if (byName) {
+      repoId = byName.repo_id;
+    }
+
+    // 1. Look up the issue for title
+    const issue = issueScanner.getIssueDetail(repoId, issueIdParam);
+    if (!issue) {
+      sendJson(res, 404, { error: "issue not found" });
+      return;
+    }
+
+    const db = getDb();
+    const body = getBody(req);
+    const label = typeof body?.label === "string" && body.label.trim()
+      ? body.label.trim()
+      : `Issue: ${issue.title.slice(0, 40)}`;
+
+    // 2. Look up work unit for branch and continuation
+    const workUnitRow = db
+      .prepare(
+        `SELECT * FROM work_units
+         WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')
+         ORDER BY created_at DESC LIMIT 1`
+      )
+      .get(issue.id, repoId) as Record<string, unknown> | undefined;
+
+    const branch = workUnitRow?.branch ? String(workUnitRow.branch) : null;
+    const continuation = workUnitRow?.continuation ? String(workUnitRow.continuation) : null;
+
+    // 3. Look up worktree path for the branch
+    let cwd: string | null = null;
+    if (branch) {
+      const scannerRepos = workScanner.getRepos();
+      const scannerRepo = scannerRepos.find((r) => r.id === repoId);
+      if (scannerRepo) {
+        const branches = workScanner.getBranches(scannerRepo.root);
+        const branchData = branches.find((b) => b.branch === branch);
+        if (branchData?.worktree_path) {
+          cwd = branchData.worktree_path;
+        } else {
+          // Fall back to repo root
+          cwd = scannerRepo.root;
+        }
+      }
+    }
+    if (!cwd) {
+      // Fall back: find repo root from work scanner
+      const scannerRepos = workScanner.getRepos();
+      const scannerRepo = scannerRepos.find((r) => r.id === repoId);
+      if (scannerRepo) {
+        cwd = scannerRepo.root;
+      }
+    }
+
+    // 4. Find provider_session_id from latest conversation linked to this issue (for resume)
+    let providerSessionId: string | null = null;
+    try {
+      const sessionLink = db
+        .prepare(
+          `SELECT si.session_id FROM session_issues si
+           JOIN sessions s ON s.id = si.session_id
+           WHERE si.issue_id = ? AND si.repo_id = ?
+           ORDER BY si.created_at DESC LIMIT 1`
+        )
+        .get(issue.id, repoId) as { session_id: string } | undefined;
+
+      if (sessionLink) {
+        // Check if there's a console session with this mandible_session_id
+        const consoleRow = db
+          .prepare(
+            `SELECT provider_session_id FROM console_sessions
+             WHERE mandible_session_id = ? AND provider_session_id IS NOT NULL
+             ORDER BY created_at DESC LIMIT 1`
+          )
+          .get(sessionLink.session_id) as { provider_session_id: string } | undefined;
+
+        if (consoleRow?.provider_session_id) {
+          providerSessionId = consoleRow.provider_session_id;
+        }
+      }
+    } catch {
+      // Non-critical — proceed without provider_session_id
+    }
+
+    // 5. Create SDK console session (stopped — user sends the first prompt)
+    const consoleSession = sessionManager.create({
+      label,
+      command: "claude",
+      backend_type: "sdk",
+      cwd,
+      provider_session_id: providerSessionId,
+    });
+
+    // 6. Update work unit: assigned_session_id (will be set when a mandible session registers)
+    // For now we store the console_session_id in case the frontend needs it
+
+    sendJson(res, 200, {
+      console_session_id: consoleSession.id,
+      continuation,
+      branch,
+      cwd,
+    });
   });
 
   return issueScanner;
