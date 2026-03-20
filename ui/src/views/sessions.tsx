@@ -76,6 +76,9 @@ export type SessionRecord = {
   nav_metadata_last_error?: string;
   issues?: IssueLink[];
   projects?: ProjectLink[];
+  // Bug: 0b454df — channel-connected session tracking
+  channel_connected_at?: number | null;
+  channel_last_tool_call?: number | null;
   [key: string]: unknown;
 };
 
@@ -244,6 +247,11 @@ function appBadge(app: string): string {
     return 'app-badge app-badge--codex';
   }
   return 'app-badge';
+}
+
+/** Bug: 0b454df — detect if a session is channel-connected. */
+function isChannelConnected(session: SessionRecord): boolean {
+  return !!(session.channel_connected_at);
 }
 
 function buildTree(sessions: SessionRecord[]): {
@@ -561,6 +569,7 @@ export function SessionsView({
     const newTimestamp = sessionId ? newSessionIds[sessionId] : undefined;
     const isNew = newTimestamp ? Date.now() - newTimestamp < 10000 : false;
     const isPinned = Boolean(session.pinned);
+    const channelConnected = isChannelConnected(session);
 
     const isChild = depth > 0;
     const descendantCount = sessionId ? countDescendants(sessionId, childrenMap) : 0;
@@ -670,6 +679,7 @@ export function SessionsView({
             </button>
             <span className={statusClass(status)} />
             {isPinned && <span className="pin-badge" title="Pinned" />}
+            {channelConnected && <span className="channel-badge" title="Channel Connected (MCP)" />}
           </div>
         </td>
         {/* App */}

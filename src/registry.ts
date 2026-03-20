@@ -97,6 +97,9 @@ interface SessionRow {
   ended_at: string | null;
   // Bug: e01653d — real user activity time from JSONL transcript mtime
   last_active: string | null;
+  // Bug: 0b454df — channel-connected session tracking
+  channel_connected_at: number | null;
+  channel_last_tool_call: number | null;
 }
 
 const SESSION_SCHEMA = `
@@ -128,6 +131,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   continuation TEXT,
   continuation_acked_by TEXT,
   last_active TEXT,
+  channel_connected_at INTEGER,
+  channel_last_tool_call INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   ended_at TEXT,
@@ -180,6 +185,13 @@ function ensureSessionColumns(db: SqliteDatabase): void {
   // Bug: e01653d — real user activity time from JSONL transcript mtime
   if (!names.has("last_active")) {
     db.exec("ALTER TABLE sessions ADD COLUMN last_active TEXT");
+  }
+  // Bug: 0b454df — channel-connected session tracking
+  if (!names.has("channel_connected_at")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN channel_connected_at INTEGER");
+  }
+  if (!names.has("channel_last_tool_call")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN channel_last_tool_call INTEGER");
   }
 }
 
@@ -261,6 +273,17 @@ export function checkLiveness(session: Session): "alive" | "dead" {
   if (session.status !== "active") {
     return "dead";
   }
+
+  // Bug: 0b454df — channel-connected sessions: liveness is based on tool call
+  // freshness rather than PID, since the MCP channel server runs in a separate
+  // process that Mandible doesn't own. If channel_connected_at is set but there
+  // is no PID, use channel_last_tool_call for staleness.
+  if (session.channel_connected_at && !session.pid) {
+    const lastToolCall = session.channel_last_tool_call ?? session.channel_connected_at;
+    const CHANNEL_STALE_MS = 5 * 60 * 1000; // 5 minutes
+    return (Date.now() - lastToolCall) < CHANNEL_STALE_MS ? "alive" : "dead";
+  }
+
   if (!session.pid) {
     const updatedAt = new Date(session.updated_at).getTime();
     const ageMs = Date.now() - updatedAt;
@@ -403,6 +426,9 @@ function toSession(row: SessionRow): Session {
     ended_at: row.ended_at ?? null,
     // Bug: e01653d — real user activity time from JSONL transcript mtime
     last_active: row.last_active ?? null,
+    // Bug: 0b454df — channel-connected session tracking
+    channel_connected_at: row.channel_connected_at ?? null,
+    channel_last_tool_call: row.channel_last_tool_call ?? null,
   };
 }
 

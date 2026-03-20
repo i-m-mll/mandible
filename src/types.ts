@@ -60,6 +60,9 @@ export interface Session {
   ended_at: string | null;
   // Bug: e01653d — real user activity time from JSONL transcript mtime
   last_active: string | null;
+  // Bug: 0b454df — channel-connected session tracking
+  channel_connected_at: number | null;
+  channel_last_tool_call: number | null;
   children?: Session[];
 }
 

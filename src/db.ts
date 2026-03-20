@@ -635,6 +635,19 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_webhook_events_created
         ON webhook_events(created_at DESC)`,
     ]
+  },
+  {
+    version: 41,
+    name: "channel_connected_sessions",
+    // Bug: 0b454df — track channel-connected sessions (MCP channel server)
+    // channel_connected_at: epoch ms when channel server first registered
+    // channel_last_tool_call: epoch ms of most recent MCP tool invocation
+    statements: [
+      `ALTER TABLE sessions ADD COLUMN channel_connected_at INTEGER`,
+      `ALTER TABLE sessions ADD COLUMN channel_last_tool_call INTEGER`,
+      `CREATE INDEX IF NOT EXISTS sessions_channel_idx
+        ON sessions(channel_connected_at) WHERE channel_connected_at IS NOT NULL`,
+    ]
   }
 ];
 
