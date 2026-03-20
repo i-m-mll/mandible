@@ -1,6 +1,7 @@
 import { IssueScanner } from "../issue-scanner.js";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb } from "../db.js";
+import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 
 export interface RouteHandler<Request = unknown, Response = unknown> {
   (req: Request, res: Response): void | Promise<void>;
@@ -81,9 +82,12 @@ function sendJson(res: unknown, status: number, payload: unknown): void {
   }
 }
 
+// Bug: f3dbb3e — accept optional sessionRegistry + sessionManager for canonical
+// liveness computation on work units in the context endpoint.
 export function registerIssueRoutes(
   server: IssueServer,
   workScanner: WorkScanner,
+  deps?: { sessionRegistry?: import("../registry.js").SessionRegistry; sessionManager?: import("../session-manager.js").SessionManager },
 ): IssueScanner {
   const issueScanner = new IssueScanner(workScanner);
 
@@ -357,38 +361,39 @@ export function registerIssueRoutes(
       )
       .get(issue.id, repoId) as Record<string, unknown> | undefined;
 
+    // Bug: f3dbb3e — use canonical liveness computation from work-unit-utils
     let workUnit: Record<string, unknown> | null = null;
     if (workUnitRow) {
-      // Derive liveness from assigned session
-      const assignedSessionId = typeof workUnitRow.assigned_session_id === "string"
-        ? workUnitRow.assigned_session_id
-        : null;
-      let liveness: Record<string, unknown> = {
-        has_live_agent: false,
-        agent_status: null,
-        is_processing: false,
-        last_activity: null,
-      };
-      if (assignedSessionId) {
-        const sessionRow = db
-          .prepare("SELECT status, updated_at, last_active FROM sessions WHERE id = ?")
-          .get(assignedSessionId) as Record<string, unknown> | undefined;
-        if (sessionRow) {
-          const status = String(sessionRow.status ?? "unknown");
-          liveness = {
-            has_live_agent: status === "active" || status === "idle",
-            agent_status: status,
-            is_processing: status === "active",
-            last_activity: sessionRow.last_active ?? sessionRow.updated_at ?? null,
-          };
-        }
-      }
+      const wu = mapWorkUnitRow(workUnitRow);
+      const liveness = deps?.sessionRegistry && deps?.sessionManager
+        ? computeLiveness(wu, deps.sessionRegistry, deps.sessionManager)
+        : (() => {
+            // Fallback: inline approximation when session deps not available
+            const assignedSessionId = wu.assigned_session_id;
+            if (!assignedSessionId) {
+              return { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
+            }
+            const sessionRow = db
+              .prepare("SELECT status, updated_at, last_active FROM sessions WHERE id = ?")
+              .get(assignedSessionId) as Record<string, unknown> | undefined;
+            if (!sessionRow) {
+              return { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
+            }
+            const status = String(sessionRow.status ?? "unknown");
+            return {
+              has_live_agent: status === "active" || status === "idle",
+              agent_session_id: assignedSessionId,
+              agent_status: status,
+              is_processing: status === "active",
+              last_activity: sessionRow.last_active ?? sessionRow.updated_at ?? null,
+            };
+          })();
 
       workUnit = {
-        branch: workUnitRow.branch ?? null,
-        state: workUnitRow.state ?? "open",
-        continuation: workUnitRow.continuation ?? null,
-        assigned_session_id: assignedSessionId,
+        branch: wu.branch,
+        state: wu.state,
+        continuation: wu.continuation,
+        assigned_session_id: wu.assigned_session_id,
         liveness,
       };
     }
@@ -436,12 +441,14 @@ export function registerIssueRoutes(
     // Auth requests store issue_ids as JSON array in the DB
     const authRows = db
       .prepare(
-        `SELECT id, title, status, head_branch, issue_ids
+        `SELECT id, title, status, head_branch, issue_ids, created_at
          FROM auth_requests
          ORDER BY created_at DESC`
       )
       .all() as Array<Record<string, unknown>>;
 
+    // Bug: f3dbb3e — bidirectional prefix matching for issue IDs (same fix
+    // as auth-queue.ts resolveWorkUnitsOnMerge)
     const authRequests = authRows
       .filter((row) => {
         const ids = row.issue_ids;
@@ -451,7 +458,7 @@ export function registerIssueRoutes(
           if (Array.isArray(parsed)) {
             return parsed.some(
               (id: string) =>
-                id === issue.id || issue.id.startsWith(id) || id.startsWith(issue.id.slice(0, 7))
+                id.startsWith(issue.id) || issue.id.startsWith(id)
             );
           }
         } catch {
@@ -464,6 +471,7 @@ export function registerIssueRoutes(
         title: String(row.title ?? ""),
         status: String(row.status ?? ""),
         head_branch: row.head_branch ?? null,
+        created_at: row.created_at ?? null,
       }));
 
     // 5. Branch info from work scanner if available

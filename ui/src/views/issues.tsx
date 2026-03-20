@@ -800,83 +800,133 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
               </div>
             )}
 
-            {/* ── Activity Timeline ── Bug: 84cd5ae */}
+            {/* ── Activity Timeline ── Bug: 84cd5ae, f3dbb3e (chronological sort) */}
             <hr className="issues-detail__divider" />
             <h3 className="issues-detail__section-title">Activity</h3>
             <div className="issue-hub__timeline">
-              {/* Session events */}
-              {(issueContext?.sessions ?? []).map((sess: IssueContextSession) => (
-                <div key={`sess-${sess.session_id}`} className="issue-hub__timeline-item">
-                  <span className={`issue-hub__timeline-icon issue-hub__timeline-icon--session`} />
-                  <span className="issue-hub__timeline-text">
-                    Session started
-                    {sess.app ? ` (${sess.app})` : ''}
-                    {' \u2014 '}
-                    <EntityPill type="session" id={sess.session_id} />
-                  </span>
-                  {sess.created_at && (
-                    <span className="issue-hub__timeline-time text-muted">
-                      {formatRelativeTime(typeof sess.created_at === 'string' ? sess.created_at : new Date(sess.created_at).toISOString())}
-                    </span>
-                  )}
-                </div>
-              ))}
-              {/* Auth request events */}
-              {(issueContext?.auth_requests ?? []).map((auth: IssueContextAuthRequest) => (
-                <div key={`auth-${auth.id}`} className="issue-hub__timeline-item">
-                  <span className={`issue-hub__timeline-icon issue-hub__timeline-icon--auth`} />
-                  <span className="issue-hub__timeline-text">
-                    Auth request: {auth.status}
-                    {' \u2014 '}
-                    <EntityPill type="auth" id={auth.id} label={auth.title?.slice(0, 30) || auth.id.slice(0, 8)} />
-                  </span>
-                </div>
-              ))}
-              {/* Comments */}
-              {issueDetail.comments.map((comment) => (
-                <div key={comment.id} className="issue-hub__timeline-item">
-                  <span className="issue-hub__timeline-icon issue-hub__timeline-icon--comment" />
-                  <div className="issue-hub__timeline-comment">
-                    <div className="issue-comment__header">
-                      <span className="issue-comment__author">{comment.author}</span>
-                      {comment.date && (
-                        <span className="issue-comment__date text-muted">
-                          {formatRelativeTime(comment.date)}
+              {(() => {
+                // Bug: f3dbb3e — normalize all timeline items to a common shape and sort chronologically
+                type TimelineItem =
+                  | { kind: 'session'; ts: number; sess: IssueContextSession }
+                  | { kind: 'auth'; ts: number; auth: IssueContextAuthRequest }
+                  | { kind: 'comment'; ts: number; comment: GitBugComment }
+                  | { kind: 'handoff'; ts: number; continuation: string };
+
+                const items: TimelineItem[] = [];
+
+                for (const sess of (issueContext?.sessions ?? [])) {
+                  const ts = sess.created_at
+                    ? (typeof sess.created_at === 'string' ? Date.parse(sess.created_at) : Number(sess.created_at))
+                    : 0;
+                  items.push({ kind: 'session', ts: Number.isNaN(ts) ? 0 : ts, sess });
+                }
+
+                for (const auth of (issueContext?.auth_requests ?? [])) {
+                  const ts = auth.created_at ? Number(auth.created_at) : 0;
+                  items.push({ kind: 'auth', ts: Number.isNaN(ts) ? 0 : ts, auth });
+                }
+
+                for (const comment of issueDetail.comments) {
+                  const ts = comment.date ? Date.parse(comment.date) : 0;
+                  items.push({ kind: 'comment', ts: Number.isNaN(ts) ? 0 : ts, comment });
+                }
+
+                if (issueContext?.work_unit?.continuation) {
+                  // Handoff note: use continuation_at if available, otherwise sort last
+                  items.push({
+                    kind: 'handoff',
+                    ts: Number.MAX_SAFE_INTEGER,
+                    continuation: issueContext.work_unit.continuation,
+                  });
+                }
+
+                items.sort((a, b) => a.ts - b.ts);
+
+                if (items.length === 0) {
+                  return <div className="issue-hub__timeline-empty text-muted">No activity yet.</div>;
+                }
+
+                return items.map((item, idx) => {
+                  if (item.kind === 'session') {
+                    const sess = item.sess;
+                    return (
+                      <div key={`sess-${sess.session_id}`} className="issue-hub__timeline-item">
+                        <span className="issue-hub__timeline-icon issue-hub__timeline-icon--session" />
+                        <span className="issue-hub__timeline-text">
+                          Session started
+                          {sess.app ? ` (${sess.app})` : ''}
+                          {' \u2014 '}
+                          <EntityPill type="session" id={sess.session_id} />
                         </span>
-                      )}
+                        {sess.created_at && (
+                          <span className="issue-hub__timeline-time text-muted">
+                            {formatRelativeTime(typeof sess.created_at === 'string' ? sess.created_at : new Date(sess.created_at).toISOString())}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  }
+                  if (item.kind === 'auth') {
+                    const auth = item.auth;
+                    return (
+                      <div key={`auth-${auth.id}`} className="issue-hub__timeline-item">
+                        <span className="issue-hub__timeline-icon issue-hub__timeline-icon--auth" />
+                        <span className="issue-hub__timeline-text">
+                          Auth request: {auth.status}
+                          {' \u2014 '}
+                          <EntityPill type="auth" id={auth.id} label={auth.title?.slice(0, 30) || auth.id.slice(0, 8)} />
+                        </span>
+                        {item.ts > 0 && (
+                          <span className="issue-hub__timeline-time text-muted">
+                            {formatRelativeTime(new Date(item.ts).toISOString())}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  }
+                  if (item.kind === 'comment') {
+                    const comment = item.comment;
+                    return (
+                      <div key={comment.id} className="issue-hub__timeline-item">
+                        <span className="issue-hub__timeline-icon issue-hub__timeline-icon--comment" />
+                        <div className="issue-hub__timeline-comment">
+                          <div className="issue-comment__header">
+                            <span className="issue-comment__author">{comment.author}</span>
+                            {comment.date && (
+                              <span className="issue-comment__date text-muted">
+                                {formatRelativeTime(comment.date)}
+                              </span>
+                            )}
+                          </div>
+                          <div
+                            className="issue-comment__body spec-panel"
+                            dangerouslySetInnerHTML={{
+                              __html: renderMarkdown(comment.body),
+                            }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  }
+                  // handoff
+                  return (
+                    <div key={`handoff-${idx}`} className="issue-hub__timeline-item">
+                      <span className="issue-hub__timeline-icon issue-hub__timeline-icon--handoff" />
+                      <div className="issue-hub__timeline-comment">
+                        <div className="issue-comment__header">
+                          <span className="issue-comment__author">Handoff Note</span>
+                        </div>
+                        <div
+                          className="issue-comment__body spec-panel"
+                          dangerouslySetInnerHTML={{
+                            __html: renderMarkdown(item.continuation),
+                          }}
+                        />
+                      </div>
                     </div>
-                    <div
-                      className="issue-comment__body spec-panel"
-                      dangerouslySetInnerHTML={{
-                        __html: renderMarkdown(comment.body),
-                      }}
-                    />
-                  </div>
-                </div>
-              ))}
-              {/* Continuation handoff note */}
-              {issueContext?.work_unit?.continuation && (
-                <div className="issue-hub__timeline-item">
-                  <span className="issue-hub__timeline-icon issue-hub__timeline-icon--handoff" />
-                  <div className="issue-hub__timeline-comment">
-                    <div className="issue-comment__header">
-                      <span className="issue-comment__author">Handoff Note</span>
-                    </div>
-                    <div
-                      className="issue-comment__body spec-panel"
-                      dangerouslySetInnerHTML={{
-                        __html: renderMarkdown(issueContext.work_unit.continuation),
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-              {(issueContext?.sessions ?? []).length === 0 &&
-                (issueContext?.auth_requests ?? []).length === 0 &&
-                issueDetail.comments.length === 0 &&
-                !issueContext?.work_unit?.continuation && (
-                <div className="issue-hub__timeline-empty text-muted">No activity yet.</div>
-              )}
+                  );
+                });
+              })()}
             </div>
 
             {/* ── Related Entities ── Bug: 84cd5ae */}

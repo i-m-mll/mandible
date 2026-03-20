@@ -91,10 +91,13 @@ export class WorkUnitReconciler {
 
     // Find committed work units with branches that don't exist in the branches table
     // A branch that was merged and deleted will not appear in the branches table.
+    // Bug: f3dbb3e — skip work units in the auth pipeline (auth_request_id IS NOT NULL).
+    // Their branch may be temporarily missing (just merged and cleaned up).
     const committed = db
       .prepare(
         `SELECT wu.id, wu.branch, wu.repo_id FROM work_units wu
-         WHERE wu.state = 'committed' AND wu.branch IS NOT NULL`
+         WHERE wu.state = 'committed' AND wu.branch IS NOT NULL
+           AND wu.auth_request_id IS NULL`
       )
       .all() as Array<{ id: string; branch: string; repo_id: string }>;
 

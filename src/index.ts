@@ -71,7 +71,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerChatRoutes(router);
   const workScanner = registerWorkRoutes(router);
   registerReviewRoutes(router, workScanner);
-  const issueScanner = registerIssueRoutes(router, workScanner);
+  // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
+  const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager } = { sessionRegistry };
+  const issueScanner = registerIssueRoutes(router, workScanner, issueDeps);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
   // Bug: 94bba43 — sync reaper settings to config file on startup so
@@ -91,6 +93,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // sessionManager is declared below; registerWorkUnitRoutes is called after it's created.
 
   const sessionManager = new SessionManager(db, logger, sessionRegistry);
+  // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
+  issueDeps.sessionManager = sessionManager;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
   registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager);
   registerConsoleRoutes(router, sessionManager);

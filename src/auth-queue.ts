@@ -941,18 +941,24 @@ export class AuthQueue {
     const closesIssues = completed.issues ?? [];
     const allIssueIds = [...issueIds, ...closesIssues];
 
-    for (const issueId of allIssueIds) {
-      // Prefix match: work_units.issue_id may be a short prefix
-      const byIssue = this.db
-        .prepare(
-          "SELECT id FROM work_units WHERE issue_id LIKE ? AND state IN ('open', 'committed')"
-        )
-        .all(`${issueId}%`) as Array<{ id: string }>;
+    // Bug: f3dbb3e — bidirectional prefix match: the work unit may store a
+    // short prefix of the issue ID, or the auth request may have a short prefix.
+    // SQL LIKE only handles one direction, so we fetch all unresolved work units
+    // and filter in JS.
+    if (allIssueIds.length > 0) {
+      const allUnresolved = this.db.prepare(
+        "SELECT id, issue_id FROM work_units WHERE state IN ('open', 'committed')"
+      ).all() as Array<{ id: string; issue_id: string }>;
 
-      for (const row of byIssue) {
-        if (!resolvedIds.has(row.id)) {
-          resolveStmt.run(now, row.id);
-          resolvedIds.add(row.id);
+      for (const issueId of allIssueIds) {
+        const matching = allUnresolved.filter(row =>
+          issueId.startsWith(row.issue_id) || row.issue_id.startsWith(issueId)
+        );
+        for (const row of matching) {
+          if (!resolvedIds.has(row.id)) {
+            resolveStmt.run(now, row.id);
+            resolvedIds.add(row.id);
+          }
         }
       }
     }

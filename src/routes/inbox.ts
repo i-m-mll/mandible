@@ -3,8 +3,13 @@ import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
-import type { AuthRequestStatus, WorkUnit } from "../types.js";
-import type { WorkUnitLiveness, WorkUnitWithLiveness } from "./work-units.js";
+import type { AuthRequestStatus } from "../types.js";
+import {
+  mapWorkUnitRow,
+  computeLiveness,
+  type WorkUnitLiveness,
+  type WorkUnitWithLiveness,
+} from "../work-unit-utils.js";
 
 // Bug: 8a281b3 — inbox rewrite: work units replace raw open issues as the
 // primary "needs attention" signal. Auth results and continuations remain.
@@ -92,84 +97,7 @@ interface AuthResultRow {
   issue_ids: string | null;
 }
 
-function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
-  return {
-    id: String(row.id ?? ""),
-    issue_id: String(row.issue_id ?? ""),
-    repo_id: String(row.repo_id ?? ""),
-    branch: typeof row.branch === "string" ? row.branch : null,
-    parent_branch: typeof row.parent_branch === "string" ? row.parent_branch : null,
-    kind: (row.kind as WorkUnit["kind"]) ?? "solo",
-    state: (row.state as WorkUnit["state"]) ?? "open",
-    assigned_session_id: typeof row.assigned_session_id === "string" ? row.assigned_session_id : null,
-    continuation: typeof row.continuation === "string" ? row.continuation : null,
-    continuation_by: typeof row.continuation_by === "string" ? row.continuation_by : null,
-    continuation_at: typeof row.continuation_at === "number" ? row.continuation_at : null,
-    created_at: Number(row.created_at ?? 0),
-    activated_at: typeof row.activated_at === "number" ? row.activated_at : null,
-    last_commit_at: typeof row.last_commit_at === "number" ? row.last_commit_at : null,
-    resolved_at: typeof row.resolved_at === "number" ? row.resolved_at : null,
-    auth_request_id: typeof row.auth_request_id === "string" ? row.auth_request_id : null,
-  };
-}
-
-/**
- * Compute liveness for a work unit (same logic as work-units.ts but inline
- * to avoid circular dependency).
- * Bug: 8a281b3
- */
-function computeInboxLiveness(
-  workUnit: WorkUnit,
-  _sessionRegistry: SessionRegistry,
-  sessionManager: SessionManager,
-): WorkUnitLiveness {
-  const db = getDb();
-  const noLiveness: WorkUnitLiveness = {
-    has_live_agent: false,
-    agent_session_id: null,
-    agent_status: null,
-    is_processing: false,
-    last_activity: null,
-  };
-
-  if (!workUnit.branch) return noLiveness;
-
-  const sessionRow = db
-    .prepare(
-      `SELECT id, status, last_active FROM sessions
-       WHERE branch = ? AND status IN ('active', 'idle')
-       ORDER BY updated_at DESC LIMIT 1`
-    )
-    .get(workUnit.branch) as { id: string; status: string; last_active: string | null } | undefined;
-
-  if (!sessionRow) return noLiveness;
-
-  let isProcessing = false;
-  const consoleRow = db
-    .prepare(
-      `SELECT id FROM console_sessions
-       WHERE mandible_session_id = ? AND status = 'running'
-       LIMIT 1`
-    )
-    .get(sessionRow.id) as { id: string } | undefined;
-
-  if (consoleRow) {
-    const backend = sessionManager.get(consoleRow.id);
-    if (backend && "isProcessing" in backend && typeof backend.isProcessing === "boolean") {
-      isProcessing = backend.isProcessing;
-    }
-  }
-
-  const lastActive = sessionRow.last_active ? new Date(sessionRow.last_active).getTime() : null;
-
-  return {
-    has_live_agent: true,
-    agent_session_id: sessionRow.id,
-    agent_status: sessionRow.status,
-    is_processing: isProcessing,
-    last_activity: lastActive,
-  };
-}
+// Bug: f3dbb3e — mapWorkUnitRow and computeLiveness extracted to work-unit-utils.ts
 
 export function registerInboxRoutes(
   server: InboxRouteServer,
@@ -198,7 +126,7 @@ export function registerInboxRoutes(
       .map(mapWorkUnitRow)
       .map((wu) => {
         const liveness = sessionManager
-          ? computeInboxLiveness(wu, sessionRegistry, sessionManager)
+          ? computeLiveness(wu, sessionRegistry, sessionManager)
           : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
         return { ...wu, liveness };
       })
@@ -207,8 +135,10 @@ export function registerInboxRoutes(
   }
 
   // Bug: 8a281b3 — helper to get work-unit continuations
+  // Bug: f3dbb3e — filter by open/committed state so resolved/abandoned units
+  // don't surface stale continuations
   function getWorkUnitContinuations(repoFilter?: string): WorkUnitWithLiveness[] {
-    const conditions = ["continuation IS NOT NULL"];
+    const conditions = ["continuation IS NOT NULL", "state IN ('open', 'committed')"];
     const params: unknown[] = [];
 
     if (repoFilter) {
@@ -225,7 +155,7 @@ export function registerInboxRoutes(
       .map(mapWorkUnitRow)
       .map((wu) => {
         const liveness = sessionManager
-          ? computeInboxLiveness(wu, sessionRegistry, sessionManager)
+          ? computeLiveness(wu, sessionRegistry, sessionManager)
           : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
         return { ...wu, liveness };
       })

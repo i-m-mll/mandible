@@ -1,6 +1,8 @@
 // Bug: 84cd5ae — shared cross-tab entity link component
 
-export type EntityPillType = 'issue' | 'session' | 'auth' | 'branch' | 'conversation' | 'work-unit';
+// Bug: f3dbb3e — removed 'work-unit' type (navigated to wrong URL using
+// work-unit UUID as issue ID; not used anywhere yet).
+export type EntityPillType = 'issue' | 'session' | 'auth' | 'branch' | 'conversation';
 
 export type EntityPillProps = {
   type: EntityPillType;
@@ -22,10 +24,6 @@ const TYPE_HREF_MAP: Record<EntityPillType, (id: string, repoId?: string) => str
       ? `#/work?repo=${encodeURIComponent(repoId)}&branch=${encodeURIComponent(id)}`
       : `#/work?branch=${encodeURIComponent(id)}`,
   conversation: (id) => `#/chat-history?session=${encodeURIComponent(id)}`,
-  'work-unit': (id, repoId) =>
-    repoId
-      ? `#/issues?repo=${encodeURIComponent(repoId)}&issue=${encodeURIComponent(id)}`
-      : `#/issues?issue=${encodeURIComponent(id)}`,
 };
 
 export function EntityPill({ type, id, label, href, repoId }: EntityPillProps): JSX.Element {

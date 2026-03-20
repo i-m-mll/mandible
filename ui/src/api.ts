@@ -504,6 +504,7 @@ export type IssueContextAuthRequest = {
   title: string;
   status: string;
   head_branch: string | null;
+  created_at: number | null;
 };
 
 export type IssueContextBranchInfo = {
