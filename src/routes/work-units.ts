@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-import type { WorkUnit } from "../types.js";
+import type { SessionRegistry } from "../registry.js";
+import type { SessionManager } from "../session-manager.js";
+import type { WorkUnit, WorkUnitState } from "../types.js";
 
 // Bug: a247bc3 — work-unit CRUD for inbox workqueue
+// Bug: 8a281b3 — liveness overlay, PATCH, GET /:id
 
 interface ClaimInput {
   issue_id: string;
@@ -24,6 +27,28 @@ interface ActivateInput {
 interface ReleaseInput {
   issue_id: string;
   repo_id: string;
+}
+
+interface PatchInput {
+  state?: string;
+  assigned_session_id?: string | null;
+  continuation?: string | null;
+  continuation_by?: string | null;
+  continuation_at?: number | null;
+  auth_request_id?: string | null;
+}
+
+// Bug: 8a281b3 — liveness data derived at query time, not stored
+export interface WorkUnitLiveness {
+  has_live_agent: boolean;
+  agent_session_id: string | null;
+  agent_status: string | null;
+  is_processing: boolean;
+  last_activity: number | null;
+}
+
+export interface WorkUnitWithLiveness extends WorkUnit {
+  liveness: WorkUnitLiveness;
 }
 
 function readBody<T>(req: RequestLike): T {
@@ -55,7 +80,87 @@ function mapRow(row: Record<string, unknown>): WorkUnit {
   };
 }
 
-export function registerWorkUnitRoutes(server: RouteRegistrar): void {
+const VALID_STATES: Set<string> = new Set(["open", "committed", "resolved", "abandoned"]);
+
+/**
+ * Compute liveness overlay for a work unit by joining to sessions and console_sessions.
+ * Bug: 8a281b3 — liveness is derived at query time, never stored.
+ */
+function computeLiveness(
+  workUnit: WorkUnit,
+  sessionRegistry: SessionRegistry,
+  sessionManager: SessionManager,
+): WorkUnitLiveness {
+  const db = getDb();
+  const noLiveness: WorkUnitLiveness = {
+    has_live_agent: false,
+    agent_session_id: null,
+    agent_status: null,
+    is_processing: false,
+    last_activity: null,
+  };
+
+  if (!workUnit.branch) {
+    return noLiveness;
+  }
+
+  // Find the most recent active/idle session on this branch
+  const sessionRow = db
+    .prepare(
+      `SELECT id, status, last_active FROM sessions
+       WHERE branch = ? AND status IN ('active', 'idle')
+       ORDER BY updated_at DESC LIMIT 1`
+    )
+    .get(workUnit.branch) as { id: string; status: string; last_active: string | null } | undefined;
+
+  if (!sessionRow) {
+    return noLiveness;
+  }
+
+  // Check SDK processing state via console_sessions
+  let isProcessing = false;
+  const consoleRow = db
+    .prepare(
+      `SELECT id FROM console_sessions
+       WHERE mandible_session_id = ? AND status = 'running'
+       LIMIT 1`
+    )
+    .get(sessionRow.id) as { id: string } | undefined;
+
+  if (consoleRow) {
+    const backend = sessionManager.get(consoleRow.id);
+    if (backend && "isProcessing" in backend && typeof backend.isProcessing === "boolean") {
+      isProcessing = backend.isProcessing;
+    }
+  }
+
+  const lastActive = sessionRow.last_active ? new Date(sessionRow.last_active).getTime() : null;
+
+  return {
+    has_live_agent: true,
+    agent_session_id: sessionRow.id,
+    agent_status: sessionRow.status,
+    is_processing: isProcessing,
+    last_activity: lastActive,
+  };
+}
+
+function enrichWithLiveness(
+  workUnit: WorkUnit,
+  sessionRegistry: SessionRegistry,
+  sessionManager: SessionManager,
+): WorkUnitWithLiveness {
+  return {
+    ...workUnit,
+    liveness: computeLiveness(workUnit, sessionRegistry, sessionManager),
+  };
+}
+
+export function registerWorkUnitRoutes(
+  server: RouteRegistrar,
+  sessionRegistry: SessionRegistry,
+  sessionManager: SessionManager,
+): void {
   const db = getDb();
 
   // POST /api/work-units/claim — create a new work unit (state=open)
@@ -200,7 +305,8 @@ export function registerWorkUnitRoutes(server: RouteRegistrar): void {
     sendJson(res, 200, { ok: true, released: result.changes });
   });
 
-  // GET /api/work-units — list with optional filters
+  // GET /api/work-units — list with optional filters, includes liveness overlay
+  // Bug: 8a281b3 — liveness overlay on work-unit responses
   server.get("/api/work-units", (req, res) => {
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -227,6 +333,113 @@ export function registerWorkUnitRoutes(server: RouteRegistrar): void {
       .prepare(`SELECT * FROM work_units${where} ORDER BY created_at DESC`)
       .all(...params) as Record<string, unknown>[];
 
-    sendJson(res, 200, { work_units: rows.map(mapRow) });
+    const workUnits = rows.map(mapRow);
+    const enriched = workUnits.map((wu) =>
+      enrichWithLiveness(wu, sessionRegistry, sessionManager)
+    );
+
+    sendJson(res, 200, { work_units: enriched });
+  });
+
+  // GET /api/work-units/:id — single work unit with liveness overlay
+  // Bug: 8a281b3
+  server.get("/api/work-units/:id", (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      sendJson(res, 400, { error: "Missing work unit id" });
+      return;
+    }
+
+    const row = db
+      .prepare("SELECT * FROM work_units WHERE id = ?")
+      .get(id) as Record<string, unknown> | undefined;
+
+    if (!row) {
+      sendJson(res, 404, { error: "Work unit not found" });
+      return;
+    }
+
+    const workUnit = mapRow(row);
+    sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
+  });
+
+  // PATCH /api/work-units/:id — update mutable fields
+  // Bug: 8a281b3
+  server.patch("/api/work-units/:id", (req, res) => {
+    const id = req.params.id;
+    if (!id) {
+      sendJson(res, 400, { error: "Missing work unit id" });
+      return;
+    }
+
+    const existing = db
+      .prepare("SELECT id FROM work_units WHERE id = ?")
+      .get(id) as { id: string } | undefined;
+
+    if (!existing) {
+      sendJson(res, 404, { error: "Work unit not found" });
+      return;
+    }
+
+    const body = readBody<PatchInput>(req);
+    const updates: string[] = [];
+    const params: unknown[] = [];
+
+    if (body.state !== undefined) {
+      if (!VALID_STATES.has(body.state)) {
+        sendJson(res, 400, { error: `Invalid state: ${body.state}. Must be one of: ${[...VALID_STATES].join(", ")}` });
+        return;
+      }
+      updates.push("state = ?");
+      params.push(body.state);
+
+      // Auto-set resolved_at when transitioning to resolved
+      if (body.state === "resolved") {
+        updates.push("resolved_at = ?");
+        params.push(Date.now());
+      }
+    }
+
+    if ("assigned_session_id" in body) {
+      updates.push("assigned_session_id = ?");
+      params.push(body.assigned_session_id ?? null);
+    }
+
+    if ("continuation" in body) {
+      updates.push("continuation = ?");
+      params.push(body.continuation ?? null);
+    }
+
+    if ("continuation_by" in body) {
+      updates.push("continuation_by = ?");
+      params.push(body.continuation_by ?? null);
+    }
+
+    if ("continuation_at" in body) {
+      updates.push("continuation_at = ?");
+      params.push(body.continuation_at ?? null);
+    }
+
+    if ("auth_request_id" in body) {
+      updates.push("auth_request_id = ?");
+      params.push(body.auth_request_id ?? null);
+    }
+
+    if (updates.length === 0) {
+      sendJson(res, 400, { error: "No fields to update" });
+      return;
+    }
+
+    params.push(id);
+    db.prepare(
+      `UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`
+    ).run(...params);
+
+    const updatedRow = db
+      .prepare("SELECT * FROM work_units WHERE id = ?")
+      .get(id) as Record<string, unknown>;
+
+    const workUnit = mapRow(updatedRow);
+    sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
   });
 }

@@ -917,6 +917,80 @@ export async function resumeConversation(
   return (await parseMaybeJson(resp)) as { console_session_id: string };
 }
 
+// ── Work Units API — Bug: 8a281b3 ──
+
+export type WorkUnitKind = 'solo' | 'partition' | 'integration';
+export type WorkUnitState = 'open' | 'committed' | 'resolved' | 'abandoned';
+
+export type WorkUnitLiveness = {
+  has_live_agent: boolean;
+  agent_session_id: string | null;
+  agent_status: string | null;
+  is_processing: boolean;
+  last_activity: number | null;
+};
+
+export type WorkUnit = {
+  id: string;
+  issue_id: string;
+  repo_id: string;
+  branch: string | null;
+  parent_branch: string | null;
+  kind: WorkUnitKind;
+  state: WorkUnitState;
+  assigned_session_id: string | null;
+  continuation: string | null;
+  continuation_by: string | null;
+  continuation_at: number | null;
+  created_at: number;
+  activated_at: number | null;
+  last_commit_at: number | null;
+  resolved_at: number | null;
+  auth_request_id: string | null;
+};
+
+export type WorkUnitWithLiveness = WorkUnit & {
+  liveness: WorkUnitLiveness;
+};
+
+export type WorkUnitFilters = {
+  state?: WorkUnitState;
+  repo_id?: string;
+  branch?: string;
+  issue_id?: string;
+};
+
+export type WorkUnitPatch = {
+  state?: WorkUnitState;
+  assigned_session_id?: string | null;
+  continuation?: string | null;
+  continuation_by?: string | null;
+  continuation_at?: number | null;
+  auth_request_id?: string | null;
+};
+
+export async function getWorkUnits(
+  filters?: WorkUnitFilters,
+): Promise<WorkUnitWithLiveness[]> {
+  const query = filters ? buildQuery(filters as Record<string, string | undefined>) : '';
+  const response = await apiGet(`/api/work-units${query}`);
+  const payload = (await parseMaybeJson(response)) as { work_units?: WorkUnitWithLiveness[] };
+  return payload.work_units ?? [];
+}
+
+export async function getWorkUnit(id: string): Promise<WorkUnitWithLiveness> {
+  const response = await apiGet(`/api/work-units/${encodeURIComponent(id)}`);
+  return (await parseMaybeJson(response)) as WorkUnitWithLiveness;
+}
+
+export async function updateWorkUnit(
+  id: string,
+  patch: WorkUnitPatch,
+): Promise<WorkUnitWithLiveness> {
+  const response = await apiPatch(`/api/work-units/${encodeURIComponent(id)}`, patch);
+  return (await parseMaybeJson(response)) as WorkUnitWithLiveness;
+}
+
 // ── Logs API — Bug: af91bdd ──
 
 export type LogsResponse = {

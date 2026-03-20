@@ -68,6 +68,9 @@ export interface InboxData {
   continuations: InboxContinuation[];
   auth_results: InboxAuthResult[];
   open_issues: InboxIssue[];
+  // Bug: 8a281b3 — work units needing attention and work-unit continuations
+  work_units?: import('../api').WorkUnitWithLiveness[];
+  work_unit_continuations?: import('../api').WorkUnitWithLiveness[];
   total: number;
 }
 
