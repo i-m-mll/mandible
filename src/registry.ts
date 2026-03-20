@@ -853,6 +853,52 @@ export class SessionRegistry {
     return rows.map((row) => row.id);
   }
 
+  // Bug: 81c9d85 — update last_active timestamp on activity events
+  updateLastActive(sessionId: string, timestamp?: number): void {
+    const ts = timestamp
+      ? new Date(timestamp).toISOString()
+      : new Date().toISOString();
+    this.db
+      .prepare("UPDATE sessions SET last_active = ?, updated_at = ? WHERE id = ?")
+      .run(ts, ts, sessionId);
+  }
+
+  // Bug: 81c9d85 — transition session to idle when SDK prompt queue drains
+  setIdle(sessionId: string): void {
+    const session = this.getSession(sessionId);
+    if (!session || session.status !== "active") {
+      return;
+    }
+    const now = new Date().toISOString();
+    this.db
+      .prepare("UPDATE sessions SET status = 'idle', updated_at = ? WHERE id = ?")
+      .run(now, sessionId);
+    const updated = this.getSession(sessionId);
+    if (updated) {
+      broadcast("session:updated", updated);
+    }
+  }
+
+  // Bug: 81c9d85 — transition session to active (from idle or other non-terminal state)
+  setActive(sessionId: string): void {
+    const session = this.getSession(sessionId);
+    if (!session || session.status === "active") {
+      return;
+    }
+    // Don't resurrect ended/dead sessions
+    if (session.status === "ended" || session.status === "dead") {
+      return;
+    }
+    const now = new Date().toISOString();
+    this.db
+      .prepare("UPDATE sessions SET status = 'active', updated_at = ? WHERE id = ?")
+      .run(now, sessionId);
+    const updated = this.getSession(sessionId);
+    if (updated) {
+      broadcast("session:updated", updated);
+    }
+  }
+
   killSession(id: string): boolean {
     const session = this.getSession(id);
     if (!session || !session.pid) {

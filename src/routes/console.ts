@@ -6,7 +6,7 @@
 import { getDb } from "../db.js";
 import type { PermissionDecision } from "../agentic-backend.js";
 import { SessionManager } from "../session-manager.js";
-import type { SDKBackendOptions } from "../backends/sdk-backend.js";
+import { SDKBackend, type SDKBackendOptions } from "../backends/sdk-backend.js";
 import type { RouteRegistrar } from "../server.js";
 import type { ConsoleSession, ConsoleSessionInput, ConsoleInteractionMode } from "../types.js";
 
@@ -26,6 +26,15 @@ function stripModelArgs(args: string[]): string[] {
   return next;
 }
 
+// Bug: 81c9d85 — enrich ConsoleSession with is_processing from SDKBackend state
+function enrichWithProcessing(backend: { meta: ConsoleSession }): ConsoleSession {
+  const meta = backend.meta;
+  if (backend instanceof SDKBackend) {
+    return { ...meta, is_processing: backend.isProcessing };
+  }
+  return { ...meta, is_processing: false };
+}
+
 export function registerConsoleRoutes(
   server: RouteRegistrar,
   manager: SessionManager
@@ -35,7 +44,7 @@ export function registerConsoleRoutes(
   // GET /api/console/sessions — list all sessions
   // ------------------------------------------------------------------
   server.get("/api/console/sessions", (_req, res) => {
-    const sessions = manager.getAll().map((s) => s.meta);
+    const sessions = manager.getAll().map((s) => enrichWithProcessing(s));
     res.status(200).json({ sessions });
   });
 

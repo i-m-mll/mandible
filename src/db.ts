@@ -601,6 +601,14 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_work_units_repo_issue ON work_units(repo_id, issue_id)`,
       `CREATE INDEX IF NOT EXISTS idx_work_units_state ON work_units(state)`,
     ]
+  },
+  {
+    version: 39,
+    name: "sessions_branch_index",
+    // Bug: 81c9d85 — index sessions by branch for efficient branch-scoped queries
+    statements: [
+      `CREATE INDEX IF NOT EXISTS sessions_branch_idx ON sessions(branch) WHERE branch IS NOT NULL`,
+    ]
   }
 ];
 
