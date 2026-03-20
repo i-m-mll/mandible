@@ -342,3 +342,27 @@ export interface GraphQueryParams {
   limit?: number;      // max nodes to return (default 50)
   status?: "open" | "all"; // issue filter only (default 'open')
 }
+
+// --- Work-unit types (Bug: a247bc3) ---
+
+export type WorkUnitKind = "solo" | "partition" | "integration";
+export type WorkUnitState = "open" | "committed" | "resolved" | "abandoned";
+
+export interface WorkUnit {
+  id: string;
+  issue_id: string;
+  repo_id: string;
+  branch: string | null;
+  parent_branch: string | null;
+  kind: WorkUnitKind;
+  state: WorkUnitState;
+  assigned_session_id: string | null;
+  continuation: string | null;
+  continuation_by: string | null;
+  continuation_at: number | null;
+  created_at: number;
+  activated_at: number | null;
+  last_commit_at: number | null;
+  resolved_at: number | null;
+  auth_request_id: string | null;
+}
