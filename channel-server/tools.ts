@@ -3,6 +3,7 @@
 // Each tool is a thin wrapper around a Mandible HTTP API call via client.ts.
 // The MCP server registers these as tools that Claude Code can invoke.
 
+import { execSync } from "node:child_process";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as client from "./client.js";
@@ -38,11 +39,23 @@ export function registerTools(
     if (!channelRegistered) {
       try {
         const cwd = process.env.CLAUDE_CWD ?? process.cwd();
+        // Bug: 73e0adf — detect branch so channel registration includes it
+        let branch: string | null = null;
+        try {
+          branch = execSync("git rev-parse --abbrev-ref HEAD", {
+            cwd,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          }).trim() || null;
+        } catch {
+          // Not in a git repo — branch stays null
+        }
         await client.registerSession({
           id: sessionId,
           app: "claude-channel",
           status: "active",
           cwd,
+          branch,
         });
         channelRegistered = true;
       } catch {
