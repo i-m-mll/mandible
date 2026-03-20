@@ -173,15 +173,16 @@ function queueWebhookEvent(
   const db = getDb();
   db.prepare(
     `INSERT INTO webhook_events
-       (id, source, event_type, title, data_json, target_issue, target_branch,
-        priority, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+       (id, source, event_type, title, data_json, target_session, target_issue,
+        target_branch, priority, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
   ).run(
     id,
     event.source,
     event.event_type,
     event.title ?? null,
     JSON.stringify(event.data),
+    event.target_session ?? null,
     event.target_issue ?? null,
     event.target_branch ?? null,
     event.priority ?? "normal",
@@ -270,7 +271,9 @@ export function registerWebhookRoutes(
     if (result) {
       // Store and mark as delivered
       queueWebhookEvent(event, id);
-      markDelivered(id, result.delivered_to!);
+      if (result.delivered_to) {
+        markDelivered(id, result.delivered_to);
+      }
 
       broadcast("webhook:received", {
         id,

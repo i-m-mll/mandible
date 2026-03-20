@@ -7,7 +7,21 @@ export interface InboxResponse {
   open_issues: InboxIssue[];
   work_units: InboxWorkUnit[];
   work_unit_continuations: InboxWorkUnit[];
+  pending_webhooks?: InboxWebhookEvent[];
   total: number;
+}
+
+export interface InboxWebhookEvent {
+  id: string;
+  source: string;
+  event_type: string;
+  title: string | null;
+  data: unknown;
+  target_issue: string | null;
+  target_branch: string | null;
+  priority: string;
+  status: string;
+  created_at: number;
 }
 
 export interface InboxContinuation {

@@ -53,6 +53,9 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
     this.logger = logger;
   }
 
+  // SpawnBackend is prompt-driven: start() makes the backend ready to receive
+  // prompts, but no child process is spawned until sendPrompt() is called.
+  // This matches SDKBackend's lifecycle where query() is called per-prompt.
   start(): void {
     if (this.destroyed || this.meta.status === "running") {
       return;
@@ -86,12 +89,12 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
     this.logger("info", "spawn_started", { id: this.id, command: this.meta.command });
   }
 
-  stop(_signal?: string): void {
+  stop(signal?: string): void {
     this.promptQueue = [];
 
     if (this.childProc) {
       try {
-        this.childProc.kill("SIGHUP");
+        this.childProc.kill((signal || "SIGTERM") as NodeJS.Signals);
       } catch {
         // Process may already be gone
       }
@@ -125,7 +128,7 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
     this.logger("info", "spawn_stopped", { id: this.id });
   }
 
-  destroy(): void {
+  destroy(signal?: string): void {
     if (this.destroyed) {
       return;
     }
@@ -134,7 +137,7 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
 
     if (this.childProc) {
       try {
-        this.childProc.kill("SIGHUP");
+        this.childProc.kill((signal || "SIGTERM") as NodeJS.Signals);
       } catch {
         // Process may already be gone
       }

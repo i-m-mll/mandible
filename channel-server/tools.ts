@@ -337,6 +337,15 @@ function formatInbox(inbox: InboxResponse): string {
     }
   }
 
+  if (inbox.pending_webhooks && inbox.pending_webhooks.length > 0) {
+    sections.push("\n## Pending Webhooks");
+    for (const wh of inbox.pending_webhooks) {
+      const title = wh.title ? ` "${wh.title}"` : "";
+      const target = wh.target_branch ? ` branch: ${wh.target_branch}` : wh.target_issue ? ` issue: ${wh.target_issue}` : "";
+      sections.push(`- ${wh.id.slice(0, 8)}... [${wh.source}/${wh.event_type}]${title} (${wh.priority})${target}`);
+    }
+  }
+
   return sections.join("\n");
 }
 

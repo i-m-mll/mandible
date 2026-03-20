@@ -99,8 +99,11 @@ function computeAgentType(
 
 function defaultBackendType(command: string): BackendType {
   if (command === "claude") return "sdk";
-  // Bug: 8d3328c — Codex, Gemini, shell default to spawn (no terminal emulation needed)
-  return "spawn";
+  // Bug: 8d3328c — Codex, Gemini use spawn (structured JSON stdout parsing)
+  if (command === "codex" || command === "gemini") return "spawn";
+  // Shell and unknown commands need interactive terminal (SpawnBackend can't
+  // execute arbitrary commands — buildPromptInvocation returns null for them)
+  return "pty";
 }
 
 function parseAllowedTools(raw: string | null): string[] | null {

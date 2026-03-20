@@ -391,6 +391,7 @@ export interface WebhookEventRow {
   event_type: string;
   title: string | null;
   data_json: string;
+  target_session: string | null;
   target_issue: string | null;
   target_branch: string | null;
   priority: string;

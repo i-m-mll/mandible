@@ -616,18 +616,19 @@ const MIGRATIONS: Migration[] = [
     // Bug: 9f66ad9 — webhook ingestion endpoint for external event routing
     statements: [
       `CREATE TABLE IF NOT EXISTS webhook_events (
-        id            TEXT PRIMARY KEY,
-        source        TEXT NOT NULL,
-        event_type    TEXT NOT NULL,
-        title         TEXT,
-        data_json     TEXT NOT NULL,
-        target_issue  TEXT,
-        target_branch TEXT,
-        priority      TEXT NOT NULL DEFAULT 'normal',
-        status        TEXT NOT NULL DEFAULT 'pending',
-        created_at    INTEGER NOT NULL,
-        delivered_at  INTEGER,
-        delivered_to  TEXT
+        id             TEXT PRIMARY KEY,
+        source         TEXT NOT NULL,
+        event_type     TEXT NOT NULL,
+        title          TEXT,
+        data_json      TEXT NOT NULL,
+        target_session TEXT,
+        target_issue   TEXT,
+        target_branch  TEXT,
+        priority       TEXT NOT NULL DEFAULT 'normal',
+        status         TEXT NOT NULL DEFAULT 'pending',
+        created_at     INTEGER NOT NULL,
+        delivered_at   INTEGER,
+        delivered_to   TEXT
       )`,
       `CREATE INDEX IF NOT EXISTS idx_webhook_events_status
         ON webhook_events(status)`,
