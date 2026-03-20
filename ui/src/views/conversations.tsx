@@ -15,6 +15,7 @@ import {
   getConversation,
   getConversationForks,
   getConversations,
+  getSessionIssues,
   getSettings,
   resumeConversation,
   triggerIngestion,
@@ -24,6 +25,7 @@ import {
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
 import { BranchSelector, type BranchInfo } from '../components/console/BranchSelector';
+import { EntityPill } from '../components/shared/EntityPill';
 
 // Configure marked for safe, synchronous rendering
 marked.setOptions({ async: false, gfm: true, breaks: false });
@@ -1058,6 +1060,9 @@ function ConversationDetail({
   const [showExport, setShowExport] = useState(false);
   const [renderMode, setRenderMode] = useState<'transcript' | 'raw'>('transcript');
 
+  // Bug: 84cd5ae — linked issue pills in conversation detail
+  const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
+
   // Fork/resume state
   const [toast, setToast] = useState<ToastState>(null);
   const [conflictDialog, setConflictDialog] = useState<{ dagUuid: string } | null>(null);
@@ -1107,6 +1112,29 @@ function ConversationDetail({
       });
     return () => { active = false; };
   }, [conversationId, loadNonce]);
+
+  // Bug: 84cd5ae — fetch linked issues for the conversation's session
+  useEffect(() => {
+    if (!conversation?.session_id) {
+      setSessionIssueLinks([]);
+      return;
+    }
+    let active = true;
+    getSessionIssues(conversation.session_id)
+      .then((data) => {
+        if (active) {
+          setSessionIssueLinks(
+            (data as Array<{ issue_id: string; repo_id: string }>).filter(
+              (d) => d.issue_id && d.repo_id
+            )
+          );
+        }
+      })
+      .catch(() => {
+        if (active) setSessionIssueLinks([]);
+      });
+    return () => { active = false; };
+  }, [conversation?.session_id]);
 
   // Reload conversation when a leaf branch is selected
   useEffect(() => {
@@ -1464,6 +1492,15 @@ function ConversationDetail({
             {conversation.model && (
               <span className="text-muted">{conversation.model}</span>
             )}
+            {/* Bug: 84cd5ae — linked issue pills */}
+            {sessionIssueLinks.length > 0 && sessionIssueLinks.map((link) => (
+              <EntityPill
+                key={`${link.repo_id}-${link.issue_id}`}
+                type="issue"
+                id={link.issue_id}
+                repoId={link.repo_id}
+              />
+            ))}
           </div>
         </div>
         <div className="conv-detail__header-right">

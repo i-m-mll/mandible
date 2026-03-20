@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
+import { EntityPill } from '../components/shared/EntityPill';
 
 marked.setOptions({ async: false, gfm: true, breaks: false });
 
@@ -540,7 +541,7 @@ function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
         {item.id && (
           <div className="inbox-detail__meta-row">
             <span className="inbox-detail__meta-label">ID</span>
-            <code className="inbox-detail__meta-value">{item.id.slice(0, 7)}</code>
+            <EntityPill type="issue" id={item.id} repoId={item.repo_id} />
           </div>
         )}
       </div>
@@ -555,7 +556,7 @@ function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
       )}
       <div className="inbox-detail__actions">
         <a href={href} className="btn btn--ghost">
-          View in Issues →
+          View in Issues &rarr;
         </a>
       </div>
     </div>
