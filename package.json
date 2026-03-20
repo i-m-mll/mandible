@@ -6,8 +6,10 @@
   "main": "dist/index.js",
   "bin": "dist/index.js",
   "scripts": {
-    "build": "node scripts/run-tsc.js && node ui/esbuild.config.js",
-    "build:server": "node scripts/run-tsc.js",
+    "build": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json && node ui/esbuild.config.js",
+    "build:server": "node scripts/run-tsc.js && node scripts/run-tsc.js -p channel-server/tsconfig.json",
+    "build:channel-server": "node scripts/run-tsc.js -p channel-server/tsconfig.json",
+    "channel-server": "node dist/channel-server/index.js",
     "build:ui": "node ui/esbuild.config.js",
     "build:watch": "node ui/esbuild.config.js --watch",
     "dev": "node scripts/run-tsc.js --watch & node ui/esbuild.config.js --watch",
