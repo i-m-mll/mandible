@@ -648,8 +648,12 @@ export function registerIssueRoutes(
       provider_session_id: providerSessionId,
     });
 
-    // 6. Update work unit: assigned_session_id (will be set when a mandible session registers)
-    // For now we store the console_session_id in case the frontend needs it
+    // 6. Update work unit: assigned_session_id with the console session ID
+    if (workUnitRow?.id) {
+      db.prepare(
+        "UPDATE work_units SET assigned_session_id = ?, updated_at = ? WHERE id = ?"
+      ).run(consoleSession.id, Date.now(), String(workUnitRow.id));
+    }
 
     sendJson(res, 200, {
       console_session_id: consoleSession.id,

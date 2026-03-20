@@ -949,9 +949,9 @@ export class SessionRegistry {
           this.db
             .prepare(
               `UPDATE work_units SET continuation = ?, continuation_by = ?, continuation_at = ?
-               WHERE id = ?`
+               WHERE id = ? AND (continuation_at IS NULL OR continuation_at < ?)`
             )
-            .run(session.continuation, session.id, now, wu.id);
+            .run(session.continuation, session.id, now, wu.id, now);
         }
       }
     } catch {
