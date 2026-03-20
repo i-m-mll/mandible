@@ -227,7 +227,7 @@ export interface ConsoleSession {
   updated_at: number;
   started_at: number | null;
   stopped_at: number | null;
-  backend_type: 'pty' | 'sdk';
+  backend_type: 'pty' | 'sdk' | 'spawn';
   allowed_tools: string[] | null;
   mandible_session_id: string | null;
   /** Bug: 40f0298 — DAG branching: message UUID to resume conversation from. */
@@ -249,7 +249,7 @@ export interface ConsoleSessionInput {
   auto_restart?: boolean;
   is_operator?: boolean;
   interaction_mode?: ConsoleInteractionMode;
-  backend_type?: 'pty' | 'sdk';
+  backend_type?: 'pty' | 'sdk' | 'spawn';
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
   provider_session_id?: string | null;

@@ -368,7 +368,9 @@ export function TerminalPane({
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([]);
   // Bug: 6634023 — Sidebar state for SessionControls (collapsed by default)
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const showDebugTerminal = backendType === 'pty' || isOperator;
+  // Bug: 8d3328c — Only PTY sessions have a debug terminal. Spawn sessions
+  // have no terminal emulation. Operator sessions always use SDK now (not spawn).
+  const showDebugTerminal = backendType === 'pty';
   const providerFamily = isOperator ? 'claude' : command;
   const availableTools = collectAvailableTools(streamEvents);
 
