@@ -38,7 +38,7 @@ type ConsoleSession = {
   created_at: number;
   started_at: number | null;
   stopped_at: number | null;
-  backend_type: 'pty' | 'sdk';
+  backend_type: 'pty' | 'sdk' | 'spawn';
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
   resume_at_message?: string | null;

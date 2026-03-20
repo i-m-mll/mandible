@@ -16,6 +16,7 @@ import { SessionRegistry } from "./registry.js";
 import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend, type SDKBackendOptions } from "./backends/sdk-backend.js";
+import { SpawnBackend } from "./backends/spawn-backend.js";
 import type {
   ConsoleInteractionMode,
   ConsoleSession,
@@ -97,7 +98,9 @@ function computeAgentType(
 }
 
 function defaultBackendType(command: string): BackendType {
-  return command === "claude" ? "sdk" : "pty";
+  if (command === "claude") return "sdk";
+  // Bug: 8d3328c — Codex, Gemini, shell default to spawn (no terminal emulation needed)
+  return "spawn";
 }
 
 function parseAllowedTools(raw: string | null): string[] | null {
@@ -135,7 +138,7 @@ function rowToSession(row: ConsoleSessionRow): ConsoleSession {
     updated_at: row.updated_at,
     started_at: row.started_at,
     stopped_at: row.stopped_at,
-    backend_type: (row.backend_type === "sdk" ? "sdk" : "pty") as BackendType,
+    backend_type: (row.backend_type === "sdk" ? "sdk" : row.backend_type === "spawn" ? "spawn" : "pty") as BackendType,
     allowed_tools: parseAllowedTools(row.allowed_tools),
     mandible_session_id: row.mandible_session_id ?? null,
     resume_at_message: row.resume_at_message ?? null,
@@ -501,6 +504,9 @@ export class SessionManager {
   private createBackend(session: ConsoleSession, type: BackendType): AgenticBackend {
     if (type === "sdk") {
       return new SDKBackend(session, this.logger, this.sessionRegistry ?? undefined);
+    }
+    if (type === "spawn") {
+      return new SpawnBackend(session, this.logger);
     }
     return new PTYBackend(session, this.logger);
   }

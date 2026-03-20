@@ -76,16 +76,16 @@ export function registerConsoleRoutes(
       interaction_mode: (["inbox_only", "direct", "both"].includes(body.interaction_mode ?? ""))
         ? body.interaction_mode as ConsoleInteractionMode
         : "both",
-      backend_type: body.backend_type === "pty" || body.backend_type === "sdk"
+      backend_type: body.backend_type === "pty" || body.backend_type === "sdk" || body.backend_type === "spawn"
         ? body.backend_type
-        : (body.command === "claude" ? "sdk" : "pty"),
+        : (body.command === "claude" ? "sdk" : "spawn"),
     };
 
     const session = manager.create(input);
     const structuredChat = input.command === "claude" || input.command === "codex" || input.command === "gemini";
-    // Start immediately for: operators, non-structured-chat (shell), and SDK
+    // Start immediately for: operators, non-structured-chat (shell), and SDK/spawn
     // sessions (they just wait for the first prompt — no process to allocate).
-    if (input.is_operator || !structuredChat || input.backend_type === "sdk") {
+    if (input.is_operator || !structuredChat || input.backend_type === "sdk" || input.backend_type === "spawn") {
       manager.start(session.id);
     }
     const ptySession = manager.get(session.id);

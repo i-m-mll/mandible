@@ -3,7 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 
 type AgentKind = 'agent' | 'operator';
 type Backend = 'claude' | 'codex' | 'gemini';
-type Transport = 'pty' | 'sdk';
+type Transport = 'pty' | 'sdk' | 'spawn';
 
 type NewSessionDialogProps = {
   open: boolean;
@@ -105,8 +105,9 @@ export function NewSessionDialog({
   }, [backend, kind]);
 
   useEffect(() => {
-    if (backend !== 'claude' && transport !== 'pty') {
-      setTransport('pty');
+    // Bug: 8d3328c — Non-Claude backends use spawn (no terminal emulation)
+    if (backend !== 'claude' && transport !== 'spawn') {
+      setTransport('spawn');
     }
   }, [backend, transport]);
 
@@ -183,7 +184,7 @@ export function NewSessionDialog({
                     disabled={disabled}
                     onClick={() => {
                       setBackend(option.value);
-                      setTransport(option.value === 'claude' ? 'sdk' : 'pty');
+                      setTransport(option.value === 'claude' ? 'sdk' : 'spawn');
                     }}
                   />
                 );
