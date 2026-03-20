@@ -2,7 +2,12 @@ import path from "node:path";
 import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionRegistry } from "../registry.js";
-import type { AuthRequestStatus } from "../types.js";
+import type { SessionManager } from "../session-manager.js";
+import type { AuthRequestStatus, WorkUnit } from "../types.js";
+import type { WorkUnitLiveness, WorkUnitWithLiveness } from "./work-units.js";
+
+// Bug: 8a281b3 — inbox rewrite: work units replace raw open issues as the
+// primary "needs attention" signal. Auth results and continuations remain.
 
 export interface InboxRouteServer {
   get(path: string, handler: (req: unknown, res: unknown) => void): void;
@@ -87,12 +92,146 @@ interface AuthResultRow {
   issue_ids: string | null;
 }
 
+function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
+  return {
+    id: String(row.id ?? ""),
+    issue_id: String(row.issue_id ?? ""),
+    repo_id: String(row.repo_id ?? ""),
+    branch: typeof row.branch === "string" ? row.branch : null,
+    parent_branch: typeof row.parent_branch === "string" ? row.parent_branch : null,
+    kind: (row.kind as WorkUnit["kind"]) ?? "solo",
+    state: (row.state as WorkUnit["state"]) ?? "open",
+    assigned_session_id: typeof row.assigned_session_id === "string" ? row.assigned_session_id : null,
+    continuation: typeof row.continuation === "string" ? row.continuation : null,
+    continuation_by: typeof row.continuation_by === "string" ? row.continuation_by : null,
+    continuation_at: typeof row.continuation_at === "number" ? row.continuation_at : null,
+    created_at: Number(row.created_at ?? 0),
+    activated_at: typeof row.activated_at === "number" ? row.activated_at : null,
+    last_commit_at: typeof row.last_commit_at === "number" ? row.last_commit_at : null,
+    resolved_at: typeof row.resolved_at === "number" ? row.resolved_at : null,
+    auth_request_id: typeof row.auth_request_id === "string" ? row.auth_request_id : null,
+  };
+}
+
+/**
+ * Compute liveness for a work unit (same logic as work-units.ts but inline
+ * to avoid circular dependency).
+ * Bug: 8a281b3
+ */
+function computeInboxLiveness(
+  workUnit: WorkUnit,
+  _sessionRegistry: SessionRegistry,
+  sessionManager: SessionManager,
+): WorkUnitLiveness {
+  const db = getDb();
+  const noLiveness: WorkUnitLiveness = {
+    has_live_agent: false,
+    agent_session_id: null,
+    agent_status: null,
+    is_processing: false,
+    last_activity: null,
+  };
+
+  if (!workUnit.branch) return noLiveness;
+
+  const sessionRow = db
+    .prepare(
+      `SELECT id, status, last_active FROM sessions
+       WHERE branch = ? AND status IN ('active', 'idle')
+       ORDER BY updated_at DESC LIMIT 1`
+    )
+    .get(workUnit.branch) as { id: string; status: string; last_active: string | null } | undefined;
+
+  if (!sessionRow) return noLiveness;
+
+  let isProcessing = false;
+  const consoleRow = db
+    .prepare(
+      `SELECT id FROM console_sessions
+       WHERE mandible_session_id = ? AND status = 'running'
+       LIMIT 1`
+    )
+    .get(sessionRow.id) as { id: string } | undefined;
+
+  if (consoleRow) {
+    const backend = sessionManager.get(consoleRow.id);
+    if (backend && "isProcessing" in backend && typeof backend.isProcessing === "boolean") {
+      isProcessing = backend.isProcessing;
+    }
+  }
+
+  const lastActive = sessionRow.last_active ? new Date(sessionRow.last_active).getTime() : null;
+
+  return {
+    has_live_agent: true,
+    agent_session_id: sessionRow.id,
+    agent_status: sessionRow.status,
+    is_processing: isProcessing,
+    last_activity: lastActive,
+  };
+}
+
 export function registerInboxRoutes(
   server: InboxRouteServer,
-  _sessionRegistry: SessionRegistry,
+  sessionRegistry: SessionRegistry,
   issueScanner: IssueScanner,
+  sessionManager?: SessionManager,
 ): void {
   const db = getDb();
+
+  // Bug: 8a281b3 — helper to get work units needing attention for inbox
+  function getWorkUnitsNeedingAttention(repoFilter?: string): WorkUnitWithLiveness[] {
+    const conditions = ["state IN ('open', 'committed')"];
+    const params: unknown[] = [];
+
+    if (repoFilter) {
+      conditions.push("repo_id = ?");
+      params.push(repoFilter);
+    }
+
+    const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+    const rows = db
+      .prepare(`SELECT * FROM work_units${where} ORDER BY created_at DESC`)
+      .all(...params) as Record<string, unknown>[];
+
+    return rows
+      .map(mapWorkUnitRow)
+      .map((wu) => {
+        const liveness = sessionManager
+          ? computeInboxLiveness(wu, sessionRegistry, sessionManager)
+          : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
+        return { ...wu, liveness };
+      })
+      // Show work units that need attention (no live agent)
+      .filter((wu) => !wu.liveness.has_live_agent);
+  }
+
+  // Bug: 8a281b3 — helper to get work-unit continuations
+  function getWorkUnitContinuations(repoFilter?: string): WorkUnitWithLiveness[] {
+    const conditions = ["continuation IS NOT NULL"];
+    const params: unknown[] = [];
+
+    if (repoFilter) {
+      conditions.push("repo_id = ?");
+      params.push(repoFilter);
+    }
+
+    const where = ` WHERE ${conditions.join(" AND ")}`;
+    const rows = db
+      .prepare(`SELECT * FROM work_units${where} ORDER BY continuation_at DESC`)
+      .all(...params) as Record<string, unknown>[];
+
+    return rows
+      .map(mapWorkUnitRow)
+      .map((wu) => {
+        const liveness = sessionManager
+          ? computeInboxLiveness(wu, sessionRegistry, sessionManager)
+          : { has_live_agent: false, agent_session_id: null, agent_status: null, is_processing: false, last_activity: null };
+        return { ...wu, liveness };
+      })
+      // Only show continuations with no live agent
+      .filter((wu) => !wu.liveness.has_live_agent);
+  }
 
   // GET /api/inbox — unified query of pending items for a branch
   server.get("/api/inbox", (req, res) => {
@@ -138,7 +277,11 @@ export function registerInboxRoutes(
           )
           .all() as AuthResultRow[]);
 
-    // Open issues: from issue scanner, filtered by repo
+    // Bug: 8a281b3 — work units replace open issues as the primary "needs attention" signal
+    const workUnits = getWorkUnitsNeedingAttention(repo ?? undefined);
+    const workUnitContinuations = getWorkUnitContinuations(repo ?? undefined);
+
+    // Open issues: from issue scanner, filtered by repo (kept for backward compat)
     let openIssues: Array<{ id: string; title: string; labels: string[] }> = [];
     if (repo) {
       const summaries = issueScanner.getRepoSummaries();
@@ -156,7 +299,8 @@ export function registerInboxRoutes(
       }
     }
 
-    const total = continuations.length + authResults.length + openIssues.length;
+    const total = continuations.length + authResults.length + openIssues.length
+      + workUnits.length + workUnitContinuations.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -177,6 +321,8 @@ export function registerInboxRoutes(
         issue_ids: row.issue_ids ? JSON.parse(row.issue_ids) : null,
       })),
       open_issues: openIssues,
+      work_units: workUnits,
+      work_unit_continuations: workUnitContinuations,
       total,
     });
   });
@@ -203,7 +349,11 @@ export function registerInboxRoutes(
       )
       .all() as AuthResultRow[];
 
-    // Open issues: all repos
+    // Bug: 8a281b3 — work units needing attention (all repos)
+    const workUnits = getWorkUnitsNeedingAttention();
+    const workUnitContinuations = getWorkUnitContinuations();
+
+    // Open issues: all repos (kept for backward compat)
     const openIssues: Array<{
       id: string;
       title: string;
@@ -225,7 +375,8 @@ export function registerInboxRoutes(
       }
     }
 
-    const total = continuations.length + authResults.length + openIssues.length;
+    const total = continuations.length + authResults.length + openIssues.length
+      + workUnits.length + workUnitContinuations.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -249,6 +400,8 @@ export function registerInboxRoutes(
         issue_ids: row.issue_ids ? JSON.parse(row.issue_ids) : null,
       })),
       open_issues: openIssues,
+      work_units: workUnits,
+      work_unit_continuations: workUnitContinuations,
       total,
     });
   });

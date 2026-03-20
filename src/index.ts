@@ -28,6 +28,7 @@ import { registerWorkUnitRoutes } from "./routes/work-units.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
+import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import type { Logger, LogLevel, StartupCommitInfo } from "./types.js";
 
 const DEFAULT_PORT = 19420;
@@ -71,7 +72,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const workScanner = registerWorkRoutes(router);
   registerReviewRoutes(router, workScanner);
   const issueScanner = registerIssueRoutes(router, workScanner);
-  registerInboxRoutes(router, sessionRegistry, issueScanner);
+  // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
   // Bug: 94bba43 — sync reaper settings to config file on startup so
   // the fallback config file is always current even if Mandible was down
@@ -86,9 +87,12 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner);
 
   registerGraphRoutes(router, issueScanner);
-  registerWorkUnitRoutes(router);
+  // Bug: 8a281b3 — work-unit routes need sessionRegistry + sessionManager for liveness overlay
+  // sessionManager is declared below; registerWorkUnitRoutes is called after it's created.
 
   const sessionManager = new SessionManager(db, logger, sessionRegistry);
+  registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
+  registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager);
   registerConsoleRoutes(router, sessionManager);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
   registerConversationRoutes(router, sessionManager);
@@ -201,6 +205,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Start periodic reaper (marks dead sessions whose PIDs vanished)
   reaperTimer.start();
 
+  // Bug: 8a281b3 — periodic work-unit reconciler (dead sessions, abandoned branches, auto-commit)
+  const workUnitReconciler = new WorkUnitReconciler(logger);
+  workUnitReconciler.start();
+
   // Start scheduled metadata backups
   startBackupScheduler();
 
@@ -231,6 +239,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     stopIngestion();
     stopBackupScheduler();
     reaperTimer.stop();
+    workUnitReconciler.stop();
     navEnricher.stop();
     clearTimeout(issueStartupTimer);
     clearInterval(issueRescanTimer);
