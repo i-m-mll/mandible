@@ -25,6 +25,7 @@ import { registerSwitchboardRoutes } from "./routes/switchboard.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerGraphRoutes } from "./routes/graph.js";
 import { registerWorkUnitRoutes } from "./routes/work-units.js";
+import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
@@ -98,6 +99,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
   registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager);
   registerConsoleRoutes(router, sessionManager);
+  // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
+  registerWebhookRoutes(router, sessionRegistry, sessionManager);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
   registerConversationRoutes(router, sessionManager);
 

@@ -3,7 +3,7 @@ import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
-import type { AuthRequestStatus } from "../types.js";
+import type { AuthRequestStatus, WebhookEventRow } from "../types.js";
 import {
   mapWorkUnitRow,
   computeLiveness,
@@ -229,8 +229,25 @@ export function registerInboxRoutes(
       }
     }
 
+    // Bug: 9f66ad9 — pending webhook events, optionally filtered by branch
+    const pendingWebhooks = branch
+      ? (db
+          .prepare(
+            `SELECT * FROM webhook_events
+             WHERE status = 'pending' AND target_branch = ?
+             ORDER BY created_at DESC LIMIT 50`
+          )
+          .all(branch) as WebhookEventRow[])
+      : (db
+          .prepare(
+            `SELECT * FROM webhook_events
+             WHERE status = 'pending'
+             ORDER BY created_at DESC LIMIT 50`
+          )
+          .all() as WebhookEventRow[]);
+
     const total = continuations.length + authResults.length + openIssues.length
-      + workUnits.length + workUnitContinuations.length;
+      + workUnits.length + workUnitContinuations.length + pendingWebhooks.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -253,6 +270,16 @@ export function registerInboxRoutes(
       open_issues: openIssues,
       work_units: workUnits,
       work_unit_continuations: workUnitContinuations,
+      pending_webhooks: pendingWebhooks.map((row) => ({
+        id: row.id,
+        source: row.source,
+        event_type: row.event_type,
+        title: row.title,
+        priority: row.priority,
+        target_branch: row.target_branch,
+        target_issue: row.target_issue,
+        created_at: row.created_at,
+      })),
       total,
     });
   });
@@ -305,8 +332,17 @@ export function registerInboxRoutes(
       }
     }
 
+    // Bug: 9f66ad9 — pending webhook events (all)
+    const pendingWebhooks = db
+      .prepare(
+        `SELECT * FROM webhook_events
+         WHERE status = 'pending'
+         ORDER BY created_at DESC LIMIT 50`
+      )
+      .all() as WebhookEventRow[];
+
     const total = continuations.length + authResults.length + openIssues.length
-      + workUnits.length + workUnitContinuations.length;
+      + workUnits.length + workUnitContinuations.length + pendingWebhooks.length;
 
     sendJson(res, 200, {
       continuations: continuations.map((row) => ({
@@ -332,6 +368,16 @@ export function registerInboxRoutes(
       open_issues: openIssues,
       work_units: workUnits,
       work_unit_continuations: workUnitContinuations,
+      pending_webhooks: pendingWebhooks.map((row) => ({
+        id: row.id,
+        source: row.source,
+        event_type: row.event_type,
+        title: row.title,
+        priority: row.priority,
+        target_branch: row.target_branch,
+        target_issue: row.target_issue,
+        created_at: row.created_at,
+      })),
       total,
     });
   });

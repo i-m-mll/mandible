@@ -368,3 +368,34 @@ export interface WorkUnit {
   resolved_at: number | null;
   auth_request_id: string | null;
 }
+
+// --- Webhook event types (Bug: 9f66ad9) ---
+
+export type WebhookPriority = "low" | "normal" | "high";
+export type WebhookEventStatus = "pending" | "delivered" | "dismissed";
+
+export interface WebhookEvent {
+  source: string;           // "github", "ci", "monitoring", "custom"
+  event_type: string;       // "pr_review", "build_failed", "alert", etc.
+  data: unknown;            // arbitrary payload
+  target_session?: string;  // specific console session ID
+  target_issue?: string;    // issue ID (routes via work unit)
+  target_branch?: string;   // branch name (routes to sessions on that branch)
+  priority?: WebhookPriority;
+  title?: string;           // human-readable summary
+}
+
+export interface WebhookEventRow {
+  id: string;
+  source: string;
+  event_type: string;
+  title: string | null;
+  data_json: string;
+  target_issue: string | null;
+  target_branch: string | null;
+  priority: string;
+  status: WebhookEventStatus;
+  created_at: number;
+  delivered_at: number | null;
+  delivered_to: string | null;
+}
