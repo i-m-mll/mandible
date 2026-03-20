@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
-import { findIssue, getIssueDetail, getIssueSessions, issueAction, scanIssueRepo } from '../api';
+import {
+  findIssue,
+  getIssueContext,
+  getIssueDetail,
+  getIssueSessions,
+  issueAction,
+  scanIssueRepo,
+  type IssueContext,
+  type IssueContextAuthRequest,
+  type IssueContextSession,
+  type IssueContextWorkUnit,
+} from '../api';
 import { useSidebarResize } from '../hooks/useSidebarResize';
+import { EntityPill, EntityPillList } from '../components/shared/EntityPill';
 
 // --- Types ---
 
@@ -169,6 +181,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   const [showCommentBox, setShowCommentBox] = useState(false);
   const [actionInFlight, setActionInFlight] = useState(false);
   const [linkedSessions, setLinkedSessions] = useState<Array<{session_id: string; created_at: number}>>([]);
+  const [issueContext, setIssueContext] = useState<IssueContext | null>(null);
 
   // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
@@ -306,6 +319,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     if (!selectedRepoId || !selectedIssueId) {
       setIssueDetail(null);
       setLinkedSessions([]);
+      setIssueContext(null);
       return;
     }
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
@@ -358,6 +372,14 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
       })
       .catch(() => {
         if (!cancelled) setLinkedSessions([]);
+      });
+    // Bug: 84cd5ae — fetch issue context for the hub view
+    getIssueContext(repoId, issueId)
+      .then((ctx) => {
+        if (!cancelled) setIssueContext(ctx);
+      })
+      .catch(() => {
+        if (!cancelled) setIssueContext(null);
       });
     return () => {
       cancelled = true;
@@ -634,51 +656,131 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           </div>
         ) : (
           <div className="issues-detail__content">
-            {/* Bug: a44fd6a — render issue detail title as inline markdown */}
-            <h2
-              className="issues-detail__title"
-              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issueDetail.title) }}
-            />
-            <div className="issues-detail__meta">
-              <span
-                className={`status-pill ${
-                  detailVisualState === 'open'
-                    ? 'status-pill--success'
-                    : detailVisualState === 'merged'
-                      ? 'status-pill--merged'
-                      : 'status-pill--dismissed'
-                }`}
-              >
-                {detailVisualState}
-              </span>
-              {displayLabels.map((lbl) => {
-                const color = labelColor(lbl);
-                const display = LABEL_DISPLAY_NAMES[lbl] ?? lbl;
-                return (
-                  <span
-                    key={lbl}
-                    className="issue-label-pill"
-                    style={{ background: color.bg, color: color.fg }}
-                    title="label"
-                  >
-                    {display}
-                  </span>
-                );
-              })}
-              {/* Umbrella: show children button */}
-              {issueDetail.labels.includes('umbrella') && (
-                <button
-                  type="button"
-                  className="btn btn--ghost btn--sm"
-                  onClick={() => {
-                    setRepoFilter(issueDetail.repo_id);
-                    setParentFilter(issueDetail.id.slice(0, 8));
-                  }}
+            {/* ── Status Banner ── Bug: 84cd5ae */}
+            <div className="issue-hub__banner">
+              <div className="issue-hub__banner-top">
+                {/* Bug: a44fd6a — render issue detail title as inline markdown */}
+                <h2
+                  className="issues-detail__title"
+                  dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issueDetail.title) }}
+                />
+              </div>
+              <div className="issues-detail__meta">
+                <span
+                  className={`status-pill status-pill--lg ${
+                    detailVisualState === 'open'
+                      ? 'status-pill--success'
+                      : detailVisualState === 'merged'
+                        ? 'status-pill--merged'
+                        : 'status-pill--dismissed'
+                  }`}
                 >
-                  Show children
-                </button>
+                  {detailVisualState}
+                </span>
+                {displayLabels.map((lbl) => {
+                  const color = labelColor(lbl);
+                  const display = LABEL_DISPLAY_NAMES[lbl] ?? lbl;
+                  return (
+                    <span
+                      key={lbl}
+                      className="issue-label-pill"
+                      style={{ background: color.bg, color: color.fg }}
+                      title="label"
+                    >
+                      {display}
+                    </span>
+                  );
+                })}
+                {/* Umbrella: show children button */}
+                {issueDetail.labels.includes('umbrella') && (
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--sm"
+                    onClick={() => {
+                      setRepoFilter(issueDetail.repo_id);
+                      setParentFilter(issueDetail.id.slice(0, 8));
+                    }}
+                  >
+                    Show children
+                  </button>
+                )}
+              </div>
+
+              {/* Work unit status line */}
+              {issueContext?.work_unit && (
+                <div className="issue-hub__work-status">
+                  {issueContext.work_unit.branch && (
+                    <span className="issue-hub__branch-status">
+                      {issueContext.work_unit.state === 'committed' ? 'Committed on ' : 'Assigned to '}
+                      <EntityPill
+                        type="branch"
+                        id={issueContext.work_unit.branch}
+                        label={issueContext.work_unit.branch}
+                        repoId={issueDetail.repo_id}
+                      />
+                    </span>
+                  )}
+                  <span className={`issue-hub__liveness issue-hub__liveness--${
+                    issueContext.work_unit.liveness.has_live_agent
+                      ? (issueContext.work_unit.liveness.is_processing ? 'active' : 'idle')
+                      : 'unassigned'
+                  }`}>
+                    <span className="issue-hub__liveness-dot" />
+                    {issueContext.work_unit.liveness.has_live_agent
+                      ? (issueContext.work_unit.liveness.is_processing
+                          ? 'Active \u2014 SDK session running'
+                          : 'Idle')
+                      : 'Unassigned'}
+                  </span>
+                </div>
               )}
+
+              {/* Action buttons */}
+              <div className="issue-hub__actions">
+                {/* Open in Console — only if there's an active session */}
+                {issueContext?.work_unit?.liveness.has_live_agent &&
+                  issueContext.work_unit.assigned_session_id && (
+                  <a
+                    className="issue-hub__action-btn issue-hub__action-btn--primary"
+                    href={`#/console?session=${encodeURIComponent(issueContext.work_unit.assigned_session_id)}`}
+                  >
+                    Open in Console
+                  </a>
+                )}
+                {/* Resume Work — continuation exists, no active session */}
+                {issueContext?.work_unit?.continuation &&
+                  !issueContext.work_unit.liveness.has_live_agent && (
+                  <button
+                    type="button"
+                    className="issue-hub__action-btn issue-hub__action-btn--secondary"
+                    onClick={() => {
+                      // P6 will implement POST /api/issues/:repo/:id/spawn
+                      // For now, no-op placeholder
+                    }}
+                    title="Coming soon — will spawn an SDK session with continuation context"
+                  >
+                    Resume Work
+                  </button>
+                )}
+                {/* Start Agent — no active session, no continuation */}
+                {(!issueContext?.work_unit || (
+                  !issueContext.work_unit.liveness.has_live_agent &&
+                  !issueContext.work_unit.continuation
+                )) && (
+                  <button
+                    type="button"
+                    className="issue-hub__action-btn issue-hub__action-btn--secondary"
+                    onClick={() => {
+                      // P6 will implement POST /api/issues/:repo/:id/spawn
+                    }}
+                    title="Coming soon — will spawn an SDK session for this issue"
+                  >
+                    Start Agent
+                  </button>
+                )}
+              </div>
             </div>
+
             <div className="issues-detail__info text-muted">
               <span>{issueDetail.author}</span>
               {issueDetail.created_at && (
@@ -698,51 +800,134 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
               </div>
             )}
 
-            {issueDetail.comments.length > 0 && (
-              <>
-                <hr className="issues-detail__divider" />
-                <h3 className="issues-detail__section-title">
-                  Comments ({issueDetail.comments.length})
-                </h3>
-                <div className="issue-comments">
-                  {issueDetail.comments.map((comment) => (
-                    <div key={comment.id} className="issue-comment">
-                      <div className="issue-comment__header">
-                        <span className="issue-comment__author">{comment.author}</span>
-                        {comment.date && (
-                          <span className="issue-comment__date text-muted">
-                            {formatRelativeTime(comment.date)}
-                          </span>
-                        )}
-                      </div>
-                      <div
-                        className="issue-comment__body spec-panel"
-                        dangerouslySetInnerHTML={{
-                          __html: renderMarkdown(comment.body),
-                        }}
-                      />
-                    </div>
-                  ))}
+            {/* ── Activity Timeline ── Bug: 84cd5ae */}
+            <hr className="issues-detail__divider" />
+            <h3 className="issues-detail__section-title">Activity</h3>
+            <div className="issue-hub__timeline">
+              {/* Session events */}
+              {(issueContext?.sessions ?? []).map((sess: IssueContextSession) => (
+                <div key={`sess-${sess.session_id}`} className="issue-hub__timeline-item">
+                  <span className={`issue-hub__timeline-icon issue-hub__timeline-icon--session`} />
+                  <span className="issue-hub__timeline-text">
+                    Session started
+                    {sess.app ? ` (${sess.app})` : ''}
+                    {' \u2014 '}
+                    <EntityPill type="session" id={sess.session_id} />
+                  </span>
+                  {sess.created_at && (
+                    <span className="issue-hub__timeline-time text-muted">
+                      {formatRelativeTime(typeof sess.created_at === 'string' ? sess.created_at : new Date(sess.created_at).toISOString())}
+                    </span>
+                  )}
                 </div>
-              </>
-            )}
+              ))}
+              {/* Auth request events */}
+              {(issueContext?.auth_requests ?? []).map((auth: IssueContextAuthRequest) => (
+                <div key={`auth-${auth.id}`} className="issue-hub__timeline-item">
+                  <span className={`issue-hub__timeline-icon issue-hub__timeline-icon--auth`} />
+                  <span className="issue-hub__timeline-text">
+                    Auth request: {auth.status}
+                    {' \u2014 '}
+                    <EntityPill type="auth" id={auth.id} label={auth.title?.slice(0, 30) || auth.id.slice(0, 8)} />
+                  </span>
+                </div>
+              ))}
+              {/* Comments */}
+              {issueDetail.comments.map((comment) => (
+                <div key={comment.id} className="issue-hub__timeline-item">
+                  <span className="issue-hub__timeline-icon issue-hub__timeline-icon--comment" />
+                  <div className="issue-hub__timeline-comment">
+                    <div className="issue-comment__header">
+                      <span className="issue-comment__author">{comment.author}</span>
+                      {comment.date && (
+                        <span className="issue-comment__date text-muted">
+                          {formatRelativeTime(comment.date)}
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      className="issue-comment__body spec-panel"
+                      dangerouslySetInnerHTML={{
+                        __html: renderMarkdown(comment.body),
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+              {/* Continuation handoff note */}
+              {issueContext?.work_unit?.continuation && (
+                <div className="issue-hub__timeline-item">
+                  <span className="issue-hub__timeline-icon issue-hub__timeline-icon--handoff" />
+                  <div className="issue-hub__timeline-comment">
+                    <div className="issue-comment__header">
+                      <span className="issue-comment__author">Handoff Note</span>
+                    </div>
+                    <div
+                      className="issue-comment__body spec-panel"
+                      dangerouslySetInnerHTML={{
+                        __html: renderMarkdown(issueContext.work_unit.continuation),
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+              {(issueContext?.sessions ?? []).length === 0 &&
+                (issueContext?.auth_requests ?? []).length === 0 &&
+                issueDetail.comments.length === 0 &&
+                !issueContext?.work_unit?.continuation && (
+                <div className="issue-hub__timeline-empty text-muted">No activity yet.</div>
+              )}
+            </div>
 
-            {linkedSessions.length > 0 && (
+            {/* ── Related Entities ── Bug: 84cd5ae */}
+            {((issueContext?.sessions ?? []).length > 0 ||
+              (issueContext?.auth_requests ?? []).length > 0 ||
+              linkedSessions.length > 0) && (
               <>
                 <hr className="issues-detail__divider" />
-                <h3 className="issues-detail__section-title">
-                  Linked Sessions ({linkedSessions.length})
-                </h3>
-                <div className="linked-chips">
-                  {linkedSessions.map((link) => (
-                    <a
-                      key={link.session_id}
-                      className="linked-session-chip"
-                      href={`#/sessions?session=${encodeURIComponent(link.session_id)}`}
-                    >
-                      {link.session_id.slice(0, 8)}
-                    </a>
-                  ))}
+                <h3 className="issues-detail__section-title">Related</h3>
+                <div className="issue-hub__related">
+                  {/* Sessions */}
+                  {(issueContext?.sessions ?? linkedSessions.map((l) => ({
+                    session_id: l.session_id,
+                    has_conversation: false,
+                  }))).length > 0 && (
+                    <div className="issue-hub__related-group">
+                      <span className="issue-hub__related-label">Sessions</span>
+                      <EntityPillList>
+                        {(issueContext?.sessions ?? []).map((sess: IssueContextSession) => (
+                          <EntityPill key={sess.session_id} type="session" id={sess.session_id} />
+                        ))}
+                        {!issueContext && linkedSessions.map((link) => (
+                          <EntityPill key={link.session_id} type="session" id={link.session_id} />
+                        ))}
+                      </EntityPillList>
+                    </div>
+                  )}
+                  {/* Auth requests */}
+                  {(issueContext?.auth_requests ?? []).length > 0 && (
+                    <div className="issue-hub__related-group">
+                      <span className="issue-hub__related-label">Auth Requests</span>
+                      <EntityPillList>
+                        {(issueContext?.auth_requests ?? []).map((auth: IssueContextAuthRequest) => (
+                          <EntityPill key={auth.id} type="auth" id={auth.id} label={auth.id.slice(0, 8)} />
+                        ))}
+                      </EntityPillList>
+                    </div>
+                  )}
+                  {/* Conversations — from sessions that have conversations */}
+                  {(issueContext?.sessions ?? []).filter((s: IssueContextSession) => s.has_conversation).length > 0 && (
+                    <div className="issue-hub__related-group">
+                      <span className="issue-hub__related-label">Conversations</span>
+                      <EntityPillList>
+                        {(issueContext?.sessions ?? [])
+                          .filter((s: IssueContextSession) => s.has_conversation)
+                          .map((s: IssueContextSession) => (
+                            <EntityPill key={`conv-${s.session_id}`} type="conversation" id={s.session_id} />
+                          ))}
+                      </EntityPillList>
+                    </div>
+                  )}
                 </div>
               </>
             )}
@@ -756,15 +941,6 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
                   onClick={handleCloseIssue}
                 >
                   Close Issue
-                </button>
-              ) : detailVisualState === 'merged' ? (
-                <button
-                  type="button"
-                  className="btn btn--success"
-                  disabled={actionInFlight}
-                  onClick={handleReopenIssue}
-                >
-                  Reopen Issue
                 </button>
               ) : (
                 <button

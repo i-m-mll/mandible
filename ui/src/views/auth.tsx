@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
+import { EntityPill } from '../components/shared/EntityPill';
 
 export type AuthRequest = {
   id?: string;
@@ -556,14 +557,7 @@ function AuthCard({
           )}
           {bugRefs.length > 0 && canIssueLink && (
             bugRefs.map((ref) => (
-              <a
-                key={ref}
-                className="auth-card__link auth-card__link--issue"
-                href={`#/issues?repo=${encodeURIComponent(repoId)}&issue=${encodeURIComponent(ref)}`}
-                onClick={(e) => e.stopPropagation()}
-              >
-                Issue {ref.slice(0, 8)}
-              </a>
+              <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
             ))
           )}
         </div>

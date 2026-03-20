@@ -475,6 +475,58 @@ export async function getSessionIssues(sessionId: string): Promise<unknown[]> {
   return Array.isArray(payload) ? payload : [];
 }
 
+// Bug: 84cd5ae — issue context hub aggregation
+export type IssueContextLiveness = {
+  has_live_agent: boolean;
+  agent_status: string | null;
+  is_processing: boolean;
+  last_activity: string | null;
+};
+
+export type IssueContextWorkUnit = {
+  branch: string | null;
+  state: string;
+  continuation: string | null;
+  assigned_session_id: string | null;
+  liveness: IssueContextLiveness;
+};
+
+export type IssueContextSession = {
+  session_id: string;
+  status: string;
+  created_at: string | null;
+  app: string;
+  has_conversation: boolean;
+};
+
+export type IssueContextAuthRequest = {
+  id: string;
+  title: string;
+  status: string;
+  head_branch: string | null;
+};
+
+export type IssueContextBranchInfo = {
+  ahead: number;
+  behind: number;
+  last_commit_date: string | null;
+};
+
+export type IssueContext = {
+  issue: unknown;
+  work_unit: IssueContextWorkUnit | null;
+  sessions: IssueContextSession[];
+  auth_requests: IssueContextAuthRequest[];
+  branch_info: IssueContextBranchInfo | null;
+};
+
+export async function getIssueContext(repoId: string, issueId: string): Promise<IssueContext> {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/context`
+  );
+  return (await parseMaybeJson(response)) as IssueContext;
+}
+
 export async function getIssueSessions(repoId: string, issueId: string): Promise<unknown[]> {
   const response = await apiGet(
     `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/sessions`
