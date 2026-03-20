@@ -20,11 +20,43 @@ import type {
  * The sessionId parameter is the Mandible session ID for this channel
  * connection, discovered at startup from the environment or passed by
  * the spawning process.
+ *
+ * Bug: 0b454df — on first tool invocation, register the session with
+ * Mandible (if not already registered at startup). Subsequent invocations
+ * record tool usage for liveness tracking.
  */
 export function registerTools(
   server: McpServer,
   sessionId: string | null,
 ): void {
+  // Bug: 0b454df — track whether we've registered with Mandible
+  let channelRegistered = false;
+
+  /** Ensure channel session is registered and record a tool call. */
+  async function ensureChannelRegistered(toolName: string): Promise<void> {
+    if (!sessionId) return;
+    if (!channelRegistered) {
+      try {
+        const cwd = process.env.CLAUDE_CWD ?? process.cwd();
+        await client.registerSession({
+          id: sessionId,
+          app: "claude-channel",
+          status: "active",
+          cwd,
+        });
+        channelRegistered = true;
+      } catch {
+        // Best effort — Mandible may not be running
+      }
+    }
+    // Record tool call for liveness tracking
+    try {
+      await client.recordChannelToolCall(sessionId, toolName);
+    } catch {
+      // Best effort
+    }
+  }
+
   // 1. mandible_check_inbox
   server.tool(
     "mandible_check_inbox",
@@ -38,6 +70,7 @@ export function registerTools(
         .describe("If true, check all branches/repos (global inbox)"),
     },
     async (args) => {
+      await ensureChannelRegistered("mandible_check_inbox");
       try {
         let inbox: InboxResponse;
         if (args.global) {
@@ -80,6 +113,7 @@ export function registerTools(
         .describe("Additional details about the work"),
     },
     async (args) => {
+      await ensureChannelRegistered("mandible_report_status");
       try {
         // Update session task field if we have a session ID
         if (sessionId) {
@@ -142,6 +176,7 @@ export function registerTools(
         .describe("Override commit message for the merge"),
     },
     async (args) => {
+      await ensureChannelRegistered("mandible_submit_auth");
       try {
         // Build the auth merge command that will be executed
         const command = `mandible auth merge ${args.branch}`;
@@ -190,6 +225,7 @@ export function registerTools(
         .describe("Filter by label (e.g. 'feature', 'error', 'umbrella')"),
     },
     async (args) => {
+      await ensureChannelRegistered("mandible_get_issues");
       try {
         const summaries = await client.getIssues({
           repo: args.repo,
@@ -228,6 +264,7 @@ export function registerTools(
         ),
     },
     async (args) => {
+      await ensureChannelRegistered("mandible_request_work");
       try {
         const result = await client.getWorkUnits({
           state: args.state ?? "open",

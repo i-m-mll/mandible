@@ -180,6 +180,33 @@ export async function submitAuth(payload: {
 
 // --- Sessions ---
 
+/** Bug: 0b454df — register a channel-connected session with Mandible. */
+export async function registerSession(payload: {
+  id: string;
+  app: string;
+  status?: string;
+  cwd?: string | null;
+  branch?: string | null;
+}): Promise<SessionUpdateResponse> {
+  return request<SessionUpdateResponse>(
+    "POST",
+    "/api/sessions/register",
+    payload,
+  );
+}
+
+/** Bug: 0b454df — notify Mandible that a channel tool was called. */
+export async function recordChannelToolCall(
+  sessionId: string,
+  toolName: string,
+): Promise<void> {
+  await request<unknown>(
+    "POST",
+    `/api/sessions/${sessionId}/channel-tool-call`,
+    { tool_name: toolName },
+  );
+}
+
 export async function updateSession(
   sessionId: string,
   patch: Record<string, unknown>,

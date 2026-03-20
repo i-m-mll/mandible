@@ -3,6 +3,7 @@
 // both routes/work-units.ts and routes/inbox.ts (and routes/issues.ts).
 
 import { getDb } from "./db.js";
+import { getChannelRegistry } from "./channel-registry.js";
 import type { SessionRegistry } from "./registry.js";
 import type { SessionManager } from "./session-manager.js";
 import type { WorkUnit } from "./types.js";
@@ -73,7 +74,38 @@ export function computeLiveness(
     .get(workUnit.branch) as { id: string; status: string; last_active: string | null } | undefined;
 
   if (!sessionRow) {
+    // Bug: 0b454df — check channel-connected sessions as a liveness source.
+    // Channel sessions may be on this branch without being found by the
+    // session query above (e.g., if the session was registered with a slightly
+    // different branch format). Check the channel registry directly.
+    const channelRegistry = getChannelRegistry();
+    const channelOnBranch = channelRegistry.getByBranch(workUnit.branch);
+    if (channelOnBranch.length > 0) {
+      const cs = channelOnBranch[0];
+      return {
+        has_live_agent: true,
+        agent_session_id: cs.session_id,
+        agent_status: "active",
+        is_processing: false,
+        last_activity: cs.last_tool_call,
+      };
+    }
     return noLiveness;
+  }
+
+  // Bug: 0b454df — if the session is channel-connected, check freshness
+  // via the channel registry rather than relying solely on PID/console state.
+  const channelRegistry = getChannelRegistry();
+  if (channelRegistry.isChannelConnected(sessionRow.id)) {
+    const isAlive = channelRegistry.isAlive(sessionRow.id);
+    const cs = channelRegistry.get(sessionRow.id);
+    return {
+      has_live_agent: isAlive,
+      agent_session_id: sessionRow.id,
+      agent_status: isAlive ? "active" : "stale",
+      is_processing: false,
+      last_activity: cs?.last_tool_call ?? null,
+    };
   }
 
   // Check SDK processing state via console_sessions

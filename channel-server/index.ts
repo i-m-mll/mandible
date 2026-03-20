@@ -11,10 +11,12 @@
 //   2. Forwards Mandible SSE events as MCP notifications
 //   3. Communicates over stdio (stdin/stdout JSON-RPC)
 
+import { execSync } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerTools } from "./tools.js";
 import { createNotificationBridge } from "./notifications.js";
+import * as client from "./client.js";
 
 const INSTRUCTIONS = `You are connected to Mandible, a local agent control plane. Mandible tracks your work via issues, branches, and work units.
 
@@ -53,6 +55,36 @@ async function main(): Promise<void> {
       instructions: INSTRUCTIONS,
     },
   );
+
+  // Bug: 0b454df — detect environment for session registration
+  const cwd = process.env.CLAUDE_CWD ?? process.cwd();
+  let branch: string | null = null;
+  try {
+    branch = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim() || null;
+  } catch {
+    // Not in a git repo — branch stays null
+  }
+
+  // Bug: 0b454df — register session with Mandible on startup so the
+  // dashboard shows it immediately, not just on first tool call.
+  if (sessionId) {
+    try {
+      await client.registerSession({
+        id: sessionId,
+        app: "claude-channel",
+        status: "active",
+        cwd,
+        branch,
+      });
+    } catch {
+      // Best effort — Mandible may not be running yet
+      process.stderr.write("Warning: could not register channel session with Mandible\n");
+    }
+  }
 
   // Register tools
   registerTools(server, sessionId);
