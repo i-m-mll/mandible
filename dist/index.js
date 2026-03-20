@@ -24,10 +24,12 @@ import { registerSwitchboardRoutes } from "./routes/switchboard.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerGraphRoutes } from "./routes/graph.js";
 import { registerWorkUnitRoutes } from "./routes/work-units.js";
+import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
+import { getChannelRegistry } from "./channel-registry.js";
 const DEFAULT_PORT = 19420;
 const LEVELS = ["debug", "info", "warn", "error"];
 const DOTFILES_ROOT = resolveDotfilesRoot();
@@ -73,6 +75,8 @@ export async function startDaemon(options = {}) {
     registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
     registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager);
     registerConsoleRoutes(router, sessionManager);
+    // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
+    registerWebhookRoutes(router, sessionRegistry, sessionManager);
     // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
     registerConversationRoutes(router, sessionManager);
     // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)
@@ -173,8 +177,37 @@ export async function startDaemon(options = {}) {
     catch (error) {
         logger("warn", "startup_discovery_failed", { error: String(error) });
     }
+    // Bug: 73e0adf — clear stale channel_connected_at on daemon startup.
+    // Sessions that were channel-connected when the daemon last stopped are
+    // no longer live; clear their channel metadata so the dashboard doesn't
+    // show phantom channel badges.
+    try {
+        db.prepare(`UPDATE sessions SET channel_connected_at = NULL, channel_last_tool_call = NULL
+       WHERE channel_connected_at IS NOT NULL AND status NOT IN ('active', 'idle')`).run();
+    }
+    catch (error) {
+        logger("warn", "channel_startup_cleanup_failed", { error: String(error) });
+    }
     // Start periodic reaper (marks dead sessions whose PIDs vanished)
     reaperTimer.start();
+    // Bug: 73e0adf — periodic channel registry pruning (every 5 minutes).
+    // Removes in-memory entries for channel sessions that haven't called
+    // any tool within the staleness window.
+    const CHANNEL_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
+    const channelPruneTimer = setInterval(() => {
+        try {
+            const pruned = getChannelRegistry().pruneStale();
+            if (pruned.length > 0) {
+                logger("info", "channel_prune", { pruned_count: pruned.length, session_ids: pruned });
+            }
+        }
+        catch (error) {
+            logger("warn", "channel_prune_failed", { error: String(error) });
+        }
+    }, CHANNEL_PRUNE_INTERVAL_MS);
+    if (typeof channelPruneTimer === "object" && "unref" in channelPruneTimer) {
+        channelPruneTimer.unref();
+    }
     // Bug: 8a281b3 — periodic work-unit reconciler (dead sessions, abandoned branches, auto-commit)
     const workUnitReconciler = new WorkUnitReconciler(logger);
     workUnitReconciler.start();
@@ -212,6 +245,7 @@ export async function startDaemon(options = {}) {
         navEnricher.stop();
         clearTimeout(issueStartupTimer);
         clearInterval(issueRescanTimer);
+        clearInterval(channelPruneTimer);
         // Bug: 737df04 — destroy all open connections (including SSE streams) before
         // calling server.close(). Without this, server.close() waits indefinitely for
         // long-lived SSE connections to drain, hits the 5s timeout, force-exits, and

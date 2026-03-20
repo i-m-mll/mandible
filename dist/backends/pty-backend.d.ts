@@ -42,6 +42,4 @@ export declare class PTYBackend extends EventEmitter implements AgenticBackend {
     private buildPtyEnv;
     private makeUserEvent;
     private buildPromptInvocation;
-    private normalizeGeminiStreamLine;
-    private normalizeCodexStreamLine;
 }
