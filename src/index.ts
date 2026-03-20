@@ -24,6 +24,7 @@ import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerSwitchboardRoutes } from "./routes/switchboard.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerGraphRoutes } from "./routes/graph.js";
+import { registerWorkUnitRoutes } from "./routes/work-units.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
@@ -85,6 +86,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner);
 
   registerGraphRoutes(router, issueScanner);
+  registerWorkUnitRoutes(router);
 
   const sessionManager = new SessionManager(db, logger, sessionRegistry);
   registerConsoleRoutes(router, sessionManager);
