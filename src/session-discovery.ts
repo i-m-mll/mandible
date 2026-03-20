@@ -30,6 +30,8 @@ interface AgentProcess {
 const AGENT_PATTERNS: ReadonlyArray<{ pattern: RegExp; app: string }> = [
   { pattern: /claude/, app: "claude" },
   { pattern: /codex/, app: "codex" },
+  // Bug: 81c9d85 — discover Gemini agent sessions
+  { pattern: /gemini/, app: "gemini" },
 ];
 
 /**
@@ -309,9 +311,13 @@ export interface ReaperStatus {
  */
 export class ReaperTimer {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
   private readonly discovery: SessionDiscovery;
   private readonly log: Logger;
   private readonly intervalMs: number;
+  // Bug: 81c9d85 — periodic discovery interval (default 5 minutes)
+  private readonly discoveryIntervalMs: number;
+  private discovering = false;
 
   // Tracked state for the status endpoint
   private _lastRunAt: string | null = null;
@@ -320,13 +326,14 @@ export class ReaperTimer {
   private _totalReaped = 0;
   private _totalRuns = 0;
 
-  constructor(discovery: SessionDiscovery, logger: Logger, intervalMs = 60_000) {
+  constructor(discovery: SessionDiscovery, logger: Logger, intervalMs = 60_000, discoveryIntervalMs = 300_000) {
     this.discovery = discovery;
     this.log = logger;
     this.intervalMs = intervalMs;
+    this.discoveryIntervalMs = discoveryIntervalMs;
   }
 
-  /** Start the periodic reaper. Safe to call multiple times. */
+  /** Start the periodic reaper and discovery. Safe to call multiple times. */
   start(): void {
     if (this.timer) {
       return;
@@ -337,14 +344,26 @@ export class ReaperTimer {
     if (typeof this.timer === "object" && "unref" in this.timer) {
       this.timer.unref();
     }
+
+    // Bug: 81c9d85 — periodic full discovery alongside reaper ticks
+    this.discoveryTimer = setInterval(() => this.discoveryTick(), this.discoveryIntervalMs);
+    if (typeof this.discoveryTimer === "object" && "unref" in this.discoveryTimer) {
+      this.discoveryTimer.unref();
+    }
+    this.log("info", "discovery_timer_started", { interval_ms: this.discoveryIntervalMs });
   }
 
-  /** Stop the periodic reaper. */
+  /** Stop the periodic reaper and discovery. */
   stop(): void {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
       this.log("info", "reaper_timer_stopped");
+    }
+    if (this.discoveryTimer) {
+      clearInterval(this.discoveryTimer);
+      this.discoveryTimer = null;
+      this.log("info", "discovery_timer_stopped");
     }
   }
 
@@ -390,6 +409,28 @@ export class ReaperTimer {
       }
     } catch (error) {
       this.log("warn", "reaper_tick_error", { error: String(error) });
+    }
+  }
+
+  // Bug: 81c9d85 — periodic full discovery tick with concurrency guard
+  private discoveryTick(): void {
+    if (this.discovering) {
+      return;
+    }
+    this.discovering = true;
+    try {
+      const result = this.discovery.discoverSessions();
+      if (result.discovered > 0 || result.dead_reaped > 0) {
+        this.log("info", "discovery_tick", {
+          discovered: result.discovered,
+          dead_reaped: result.dead_reaped,
+          duration_ms: result.duration_ms,
+        });
+      }
+    } catch (error) {
+      this.log("warn", "discovery_tick_error", { error: String(error) });
+    } finally {
+      this.discovering = false;
     }
   }
 }

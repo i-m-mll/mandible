@@ -573,6 +573,14 @@ const MIGRATIONS: Migration[] = [
     statements: [
       `ALTER TABLE console_sessions ADD COLUMN resume_at_message TEXT`,
     ]
+  },
+  {
+    version: 38,
+    name: "sessions_branch_index",
+    // Bug: 81c9d85 — index sessions by branch for efficient branch-scoped queries
+    statements: [
+      `CREATE INDEX IF NOT EXISTS sessions_branch_idx ON sessions(branch) WHERE branch IS NOT NULL`,
+    ]
   }
 ];
 
