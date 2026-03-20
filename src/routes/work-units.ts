@@ -227,6 +227,6 @@ export function registerWorkUnitRoutes(server: RouteRegistrar): void {
       .prepare(`SELECT * FROM work_units${where} ORDER BY created_at DESC`)
       .all(...params) as Record<string, unknown>[];
 
-    sendJson(res, 200, rows.map(mapRow));
+    sendJson(res, 200, { work_units: rows.map(mapRow) });
   });
 }

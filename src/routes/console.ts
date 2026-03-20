@@ -101,7 +101,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
-    res.status(200).json({ session: ptySession.meta });
+    res.status(200).json({ session: enrichWithProcessing(ptySession) });
   });
 
   server.patch("/api/console/sessions/:id", (req, res) => {
