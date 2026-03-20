@@ -7,6 +7,7 @@ import {
   getIssueSessions,
   issueAction,
   scanIssueRepo,
+  spawnIssueAgent,
   type IssueContext,
   type IssueContextAuthRequest,
   type IssueContextSession,
@@ -753,11 +754,20 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
                   <button
                     type="button"
                     className="issue-hub__action-btn issue-hub__action-btn--secondary"
-                    onClick={() => {
-                      // P6 will implement POST /api/issues/:repo/:id/spawn
-                      // For now, no-op placeholder
+                    disabled={actionInFlight}
+                    onClick={async () => {
+                      // Bug: cbbb3d9 — spawn SDK session from issue hub
+                      if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
+                      setActionInFlight(true);
+                      try {
+                        const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
+                        window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+                      } catch {
+                        // silently fail
+                      } finally {
+                        setActionInFlight(false);
+                      }
                     }}
-                    title="Coming soon — will spawn an SDK session with continuation context"
                   >
                     Resume Work
                   </button>
@@ -770,10 +780,20 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
                   <button
                     type="button"
                     className="issue-hub__action-btn issue-hub__action-btn--secondary"
-                    onClick={() => {
-                      // P6 will implement POST /api/issues/:repo/:id/spawn
+                    disabled={actionInFlight}
+                    onClick={async () => {
+                      // Bug: cbbb3d9 — spawn SDK session from issue hub
+                      if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
+                      setActionInFlight(true);
+                      try {
+                        const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
+                        window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+                      } catch {
+                        // silently fail
+                      } finally {
+                        setActionInFlight(false);
+                      }
                     }}
-                    title="Coming soon — will spawn an SDK session for this issue"
                   >
                     Start Agent
                   </button>

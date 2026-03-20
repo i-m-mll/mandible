@@ -43,6 +43,11 @@ const RESUME_CONFLICT_LABELS: Record<string, string> = {
   auto_fork: 'Auto-fork (create new conversation)',
   allow_concurrent: 'Allow concurrent (resume in-place)',
 };
+// Bug: cbbb3d9 — auto-resume policy for work-unit continuations
+const AUTO_RESUME_POLICIES = ['manual'];
+const AUTO_RESUME_LABELS: Record<string, string> = {
+  manual: 'Manual (user clicks Resume)',
+};
 const DESKTOP_DAEMON_MODES: DesktopDaemonLaunchMode[] = ['on_demand', 'manual'];
 
 function Toggle(props: {
@@ -866,6 +871,40 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             >
               {RESUME_CONFLICT_POLICIES.map((p) => (
                 <option key={p} value={p}>{RESUME_CONFLICT_LABELS[p] ?? p}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Section: Work Queue ── Bug: cbbb3d9 */}
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Work Queue</h3>
+          <p className="settings-view__section-desc">
+            How to handle work-unit continuations (handoff notes from ended sessions).
+          </p>
+        </div>
+
+        <div className="settings-view__section-body">
+          <div className="settings-view__select-row">
+            <div className="settings-view__select-info">
+              <span className="settings-view__select-label">Auto-resume policy</span>
+              <span className="settings-view__select-desc">
+                When a session ends with a continuation, how should the work be resumed?
+              </span>
+            </div>
+            <select
+              className="settings-view__select"
+              value={settings.auto_resume_policy ?? 'manual'}
+              onChange={async (e) => {
+                try {
+                  await onSave('auto_resume_policy', (e.target as HTMLSelectElement).value);
+                } catch { /* ignore */ }
+              }}
+            >
+              {AUTO_RESUME_POLICIES.map((p) => (
+                <option key={p} value={p}>{AUTO_RESUME_LABELS[p] ?? p}</option>
               ))}
             </select>
           </div>

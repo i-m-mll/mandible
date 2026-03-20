@@ -655,6 +655,8 @@ export class SessionRegistry {
     const updated = this.getSession(id);
     if (updated) {
       if (status === "ended" || status === "dead") {
+        // Bug: cbbb3d9 — transfer continuation to work unit on session end
+        this.transferContinuationToWorkUnit(updated);
         broadcast("session:ended", updated);
       } else {
         broadcast("session:updated", updated);
@@ -912,6 +914,51 @@ export class SessionRegistry {
     }
   }
 
+  /**
+   * Transfer a session's continuation to linked work units when the session ends.
+   * Bug: cbbb3d9 — session-to-work-unit continuation transfer
+   */
+  private transferContinuationToWorkUnit(session: Session): void {
+    if (!session.continuation) {
+      return;
+    }
+    try {
+      // Find issues linked to this session
+      const links = this.db
+        .prepare(
+          "SELECT issue_id, repo_id FROM session_issues WHERE session_id = ?"
+        )
+        .all(session.id) as Array<{ issue_id: string; repo_id: string }>;
+
+      if (links.length === 0) {
+        return;
+      }
+
+      const now = Date.now();
+      for (const link of links) {
+        // Find open/committed work unit for this issue+repo
+        const wu = this.db
+          .prepare(
+            `SELECT id FROM work_units
+             WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')
+             ORDER BY created_at DESC LIMIT 1`
+          )
+          .get(link.issue_id, link.repo_id) as { id: string } | undefined;
+
+        if (wu) {
+          this.db
+            .prepare(
+              `UPDATE work_units SET continuation = ?, continuation_by = ?, continuation_at = ?
+               WHERE id = ?`
+            )
+            .run(session.continuation, session.id, now, wu.id);
+        }
+      }
+    } catch {
+      // Non-critical — best effort transfer
+    }
+  }
+
   private ensureLiveness(session: Session): Session {
     if (session.status !== "active") {
       return session;
@@ -925,6 +972,8 @@ export class SessionRegistry {
       .prepare("UPDATE sessions SET status = ?, ended_at = ?, updated_at = ? WHERE id = ?")
       .run("dead", now, now, session.id);
     const updated = { ...session, status: "dead" as SessionStatus, ended_at: now, updated_at: now };
+    // Bug: cbbb3d9 — transfer continuation to work unit on session death
+    this.transferContinuationToWorkUnit(updated);
     broadcast("session:ended", updated);
     return updated;
   }

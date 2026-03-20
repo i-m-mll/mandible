@@ -536,6 +536,26 @@ export async function getIssueSessions(repoId: string, issueId: string): Promise
   return Array.isArray(payload) ? payload : [];
 }
 
+// Bug: cbbb3d9 — spawn SDK console session from issue hub
+export type SpawnIssueAgentResult = {
+  console_session_id: string;
+  continuation: string | null;
+  branch: string | null;
+  cwd: string | null;
+};
+
+export async function spawnIssueAgent(
+  repoId: string,
+  issueId: string,
+  label?: string,
+): Promise<SpawnIssueAgentResult> {
+  const response = await apiPost(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/spawn`,
+    label ? { label } : {},
+  );
+  return (await parseMaybeJson(response)) as SpawnIssueAgentResult;
+}
+
 export async function getStarredChats<T>(): Promise<T[]> {
   const response = await apiGet('/api/chats/starred');
   const payload = (await parseMaybeJson(response)) as ApiList<T>;
