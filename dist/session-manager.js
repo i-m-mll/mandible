@@ -3,6 +3,7 @@ import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend } from "./backends/sdk-backend.js";
+import { SpawnBackend } from "./backends/spawn-backend.js";
 const OPERATOR_DEFAULTS = {
     command: "claude",
     args: ["--dangerously-skip-permissions"],
@@ -27,7 +28,14 @@ function computeAgentType(command, is_operator) {
     return "shell";
 }
 function defaultBackendType(command) {
-    return command === "claude" ? "sdk" : "pty";
+    if (command === "claude")
+        return "sdk";
+    // Bug: 8d3328c — Codex, Gemini use spawn (structured JSON stdout parsing)
+    if (command === "codex" || command === "gemini")
+        return "spawn";
+    // Shell and unknown commands need interactive terminal (SpawnBackend can't
+    // execute arbitrary commands — buildPromptInvocation returns null for them)
+    return "pty";
 }
 function parseAllowedTools(raw) {
     if (!raw)
@@ -65,7 +73,7 @@ function rowToSession(row) {
         updated_at: row.updated_at,
         started_at: row.started_at,
         stopped_at: row.stopped_at,
-        backend_type: (row.backend_type === "sdk" ? "sdk" : "pty"),
+        backend_type: (row.backend_type === "sdk" ? "sdk" : row.backend_type === "spawn" ? "spawn" : "pty"),
         allowed_tools: parseAllowedTools(row.allowed_tools),
         mandible_session_id: row.mandible_session_id ?? null,
         resume_at_message: row.resume_at_message ?? null,
@@ -340,6 +348,9 @@ export class SessionManager {
     createBackend(session, type) {
         if (type === "sdk") {
             return new SDKBackend(session, this.logger, this.sessionRegistry ?? undefined);
+        }
+        if (type === "spawn") {
+            return new SpawnBackend(session, this.logger);
         }
         return new PTYBackend(session, this.logger);
     }

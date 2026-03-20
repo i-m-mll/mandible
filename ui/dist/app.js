@@ -14311,6 +14311,9 @@ function appBadge(app) {
   }
   return "app-badge";
 }
+function isChannelConnected(session) {
+  return !!session.channel_connected_at;
+}
 function buildTree(sessions) {
   const byId = /* @__PURE__ */ new Map();
   sessions.forEach((session) => {
@@ -14562,6 +14565,7 @@ function SessionsView({
     const newTimestamp = sessionId ? newSessionIds[sessionId] : void 0;
     const isNew = newTimestamp ? Date.now() - newTimestamp < 1e4 : false;
     const isPinned = Boolean(session.pinned);
+    const channelConnected = isChannelConnected(session);
     const isChild = depth > 0;
     const descendantCount = sessionId ? countDescendants(sessionId, childrenMap) : 0;
     const isParent = !isChild;
@@ -14648,7 +14652,8 @@ function SessionsView({
               }
             ),
             /* @__PURE__ */ u3("span", { className: statusClass(status) }),
-            isPinned && /* @__PURE__ */ u3("span", { className: "pin-badge", title: "Pinned" })
+            isPinned && /* @__PURE__ */ u3("span", { className: "pin-badge", title: "Pinned" }),
+            channelConnected && /* @__PURE__ */ u3("span", { className: "channel-badge", title: "Channel Connected (MCP)" })
           ] }) }),
           /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-flex", children: /* @__PURE__ */ u3("span", { className: appBadge(getSessionApp(session)), children: getSessionApp(session).slice(0, 2).toUpperCase() }) }) }),
           /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-stack", children: [
@@ -22374,7 +22379,7 @@ function TerminalPane({
   const [permissionBusy, setPermissionBusy] = d2(false);
   const [activeSubagents, setActiveSubagents] = d2([]);
   const [sidebarOpen, setSidebarOpen] = d2(false);
-  const showDebugTerminal = backendType === "pty" || isOperator;
+  const showDebugTerminal = backendType === "pty";
   const providerFamily = isOperator ? "claude" : command;
   const availableTools = collectAvailableTools(streamEvents);
   y2(() => {
@@ -23100,8 +23105,8 @@ function NewSessionDialog({
     }
   }, [backend, kind]);
   y2(() => {
-    if (backend !== "claude" && transport !== "pty") {
-      setTransport("pty");
+    if (backend !== "claude" && transport !== "spawn") {
+      setTransport("spawn");
     }
   }, [backend, transport]);
   if (!open)
@@ -23169,7 +23174,7 @@ function NewSessionDialog({
               disabled,
               onClick: () => {
                 setBackend(option.value);
-                setTransport(option.value === "claude" ? "sdk" : "pty");
+                setTransport(option.value === "claude" ? "sdk" : "spawn");
               }
             },
             option.value

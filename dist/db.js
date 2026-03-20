@@ -599,6 +599,45 @@ const MIGRATIONS = [
         statements: [
             `CREATE INDEX IF NOT EXISTS sessions_branch_idx ON sessions(branch) WHERE branch IS NOT NULL`,
         ]
+    },
+    {
+        version: 40,
+        name: "webhook_events",
+        // Bug: 9f66ad9 — webhook ingestion endpoint for external event routing
+        statements: [
+            `CREATE TABLE IF NOT EXISTS webhook_events (
+        id             TEXT PRIMARY KEY,
+        source         TEXT NOT NULL,
+        event_type     TEXT NOT NULL,
+        title          TEXT,
+        data_json      TEXT NOT NULL,
+        target_session TEXT,
+        target_issue   TEXT,
+        target_branch  TEXT,
+        priority       TEXT NOT NULL DEFAULT 'normal',
+        status         TEXT NOT NULL DEFAULT 'pending',
+        created_at     INTEGER NOT NULL,
+        delivered_at   INTEGER,
+        delivered_to   TEXT
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_webhook_events_status
+        ON webhook_events(status)`,
+            `CREATE INDEX IF NOT EXISTS idx_webhook_events_created
+        ON webhook_events(created_at DESC)`,
+        ]
+    },
+    {
+        version: 41,
+        name: "channel_connected_sessions",
+        // Bug: 0b454df — track channel-connected sessions (MCP channel server)
+        // channel_connected_at: epoch ms when channel server first registered
+        // channel_last_tool_call: epoch ms of most recent MCP tool invocation
+        statements: [
+            `ALTER TABLE sessions ADD COLUMN channel_connected_at INTEGER`,
+            `ALTER TABLE sessions ADD COLUMN channel_last_tool_call INTEGER`,
+            `CREATE INDEX IF NOT EXISTS sessions_channel_idx
+        ON sessions(channel_connected_at) WHERE channel_connected_at IS NOT NULL`,
+        ]
     }
 ];
 export function getDbPath() {

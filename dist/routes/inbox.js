@@ -164,8 +164,20 @@ export function registerInboxRoutes(server, sessionRegistry, issueScanner, sessi
                 }
             }
         }
+        // Bug: 9f66ad9 — pending webhook events, optionally filtered by branch
+        const pendingWebhooks = branch
+            ? db
+                .prepare(`SELECT * FROM webhook_events
+             WHERE status = 'pending' AND target_branch = ?
+             ORDER BY created_at DESC LIMIT 50`)
+                .all(branch)
+            : db
+                .prepare(`SELECT * FROM webhook_events
+             WHERE status = 'pending'
+             ORDER BY created_at DESC LIMIT 50`)
+                .all();
         const total = continuations.length + authResults.length + openIssues.length
-            + workUnits.length + workUnitContinuations.length;
+            + workUnits.length + workUnitContinuations.length + pendingWebhooks.length;
         sendJson(res, 200, {
             continuations: continuations.map((row) => ({
                 session_id: row.id,
@@ -187,6 +199,16 @@ export function registerInboxRoutes(server, sessionRegistry, issueScanner, sessi
             open_issues: openIssues,
             work_units: workUnits,
             work_unit_continuations: workUnitContinuations,
+            pending_webhooks: pendingWebhooks.map((row) => ({
+                id: row.id,
+                source: row.source,
+                event_type: row.event_type,
+                title: row.title,
+                priority: row.priority,
+                target_branch: row.target_branch,
+                target_issue: row.target_issue,
+                created_at: row.created_at,
+            })),
             total,
         });
     });
@@ -224,8 +246,14 @@ export function registerInboxRoutes(server, sessionRegistry, issueScanner, sessi
                 }
             }
         }
+        // Bug: 9f66ad9 — pending webhook events (all)
+        const pendingWebhooks = db
+            .prepare(`SELECT * FROM webhook_events
+         WHERE status = 'pending'
+         ORDER BY created_at DESC LIMIT 50`)
+            .all();
         const total = continuations.length + authResults.length + openIssues.length
-            + workUnits.length + workUnitContinuations.length;
+            + workUnits.length + workUnitContinuations.length + pendingWebhooks.length;
         sendJson(res, 200, {
             continuations: continuations.map((row) => ({
                 session_id: row.id,
@@ -250,6 +278,16 @@ export function registerInboxRoutes(server, sessionRegistry, issueScanner, sessi
             open_issues: openIssues,
             work_units: workUnits,
             work_unit_continuations: workUnitContinuations,
+            pending_webhooks: pendingWebhooks.map((row) => ({
+                id: row.id,
+                source: row.source,
+                event_type: row.event_type,
+                title: row.title,
+                priority: row.priority,
+                target_branch: row.target_branch,
+                target_issue: row.target_issue,
+                created_at: row.created_at,
+            })),
             total,
         });
     });

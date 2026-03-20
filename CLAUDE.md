@@ -67,15 +67,24 @@ The auth queue is the mechanism for protected-branch merges. Full protocol is in
 
 ## Agent interaction tiers
 
-Mandible interacts with agents at three tiers of integration:
+Mandible interacts with agents at four tiers of integration:
 
 - **First-class (SDK)**: Agents spawned via Console using the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`). Full lifecycle control (start, stop, abort, resume), structured event stream (tool calls, thinking, content blocks), permission gating, cost tracking, conversation branching/forking. This is the intended primary workflow for Claude interactions.
+- **1.5-class (Channel)**: External Claude CLI sessions connected via the MCP channel server (`claude --channels server:mandible`). No lifecycle control, but rich integration: sessions self-register, tool usage is tracked for liveness, work-unit assignment works via `mandible_request_work`, and webhook events are surfaced via `mandible_check_inbox`. Channel sessions appear in the Sessions tab with a link-icon badge.
 - **Second-class (PTY)**: Agents spawned via Console as PTY terminal processes. Process-level control (start, stop, signal), terminal I/O. Used for `codex`, `gemini`, shell commands, and cases where raw terminal access is needed.
 - **Third-class (External)**: Agents discovered via process scan or session registration hooks. Best-effort tracking only — Mandible monitors but does not control. Used for agents started from terminal (e.g., `claude` CLI sessions in Zellij panes).
 
-Feature design targets SDK-first: new capabilities (work-unit assignment, handoff notes, conversation branching, permission policies, cost tracking, auto-resume) are SDK-only. PTY and external agents get whatever can be inferred from their limited integration surface.
+Feature design targets SDK-first: new capabilities (work-unit assignment, handoff notes, conversation branching, permission policies, cost tracking, auto-resume) are SDK-only. Channel sessions get tool-mediated access to the same features (inbox, issues, work units, auth submission). PTY and external agents get whatever can be inferred from their limited integration surface.
 
 "Resume Work" from the Issues tab always spawns a first-class SDK session, regardless of what tier the previous session was. This is the natural upgrade path.
+
+### Connecting via channel
+
+To connect a Claude CLI session via the MCP channel server:
+```bash
+claude --channels server:mandible
+```
+The channel server registers the session with Mandible on startup and records tool usage for liveness tracking. Channel-connected sessions are marked with `channel_connected_at` in the sessions table and appear with a purple link badge in the dashboard.
 
 ## Mandible API quick reference
 

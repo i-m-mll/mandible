@@ -49,6 +49,8 @@ export interface Session {
     continuation_acked_by: string | null;
     ended_at: string | null;
     last_active: string | null;
+    channel_connected_at: number | null;
+    channel_last_tool_call: number | null;
     children?: Session[];
 }
 export interface StarredChat {
@@ -184,7 +186,7 @@ export interface ConsoleSession {
     updated_at: number;
     started_at: number | null;
     stopped_at: number | null;
-    backend_type: 'pty' | 'sdk';
+    backend_type: 'pty' | 'sdk' | 'spawn';
     allowed_tools: string[] | null;
     mandible_session_id: string | null;
     /** Bug: 40f0298 — DAG branching: message UUID to resume conversation from. */
@@ -205,7 +207,7 @@ export interface ConsoleSessionInput {
     auto_restart?: boolean;
     is_operator?: boolean;
     interaction_mode?: ConsoleInteractionMode;
-    backend_type?: 'pty' | 'sdk';
+    backend_type?: 'pty' | 'sdk' | 'spawn';
     allowed_tools?: string[] | null;
     mandible_session_id?: string | null;
     provider_session_id?: string | null;
@@ -302,4 +304,31 @@ export interface WorkUnit {
     last_commit_at: number | null;
     resolved_at: number | null;
     auth_request_id: string | null;
+}
+export type WebhookPriority = "low" | "normal" | "high";
+export type WebhookEventStatus = "pending" | "delivered" | "dismissed";
+export interface WebhookEvent {
+    source: string;
+    event_type: string;
+    data: unknown;
+    target_session?: string;
+    target_issue?: string;
+    target_branch?: string;
+    priority?: WebhookPriority;
+    title?: string;
+}
+export interface WebhookEventRow {
+    id: string;
+    source: string;
+    event_type: string;
+    title: string | null;
+    data_json: string;
+    target_session: string | null;
+    target_issue: string | null;
+    target_branch: string | null;
+    priority: string;
+    status: WebhookEventStatus;
+    created_at: number;
+    delivered_at: number | null;
+    delivered_to: string | null;
 }

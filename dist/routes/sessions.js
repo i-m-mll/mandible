@@ -1,6 +1,7 @@
 import { getDb, resolvePrefix } from "../db.js";
 import { navigateToSession } from "../navigate.js";
 import { SessionRegistry, syncPinnedPanesTsv, } from "../registry.js";
+import { getChannelRegistry, getChannelConnectedSessionsFromDb, } from "../channel-registry.js";
 function readBody(req) {
     return (req.body ?? {});
 }
@@ -240,6 +241,60 @@ export function registerSessionRoutes(server, registry = new SessionRegistry(get
     server.get("/api/sessions/pinned", (_req, res) => {
         const ids = registry.getPinnedSessionIds();
         sendJson(res, 200, { ids });
+    });
+    // Bug: 0b454df — list channel-connected sessions
+    server.get("/api/sessions/channel-connected", (_req, res) => {
+        const channelRegistry = getChannelRegistry();
+        const inMemory = channelRegistry.getAll();
+        // Merge in-memory state with DB-persisted state for resilience
+        const dbSessions = getChannelConnectedSessionsFromDb();
+        const inMemoryIds = new Set(inMemory.map((s) => s.session_id));
+        const combined = dbSessions.map((dbRow) => {
+            const live = inMemory.find((s) => s.session_id === dbRow.id);
+            return {
+                ...dbRow,
+                is_alive: live ? channelRegistry.isAlive(dbRow.id) : false,
+                tools_called: live?.tools_called ?? [],
+                last_tool_call_in_memory: live?.last_tool_call ?? null,
+            };
+        });
+        // Add any in-memory sessions not yet in DB (transient race)
+        for (const live of inMemory) {
+            if (!dbSessions.some((d) => d.id === live.session_id)) {
+                combined.push({
+                    id: live.session_id,
+                    app: "claude-channel",
+                    status: "active",
+                    branch: live.branch,
+                    cwd: live.cwd,
+                    channel_connected_at: live.connected_at,
+                    channel_last_tool_call: live.last_tool_call,
+                    is_alive: channelRegistry.isAlive(live.session_id),
+                    tools_called: live.tools_called,
+                    last_tool_call_in_memory: live.last_tool_call,
+                });
+            }
+        }
+        sendJson(res, 200, { sessions: combined });
+    });
+    // Bug: 0b454df — record a channel tool call for liveness tracking
+    server.post("/api/sessions/:id/channel-tool-call", (req, res) => {
+        const rawId = req.params.id;
+        if (!rawId) {
+            sendJson(res, 400, { error: "Missing session id" });
+            return;
+        }
+        const id = resolveSessionId(rawId, res);
+        if (!id)
+            return;
+        const body = readBody(req);
+        const toolName = body.tool_name ?? "unknown";
+        const channelRegistry = getChannelRegistry();
+        // Get current session branch/cwd from DB
+        const session = registry.getSession(id);
+        channelRegistry.register(id, session?.cwd ?? null, session?.branch ?? null);
+        channelRegistry.recordToolCall(id, toolName);
+        sendJson(res, 200, { ok: true });
     });
     server.get("/api/sessions/by-pid/:pid", (req, res) => {
         const pidStr = req.params.pid;
