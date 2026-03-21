@@ -807,19 +807,9 @@ export function InboxView({
 
   if (loading && !data) {
     return (
-      <div className="inbox-sidebar-layout">
-        <div className="inbox-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-          <div className="inbox-sidebar__header">
-            <span className="text-muted" style={{ fontSize: '13px', padding: '14px' }}>
-              Loading…
-            </span>
-          </div>
-        </div>
-        <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
-        <div className="inbox-detail">
-          <div className="inbox-detail__empty">
-            <span className="text-muted">Loading inbox…</span>
-          </div>
+      <div className="inbox-detail" style={{ height: 'calc(100vh - 80px)', margin: '-28px -32px -48px' }}>
+        <div className="inbox-detail__empty">
+          <span className="text-muted">Loading inbox…</span>
         </div>
       </div>
     );

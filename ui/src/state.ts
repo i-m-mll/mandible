@@ -856,12 +856,13 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
 }
 
 const CACHE_KEY = 'mandible_state_cache';
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 // Bug: 7136f0d — starredChats removed from cache (Chats tab removed, starring via History tab)
 type CachedFields = Pick<
   AppState,
   'sessions' | 'authQueue' | 'authHistory' | 'workRepos' | 'workBranches' | 'issueRepos' | 'conversations'
+  | 'inboxData' | 'consoleSessions' | 'settings' | 'switchboardPairings' | 'switchboardTemplates'
 >;
 
 // Bug: 9860b1c, b794add — Filter stale resolved auth items on cache load so they
@@ -938,6 +939,11 @@ function saveCachedState(state: AppState): void {
       workBranches: state.workBranches,
       issueRepos: state.issueRepos,
       conversations: state.conversations,
+      inboxData: state.inboxData,
+      consoleSessions: state.consoleSessions,
+      settings: state.settings,
+      switchboardPairings: state.switchboardPairings,
+      switchboardTemplates: state.switchboardTemplates,
     };
     window.localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, state: toCache }));
   } catch {

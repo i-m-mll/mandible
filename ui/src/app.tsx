@@ -509,6 +509,11 @@ function App(): JSX.Element {
     state.workBranches,
     state.issueRepos,
     state.conversations,
+    state.inboxData,
+    state.consoleSessions,
+    state.settings,
+    state.switchboardPairings,
+    state.switchboardTemplates,
   ]);
 
   const badges = useMemo(() => selectBadgeCounts(state), [state]);
