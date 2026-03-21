@@ -1,6 +1,8 @@
 // Bug: 9bf8b4c — Claude Agent SDK backend for Console
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { getDb } from "../db.js";
+import { computePresetUnion } from "../presets.js";
 const EVENT_LOG_LIMIT = 2000;
 const PERMISSION_TIMEOUT_MS = 120_000;
 export class SDKBackend extends EventEmitter {
@@ -375,6 +377,21 @@ export class SDKBackend extends EventEmitter {
             resumeOpts.resume = this.meta.provider_session_id;
             resumeOpts.resumeSessionAt = this.meta.resume_at_message;
         }
+        // Bug: 61bee4e — Compute system prompt from presets if presetIds are set
+        let systemPrompt = this.options.systemPrompt;
+        if (this.options.presetIds && this.options.presetIds.length > 0 && !systemPrompt) {
+            try {
+                const db = getDb();
+                const result = computePresetUnion(this.options.presetIds, db);
+                if (result.text) {
+                    systemPrompt = result.text;
+                }
+            }
+            catch {
+                // Presets module or DB not available — fall through to default
+            }
+        }
+        const settingSources = (this.options.settingSourcesOverride ?? ["user", "project", "local"]);
         return {
             abortController,
             cwd,
@@ -383,7 +400,7 @@ export class SDKBackend extends EventEmitter {
                 ...this.meta.env,
             },
             model: this.options.model ?? this.extractModel(this.meta.args) ?? undefined,
-            systemPrompt: this.options.systemPrompt,
+            systemPrompt,
             permissionMode,
             ...(permissionMode === "bypassPermissions"
                 ? { allowDangerouslySkipPermissions: true }
@@ -392,7 +409,7 @@ export class SDKBackend extends EventEmitter {
             maxTurns: this.options.maxTurns,
             maxBudgetUsd: this.options.maxCostUsd,
             includePartialMessages: true,
-            settingSources: ["user", "project", "local"],
+            settingSources,
             canUseTool: this.handleToolPermission,
             hooks,
             agentProgressSummaries: true,

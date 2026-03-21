@@ -16,6 +16,10 @@ export interface SDKBackendOptions {
     allowedTools?: string[];
     maxTurns?: number;
     maxCostUsd?: number;
+    /** Bug: 61bee4e — Preset IDs to compute union system prompt from */
+    presetIds?: string[];
+    /** Bug: 61bee4e — Override settingSources based on active preset sources */
+    settingSourcesOverride?: string[];
 }
 export declare class SDKBackend extends EventEmitter implements AgenticBackend, PermissionAwareBackend, ConfigurableBackend<SDKBackendOptions>, UsageAwareBackend<UsageRow> {
     readonly id: string;
