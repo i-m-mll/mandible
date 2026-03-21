@@ -5873,12 +5873,35 @@ tr:hover .work-actions__trigger {
   flex-shrink: 0;
 }
 
-.terminal-pane__sidebar-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-default);
+/* Bug: 60b1fd7 — Sidebar tab bar */
+.terminal-pane__sidebar-tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.terminal-pane__sidebar-tab {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.terminal-pane__sidebar-tab:hover {
+  color: var(--fg-default);
+  background: rgba(255,255,255,0.04);
+}
+
+.terminal-pane__sidebar-tab--active {
+  color: var(--fg-default);
+  font-weight: 600;
+  background: rgba(255,255,255,0.06);
 }
 
 .terminal-pane__sidebar-close {
@@ -5898,6 +5921,66 @@ tr:hover .work-actions__trigger {
 .terminal-pane__sidebar-close:hover {
   background: rgba(255,255,255,0.06);
   color: var(--fg-default);
+}
+
+/* Bug: 60b1fd7 — MessageInfoPanel styles */
+.message-info-panel {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.message-info-panel__empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px 12px;
+}
+
+.message-info-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.message-info-panel__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.message-info-panel__value {
+  font-size: 13px;
+  color: var(--fg-default);
+  word-break: break-word;
+}
+
+.message-info-panel__value--mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.message-info-panel__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.message-info-panel__tool-pill {
+  display: inline-block;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--accent-blue, #4da3ff);
+  background: rgba(77, 163, 255, 0.1);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 /* Bug: 6634023 — SessionControls adapted for sidebar layout */
