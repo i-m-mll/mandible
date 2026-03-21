@@ -1,7 +1,7 @@
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
-import type { PresetWithNodes, PresetDiff } from './types/presets';
-export type { Preset, PresetNode, LibraryConvention } from './types/presets';
+import type { PresetWithNodes, PresetDiff, ConventionSettingLink, SessionValidationResult } from './types/presets';
+export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
 
 export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[]; presets?: T[]; nodes?: T[]; diffs?: T[] };
 
@@ -1464,6 +1464,51 @@ export async function removeSessionPreset(
   await apiDelete(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets/${encodeURIComponent(presetId)}`,
   );
+}
+
+// ── Convention-Setting Links API — Bug: 8baedeb ──
+
+export async function getSettingLinks(settingKey: string): Promise<ConventionSettingLink[]> {
+  const response = await apiGet(`/api/presets/links?setting_key=${encodeURIComponent(settingKey)}`);
+  const payload = (await parseMaybeJson(response)) as { links?: ConventionSettingLink[] };
+  return payload.links ?? [];
+}
+
+export async function getNodeLinks(nodeId: string): Promise<ConventionSettingLink[]> {
+  const response = await apiGet(`/api/presets/nodes/${encodeURIComponent(nodeId)}/links`);
+  const payload = (await parseMaybeJson(response)) as { links?: ConventionSettingLink[] };
+  return payload.links ?? [];
+}
+
+export async function createNodeLink(
+  nodeId: string,
+  settingKey: string,
+  linkType?: string,
+): Promise<ConventionSettingLink> {
+  const response = await apiPost(
+    `/api/presets/nodes/${encodeURIComponent(nodeId)}/links`,
+    { settingKey, linkType },
+  );
+  const payload = (await parseMaybeJson(response)) as { link?: ConventionSettingLink };
+  return payload.link as ConventionSettingLink;
+}
+
+export async function deleteSettingLink(linkId: string): Promise<void> {
+  await apiDelete(`/api/presets/links/${encodeURIComponent(linkId)}`);
+}
+
+export async function validateSessionPresets(sessionId: string): Promise<SessionValidationResult> {
+  const response = await apiGet(
+    `/api/presets/validate-session?session_id=${encodeURIComponent(sessionId)}`,
+  );
+  return (await parseMaybeJson(response)) as SessionValidationResult;
+}
+
+export async function validatePresetIds(presetIds: string[]): Promise<SessionValidationResult> {
+  // Bug: 8baedeb — delegate to backend endpoint for accurate validation
+  // (client-side approach only checked link existence, not actual setting values)
+  const response = await apiPost('/api/presets/validate-preset-ids', { presetIds });
+  return (await parseMaybeJson(response)) as SessionValidationResult;
 }
 
 export async function getDefaultPresetIds(): Promise<string[]> {
