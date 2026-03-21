@@ -65,6 +65,7 @@ export function registerAuthRoutes(app, queue = new AuthQueue()) {
         }
         res.json({
             request_id: request.id,
+            type: request.type,
             status: request.status,
             output: request.output,
             exit_code: request.exit_code,
@@ -118,8 +119,16 @@ export function registerAuthRoutes(app, queue = new AuthQueue()) {
             handleQueueError(error, res);
         }
     });
-    app.get("/api/auth/queue", (_req, res) => {
-        const requests = queue.listActive();
+    app.get("/api/auth/queue", (req, res) => {
+        const query = req.query ?? {};
+        // Bug: dd21c1e — optional ?type=X filter
+        const typeFilter = typeof query.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(query.type)
+            ? query.type
+            : undefined;
+        let requests = queue.listActive();
+        if (typeFilter) {
+            requests = requests.filter((r) => r.type === typeFilter);
+        }
         // Bug: 0b83252 — resolve depends_on_status for each request with a dependency
         const enriched = requests.map((r) => {
             if (!r.depends_on_id)
@@ -131,11 +140,18 @@ export function registerAuthRoutes(app, queue = new AuthQueue()) {
     });
     app.get("/api/auth/history", (req, res) => {
         const query = req.query ?? {};
+        // Bug: dd21c1e — optional ?type=X filter
+        const typeFilter = typeof query.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(query.type)
+            ? query.type
+            : undefined;
         const limitRaw = typeof query.limit === "string" ? Number(query.limit) : undefined;
         const limit = limitRaw != null && Number.isFinite(limitRaw) && limitRaw > 0
             ? Math.min(limitRaw, 200)
             : 50;
-        const requests = queue.listHistory(limit);
+        let requests = queue.listHistory(limit);
+        if (typeFilter) {
+            requests = requests.filter((r) => r.type === typeFilter);
+        }
         res.json({ requests });
     });
     app.post("/api/auth/request/:id/approve", (req, res) => {
@@ -227,10 +243,18 @@ export function registerAuthRoutes(app, queue = new AuthQueue()) {
     });
     return queue;
 }
+// Bug: dd21c1e — valid auth request types for input validation
+const VALID_AUTH_REQUEST_TYPES = [
+    "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
+];
 function parseAuthRequestPayload(body) {
     if (typeof body.command !== "string" || typeof body.title !== "string") {
         return null;
     }
+    // Bug: dd21c1e — parse type, default to 'merge'
+    const type = typeof body.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(body.type)
+        ? body.type
+        : undefined;
     const executionMode = body.execution_mode === "remote" || body.execution_mode === "daemon"
         ? body.execution_mode
         : undefined;
@@ -245,6 +269,7 @@ function parseAuthRequestPayload(body) {
         : undefined;
     return {
         session_id: typeof body.session_id === "string" ? body.session_id : null,
+        type,
         command: body.command,
         title: body.title,
         cwd: typeof body.cwd === "string" ? body.cwd : null,
@@ -284,6 +309,13 @@ function parseAuthRequestUpdatePayload(body) {
             return { ok: false, error: "Invalid status — only 'pending' is accepted (use the retry flow to reset a failed request)" };
         }
         payload.status = "pending";
+    }
+    // Bug: dd21c1e — allow updating type
+    if (hasKey("type")) {
+        if (typeof body.type !== "string" || !VALID_AUTH_REQUEST_TYPES.includes(body.type)) {
+            return { ok: false, error: `Invalid 'type' — must be one of: ${VALID_AUTH_REQUEST_TYPES.join(", ")}` };
+        }
+        payload.type = body.type;
     }
     if (hasKey("title")) {
         if (typeof body.title !== "string") {

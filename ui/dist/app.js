@@ -11380,6 +11380,21 @@ function getAuthTitle(request) {
 function getAuthStatus(request) {
   return request.status || request.state || "pending";
 }
+function getAuthType(request) {
+  return request.type ?? "merge";
+}
+var AUTH_TYPE_META = {
+  "merge": { label: "Merge", cssClass: "type-badge--merge" },
+  "commit": { label: "Commit", cssClass: "type-badge--commit" },
+  "force-push": { label: "Force Push", cssClass: "type-badge--force-push" },
+  "branch-delete": { label: "Delete", cssClass: "type-badge--branch-delete" },
+  "config-change": { label: "Config", cssClass: "type-badge--config-change" },
+  "preset-promote": { label: "Promote", cssClass: "type-badge--preset-promote" },
+  "data-delete": { label: "Delete Data", cssClass: "type-badge--data-delete" }
+};
+function typeHasDiffStats(type2) {
+  return type2 === "merge" || type2 === "commit";
+}
 function getStats(request) {
   const files = request.stats?.files ?? request.files_changed ?? null;
   const additions = request.stats?.additions ?? request.additions ?? null;
@@ -11711,8 +11726,11 @@ function AuthCard({
     }
   }, [showConsole, consoleText]);
   const effectiveTimestampLabel = timestampLabel ?? getSubmissionTimestampLabel(request);
+  const authType = getAuthType(request);
+  const typeMeta = AUTH_TYPE_META[authType];
+  const showDiffStats = typeHasDiffStats(authType);
   const hasStats = stats.files != null || stats.additions != null || stats.deletions != null;
-  const statsLine = /* @__PURE__ */ u3("span", { className: "auth-card__stats", children: hasStats ? /* @__PURE__ */ u3(k, { children: [
+  const statsLine = showDiffStats ? /* @__PURE__ */ u3("span", { className: "auth-card__stats", children: hasStats ? /* @__PURE__ */ u3(k, { children: [
     /* @__PURE__ */ u3("span", { children: [
       formatNumber(stats.files ?? 0),
       " files"
@@ -11725,10 +11743,11 @@ function AuthCard({
       "-",
       formatNumber(stats.deletions ?? 0)
     ] })
-  ] }) : /* @__PURE__ */ u3("span", { className: "stats-unavailable", children: "\u2014" }) });
+  ] }) : /* @__PURE__ */ u3("span", { className: "stats-unavailable", children: "\u2014" }) }) : null;
   const summaryContent = /* @__PURE__ */ u3("div", { className: "auth-card__summary", children: [
     /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--primary", children: [
       /* @__PURE__ */ u3("span", { className: statusClass2, children: statusLabel }),
+      authType !== "merge" && /* @__PURE__ */ u3("span", { className: `type-badge ${typeMeta.cssClass}`, children: typeMeta.label }),
       /* @__PURE__ */ u3(
         "span",
         {
@@ -11740,7 +11759,7 @@ function AuthCard({
     ] }),
     /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--stats", children: [
       statsLine,
-      /* @__PURE__ */ u3("span", { className: "auth-card__divider", children: "|" }),
+      statsLine && /* @__PURE__ */ u3("span", { className: "auth-card__divider", children: "|" }),
       /* @__PURE__ */ u3(
         "span",
         {
@@ -11915,11 +11934,11 @@ function AuthCard({
                   onClick: () => setShowDiff((prev) => !prev),
                   children: [
                     /* @__PURE__ */ u3("span", { className: `panel__chevron${showDiff ? " panel__chevron--open" : ""}`, children: "\u25B8" }),
-                    "Changes"
+                    showDiffStats ? "Changes" : "Details"
                   ]
                 }
               ),
-              showDiff && (diffSections.length > 0 ? /* @__PURE__ */ u3("div", { className: "panel__body diff-panel", children: [
+              showDiff && (showDiffStats ? diffSections.length > 0 ? /* @__PURE__ */ u3("div", { className: "panel__body diff-panel", children: [
                 /* @__PURE__ */ u3("div", { className: "diff-file-tabs", children: [
                   diffSections.length > 1 && /* @__PURE__ */ u3(
                     "button",
@@ -11941,7 +11960,15 @@ function AuthCard({
                   ))
                 ] }),
                 /* @__PURE__ */ u3("div", { dangerouslySetInnerHTML: { __html: diffHtml } })
-              ] }) : /* @__PURE__ */ u3("div", { className: "panel__body diff-panel spec-panel--empty", children: "No diff available." }))
+              ] }) : /* @__PURE__ */ u3("div", { className: "panel__body diff-panel spec-panel--empty", children: "No diff available." }) : /* @__PURE__ */ u3("div", { className: "panel__body spec-panel", children: [
+                /* @__PURE__ */ u3("p", { className: "type-detail-summary", children: [
+                  /* @__PURE__ */ u3("span", { className: `type-badge ${typeMeta.cssClass}`, children: typeMeta.label }),
+                  " ",
+                  getAuthTitle(request)
+                ] }),
+                specContent && /* @__PURE__ */ u3("div", { dangerouslySetInnerHTML: { __html: specHtml } }),
+                !specContent && /* @__PURE__ */ u3("p", { className: "text-muted", children: "No additional details for this request type." })
+              ] }))
             ] })
           ] }),
           showConsoleToggle && /* @__PURE__ */ u3("div", { className: "console-output", children: [
@@ -11990,6 +12017,8 @@ function AuthSidebarItem({
   } else {
     dotStatus = status;
   }
+  const authType = getAuthType(request);
+  const sidebarTypeMeta = AUTH_TYPE_META[authType];
   const headBranch = request.head_branch ?? request.head ?? "";
   const baseBranch = request.base_branch ?? request.base ?? "";
   const branchInfo = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : headBranch;
@@ -12006,13 +12035,16 @@ function AuthSidebarItem({
       children: [
         /* @__PURE__ */ u3("span", { className: `auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}` }),
         /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__body", children: [
-          /* @__PURE__ */ u3(
-            "span",
-            {
-              className: "auth-sidebar-item__title",
-              dangerouslySetInnerHTML: { __html: renderInlineMarkdown(getAuthTitle(request)) }
-            }
-          ),
+          /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__title-row", children: [
+            authType !== "merge" && /* @__PURE__ */ u3("span", { className: `type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`, children: sidebarTypeMeta.label }),
+            /* @__PURE__ */ u3(
+              "span",
+              {
+                className: "auth-sidebar-item__title",
+                dangerouslySetInnerHTML: { __html: renderInlineMarkdown(getAuthTitle(request)) }
+              }
+            )
+          ] }),
           repo && /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__repo", children: repo }),
           branchInfo && /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__branch", children: branchInfo }),
           /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__time", children: timestampLabel })
@@ -12021,6 +12053,16 @@ function AuthSidebarItem({
     }
   );
 }
+var AUTH_TYPE_OPTIONS = [
+  { value: "all", label: "All types" },
+  { value: "merge", label: "Merge" },
+  { value: "commit", label: "Commit" },
+  { value: "force-push", label: "Force Push" },
+  { value: "branch-delete", label: "Delete" },
+  { value: "config-change", label: "Config" },
+  { value: "preset-promote", label: "Promote" },
+  { value: "data-delete", label: "Delete Data" }
+];
 function AuthQueueView({
   queue,
   historyQueue,
@@ -12041,6 +12083,7 @@ function AuthQueueView({
     storageKey: "sidebar-width:auth"
   });
   const [filterMode, setFilterMode] = d2("active");
+  const [typeFilter, setTypeFilter] = d2("all");
   const [repoFilter, setRepoFilter] = d2(null);
   const [branchFilter, setBranchFilter] = d2(null);
   const [branchInput, setBranchInput] = d2("");
@@ -12419,6 +12462,9 @@ function AuthQueueView({
   }, [uniqueRepos, repoFilter]);
   const filteredSidebarItems = T2(() => {
     let items = sidebarItems;
+    if (typeFilter !== "all") {
+      items = items.filter((r3) => getAuthType(r3) === typeFilter);
+    }
     if (repoFilter) {
       items = items.filter((r3) => {
         const repo = r3.repo && r3.repo.trim() ? r3.repo.trim() : null;
@@ -12432,7 +12478,7 @@ function AuthQueueView({
       });
     }
     return items;
-  }, [sidebarItems, repoFilter, branchFilter]);
+  }, [sidebarItems, typeFilter, repoFilter, branchFilter]);
   const selectedRequest = T2(() => {
     if (!selectedId)
       return null;
@@ -12455,7 +12501,7 @@ function AuthQueueView({
       setLocalSelectedId(firstId);
       onSelectAuth?.(firstId);
     }
-  }, [filterMode, repoFilter, branchFilter, filteredSidebarItems]);
+  }, [filterMode, typeFilter, repoFilter, branchFilter, filteredSidebarItems]);
   const renderDetailActions = (request) => {
     const id2 = getAuthId(request);
     const status = getAuthStatus(request);
@@ -12602,6 +12648,14 @@ function AuthQueueView({
           }
         ) })
       ] }),
+      /* @__PURE__ */ u3("div", { className: "auth-sidebar__type-filter", children: /* @__PURE__ */ u3(
+        "select",
+        {
+          value: typeFilter,
+          onChange: (event) => setTypeFilter(event.currentTarget.value),
+          children: AUTH_TYPE_OPTIONS.map((opt) => /* @__PURE__ */ u3("option", { value: opt.value, children: opt.label }, opt.value))
+        }
+      ) }),
       uniqueRepos.length > 1 && /* @__PURE__ */ u3("div", { className: "auth-sidebar__repo-filter", children: [
         /* @__PURE__ */ u3(
           "button",
@@ -12700,7 +12754,7 @@ function AuthQueueView({
           branch
         )) })
       ] }),
-      /* @__PURE__ */ u3("div", { className: "auth-sidebar__list", children: filteredSidebarItems.length === 0 ? /* @__PURE__ */ u3("div", { className: "auth-sidebar__empty", children: branchFilter ? `No requests for branch ${branchFilter.split("/").pop() ?? branchFilter}.` : repoFilter ? `No requests for ${repoFilter.includes("/") ? repoFilter.split("/")[1] : repoFilter}.` : filterMode === "active" ? "No active requests." : filterMode === "historical" ? "No historical requests." : "No auth requests." }) : filteredSidebarItems.map((request) => /* @__PURE__ */ u3(
+      /* @__PURE__ */ u3("div", { className: "auth-sidebar__list", children: filteredSidebarItems.length === 0 ? /* @__PURE__ */ u3("div", { className: "auth-sidebar__empty", children: typeFilter !== "all" ? `No ${AUTH_TYPE_META[typeFilter].label.toLowerCase()} requests.` : branchFilter ? `No requests for branch ${branchFilter.split("/").pop() ?? branchFilter}.` : repoFilter ? `No requests for ${repoFilter.includes("/") ? repoFilter.split("/")[1] : repoFilter}.` : filterMode === "active" ? "No active requests." : filterMode === "historical" ? "No historical requests." : "No auth requests." }) : filteredSidebarItems.map((request) => /* @__PURE__ */ u3(
         AuthSidebarItem,
         {
           request,
