@@ -173,21 +173,7 @@ export interface MessageGroupProps {
   isThinking?: boolean;
 }
 
-export interface StatusBarProps {
-  streaming: boolean;
-  model?: string;
-  backend?: string;
-  totalCostUsd?: number;
-  numTurns?: number;
-  durationMs?: number;
-  error?: string;
-  /** Elapsed seconds since streaming started — shown live while streaming=true. */
-  elapsedSeconds?: number;
-  liveLabel?: string;
-  modelOptions?: string[];
-  modelSaving?: boolean;
-  onChangeModel?: (model: string) => void | Promise<void>;
-}
+// TOMBSTONE (Bug: fbca9d5): StatusBarProps deleted — StatusBar removed in P1.
 
 export interface StreamRendererProps {
   /** Accumulated events from the parent-owned SSE/WebSocket client. */
@@ -196,13 +182,10 @@ export interface StreamRendererProps {
   streaming: boolean;
   elapsedSeconds?: number;
   emptyLabel?: string;
-  /** Optional session metadata for the status bar. */
+  /** Session metadata — slimmed in P1 (Bug: fbca9d5). P3 adds conversationId, onFork. */
   sessionInfo?: {
     sessionId: string;
     backend?: string;
     model?: string;
-    modelOptions?: string[];
-    modelSaving?: boolean;
-    onChangeModel?: (model: string) => void | Promise<void>;
   };
 }

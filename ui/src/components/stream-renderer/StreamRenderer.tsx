@@ -15,7 +15,7 @@ import type {
   UserEvent,
 } from './types';
 import { MessageGroup } from './MessageGroup';
-import { StatusBar } from './StatusBar';
+// FORBIDDEN (Bug: fbca9d5): No StatusBar import — no UI between stream and input.
 import { MessageActions } from '../shared/MessageActions';
 import { PresetViolationBlock } from './PresetViolationBlock';
 
@@ -112,60 +112,7 @@ function useStreamState(events: StreamEvent[]): StreamState {
   }, [events]);
 }
 
-// ---- StatusBar data derivation ----
-
-function deriveStatusBarProps(
-  streaming: boolean,
-  initEvent: SystemInitEvent | null,
-  resultEvent: ResultEvent | null,
-  liveLabel: string | undefined,
-  sessionInfo?: StreamRendererProps['sessionInfo'],
-): {
-  model?: string;
-  totalCostUsd?: number;
-  numTurns?: number;
-  durationMs?: number;
-  error?: string;
-  liveLabel?: string;
-  backend?: string;
-  modelOptions?: string[];
-  modelSaving?: boolean;
-  onChangeModel?: (model: string) => void | Promise<void>;
-} {
-  const model = sessionInfo?.model ?? initEvent?.model;
-  const backend = sessionInfo?.backend;
-  const shared = {
-    backend,
-    modelOptions: sessionInfo?.modelOptions,
-    modelSaving: sessionInfo?.modelSaving,
-    onChangeModel: sessionInfo?.onChangeModel,
-  };
-
-  if (!resultEvent) {
-    return { model, liveLabel, ...shared };
-  }
-
-  if (resultEvent.is_error) {
-    return {
-      model,
-      totalCostUsd: resultEvent.total_cost_usd,
-      numTurns: resultEvent.num_turns,
-      durationMs: resultEvent.duration_ms,
-      error: resultEvent.errors?.join('; '),
-      liveLabel,
-      ...shared,
-    };
-  }
-
-  return {
-    model,
-    totalCostUsd: resultEvent.total_cost_usd,
-    numTurns: resultEvent.num_turns,
-    durationMs: resultEvent.duration_ms,
-    liveLabel,
-    ...shared,
-  };
-}
+// FORBIDDEN (Bug: fbca9d5): deriveStatusBarProps removed — no StatusBar in chat stream.
 
 function deriveLiveLabel(turns: RenderedTurn[], streaming: boolean): string | undefined {
   if (!streaming) {
@@ -216,7 +163,7 @@ export function StreamRenderer({
   emptyLabel,
   sessionInfo,
 }: StreamRendererProps): JSX.Element {
-  const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages, violations } = useStreamState(events);
+  const { turns, syntheticPrompts, streamUserMessages, violations } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [userScrolled, setUserScrolled] = useState(false);
 
@@ -250,13 +197,6 @@ export function StreamRenderer({
 
   const liveLabel = deriveLiveLabel(turns, streaming);
   const tokenCount = deriveTokenCount(turns);
-  const statusBarProps = deriveStatusBarProps(
-    streaming,
-    initEvent,
-    resultEvent,
-    liveLabel,
-    sessionInfo,
-  );
 
   // Bug: db5e986 — treat synthetic prompts as real content so "No events" is
   // not shown after the user submits a message but before the assistant replies.
@@ -268,7 +208,7 @@ export function StreamRenderer({
         <div className="stream-renderer__empty">
           {emptyLabel ?? (streaming ? 'Starting…' : 'No events')}
         </div>
-        <StatusBar streaming={streaming} elapsedSeconds={elapsedSeconds} {...statusBarProps} />
+        {/* FORBIDDEN (Bug: fbca9d5): No StatusBar here — no UI between stream and input. */}
       </div>
     );
   }
@@ -402,7 +342,7 @@ export function StreamRenderer({
           Jump to bottom ↓
         </button>
       )}
-      <StatusBar streaming={streaming} elapsedSeconds={elapsedSeconds} {...statusBarProps} />
+      {/* FORBIDDEN (Bug: fbca9d5): No StatusBar here — no UI between stream and input. */}
     </div>
   );
 }
