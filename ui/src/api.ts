@@ -1415,7 +1415,13 @@ export async function getPresetUnion(params: {
   if (params.preset_ids) query.set('preset_ids', params.preset_ids.join(','));
   const qs = query.toString();
   const response = await apiGet(`/api/presets/union${qs ? '?' + qs : ''}`);
-  return (await parseMaybeJson(response)) as PresetUnion;
+  // Bug: 61bee4e — Server returns { text, tokenEstimate }, map to PresetUnion shape.
+  const raw = (await parseMaybeJson(response)) as { text?: string; tokenEstimate?: number };
+  return {
+    systemPrompt: raw.text ?? '',
+    settingSources: [],
+    totalTokens: raw.tokenEstimate ?? 0,
+  };
 }
 
 export async function getSessionPresets(
@@ -1425,17 +1431,24 @@ export async function getSessionPresets(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
   );
   const payload = await parseMaybeJson(response);
-  return Array.isArray(payload) ? payload : [];
+  // Bug: 61bee4e — Server returns { presets: [...] }, not a bare array.
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === 'object' && 'presets' in payload) {
+    return (payload as { presets: SessionPreset[] }).presets ?? [];
+  }
+  return [];
 }
 
 export async function addSessionPreset(
   sessionId: string,
   presetId: string,
-  position?: number,
+  _position?: number,
 ): Promise<void> {
+  // Bug: 61bee4e — Server expects { presetIds: string[] }, not { preset_id, position }.
+  // Position is handled server-side (auto-incremented from current max).
   await apiPost(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
-    { preset_id: presetId, position },
+    { presetIds: [presetId] },
   );
 }
 
