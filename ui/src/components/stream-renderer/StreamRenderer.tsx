@@ -188,6 +188,25 @@ function deriveLiveLabel(turns: RenderedTurn[], streaming: boolean): string | un
   return 'Working';
 }
 
+/** Bug: 4891ce4 — Extract token count from the last assistant event's usage for inline display. */
+function deriveTokenCount(turns: RenderedTurn[]): number | undefined {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const usage = turns[i].assistantEvent.message.usage;
+    if (usage) {
+      return usage.input_tokens + usage.output_tokens;
+    }
+  }
+  return undefined;
+}
+
+/** Bug: 4891ce4 — Format elapsed seconds as "Xs" or "Xm Ys". */
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+}
+
 // ---- Root component ----
 
 export function StreamRenderer({
@@ -230,6 +249,7 @@ export function StreamRenderer({
   }
 
   const liveLabel = deriveLiveLabel(turns, streaming);
+  const tokenCount = deriveTokenCount(turns);
   const statusBarProps = deriveStatusBarProps(
     streaming,
     initEvent,
@@ -353,6 +373,25 @@ export function StreamRenderer({
         onScroll={handleScroll}
       >
         {nodes}
+        {/* Bug: 4891ce4 — Inline streaming indicator at bottom of chat stream.
+            Shows pulsing dot, status label, token count, and elapsed timer.
+            Only visible when agent is actively working. */}
+        {streaming && (
+          <div className="stream-live-indicator">
+            <span className="stream-live-indicator__dot" />
+            <span className="stream-live-indicator__label">{liveLabel ?? 'Working'}</span>
+            {tokenCount !== undefined && (
+              <span className="stream-live-indicator__tokens">
+                {tokenCount.toLocaleString()} tokens
+              </span>
+            )}
+            {elapsedSeconds !== undefined && (
+              <span className="stream-live-indicator__timer">
+                {formatElapsed(elapsedSeconds)}
+              </span>
+            )}
+          </div>
+        )}
       </div>
       {userScrolled && streaming && (
         <button

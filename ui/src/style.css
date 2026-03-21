@@ -6135,6 +6135,21 @@ tr:hover .work-actions__trigger {
   letter-spacing: 0.02em;
 }
 
+/* Bug: 4891ce4 — Token count and timer in inline streaming indicator */
+.stream-live-indicator__tokens {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.stream-live-indicator__timer {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
 /* Jump-to-bottom floating button */
 .stream-renderer__scroll-btn {
   position: absolute;

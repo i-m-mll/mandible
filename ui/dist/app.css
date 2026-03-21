@@ -6115,6 +6115,18 @@ tr:hover .work-actions__trigger {
 .stream-live-indicator__label {
   letter-spacing: 0.02em;
 }
+.stream-live-indicator__tokens {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+.stream-live-indicator__timer {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.6;
+}
 .stream-renderer__scroll-btn {
   position: absolute;
   bottom: 48px;

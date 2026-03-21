@@ -48,16 +48,13 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
     }
   }
 
+  // Bug: 4891ce4 — Removed thinking indicator div; replaced by inline
+  // stream-live-indicator at bottom of StreamRenderer scroll area.
   return (
     <div className="message-group">
       <div className="message-group__content">
         {blocks.map((block, i) => renderBlock(block, i))}
       </div>
-      {isThinking && (
-        <div className="message-group__thinking-indicator" aria-label="Thinking">
-          thinking…
-        </div>
-      )}
     </div>
   );
 }
