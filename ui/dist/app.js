@@ -21910,10 +21910,7 @@ function MessageGroup({ turn, isStreaming, isThinking }) {
         return null;
     }
   }
-  return /* @__PURE__ */ u3("div", { className: "message-group", children: [
-    /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) }),
-    isThinking && /* @__PURE__ */ u3("div", { className: "message-group__thinking-indicator", "aria-label": "Thinking", children: "thinking\u2026" })
-  ] });
+  return /* @__PURE__ */ u3("div", { className: "message-group", children: /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) }) });
 }
 
 // ui/src/components/stream-renderer/StatusBar.tsx
@@ -21943,7 +21940,7 @@ function StatusBar({
   modelSaving,
   onChangeModel
 }) {
-  const dotClass = error ? "status-bar__dot status-bar__dot--error" : streaming ? "status-bar__dot status-bar__dot--streaming" : "status-bar__dot status-bar__dot--done";
+  const dotClass = error ? "status-bar__dot status-bar__dot--error" : "status-bar__dot status-bar__dot--done";
   const centerParts = [];
   if (numTurns !== void 0) {
     centerParts.push(`${numTurns} turn${numTurns === 1 ? "" : "s"}`);
@@ -21953,21 +21950,19 @@ function StatusBar({
   }
   const centerText = centerParts.join(" \xB7 ");
   let rightText = "";
-  if (streaming && elapsedSeconds !== void 0) {
-    rightText = `${elapsedSeconds}s`;
-  } else if (!streaming && durationMs !== void 0) {
+  if (!streaming && durationMs !== void 0) {
     rightText = formatDuration2(durationMs);
   }
   let labelContent;
   if (error) {
     labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__error", children: error });
   } else if (streaming) {
-    labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__label", children: liveLabel ?? "Working" });
+    labelContent = null;
   } else {
     labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Complete" });
   }
   return /* @__PURE__ */ u3("div", { className: "status-bar", children: [
-    /* @__PURE__ */ u3("span", { className: dotClass, "aria-hidden": "true" }),
+    !streaming && /* @__PURE__ */ u3("span", { className: dotClass, "aria-hidden": "true" }),
     labelContent,
     onChangeModel && backend === "codex" ? /* @__PURE__ */ u3(
       "button",
@@ -22145,6 +22140,22 @@ function deriveLiveLabel(turns, streaming) {
   }
   return "Working";
 }
+function deriveTokenCount(turns) {
+  for (let i4 = turns.length - 1; i4 >= 0; i4--) {
+    const usage = turns[i4].assistantEvent.message.usage;
+    if (usage) {
+      return usage.input_tokens + usage.output_tokens;
+    }
+  }
+  return void 0;
+}
+function formatElapsed(seconds) {
+  if (seconds < 60)
+    return `${seconds}s`;
+  const m4 = Math.floor(seconds / 60);
+  const s3 = seconds % 60;
+  return `${m4}m ${s3}s`;
+}
 function StreamRenderer({
   events,
   streaming,
@@ -22180,6 +22191,7 @@ function StreamRenderer({
     setUserScrolled(false);
   }
   const liveLabel = deriveLiveLabel(turns, streaming);
+  const tokenCount = deriveTokenCount(turns);
   const statusBarProps = deriveStatusBarProps(
     streaming,
     initEvent,
@@ -22276,7 +22288,18 @@ function StreamRenderer({
         ref: scrollRef,
         className: "stream-renderer__scroll",
         onScroll: handleScroll,
-        children: nodes
+        children: [
+          nodes,
+          streaming && /* @__PURE__ */ u3("div", { className: "stream-live-indicator", children: [
+            /* @__PURE__ */ u3("span", { className: "stream-live-indicator__dot" }),
+            /* @__PURE__ */ u3("span", { className: "stream-live-indicator__label", children: liveLabel ?? "Working" }),
+            tokenCount !== void 0 && /* @__PURE__ */ u3("span", { className: "stream-live-indicator__tokens", children: [
+              tokenCount.toLocaleString(),
+              " tokens"
+            ] }),
+            elapsedSeconds !== void 0 && /* @__PURE__ */ u3("span", { className: "stream-live-indicator__timer", children: formatElapsed(elapsedSeconds) })
+          ] })
+        ]
       }
     ),
     userScrolled && streaming && /* @__PURE__ */ u3(
@@ -23085,7 +23108,16 @@ function parseModelFromArgs(args) {
 }
 function deriveStreamingState(events, _streamStartAtRef) {
   const last = events[events.length - 1];
-  return Boolean(last && last.type !== "result");
+  if (!last)
+    return false;
+  if (last.type === "result")
+    return false;
+  if (last.type === "assistant") {
+    const assistantEvent = last;
+    if (assistantEvent.message.stop_reason)
+      return false;
+  }
+  return true;
 }
 function flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming, streamStartAtRef) {
   const pending = pendingSSERef.current;
@@ -23596,7 +23628,7 @@ function TerminalPane({
   y2(() => {
     if (!streaming)
       return;
-    const timer2 = setTimeout(() => {
+    const check = () => {
       void getConsoleStreamEvents(sessionId, 500).then((events) => {
         if (events.length > 0) {
           const last = events[events.length - 1];
@@ -23607,7 +23639,8 @@ function TerminalPane({
         }
       }).catch(() => {
       });
-    }, 2e4);
+    };
+    const timer2 = setTimeout(check, 5e3);
     return () => clearTimeout(timer2);
   }, [streaming, sessionId]);
   y2(() => {
