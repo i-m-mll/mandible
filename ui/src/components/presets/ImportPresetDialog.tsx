@@ -1,6 +1,6 @@
 // Bug: 11f4f47 — Import preset dialog: file picker or paste-Markdown textarea
 import type { JSX } from 'preact/jsx-runtime';
-import { useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { importPreset } from '../../api';
 import type { Preset } from '../../api';
 
@@ -21,6 +21,18 @@ export function ImportPresetDialog({
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Bug: 11f4f47 — Close dialog on Escape keypress
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
 
   if (!open) return null;
 

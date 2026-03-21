@@ -111,7 +111,13 @@ export function PresetPillSelector({
     .filter((p): p is Preset => p !== undefined);
 
   return (
-    <div className="preset-pill-selector" ref={containerRef}>
+    <div
+      className="preset-pill-selector"
+      ref={containerRef}
+      role="combobox"
+      aria-haspopup="listbox"
+      aria-expanded={dropdownOpen}
+    >
       <div className="preset-pill-selector__input-row">
         <input
           ref={inputRef}
@@ -120,21 +126,32 @@ export function PresetPillSelector({
           placeholder={selectedPresetIds.length > 0 ? 'Add preset...' : 'Search presets...'}
           value={searchText}
           disabled={disabled}
+          aria-controls="preset-dropdown"
+          aria-activedescendant={dropdownOpen && filtered[highlightIndex] ? `preset-option-${filtered[highlightIndex].id}` : undefined}
           onInput={(e) => {
             setSearchText(e.currentTarget.value);
             setDropdownOpen(true);
           }}
           onFocus={() => setDropdownOpen(true)}
+          onBlur={(e: FocusEvent) => {
+            // Close dropdown when focus moves outside the component container
+            const related = e.relatedTarget as Node | null;
+            if (containerRef.current && related && containerRef.current.contains(related)) return;
+            setDropdownOpen(false);
+          }}
           onKeyDown={handleKeyDown}
         />
       </div>
 
       {dropdownOpen && filtered.length > 0 && (
-        <div className="preset-pill-selector__dropdown">
+        <div className="preset-pill-selector__dropdown" id="preset-dropdown" role="listbox">
           {filtered.map((preset, idx) => (
             <button
               key={preset.id}
               type="button"
+              id={`preset-option-${preset.id}`}
+              role="option"
+              aria-selected={idx === highlightIndex}
               className={`preset-pill-selector__option${idx === highlightIndex ? ' preset-pill-selector__option--highlight' : ''}`}
               onClick={() => addPreset(preset.id)}
               onMouseEnter={() => setHighlightIndex(idx)}

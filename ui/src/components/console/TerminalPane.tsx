@@ -20,11 +20,13 @@ import {
   getConversations,
   getConsolePermissions,
   getConsoleStreamEvents,
+  getPresetUnion,
   restartConsoleSession,
   respondToConsolePermission,
   sendConsolePrompt,
   startConsoleSession,
 } from '../../api';
+import type { PresetUnion } from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
 type ActiveSubagent = {
@@ -371,6 +373,8 @@ export function TerminalPane({
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([]);
   // Bug: 6634023 — Sidebar state for SessionControls (collapsed by default)
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Bug: 11f4f47 — Track preset union token count for ContextIndicator
+  const [presetTokenCount, setPresetTokenCount] = useState(0);
   // Bug: 8d3328c — Only PTY sessions have a debug terminal. Spawn sessions
   // have no terminal emulation. Operator sessions always use SDK now (not spawn).
   const showDebugTerminal = backendType === 'pty';
@@ -763,6 +767,20 @@ export function TerminalPane({
     setActiveSubagents(buildActiveSubagents(streamEvents));
   }, [backendType, streamEvents]);
 
+  // Bug: 11f4f47 — Fetch initial preset union token count for SDK sessions
+  useEffect(() => {
+    if (backendType !== 'sdk') return;
+    let cancelled = false;
+    getPresetUnion({ session_id: sessionId })
+      .then((union: PresetUnion) => {
+        if (!cancelled) setPresetTokenCount(union.totalTokens);
+      })
+      .catch(() => {
+        // Non-fatal: indicator stays at 0
+      });
+    return () => { cancelled = true; };
+  }, [backendType, sessionId]);
+
   // Bug: 1d286c1 — handleReconnect now calls backend restart API before opening WS.
   // The previous version only opened a new WS but never restarted the PTY process,
   // so reconnect always got immediately rejected by the backend.
@@ -1050,7 +1068,7 @@ export function TerminalPane({
               {/* Bug: 11f4f47 — Context indicator bar above the input area */}
               {backendType === 'sdk' && (
                 <div style={{ padding: '0 16px', flexShrink: 0 }}>
-                  <ContextIndicator tokenCount={0} modelName={model} variant="bar" />
+                  <ContextIndicator tokenCount={presetTokenCount} modelName={model} variant="bar" />
                 </div>
               )}
               {/* Bug: aea2c67 — prompt input bar in rich view */}
@@ -1143,7 +1161,10 @@ export function TerminalPane({
                 />
                 {/* Bug: 11f4f47 — Live preset pills in sidebar for SDK sessions */}
                 {backendType === 'sdk' && (
-                  <LivePresetPills sessionId={sessionId} />
+                  <LivePresetPills
+                    sessionId={sessionId}
+                    onUnionUpdate={({ totalTokens }) => setPresetTokenCount(totalTokens)}
+                  />
                 )}
               </div>
             )}

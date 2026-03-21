@@ -14,10 +14,12 @@ import { PresetPillSelector } from '../presets/PresetPillSelector';
 
 type LivePresetPillsProps = {
   sessionId: string;
+  onUnionUpdate?: (union: { totalTokens: number }) => void;
 };
 
 export function LivePresetPills({
   sessionId,
+  onUnionUpdate,
 }: LivePresetPillsProps): JSX.Element {
   const [allPresets, setAllPresets] = useState<Preset[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -72,6 +74,8 @@ export function LivePresetPills({
       await updateConsoleSessionOptions(sessionId, {
         systemPrompt: union.systemPrompt,
       });
+      // Bug: 11f4f47 — Notify parent of updated token count for ContextIndicator
+      onUnionUpdate?.({ totalTokens: union.totalTokens });
     } catch {
       // Revert on error
       setSelectedIds(prevIds);
