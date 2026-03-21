@@ -206,6 +206,11 @@ export function PresetsView({
           position: rootNodes.length,
         });
         dispatch({ type: 'nodeAdded', presetId, node: newNode });
+        // Bug: e20c88e — Push undo for library convention add (was missing)
+        dispatch({
+          type: 'presetsPushUndo',
+          command: { type: 'add', node: newNode },
+        });
       } catch (err) {
         console.error('Failed to add convention to preset:', err);
       }
@@ -256,7 +261,8 @@ export function PresetsView({
         style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
       >
         {/* Library entry */}
-        <div
+        <button
+          type="button"
           className={`presets-sidebar__item presets-sidebar__item--library${presetsState.libraryMode ? ' presets-sidebar__item--active' : ''}`}
           onClick={handleLibraryToggle}
         >
@@ -267,7 +273,7 @@ export function PresetsView({
             <rect x="8" y="8" width="5" height="5" rx="1" />
           </svg>
           <span>Convention Library</span>
-        </div>
+        </button>
 
         {/* Preset list */}
         <div className="presets-sidebar__list">
@@ -287,6 +293,14 @@ export function PresetsView({
                 key={preset.id}
                 className={`presets-sidebar__item${isSelected ? ' presets-sidebar__item--active' : ''}`}
                 onClick={() => handleSelectPreset(preset.id)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleSelectPreset(preset.id);
+                  }
+                }}
               >
                 {isRenaming ? (
                   <input

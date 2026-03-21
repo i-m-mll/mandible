@@ -112,6 +112,14 @@ export function ConventionLibrary({
                 <div
                   className="convention-library__card-header"
                   onClick={() => setExpandedId(isExpanded ? null : conv.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setExpandedId(isExpanded ? null : conv.id);
+                    }
+                  }}
                 >
                   <div className="convention-library__card-info">
                     <span className="convention-library__card-title">{conv.title}</span>

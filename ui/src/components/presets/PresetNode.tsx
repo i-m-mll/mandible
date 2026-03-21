@@ -152,8 +152,13 @@ export function PresetNodeView({
   }, [showMenu]);
 
   const handleSave = useCallback(() => {
+    // Bug: e20c88e — Skip API call and undo push if nothing changed
+    if (editTitle === node.title && editBody === node.body) {
+      onCancelEdit();
+      return;
+    }
     onSaveEdit(node.id, editTitle, editBody);
-  }, [node.id, editTitle, editBody, onSaveEdit]);
+  }, [node.id, node.title, node.body, editTitle, editBody, onSaveEdit, onCancelEdit]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -249,7 +254,6 @@ export function PresetNodeView({
               type="text"
               value={editTitle}
               onInput={(e) => setEditTitle((e.target as HTMLInputElement).value)}
-              onBlur={handleSave}
               placeholder="Node title"
             />
           </div>
@@ -287,8 +291,8 @@ export function PresetNodeView({
                 <button
                   type="button"
                   onClick={() => { onSplitIntoChildren(node.id); setShowMenu(false); }}
-                  disabled={!isLeaf}
-                  className={!isLeaf ? 'preset-node__menu-item--disabled' : ''}
+                  disabled={!node.body || !/^#{1,6}\s+/m.test(node.body)}
+                  className={(!node.body || !/^#{1,6}\s+/m.test(node.body)) ? 'preset-node__menu-item--disabled' : ''}
                 >
                   Split into children
                 </button>
@@ -315,7 +319,6 @@ export function PresetNodeView({
             className="preset-node__body-textarea"
             value={editBody}
             onInput={(e) => setEditBody((e.target as HTMLTextAreaElement).value)}
-            onBlur={handleSave}
             placeholder="Convention body (Markdown)"
             rows={6}
           />

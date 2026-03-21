@@ -1,5 +1,6 @@
 // Bug: e20c88e — Insert from Library command palette modal
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import type { LibraryConvention } from '../../types/presets';
 import { fetchConventionLibrary } from '../../api';
 
@@ -21,6 +22,9 @@ export function InsertFromLibraryModal({
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(overlayRef, isOpen);
 
   useEffect(() => {
     if (isOpen) {
@@ -90,13 +94,14 @@ export function InsertFromLibraryModal({
 
   return (
     <div
+      ref={overlayRef}
       className="insert-modal__overlay"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
       onKeyDown={handleKeyDown}
     >
-      <div className="insert-modal">
+      <div className="insert-modal" role="dialog" aria-label="Insert from library">
         <input
           ref={inputRef}
           type="text"
@@ -104,8 +109,14 @@ export function InsertFromLibraryModal({
           placeholder="Search conventions to insert..."
           value={search}
           onInput={(e) => handleSearchInput((e.target as HTMLInputElement).value)}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-haspopup="listbox"
+          aria-expanded={results.length > 0}
+          aria-activedescendant={results.length > 0 ? `insert-result-${selectedIdx}` : undefined}
+          aria-controls="insert-modal-listbox"
         />
-        <div ref={listRef} className="insert-modal__results">
+        <div ref={listRef} className="insert-modal__results" id="insert-modal-listbox" role="listbox">
           {loading ? (
             <div className="insert-modal__loading text-muted">Searching...</div>
           ) : results.length === 0 ? (
@@ -114,6 +125,9 @@ export function InsertFromLibraryModal({
             results.map((conv, idx) => (
               <div
                 key={conv.id}
+                id={`insert-result-${idx}`}
+                role="option"
+                aria-selected={idx === selectedIdx}
                 className={`insert-modal__result${idx === selectedIdx ? ' insert-modal__result--selected' : ''}`}
                 onClick={() => {
                   onInsert(conv);

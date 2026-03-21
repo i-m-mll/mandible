@@ -1,5 +1,6 @@
 // Bug: e20c88e — Promotion/routing dialog for preset diffs
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import type { Preset, PresetDiff } from '../../types/presets';
 
 export type RoutingDialogProps = {
@@ -31,6 +32,9 @@ export function RoutingDialog({
   isClaudeMdPreset,
 }: RoutingDialogProps): JSX.Element | null {
   const [selectedPresetId, setSelectedPresetId] = useState(recommendedPresetId || '');
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(overlayRef, isOpen);
 
   if (!isOpen) return null;
 
@@ -42,6 +46,7 @@ export function RoutingDialog({
 
   return (
     <div
+      ref={overlayRef}
       className="routing-dialog__overlay"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
