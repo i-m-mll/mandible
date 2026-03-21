@@ -1,8 +1,9 @@
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
-import type { Preset, PresetWithNodes, PresetNode, LibraryConvention, PresetDiff } from './types/presets';
+import type { PresetWithNodes, PresetDiff } from './types/presets';
+export type { Preset, PresetNode, LibraryConvention } from './types/presets';
 
-export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[] };
+export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[]; presets?: T[]; nodes?: T[]; diffs?: T[] };
 
 const DEFAULT_HEADERS = {
   Accept: 'application/json',
@@ -83,6 +84,9 @@ function normalizeList<T>(payload: ApiList<T>): T[] {
     payload.requests ||
     payload.repos ||
     payload.branches ||
+    payload.presets ||
+    payload.nodes ||
+    payload.diffs ||
     []
   );
 }
@@ -1252,7 +1256,8 @@ export async function createPreset(data: {
   markdown?: string;
 }): Promise<Preset> {
   const response = await apiPost('/api/presets', data);
-  return (await parseMaybeJson(response)) as Preset;
+  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
+  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
 }
 
 export async function fetchPreset(id: string): Promise<PresetWithNodes> {
@@ -1262,15 +1267,17 @@ export async function fetchPreset(id: string): Promise<PresetWithNodes> {
 
 export async function getPreset(id: string): Promise<Preset> {
   const response = await apiGet(`/api/presets/${encodeURIComponent(id)}`);
-  return (await parseMaybeJson(response)) as Preset;
+  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
+  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
 }
 
 export async function updatePreset(
   id: string,
   data: Partial<Preset>,
 ): Promise<Preset> {
-  const response = await apiPatch(`/api/presets/${encodeURIComponent(id)}`, data);
-  return (await parseMaybeJson(response)) as Preset;
+  const response = await apiPut(`/api/presets/${encodeURIComponent(id)}`, data);
+  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
+  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
 }
 
 export async function deletePreset(id: string): Promise<void> {
@@ -1298,7 +1305,8 @@ export async function addPresetNode(
     `/api/presets/${encodeURIComponent(presetId)}/nodes`,
     node,
   );
-  return (await parseMaybeJson(response)) as PresetNode;
+  const payload = (await parseMaybeJson(response)) as { node?: PresetNode } | PresetNode;
+  return (payload && typeof payload === 'object' && 'node' in payload) ? payload.node as PresetNode : payload as PresetNode;
 }
 
 export async function updatePresetNode(
@@ -1306,11 +1314,12 @@ export async function updatePresetNode(
   nodeId: string,
   data: Partial<PresetNode>,
 ): Promise<PresetNode> {
-  const response = await apiPatch(
+  const response = await apiPut(
     `/api/presets/${encodeURIComponent(presetId)}/nodes/${encodeURIComponent(nodeId)}`,
     data,
   );
-  return (await parseMaybeJson(response)) as PresetNode;
+  const payload = (await parseMaybeJson(response)) as { node?: PresetNode } | PresetNode;
+  return (payload && typeof payload === 'object' && 'node' in payload) ? payload.node as PresetNode : payload as PresetNode;
 }
 
 export async function deletePresetNode(
@@ -1326,7 +1335,7 @@ export async function reorderPresetNode(
   presetId: string,
   data: { nodeId: string; newParentId: string | null; newPosition: number },
 ): Promise<void> {
-  await apiPost(
+  await apiPatch(
     `/api/presets/${encodeURIComponent(presetId)}/nodes/reorder`,
     data,
   );
@@ -1362,7 +1371,8 @@ export async function exportPreset(id: string): Promise<string> {
 
 export async function importPreset(markdown: string): Promise<Preset> {
   const response = await apiPost('/api/presets/import', { markdown });
-  return (await parseMaybeJson(response)) as Preset;
+  const payload = (await parseMaybeJson(response)) as { preset?: Preset } | Preset;
+  return (payload && typeof payload === 'object' && 'preset' in payload) ? payload.preset as Preset : payload as Preset;
 }
 
 export async function fetchPresetDiffs(sessionId: string): Promise<PresetDiff[]> {
@@ -1377,11 +1387,12 @@ export async function updatePresetDiff(
   id: string,
   status: string,
 ): Promise<PresetDiff> {
-  const response = await apiPatch(
+  const response = await apiPut(
     `/api/presets/diffs/${encodeURIComponent(id)}`,
     { status },
   );
-  return (await parseMaybeJson(response)) as PresetDiff;
+  const payload = (await parseMaybeJson(response)) as { diff?: PresetDiff } | PresetDiff;
+  return (payload && typeof payload === 'object' && 'diff' in payload) ? payload.diff as PresetDiff : payload as PresetDiff;
 }
 
 export async function fetchPresetUnion(
@@ -1424,18 +1435,19 @@ export async function getSessionPresets(
   const response = await apiGet(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
   );
-  const payload = await parseMaybeJson(response);
-  return Array.isArray(payload) ? payload : [];
+  const payload = (await parseMaybeJson(response)) as { presets?: SessionPreset[] } | SessionPreset[];
+  if (Array.isArray(payload)) return payload;
+  return Array.isArray(payload?.presets) ? payload.presets : [];
 }
 
 export async function addSessionPreset(
   sessionId: string,
   presetId: string,
-  position?: number,
+  _position?: number,
 ): Promise<void> {
   await apiPost(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
-    { preset_id: presetId, position },
+    { presetIds: [presetId] },
   );
 }
 
@@ -1449,17 +1461,21 @@ export async function removeSessionPreset(
 }
 
 export async function getDefaultPresetIds(): Promise<string[]> {
-  const response = await apiGet('/api/settings/default_preset_ids');
-  const payload = await parseMaybeJson(response);
-  if (payload && typeof payload === 'object' && 'value' in payload) {
-    const val = (payload as { value?: unknown }).value;
-    if (typeof val === 'string') {
-      try {
-        return JSON.parse(val) as string[];
-      } catch {
-        return val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+  try {
+    const response = await apiGet('/api/settings/default_preset_ids');
+    const payload = await parseMaybeJson(response);
+    if (payload && typeof payload === 'object' && 'value' in payload) {
+      const val = (payload as { value?: unknown }).value;
+      if (typeof val === 'string') {
+        try {
+          return JSON.parse(val) as string[];
+        } catch {
+          return val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+        }
       }
     }
+  } catch {
+    // Setting doesn't exist yet — return empty defaults
   }
   return [];
 }
