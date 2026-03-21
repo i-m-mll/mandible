@@ -3,10 +3,20 @@ import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
 
+export type AuthRequestType =
+  | 'merge'
+  | 'commit'
+  | 'force-push'
+  | 'branch-delete'
+  | 'config-change'
+  | 'preset-promote'
+  | 'data-delete';
+
 export type AuthRequest = {
   id?: string;
   request_id?: string;
   session_id?: string | null;
+  type?: AuthRequestType;
   title?: string;
   summary?: string;
   repo?: string;
@@ -67,6 +77,25 @@ function getAuthTitle(request: AuthRequest): string {
 
 function getAuthStatus(request: AuthRequest): string {
   return request.status || request.state || 'pending';
+}
+
+function getAuthType(request: AuthRequest): AuthRequestType {
+  return request.type ?? 'merge';
+}
+
+const AUTH_TYPE_META: Record<AuthRequestType, { label: string; cssClass: string }> = {
+  'merge':          { label: 'Merge',       cssClass: 'type-badge--merge' },
+  'commit':         { label: 'Commit',      cssClass: 'type-badge--commit' },
+  'force-push':     { label: 'Force Push',  cssClass: 'type-badge--force-push' },
+  'branch-delete':  { label: 'Delete',      cssClass: 'type-badge--branch-delete' },
+  'config-change':  { label: 'Config',      cssClass: 'type-badge--config-change' },
+  'preset-promote': { label: 'Promote',     cssClass: 'type-badge--preset-promote' },
+  'data-delete':    { label: 'Delete Data', cssClass: 'type-badge--data-delete' },
+};
+
+/** Returns true when the request type has meaningful diff stats to display. */
+function typeHasDiffStats(type: AuthRequestType): boolean {
+  return type === 'merge' || type === 'commit';
 }
 
 function getStats(request: AuthRequest): { files: number | null; additions: number | null; deletions: number | null } {
@@ -481,8 +510,12 @@ function AuthCard({
 
   const effectiveTimestampLabel = timestampLabel ?? getSubmissionTimestampLabel(request);
 
+  const authType = getAuthType(request);
+  const typeMeta = AUTH_TYPE_META[authType];
+  const showDiffStats = typeHasDiffStats(authType);
+
   const hasStats = stats.files != null || stats.additions != null || stats.deletions != null;
-  const statsLine = (
+  const statsLine = showDiffStats ? (
     <span className="auth-card__stats">
       {hasStats ? (
         <>
@@ -494,12 +527,15 @@ function AuthCard({
         <span className="stats-unavailable">—</span>
       )}
     </span>
-  );
+  ) : null;
 
   const summaryContent = (
     <div className="auth-card__summary">
       <div className="auth-card__row auth-card__row--primary">
         <span className={statusClass}>{statusLabel}</span>
+        {authType !== 'merge' && (
+          <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
+        )}
         {/* Bug: a44fd6a — render auth request title as inline markdown */}
         <span
           className="auth-card__title"
@@ -511,7 +547,7 @@ function AuthCard({
       </div>
       <div className="auth-card__row auth-card__row--stats">
         {statsLine}
-        <span className="auth-card__divider">|</span>
+        {statsLine && <span className="auth-card__divider">|</span>}
         <span
           className="auth-card__request-id"
           onClick={(event) => {
@@ -715,34 +751,49 @@ function AuthCard({
                 <span className={`panel__chevron${showDiff ? ' panel__chevron--open' : ''}`}>
                   {'\u25B8'}
                 </span>
-                Changes
+                {showDiffStats ? 'Changes' : 'Details'}
               </button>
               {showDiff && (
-                diffSections.length > 0 ? (
-                  <div className="panel__body diff-panel">
-                    <div className="diff-file-tabs">
-                      {diffSections.length > 1 && (
-                        <button
-                          className={`diff-file-tab${selectedFile === -1 ? ' diff-file-tab--active' : ''}`}
-                          onClick={() => setSelectedFile(-1)}
-                        >All</button>
-                      )}
-                      {diffSections.map((section, i) => (
-                        <button
-                          key={i}
-                          className={`diff-file-tab${selectedFile === i ? ' diff-file-tab--active' : ''}`}
-                          onClick={() => setSelectedFile(i)}
-                          title={section.filename}
-                        >
-                          {section.filename.split('/').pop()}
-                        </button>
-                      ))}
+                showDiffStats ? (
+                  diffSections.length > 0 ? (
+                    <div className="panel__body diff-panel">
+                      <div className="diff-file-tabs">
+                        {diffSections.length > 1 && (
+                          <button
+                            className={`diff-file-tab${selectedFile === -1 ? ' diff-file-tab--active' : ''}`}
+                            onClick={() => setSelectedFile(-1)}
+                          >All</button>
+                        )}
+                        {diffSections.map((section, i) => (
+                          <button
+                            key={i}
+                            className={`diff-file-tab${selectedFile === i ? ' diff-file-tab--active' : ''}`}
+                            onClick={() => setSelectedFile(i)}
+                            title={section.filename}
+                          >
+                            {section.filename.split('/').pop()}
+                          </button>
+                        ))}
+                      </div>
+                      <div dangerouslySetInnerHTML={{ __html: diffHtml }} />
                     </div>
-                    <div dangerouslySetInnerHTML={{ __html: diffHtml }} />
-                  </div>
+                  ) : (
+                    <div className="panel__body diff-panel spec-panel--empty">
+                      No diff available.
+                    </div>
+                  )
                 ) : (
-                  <div className="panel__body diff-panel spec-panel--empty">
-                    No diff available.
+                  <div className="panel__body spec-panel">
+                    <p className="type-detail-summary">
+                      <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
+                      {' '}{getAuthTitle(request)}
+                    </p>
+                    {specContent && (
+                      <div dangerouslySetInnerHTML={{ __html: specHtml }} />
+                    )}
+                    {!specContent && (
+                      <p className="text-muted">No additional details for this request type.</p>
+                    )}
                   </div>
                 )
               )}
@@ -883,6 +934,9 @@ function AuthSidebarItem({
     dotStatus = status;
   }
 
+  const authType = getAuthType(request);
+  const sidebarTypeMeta = AUTH_TYPE_META[authType];
+
   const headBranch = request.head_branch ?? request.head ?? '';
   const baseBranch = request.base_branch ?? request.base ?? '';
   const branchInfo = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : headBranch;
@@ -903,11 +957,18 @@ function AuthSidebarItem({
     >
       <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />
       <span className="auth-sidebar-item__body">
-        {/* Bug: a44fd6a — render auth sidebar title as inline markdown */}
-        <span
-          className="auth-sidebar-item__title"
-          dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
-        />
+        <span className="auth-sidebar-item__title-row">
+          {authType !== 'merge' && (
+            <span className={`type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`}>
+              {sidebarTypeMeta.label}
+            </span>
+          )}
+          {/* Bug: a44fd6a — render auth sidebar title as inline markdown */}
+          <span
+            className="auth-sidebar-item__title"
+            dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+          />
+        </span>
         {repo && (
           <span className="auth-sidebar-item__repo">{repo}</span>
         )}
@@ -919,6 +980,17 @@ function AuthSidebarItem({
     </button>
   );
 }
+
+const AUTH_TYPE_OPTIONS: { value: AuthRequestType | 'all'; label: string }[] = [
+  { value: 'all', label: 'All types' },
+  { value: 'merge', label: 'Merge' },
+  { value: 'commit', label: 'Commit' },
+  { value: 'force-push', label: 'Force Push' },
+  { value: 'branch-delete', label: 'Delete' },
+  { value: 'config-change', label: 'Config' },
+  { value: 'preset-promote', label: 'Promote' },
+  { value: 'data-delete', label: 'Delete Data' },
+];
 
 type AuthFilterMode = 'active' | 'all' | 'historical';
 
@@ -944,6 +1016,9 @@ export function AuthQueueView({
 
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
+
+  // Type filter: 'all' = show all types
+  const [typeFilter, setTypeFilter] = useState<AuthRequestType | 'all'>('all');
 
   // Repo filter: null = show all repos
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
@@ -1437,9 +1512,12 @@ export function AuthQueueView({
     }
   }, [uniqueRepos, repoFilter]);
 
-  // Apply repo + branch filters on top of the mode-filtered list
+  // Apply type, repo, and branch filters on top of the mode-filtered list
   const filteredSidebarItems = useMemo((): AuthRequest[] => {
     let items = sidebarItems;
+    if (typeFilter !== 'all') {
+      items = items.filter((r) => getAuthType(r) === typeFilter);
+    }
     if (repoFilter) {
       items = items.filter((r) => {
         const repo = r.repo && r.repo.trim() ? r.repo.trim() : null;
@@ -1453,7 +1531,7 @@ export function AuthQueueView({
       });
     }
     return items;
-  }, [sidebarItems, repoFilter, branchFilter]);
+  }, [sidebarItems, typeFilter, repoFilter, branchFilter]);
 
   // Find the selected request from whichever list contains it
   const selectedRequest = useMemo((): AuthRequest | null => {
@@ -1495,7 +1573,7 @@ export function AuthQueueView({
       onSelectAuth?.(firstId);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterMode, repoFilter, branchFilter, filteredSidebarItems]);
+  }, [filterMode, typeFilter, repoFilter, branchFilter, filteredSidebarItems]);
 
   // Render the action buttons for the selected request in the detail panel
   const renderDetailActions = (request: AuthRequest): JSX.Element | null => {
@@ -1668,6 +1746,17 @@ export function AuthQueueView({
           )}
         </div>
 
+        <div className="auth-sidebar__type-filter">
+          <select
+            value={typeFilter}
+            onChange={(event) => setTypeFilter(event.currentTarget.value as AuthRequestType | 'all')}
+          >
+            {AUTH_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        </div>
+
         {uniqueRepos.length > 1 && (
           <div className="auth-sidebar__repo-filter">
             <button
@@ -1782,15 +1871,17 @@ export function AuthQueueView({
         <div className="auth-sidebar__list">
           {filteredSidebarItems.length === 0 ? (
             <div className="auth-sidebar__empty">
-              {branchFilter
-                ? `No requests for branch ${branchFilter.split('/').pop() ?? branchFilter}.`
-                : repoFilter
-                  ? `No requests for ${repoFilter.includes('/') ? repoFilter.split('/')[1] : repoFilter}.`
-                  : filterMode === 'active'
-                    ? 'No active requests.'
-                    : filterMode === 'historical'
-                      ? 'No historical requests.'
-                      : 'No auth requests.'}
+              {typeFilter !== 'all'
+                ? `No ${AUTH_TYPE_META[typeFilter].label.toLowerCase()} requests.`
+                : branchFilter
+                  ? `No requests for branch ${branchFilter.split('/').pop() ?? branchFilter}.`
+                  : repoFilter
+                    ? `No requests for ${repoFilter.includes('/') ? repoFilter.split('/')[1] : repoFilter}.`
+                    : filterMode === 'active'
+                      ? 'No active requests.'
+                      : filterMode === 'historical'
+                        ? 'No historical requests.'
+                        : 'No auth requests.'}
             </div>
           ) : (
             filteredSidebarItems.map((request) => (
