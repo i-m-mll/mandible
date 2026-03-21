@@ -4,6 +4,10 @@ import { getDb, resolvePrefix } from "./db.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
+// Bug: dd21c1e — valid auth request types
+const VALID_AUTH_REQUEST_TYPES = [
+    "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
+];
 export class AuthQueueError extends Error {
     code;
     status;
@@ -126,6 +130,7 @@ export class AuthQueue {
         const request = {
             id: randomUUID(),
             session_id: payload.session_id ?? null,
+            type: payload.type ?? "merge",
             command: payload.command,
             title: payload.title,
             cwd: payload.cwd ?? null,
@@ -159,6 +164,7 @@ export class AuthQueue {
         const stmt = this.db.prepare(`INSERT INTO auth_requests (
         id,
         session_id,
+        type,
         command,
         title,
         cwd,
@@ -191,6 +197,7 @@ export class AuthQueue {
       ) VALUES (
         @id,
         @session_id,
+        @type,
         @command,
         @title,
         @cwd,
@@ -266,6 +273,7 @@ export class AuthQueue {
         }
         const resetToPending = (isFailed || isApproved) && fields.status === "pending";
         const allowedFields = [
+            "type",
             "title",
             "diff_summary",
             "commit_message",
@@ -738,6 +746,7 @@ export class AuthQueue {
     buildResolvedPayload(request) {
         return {
             request_id: request.id,
+            type: request.type,
             status: request.status,
             exit_code: request.exit_code,
             error: request.error,
@@ -770,6 +779,7 @@ export class AuthQueue {
       CREATE TABLE IF NOT EXISTS auth_requests (
         id TEXT PRIMARY KEY,
         session_id TEXT,
+        type TEXT NOT NULL DEFAULT 'merge',
         command TEXT NOT NULL,
         title TEXT NOT NULL,
         cwd TEXT,
@@ -841,9 +851,15 @@ function mapRow(row) {
             parsedIssues = null;
         }
     }
+    // Bug: dd21c1e — parse type column, default to 'merge' for backward compat
+    const rawType = row.type == null ? "merge" : String(row.type);
+    const type = VALID_AUTH_REQUEST_TYPES.includes(rawType)
+        ? rawType
+        : "merge";
     return {
         id: String(row.id),
         session_id: row.session_id == null ? null : String(row.session_id),
+        type,
         command: String(row.command),
         title: String(row.title),
         cwd: row.cwd == null ? null : String(row.cwd),
