@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
-import { parseMarkdownToNodes, serializeNodesToMarkdown, computeContentHash, computePresetUnion, importClaudeMd, routePresetDiffWithNodes, } from "../presets.js";
+import { parseMarkdownToNodes, serializeNodesToMarkdown, computeContentHash, computePresetUnion, importClaudeMd, routePresetDiffWithNodes, scanForSettingLinks, scanPresetForSettingLinks, } from "../presets.js";
 function sendJson(res, code, payload) {
     res.status(code).json(payload);
 }
@@ -217,6 +217,8 @@ export function registerPresetRoutes(server) {
             }
         });
         insertAll();
+        // Bug: 8baedeb — auto-detect setting links for imported nodes
+        scanPresetForSettingLinks(id, db);
         const preset = {
             id,
             name,
@@ -282,6 +284,8 @@ export function registerPresetRoutes(server) {
         try {
             const db = getDb();
             const preset = importClaudeMd(filePath, db);
+            // Bug: 8baedeb — auto-detect setting links for imported CLAUDE.md nodes
+            scanPresetForSettingLinks(preset.id, db);
             broadcast("preset:created", preset);
             res.status(201).json({ preset });
         }
@@ -345,6 +349,151 @@ export function registerPresetRoutes(server) {
         });
     });
     // ================================================================
+    // Convention-Setting Links (must be before :id routes)
+    // Bug: 8baedeb — convention-configuration linkage
+    // ================================================================
+    // GET /api/presets/links?setting_key=X — find conventions linked to a setting
+    server.get("/api/presets/links", (req, res) => {
+        const settingKey = req.query.setting_key;
+        if (!settingKey || typeof settingKey !== "string") {
+            sendJson(res, 400, { error: "setting_key query parameter required" });
+            return;
+        }
+        const db = getDb();
+        const links = db
+            .prepare(`SELECT csl.*, pn.title AS node_title, pn.preset_id, p.name AS preset_name
+         FROM convention_setting_links csl
+         JOIN preset_nodes pn ON pn.id = csl.node_id
+         JOIN presets p ON p.id = pn.preset_id
+         WHERE csl.setting_key = ?
+         ORDER BY csl.created_at DESC`)
+            .all(settingKey);
+        res.status(200).json({ links });
+    });
+    // GET /api/presets/validate-session?session_id=X — check for unsatisfied requires links
+    server.get("/api/presets/validate-session", (req, res) => {
+        const sessionId = req.query.session_id;
+        if (!sessionId || typeof sessionId !== "string") {
+            sendJson(res, 400, { error: "session_id query parameter required" });
+            return;
+        }
+        const db = getDb();
+        // Get all preset IDs for this session
+        const sessionPresetRows = db
+            .prepare("SELECT preset_id FROM session_presets WHERE session_id = ?")
+            .all(sessionId);
+        if (sessionPresetRows.length === 0) {
+            res.status(200).json({ valid: true, warnings: [] });
+            return;
+        }
+        const presetIds = sessionPresetRows.map((r) => r.preset_id);
+        const placeholders = presetIds.map(() => "?").join(",");
+        // Find all 'requires' links for nodes in those presets
+        const requiresLinks = db
+            .prepare(`SELECT csl.setting_key, pn.title AS convention_title, p.name AS preset_name
+         FROM convention_setting_links csl
+         JOIN preset_nodes pn ON pn.id = csl.node_id
+         JOIN presets p ON p.id = pn.preset_id
+         WHERE csl.link_type = 'requires'
+           AND pn.preset_id IN (${placeholders})`)
+            .all(...presetIds);
+        if (requiresLinks.length === 0) {
+            res.status(200).json({ valid: true, warnings: [] });
+            return;
+        }
+        // Check which settings exist and are configured
+        const settingKeys = [...new Set(requiresLinks.map((l) => l.setting_key))];
+        const settingPlaceholders = settingKeys.map(() => "?").join(",");
+        const settings = db
+            .prepare(`SELECT key, value FROM settings WHERE key IN (${settingPlaceholders})`)
+            .all(...settingKeys);
+        const settingMap = new Map(settings.map((s) => [s.key, s.value]));
+        const warnings = [];
+        for (const link of requiresLinks) {
+            const val = settingMap.get(link.setting_key);
+            if (val === undefined || val === "" || val === "false") {
+                warnings.push({
+                    conventionTitle: link.convention_title || link.preset_name,
+                    settingKey: link.setting_key,
+                    message: `Convention "${link.convention_title || link.preset_name}" requires setting "${link.setting_key}" to be configured.`,
+                });
+            }
+        }
+        // Deduplicate by settingKey (multiple conventions may reference the same setting)
+        const seen = new Set();
+        const dedupedWarnings = warnings.filter((w) => {
+            const key = `${w.settingKey}:${w.conventionTitle}`;
+            if (seen.has(key))
+                return false;
+            seen.add(key);
+            return true;
+        });
+        res.status(200).json({
+            valid: dedupedWarnings.length === 0,
+            warnings: dedupedWarnings,
+        });
+    });
+    // POST /api/presets/validate-preset-ids — validate preset IDs before session creation
+    // Bug: 8baedeb — backend validation for pre-creation flows (NewSessionDialog, etc.)
+    server.post("/api/presets/validate-preset-ids", (req, res) => {
+        const body = (req.body ?? {});
+        if (!Array.isArray(body.presetIds) || body.presetIds.length === 0) {
+            res.status(200).json({ valid: true, warnings: [] });
+            return;
+        }
+        const presetIds = body.presetIds.filter((id) => typeof id === "string");
+        if (presetIds.length === 0) {
+            res.status(200).json({ valid: true, warnings: [] });
+            return;
+        }
+        const db = getDb();
+        const placeholders = presetIds.map(() => "?").join(",");
+        // Find all 'requires' links for nodes in those presets
+        const requiresLinks = db
+            .prepare(`SELECT csl.setting_key, pn.title AS convention_title, p.name AS preset_name
+         FROM convention_setting_links csl
+         JOIN preset_nodes pn ON pn.id = csl.node_id
+         JOIN presets p ON p.id = pn.preset_id
+         WHERE csl.link_type = 'requires'
+           AND pn.preset_id IN (${placeholders})`)
+            .all(...presetIds);
+        if (requiresLinks.length === 0) {
+            res.status(200).json({ valid: true, warnings: [] });
+            return;
+        }
+        // Check which settings exist and are configured
+        const settingKeys = [...new Set(requiresLinks.map((l) => l.setting_key))];
+        const settingPlaceholders = settingKeys.map(() => "?").join(",");
+        const settings = db
+            .prepare(`SELECT key, value FROM settings WHERE key IN (${settingPlaceholders})`)
+            .all(...settingKeys);
+        const settingMap = new Map(settings.map((s) => [s.key, s.value]));
+        const warnings = [];
+        for (const link of requiresLinks) {
+            const val = settingMap.get(link.setting_key);
+            if (val === undefined || val === "" || val === "false") {
+                warnings.push({
+                    conventionTitle: link.convention_title || link.preset_name,
+                    settingKey: link.setting_key,
+                    message: `Convention "${link.convention_title || link.preset_name}" requires setting "${link.setting_key}" to be configured.`,
+                });
+            }
+        }
+        // Deduplicate by settingKey + conventionTitle
+        const seen = new Set();
+        const dedupedWarnings = warnings.filter((w) => {
+            const key = `${w.settingKey}:${w.conventionTitle}`;
+            if (seen.has(key))
+                return false;
+            seen.add(key);
+            return true;
+        });
+        res.status(200).json({
+            valid: dedupedWarnings.length === 0,
+            warnings: dedupedWarnings,
+        });
+    });
+    // ================================================================
     // Preset CRUD
     // ================================================================
     // GET /api/presets — list all presets
@@ -402,6 +551,8 @@ export function registerPresetRoutes(server) {
                 }
             });
             insertAll();
+            // Bug: 8baedeb — auto-detect setting links for newly created nodes
+            scanPresetForSettingLinks(id, db);
         }
         const preset = {
             id,
@@ -464,6 +615,8 @@ export function registerPresetRoutes(server) {
             return;
         }
         // Delete nodes first (FK cascade may not work in all SQLite configs)
+        // Bug: 8baedeb — also clean up convention_setting_links for nodes in this preset
+        db.prepare("DELETE FROM convention_setting_links WHERE node_id IN (SELECT id FROM preset_nodes WHERE preset_id = ?)").run(preset.id);
         db.prepare("DELETE FROM preset_nodes WHERE preset_id = ?").run(preset.id);
         db.prepare("DELETE FROM session_presets WHERE preset_id = ?").run(preset.id);
         db.prepare("DELETE FROM preset_diffs WHERE preset_id = ?").run(preset.id);
@@ -539,6 +692,8 @@ export function registerPresetRoutes(server) {
             db.prepare("UPDATE presets SET content_hash = ?, version = version + 1, updated_at = ? WHERE id = ?").run(contentHash, now, preset.id);
         });
         replaceAll();
+        // Bug: 8baedeb — re-scan setting links after bulk node replacement
+        scanPresetForSettingLinks(preset.id, db);
         broadcast("preset:updated", { id: preset.id });
         res.status(200).json({ nodes });
     });
@@ -564,6 +719,8 @@ export function registerPresetRoutes(server) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(nodeId, preset.id, parentId, position, title, nodeBody, level, now, now);
         // Update preset timestamp
         db.prepare("UPDATE presets SET updated_at = ? WHERE id = ?").run(now, preset.id);
+        // Bug: 8baedeb — auto-detect setting links for new node
+        scanForSettingLinks(nodeId, `${title} ${nodeBody}`, db);
         const node = {
             id: nodeId,
             preset_id: preset.id,
@@ -603,6 +760,8 @@ export function registerPresetRoutes(server) {
        WHERE id = ?`).run(parentId, position, title, nodeBody, level, now, node.id);
         // Update preset timestamp
         db.prepare("UPDATE presets SET updated_at = ? WHERE id = ?").run(now, req.params.id);
+        // Bug: 8baedeb — re-scan setting links on node update
+        scanForSettingLinks(node.id, `${title} ${nodeBody}`, db);
         const updated = {
             ...node,
             parent_id: parentId,
@@ -674,6 +833,73 @@ export function registerPresetRoutes(server) {
         db.prepare("UPDATE preset_nodes SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?").run(newParentId, newPosition, now, node.id);
         db.prepare("UPDATE presets SET updated_at = ? WHERE id = ?").run(now, preset.id);
         broadcast("preset:updated", { id: preset.id });
+        res.status(200).json({ ok: true });
+    });
+    // ================================================================
+    // Node Setting Links
+    // Bug: 8baedeb — convention-configuration linkage per node
+    // ================================================================
+    // GET /api/presets/nodes/:nodeId/links — get links for a node
+    server.get("/api/presets/nodes/:nodeId/links", (req, res) => {
+        const db = getDb();
+        const links = db
+            .prepare("SELECT * FROM convention_setting_links WHERE node_id = ? ORDER BY created_at DESC")
+            .all(req.params.nodeId);
+        res.status(200).json({ links });
+    });
+    // POST /api/presets/nodes/:nodeId/links — create a manual link
+    server.post("/api/presets/nodes/:nodeId/links", (req, res) => {
+        const db = getDb();
+        const nodeId = req.params.nodeId;
+        // Verify the node exists
+        const node = db
+            .prepare("SELECT id FROM preset_nodes WHERE id = ?")
+            .get(nodeId);
+        if (!node) {
+            sendJson(res, 404, { error: "node not found" });
+            return;
+        }
+        const body = (req.body ?? {});
+        if (!body.settingKey || typeof body.settingKey !== "string") {
+            sendJson(res, 400, { error: "settingKey is required" });
+            return;
+        }
+        const validLinkTypes = ["references", "requires", "configures"];
+        const linkType = body.linkType && validLinkTypes.includes(body.linkType)
+            ? body.linkType
+            : "references";
+        const now = Date.now();
+        const id = randomUUID();
+        try {
+            db.prepare(`INSERT INTO convention_setting_links (id, node_id, setting_key, link_type, created_at)
+         VALUES (?, ?, ?, ?, ?)`).run(id, nodeId, body.settingKey, linkType, now);
+        }
+        catch (err) {
+            if (err instanceof Error && err.message.includes("UNIQUE constraint")) {
+                sendJson(res, 409, { error: "Link already exists for this node and setting" });
+                return;
+            }
+            throw err;
+        }
+        const link = {
+            id,
+            node_id: nodeId,
+            setting_key: body.settingKey,
+            link_type: linkType,
+            created_at: now,
+        };
+        res.status(201).json({ link });
+    });
+    // DELETE /api/presets/links/:id — remove a link
+    server.delete("/api/presets/links/:id", (req, res) => {
+        const db = getDb();
+        const result = db
+            .prepare("DELETE FROM convention_setting_links WHERE id = ?")
+            .run(req.params.id);
+        if (result.changes === 0) {
+            sendJson(res, 404, { error: "link not found" });
+            return;
+        }
         res.status(200).json({ ok: true });
     });
     // ================================================================

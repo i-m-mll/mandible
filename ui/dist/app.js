@@ -61,10 +61,12 @@ __export(api_exports, {
   buildQuery: () => buildQuery,
   closeConsoleSession: () => closeConsoleSession,
   createConsoleSession: () => createConsoleSession,
+  createNodeLink: () => createNodeLink,
   createPreset: () => createPreset,
   createSwitchboardTemplate: () => createSwitchboardTemplate,
   deletePreset: () => deletePreset,
   deletePresetNode: () => deletePresetNode,
+  deleteSettingLink: () => deleteSettingLink,
   deleteSwitchboardPairing: () => deleteSwitchboardPairing,
   deleteSwitchboardTemplate: () => deleteSwitchboardTemplate,
   dismissAuthRequest: () => dismissAuthRequest,
@@ -98,6 +100,7 @@ __export(api_exports, {
   getIssueRepos: () => getIssueRepos,
   getIssueSessions: () => getIssueSessions,
   getLogs: () => getLogs,
+  getNodeLinks: () => getNodeLinks,
   getPreset: () => getPreset,
   getPresetUnion: () => getPresetUnion,
   getPresets: () => getPresets,
@@ -108,6 +111,7 @@ __export(api_exports, {
   getSessionIssues: () => getSessionIssues,
   getSessionPresets: () => getSessionPresets,
   getSessions: () => getSessions,
+  getSettingLinks: () => getSettingLinks,
   getSettings: () => getSettings,
   getStarredChats: () => getStarredChats,
   getSwitchboardItems: () => getSwitchboardItems,
@@ -162,7 +166,9 @@ __export(api_exports, {
   updateSetting: () => updateSetting,
   updateStarredChat: () => updateStarredChat,
   updateSwitchboardPairing: () => updateSwitchboardPairing,
-  updateWorkUnit: () => updateWorkUnit
+  updateWorkUnit: () => updateWorkUnit,
+  validatePresetIds: () => validatePresetIds,
+  validateSessionPresets: () => validateSessionPresets
 });
 async function apiGet(path) {
   const response = await fetch(path, { headers: DEFAULT_HEADERS });
@@ -997,6 +1003,37 @@ async function removeSessionPreset(sessionId, presetId) {
   await apiDelete(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets/${encodeURIComponent(presetId)}`
   );
+}
+async function getSettingLinks(settingKey) {
+  const response = await apiGet(`/api/presets/links?setting_key=${encodeURIComponent(settingKey)}`);
+  const payload = await parseMaybeJson(response);
+  return payload.links ?? [];
+}
+async function getNodeLinks(nodeId) {
+  const response = await apiGet(`/api/presets/nodes/${encodeURIComponent(nodeId)}/links`);
+  const payload = await parseMaybeJson(response);
+  return payload.links ?? [];
+}
+async function createNodeLink(nodeId, settingKey, linkType) {
+  const response = await apiPost(
+    `/api/presets/nodes/${encodeURIComponent(nodeId)}/links`,
+    { settingKey, linkType }
+  );
+  const payload = await parseMaybeJson(response);
+  return payload.link;
+}
+async function deleteSettingLink(linkId) {
+  await apiDelete(`/api/presets/links/${encodeURIComponent(linkId)}`);
+}
+async function validateSessionPresets(sessionId) {
+  const response = await apiGet(
+    `/api/presets/validate-session?session_id=${encodeURIComponent(sessionId)}`
+  );
+  return await parseMaybeJson(response);
+}
+async function validatePresetIds(presetIds) {
+  const response = await apiPost("/api/presets/validate-preset-ids", { presetIds });
+  return await parseMaybeJson(response);
 }
 async function getDefaultPresetIds() {
   try {
@@ -11607,7 +11644,7 @@ function AuthCard({
   onDragStart,
   onDragEnd,
   onDragOver,
-  onDrop: onDrop2,
+  onDrop,
   onUpdateField
 }) {
   const [showCommit, setShowCommit] = d2(true);
@@ -11750,7 +11787,7 @@ function AuthCard({
       onDragStart,
       onDragEnd,
       onDragOver,
-      onDrop: onDrop2,
+      onDrop,
       children: [
         /* @__PURE__ */ u3(
           "button",
@@ -22862,6 +22899,121 @@ function ContextIndicator({
 
 // ui/src/components/console/TerminalPane.tsx
 init_api();
+
+// ui/src/stream-cache.ts
+var DB_NAME = "mandible-stream-cache";
+var DB_VERSION = 1;
+var STORE_NAME = "streams";
+var DEFAULT_MAX_SESSIONS = 20;
+var dbPromise = null;
+var evictTimer = null;
+function debouncedEvict() {
+  if (evictTimer)
+    clearTimeout(evictTimer);
+  evictTimer = setTimeout(() => {
+    void evictLRU().catch(() => {
+    });
+  }, 5e3);
+}
+function getDb() {
+  if (dbPromise)
+    return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: "sessionId" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return dbPromise;
+}
+async function getCachedEvents(sessionId) {
+  const db = await getDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.get(sessionId);
+    request.onsuccess = () => {
+      const record = request.result;
+      resolve(record ? record.events : null);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+async function setCachedEvents(sessionId, events) {
+  const db = await getDb();
+  const json = JSON.stringify(events);
+  const sizeBytes = new Blob([json]).size;
+  const record = {
+    sessionId,
+    events,
+    updatedAt: Date.now(),
+    sizeBytes
+  };
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.put(record);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => {
+      debouncedEvict();
+    };
+  });
+}
+async function evictLRU(maxSessions, maxSizeBytes) {
+  const limit = maxSessions ?? DEFAULT_MAX_SESSIONS;
+  const db = await getDb();
+  const records = await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  if (records.length <= limit && !maxSizeBytes)
+    return;
+  records.sort((a4, b) => a4.updatedAt - b.updatedAt);
+  const toDelete = [];
+  while (records.length - toDelete.length > limit) {
+    const victim = records[toDelete.length];
+    toDelete.push(victim.sessionId);
+  }
+  if (maxSizeBytes) {
+    let totalSize = records.reduce((sum, r3) => sum + r3.sizeBytes, 0);
+    for (const id2 of toDelete) {
+      const r3 = records.find((rec) => rec.sessionId === id2);
+      if (r3)
+        totalSize -= r3.sizeBytes;
+    }
+    let idx = 0;
+    while (totalSize > maxSizeBytes && idx < records.length) {
+      const candidate = records[idx];
+      if (!toDelete.includes(candidate.sessionId)) {
+        toDelete.push(candidate.sessionId);
+        totalSize -= candidate.sizeBytes;
+      }
+      idx++;
+    }
+  }
+  if (toDelete.length === 0)
+    return;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    for (const id2 of toDelete) {
+      store.delete(id2);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ui/src/components/console/TerminalPane.tsx
 var MODEL_OPTIONS = {
   claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
   gemini: [
@@ -23293,6 +23445,13 @@ function TerminalPane({
     let cancelled = false;
     hydratingRef.current = true;
     pendingSSERef.current = [];
+    void getCachedEvents(sessionId).then((cached) => {
+      if (cancelled || !cached || cached.length === 0)
+        return;
+      setStreamEvents(cached);
+      setStreaming(deriveStreamingState(cached, streamStartAtRef));
+    }).catch(() => {
+    });
     if (!providerSessionId) {
       getConsoleStreamEvents(sessionId, 500).then((events) => {
         if (cancelled)
@@ -23353,6 +23512,47 @@ function TerminalPane({
       cancelled = true;
     };
   }, [providerSessionId, sessionId, resumeAtMessage]);
+  const cacheFlushTimerRef = A2(null);
+  const streamEventsRef = A2(streamEvents);
+  streamEventsRef.current = streamEvents;
+  const sessionIdRef = A2(sessionId);
+  sessionIdRef.current = sessionId;
+  const streamingRef = A2(streaming);
+  streamingRef.current = streaming;
+  y2(() => {
+    if (!streaming)
+      return;
+    const scheduleFlush = () => {
+      cacheFlushTimerRef.current = setTimeout(() => {
+        const events = streamEventsRef.current;
+        if (events.length > 0) {
+          void setCachedEvents(sessionIdRef.current, events).catch(() => {
+          });
+        }
+        if (streamingRef.current)
+          scheduleFlush();
+      }, 2e3);
+    };
+    scheduleFlush();
+    return () => {
+      if (cacheFlushTimerRef.current)
+        clearTimeout(cacheFlushTimerRef.current);
+    };
+  }, [streaming]);
+  y2(() => {
+    const flushToCache = () => {
+      const events = streamEventsRef.current;
+      if (events.length > 0) {
+        void setCachedEvents(sessionIdRef.current, events).catch(() => {
+        });
+      }
+    };
+    window.addEventListener("beforeunload", flushToCache);
+    return () => {
+      window.removeEventListener("beforeunload", flushToCache);
+      flushToCache();
+    };
+  }, [sessionId]);
   y2(() => {
     if (!streaming)
       return;
@@ -23413,7 +23613,26 @@ function TerminalPane({
       return;
     }
     if (streamStartAtRef.current === null) {
-      streamStartAtRef.current = Date.now();
+      let recovered = false;
+      for (let i4 = streamEvents.length - 1; i4 >= 0; i4--) {
+        const ev = streamEvents[i4];
+        if (ev.type === "synthetic_prompt") {
+          const localId = ev.localId;
+          if (localId) {
+            const match = localId.match(/^sp-(\d+)-/);
+            if (match) {
+              streamStartAtRef.current = Number(match[1]);
+              recovered = true;
+              break;
+            }
+          }
+        }
+        if (ev.type === "result")
+          break;
+      }
+      if (!recovered) {
+        streamStartAtRef.current = Date.now();
+      }
     }
     setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1e3));
     const interval2 = window.setInterval(() => {
@@ -23422,7 +23641,7 @@ function TerminalPane({
       }
     }, 1e3);
     return () => window.clearInterval(interval2);
-  }, [streaming]);
+  }, [streaming, streamEvents]);
   y2(() => {
     if (backendType !== "sdk") {
       setActiveSubagents([]);
@@ -23861,6 +24080,7 @@ function NewSessionDialog({
   const [presetIds, setPresetIds] = d2([]);
   const [allPresets, setAllPresets] = d2([]);
   const [presetsLoaded, setPresetsLoaded] = d2(false);
+  const [validationWarnings, setValidationWarnings] = d2([]);
   y2(() => {
     if (!open)
       return;
@@ -23896,6 +24116,24 @@ function NewSessionDialog({
     };
   }, [open, initialPresetId]);
   y2(() => {
+    if (!presetsLoaded || presetIds.length === 0 || transport !== "sdk") {
+      setValidationWarnings([]);
+      return;
+    }
+    let cancelled = false;
+    void validatePresetIds(presetIds).then((result) => {
+      if (!cancelled) {
+        setValidationWarnings(result.warnings);
+      }
+    }).catch(() => {
+      if (!cancelled)
+        setValidationWarnings([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [presetIds, presetsLoaded, transport]);
+  y2(() => {
     if (kind === "operator" && backend !== "claude") {
       setBackend("claude");
       setTransport("sdk");
@@ -23926,6 +24164,7 @@ function NewSessionDialog({
     setTransport("sdk");
     setPresetIds([]);
     setPresetsLoaded(false);
+    setValidationWarnings([]);
     onClose();
   };
   const handleOverlayClick = (e3) => {
@@ -24019,7 +24258,33 @@ function NewSessionDialog({
             onChange: setPresetIds,
             presets: allPresets
           }
-        )
+        ),
+        validationWarnings.length > 0 && /* @__PURE__ */ u3("div", { className: "new-session-dialog__validation-warnings", children: validationWarnings.map((w3, i4) => /* @__PURE__ */ u3("div", { className: "new-session-dialog__validation-warning", children: [
+          /* @__PURE__ */ u3("span", { className: "new-session-dialog__validation-warning-icon", children: "\u26A0" }),
+          /* @__PURE__ */ u3("span", { children: [
+            'Convention "',
+            w3.conventionTitle,
+            '" requires setting "',
+            w3.settingKey,
+            '" to be configured.',
+            " ",
+            /* @__PURE__ */ u3(
+              "a",
+              {
+                href: "#/settings",
+                className: "new-session-dialog__validation-warning-link",
+                onClick: (e3) => {
+                  e3.preventDefault();
+                  window.location.hash = "#/settings";
+                },
+                children: [
+                  "Configure now ",
+                  "\u2192"
+                ]
+              }
+            )
+          ] })
+        ] }, i4)) })
       ] }),
       /* @__PURE__ */ u3("div", { className: "new-session-dialog__actions", children: [
         /* @__PURE__ */ u3("button", { type: "button", onClick: onClose, className: "new-session-dialog__button new-session-dialog__button--ghost", children: "Cancel" }),
@@ -31386,6 +31651,7 @@ function PresetNodeView({
   onSplitIntoChildren,
   onCopy,
   onFocus,
+  onDrop,
   isLeaf,
   children: children2,
   ariaSetSize,
@@ -32429,12 +32695,32 @@ function ConventionLibrary({
   const [search, setSearch] = d2("");
   const [loading, setLoading] = d2(false);
   const [expandedId, setExpandedId] = d2(null);
+  const [showBreadcrumbs, setShowBreadcrumbs] = d2(() => {
+    try {
+      return localStorage.getItem("mandible_convention_breadcrumbs") === "true";
+    } catch {
+      return false;
+    }
+  });
   const debounceRef = A2(null);
+  const [nodeLinksMap, setNodeLinksMap] = d2(/* @__PURE__ */ new Map());
   const loadConventions = q2((query) => {
     setLoading(true);
     fetchConventionLibrary(query || void 0, 100).then((items) => {
       setConventions(items);
       setLoading(false);
+      const linkPromises = items.map(
+        (item) => getNodeLinks(item.id).then((links) => [item.id, links]).catch(() => [item.id, []])
+      );
+      void Promise.all(linkPromises).then((results) => {
+        const map = /* @__PURE__ */ new Map();
+        for (const [nodeId, links] of results) {
+          if (links.length > 0) {
+            map.set(nodeId, links);
+          }
+        }
+        setNodeLinksMap(map);
+      });
     }).catch(() => {
       setLoading(false);
     });
@@ -32468,19 +32754,41 @@ function ConventionLibrary({
       /* @__PURE__ */ u3("h2", { className: "convention-library__title", children: "Convention Library" }),
       /* @__PURE__ */ u3("p", { className: "text-muted", style: { margin: "4px 0 0", fontSize: "13px" }, children: "Browse all leaf conventions across presets" })
     ] }),
-    /* @__PURE__ */ u3("div", { className: "convention-library__search", children: /* @__PURE__ */ u3(
-      "input",
-      {
-        type: "text",
-        className: "convention-library__search-input",
-        placeholder: "Search conventions...",
-        value: search,
-        onInput: (e3) => handleSearchInput(e3.target.value)
-      }
-    ) }),
+    /* @__PURE__ */ u3("div", { className: "convention-library__search", children: [
+      /* @__PURE__ */ u3(
+        "input",
+        {
+          type: "text",
+          className: "convention-library__search-input",
+          placeholder: "Search conventions...",
+          value: search,
+          onInput: (e3) => handleSearchInput(e3.target.value)
+        }
+      ),
+      /* @__PURE__ */ u3("label", { className: "convention-library__breadcrumb-toggle", style: { display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", color: "var(--fg-muted)", cursor: "pointer", whiteSpace: "nowrap", userSelect: "none" }, children: [
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "checkbox",
+            checked: showBreadcrumbs,
+            onChange: (e3) => {
+              const val = e3.target.checked;
+              setShowBreadcrumbs(val);
+              try {
+                localStorage.setItem("mandible_convention_breadcrumbs", String(val));
+              } catch {
+              }
+            },
+            style: { margin: 0 }
+          }
+        ),
+        "Show paths"
+      ] })
+    ] }),
     loading ? /* @__PURE__ */ u3("div", { className: "convention-library__loading", children: /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading..." }) }) : dedupedList.length === 0 ? /* @__PURE__ */ u3("div", { className: "convention-library__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: search ? "No conventions match your search." : "No conventions found. Create a preset or import from CLAUDE.md." }) }) : /* @__PURE__ */ u3("div", { className: "convention-library__list", children: dedupedList.map((conv) => {
       const isExpanded = expandedId === conv.id;
       const bodyPreview = conv.body.slice(0, 80).replace(/\n/g, " ");
+      const links = nodeLinksMap.get(conv.id) ?? [];
       return /* @__PURE__ */ u3(
         "div",
         {
@@ -32501,8 +32809,22 @@ function ConventionLibrary({
                 },
                 children: [
                   /* @__PURE__ */ u3("div", { className: "convention-library__card-info", children: [
-                    conv.breadcrumb && conv.breadcrumb.length > 0 && /* @__PURE__ */ u3("span", { className: "convention-library__card-breadcrumb text-muted", children: conv.breadcrumb.join(" \u203A ") }),
-                    /* @__PURE__ */ u3("span", { className: "convention-library__card-title", children: conv.title }),
+                    showBreadcrumbs && conv.breadcrumb && conv.breadcrumb.length > 0 && /* @__PURE__ */ u3("span", { className: "convention-library__card-breadcrumb text-muted", children: conv.breadcrumb.join(" \u203A ") }),
+                    /* @__PURE__ */ u3("span", { className: "convention-library__card-title", children: [
+                      conv.title,
+                      links.length > 0 && /* @__PURE__ */ u3(
+                        "span",
+                        {
+                          className: "convention-library__settings-badge",
+                          title: `Linked settings: ${links.map((l3) => l3.setting_key).join(", ")}`,
+                          children: [
+                            "\u2699",
+                            " ",
+                            links.length
+                          ]
+                        }
+                      )
+                    ] }),
                     !isExpanded && /* @__PURE__ */ u3("span", { className: "convention-library__card-preview text-muted", children: [
                       bodyPreview,
                       conv.body.length > 80 ? "..." : ""
