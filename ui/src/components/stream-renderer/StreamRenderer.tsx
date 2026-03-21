@@ -196,6 +196,8 @@ export function StreamRenderer({
   elapsedSeconds,
   emptyLabel,
   sessionInfo,
+  onSelectMessageInfo,
+  selectedMessageId,
 }: StreamRendererProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -298,8 +300,24 @@ export function StreamRenderer({
         }
         const turnText = turnTextParts.join('\n\n');
 
+        // Bug: 02d701a — P3: per-turn metadata for hover display
+        const usage = turn.assistantEvent.message.usage;
+        const turnMetadata = {
+          tokenCount: usage
+            ? usage.input_tokens + usage.output_tokens
+            : undefined,
+          model: turn.assistantEvent.message.model,
+        };
+
+        const isSelected = selectedMessageId === turn.id;
+        const turnClasses = [
+          'stream-turn',
+          'stream-turn--assistant',
+          isSelected ? 'stream-turn--selected' : '',
+        ].filter(Boolean).join(' ');
+
         return (
-          <div key={node.key} className="stream-turn stream-turn--assistant" style={{ position: 'relative' }}>
+          <div key={node.key} className={turnClasses} style={{ position: 'relative' }}>
             <div className="stream-turn__speaker">
               <span className="stream-turn__badge">Assistant</span>
             </div>
@@ -312,6 +330,8 @@ export function StreamRenderer({
             </div>
             <MessageActions
               onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
+              onInfo={onSelectMessageInfo ? () => onSelectMessageInfo(turn.id) : undefined}
+              metadata={turnMetadata}
             />
           </div>
         );
