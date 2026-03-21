@@ -7283,9 +7283,14 @@ tr:hover .work-actions__trigger {
   border-left: 2px solid var(--accent-blue);
 }
 .presets-sidebar__item--library {
+  border: none;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   padding: 12px;
   font-weight: 500;
+  background: var(--bg-secondary);
+  font-family: var(--font-sans);
+  width: 100%;
+  text-align: left;
 }
 .presets-sidebar__item-name {
   flex: 1;
