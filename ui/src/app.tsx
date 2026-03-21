@@ -4,6 +4,7 @@ import { useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 import {
   acknowledgeInboxItem,
   ackAllInbox,
+  addSessionPreset,
   approveAuthRequest,
   closeConsoleSession,
   createConsoleSession,
@@ -797,11 +798,13 @@ function App(): JSX.Element {
     backend,
     kind,
     backend_type,
+    presetIds,
   }: {
     label: string;
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk';
+    presetIds?: string[];
   }) => {
     try {
       const result = await createConsoleSession(label, backend, kind, backend_type);
@@ -822,6 +825,18 @@ function App(): JSX.Element {
         session,
       });
       dispatch({ type: 'setConsoleActiveSessionId', sessionId: id });
+
+      // Bug: 11f4f47 — Apply selected presets to the new SDK session.
+      // Each preset is added independently so one failure doesn't block the rest.
+      if (backend_type === 'sdk' && presetIds && presetIds.length > 0) {
+        await Promise.all(
+          presetIds.map((presetId, position) =>
+            addSessionPreset(id, presetId, position).catch((err) => {
+              console.error(`Failed to add preset ${presetId} to session ${id}:`, err);
+            }),
+          ),
+        );
+      }
     } catch {
       return;
     }
@@ -1133,6 +1148,7 @@ function App(): JSX.Element {
             onNewSession={handleConsoleNewSession}
             isActive={route.tab === 'console'}
             initialSessionId={route.params.session ?? null}
+            initialPresetId={route.params.preset ?? null}
           />
         )}
         {route.tab === 'settings' && (

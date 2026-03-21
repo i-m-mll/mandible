@@ -12,16 +12,21 @@ import type { StreamEvent, ToolResultContentBlock } from '../stream-renderer/typ
 import { ViewToggle } from './ViewToggle';
 import { PermissionDialog } from './PermissionDialog';
 import { SessionControls } from './SessionControls';
+import { PtyBanner } from './PtyBanner';
+import { LivePresetPills } from './LivePresetPills';
+import { ContextIndicator } from '../presets/ContextIndicator';
 import {
   getConversation,
   getConversations,
   getConsolePermissions,
   getConsoleStreamEvents,
+  getPresetUnion,
   restartConsoleSession,
   respondToConsolePermission,
   sendConsolePrompt,
   startConsoleSession,
 } from '../../api';
+import type { PresetUnion } from '../../api';
 
 type ViewMode = 'terminal' | 'rich';
 type ActiveSubagent = {
@@ -368,6 +373,8 @@ export function TerminalPane({
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([]);
   // Bug: 6634023 — Sidebar state for SessionControls (collapsed by default)
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Bug: 11f4f47 — Track preset union token count for ContextIndicator
+  const [presetTokenCount, setPresetTokenCount] = useState(0);
   // Bug: 8d3328c — Only PTY sessions have a debug terminal. Spawn sessions
   // have no terminal emulation. Operator sessions always use SDK now (not spawn).
   const showDebugTerminal = backendType === 'pty';
@@ -760,6 +767,20 @@ export function TerminalPane({
     setActiveSubagents(buildActiveSubagents(streamEvents));
   }, [backendType, streamEvents]);
 
+  // Bug: 11f4f47 — Fetch initial preset union token count for SDK sessions
+  useEffect(() => {
+    if (backendType !== 'sdk') return;
+    let cancelled = false;
+    getPresetUnion({ session_id: sessionId })
+      .then((union: PresetUnion) => {
+        if (!cancelled) setPresetTokenCount(union.totalTokens);
+      })
+      .catch(() => {
+        // Non-fatal: indicator stays at 0
+      });
+    return () => { cancelled = true; };
+  }, [backendType, sessionId]);
+
   // Bug: 1d286c1 — handleReconnect now calls backend restart API before opening WS.
   // The previous version only opened a new WS but never restarted the PTY process,
   // so reconnect always got immediately rejected by the backend.
@@ -1013,6 +1034,8 @@ export function TerminalPane({
                   below the visible area. Without it, flex items default to min-height:auto
                   which lets them grow beyond the parent's bounds. */}
               <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+                {/* Bug: 11f4f47 — PTY deprecation banner in rich view */}
+                {backendType === 'pty' && <PtyBanner />}
                 {backendType === 'sdk' && activeSubagents.length > 0 && (
                   <div className="terminal-pane__subagents">
                     <div className="terminal-pane__subagents-title">Active subagents</div>
@@ -1042,6 +1065,12 @@ export function TerminalPane({
                   }}
                 />
               </div>
+              {/* Bug: 11f4f47 — Context indicator bar above the input area */}
+              {backendType === 'sdk' && (
+                <div style={{ padding: '0 16px', flexShrink: 0 }}>
+                  <ContextIndicator tokenCount={presetTokenCount} modelName={model} variant="bar" />
+                </div>
+              )}
               {/* Bug: aea2c67 — prompt input bar in rich view */}
               <form
                 onSubmit={handlePromptSubmit}
@@ -1130,6 +1159,13 @@ export function TerminalPane({
                   availableTools={availableTools}
                   onModelSaved={setModel}
                 />
+                {/* Bug: 11f4f47 — Live preset pills in sidebar for SDK sessions */}
+                {backendType === 'sdk' && (
+                  <LivePresetPills
+                    sessionId={sessionId}
+                    onUnionUpdate={({ totalTokens }) => setPresetTokenCount(totalTokens)}
+                  />
+                )}
               </div>
             )}
           </div>

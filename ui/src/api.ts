@@ -1236,13 +1236,15 @@ export async function getGraph(
   return (await parseMaybeJson(response)) as { nodes: GraphNode[]; edges: GraphEdge[] };
 }
 
-// ── Presets API — Bug: e20c88e ──
+// ── Presets API — Bug: e20c88e, Bug: 11f4f47 ──
 
 export async function fetchPresets(): Promise<Preset[]> {
   const response = await apiGet('/api/presets');
   const payload = (await parseMaybeJson(response)) as ApiList<Preset>;
   return normalizeList(payload);
 }
+
+export const getPresets = fetchPresets;
 
 export async function createPreset(data: {
   name: string;
@@ -1256,6 +1258,11 @@ export async function createPreset(data: {
 export async function fetchPreset(id: string): Promise<PresetWithNodes> {
   const response = await apiGet(`/api/presets/${encodeURIComponent(id)}`);
   return (await parseMaybeJson(response)) as PresetWithNodes;
+}
+
+export async function getPreset(id: string): Promise<Preset> {
+  const response = await apiGet(`/api/presets/${encodeURIComponent(id)}`);
+  return (await parseMaybeJson(response)) as Preset;
 }
 
 export async function updatePreset(
@@ -1347,6 +1354,9 @@ export async function exportPreset(id: string): Promise<string> {
   if (payload && typeof payload === 'object' && 'markdown' in payload) {
     return String((payload as { markdown?: unknown }).markdown || '');
   }
+  if (payload && typeof payload === 'object' && 'content' in payload) {
+    return String((payload as { content?: unknown }).content ?? '');
+  }
   return '';
 }
 
@@ -1381,4 +1391,75 @@ export async function fetchPresetUnion(
     `/api/presets/union?session_id=${encodeURIComponent(sessionId)}`,
   );
   return (await parseMaybeJson(response)) as { text: string; tokenEstimate: number };
+}
+
+export type PresetUnion = {
+  systemPrompt: string;
+  settingSources: string[];
+  totalTokens: number;
+};
+
+export type SessionPreset = {
+  preset_id: string;
+  preset_name: string;
+  version: number;
+  position: number;
+};
+
+export async function getPresetUnion(params: {
+  session_id?: string;
+  preset_ids?: string[];
+}): Promise<PresetUnion> {
+  const query = new URLSearchParams();
+  if (params.session_id) query.set('session_id', params.session_id);
+  if (params.preset_ids) query.set('preset_ids', params.preset_ids.join(','));
+  const qs = query.toString();
+  const response = await apiGet(`/api/presets/union${qs ? '?' + qs : ''}`);
+  return (await parseMaybeJson(response)) as PresetUnion;
+}
+
+export async function getSessionPresets(
+  sessionId: string,
+): Promise<SessionPreset[]> {
+  const response = await apiGet(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
+  );
+  const payload = await parseMaybeJson(response);
+  return Array.isArray(payload) ? payload : [];
+}
+
+export async function addSessionPreset(
+  sessionId: string,
+  presetId: string,
+  position?: number,
+): Promise<void> {
+  await apiPost(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
+    { preset_id: presetId, position },
+  );
+}
+
+export async function removeSessionPreset(
+  sessionId: string,
+  presetId: string,
+): Promise<void> {
+  await apiDelete(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/presets/${encodeURIComponent(presetId)}`,
+  );
+}
+
+export async function getDefaultPresetIds(): Promise<string[]> {
+  const response = await apiGet('/api/settings/default_preset_ids');
+  const payload = await parseMaybeJson(response);
+  if (payload && typeof payload === 'object' && 'value' in payload) {
+    const val = (payload as { value?: unknown }).value;
+    if (typeof val === 'string') {
+      try {
+        return JSON.parse(val) as string[];
+      } catch {
+        return val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+      }
+    }
+  }
+  return [];
 }

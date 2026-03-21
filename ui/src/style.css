@@ -8740,3 +8740,243 @@ h6.preset-node__title {
     width: 95vw;
   }
 }
+
+/* ── Preset Pill Selector — Bug: 11f4f47 ── */
+
+.preset-pill-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.preset-pill-selector__input-row {
+  position: relative;
+}
+
+.preset-pill-selector__input {
+  width: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.preset-pill-selector__input:focus {
+  border-color: rgba(77, 163, 255, 0.4);
+}
+
+.preset-pill-selector__input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.preset-pill-selector__dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  background: var(--bg-card);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  margin-top: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+  box-shadow: var(--shadow-soft);
+}
+
+.preset-pill-selector__option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  text-align: left;
+  cursor: pointer;
+}
+
+.preset-pill-selector__option:hover,
+.preset-pill-selector__option--highlight {
+  background: rgba(77, 163, 255, 0.1);
+}
+
+.preset-pill-selector__option-name {
+  font-weight: 500;
+}
+
+.preset-pill-selector__option-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.preset-pill-selector__pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preset-pill-selector__empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Individual preset pill */
+.preset-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 8px;
+  border-radius: 6px;
+  background: rgba(77, 163, 255, 0.1);
+  border: 1px solid rgba(77, 163, 255, 0.2);
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.preset-pill__name {
+  font-weight: 500;
+}
+
+.preset-pill__nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+.preset-pill__nav:hover {
+  opacity: 1;
+  color: var(--accent-blue);
+}
+
+.preset-pill__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
+.preset-pill__dismiss:hover {
+  opacity: 1;
+  color: var(--accent-red);
+}
+
+.preset-pill__dismiss:disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+
+/* ── Context Indicator — Bug: 11f4f47 ── */
+
+.context-indicator--compact {
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--font-mono);
+}
+
+.context-indicator--bar {
+  width: 100%;
+  height: 4px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.context-indicator__fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease, background 0.3s ease;
+}
+
+/* ── PTY Deprecation Banner — Bug: 11f4f47 ── */
+
+.pty-banner {
+  text-align: center;
+  color: var(--accent-yellow);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.85;
+  padding: 16px 24px;
+}
+
+/* ── Preset Violation Block — Bug: 11f4f47 ── */
+
+.preset-violation-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 20px;
+  margin: 8px 0;
+  border-radius: 8px;
+  background: rgba(245, 194, 92, 0.08);
+  border: 1px solid rgba(245, 194, 92, 0.2);
+}
+
+.preset-violation-block--clickable {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.preset-violation-block--clickable:hover {
+  background: rgba(245, 194, 92, 0.14);
+}
+
+.preset-violation-block__text {
+  color: var(--accent-yellow);
+  font-size: 13px;
+  font-family: var(--font-sans);
+}
+
+/* ── Session Preset Badges — Bug: 11f4f47 ── */
+
+.session-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.session-preset-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(168, 85, 247, 0.1);
+  border: 1px solid rgba(168, 85, 247, 0.2);
+  font-size: 11px;
+  color: var(--accent-purple);
+  white-space: nowrap;
+}
+
+.session-preset-badge__version {
+  opacity: 0.7;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}

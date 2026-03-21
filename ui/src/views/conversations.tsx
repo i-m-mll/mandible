@@ -16,12 +16,14 @@ import {
   getConversationForks,
   getConversations,
   getSessionIssues,
+  getSessionPresets,
   getSettings,
   resumeConversation,
   triggerIngestion,
   updateConversation,
   type ForkData,
   type ForkPoint,
+  type SessionPreset,
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
 import { BranchSelector, type BranchInfo } from '../components/console/BranchSelector';
@@ -1062,6 +1064,8 @@ function ConversationDetail({
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
+  // Bug: 11f4f47 — preset provenance in conversation history
+  const [sessionPresets, setSessionPresets] = useState<SessionPreset[]>([]);
 
   // Fork/resume state
   const [toast, setToast] = useState<ToastState>(null);
@@ -1132,6 +1136,23 @@ function ConversationDetail({
       })
       .catch(() => {
         if (active) setSessionIssueLinks([]);
+      });
+    return () => { active = false; };
+  }, [conversation?.session_id]);
+
+  // Bug: 11f4f47 — fetch preset provenance for the conversation's session
+  useEffect(() => {
+    if (!conversation?.session_id) {
+      setSessionPresets([]);
+      return;
+    }
+    let active = true;
+    getSessionPresets(conversation.session_id)
+      .then((data) => {
+        if (active) setSessionPresets(data);
+      })
+      .catch(() => {
+        if (active) setSessionPresets([]);
       });
     return () => { active = false; };
   }, [conversation?.session_id]);
@@ -1501,6 +1522,23 @@ function ConversationDetail({
                 repoId={link.repo_id}
               />
             ))}
+            {/* Bug: 11f4f47 — preset provenance badges */}
+            {sessionPresets.length > 0 && (
+              <div className="session-presets">
+                {sessionPresets.map((sp) => (
+                  <span
+                    key={sp.preset_id}
+                    className="session-preset-badge"
+                    title={`Preset: ${sp.preset_name} (v${sp.version})`}
+                    onClick={() => { window.location.hash = `#/presets?id=${encodeURIComponent(sp.preset_id)}`; }}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    {sp.preset_name}
+                    <span className="session-preset-badge__version">v{sp.version}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
         <div className="conv-detail__header-right">
