@@ -218,4 +218,8 @@ export interface StreamRendererProps {
     backend?: string;
     model?: string;
   };
+  /** Bug: 02d701a — P3: callback when user clicks Info on a specific turn. */
+  onSelectMessageInfo?: (turnId: string) => void;
+  /** Bug: 02d701a — P3: currently selected message ID for highlight. */
+  selectedMessageId?: string | null;
 }

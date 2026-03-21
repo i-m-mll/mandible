@@ -1,28 +1,52 @@
 // Bug: a0963df — Unified hover-revealed action bar for messages
+// Bug: 02d701a — P3: overflow menu, metadata row, onInfo callback
 
 import { useState } from 'preact/hooks';
+
+export type MessageActionsMeta = {
+  tokenCount?: number;
+  elapsedMs?: number;
+  model?: string;
+};
 
 export type MessageActionsProps = {
   onCopy?: () => void;
   onResume?: () => void;
   onFork?: () => void;
+  onInfo?: () => void;
   dagUuid?: string;              // for resume/fork targeting
   showResume?: boolean;          // show resume action (default true when dagUuid present)
   showFork?: boolean;            // show fork action (default true when dagUuid present)
+  metadata?: MessageActionsMeta;
 };
+
+/** Format elapsed milliseconds as "Xs" or "Xm Ys". */
+function formatElapsedMs(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+}
 
 export function MessageActions({
   onCopy,
   onResume,
   onFork,
+  onInfo,
   dagUuid,
   showResume,
   showFork,
+  metadata,
 }: MessageActionsProps): JSX.Element {
   const [copiedFeedback, setCopiedFeedback] = useState(false);
+  const [overflowOpen, setOverflowOpen] = useState(false);
 
   const shouldShowResume = showResume ?? !!dagUuid;
   const shouldShowFork = showFork ?? !!dagUuid;
+
+  // Are there any overflow items to show?
+  const hasOverflow = shouldShowResume || shouldShowFork || !!onInfo;
 
   const handleCopy = (e: MouseEvent) => {
     e.stopPropagation();
@@ -33,18 +57,32 @@ export function MessageActions({
     }
   };
 
-  const handleResume = (e: MouseEvent) => {
+  const handleOverflowToggle = (e: MouseEvent) => {
     e.stopPropagation();
-    if (onResume) onResume();
+    setOverflowOpen((prev) => !prev);
   };
 
-  const handleFork = (e: MouseEvent) => {
+  const handleOverflowItem = (e: MouseEvent, action: (() => void) | undefined) => {
     e.stopPropagation();
-    if (onFork) onFork();
+    setOverflowOpen(false);
+    if (action) action();
   };
+
+  // Build metadata parts
+  const metaParts: string[] = [];
+  if (metadata?.tokenCount != null) {
+    metaParts.push(`${metadata.tokenCount.toLocaleString()} tokens`);
+  }
+  if (metadata?.elapsedMs != null) {
+    metaParts.push(formatElapsedMs(metadata.elapsedMs));
+  }
+  if (metadata?.model) {
+    metaParts.push(metadata.model);
+  }
 
   return (
     <div className="message-actions" data-dag-uuid={dagUuid}>
+      {/* Primary actions — always visible on hover */}
       {onCopy && (
         <button
           type="button"
@@ -56,27 +94,59 @@ export function MessageActions({
           {copiedFeedback ? '\u2713' : 'Copy'}
         </button>
       )}
-      {shouldShowResume && (
-        <button
-          type="button"
-          className="message-actions__btn"
-          onClick={handleResume}
-          title="Resume from this message"
-          aria-label="Resume"
-        >
-          &#x21A9;
-        </button>
+
+      {/* Overflow menu — secondary actions behind ellipsis */}
+      {hasOverflow && (
+        <div className="message-actions__overflow-wrap">
+          <button
+            type="button"
+            className="message-actions__btn message-actions__overflow"
+            onClick={handleOverflowToggle}
+            title="More actions"
+            aria-label="More actions"
+            aria-expanded={overflowOpen}
+          >
+            &#x2026;
+          </button>
+          {overflowOpen && (
+            <div className="message-actions__overflow-menu">
+              {shouldShowFork && (
+                <button
+                  type="button"
+                  className="message-actions__overflow-item"
+                  onClick={(e) => handleOverflowItem(e, onFork)}
+                >
+                  &#x2441; Fork
+                </button>
+              )}
+              {shouldShowResume && (
+                <button
+                  type="button"
+                  className="message-actions__overflow-item"
+                  onClick={(e) => handleOverflowItem(e, onResume)}
+                >
+                  &#x21A9; Resume
+                </button>
+              )}
+              {onInfo && (
+                <button
+                  type="button"
+                  className="message-actions__overflow-item"
+                  onClick={(e) => handleOverflowItem(e, onInfo)}
+                >
+                  &#x2139; Info
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       )}
-      {shouldShowFork && (
-        <button
-          type="button"
-          className="message-actions__btn"
-          onClick={handleFork}
-          title="Fork a new branch from this message"
-          aria-label="Fork"
-        >
-          &#x2441;
-        </button>
+
+      {/* Metadata row — subdued line below action buttons */}
+      {metaParts.length > 0 && (
+        <div className="message-actions__meta">
+          {metaParts.join(' \u00b7 ')}
+        </div>
       )}
     </div>
   );
