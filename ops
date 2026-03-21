@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":1,"timestamp":1774135273,"nonce":"b7OqjposeP3dXaLFyr+Z27HmIMc=","title":"P4: Automatic grouping with TurnGroup + sticky speakers","message":"Part of chat stream UX overhaul. Parent: 763d7f6","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1774135273,"nonce":"HerIdYybWQHzMzrKmE8uPNv7BjI=","added":["feature","parent:763d7f6"],"removed":null}]}
