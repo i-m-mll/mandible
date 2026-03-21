@@ -1,5 +1,7 @@
 // Bug: 2a54b51 — IndexedDB-backed stream event cache for instant hydration
 // on tab switch / page reload. Uses raw IndexedDB API (no external deps).
+// Bug: 2a54b51 (Gemini review) — evictLRU is debounced to avoid a full IndexedDB read
+// on every write. During active streaming (writes every 2s) this would be wasteful.
 
 import type { StreamEvent } from './components/stream-renderer/types';
 
@@ -10,6 +12,16 @@ const STORE_NAME = 'streams';
 const DEFAULT_MAX_SESSIONS = 20;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
+
+// Debounce timer for LRU eviction — eviction is not urgent; batching avoids
+// a full IndexedDB read on every write during active streaming.
+let evictTimer: ReturnType<typeof setTimeout> | null = null;
+function debouncedEvict(): void {
+  if (evictTimer) clearTimeout(evictTimer);
+  evictTimer = setTimeout(() => {
+    void evictLRU().catch(() => {});
+  }, 5000);
+}
 
 function getDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
@@ -69,8 +81,9 @@ export async function setCachedEvents(sessionId: string, events: StreamEvent[]):
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
     tx.oncomplete = () => {
-      // Trigger LRU eviction after write
-      void evictLRU(DEFAULT_MAX_SESSIONS);
+      // Trigger debounced LRU eviction after write — avoids a full IndexedDB read
+      // on every flush tick during active streaming.
+      debouncedEvict();
     };
   });
 }

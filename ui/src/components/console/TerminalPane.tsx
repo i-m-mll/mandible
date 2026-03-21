@@ -690,6 +690,10 @@ export function TerminalPane({
   streamEventsRef.current = streamEvents;
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+  // Bug: 2a54b51 (Gemini review) — streamingRef tracks live streaming state so the recursive
+  // scheduleFlush callback doesn't read a stale closure value from when the effect first ran.
+  const streamingRef = useRef(streaming);
+  streamingRef.current = streaming;
 
   useEffect(() => {
     if (!streaming) return;
@@ -699,7 +703,7 @@ export function TerminalPane({
         if (events.length > 0) {
           void setCachedEvents(sessionIdRef.current, events).catch(() => {});
         }
-        if (streaming) scheduleFlush();
+        if (streamingRef.current) scheduleFlush();
       }, 2000);
     };
     scheduleFlush();
