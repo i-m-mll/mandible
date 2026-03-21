@@ -994,17 +994,20 @@ async function removeSessionPreset(sessionId, presetId) {
   );
 }
 async function getDefaultPresetIds() {
-  const response = await apiGet("/api/settings/default_preset_ids");
-  const payload = await parseMaybeJson(response);
-  if (payload && typeof payload === "object" && "value" in payload) {
-    const val = payload.value;
-    if (typeof val === "string") {
-      try {
-        return JSON.parse(val);
-      } catch {
-        return val ? val.split(",").map((s3) => s3.trim()).filter(Boolean) : [];
+  try {
+    const response = await apiGet("/api/settings/default_preset_ids");
+    const payload = await parseMaybeJson(response);
+    if (payload && typeof payload === "object" && "value" in payload) {
+      const val = payload.value;
+      if (typeof val === "string") {
+        try {
+          return JSON.parse(val);
+        } catch {
+          return val ? val.split(",").map((s3) => s3.trim()).filter(Boolean) : [];
+        }
       }
     }
+  } catch {
   }
   return [];
 }
