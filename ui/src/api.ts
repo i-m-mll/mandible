@@ -1,7 +1,7 @@
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
-import type { PresetWithNodes, PresetDiff } from './types/presets';
-export type { Preset, PresetNode, LibraryConvention } from './types/presets';
+import type { PresetWithNodes, PresetDiff, ConventionSettingLink, SessionValidationResult } from './types/presets';
+export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
 
 export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[]; presets?: T[]; nodes?: T[]; diffs?: T[] };
 
@@ -1464,6 +1464,85 @@ export async function removeSessionPreset(
   await apiDelete(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets/${encodeURIComponent(presetId)}`,
   );
+}
+
+// ── Convention-Setting Links API — Bug: 8baedeb ──
+
+export async function getSettingLinks(settingKey: string): Promise<ConventionSettingLink[]> {
+  const response = await apiGet(`/api/presets/links?setting_key=${encodeURIComponent(settingKey)}`);
+  const payload = (await parseMaybeJson(response)) as { links?: ConventionSettingLink[] };
+  return payload.links ?? [];
+}
+
+export async function getNodeLinks(nodeId: string): Promise<ConventionSettingLink[]> {
+  const response = await apiGet(`/api/presets/nodes/${encodeURIComponent(nodeId)}/links`);
+  const payload = (await parseMaybeJson(response)) as { links?: ConventionSettingLink[] };
+  return payload.links ?? [];
+}
+
+export async function createNodeLink(
+  nodeId: string,
+  settingKey: string,
+  linkType?: string,
+): Promise<ConventionSettingLink> {
+  const response = await apiPost(
+    `/api/presets/nodes/${encodeURIComponent(nodeId)}/links`,
+    { settingKey, linkType },
+  );
+  const payload = (await parseMaybeJson(response)) as { link?: ConventionSettingLink };
+  return payload.link as ConventionSettingLink;
+}
+
+export async function deleteSettingLink(linkId: string): Promise<void> {
+  await apiDelete(`/api/presets/links/${encodeURIComponent(linkId)}`);
+}
+
+export async function validateSessionPresets(sessionId: string): Promise<SessionValidationResult> {
+  const response = await apiGet(
+    `/api/presets/validate-session?session_id=${encodeURIComponent(sessionId)}`,
+  );
+  return (await parseMaybeJson(response)) as SessionValidationResult;
+}
+
+export async function validatePresetIds(presetIds: string[]): Promise<SessionValidationResult> {
+  // For pre-creation validation, create a temporary session_id concept
+  // We'll call the endpoint with preset_ids as a workaround — but the endpoint
+  // actually expects session_id. For the NewSessionDialog flow, we need a different approach:
+  // We'll use a direct query by posting to a validation check.
+  // Since the server endpoint uses session_id, we'll need to check conventions
+  // for selected presets client-side by fetching all links.
+  const allWarnings: SessionValidationResult['warnings'] = [];
+  for (const presetId of presetIds) {
+    try {
+      const response = await apiGet(`/api/presets/${encodeURIComponent(presetId)}/nodes`);
+      const payload = (await parseMaybeJson(response)) as { nodes?: Array<{ id: string }> };
+      const nodes = payload.nodes ?? [];
+      for (const node of nodes) {
+        const links = await getNodeLinks(node.id);
+        const requiresLinks = links.filter((l) => l.link_type === 'requires');
+        for (const link of requiresLinks) {
+          allWarnings.push({
+            conventionTitle: link.node_title ?? `Node ${link.node_id.slice(0, 8)}`,
+            settingKey: link.setting_key,
+            message: `Convention requires setting "${link.setting_key}" to be configured.`,
+          });
+        }
+      }
+    } catch {
+      // Skip on error
+    }
+  }
+
+  // Deduplicate
+  const seen = new Set<string>();
+  const deduped = allWarnings.filter((w) => {
+    const key = `${w.settingKey}:${w.conventionTitle}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return { valid: deduped.length === 0, warnings: deduped };
 }
 
 export async function getDefaultPresetIds(): Promise<string[]> {

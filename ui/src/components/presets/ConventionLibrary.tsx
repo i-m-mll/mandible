@@ -1,9 +1,11 @@
 // Bug: e20c88e — Convention library flat view
+// Bug: 8baedeb — setting link badges on convention cards
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { sanitizeHtml } from '../../sanitize';
 import type { LibraryConvention } from '../../types/presets';
-import { fetchConventionLibrary } from '../../api';
+import type { ConventionSettingLink } from '../../types/presets';
+import { fetchConventionLibrary, getNodeLinks } from '../../api';
 
 export type ConventionLibraryProps = {
   selectedPresetId: string | null;
@@ -26,6 +28,8 @@ export function ConventionLibrary({
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bug: 8baedeb — track setting links per node for badge display
+  const [nodeLinksMap, setNodeLinksMap] = useState<Map<string, ConventionSettingLink[]>>(new Map());
 
   const loadConventions = useCallback((query: string) => {
     setLoading(true);
@@ -33,6 +37,19 @@ export function ConventionLibrary({
       .then((items) => {
         setConventions(items);
         setLoading(false);
+        // Fetch setting links for all convention nodes in the background
+        const linkPromises = items.map((item) =>
+          getNodeLinks(item.id).then((links) => [item.id, links] as const).catch(() => [item.id, []] as const)
+        );
+        void Promise.all(linkPromises).then((results) => {
+          const map = new Map<string, ConventionSettingLink[]>();
+          for (const [nodeId, links] of results) {
+            if (links.length > 0) {
+              map.set(nodeId, links);
+            }
+          }
+          setNodeLinksMap(map);
+        });
       })
       .catch(() => {
         setLoading(false);
@@ -103,6 +120,7 @@ export function ConventionLibrary({
           {dedupedList.map((conv) => {
             const isExpanded = expandedId === conv.id;
             const bodyPreview = conv.body.slice(0, 80).replace(/\n/g, ' ');
+            const links = nodeLinksMap.get(conv.id) ?? [];
 
             return (
               <div
@@ -127,7 +145,17 @@ export function ConventionLibrary({
                         {conv.breadcrumb.join(' \u203a ')}
                       </span>
                     )}
-                    <span className="convention-library__card-title">{conv.title}</span>
+                    <span className="convention-library__card-title">
+                      {conv.title}
+                      {links.length > 0 && (
+                        <span
+                          className="convention-library__settings-badge"
+                          title={`Linked settings: ${links.map((l) => l.setting_key).join(', ')}`}
+                        >
+                          {'\u2699'} {links.length}
+                        </span>
+                      )}
+                    </span>
                     {!isExpanded && (
                       <span className="convention-library__card-preview text-muted">
                         {bodyPreview}{conv.body.length > 80 ? '...' : ''}
