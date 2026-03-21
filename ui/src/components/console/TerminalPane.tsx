@@ -12,6 +12,9 @@ import type { StreamEvent, ToolResultContentBlock } from '../stream-renderer/typ
 import { ViewToggle } from './ViewToggle';
 import { PermissionDialog } from './PermissionDialog';
 import { SessionControls } from './SessionControls';
+import { PtyBanner } from './PtyBanner';
+import { LivePresetPills } from './LivePresetPills';
+import { ContextIndicator } from '../presets/ContextIndicator';
 import {
   getConversation,
   getConversations,
@@ -1013,6 +1016,8 @@ export function TerminalPane({
                   below the visible area. Without it, flex items default to min-height:auto
                   which lets them grow beyond the parent's bounds. */}
               <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+                {/* Bug: 11f4f47 — PTY deprecation banner in rich view */}
+                {backendType === 'pty' && <PtyBanner />}
                 {backendType === 'sdk' && activeSubagents.length > 0 && (
                   <div className="terminal-pane__subagents">
                     <div className="terminal-pane__subagents-title">Active subagents</div>
@@ -1130,7 +1135,15 @@ export function TerminalPane({
                   availableTools={availableTools}
                   onModelSaved={setModel}
                 />
+                {/* Bug: 11f4f47 — Live preset pills in sidebar for SDK sessions */}
+                {backendType === 'sdk' && (
+                  <LivePresetPills sessionId={sessionId} />
+                )}
               </div>
+            )}
+            {/* Bug: 11f4f47 — Context indicator bar below sidebar area */}
+            {backendType === 'sdk' && (
+              <ContextIndicator tokenCount={0} modelName={model} variant="bar" />
             )}
           </div>
         )}

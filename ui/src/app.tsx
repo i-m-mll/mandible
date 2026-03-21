@@ -91,7 +91,7 @@ function setLastSeenCommit(hash: string): void {
 
 
 type Route = {
-  tab: 'sessions' | 'auth' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'switchboard' | 'inbox' | 'console' | 'logs' | 'graph';
+  tab: 'sessions' | 'auth' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'switchboard' | 'inbox' | 'console' | 'logs' | 'graph' | 'presets';
   params: Record<string, string>;
 };
 
@@ -111,7 +111,7 @@ function parseHashRoute(): Route {
   }
   // Support legacy 'conversations' and 'chats' routes as aliases for 'chat-history'
   const normalizedPath = (path === 'conversations' || path === 'chats') ? 'chat-history' : path;
-  const tab = ['sessions', 'auth', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph'].includes(normalizedPath)
+  const tab = ['sessions', 'auth', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph', 'presets'].includes(normalizedPath)
     ? (normalizedPath as Route['tab'])
     : 'sessions';
   return { tab, params };
@@ -796,11 +796,13 @@ function App(): JSX.Element {
     backend,
     kind,
     backend_type,
+    presetIds: _presetIds,
   }: {
     label: string;
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk';
+    presetIds?: string[];
   }) => {
     try {
       const result = await createConsoleSession(label, backend, kind, backend_type);
@@ -1125,6 +1127,7 @@ function App(): JSX.Element {
             onNewSession={handleConsoleNewSession}
             isActive={route.tab === 'console'}
             initialSessionId={route.params.session ?? null}
+            initialPresetId={route.params.preset ?? null}
           />
         )}
         {route.tab === 'settings' && (

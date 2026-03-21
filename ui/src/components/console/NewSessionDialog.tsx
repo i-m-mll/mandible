@@ -1,5 +1,9 @@
+// Bug: 11f4f47 — NewSessionDialog with preset selector for SDK sessions
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useState } from 'preact/hooks';
+import type { Preset } from '../../api';
+import { getPresets, getDefaultPresetIds } from '../../api';
+import { PresetPillSelector } from '../presets/PresetPillSelector';
 
 type AgentKind = 'agent' | 'operator';
 type Backend = 'claude' | 'codex' | 'gemini';
@@ -13,7 +17,10 @@ type NewSessionDialogProps = {
     backend: Backend;
     kind: AgentKind;
     backend_type: Transport;
+    presetIds?: string[];
   }) => void;
+  /** Pre-selected preset ID from navigation (e.g., "Start Chat" from Presets tab). */
+  initialPresetId?: string | null;
 };
 
 const KIND_OPTIONS: Array<{
@@ -91,11 +98,54 @@ export function NewSessionDialog({
   open,
   onClose,
   onSubmit,
+  initialPresetId,
 }: NewSessionDialogProps): JSX.Element | null {
   const [label, setLabel] = useState('');
   const [kind, setKind] = useState<AgentKind>('agent');
   const [backend, setBackend] = useState<Backend>('claude');
   const [transport, setTransport] = useState<Transport>('sdk');
+  const [presetIds, setPresetIds] = useState<string[]>([]);
+  const [allPresets, setAllPresets] = useState<Preset[]>([]);
+  const [presetsLoaded, setPresetsLoaded] = useState(false);
+
+  // Load available presets and default selections when dialog opens
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+
+    const loadPresets = async () => {
+      try {
+        const [presets, defaults] = await Promise.all([
+          getPresets(),
+          getDefaultPresetIds(),
+        ]);
+        if (cancelled) return;
+        setAllPresets(presets);
+
+        // If an initial preset ID was passed (e.g., from "Start Chat" button),
+        // use it; otherwise use defaults
+        if (initialPresetId) {
+          const ids = presets.some((p) => p.id === initialPresetId)
+            ? [initialPresetId]
+            : [];
+          // Merge with defaults, initial first
+          const merged = [...ids, ...defaults.filter((d) => !ids.includes(d))];
+          setPresetIds(merged.filter((id) => presets.some((p) => p.id === id)));
+        } else {
+          setPresetIds(defaults.filter((id) => presets.some((p) => p.id === id)));
+        }
+        setPresetsLoaded(true);
+      } catch {
+        if (!cancelled) {
+          setAllPresets([]);
+          setPresetIds([]);
+          setPresetsLoaded(true);
+        }
+      }
+    };
+    void loadPresets();
+    return () => { cancelled = true; };
+  }, [open, initialPresetId]);
 
   useEffect(() => {
     if (kind === 'operator' && backend !== 'claude') {
@@ -113,14 +163,24 @@ export function NewSessionDialog({
 
   if (!open) return null;
 
+  const isSDK = transport === 'sdk';
+
   const handleSubmit = (e: Event) => {
     e.preventDefault();
     if (!label.trim()) return;
-    onSubmit({ label: label.trim(), backend, kind, backend_type: transport });
+    onSubmit({
+      label: label.trim(),
+      backend,
+      kind,
+      backend_type: transport,
+      presetIds: isSDK ? presetIds : undefined,
+    });
     setLabel('');
     setKind('agent');
     setBackend('claude');
     setTransport('sdk');
+    setPresetIds([]);
+    setPresetsLoaded(false);
     onClose();
   };
 
@@ -209,6 +269,18 @@ export function NewSessionDialog({
                   onClick={() => setTransport('pty')}
                 />
               </div>
+            </div>
+          )}
+
+          {/* Bug: 11f4f47 — Preset selector shown only for SDK sessions */}
+          {isSDK && presetsLoaded && (
+            <div className="new-session-dialog__field">
+              <div className="new-session-dialog__label">Presets</div>
+              <PresetPillSelector
+                selectedPresetIds={presetIds}
+                onChange={setPresetIds}
+                presets={allPresets}
+              />
             </div>
           )}
 
