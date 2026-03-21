@@ -6,6 +6,7 @@ import type { SwitchboardItem, SwitchboardPairing } from './views/switchboard';
 import type { WorkBranch, WorkRepo } from './views/work';
 import type { Conversation, HookTemplate } from './api';
 import type { SSEPayload } from './sse-client';
+import type { Preset, PresetNode, UndoCommand } from './types/presets';
 
 type BugRef = {
   repo_id: string;
@@ -71,6 +72,16 @@ type AppState = {
   consoleActiveSessionId: string | null;
   consoleUnreadBadge: number;
   selectedInboxItemId: string | null;
+  // Bug: e20c88e — Presets tab state
+  presetsState: {
+    presets: Preset[];
+    selectedPresetId: string | null;
+    libraryMode: boolean;
+    editingNodeId: string | null;
+    nodes: Record<string, PresetNode[]>;
+    undoStack: UndoCommand[];
+    redoStack: UndoCommand[];
+  };
 };
 
 type Action =
@@ -120,7 +131,24 @@ type Action =
   | { type: 'setConsoleActiveSessionId'; sessionId: string | null }
   | { type: 'setConsoleUnreadBadge'; count: number }
   | { type: 'incrementConsoleUnread'; sessionId: string }
-  | { type: 'clearConsoleUnread'; sessionId: string };
+  | { type: 'clearConsoleUnread'; sessionId: string }
+  // Bug: e20c88e — Presets actions
+  | { type: 'presetsLoaded'; presets: Preset[] }
+  | { type: 'presetSelected'; presetId: string | null }
+  | { type: 'presetCreated'; preset: Preset }
+  | { type: 'presetUpdated'; preset: Preset }
+  | { type: 'presetDeleted'; presetId: string }
+  | { type: 'nodesLoaded'; presetId: string; nodes: PresetNode[] }
+  | { type: 'nodeAdded'; presetId: string; node: PresetNode }
+  | { type: 'nodeUpdated'; presetId: string; node: PresetNode }
+  | { type: 'nodeDeleted'; presetId: string; nodeId: string }
+  | { type: 'nodeReordered'; presetId: string; nodeId: string; newParentId: string | null; newPosition: number }
+  | { type: 'libraryToggled'; libraryMode: boolean }
+  | { type: 'editingNodeSet'; nodeId: string | null }
+  | { type: 'presetsUndo' }
+  | { type: 'presetsRedo' }
+  | { type: 'presetsPushUndo'; command: UndoCommand }
+  | { type: 'presetsClearUndoStack' };
 
 type AppAction = Action | { type: 'sse'; payload: SSEPayload };
 
@@ -149,6 +177,15 @@ const initialState: AppState = {
   consoleActiveSessionId: null,
   consoleUnreadBadge: 0,
   selectedInboxItemId: null,
+  presetsState: {
+    presets: [],
+    selectedPresetId: null,
+    libraryMode: false,
+    editingNodeId: null,
+    nodes: {},
+    undoStack: [],
+    redoStack: [],
+  },
 };
 
 function getSessionId(session: SessionRecord): string {
@@ -396,6 +433,155 @@ function appReducer(state: AppState, action: AppAction): AppState {
       );
       return { ...state, consoleSessions, consoleUnreadBadge };
     }
+    // Bug: e20c88e — Presets reducer cases
+    case 'presetsLoaded':
+      return { ...state, presetsState: { ...state.presetsState, presets: action.presets } };
+    case 'presetSelected':
+      return {
+        ...state,
+        presetsState: {
+          ...state.presetsState,
+          selectedPresetId: action.presetId,
+          libraryMode: false,
+          editingNodeId: null,
+          undoStack: [],
+          redoStack: [],
+        },
+      };
+    case 'presetCreated': {
+      return {
+        ...state,
+        presetsState: {
+          ...state.presetsState,
+          presets: [action.preset, ...state.presetsState.presets],
+          selectedPresetId: action.preset.id,
+          libraryMode: false,
+        },
+      };
+    }
+    case 'presetUpdated': {
+      const presets = state.presetsState.presets.map((p) =>
+        p.id === action.preset.id ? { ...p, ...action.preset } : p,
+      );
+      return { ...state, presetsState: { ...state.presetsState, presets } };
+    }
+    case 'presetDeleted': {
+      const presets = state.presetsState.presets.filter((p) => p.id !== action.presetId);
+      const selectedPresetId =
+        state.presetsState.selectedPresetId === action.presetId
+          ? null
+          : state.presetsState.selectedPresetId;
+      return {
+        ...state,
+        presetsState: { ...state.presetsState, presets, selectedPresetId },
+      };
+    }
+    case 'nodesLoaded':
+      return {
+        ...state,
+        presetsState: {
+          ...state.presetsState,
+          nodes: { ...state.presetsState.nodes, [action.presetId]: action.nodes },
+        },
+      };
+    case 'nodeAdded': {
+      const existing = state.presetsState.nodes[action.presetId] || [];
+      return {
+        ...state,
+        presetsState: {
+          ...state.presetsState,
+          nodes: {
+            ...state.presetsState.nodes,
+            [action.presetId]: [...existing, action.node],
+          },
+        },
+      };
+    }
+    case 'nodeUpdated': {
+      const nodes = (state.presetsState.nodes[action.presetId] || []).map((n) =>
+        n.id === action.node.id ? { ...n, ...action.node } : n,
+      );
+      return {
+        ...state,
+        presetsState: {
+          ...state.presetsState,
+          nodes: { ...state.presetsState.nodes, [action.presetId]: nodes },
+        },
+      };
+    }
+    case 'nodeDeleted': {
+      const nodes = (state.presetsState.nodes[action.presetId] || []).filter(
+        (n) => n.id !== action.nodeId,
+      );
+      return {
+        ...state,
+        presetsState: {
+          ...state.presetsState,
+          nodes: { ...state.presetsState.nodes, [action.presetId]: nodes },
+        },
+      };
+    }
+    case 'nodeReordered': {
+      const nodes = (state.presetsState.nodes[action.presetId] || []).map((n) =>
+        n.id === action.nodeId
+          ? { ...n, parent_id: action.newParentId, position: action.newPosition }
+          : n,
+      );
+      return {
+        ...state,
+        presetsState: {
+          ...state.presetsState,
+          nodes: { ...state.presetsState.nodes, [action.presetId]: nodes },
+        },
+      };
+    }
+    case 'libraryToggled':
+      return {
+        ...state,
+        presetsState: {
+          ...state.presetsState,
+          libraryMode: action.libraryMode,
+          selectedPresetId: action.libraryMode ? state.presetsState.selectedPresetId : state.presetsState.selectedPresetId,
+        },
+      };
+    case 'editingNodeSet':
+      return {
+        ...state,
+        presetsState: { ...state.presetsState, editingNodeId: action.nodeId },
+      };
+    case 'presetsPushUndo': {
+      const STACK_CAP = 50;
+      const undoStack = [...state.presetsState.undoStack, action.command].slice(-STACK_CAP);
+      return {
+        ...state,
+        presetsState: { ...state.presetsState, undoStack, redoStack: [] },
+      };
+    }
+    case 'presetsUndo': {
+      if (state.presetsState.undoStack.length === 0) return state;
+      const undoStack = state.presetsState.undoStack.slice();
+      const command = undoStack.pop()!;
+      const redoStack = [...state.presetsState.redoStack, command];
+      return {
+        ...state,
+        presetsState: { ...state.presetsState, undoStack, redoStack },
+      };
+    }
+    case 'presetsRedo': {
+      if (state.presetsState.redoStack.length === 0) return state;
+      const redoStack = state.presetsState.redoStack.slice();
+      const command = redoStack.pop()!;
+      const undoStack = [...state.presetsState.undoStack, command];
+      return {
+        ...state,
+        presetsState: { ...state.presetsState, undoStack, redoStack },
+      };
+    }
+    case 'presetsClearUndoStack':
+      return {
+        ...state,
+        presetsState: { ...state.presetsState, undoStack: [], redoStack: [] },
+      };
     default:
       return state;
   }

@@ -1,5 +1,6 @@
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
+import type { Preset, PresetWithNodes, PresetNode, LibraryConvention, PresetDiff } from './types/presets';
 
 export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[] };
 
@@ -1233,4 +1234,151 @@ export async function getGraph(
   const qs = query.toString();
   const response = await apiGet(`/api/graph${qs ? '?' + qs : ''}`);
   return (await parseMaybeJson(response)) as { nodes: GraphNode[]; edges: GraphEdge[] };
+}
+
+// ── Presets API — Bug: e20c88e ──
+
+export async function fetchPresets(): Promise<Preset[]> {
+  const response = await apiGet('/api/presets');
+  const payload = (await parseMaybeJson(response)) as ApiList<Preset>;
+  return normalizeList(payload);
+}
+
+export async function createPreset(data: {
+  name: string;
+  description?: string;
+  markdown?: string;
+}): Promise<Preset> {
+  const response = await apiPost('/api/presets', data);
+  return (await parseMaybeJson(response)) as Preset;
+}
+
+export async function fetchPreset(id: string): Promise<PresetWithNodes> {
+  const response = await apiGet(`/api/presets/${encodeURIComponent(id)}`);
+  return (await parseMaybeJson(response)) as PresetWithNodes;
+}
+
+export async function updatePreset(
+  id: string,
+  data: Partial<Preset>,
+): Promise<Preset> {
+  const response = await apiPatch(`/api/presets/${encodeURIComponent(id)}`, data);
+  return (await parseMaybeJson(response)) as Preset;
+}
+
+export async function deletePreset(id: string): Promise<void> {
+  await apiDelete(`/api/presets/${encodeURIComponent(id)}`);
+}
+
+export async function fetchPresetNodes(presetId: string): Promise<PresetNode[]> {
+  const response = await apiGet(`/api/presets/${encodeURIComponent(presetId)}/nodes`);
+  const payload = (await parseMaybeJson(response)) as ApiList<PresetNode>;
+  return normalizeList(payload);
+}
+
+export async function updatePresetNodes(
+  presetId: string,
+  nodes: PresetNode[],
+): Promise<void> {
+  await apiPut(`/api/presets/${encodeURIComponent(presetId)}/nodes`, { nodes });
+}
+
+export async function addPresetNode(
+  presetId: string,
+  node: Partial<PresetNode>,
+): Promise<PresetNode> {
+  const response = await apiPost(
+    `/api/presets/${encodeURIComponent(presetId)}/nodes`,
+    node,
+  );
+  return (await parseMaybeJson(response)) as PresetNode;
+}
+
+export async function updatePresetNode(
+  presetId: string,
+  nodeId: string,
+  data: Partial<PresetNode>,
+): Promise<PresetNode> {
+  const response = await apiPatch(
+    `/api/presets/${encodeURIComponent(presetId)}/nodes/${encodeURIComponent(nodeId)}`,
+    data,
+  );
+  return (await parseMaybeJson(response)) as PresetNode;
+}
+
+export async function deletePresetNode(
+  presetId: string,
+  nodeId: string,
+): Promise<void> {
+  await apiDelete(
+    `/api/presets/${encodeURIComponent(presetId)}/nodes/${encodeURIComponent(nodeId)}`,
+  );
+}
+
+export async function reorderPresetNode(
+  presetId: string,
+  data: { nodeId: string; newParentId: string | null; newPosition: number },
+): Promise<void> {
+  await apiPost(
+    `/api/presets/${encodeURIComponent(presetId)}/nodes/reorder`,
+    data,
+  );
+}
+
+export async function fetchConventionLibrary(
+  query?: string,
+  limit?: number,
+  offset?: number,
+): Promise<LibraryConvention[]> {
+  const params = new URLSearchParams();
+  if (query) params.set('q', query);
+  if (limit != null) params.set('limit', String(limit));
+  if (offset != null) params.set('offset', String(offset));
+  const qs = params.toString();
+  const response = await apiGet(`/api/presets/library${qs ? '?' + qs : ''}`);
+  const payload = (await parseMaybeJson(response)) as ApiList<LibraryConvention>;
+  return normalizeList(payload);
+}
+
+export async function exportPreset(id: string): Promise<string> {
+  const response = await apiGet(`/api/presets/${encodeURIComponent(id)}/export`);
+  const payload = await parseMaybeJson(response);
+  if (typeof payload === 'string') return payload;
+  if (payload && typeof payload === 'object' && 'markdown' in payload) {
+    return String((payload as { markdown?: unknown }).markdown || '');
+  }
+  return '';
+}
+
+export async function importPreset(markdown: string): Promise<Preset> {
+  const response = await apiPost('/api/presets/import', { markdown });
+  return (await parseMaybeJson(response)) as Preset;
+}
+
+export async function fetchPresetDiffs(sessionId: string): Promise<PresetDiff[]> {
+  const response = await apiGet(
+    `/api/presets/diffs?session_id=${encodeURIComponent(sessionId)}`,
+  );
+  const payload = (await parseMaybeJson(response)) as ApiList<PresetDiff>;
+  return normalizeList(payload);
+}
+
+export async function updatePresetDiff(
+  id: string,
+  status: string,
+): Promise<PresetDiff> {
+  const response = await apiPatch(
+    `/api/presets/diffs/${encodeURIComponent(id)}`,
+    { status },
+  );
+  return (await parseMaybeJson(response)) as PresetDiff;
+}
+
+export async function fetchPresetUnion(
+  sessionId: string,
+): Promise<{ text: string; tokenEstimate: number }> {
+  const response = await apiGet(
+    `/api/presets/union?session_id=${encodeURIComponent(sessionId)}`,
+  );
+  return (await parseMaybeJson(response)) as { text: string; tokenEstimate: number };
 }

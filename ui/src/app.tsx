@@ -56,6 +56,7 @@ import { ConsoleView } from './views/console';
 import { LogsView } from './views/logs';
 import { GraphView } from './views/graph';
 import type { GraphNodeType } from './views/graph';
+import { PresetsView } from './views/presets';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
 
@@ -91,7 +92,7 @@ function setLastSeenCommit(hash: string): void {
 
 
 type Route = {
-  tab: 'sessions' | 'auth' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'switchboard' | 'inbox' | 'console' | 'logs' | 'graph';
+  tab: 'sessions' | 'auth' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'switchboard' | 'inbox' | 'console' | 'logs' | 'graph' | 'presets';
   params: Record<string, string>;
 };
 
@@ -111,7 +112,7 @@ function parseHashRoute(): Route {
   }
   // Support legacy 'conversations' and 'chats' routes as aliases for 'chat-history'
   const normalizedPath = (path === 'conversations' || path === 'chats') ? 'chat-history' : path;
-  const tab = ['sessions', 'auth', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph'].includes(normalizedPath)
+  const tab = ['sessions', 'auth', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph', 'presets'].includes(normalizedPath)
     ? (normalizedPath as Route['tab'])
     : 'sessions';
   return { tab, params };
@@ -977,7 +978,7 @@ function App(): JSX.Element {
           <div className="tab-overflow" ref={overflowRef}>
             <button
               type="button"
-              className={`tab-overflow__btn${['work', 'review', 'logs', 'switchboard', 'graph'].includes(route.tab) ? ' tab-overflow__btn--active' : ''}`}
+              className={`tab-overflow__btn${['work', 'review', 'logs', 'switchboard', 'graph', 'presets'].includes(route.tab) ? ' tab-overflow__btn--active' : ''}`}
               onClick={() => setShowOverflow((v) => !v)}
               aria-label="More tabs"
             >
@@ -1015,6 +1016,13 @@ function App(): JSX.Element {
                   onClick={() => setShowOverflow(false)}
                 >
                   Logs
+                </a>
+                <a
+                  href="#/presets"
+                  className={route.tab === 'presets' ? 'active' : ''}
+                  onClick={() => setShowOverflow(false)}
+                >
+                  Presets
                 </a>
                 <a
                   href="#/switchboard"
@@ -1138,6 +1146,12 @@ function App(): JSX.Element {
         )}
         {route.tab === 'graph' && (
           <GraphView onNavigate={handleGraphNavigate} refreshToken={graphRefreshToken} />
+        )}
+        {route.tab === 'presets' && (
+          <PresetsView
+            presetsState={state.presetsState}
+            dispatch={dispatch}
+          />
         )}
       </main>
     </div>
