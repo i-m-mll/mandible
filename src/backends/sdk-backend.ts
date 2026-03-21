@@ -36,6 +36,8 @@ import type {
   Logger,
 } from "../types.js";
 import { SessionRegistry } from "../registry.js";
+import { getDb } from "../db.js";
+import { computePresetUnion } from "../presets.js";
 
 const EVENT_LOG_LIMIT = 2000;
 const PERMISSION_TIMEOUT_MS = 120_000;
@@ -491,15 +493,13 @@ implements
     let systemPrompt = this.options.systemPrompt;
     if (this.options.presetIds && this.options.presetIds.length > 0 && !systemPrompt) {
       try {
-        const { computePresetUnion } = require("../presets.js") as typeof import("../presets.js");
-        const { getDb } = require("../db.js") as typeof import("../db.js");
         const db = getDb();
         const result = computePresetUnion(this.options.presetIds, db);
         if (result.text) {
           systemPrompt = result.text;
         }
       } catch {
-        // Presets module not available — fall through to default
+        // Presets module or DB not available — fall through to default
       }
     }
 
@@ -508,7 +508,6 @@ implements
     let settingSources: SettingSource[] = (this.options.settingSourcesOverride ?? ["user", "project", "local"]) as SettingSource[];
     if (this.options.presetIds && this.options.presetIds.length > 0 && !this.options.settingSourcesOverride) {
       try {
-        const { getDb } = require("../db.js") as typeof import("../db.js");
         const db = getDb();
         const presetSources = this.options.presetIds.map((id) => {
           const row = db.prepare("SELECT source FROM presets WHERE id = ?").get(id) as { source: string } | undefined;
