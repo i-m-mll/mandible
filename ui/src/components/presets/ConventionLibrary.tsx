@@ -25,6 +25,13 @@ export function ConventionLibrary({
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showBreadcrumbs, setShowBreadcrumbs] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mandible_convention_breadcrumbs') === 'true';
+    } catch {
+      return false;
+    }
+  });
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadConventions = useCallback((query: string) => {
@@ -84,6 +91,19 @@ export function ConventionLibrary({
           value={search}
           onInput={(e) => handleSearchInput((e.target as HTMLInputElement).value)}
         />
+        <label className="convention-library__breadcrumb-toggle" style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', color: 'var(--fg-muted)', cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            checked={showBreadcrumbs}
+            onChange={(e) => {
+              const val = (e.target as HTMLInputElement).checked;
+              setShowBreadcrumbs(val);
+              try { localStorage.setItem('mandible_convention_breadcrumbs', String(val)); } catch {}
+            }}
+            style={{ margin: 0 }}
+          />
+          Show paths
+        </label>
       </div>
 
       {loading ? (
@@ -122,7 +142,7 @@ export function ConventionLibrary({
                   }}
                 >
                   <div className="convention-library__card-info">
-                    {conv.breadcrumb && conv.breadcrumb.length > 0 && (
+                    {showBreadcrumbs && conv.breadcrumb && conv.breadcrumb.length > 0 && (
                       <span className="convention-library__card-breadcrumb text-muted">
                         {conv.breadcrumb.join(' \u203a ')}
                       </span>
