@@ -51,6 +51,30 @@ export type PresetDiff = {
   created_at: number;
 };
 
+// Bug: 8baedeb — convention-setting link types
+export type ConventionSettingLink = {
+  id: string;
+  node_id: string;
+  setting_key: string;
+  link_type: 'references' | 'requires' | 'configures';
+  created_at: number;
+  // Enriched fields from joins
+  node_title?: string;
+  preset_id?: string;
+  preset_name?: string;
+};
+
+export type SessionValidationWarning = {
+  conventionTitle: string;
+  settingKey: string;
+  message: string;
+};
+
+export type SessionValidationResult = {
+  valid: boolean;
+  warnings: SessionValidationWarning[];
+};
+
 // Undo/Redo command pattern
 export type UndoCommandType = 'add' | 'delete' | 'edit' | 'move';
 

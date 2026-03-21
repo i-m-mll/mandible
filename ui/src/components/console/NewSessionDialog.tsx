@@ -1,8 +1,9 @@
 // Bug: 11f4f47 — NewSessionDialog with preset selector for SDK sessions
+// Bug: 8baedeb — session validation warnings for convention-setting links
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useState } from 'preact/hooks';
-import type { Preset } from '../../api';
-import { getPresets, getDefaultPresetIds } from '../../api';
+import type { Preset, SessionValidationWarning } from '../../api';
+import { getPresets, getDefaultPresetIds, validatePresetIds } from '../../api';
 import { PresetPillSelector } from '../presets/PresetPillSelector';
 
 type AgentKind = 'agent' | 'operator';
@@ -107,6 +108,8 @@ export function NewSessionDialog({
   const [presetIds, setPresetIds] = useState<string[]>([]);
   const [allPresets, setAllPresets] = useState<Preset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
+  // Bug: 8baedeb — convention-setting validation warnings
+  const [validationWarnings, setValidationWarnings] = useState<SessionValidationWarning[]>([]);
 
   // Load available presets and default selections when dialog opens
   useEffect(() => {
@@ -147,6 +150,23 @@ export function NewSessionDialog({
     return () => { cancelled = true; };
   }, [open, initialPresetId]);
 
+  // Bug: 8baedeb — validate selected presets for unsatisfied setting requirements
+  useEffect(() => {
+    if (!presetsLoaded || presetIds.length === 0 || transport !== 'sdk') {
+      setValidationWarnings([]);
+      return;
+    }
+    let cancelled = false;
+    void validatePresetIds(presetIds).then((result) => {
+      if (!cancelled) {
+        setValidationWarnings(result.warnings);
+      }
+    }).catch(() => {
+      if (!cancelled) setValidationWarnings([]);
+    });
+    return () => { cancelled = true; };
+  }, [presetIds, presetsLoaded, transport]);
+
   useEffect(() => {
     if (kind === 'operator' && backend !== 'claude') {
       setBackend('claude');
@@ -181,6 +201,7 @@ export function NewSessionDialog({
     setTransport('sdk');
     setPresetIds([]);
     setPresetsLoaded(false);
+    setValidationWarnings([]);
     onClose();
   };
 
@@ -281,6 +302,29 @@ export function NewSessionDialog({
                 onChange={setPresetIds}
                 presets={allPresets}
               />
+              {/* Bug: 8baedeb — validation warnings for unconfigured required settings */}
+              {validationWarnings.length > 0 && (
+                <div className="new-session-dialog__validation-warnings">
+                  {validationWarnings.map((w, i) => (
+                    <div key={i} className="new-session-dialog__validation-warning">
+                      <span className="new-session-dialog__validation-warning-icon">{'\u26A0'}</span>
+                      <span>
+                        Convention "{w.conventionTitle}" requires setting "{w.settingKey}" to be configured.{' '}
+                        <a
+                          href="#/settings"
+                          className="new-session-dialog__validation-warning-link"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            window.location.hash = '#/settings';
+                          }}
+                        >
+                          Configure now {'\u2192'}
+                        </a>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 

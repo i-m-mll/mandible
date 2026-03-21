@@ -27,6 +27,7 @@ import {
   startConsoleSession,
 } from '../../api';
 import type { PresetUnion } from '../../api';
+import { getCachedEvents, setCachedEvents, openStreamCache } from '../../stream-cache';
 
 type ViewMode = 'terminal' | 'rich';
 type ActiveSubagent = {
@@ -595,10 +596,18 @@ export function TerminalPane({
 
   // Bug: 309dd56 — Hydrate rich view: conversation history is the authoritative base layer,
   // with in-memory stream events providing only the "live tail" (events not yet persisted).
+  // Bug: 2a54b51 — Check IndexedDB cache first for instant hydration before API calls.
   useEffect(() => {
     let cancelled = false;
     hydratingRef.current = true;
     pendingSSERef.current = [];
+
+    // Phase 0: Show cached events immediately (if available) for instant display
+    void getCachedEvents(sessionId).then((cached) => {
+      if (cancelled || !cached || cached.length === 0) return;
+      setStreamEvents(cached);
+      setStreaming(deriveStreamingState(cached, streamStartAtRef));
+    }).catch(() => {/* non-fatal */});
 
     // Case 1: No provider session — use in-memory events directly (no conversation to look up)
     if (!providerSessionId) {
@@ -675,6 +684,49 @@ export function TerminalPane({
     return () => { cancelled = true; };
   }, [providerSessionId, sessionId, resumeAtMessage]);
 
+  // Bug: 2a54b51 — Debounced write of stream events to IndexedDB cache (every 2s while streaming)
+  const cacheFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamEventsRef = useRef(streamEvents);
+  streamEventsRef.current = streamEvents;
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  // Bug: 2a54b51 (Gemini review) — streamingRef tracks live streaming state so the recursive
+  // scheduleFlush callback doesn't read a stale closure value from when the effect first ran.
+  const streamingRef = useRef(streaming);
+  streamingRef.current = streaming;
+
+  useEffect(() => {
+    if (!streaming) return;
+    const scheduleFlush = () => {
+      cacheFlushTimerRef.current = setTimeout(() => {
+        const events = streamEventsRef.current;
+        if (events.length > 0) {
+          void setCachedEvents(sessionIdRef.current, events).catch(() => {});
+        }
+        if (streamingRef.current) scheduleFlush();
+      }, 2000);
+    };
+    scheduleFlush();
+    return () => {
+      if (cacheFlushTimerRef.current) clearTimeout(cacheFlushTimerRef.current);
+    };
+  }, [streaming]);
+
+  // Bug: 2a54b51 — Flush stream events to cache on unmount and beforeunload
+  useEffect(() => {
+    const flushToCache = () => {
+      const events = streamEventsRef.current;
+      if (events.length > 0) {
+        void setCachedEvents(sessionIdRef.current, events).catch(() => {});
+      }
+    };
+    window.addEventListener('beforeunload', flushToCache);
+    return () => {
+      window.removeEventListener('beforeunload', flushToCache);
+      flushToCache();
+    };
+  }, [sessionId]);
+
   // Bug: 2a04856 — Polling fallback: if streaming stays true for 20s (missed SSE result event,
   // e.g. due to SSE reconnect during daemon rebuild), re-fetch events and check for completion.
   useEffect(() => {
@@ -742,13 +794,38 @@ export function TerminalPane({
     };
   }, [sessionId]);
 
+  // Bug: 2a54b51 — Derive streamStartAt from stream events so the elapsed timer
+  // survives component re-mounts (tab switches). The synthetic_prompt localId
+  // encodes Date.now() as "sp-<timestamp>-<rand>". Falling back to Date.now()
+  // only if no synthetic prompt is found.
   useEffect(() => {
     if (!streaming) {
       streamStartAtRef.current = null;
       return;
     }
     if (streamStartAtRef.current === null) {
-      streamStartAtRef.current = Date.now();
+      // Scan backwards for the last synthetic_prompt or user text message
+      // to recover the actual activity start time.
+      let recovered = false;
+      for (let i = streamEvents.length - 1; i >= 0; i--) {
+        const ev = streamEvents[i];
+        if (ev.type === 'synthetic_prompt') {
+          const localId = (ev as { localId?: string }).localId;
+          if (localId) {
+            const match = localId.match(/^sp-(\d+)-/);
+            if (match) {
+              streamStartAtRef.current = Number(match[1]);
+              recovered = true;
+              break;
+            }
+          }
+        }
+        // Stop scanning once we hit a result event (previous turn boundary)
+        if (ev.type === 'result') break;
+      }
+      if (!recovered) {
+        streamStartAtRef.current = Date.now();
+      }
     }
     setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1000));
     const interval = window.setInterval(() => {
@@ -757,7 +834,7 @@ export function TerminalPane({
       }
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [streaming]);
+  }, [streaming, streamEvents]);
 
   useEffect(() => {
     if (backendType !== 'sdk') {

@@ -54,6 +54,24 @@ export interface RouteResult {
     confidence: "high" | "medium" | "low";
     reason: string;
 }
+export interface ConventionSettingLink {
+    id: string;
+    node_id: string;
+    setting_key: string;
+    link_type: "references" | "requires" | "configures";
+    created_at: number;
+}
+/**
+ * Scan a node's title + body text for known setting patterns and upsert
+ * convention_setting_links rows accordingly.
+ * Bug: 8baedeb — auto-detection of convention-setting links
+ */
+export declare function scanForSettingLinks(nodeId: string, text: string, db: Db): ConventionSettingLink[];
+/**
+ * Scan all nodes in a preset for setting links.
+ * Bug: 8baedeb — bulk scan after import
+ */
+export declare function scanPresetForSettingLinks(presetId: string, db: Db): void;
 /**
  * Parse Markdown into a flat list of PresetNode objects with parent_id
  * relationships derived from heading depth.

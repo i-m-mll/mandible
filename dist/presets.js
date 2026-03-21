@@ -4,6 +4,52 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+// Bug: 8baedeb — setting patterns for auto-detection of convention-setting links
+const SETTING_PATTERNS = [
+    { pattern: /protected.branch/i, settingKey: "protected_branches", linkType: "references" },
+    { pattern: /reaper|idle.threshold|idle.timeout/i, settingKey: "reaper_enabled", linkType: "references" },
+    { pattern: /signing|gpg.sign|yubikey/i, settingKey: "commit_signing", linkType: "references" },
+    { pattern: /claude.*(notification|notify)/i, settingKey: "claude_notifications_enabled", linkType: "references" },
+    { pattern: /quiet.hours/i, settingKey: "quiet_hours", linkType: "references" },
+    { pattern: /pretool|pre.tool|hook/i, settingKey: "pretool_hooks_enabled", linkType: "references" },
+    { pattern: /log.retention/i, settingKey: "log_retention_days", linkType: "references" },
+    { pattern: /theme|catppuccin/i, settingKey: "theme", linkType: "references" },
+    { pattern: /push.*upstream|upstream.*push/i, settingKey: "push_same_name_upstream", linkType: "references" },
+    { pattern: /auto.close.*issue|issue.*auto.close/i, settingKey: "auto_close_issues_on_merge", linkType: "references" },
+];
+/**
+ * Scan a node's title + body text for known setting patterns and upsert
+ * convention_setting_links rows accordingly.
+ * Bug: 8baedeb — auto-detection of convention-setting links
+ */
+export function scanForSettingLinks(nodeId, text, db) {
+    const now = Date.now();
+    const links = [];
+    // Delete only auto-detected links for this node, preserving manual links
+    db.prepare("DELETE FROM convention_setting_links WHERE node_id = ? AND source = 'auto'").run(nodeId);
+    const insert = db.prepare(`INSERT OR IGNORE INTO convention_setting_links (id, node_id, setting_key, link_type, source, created_at)
+     VALUES (?, ?, ?, ?, 'auto', ?)`);
+    for (const { pattern, settingKey, linkType } of SETTING_PATTERNS) {
+        if (pattern.test(text)) {
+            const id = randomUUID();
+            insert.run(id, nodeId, settingKey, linkType, now);
+            links.push({ id, node_id: nodeId, setting_key: settingKey, link_type: linkType, created_at: now });
+        }
+    }
+    return links;
+}
+/**
+ * Scan all nodes in a preset for setting links.
+ * Bug: 8baedeb — bulk scan after import
+ */
+export function scanPresetForSettingLinks(presetId, db) {
+    const nodes = db
+        .prepare("SELECT id, title, body FROM preset_nodes WHERE preset_id = ?")
+        .all(presetId);
+    for (const node of nodes) {
+        scanForSettingLinks(node.id, `${node.title} ${node.body}`, db);
+    }
+}
 // ---------------------------------------------------------------------------
 // Markdown Parser
 // ---------------------------------------------------------------------------

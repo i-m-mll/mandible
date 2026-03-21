@@ -1,9 +1,11 @@
 // Bug: e20c88e — Convention library flat view
+// Bug: 8baedeb — setting link badges on convention cards
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { sanitizeHtml } from '../../sanitize';
 import type { LibraryConvention } from '../../types/presets';
-import { fetchConventionLibrary } from '../../api';
+import type { ConventionSettingLink } from '../../types/presets';
+import { fetchConventionLibrary, getNodeLinks } from '../../api';
 
 export type ConventionLibraryProps = {
   selectedPresetId: string | null;
@@ -25,7 +27,16 @@ export function ConventionLibrary({
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showBreadcrumbs, setShowBreadcrumbs] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mandible_convention_breadcrumbs') === 'true';
+    } catch {
+      return false;
+    }
+  });
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bug: 8baedeb — track setting links per node for badge display
+  const [nodeLinksMap, setNodeLinksMap] = useState<Map<string, ConventionSettingLink[]>>(new Map());
 
   const loadConventions = useCallback((query: string) => {
     setLoading(true);
@@ -33,6 +44,19 @@ export function ConventionLibrary({
       .then((items) => {
         setConventions(items);
         setLoading(false);
+        // Fetch setting links for all convention nodes in the background
+        const linkPromises = items.map((item) =>
+          getNodeLinks(item.id).then((links) => [item.id, links] as const).catch(() => [item.id, []] as const)
+        );
+        void Promise.all(linkPromises).then((results) => {
+          const map = new Map<string, ConventionSettingLink[]>();
+          for (const [nodeId, links] of results) {
+            if (links.length > 0) {
+              map.set(nodeId, links);
+            }
+          }
+          setNodeLinksMap(map);
+        });
       })
       .catch(() => {
         setLoading(false);
@@ -84,6 +108,19 @@ export function ConventionLibrary({
           value={search}
           onInput={(e) => handleSearchInput((e.target as HTMLInputElement).value)}
         />
+        <label className="convention-library__breadcrumb-toggle" style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', color: 'var(--fg-muted)', cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            checked={showBreadcrumbs}
+            onChange={(e) => {
+              const val = (e.target as HTMLInputElement).checked;
+              setShowBreadcrumbs(val);
+              try { localStorage.setItem('mandible_convention_breadcrumbs', String(val)); } catch {}
+            }}
+            style={{ margin: 0 }}
+          />
+          Show paths
+        </label>
       </div>
 
       {loading ? (
@@ -103,6 +140,7 @@ export function ConventionLibrary({
           {dedupedList.map((conv) => {
             const isExpanded = expandedId === conv.id;
             const bodyPreview = conv.body.slice(0, 80).replace(/\n/g, ' ');
+            const links = nodeLinksMap.get(conv.id) ?? [];
 
             return (
               <div
@@ -122,12 +160,22 @@ export function ConventionLibrary({
                   }}
                 >
                   <div className="convention-library__card-info">
-                    {conv.breadcrumb && conv.breadcrumb.length > 0 && (
+                    {showBreadcrumbs && conv.breadcrumb && conv.breadcrumb.length > 0 && (
                       <span className="convention-library__card-breadcrumb text-muted">
                         {conv.breadcrumb.join(' \u203a ')}
                       </span>
                     )}
-                    <span className="convention-library__card-title">{conv.title}</span>
+                    <span className="convention-library__card-title">
+                      {conv.title}
+                      {links.length > 0 && (
+                        <span
+                          className="convention-library__settings-badge"
+                          title={`Linked settings: ${links.map((l) => l.setting_key).join(', ')}`}
+                        >
+                          {'\u2699'} {links.length}
+                        </span>
+                      )}
+                    </span>
                     {!isExpanded && (
                       <span className="convention-library__card-preview text-muted">
                         {bodyPreview}{conv.body.length > 80 ? '...' : ''}
