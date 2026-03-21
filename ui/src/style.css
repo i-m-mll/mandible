@@ -4364,6 +4364,11 @@ tr:hover .work-actions__trigger {
   display: flex;
   justify-content: flex-end;
   padding-top: 6px;
+  /* Bug: fbca9d5 — Sticky role pills: pin speaker badge while scrolling (History tab) */
+  position: sticky;
+  top: 0;
+  align-self: start;
+  z-index: 2;
 }
 
 .transcript-turn__badge {
@@ -6082,6 +6087,11 @@ tr:hover .work-actions__trigger {
   display: flex;
   justify-content: flex-end;
   padding-top: 6px;
+  /* Bug: fbca9d5 — Sticky role pills: pin speaker badge while scrolling */
+  position: sticky;
+  top: 0;
+  align-self: start;
+  z-index: 2;
 }
 
 .stream-turn__badge {
@@ -6471,82 +6481,7 @@ tr:hover .work-actions__trigger {
   font-size: 12px;
 }
 
-/* Status bar — sticky bottom of scroll container */
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 16px;
-  background: rgba(10, 15, 20, 0.92);
-  backdrop-filter: blur(8px);
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-  font-size: 12px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.status-bar__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  display: inline-block;
-  flex-shrink: 0;
-}
-
-.status-bar__dot--streaming {
-  background: var(--accent-blue);
-  animation: stream-pulse 1.4s ease-in-out infinite;
-}
-
-.status-bar__dot--done {
-  background: var(--accent-green);
-}
-
-.status-bar__dot--error {
-  background: var(--accent-red);
-}
-
-.status-bar__label {
-  color: var(--text-primary);
-}
-
-.status-bar__error {
-  color: var(--accent-red);
-  flex: 1;
-}
-
-.status-bar__center {
-  flex: 1;
-  text-align: center;
-}
-
-.status-bar__model-select,
-.status-bar__model-button {
-  appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text-primary);
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 11px;
-  font-family: var(--font-mono);
-}
-
-.status-bar__model-button {
-  cursor: pointer;
-}
-
-.status-bar__model-select:disabled,
-.status-bar__model-button:disabled {
-  opacity: 0.7;
-  cursor: default;
-}
-
-.status-bar__right {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-}
+/* TOMBSTONE (Bug: fbca9d5): .status-bar* CSS deleted — StatusBar removed in P1. */
 
 /* JSON syntax highlighting */
 .json-key     { color: var(--accent-blue); }

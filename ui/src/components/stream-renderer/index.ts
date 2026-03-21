@@ -22,5 +22,4 @@ export type {
   ThinkingBlockProps,
   ToolUseBlockProps,
   FileEditBlockProps,
-  StatusBarProps,
 } from './types';
