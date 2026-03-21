@@ -51,6 +51,7 @@ export function PresetNodeView({
   onSplitIntoChildren,
   onCopy,
   onFocus,
+  onDrop,
   isLeaf,
   children,
   ariaSetSize,
