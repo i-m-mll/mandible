@@ -62,6 +62,10 @@ export interface SDKBackendOptions {
   allowedTools?: string[];
   maxTurns?: number;
   maxCostUsd?: number;
+  /** Bug: 61bee4e — Preset IDs to compute union system prompt from */
+  presetIds?: string[];
+  /** Bug: 61bee4e — Override settingSources based on active preset sources */
+  settingSourcesOverride?: string[];
 }
 
 export class SDKBackend extends EventEmitter
@@ -483,6 +487,50 @@ implements
       resumeOpts.resumeSessionAt = this.meta.resume_at_message;
     }
 
+    // Bug: 61bee4e — Compute system prompt from presets if presetIds are set
+    let systemPrompt = this.options.systemPrompt;
+    if (this.options.presetIds && this.options.presetIds.length > 0 && !systemPrompt) {
+      try {
+        const { computePresetUnion } = require("../presets.js") as typeof import("../presets.js");
+        const { getDb } = require("../db.js") as typeof import("../db.js");
+        const db = getDb();
+        const result = computePresetUnion(this.options.presetIds, db);
+        if (result.text) {
+          systemPrompt = result.text;
+        }
+      } catch {
+        // Presets module not available — fall through to default
+      }
+    }
+
+    // Bug: 61bee4e — Determine settingSources based on active preset sources
+    type SettingSource = "user" | "project" | "local";
+    let settingSources: SettingSource[] = (this.options.settingSourcesOverride ?? ["user", "project", "local"]) as SettingSource[];
+    if (this.options.presetIds && this.options.presetIds.length > 0 && !this.options.settingSourcesOverride) {
+      try {
+        const { getDb } = require("../db.js") as typeof import("../db.js");
+        const db = getDb();
+        const presetSources = this.options.presetIds.map((id) => {
+          const row = db.prepare("SELECT source FROM presets WHERE id = ?").get(id) as { source: string } | undefined;
+          return row?.source;
+        }).filter(Boolean) as string[];
+
+        // If a preset is sourced from claude_md_global, exclude "user" from settingSources
+        // (the preset replaces the user-level CLAUDE.md)
+        if (presetSources.includes("claude_md_global")) {
+          settingSources = settingSources.filter((s): s is SettingSource => s !== "user");
+        }
+        if (presetSources.includes("claude_md_project")) {
+          settingSources = settingSources.filter((s): s is SettingSource => s !== "project");
+        }
+        if (presetSources.includes("claude_md_local")) {
+          settingSources = settingSources.filter((s): s is SettingSource => s !== "local");
+        }
+      } catch {
+        // Fall through to defaults
+      }
+    }
+
     return {
       abortController,
       cwd,
@@ -491,7 +539,7 @@ implements
         ...this.meta.env,
       },
       model: this.options.model ?? this.extractModel(this.meta.args) ?? undefined,
-      systemPrompt: this.options.systemPrompt,
+      systemPrompt,
       permissionMode,
       ...(permissionMode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }
@@ -500,7 +548,7 @@ implements
       maxTurns: this.options.maxTurns,
       maxBudgetUsd: this.options.maxCostUsd,
       includePartialMessages: true,
-      settingSources: ["user", "project", "local"],
+      settingSources,
       canUseTool: this.handleToolPermission,
       hooks,
       agentProgressSummaries: true,
