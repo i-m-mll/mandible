@@ -138,7 +138,37 @@ export type RenderedTurn = {
   assistantEvent: AssistantEvent;
   /** Tool results keyed by tool_use_id for O(1) lookup. */
   toolResults: Map<string, ToolResultContentBlock>;
+  /** Monotonic timestamp when this turn was first built — P3 uses for per-turn elapsed. */
+  receivedAt?: number;
 };
+
+// ---- RenderNode types (Bug: d744dde — chronological message ordering) ----
+
+export type GroupEntity = 'user' | 'assistant' | 'system';
+
+export type RenderNodeAssistantTurn = {
+  kind: 'assistant_turn';
+  key: string;
+  entity: 'assistant';
+  turn: RenderedTurn;
+};
+
+export type RenderNodeUserMessage = {
+  kind: 'user_message';
+  key: string;
+  entity: 'user';
+  text: string;
+  source: 'stream' | 'synthetic';
+};
+
+export type RenderNodeViolation = {
+  kind: 'violation';
+  key: string;
+  entity: 'system';
+  event: PresetViolationEvent;
+};
+
+export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeViolation;
 
 // ---- Component props ----
 

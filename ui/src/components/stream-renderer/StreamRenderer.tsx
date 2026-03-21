@@ -1,10 +1,13 @@
 // Bug: aa35aeb — Console tab renderer: root component with event parsing and auto-scroll
+// Bug: d744dde — P2: chronological RenderNode array replaces insertionIdx interleaving
 
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type {
   AssistantEvent,
   PresetViolationEvent,
+  RenderNode,
+  RenderNodeAssistantTurn,
   RenderedTurn,
   ResultEvent,
   StreamEvent,
@@ -22,52 +25,75 @@ import { PresetViolationBlock } from './PresetViolationBlock';
 // ---- Event parsing hook ----
 
 type StreamState = {
-  turns: RenderedTurn[];
+  nodes: RenderNode[];
   initEvent: SystemInitEvent | null;
   resultEvent: ResultEvent | null;
-  /** Synthetic user prompts, in-order, interleaved with turns by insertionIdx. */
-  syntheticPrompts: Array<{ localId: string; text: string; insertionIdx: number }>;
-  /** User text messages from the real stream (survive page refresh), interleaved by insertionIdx. */
-  streamUserMessages: Array<{ id: string; text: string; insertionIdx: number }>;
-  /** Bug: 11f4f47 — Preset violations, interleaved with turns by insertionIdx. */
-  violations: Array<{ event: PresetViolationEvent; insertionIdx: number }>;
 };
+
+let turnIndexCounter = 0;
 
 function buildTurn(
   assistant: AssistantEvent,
   results: Map<string, ToolResultContentBlock>,
 ): RenderedTurn {
   return {
-    id: assistant.uuid ?? `turn-${Math.random().toString(36).slice(2)}`,
+    id: assistant.uuid ?? assistant.message?.id ?? `turn-idx-${turnIndexCounter++}`,
     assistantEvent: assistant,
     toolResults: new Map(results),
+    receivedAt: Date.now(),
   };
+}
+
+/** Extract turns from the RenderNode array for helper functions. */
+function extractTurns(nodes: RenderNode[]): RenderedTurn[] {
+  return nodes
+    .filter((n): n is RenderNodeAssistantTurn => n.kind === 'assistant_turn')
+    .map((n) => n.turn);
 }
 
 function useStreamState(events: StreamEvent[]): StreamState {
   return useMemo(() => {
-    const turns: RenderedTurn[] = [];
-    const syntheticPrompts: StreamState['syntheticPrompts'] = [];
-    const streamUserMessages: StreamState['streamUserMessages'] = [];
-    const violations: StreamState['violations'] = [];
+    // Reset counter per memo computation so IDs are stable across re-renders
+    turnIndexCounter = 0;
+
+    const nodes: RenderNode[] = [];
     let initEvent: SystemInitEvent | null = null;
     let resultEvent: ResultEvent | null = null;
     let pendingAssistant: AssistantEvent | null = null;
     const pendingResults = new Map<string, ToolResultContentBlock>();
     let userMsgIdx = 0;
 
+    /** Flush the current pending assistant turn into nodes. */
+    function flushPendingTurn(): void {
+      if (pendingAssistant) {
+        const turn = buildTurn(pendingAssistant, pendingResults);
+        nodes.push({
+          kind: 'assistant_turn',
+          key: turn.id,
+          entity: 'assistant',
+          turn,
+        });
+        pendingAssistant = null;
+        pendingResults.clear();
+      }
+    }
+
     for (const event of events) {
       if (event.type === 'system' && (event as SystemInitEvent).subtype === 'init') {
         initEvent = event as SystemInitEvent;
       } else if (event.type === 'preset:violation') {
-        // Bug: 11f4f47 — Track violation events for inline rendering
-        violations.push({ event: event as PresetViolationEvent, insertionIdx: turns.length });
+        // Bug: 11f4f47 — Violation events flush the pending turn and emit inline
+        const violationEvent = event as PresetViolationEvent;
+        flushPendingTurn();
+        nodes.push({
+          kind: 'violation',
+          key: violationEvent.localId ?? `violation-${nodes.length}`,
+          entity: 'system',
+          event: violationEvent,
+        });
       } else if (event.type === 'assistant') {
         // Flush previous turn before starting a new one
-        if (pendingAssistant) {
-          turns.push(buildTurn(pendingAssistant, pendingResults));
-          pendingResults.clear();
-        }
+        flushPendingTurn();
         pendingAssistant = event as AssistantEvent;
       } else if (event.type === 'user') {
         const userEvent = event as UserEvent;
@@ -85,30 +111,38 @@ function useStreamState(events: StreamEvent[]): StreamState {
           }
         }
         if (hasText) {
-          // Record insertion point: just before the next assistant turn (turns.length at this moment)
-          streamUserMessages.push({
-            id: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+          // User text message: flush pending turn, emit user_message node
+          flushPendingTurn();
+          nodes.push({
+            kind: 'user_message',
+            key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+            entity: 'user',
             text: textParts.join('\n'),
-            insertionIdx: turns.length,
+            source: 'stream',
           });
         }
+        // If only tool_results (no text), silently accumulate in pendingResults — no visible node
       } else if (event.type === 'result') {
         resultEvent = event as ResultEvent;
       } else if (event.type === 'synthetic_prompt') {
-        // Bug: db5e986 — optimistic user prompt display: record insertion point so
-        // the bubble is rendered just before the next assistant turn.
+        // Bug: db5e986 — optimistic user prompt display
         const sp = event as SyntheticPromptEvent;
-        syntheticPrompts.push({ localId: sp.localId, text: sp.text, insertionIdx: turns.length });
+        flushPendingTurn();
+        nodes.push({
+          kind: 'user_message',
+          key: `sp-${sp.localId}`,
+          entity: 'user',
+          text: sp.text,
+          source: 'synthetic',
+        });
       }
       // Unknown event types (stream_event, system:compact_boundary, etc.) are silently ignored
     }
 
     // Flush the final pending turn
-    if (pendingAssistant) {
-      turns.push(buildTurn(pendingAssistant, pendingResults));
-    }
+    flushPendingTurn();
 
-    return { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages, violations };
+    return { nodes, initEvent, resultEvent };
   }, [events]);
 }
 
@@ -216,7 +250,7 @@ export function StreamRenderer({
   emptyLabel,
   sessionInfo,
 }: StreamRendererProps): JSX.Element {
-  const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages, violations } = useStreamState(events);
+  const { nodes, initEvent, resultEvent } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [userScrolled, setUserScrolled] = useState(false);
 
@@ -248,6 +282,7 @@ export function StreamRenderer({
     setUserScrolled(false);
   }
 
+  const turns = extractTurns(nodes);
   const liveLabel = deriveLiveLabel(turns, streaming);
   const tokenCount = deriveTokenCount(turns);
   const statusBarProps = deriveStatusBarProps(
@@ -258,112 +293,94 @@ export function StreamRenderer({
     sessionInfo,
   );
 
-  // Bug: db5e986 — treat synthetic prompts as real content so "No events" is
-  // not shown after the user submits a message but before the assistant replies.
-  const hasContent = events.length > 0 || syntheticPrompts.length > 0 || streamUserMessages.length > 0;
+  // Bug: d744dde — nodes array is the single source of truth for content presence
+  const hasContent = nodes.length > 0;
 
   if (!hasContent) {
     return (
       <div className="stream-renderer">
         <div className="stream-renderer__empty">
-          {emptyLabel ?? (streaming ? 'Starting…' : 'No events')}
+          {emptyLabel ?? (streaming ? 'Starting\u2026' : 'No events')}
         </div>
         <StatusBar streaming={streaming} elapsedSeconds={elapsedSeconds} {...statusBarProps} />
       </div>
     );
   }
 
-  // Build an interleaved list of nodes: user bubbles (both stream-based and synthetic)
-  // inserted at their recorded position (just before the assistant turn they precede).
-  const nodes: JSX.Element[] = [];
-  // Track which prompts/messages/violations have already been emitted
-  let spIdx = 0;
-  let umIdx = 0;
-  let vIdx = 0;
-  for (let i = 0; i <= turns.length; i++) {
-    // Bug: 11f4f47 — Emit violation blocks at their insertion point
-    while (vIdx < violations.length && violations[vIdx].insertionIdx === i) {
-      const v = violations[vIdx];
-      const key = v.event.localId ?? `violation-${vIdx}`;
-      nodes.push(
-        <PresetViolationBlock
-          key={key}
-          analyzing={v.event.analyzing}
-          presetId={v.event.preset_id}
-          subagentSessionId={v.event.subagent_session_id}
-        />,
-      );
-      vIdx++;
-    }
-    // Emit all stream user messages whose insertionIdx === i
-    // Bug: 5183781 — render user text events from the real stream as bubbles
-    while (umIdx < streamUserMessages.length && streamUserMessages[umIdx].insertionIdx === i) {
-      const um = streamUserMessages[umIdx];
-      nodes.push(
-        <div key={`um-${um.id}`} className="stream-turn stream-turn--user">
-          <div className="stream-turn__speaker">
-            <span className="stream-turn__badge">You</span>
-          </div>
-          <div className="stream-turn__body">
-            <div className="user-prompt-bubble">
-              <div className="user-prompt-bubble__text">{um.text}</div>
-            </div>
-          </div>
-        </div>,
-      );
-      umIdx++;
-    }
-    // Emit all synthetic prompts whose insertionIdx === i
-    while (spIdx < syntheticPrompts.length && syntheticPrompts[spIdx].insertionIdx === i) {
-      const sp = syntheticPrompts[spIdx];
-      nodes.push(
-        <div key={`sp-${sp.localId}`} className="stream-turn stream-turn--user">
-          <div className="stream-turn__speaker">
-            <span className="stream-turn__badge">You</span>
-          </div>
-          <div className="stream-turn__body">
-            <div className="user-prompt-bubble">
-              <div className="user-prompt-bubble__text">{sp.text}</div>
-            </div>
-          </div>
-        </div>,
-      );
-      spIdx++;
-    }
-    if (i < turns.length) {
-      const turn = turns[i];
-      const isLastStreamingTurn = streaming && i === turns.length - 1;
-      // Show "thinking…" indicator when the streaming turn contains a thinking block
-      const isThinking =
-        isLastStreamingTurn &&
-        turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
-
-      // Collect text content for copy action
-      const turnTextParts: string[] = [];
-      for (const block of turn.assistantEvent.message.content) {
-        if (block.type === 'text' && block.text) turnTextParts.push(block.text);
-      }
-      const turnText = turnTextParts.join('\n\n');
-
-      nodes.push(
-        <div key={turn.id} className="stream-turn stream-turn--assistant" style={{ position: 'relative' }}>
-          <div className="stream-turn__speaker">
-            <span className="stream-turn__badge">Assistant</span>
-          </div>
-          <div className="stream-turn__body">
-            <MessageGroup
-              turn={turn}
-              isStreaming={isLastStreamingTurn}
-              isThinking={isThinking}
-            />
-          </div>
-          <MessageActions
-            onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
-          />
-        </div>,
-      );
+  // Precompute the index of the last assistant_turn node for isLastStreamingTurn
+  let lastAssistantIdx = -1;
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    if (nodes[i].kind === 'assistant_turn') {
+      lastAssistantIdx = i;
+      break;
     }
   }
+
+  // Bug: d744dde — Render loop: flat .map() over chronological RenderNode array
+  const rendered = nodes.map((node, idx) => {
+    switch (node.kind) {
+      case 'user_message':
+        return (
+          <div key={node.key} className="stream-turn stream-turn--user">
+            <div className="stream-turn__speaker">
+              <span className="stream-turn__badge">You</span>
+            </div>
+            <div className="stream-turn__body">
+              <div className="user-prompt-bubble">
+                <div className="user-prompt-bubble__text">{node.text}</div>
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'violation':
+        return (
+          <PresetViolationBlock
+            key={node.key}
+            analyzing={node.event.analyzing}
+            presetId={node.event.preset_id}
+            subagentSessionId={node.event.subagent_session_id}
+          />
+        );
+
+      case 'assistant_turn': {
+        const { turn } = node;
+        const isLastStreamingTurn = streaming && idx === lastAssistantIdx;
+        // Show "thinking..." indicator when the streaming turn contains a thinking block
+        const isThinking =
+          isLastStreamingTurn &&
+          turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
+
+        // Collect text content for copy action
+        const turnTextParts: string[] = [];
+        for (const block of turn.assistantEvent.message.content) {
+          if (block.type === 'text' && block.text) turnTextParts.push(block.text);
+        }
+        const turnText = turnTextParts.join('\n\n');
+
+        return (
+          <div key={node.key} className="stream-turn stream-turn--assistant" style={{ position: 'relative' }}>
+            <div className="stream-turn__speaker">
+              <span className="stream-turn__badge">Assistant</span>
+            </div>
+            <div className="stream-turn__body">
+              <MessageGroup
+                turn={turn}
+                isStreaming={isLastStreamingTurn}
+                isThinking={isThinking}
+              />
+            </div>
+            <MessageActions
+              onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
+            />
+          </div>
+        );
+      }
+
+      default:
+        return null;
+    }
+  });
 
   return (
     <div className="stream-renderer">
@@ -372,7 +389,7 @@ export function StreamRenderer({
         className="stream-renderer__scroll"
         onScroll={handleScroll}
       >
-        {nodes}
+        {rendered}
         {/* Bug: 4891ce4 — Inline streaming indicator at bottom of chat stream.
             Shows pulsing dot, status label, token count, and elapsed timer.
             Only visible when agent is actively working. */}
