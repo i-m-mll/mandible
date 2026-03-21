@@ -1047,6 +1047,12 @@ export function TerminalPane({
                   }}
                 />
               </div>
+              {/* Bug: 11f4f47 — Context indicator bar above the input area */}
+              {backendType === 'sdk' && (
+                <div style={{ padding: '0 16px', flexShrink: 0 }}>
+                  <ContextIndicator tokenCount={0} modelName={model} variant="bar" />
+                </div>
+              )}
               {/* Bug: aea2c67 — prompt input bar in rich view */}
               <form
                 onSubmit={handlePromptSubmit}
@@ -1140,10 +1146,6 @@ export function TerminalPane({
                   <LivePresetPills sessionId={sessionId} />
                 )}
               </div>
-            )}
-            {/* Bug: 11f4f47 — Context indicator bar below sidebar area */}
-            {backendType === 'sdk' && (
-              <ContextIndicator tokenCount={0} modelName={model} variant="bar" />
             )}
           </div>
         )}
