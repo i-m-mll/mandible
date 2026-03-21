@@ -73,7 +73,29 @@ export function registerPresetRoutes(server) {
             seen.add(hash);
             return true;
         });
-        res.status(200).json({ nodes: dedupedNodes });
+        // Bug: 69d26df — Compute ancestor breadcrumbs for leaf nodes
+        // Collect all preset IDs referenced by leaf nodes, fetch their full node trees,
+        // then walk parent_id from each leaf to root to build the breadcrumb.
+        const presetIds = [...new Set(dedupedNodes.map((n) => n.preset_id))];
+        const nodeMap = new Map();
+        for (const pid of presetIds) {
+            const allNodes = db
+                .prepare("SELECT * FROM preset_nodes WHERE preset_id = ?")
+                .all(pid);
+            for (const n of allNodes) {
+                nodeMap.set(n.id, n);
+            }
+        }
+        const nodesWithBreadcrumb = dedupedNodes.map((node) => {
+            const ancestors = [];
+            let current = node.parent_id ? nodeMap.get(node.parent_id) : undefined;
+            while (current) {
+                ancestors.unshift(current.title);
+                current = current.parent_id ? nodeMap.get(current.parent_id) : undefined;
+            }
+            return { ...node, breadcrumb: ancestors };
+        });
+        res.status(200).json({ nodes: nodesWithBreadcrumb });
     });
     // ================================================================
     // Preset Diffs (must be before :id routes)
