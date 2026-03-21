@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type http from "node:http";
@@ -29,6 +30,7 @@ import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { registerPresetRoutes } from "./routes/presets.js";
+import { importClaudeMd } from "./presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
@@ -224,6 +226,23 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     ).run();
   } catch (error) {
     logger("warn", "channel_startup_cleanup_failed", { error: String(error) });
+  }
+
+  // Bug: 1a85d82 — Auto-import global CLAUDE.md into presets on startup if none exist yet.
+  // This populates the Convention Library so the Presets tab is useful out of the box.
+  try {
+    const existingGlobalPreset = db.prepare(
+      "SELECT id FROM presets WHERE source = 'claude_md_global' LIMIT 1"
+    ).get();
+    if (!existingGlobalPreset) {
+      const globalClaudeMd = path.join(os.homedir(), ".claude", "CLAUDE.md");
+      if (fs.existsSync(globalClaudeMd)) {
+        importClaudeMd(globalClaudeMd, db);
+        logger("info", "startup_preset_import", { path: globalClaudeMd });
+      }
+    }
+  } catch (error) {
+    logger("warn", "startup_preset_import_failed", { error: String(error) });
   }
 
   // Start periodic reaper (marks dead sessions whose PIDs vanished)
