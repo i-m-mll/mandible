@@ -1,5 +1,6 @@
 // Bug: aa35aeb — Console tab renderer: root component with event parsing and auto-scroll
 // Bug: d744dde — P2: chronological RenderNode array replaces insertionIdx interleaving
+// Bug: a654b69 — P4: automatic message grouping with TurnGroup + sticky speakers
 
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -20,6 +21,8 @@ import type {
 import { MessageGroup } from './MessageGroup';
 // FORBIDDEN (Bug: fbca9d5): No StatusBar import — no UI between stream and input.
 import { MessageActions } from '../shared/MessageActions';
+import { groupByEntity } from '../shared/groupByEntity';
+import type { NodeGroup } from '../shared/groupByEntity';
 import { PresetViolationBlock } from './PresetViolationBlock';
 
 // ---- Event parsing hook ----
@@ -249,29 +252,25 @@ export function StreamRenderer({
     );
   }
 
-  // Precompute the index of the last assistant_turn node for isLastStreamingTurn
-  let lastAssistantIdx = -1;
+  // Bug: a654b69 — P4: group consecutive same-entity nodes for TurnGroup layout
+  const groups = groupByEntity(nodes, (n) => n.entity, (n) => n.key);
+
+  // Precompute the key of the last assistant_turn node for isLastStreamingTurn
+  let lastAssistantKey: string | null = null;
   for (let i = nodes.length - 1; i >= 0; i--) {
     if (nodes[i].kind === 'assistant_turn') {
-      lastAssistantIdx = i;
+      lastAssistantKey = nodes[i].key;
       break;
     }
   }
 
-  // Bug: d744dde — Render loop: flat .map() over chronological RenderNode array
-  const rendered = nodes.map((node, idx) => {
+  /** Render a single node's body content (no speaker badge — that's at the group level). */
+  function renderNodeBody(node: RenderNode): JSX.Element | null {
     switch (node.kind) {
       case 'user_message':
         return (
-          <div key={node.key} className="stream-turn stream-turn--user">
-            <div className="stream-turn__speaker">
-              <span className="stream-turn__badge">You</span>
-            </div>
-            <div className="stream-turn__body">
-              <div className="user-prompt-bubble">
-                <div className="user-prompt-bubble__text">{node.text}</div>
-              </div>
-            </div>
+          <div key={node.key} className="user-prompt-bubble">
+            <div className="user-prompt-bubble__text">{node.text}</div>
           </div>
         );
 
@@ -287,8 +286,7 @@ export function StreamRenderer({
 
       case 'assistant_turn': {
         const { turn } = node;
-        const isLastStreamingTurn = streaming && idx === lastAssistantIdx;
-        // Show "thinking..." indicator when the streaming turn contains a thinking block
+        const isLastStreamingTurn = streaming && node.key === lastAssistantKey;
         const isThinking =
           isLastStreamingTurn &&
           turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
@@ -310,24 +308,18 @@ export function StreamRenderer({
         };
 
         const isSelected = selectedMessageId === turn.id;
-        const turnClasses = [
-          'stream-turn',
-          'stream-turn--assistant',
-          isSelected ? 'stream-turn--selected' : '',
-        ].filter(Boolean).join(' ');
 
         return (
-          <div key={node.key} className={turnClasses} style={{ position: 'relative' }}>
-            <div className="stream-turn__speaker">
-              <span className="stream-turn__badge">Assistant</span>
-            </div>
-            <div className="stream-turn__body">
-              <MessageGroup
-                turn={turn}
-                isStreaming={isLastStreamingTurn}
-                isThinking={isThinking}
-              />
-            </div>
+          <div
+            key={node.key}
+            className={isSelected ? 'stream-turn-node stream-turn--selected' : 'stream-turn-node'}
+            style={{ position: 'relative' }}
+          >
+            <MessageGroup
+              turn={turn}
+              isStreaming={isLastStreamingTurn}
+              isThinking={isThinking}
+            />
             <MessageActions
               onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
               onInfo={onSelectMessageInfo ? () => onSelectMessageInfo(turn.id) : undefined}
@@ -340,6 +332,48 @@ export function StreamRenderer({
       default:
         return null;
     }
+  }
+
+  /** Collect all copyable text from a group's nodes. */
+  function collectGroupText(group: NodeGroup<RenderNode>): string {
+    const parts: string[] = [];
+    for (const node of group.nodes) {
+      if (node.kind === 'user_message') {
+        parts.push(node.text);
+      } else if (node.kind === 'assistant_turn') {
+        for (const block of node.turn.assistantEvent.message.content) {
+          if (block.type === 'text' && block.text) parts.push(block.text);
+        }
+      }
+    }
+    return parts.join('\n\n');
+  }
+
+  const badgeLabels: Record<string, string> = {
+    user: 'You',
+    assistant: 'Assistant',
+    system: 'System',
+  };
+
+  const rendered = groups.map((group) => {
+    const entityClass = `stream-turn--${group.entity}`;
+
+    return (
+      <div key={group.id} className={`stream-turn ${entityClass}`} style={{ position: 'relative' }}>
+        <div className="stream-turn__speaker">
+          <span className="stream-turn__badge">{badgeLabels[group.entity] ?? group.entity}</span>
+        </div>
+        <div className="stream-turn__body">
+          {group.nodes.map(renderNodeBody)}
+        </div>
+        {/* Bug: a654b69 — Group "Copy all" when group has >1 node */}
+        {group.nodes.length > 1 && (
+          <MessageActions
+            onCopy={() => { navigator.clipboard.writeText(collectGroupText(group)).catch(() => {}); }}
+          />
+        )}
+      </div>
+    );
   });
 
   return (

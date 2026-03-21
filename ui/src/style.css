@@ -6121,6 +6121,14 @@ tr:hover .work-actions__trigger {
   min-width: 0;
 }
 
+/* Bug: a654b69 — P4: individual nodes within a grouped turn */
+.stream-turn-node {
+  margin-bottom: 8px;
+}
+.stream-turn-node:last-child {
+  margin-bottom: 0;
+}
+
 .stream-live-indicator {
   display: inline-flex;
   align-items: center;
