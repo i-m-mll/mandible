@@ -110,12 +110,24 @@ export type SyntheticPromptEvent = {
   localId: string;
 };
 
+/** Bug: 11f4f47 — Preset violation event emitted by the backend when
+ *  a workflow rule is violated. Rendered as an inline callout block. */
+export type PresetViolationEvent = {
+  type: 'preset:violation';
+  preset_id?: string;
+  subagent_session_id?: string;
+  analyzing: boolean;
+  /** Unique key for reconciliation. */
+  localId?: string;
+};
+
 export type StreamEvent =
   | SystemInitEvent
   | AssistantEvent
   | UserEvent
   | ResultEvent
   | SyntheticPromptEvent
+  | PresetViolationEvent
   | { type: string; [key: string]: unknown };
 
 // ---- Render model (derived from raw events) ----

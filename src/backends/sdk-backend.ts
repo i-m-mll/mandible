@@ -36,6 +36,8 @@ import type {
   Logger,
 } from "../types.js";
 import { SessionRegistry } from "../registry.js";
+import { getDb } from "../db.js";
+import { computePresetUnion } from "../presets.js";
 
 const EVENT_LOG_LIMIT = 2000;
 const PERMISSION_TIMEOUT_MS = 120_000;
@@ -62,6 +64,10 @@ export interface SDKBackendOptions {
   allowedTools?: string[];
   maxTurns?: number;
   maxCostUsd?: number;
+  /** Bug: 61bee4e — Preset IDs to compute union system prompt from */
+  presetIds?: string[];
+  /** Bug: 61bee4e — Override settingSources based on active preset sources */
+  settingSourcesOverride?: string[];
 }
 
 export class SDKBackend extends EventEmitter
@@ -483,6 +489,31 @@ implements
       resumeOpts.resumeSessionAt = this.meta.resume_at_message;
     }
 
+    // Bug: 61bee4e — Compute system prompt from presets if presetIds are set
+    let systemPrompt = this.options.systemPrompt;
+    if (this.options.presetIds && this.options.presetIds.length > 0 && !systemPrompt) {
+      try {
+        const db = getDb();
+        const result = computePresetUnion(this.options.presetIds, db);
+        if (result.text) {
+          systemPrompt = result.text;
+        }
+      } catch {
+        // Presets module or DB not available — fall through to default
+      }
+    }
+
+    // Bug: 61bee4e — settingSources controls more than just CLAUDE.md loading in the SDK.
+    // Removing a source (e.g., "user") would prevent ALL user-level settings from loading,
+    // not just CLAUDE.md. Instead, we let the SDK load settings normally from all sources
+    // and rely on the preset systemPrompt being additive — the union text is prepended to
+    // whatever CLAUDE.md content the SDK loads on its own. If duplication becomes a problem,
+    // content-hash dedup in the union engine can handle it later.
+    // If settingSourcesOverride is explicitly provided, honour it (the caller knows what
+    // they're doing). Otherwise, always use the full set.
+    type SettingSource = "user" | "project" | "local";
+    const settingSources: SettingSource[] = (this.options.settingSourcesOverride ?? ["user", "project", "local"]) as SettingSource[];
+
     return {
       abortController,
       cwd,
@@ -491,7 +522,7 @@ implements
         ...this.meta.env,
       },
       model: this.options.model ?? this.extractModel(this.meta.args) ?? undefined,
-      systemPrompt: this.options.systemPrompt,
+      systemPrompt,
       permissionMode,
       ...(permissionMode === "bypassPermissions"
         ? { allowDangerouslySkipPermissions: true }
@@ -500,7 +531,7 @@ implements
       maxTurns: this.options.maxTurns,
       maxBudgetUsd: this.options.maxCostUsd,
       includePartialMessages: true,
-      settingSources: ["user", "project", "local"],
+      settingSources,
       canUseTool: this.handleToolPermission,
       hooks,
       agentProgressSummaries: true,

@@ -18,9 +18,12 @@ type ConsoleViewProps = {
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk';
+    presetIds?: string[];
   }) => void;
   isActive: boolean;
   initialSessionId: string | null;
+  /** Pre-selected preset ID from navigation (e.g., "Start Chat" from Presets tab). */
+  initialPresetId?: string | null;
 };
 
 export function ConsoleView({
@@ -31,8 +34,9 @@ export function ConsoleView({
   onNewSession,
   isActive,
   initialSessionId,
+  initialPresetId,
 }: ConsoleViewProps): JSX.Element {
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(Boolean(initialPresetId));
   // Per-session view mode stored locally: Record<sessionId, ViewMode>
   const [viewModes, setViewModes] = useState<Record<string, ViewMode>>({});
 
@@ -142,6 +146,7 @@ export function ConsoleView({
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onSubmit={onNewSession}
+        initialPresetId={initialPresetId}
       />
     </div>
   );

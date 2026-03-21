@@ -63,6 +63,10 @@ export function registerConsoleRoutes(server, manager) {
             backend_type: body.backend_type === "pty" || body.backend_type === "sdk" || body.backend_type === "spawn"
                 ? body.backend_type
                 : (body.command === "claude" ? "sdk" : "spawn"),
+            // Bug: 61bee4e — Accept presetIds for convention presets
+            presetIds: Array.isArray(body.presetIds)
+                ? body.presetIds.filter((id) => typeof id === "string")
+                : undefined,
         };
         const session = manager.create(input);
         const structuredChat = input.command === "claude" || input.command === "codex" || input.command === "gemini";

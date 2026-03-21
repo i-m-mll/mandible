@@ -290,7 +290,31 @@ export class SessionManager {
       resume_at_message,
     });
 
+    // Bug: 61bee4e — Store preset associations and pass presetIds to backend
+    if (input.presetIds && input.presetIds.length > 0) {
+      const insertPreset = db.prepare(
+        `INSERT OR IGNORE INTO session_presets (session_id, preset_id, preset_version, position)
+         VALUES (?, ?, ?, ?)`,
+      );
+      const presetTx = db.transaction(() => {
+        for (let i = 0; i < input.presetIds!.length; i++) {
+          const presetRow = db.prepare("SELECT version FROM presets WHERE id = ?")
+            .get(input.presetIds![i]) as { version: number } | undefined;
+          if (presetRow) {
+            insertPreset.run(id, input.presetIds![i], presetRow.version, i);
+          }
+        }
+      });
+      presetTx();
+    }
+
     const backend = this.createBackend(session, backend_type);
+
+    // Bug: 61bee4e — If presetIds are set, update the SDK backend options
+    if (input.presetIds && input.presetIds.length > 0 && backend instanceof SDKBackend) {
+      backend.updateOptions({ presetIds: input.presetIds });
+    }
+
     this.sessions.set(id, backend);
     this.wireBackend(backend);
 

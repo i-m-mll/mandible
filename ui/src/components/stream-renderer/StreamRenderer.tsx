@@ -4,6 +4,7 @@ import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type {
   AssistantEvent,
+  PresetViolationEvent,
   RenderedTurn,
   ResultEvent,
   StreamEvent,
@@ -16,6 +17,7 @@ import type {
 import { MessageGroup } from './MessageGroup';
 import { StatusBar } from './StatusBar';
 import { MessageActions } from '../shared/MessageActions';
+import { PresetViolationBlock } from './PresetViolationBlock';
 
 // ---- Event parsing hook ----
 
@@ -27,6 +29,8 @@ type StreamState = {
   syntheticPrompts: Array<{ localId: string; text: string; insertionIdx: number }>;
   /** User text messages from the real stream (survive page refresh), interleaved by insertionIdx. */
   streamUserMessages: Array<{ id: string; text: string; insertionIdx: number }>;
+  /** Bug: 11f4f47 — Preset violations, interleaved with turns by insertionIdx. */
+  violations: Array<{ event: PresetViolationEvent; insertionIdx: number }>;
 };
 
 function buildTurn(
@@ -45,6 +49,7 @@ function useStreamState(events: StreamEvent[]): StreamState {
     const turns: RenderedTurn[] = [];
     const syntheticPrompts: StreamState['syntheticPrompts'] = [];
     const streamUserMessages: StreamState['streamUserMessages'] = [];
+    const violations: StreamState['violations'] = [];
     let initEvent: SystemInitEvent | null = null;
     let resultEvent: ResultEvent | null = null;
     let pendingAssistant: AssistantEvent | null = null;
@@ -54,6 +59,9 @@ function useStreamState(events: StreamEvent[]): StreamState {
     for (const event of events) {
       if (event.type === 'system' && (event as SystemInitEvent).subtype === 'init') {
         initEvent = event as SystemInitEvent;
+      } else if (event.type === 'preset:violation') {
+        // Bug: 11f4f47 — Track violation events for inline rendering
+        violations.push({ event: event as PresetViolationEvent, insertionIdx: turns.length });
       } else if (event.type === 'assistant') {
         // Flush previous turn before starting a new one
         if (pendingAssistant) {
@@ -100,7 +108,7 @@ function useStreamState(events: StreamEvent[]): StreamState {
       turns.push(buildTurn(pendingAssistant, pendingResults));
     }
 
-    return { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages };
+    return { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages, violations };
   }, [events]);
 }
 
@@ -189,7 +197,7 @@ export function StreamRenderer({
   emptyLabel,
   sessionInfo,
 }: StreamRendererProps): JSX.Element {
-  const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages } = useStreamState(events);
+  const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages, violations } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [userScrolled, setUserScrolled] = useState(false);
 
@@ -248,10 +256,25 @@ export function StreamRenderer({
   // Build an interleaved list of nodes: user bubbles (both stream-based and synthetic)
   // inserted at their recorded position (just before the assistant turn they precede).
   const nodes: JSX.Element[] = [];
-  // Track which prompts/messages have already been emitted
+  // Track which prompts/messages/violations have already been emitted
   let spIdx = 0;
   let umIdx = 0;
+  let vIdx = 0;
   for (let i = 0; i <= turns.length; i++) {
+    // Bug: 11f4f47 — Emit violation blocks at their insertion point
+    while (vIdx < violations.length && violations[vIdx].insertionIdx === i) {
+      const v = violations[vIdx];
+      const key = v.event.localId ?? `violation-${vIdx}`;
+      nodes.push(
+        <PresetViolationBlock
+          key={key}
+          analyzing={v.event.analyzing}
+          presetId={v.event.preset_id}
+          subagentSessionId={v.event.subagent_session_id}
+        />,
+      );
+      vIdx++;
+    }
     // Emit all stream user messages whose insertionIdx === i
     // Bug: 5183781 — render user text events from the real stream as bubbles
     while (umIdx < streamUserMessages.length && streamUserMessages[umIdx].insertionIdx === i) {
