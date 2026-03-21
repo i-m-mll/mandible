@@ -90,10 +90,13 @@ export type AuthRequestStatus =
   | "completed"
   | "dismissed";
 export type AuthExecutionMode = "daemon" | "remote";
+// Bug: dd21c1e — generalize auth queue to support action types beyond merges
+export type AuthRequestType = "merge" | "commit" | "force-push" | "branch-delete" | "config-change" | "preset-promote" | "data-delete";
 
 export interface AuthRequest {
   id: string;
   session_id: string | null;
+  type: AuthRequestType;
   command: string;
   title: string;
   cwd: string | null;
@@ -127,6 +130,7 @@ export interface AuthRequest {
 
 export interface AuthRequestInput {
   session_id?: string | null;
+  type?: AuthRequestType;
   command: string;
   title: string;
   cwd?: string | null;

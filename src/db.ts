@@ -729,6 +729,14 @@ const MIGRATIONS: Migration[] = [
     statements: [
       `ALTER TABLE convention_setting_links ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'`,
     ]
+  },
+  {
+    version: 45,
+    name: "auth_request_type",
+    // Bug: dd21c1e — generalize auth queue to support action types beyond merges
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN type TEXT NOT NULL DEFAULT 'merge'`
+    ]
   }
 ];
 

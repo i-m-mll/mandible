@@ -1,7 +1,7 @@
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-import type { AuthRequestInput } from "../types.js";
+import type { AuthRequestInput, AuthRequestType } from "../types.js";
 import { execSync } from "node:child_process";
 import path from "node:path";
 
@@ -76,6 +76,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
 
     res.json({
       request_id: request.id,
+      type: request.type,
       status: request.status,
       output: request.output,
       exit_code: request.exit_code,
@@ -131,8 +132,16 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
     }
   });
 
-  app.get("/api/auth/queue", (_req, res) => {
-    const requests = queue.listActive();
+  app.get("/api/auth/queue", (req, res) => {
+    const query = req.query ?? {};
+    // Bug: dd21c1e — optional ?type=X filter
+    const typeFilter = typeof query.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(query.type as AuthRequestType)
+      ? (query.type as AuthRequestType)
+      : undefined;
+    let requests = queue.listActive();
+    if (typeFilter) {
+      requests = requests.filter((r) => r.type === typeFilter);
+    }
     // Bug: 0b83252 — resolve depends_on_status for each request with a dependency
     const enriched = requests.map((r) => {
       if (!r.depends_on_id) return { ...r, depends_on_status: null };
@@ -144,12 +153,19 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
 
   app.get("/api/auth/history", (req, res) => {
     const query = req.query ?? {};
+    // Bug: dd21c1e — optional ?type=X filter
+    const typeFilter = typeof query.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(query.type as AuthRequestType)
+      ? (query.type as AuthRequestType)
+      : undefined;
     const limitRaw = typeof query.limit === "string" ? Number(query.limit) : undefined;
     const limit =
       limitRaw != null && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(limitRaw, 200)
         : 50;
-    const requests = queue.listHistory(limit);
+    let requests = queue.listHistory(limit);
+    if (typeFilter) {
+      requests = requests.filter((r) => r.type === typeFilter);
+    }
     res.json({ requests });
   });
 
@@ -249,10 +265,21 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
   return queue;
 }
 
+// Bug: dd21c1e — valid auth request types for input validation
+const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
+  "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
+];
+
 function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInput | null {
   if (typeof body.command !== "string" || typeof body.title !== "string") {
     return null;
   }
+
+  // Bug: dd21c1e — parse type, default to 'merge'
+  const type: AuthRequestType | undefined =
+    typeof body.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(body.type as AuthRequestType)
+      ? (body.type as AuthRequestType)
+      : undefined;
 
   const executionMode =
     body.execution_mode === "remote" || body.execution_mode === "daemon"
@@ -276,6 +303,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
 
   return {
     session_id: typeof body.session_id === "string" ? body.session_id : null,
+    type,
     command: body.command,
     title: body.title,
     cwd: typeof body.cwd === "string" ? body.cwd : null,
@@ -322,6 +350,14 @@ function parseAuthRequestUpdatePayload(
       return { ok: false, error: "Invalid status — only 'pending' is accepted (use the retry flow to reset a failed request)" };
     }
     payload.status = "pending";
+  }
+
+  // Bug: dd21c1e — allow updating type
+  if (hasKey("type")) {
+    if (typeof body.type !== "string" || !VALID_AUTH_REQUEST_TYPES.includes(body.type as AuthRequestType)) {
+      return { ok: false, error: `Invalid 'type' — must be one of: ${VALID_AUTH_REQUEST_TYPES.join(", ")}` };
+    }
+    payload.type = body.type as AuthRequestType;
   }
 
   if (hasKey("title")) {
