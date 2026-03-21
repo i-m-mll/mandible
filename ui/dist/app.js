@@ -15158,17 +15158,29 @@ function SessionsView({
 init_api();
 
 // ui/src/components/shared/MessageActions.tsx
+function formatElapsedMs(ms) {
+  const seconds = Math.round(ms / 1e3);
+  if (seconds < 60)
+    return `${seconds}s`;
+  const m4 = Math.floor(seconds / 60);
+  const s3 = seconds % 60;
+  return `${m4}m ${s3}s`;
+}
 function MessageActions({
   onCopy,
   onResume,
   onFork,
+  onInfo,
   dagUuid,
   showResume,
-  showFork
+  showFork,
+  metadata
 }) {
   const [copiedFeedback, setCopiedFeedback] = d2(false);
+  const [overflowOpen, setOverflowOpen] = d2(false);
   const shouldShowResume = showResume ?? !!dagUuid;
   const shouldShowFork = showFork ?? !!dagUuid;
+  const hasOverflow = shouldShowResume || shouldShowFork || !!onInfo;
   const handleCopy = (e3) => {
     e3.stopPropagation();
     if (onCopy) {
@@ -15177,16 +15189,26 @@ function MessageActions({
       setTimeout(() => setCopiedFeedback(false), 1200);
     }
   };
-  const handleResume = (e3) => {
+  const handleOverflowToggle = (e3) => {
     e3.stopPropagation();
-    if (onResume)
-      onResume();
+    setOverflowOpen((prev) => !prev);
   };
-  const handleFork = (e3) => {
+  const handleOverflowItem = (e3, action) => {
     e3.stopPropagation();
-    if (onFork)
-      onFork();
+    setOverflowOpen(false);
+    if (action)
+      action();
   };
+  const metaParts = [];
+  if (metadata?.tokenCount != null) {
+    metaParts.push(`${metadata.tokenCount.toLocaleString()} tokens`);
+  }
+  if (metadata?.elapsedMs != null) {
+    metaParts.push(formatElapsedMs(metadata.elapsedMs));
+  }
+  if (metadata?.model) {
+    metaParts.push(metadata.model);
+  }
   return /* @__PURE__ */ u3("div", { className: "message-actions", "data-dag-uuid": dagUuid, children: [
     onCopy && /* @__PURE__ */ u3(
       "button",
@@ -15199,28 +15221,50 @@ function MessageActions({
         children: copiedFeedback ? "\u2713" : "Copy"
       }
     ),
-    shouldShowResume && /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: "message-actions__btn",
-        onClick: handleResume,
-        title: "Resume from this message",
-        "aria-label": "Resume",
-        children: "\u21A9"
-      }
-    ),
-    shouldShowFork && /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: "message-actions__btn",
-        onClick: handleFork,
-        title: "Fork a new branch from this message",
-        "aria-label": "Fork",
-        children: "\u2441"
-      }
-    )
+    hasOverflow && /* @__PURE__ */ u3("div", { className: "message-actions__overflow-wrap", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "message-actions__btn message-actions__overflow",
+          onClick: handleOverflowToggle,
+          title: "More actions",
+          "aria-label": "More actions",
+          "aria-expanded": overflowOpen,
+          children: "\u2026"
+        }
+      ),
+      overflowOpen && /* @__PURE__ */ u3("div", { className: "message-actions__overflow-menu", children: [
+        shouldShowFork && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "message-actions__overflow-item",
+            onClick: (e3) => handleOverflowItem(e3, onFork),
+            children: "\u2441 Fork"
+          }
+        ),
+        shouldShowResume && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "message-actions__overflow-item",
+            onClick: (e3) => handleOverflowItem(e3, onResume),
+            children: "\u21A9 Resume"
+          }
+        ),
+        onInfo && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "message-actions__overflow-item",
+            onClick: (e3) => handleOverflowItem(e3, onInfo),
+            children: "\u2139 Info"
+          }
+        )
+      ] })
+    ] }),
+    metaParts.length > 0 && /* @__PURE__ */ u3("div", { className: "message-actions__meta", children: metaParts.join(" \xB7 ") })
   ] });
 }
 
@@ -21913,89 +21957,23 @@ function MessageGroup({ turn, isStreaming, isThinking }) {
   return /* @__PURE__ */ u3("div", { className: "message-group", children: /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) }) });
 }
 
-// ui/src/components/stream-renderer/StatusBar.tsx
-function formatCost(usd) {
-  if (usd < 1e-3) {
-    return "est. <$0.001";
+// ui/src/components/shared/groupByEntity.ts
+function groupByEntity(items, getEntity, getId) {
+  const groups = [];
+  for (const item of items) {
+    const entity = getEntity(item);
+    const last = groups[groups.length - 1];
+    if (last && last.entity === entity) {
+      last.nodes.push(item);
+    } else {
+      groups.push({
+        id: `group-${getId(item)}`,
+        entity,
+        nodes: [item]
+      });
+    }
   }
-  return `est. $${usd.toFixed(4)}`;
-}
-function formatDuration2(ms) {
-  if (ms < 1e3) {
-    return `${ms}ms`;
-  }
-  return `${(ms / 1e3).toFixed(1)}s`;
-}
-function StatusBar({
-  streaming,
-  model,
-  backend,
-  totalCostUsd,
-  numTurns,
-  durationMs,
-  error,
-  elapsedSeconds,
-  liveLabel,
-  modelOptions,
-  modelSaving,
-  onChangeModel
-}) {
-  const dotClass = error ? "status-bar__dot status-bar__dot--error" : "status-bar__dot status-bar__dot--done";
-  const centerParts = [];
-  if (numTurns !== void 0) {
-    centerParts.push(`${numTurns} turn${numTurns === 1 ? "" : "s"}`);
-  }
-  if (totalCostUsd !== void 0) {
-    centerParts.push(formatCost(totalCostUsd));
-  }
-  const centerText = centerParts.join(" \xB7 ");
-  let rightText = "";
-  if (!streaming && durationMs !== void 0) {
-    rightText = formatDuration2(durationMs);
-  }
-  let labelContent;
-  if (error) {
-    labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__error", children: error });
-  } else if (streaming) {
-    labelContent = null;
-  } else {
-    labelContent = /* @__PURE__ */ u3("span", { className: "status-bar__label", children: "Complete" });
-  }
-  return /* @__PURE__ */ u3("div", { className: "status-bar", children: [
-    !streaming && /* @__PURE__ */ u3("span", { className: dotClass, "aria-hidden": "true" }),
-    labelContent,
-    onChangeModel && backend === "codex" ? /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: "status-bar__model-button",
-        onClick: () => {
-          const next = window.prompt("Set model", model ?? "");
-          if (next !== null) {
-            void onChangeModel(next.trim());
-          }
-        },
-        disabled: modelSaving,
-        children: modelSaving ? "Saving\u2026" : model ?? "default"
-      }
-    ) : onChangeModel && modelOptions && modelOptions.length > 0 ? /* @__PURE__ */ u3(
-      "select",
-      {
-        className: "status-bar__model-select",
-        value: model ?? "",
-        onChange: (e3) => {
-          void onChangeModel(e3.currentTarget.value);
-        },
-        disabled: modelSaving,
-        children: [
-          /* @__PURE__ */ u3("option", { value: "", children: "default" }),
-          modelOptions.map((option) => /* @__PURE__ */ u3("option", { value: option, children: option }, option))
-        ]
-      }
-    ) : model ? /* @__PURE__ */ u3("span", { className: "status-bar__center", children: model }) : null,
-    centerText && /* @__PURE__ */ u3("span", { className: "status-bar__center", children: centerText }),
-    rightText && /* @__PURE__ */ u3("span", { className: "status-bar__right", children: rightText })
-  ] });
+  return groups;
 }
 
 // ui/src/components/stream-renderer/PresetViolationBlock.tsx
@@ -22027,34 +22005,54 @@ function PresetViolationBlock({
 }
 
 // ui/src/components/stream-renderer/StreamRenderer.tsx
+var turnIndexCounter = 0;
 function buildTurn(assistant, results) {
   return {
-    id: assistant.uuid ?? `turn-${Math.random().toString(36).slice(2)}`,
+    id: assistant.uuid ?? assistant.message?.id ?? `turn-idx-${turnIndexCounter++}`,
     assistantEvent: assistant,
-    toolResults: new Map(results)
+    toolResults: new Map(results),
+    receivedAt: Date.now()
   };
+}
+function extractTurns(nodes) {
+  return nodes.filter((n2) => n2.kind === "assistant_turn").map((n2) => n2.turn);
 }
 function useStreamState(events) {
   return T2(() => {
-    const turns = [];
-    const syntheticPrompts = [];
-    const streamUserMessages = [];
-    const violations = [];
+    turnIndexCounter = 0;
+    const nodes = [];
     let initEvent = null;
     let resultEvent = null;
     let pendingAssistant = null;
     const pendingResults = /* @__PURE__ */ new Map();
     let userMsgIdx = 0;
+    function flushPendingTurn() {
+      if (pendingAssistant) {
+        const turn = buildTurn(pendingAssistant, pendingResults);
+        nodes.push({
+          kind: "assistant_turn",
+          key: turn.id,
+          entity: "assistant",
+          turn
+        });
+        pendingAssistant = null;
+        pendingResults.clear();
+      }
+    }
     for (const event of events) {
       if (event.type === "system" && event.subtype === "init") {
         initEvent = event;
       } else if (event.type === "preset:violation") {
-        violations.push({ event, insertionIdx: turns.length });
+        const violationEvent = event;
+        flushPendingTurn();
+        nodes.push({
+          kind: "violation",
+          key: violationEvent.localId ?? `violation-${nodes.length}`,
+          entity: "system",
+          event: violationEvent
+        });
       } else if (event.type === "assistant") {
-        if (pendingAssistant) {
-          turns.push(buildTurn(pendingAssistant, pendingResults));
-          pendingResults.clear();
-        }
+        flushPendingTurn();
         pendingAssistant = event;
       } else if (event.type === "user") {
         const userEvent = event;
@@ -22069,56 +22067,32 @@ function useStreamState(events) {
           }
         }
         if (hasText) {
-          streamUserMessages.push({
-            id: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+          flushPendingTurn();
+          nodes.push({
+            kind: "user_message",
+            key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+            entity: "user",
             text: textParts.join("\n"),
-            insertionIdx: turns.length
+            source: "stream"
           });
         }
       } else if (event.type === "result") {
         resultEvent = event;
       } else if (event.type === "synthetic_prompt") {
         const sp = event;
-        syntheticPrompts.push({ localId: sp.localId, text: sp.text, insertionIdx: turns.length });
+        flushPendingTurn();
+        nodes.push({
+          kind: "user_message",
+          key: `sp-${sp.localId}`,
+          entity: "user",
+          text: sp.text,
+          source: "synthetic"
+        });
       }
     }
-    if (pendingAssistant) {
-      turns.push(buildTurn(pendingAssistant, pendingResults));
-    }
-    return { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages, violations };
+    flushPendingTurn();
+    return { nodes, initEvent, resultEvent };
   }, [events]);
-}
-function deriveStatusBarProps(streaming, initEvent, resultEvent, liveLabel, sessionInfo) {
-  const model = sessionInfo?.model ?? initEvent?.model;
-  const backend = sessionInfo?.backend;
-  const shared = {
-    backend,
-    modelOptions: sessionInfo?.modelOptions,
-    modelSaving: sessionInfo?.modelSaving,
-    onChangeModel: sessionInfo?.onChangeModel
-  };
-  if (!resultEvent) {
-    return { model, liveLabel, ...shared };
-  }
-  if (resultEvent.is_error) {
-    return {
-      model,
-      totalCostUsd: resultEvent.total_cost_usd,
-      numTurns: resultEvent.num_turns,
-      durationMs: resultEvent.duration_ms,
-      error: resultEvent.errors?.join("; "),
-      liveLabel,
-      ...shared
-    };
-  }
-  return {
-    model,
-    totalCostUsd: resultEvent.total_cost_usd,
-    numTurns: resultEvent.num_turns,
-    durationMs: resultEvent.duration_ms,
-    liveLabel,
-    ...shared
-  };
 }
 function deriveLiveLabel(turns, streaming) {
   if (!streaming) {
@@ -22161,9 +22135,11 @@ function StreamRenderer({
   streaming,
   elapsedSeconds,
   emptyLabel,
-  sessionInfo
+  sessionInfo,
+  onSelectMessageInfo,
+  selectedMessageId
 }) {
-  const { turns, initEvent, resultEvent, syntheticPrompts, streamUserMessages, violations } = useStreamState(events);
+  const { nodes } = useStreamState(events);
   const scrollRef = A2(null);
   const [userScrolled, setUserScrolled] = d2(false);
   y2(() => {
@@ -22190,97 +22166,120 @@ function StreamRenderer({
     }
     setUserScrolled(false);
   }
+  const turns = extractTurns(nodes);
   const liveLabel = deriveLiveLabel(turns, streaming);
   const tokenCount = deriveTokenCount(turns);
-  const statusBarProps = deriveStatusBarProps(
-    streaming,
-    initEvent,
-    resultEvent,
-    liveLabel,
-    sessionInfo
-  );
-  const hasContent = events.length > 0 || syntheticPrompts.length > 0 || streamUserMessages.length > 0;
+  const hasContent = nodes.length > 0;
   if (!hasContent) {
-    return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
-      /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: emptyLabel ?? (streaming ? "Starting\u2026" : "No events") }),
-      /* @__PURE__ */ u3(StatusBar, { streaming, elapsedSeconds, ...statusBarProps })
-    ] });
+    return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: emptyLabel ?? (streaming ? "Starting\u2026" : "No events") }) });
   }
-  const nodes = [];
-  let spIdx = 0;
-  let umIdx = 0;
-  let vIdx = 0;
-  for (let i4 = 0; i4 <= turns.length; i4++) {
-    while (vIdx < violations.length && violations[vIdx].insertionIdx === i4) {
-      const v3 = violations[vIdx];
-      const key2 = v3.event.localId ?? `violation-${vIdx}`;
-      nodes.push(
-        /* @__PURE__ */ u3(
+  const groups = groupByEntity(nodes, (n2) => n2.entity, (n2) => n2.key);
+  let lastAssistantKey = null;
+  for (let i4 = nodes.length - 1; i4 >= 0; i4--) {
+    if (nodes[i4].kind === "assistant_turn") {
+      lastAssistantKey = nodes[i4].key;
+      break;
+    }
+  }
+  function renderNodeBody(node) {
+    switch (node.kind) {
+      case "user_message":
+        return /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: node.text }) }, node.key);
+      case "violation":
+        return /* @__PURE__ */ u3(
           PresetViolationBlock,
           {
-            analyzing: v3.event.analyzing,
-            presetId: v3.event.preset_id,
-            subagentSessionId: v3.event.subagent_session_id
+            analyzing: node.event.analyzing,
+            presetId: node.event.preset_id,
+            subagentSessionId: node.event.subagent_session_id
           },
-          key2
-        )
-      );
-      vIdx++;
-    }
-    while (umIdx < streamUserMessages.length && streamUserMessages[umIdx].insertionIdx === i4) {
-      const um = streamUserMessages[umIdx];
-      nodes.push(
-        /* @__PURE__ */ u3("div", { className: "stream-turn stream-turn--user", children: [
-          /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: "You" }) }),
-          /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: um.text }) }) })
-        ] }, `um-${um.id}`)
-      );
-      umIdx++;
-    }
-    while (spIdx < syntheticPrompts.length && syntheticPrompts[spIdx].insertionIdx === i4) {
-      const sp = syntheticPrompts[spIdx];
-      nodes.push(
-        /* @__PURE__ */ u3("div", { className: "stream-turn stream-turn--user", children: [
-          /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: "You" }) }),
-          /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: /* @__PURE__ */ u3("div", { className: "user-prompt-bubble", children: /* @__PURE__ */ u3("div", { className: "user-prompt-bubble__text", children: sp.text }) }) })
-        ] }, `sp-${sp.localId}`)
-      );
-      spIdx++;
-    }
-    if (i4 < turns.length) {
-      const turn = turns[i4];
-      const isLastStreamingTurn = streaming && i4 === turns.length - 1;
-      const isThinking = isLastStreamingTurn && turn.assistantEvent.message.content.some((b) => b.type === "thinking");
-      const turnTextParts = [];
-      for (const block2 of turn.assistantEvent.message.content) {
-        if (block2.type === "text" && block2.text)
-          turnTextParts.push(block2.text);
+          node.key
+        );
+      case "assistant_turn": {
+        const { turn } = node;
+        const isLastStreamingTurn = streaming && node.key === lastAssistantKey;
+        const isThinking = isLastStreamingTurn && turn.assistantEvent.message.content.some((b) => b.type === "thinking");
+        const turnTextParts = [];
+        for (const block2 of turn.assistantEvent.message.content) {
+          if (block2.type === "text" && block2.text)
+            turnTextParts.push(block2.text);
+        }
+        const turnText = turnTextParts.join("\n\n");
+        const usage = turn.assistantEvent.message.usage;
+        const turnMetadata = {
+          tokenCount: usage ? usage.input_tokens + usage.output_tokens : void 0,
+          model: turn.assistantEvent.message.model
+        };
+        const isSelected = selectedMessageId === turn.id;
+        return /* @__PURE__ */ u3(
+          "div",
+          {
+            className: isSelected ? "stream-turn-node stream-turn--selected" : "stream-turn-node",
+            style: { position: "relative" },
+            children: [
+              /* @__PURE__ */ u3(
+                MessageGroup,
+                {
+                  turn,
+                  isStreaming: isLastStreamingTurn,
+                  isThinking
+                }
+              ),
+              /* @__PURE__ */ u3(
+                MessageActions,
+                {
+                  onCopy: () => {
+                    navigator.clipboard.writeText(turnText).catch(() => {
+                    });
+                  },
+                  onInfo: onSelectMessageInfo ? () => onSelectMessageInfo(turn.id) : void 0,
+                  metadata: turnMetadata
+                }
+              )
+            ]
+          },
+          node.key
+        );
       }
-      const turnText = turnTextParts.join("\n\n");
-      nodes.push(
-        /* @__PURE__ */ u3("div", { className: "stream-turn stream-turn--assistant", style: { position: "relative" }, children: [
-          /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: "Assistant" }) }),
-          /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: /* @__PURE__ */ u3(
-            MessageGroup,
-            {
-              turn,
-              isStreaming: isLastStreamingTurn,
-              isThinking
-            }
-          ) }),
-          /* @__PURE__ */ u3(
-            MessageActions,
-            {
-              onCopy: () => {
-                navigator.clipboard.writeText(turnText).catch(() => {
-                });
-              }
-            }
-          )
-        ] }, turn.id)
-      );
+      default:
+        return null;
     }
   }
+  function collectGroupText(group) {
+    const parts = [];
+    for (const node of group.nodes) {
+      if (node.kind === "user_message") {
+        parts.push(node.text);
+      } else if (node.kind === "assistant_turn") {
+        for (const block2 of node.turn.assistantEvent.message.content) {
+          if (block2.type === "text" && block2.text)
+            parts.push(block2.text);
+        }
+      }
+    }
+    return parts.join("\n\n");
+  }
+  const badgeLabels = {
+    user: "You",
+    assistant: "Assistant",
+    system: "System"
+  };
+  const rendered = groups.map((group) => {
+    const entityClass = `stream-turn--${group.entity}`;
+    return /* @__PURE__ */ u3("div", { className: `stream-turn ${entityClass}`, style: { position: "relative" }, children: [
+      /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: badgeLabels[group.entity] ?? group.entity }) }),
+      /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: group.nodes.map(renderNodeBody) }),
+      group.nodes.length > 1 && /* @__PURE__ */ u3(
+        MessageActions,
+        {
+          onCopy: () => {
+            navigator.clipboard.writeText(collectGroupText(group)).catch(() => {
+            });
+          }
+        }
+      )
+    ] }, group.id);
+  });
   return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
     /* @__PURE__ */ u3(
       "div",
@@ -22289,7 +22288,7 @@ function StreamRenderer({
         className: "stream-renderer__scroll",
         onScroll: handleScroll,
         children: [
-          nodes,
+          rendered,
           streaming && /* @__PURE__ */ u3("div", { className: "stream-live-indicator", children: [
             /* @__PURE__ */ u3("span", { className: "stream-live-indicator__dot" }),
             /* @__PURE__ */ u3("span", { className: "stream-live-indicator__label", children: liveLabel ?? "Working" }),
@@ -22310,8 +22309,7 @@ function StreamRenderer({
         onClick: handleJumpToBottom,
         children: "Jump to bottom \u2193"
       }
-    ),
-    /* @__PURE__ */ u3(StatusBar, { streaming, elapsedSeconds, ...statusBarProps })
+    )
   ] });
 }
 
@@ -22889,6 +22887,79 @@ function LivePresetPills({
   ] });
 }
 
+// ui/src/components/console/MessageInfoPanel.tsx
+function findAssistantEvent(events, turnId) {
+  for (const event of events) {
+    if (event.type !== "assistant")
+      continue;
+    const ae = event;
+    const id2 = ae.uuid ?? ae.message?.id;
+    if (id2 === turnId)
+      return ae;
+  }
+  return null;
+}
+function MessageInfoPanel({
+  selectedMessageId,
+  streamEvents
+}) {
+  if (!selectedMessageId) {
+    return /* @__PURE__ */ u3("div", { className: "message-info-panel", children: /* @__PURE__ */ u3("div", { className: "message-info-panel__empty", children: "Select a message to view its metadata." }) });
+  }
+  const assistant = findAssistantEvent(streamEvents, selectedMessageId);
+  if (!assistant) {
+    return /* @__PURE__ */ u3("div", { className: "message-info-panel", children: /* @__PURE__ */ u3("div", { className: "message-info-panel__empty", children: "Message not found in stream events." }) });
+  }
+  const msg = assistant.message;
+  const usage = msg.usage;
+  const blocks = msg.content;
+  const blockCounts = /* @__PURE__ */ new Map();
+  for (const block2 of blocks) {
+    blockCounts.set(block2.type, (blockCounts.get(block2.type) ?? 0) + 1);
+  }
+  const toolNames = [];
+  for (const block2 of blocks) {
+    if (block2.type === "tool_use") {
+      toolNames.push(block2.name);
+    }
+  }
+  return /* @__PURE__ */ u3("div", { className: "message-info-panel", children: [
+    msg.model && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Model" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: msg.model })
+    ] }),
+    msg.stop_reason && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Stop reason" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: msg.stop_reason })
+    ] }),
+    usage && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Tokens" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: [
+        usage.input_tokens.toLocaleString(),
+        " in / ",
+        usage.output_tokens.toLocaleString(),
+        " out",
+        " ",
+        "(",
+        (usage.input_tokens + usage.output_tokens).toLocaleString(),
+        " total)"
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Content blocks" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: Array.from(blockCounts.entries()).map(([type2, count]) => `${count} ${type2}`).join(", ") })
+    ] }),
+    toolNames.length > 0 && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Tools" }),
+      /* @__PURE__ */ u3("div", { className: "message-info-panel__tools", children: toolNames.map((name, i4) => /* @__PURE__ */ u3("span", { className: "message-info-panel__tool-pill", children: name }, `${name}-${i4}`)) })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Message ID" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value message-info-panel__value--mono", children: selectedMessageId })
+    ] })
+  ] });
+}
+
 // ui/src/components/presets/ContextIndicator.tsx
 var MODEL_CONTEXT_WINDOWS = {
   opus: 1e6,
@@ -23338,6 +23409,8 @@ function TerminalPane({
   const [permissionBusy, setPermissionBusy] = d2(false);
   const [activeSubagents, setActiveSubagents] = d2([]);
   const [sidebarOpen, setSidebarOpen] = d2(false);
+  const [sidebarTab, setSidebarTab] = d2("settings");
+  const [selectedMessageId, setSelectedMessageId] = d2(null);
   const [presetTokenCount, setPresetTokenCount] = d2(0);
   const showDebugTerminal = backendType === "pty";
   const providerFamily = isOperator ? "claude" : command;
@@ -23731,6 +23804,15 @@ function TerminalPane({
       cancelled = true;
     };
   }, [backendType, sessionId]);
+  const handleSelectMessageInfo = (turnId) => {
+    if (selectedMessageId === turnId && sidebarTab === "info") {
+      setSelectedMessageId(null);
+      return;
+    }
+    setSelectedMessageId(turnId);
+    setSidebarOpen(true);
+    setSidebarTab("info");
+  };
   const handleReconnect = async () => {
     setWsStatus("connecting");
     termRef.current?.reset();
@@ -23971,7 +24053,9 @@ function TerminalPane({
                       sessionId,
                       backend: providerFamily,
                       model
-                    }
+                    },
+                    onSelectMessageInfo: handleSelectMessageInfo,
+                    selectedMessageId
                   }
                 )
               ] }),
@@ -24036,35 +24120,63 @@ function TerminalPane({
             ] }),
             sidebarOpen && /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar", children: [
               /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar-header", children: [
-                /* @__PURE__ */ u3("span", { className: "terminal-pane__sidebar-title", children: "Settings" }),
+                /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar-tabs", children: [
+                  /* @__PURE__ */ u3(
+                    "button",
+                    {
+                      type: "button",
+                      className: `terminal-pane__sidebar-tab${sidebarTab === "settings" ? " terminal-pane__sidebar-tab--active" : ""}`,
+                      onClick: () => setSidebarTab("settings"),
+                      children: "Settings"
+                    }
+                  ),
+                  /* @__PURE__ */ u3(
+                    "button",
+                    {
+                      type: "button",
+                      className: `terminal-pane__sidebar-tab${sidebarTab === "info" ? " terminal-pane__sidebar-tab--active" : ""}`,
+                      onClick: () => setSidebarTab("info"),
+                      children: "Info"
+                    }
+                  )
+                ] }),
                 /* @__PURE__ */ u3(
                   "button",
                   {
                     type: "button",
                     className: "terminal-pane__sidebar-close",
                     onClick: () => setSidebarOpen(false),
-                    title: "Close settings",
+                    title: "Close sidebar",
                     children: /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 14 14", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M3 3l8 8M11 3l-8 8", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round" }) })
                   }
                 )
               ] }),
-              /* @__PURE__ */ u3(
-                SessionControls,
+              sidebarTab === "settings" && /* @__PURE__ */ u3(k, { children: [
+                /* @__PURE__ */ u3(
+                  SessionControls,
+                  {
+                    sessionId,
+                    backendType,
+                    model,
+                    modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
+                    allowedTools,
+                    availableTools,
+                    onModelSaved: setModel
+                  }
+                ),
+                backendType === "sdk" && /* @__PURE__ */ u3(
+                  LivePresetPills,
+                  {
+                    sessionId,
+                    onUnionUpdate: ({ totalTokens }) => setPresetTokenCount(totalTokens)
+                  }
+                )
+              ] }),
+              sidebarTab === "info" && /* @__PURE__ */ u3(
+                MessageInfoPanel,
                 {
-                  sessionId,
-                  backendType,
-                  model,
-                  modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
-                  allowedTools,
-                  availableTools,
-                  onModelSaved: setModel
-                }
-              ),
-              backendType === "sdk" && /* @__PURE__ */ u3(
-                LivePresetPills,
-                {
-                  sessionId,
-                  onUnionUpdate: ({ totalTokens }) => setPresetTokenCount(totalTokens)
+                  selectedMessageId,
+                  streamEvents
                 }
               )
             ] })
