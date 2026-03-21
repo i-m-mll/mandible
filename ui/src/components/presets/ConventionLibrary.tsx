@@ -122,6 +122,11 @@ export function ConventionLibrary({
                   }}
                 >
                   <div className="convention-library__card-info">
+                    {conv.breadcrumb && conv.breadcrumb.length > 0 && (
+                      <span className="convention-library__card-breadcrumb text-muted">
+                        {conv.breadcrumb.join(' \u203a ')}
+                      </span>
+                    )}
                     <span className="convention-library__card-title">{conv.title}</span>
                     {!isExpanded && (
                       <span className="convention-library__card-preview text-muted">
