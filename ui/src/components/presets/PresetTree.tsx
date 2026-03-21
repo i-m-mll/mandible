@@ -1,5 +1,6 @@
 // Bug: e20c88e — Preset tree editor container
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import type { Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/types';
 import type { PresetNode, UndoCommand } from '../../types/presets';
 import {
   addPresetNode,
@@ -626,6 +627,52 @@ export function PresetTree({
     }
   }, [presetId, nodes, onNodeAdded, onEditingNodeSet, onPushUndo]);
 
+  // Handle drag-and-drop reorder
+  const handleDrop = useCallback((sourceId: string, targetId: string, edge: Edge | null) => {
+    const sourceNode = nodes.find((n) => n.id === sourceId);
+    const targetNode = nodes.find((n) => n.id === targetId);
+    if (!sourceNode || !targetNode) return;
+
+    let newParentId: string | null;
+    let newPosition: number;
+
+    if (edge === 'top') {
+      // Insert before target, as a sibling of target
+      newParentId = targetNode.parent_id;
+      newPosition = targetNode.position;
+    } else if (edge === 'bottom') {
+      // Insert after target, as a sibling of target
+      newParentId = targetNode.parent_id;
+      newPosition = targetNode.position + 1;
+    } else {
+      // Center — nest as child
+      newParentId = targetNode.id;
+      const targetChildren = nodes.filter((n) => n.parent_id === targetNode.id);
+      newPosition = targetChildren.length;
+      setExpanded((prev) => new Set([...prev, targetNode.id]));
+    }
+
+    onPushUndo({
+      type: 'move',
+      nodeId: sourceId,
+      oldParentId: sourceNode.parent_id,
+      oldPosition: sourceNode.position,
+      newParentId,
+      newPosition,
+    });
+
+    onNodeReordered(presetId, sourceId, newParentId, newPosition);
+    reorderPresetNode(presetId, {
+      nodeId: sourceId,
+      newParentId,
+      newPosition,
+    }).catch(() => {
+      onNodeReordered(presetId, sourceId, sourceNode.parent_id, sourceNode.position);
+    });
+
+    announce(`Moved "${sourceNode.title}"`);
+  }, [nodes, presetId, onPushUndo, onNodeReordered, announce]);
+
   const renderNode = (treeNode: TreeNode, siblings: TreeNode[]): JSX.Element => {
     const isLeaf = treeNode.childNodes.length === 0;
     const childElements = isLeaf
@@ -650,6 +697,7 @@ export function PresetTree({
         onSplitIntoChildren={handleSplitIntoChildren}
         onCopy={handleCopy}
         onFocus={setFocusedNodeId}
+        onDrop={handleDrop}
         isLeaf={isLeaf}
         ariaSetSize={siblings.length}
         ariaPosInSet={siblings.indexOf(treeNode) + 1}

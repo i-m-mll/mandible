@@ -7774,6 +7774,22 @@ tr:hover .work-actions__trigger {
   border-left-color: var(--accent-blue);
 }
 
+.preset-node--dragging {
+  opacity: 0.4;
+}
+
+.preset-node--drop-target {
+  background: rgba(77, 163, 255, 0.06);
+}
+
+.preset-node--drop-top {
+  box-shadow: inset 0 2px 0 0 var(--accent-blue);
+}
+
+.preset-node--drop-bottom {
+  box-shadow: inset 0 -2px 0 0 var(--accent-blue);
+}
+
 .preset-node__header {
   display: flex;
   align-items: center;

@@ -1,6 +1,9 @@
 // Bug: e20c88e — Preset tree node component
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
+import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
+import { attachClosestEdge, extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
+import type { Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/types';
 import type { PresetNode as PresetNodeType } from '../../types/presets';
 
 export type PresetNodeProps = {
@@ -17,8 +20,7 @@ export type PresetNodeProps = {
   onSplitIntoChildren: (nodeId: string) => void;
   onCopy: (nodeId: string) => void;
   onFocus: (nodeId: string) => void;
-  onDragStart?: (nodeId: string, e: DragEvent) => void;
-  onDragEnd?: () => void;
+  onDrop: (sourceId: string, targetId: string, edge: Edge | null) => void;
   isLeaf: boolean;
   children?: JSX.Element | JSX.Element[] | null;
   ariaSetSize: number;
@@ -69,10 +71,66 @@ export function PresetNodeView({
   const [editBody, setEditBody] = useState(node.body);
   const [showMenu, setShowMenu] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [closestEdge, setClosestEdge] = useState<Edge | null>(null);
+  const [isDropTarget, setIsDropTarget] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const bodyTextareaRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
+  const dragHandleRef = useRef<HTMLSpanElement>(null);
+
+  // Wire up pragmatic-drag-and-drop
+  useEffect(() => {
+    const el = nodeRef.current;
+    const handle = dragHandleRef.current;
+    if (!el || !handle) return;
+
+    const cleanupDraggable = draggable({
+      element: el,
+      dragHandle: handle,
+      getInitialData: () => ({ nodeId: node.id, type: 'preset-node' }),
+      onDragStart: () => setIsDragging(true),
+      onDrop: () => setIsDragging(false),
+    });
+
+    const cleanupDropTarget = dropTargetForElements({
+      element: el,
+      getData: ({ input, element }) => {
+        return attachClosestEdge(
+          { nodeId: node.id },
+          { input, element, allowedEdges: ['top', 'bottom'] },
+        );
+      },
+      canDrop: ({ source }) => {
+        const data = source.data;
+        return data.type === 'preset-node' && data.nodeId !== node.id;
+      },
+      onDragEnter: ({ self }) => {
+        setIsDropTarget(true);
+        setClosestEdge(extractClosestEdge(self.data));
+      },
+      onDrag: ({ self }) => {
+        setClosestEdge(extractClosestEdge(self.data));
+      },
+      onDragLeave: () => {
+        setIsDropTarget(false);
+        setClosestEdge(null);
+      },
+      onDrop: ({ source, self }) => {
+        setIsDropTarget(false);
+        const edge = extractClosestEdge(self.data);
+        setClosestEdge(null);
+        const sourceId = source.data.nodeId as string;
+        onDrop(sourceId, node.id, edge);
+      },
+    });
+
+    return () => {
+      cleanupDraggable();
+      cleanupDropTarget();
+    };
+  }, [node.id, onDrop]);
 
   useEffect(() => {
     if (isEditing) {
@@ -145,7 +203,7 @@ export function PresetNodeView({
   return (
     <div
       ref={nodeRef}
-      className={`preset-node${isFocused ? ' preset-node--focused' : ''}${isEditing ? ' preset-node--editing' : ''}`}
+      className={`preset-node${isFocused ? ' preset-node--focused' : ''}${isEditing ? ' preset-node--editing' : ''}${isDragging ? ' preset-node--dragging' : ''}${isDropTarget ? ' preset-node--drop-target' : ''}${closestEdge === 'top' ? ' preset-node--drop-top' : ''}${closestEdge === 'bottom' ? ' preset-node--drop-bottom' : ''}`}
       style={{ paddingLeft: `${depth * 16}px` }}
       role="treeitem"
       aria-level={depth + 1}
@@ -158,7 +216,7 @@ export function PresetNodeView({
       data-node-id={node.id}
     >
       <div className="preset-node__header">
-        <span className="preset-node__drag-handle" aria-hidden="true" title="Drag to reorder">
+        <span ref={dragHandleRef} className="preset-node__drag-handle" aria-hidden="true" title="Drag to reorder">
           <svg width="8" height="14" viewBox="0 0 8 14" fill="currentColor">
             <circle cx="2" cy="2" r="1.2" />
             <circle cx="6" cy="2" r="1.2" />
