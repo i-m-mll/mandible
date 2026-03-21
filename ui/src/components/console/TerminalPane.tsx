@@ -83,23 +83,24 @@ function parseModelFromArgs(args: string[]): string | undefined {
 
 // Bug: 309dd56 — Derive streaming state from the last event in a list.
 // Extracted helper to avoid duplicating this pattern across hydration paths.
+// Bug: 52b75c0 — Removed streamStartAtRef side effect. This function is now pure:
+// it only returns whether streaming is active. Timer start time is derived
+// separately in the timer recovery useEffect to avoid resetting on tab navigation.
 function deriveStreamingState(
   events: StreamEvent[],
-  streamStartAtRef: { current: number | null },
+  _streamStartAtRef: { current: number | null },
 ): boolean {
   const last = events[events.length - 1];
-  const isStreaming = Boolean(last && last.type !== 'result');
-  if (isStreaming && streamStartAtRef.current === null) {
-    streamStartAtRef.current = Date.now();
-  }
-  return isStreaming;
+  return Boolean(last && last.type !== 'result');
 }
 
 // Bug: 309dd56 — Flush pending SSE events after hydration, deduplicating against current state.
+// Bug: 52b75c0 — Derive streaming state from the FULL merged event list, not just last pending.
 function flushPendingSSE(
   pendingSSERef: { current: StreamEvent[] },
   setStreamEvents: (fn: (prev: StreamEvent[]) => StreamEvent[]) => void,
   setStreaming: (v: boolean) => void,
+  streamStartAtRef: { current: number | null },
 ): void {
   const pending = pendingSSERef.current;
   pendingSSERef.current = [];
@@ -110,12 +111,12 @@ function flushPendingSSE(
       const peJson = JSON.stringify(pe);
       return !prev.some(existing => JSON.stringify(existing) === peJson);
     });
-    return newEvents.length > 0 ? [...prev, ...newEvents] : prev;
+    const merged = newEvents.length > 0 ? [...prev, ...newEvents] : prev;
+    // Derive streaming state from the full merged result
+    const isStreaming = deriveStreamingState(merged, streamStartAtRef);
+    setStreaming(isStreaming);
+    return merged;
   });
-  const lastPending = pending[pending.length - 1];
-  if (lastPending?.type === 'result') {
-    setStreaming(false);
-  }
 }
 
 // Bug: 309dd56 — Compute the "live tail": in-memory stream events not yet persisted to
@@ -625,7 +626,7 @@ export function TerminalPane({
         .finally(() => {
           if (!cancelled) {
             hydratingRef.current = false;
-            flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming);
+            flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming, streamStartAtRef);
           }
         });
       return () => { cancelled = true; };
@@ -677,7 +678,7 @@ export function TerminalPane({
         if (!cancelled) {
           setHydratingHistory(false);
           hydratingRef.current = false;
-          flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming);
+          flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming, streamStartAtRef);
         }
       });
 
@@ -759,15 +760,12 @@ export function TerminalPane({
       const streamEvent = detail.event;
       if (!streamEvent) return;
 
-      // Bug: 309dd56 — Buffer SSE events during hydration to prevent clobbering
+      // Bug: 309dd56 — Buffer SSE events during hydration to prevent clobbering.
+      // Bug: 52b75c0 — Do NOT update streaming state during hydration; it causes
+      // a race where streaming=true is set before history is loaded, showing the
+      // blinker on idle sessions. Streaming state is derived after flush instead.
       if (hydratingRef.current) {
         pendingSSERef.current.push(streamEvent);
-        // Still update streaming state for UI feedback
-        if (streamEvent.type === 'result') {
-          setStreaming(false);
-        } else {
-          setStreaming(true);
-        }
         return;
       }
 
@@ -781,6 +779,9 @@ export function TerminalPane({
       // Mark streaming active when first event arrives; clear on result/stop
       if (streamEvent.type === 'result') {
         setStreaming(false);
+        // Bug: 52b75c0 — Reset timer start only on result, not on every streaming=false toggle.
+        // This prevents timer reset when switching tabs (which temporarily sets streaming=false).
+        streamStartAtRef.current = null;
       } else {
         setStreaming(true);
       }
@@ -798,9 +799,11 @@ export function TerminalPane({
   // survives component re-mounts (tab switches). The synthetic_prompt localId
   // encodes Date.now() as "sp-<timestamp>-<rand>". Falling back to Date.now()
   // only if no synthetic prompt is found.
+  // Bug: 52b75c0 — Do NOT reset streamStartAtRef when streaming goes false here;
+  // that causes timer reset on tab navigation. Reset only on result event (below).
   useEffect(() => {
     if (!streaming) {
-      streamStartAtRef.current = null;
+      setElapsedSeconds(undefined);
       return;
     }
     if (streamStartAtRef.current === null) {
@@ -1032,6 +1035,15 @@ export function TerminalPane({
               View history
             </button>
           )}
+          {/* Bug: 52b75c0 — Sidebar toggle moved from floating gear icon to header actions */}
+          <button
+            type="button"
+            className="terminal-pane__link-btn"
+            onClick={() => setSidebarOpen((prev) => !prev)}
+            title="Session settings"
+          >
+            ⋮
+          </button>
         </div>
       </div>
 
@@ -1199,19 +1211,8 @@ export function TerminalPane({
               </form>
             </div>
 
-            {/* Bug: 6634023 — Collapsible right sidebar for session controls */}
-            {!sidebarOpen && (
-              <button
-                type="button"
-                className="terminal-pane__sidebar-toggle"
-                onClick={() => setSidebarOpen(true)}
-                title="Session settings"
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M6.5 1.75a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 .75.75v.3a5.45 5.45 0 0 1 1.28.53l.21-.21a.75.75 0 0 1 1.06 0l1.06 1.06a.75.75 0 0 1 0 1.06l-.21.21c.22.4.4.83.53 1.28h.3a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-.75.75h-.3a5.45 5.45 0 0 1-.53 1.28l.21.21a.75.75 0 0 1 0 1.06l-1.06 1.06a.75.75 0 0 1-1.06 0l-.21-.21c-.4.22-.83.4-1.28.53v.3a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1-.75-.75v-.3a5.45 5.45 0 0 1-1.28-.53l-.21.21a.75.75 0 0 1-1.06 0L2.89 11.9a.75.75 0 0 1 0-1.06l.21-.21A5.45 5.45 0 0 1 2.57 9.4h-.3a.75.75 0 0 1-.75-.75v-1.5a.75.75 0 0 1 .75-.75h.3c.13-.45.31-.88.53-1.28l-.21-.21a.75.75 0 0 1 0-1.06L3.95 2.8a.75.75 0 0 1 1.06 0l.21.21c.4-.22.83-.4 1.28-.53v-.3zM8 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z" fill="currentColor"/>
-                </svg>
-              </button>
-            )}
+            {/* Bug: 6634023 — Collapsible right sidebar for session controls
+                Bug: 52b75c0 — Toggle moved to header; no more floating gear icon */}
             {sidebarOpen && (
               <div className="terminal-pane__sidebar">
                 <div className="terminal-pane__sidebar-header">

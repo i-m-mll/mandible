@@ -353,15 +353,6 @@ export function StreamRenderer({
         onScroll={handleScroll}
       >
         {nodes}
-        {streaming && (
-          <div className="stream-live-indicator" aria-live="polite">
-            <span className="stream-live-indicator__dot" aria-hidden="true" />
-            <span className="stream-live-indicator__label">
-              {liveLabel ?? 'Working'}
-              {elapsedSeconds !== undefined ? ` ${elapsedSeconds}s` : ''}
-            </span>
-          </div>
-        )}
       </div>
       {userScrolled && streaming && (
         <button
