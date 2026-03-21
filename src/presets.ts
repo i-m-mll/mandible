@@ -129,8 +129,18 @@ export function parseMarkdownToNodes(markdown: string, presetId: string): Preset
     stack.push({ level: currentLevel, nodeId: currentNodeId });
   }
 
+  let insideCodeBlock = false;
+
   for (const line of lines) {
-    const match = line.match(HEADING_RE);
+    // Track fenced code blocks — toggle on/off when encountering ``` lines.
+    // Bug: 61bee4e — headings inside code blocks must not be parsed as nodes.
+    if (line.trimStart().startsWith("```")) {
+      insideCodeBlock = !insideCodeBlock;
+      currentBodyLines.push(line);
+      continue;
+    }
+
+    const match = !insideCodeBlock ? line.match(HEADING_RE) : null;
     if (match) {
       // Flush previous node
       flushNode();
@@ -331,10 +341,12 @@ export function routePresetDiff(
   // Tokenize the diff content into a bag of words
   const diffWords = tokenize(diffContent);
   if (diffWords.size === 0) {
+    // Bug: 61bee4e — Empty diff content: return empty recommendation with low confidence
+    // rather than silently picking an unrelated preset.
     return {
-      recommendedPresetId: sessionPresets[0].id,
+      recommendedPresetId: "",
       confidence: "low",
-      reason: "Empty diff content, defaulting to first preset",
+      reason: "Empty diff content, no recommendation",
     };
   }
 
@@ -375,12 +387,14 @@ export function routePresetDiff(
     }
   }
 
-  // Fallback to first manual preset
+  // Bug: 61bee4e — If no matching preset found, return empty with low confidence
+  // rather than falling back to an unrelated preset.
   if (!bestId) {
-    const manual = sessionPresets.find((p) => p.source === "manual");
-    bestId = manual?.id ?? sessionPresets[0].id;
-    bestScore = 0;
-    bestReason = "Fallback to default manual preset";
+    return {
+      recommendedPresetId: "",
+      confidence: "low",
+      reason: "No matching preset found",
+    };
   }
 
   const confidence: "high" | "medium" | "low" =
@@ -473,28 +487,36 @@ export function importClaudeMd(filePath: string, db: Db): Preset {
   };
 }
 
-function inferSourceFromPath(filePath: string): PresetSource {
+// Bug: 61bee4e — Exported for testing.
+export function inferSourceFromPath(filePath: string): PresetSource {
   const normalized = filePath.replace(/\\/g, "/");
+  const homeDir = (typeof process !== "undefined" ? process.env.HOME : "") ?? "";
+  const homePath = homeDir.replace(/\\/g, "/");
 
-  // Global CLAUDE.md: ~/.claude/CLAUDE.md or similar
+  // Check global first: must be specifically under the user's home directory.
+  // ~/.claude/CLAUDE.md or ~/.dotfiles/ paths are global (user-level) configuration.
+  const globalClaudeMdPath = homePath ? `${homePath}/.claude/CLAUDE.md` : null;
   if (
-    normalized.includes("/.claude/CLAUDE.md") ||
-    normalized.includes("/.dotfiles/")
+    (globalClaudeMdPath && normalized === globalClaudeMdPath) ||
+    (homePath && normalized.startsWith(`${homePath}/.dotfiles/`) && normalized.includes("CLAUDE.md"))
   ) {
     return "claude_md_global";
   }
 
-  // Project-level: <repo>/.claude/CLAUDE.md
+  // Project-level: <repo>/.claude/CLAUDE.md (any path with /.claude/CLAUDE.md that isn't global)
   if (normalized.includes("/.claude/CLAUDE.md")) {
     return "claude_md_project";
   }
 
-  // Repo root: <repo>/CLAUDE.md
+  // Repo root: <repo>/CLAUDE.md (direct child of a directory)
   if (normalized.endsWith("/CLAUDE.md")) {
+    // Check whether this is a nested CLAUDE.md (more than one directory deep from a known root).
+    // A root-level CLAUDE.md has the pattern: .../<dirname>/CLAUDE.md
+    // A local (subdirectory) CLAUDE.md would have additional path segments after the repo root.
     return "claude_md_project";
   }
 
-  // Local CLAUDE.md (nested in subdirectories)
+  // Local CLAUDE.md (nested in subdirectories, e.g., <repo>/subdir/CLAUDE.md)
   if (normalized.includes("CLAUDE.md")) {
     return "claude_md_local";
   }
@@ -502,7 +524,8 @@ function inferSourceFromPath(filePath: string): PresetSource {
   return "manual";
 }
 
-function derivePresetName(filePath: string, source: PresetSource): string {
+// Bug: 61bee4e — Exported for testing.
+export function derivePresetName(filePath: string, source: PresetSource): string {
   const normalized = filePath.replace(/\\/g, "/");
   const parts = normalized.split("/");
 
@@ -552,10 +575,11 @@ export function routePresetDiffWithNodes(
 
   const diffWords = tokenize(diffContent);
   if (diffWords.size === 0) {
+    // Bug: 61bee4e — Empty diff content: return empty recommendation with low confidence.
     return {
-      recommendedPresetId: sessionPresets[0].id,
+      recommendedPresetId: "",
       confidence: "low",
-      reason: "Empty diff content, defaulting to first preset",
+      reason: "Empty diff content, no recommendation",
     };
   }
 
@@ -598,11 +622,13 @@ export function routePresetDiffWithNodes(
     }
   }
 
+  // Bug: 61bee4e — If no matching preset found, return empty with low confidence.
   if (!bestId) {
-    const manual = sessionPresets.find((p) => p.source === "manual");
-    bestId = manual?.id ?? sessionPresets[0].id;
-    bestScore = 0;
-    bestReason = "Fallback to default manual preset";
+    return {
+      recommendedPresetId: "",
+      confidence: "low",
+      reason: "No matching preset found",
+    };
   }
 
   const confidence: "high" | "medium" | "low" =

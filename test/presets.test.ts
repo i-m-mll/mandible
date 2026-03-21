@@ -17,6 +17,8 @@ import {
   estimateTokens,
   computePresetUnion,
   routePresetDiff,
+  inferSourceFromPath,
+  derivePresetName,
   MODEL_CONTEXT_WINDOWS,
   type Preset,
   type PresetNode,
@@ -418,5 +420,216 @@ describe("Routing Algorithm", () => {
       repo: "project-a",
     });
     expect(result.recommendedPresetId).toBe("project-a");
+  });
+
+  // Bug: 61bee4e — Routing fallback behavior fixes
+  it("returns empty recommendedPresetId for empty diff content", () => {
+    const presets: Preset[] = [
+      {
+        id: "p1", name: "My Preset", description: "", source: "manual",
+        source_path: null, content_hash: "", version: 1, created_at: Date.now(), updated_at: Date.now(),
+      },
+    ];
+    const result = routePresetDiff("", presets, {});
+    expect(result.recommendedPresetId).toBe("");
+    expect(result.confidence).toBe("low");
+  });
+
+  it("returns empty when only global presets exist (global is skipped)", () => {
+    const presets: Preset[] = [
+      {
+        id: "g1", name: "Global CLAUDE.md", description: "global", source: "claude_md_global",
+        source_path: null, content_hash: "", version: 1, created_at: Date.now(), updated_at: Date.now(),
+      },
+    ];
+    const result = routePresetDiff("some convention about commits", presets, {});
+    expect(result.recommendedPresetId).toBe("");
+    expect(result.confidence).toBe("low");
+    expect(result.reason).toBe("No matching preset found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Code-block-aware parsing (Bug: 61bee4e)
+// ---------------------------------------------------------------------------
+
+describe("Markdown Parser — code-block awareness", () => {
+  it("does NOT parse headings inside fenced code blocks", () => {
+    const md = [
+      "# Real Heading",
+      "",
+      "Some text.",
+      "",
+      "```bash",
+      "# This is a comment, not a heading",
+      "echo hello",
+      "## Also not a heading",
+      "```",
+      "",
+      "## Another Real Heading",
+      "",
+      "Final text.",
+    ].join("\n");
+
+    const nodes = parseMarkdownToNodes(md, "preset-1");
+    const titles = nodes.map((n) => n.title);
+
+    expect(titles).toContain("Real Heading");
+    expect(titles).toContain("Another Real Heading");
+    expect(titles).not.toContain("This is a comment, not a heading");
+    expect(titles).not.toContain("Also not a heading");
+    // The code block content should be part of the "Real Heading" node body
+    const realHeading = nodes.find((n) => n.title === "Real Heading")!;
+    expect(realHeading.body).toContain("# This is a comment, not a heading");
+    expect(realHeading.body).toContain("## Also not a heading");
+  });
+
+  it("handles multiple code blocks correctly", () => {
+    const md = [
+      "# Heading 1",
+      "",
+      "```",
+      "# not a heading",
+      "```",
+      "",
+      "# Heading 2",
+      "",
+      "```python",
+      "# also not a heading",
+      "```",
+      "",
+      "# Heading 3",
+    ].join("\n");
+
+    const nodes = parseMarkdownToNodes(md, "preset-1");
+    const titles = nodes.map((n) => n.title);
+
+    expect(titles).toEqual(["Heading 1", "Heading 2", "Heading 3"]);
+  });
+
+  it("handles indented code fences", () => {
+    const md = [
+      "# Heading",
+      "",
+      "  ```",
+      "  # comment inside indented fence",
+      "  ```",
+      "",
+      "# Next Heading",
+    ].join("\n");
+
+    const nodes = parseMarkdownToNodes(md, "preset-1");
+    const titles = nodes.map((n) => n.title);
+
+    expect(titles).toEqual(["Heading", "Next Heading"]);
+  });
+
+  it("handles unclosed code fence (everything after is body)", () => {
+    const md = [
+      "# Heading",
+      "",
+      "```",
+      "# not a heading",
+      "# still not a heading",
+    ].join("\n");
+
+    const nodes = parseMarkdownToNodes(md, "preset-1");
+    expect(nodes.length).toBe(1);
+    expect(nodes[0].title).toBe("Heading");
+    expect(nodes[0].body).toContain("# not a heading");
+    expect(nodes[0].body).toContain("# still not a heading");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-trip with code blocks (Bug: 61bee4e)
+// ---------------------------------------------------------------------------
+
+describe("Round-trip with code blocks", () => {
+  it("preserves code blocks through parse-serialize round-trip", () => {
+    const md = [
+      "# Config",
+      "",
+      "Instructions.",
+      "",
+      "```bash",
+      "# shell comment",
+      "npm run build",
+      "```",
+      "",
+      "## Details",
+      "",
+      "More details.",
+    ].join("\n");
+
+    const nodes = parseMarkdownToNodes(md, "preset-1");
+    const output = serializeNodesToMarkdown(nodes);
+
+    expect(output).toContain("```bash");
+    expect(output).toContain("# shell comment");
+    expect(output).toContain("npm run build");
+    expect(output).toContain("```");
+    expect(output).toContain("# Config");
+    expect(output).toContain("## Details");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// inferSourceFromPath (Bug: 61bee4e)
+// ---------------------------------------------------------------------------
+
+describe("inferSourceFromPath", () => {
+  const origHome = process.env.HOME;
+  afterEach(() => { process.env.HOME = origHome; });
+
+  it("classifies ~/.claude/CLAUDE.md as global", () => {
+    process.env.HOME = "/Users/testuser";
+    expect(inferSourceFromPath("/Users/testuser/.claude/CLAUDE.md")).toBe("claude_md_global");
+  });
+
+  it("classifies ~/.dotfiles/.../CLAUDE.md as global", () => {
+    process.env.HOME = "/Users/testuser";
+    expect(inferSourceFromPath("/Users/testuser/.dotfiles/.config/claude/CLAUDE.md")).toBe("claude_md_global");
+  });
+
+  it("classifies project .claude/CLAUDE.md as project, NOT global", () => {
+    process.env.HOME = "/Users/testuser";
+    expect(inferSourceFromPath("/Users/testuser/projects/myrepo/.claude/CLAUDE.md")).toBe("claude_md_project");
+  });
+
+  it("classifies repo root CLAUDE.md as project", () => {
+    process.env.HOME = "/Users/testuser";
+    expect(inferSourceFromPath("/Users/testuser/projects/myrepo/CLAUDE.md")).toBe("claude_md_project");
+  });
+
+  it("classifies non-CLAUDE.md files as manual", () => {
+    process.env.HOME = "/Users/testuser";
+    expect(inferSourceFromPath("/Users/testuser/my-preset.md")).toBe("manual");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// derivePresetName (Bug: 61bee4e)
+// ---------------------------------------------------------------------------
+
+describe("derivePresetName", () => {
+  it("returns 'Global CLAUDE.md' for global source", () => {
+    expect(derivePresetName("/Users/me/.claude/CLAUDE.md", "claude_md_global")).toBe("Global CLAUDE.md");
+  });
+
+  it("derives repo name from .claude path for project source", () => {
+    expect(derivePresetName("/Users/me/projects/mandible/.claude/CLAUDE.md", "claude_md_project")).toBe("mandible CLAUDE.md");
+  });
+
+  it("derives repo name from root CLAUDE.md for project source", () => {
+    expect(derivePresetName("/Users/me/projects/mandible/CLAUDE.md", "claude_md_project")).toBe("mandible CLAUDE.md");
+  });
+
+  it("returns 'Local CLAUDE.md' for local source", () => {
+    expect(derivePresetName("/some/path/nested/CLAUDE.md", "claude_md_local")).toBe("Local CLAUDE.md");
+  });
+
+  it("returns filename for manual source", () => {
+    expect(derivePresetName("/some/path/my-preset.md", "manual")).toBe("my-preset.md");
   });
 });

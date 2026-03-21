@@ -503,32 +503,16 @@ implements
       }
     }
 
-    // Bug: 61bee4e — Determine settingSources based on active preset sources
+    // Bug: 61bee4e — settingSources controls more than just CLAUDE.md loading in the SDK.
+    // Removing a source (e.g., "user") would prevent ALL user-level settings from loading,
+    // not just CLAUDE.md. Instead, we let the SDK load settings normally from all sources
+    // and rely on the preset systemPrompt being additive — the union text is prepended to
+    // whatever CLAUDE.md content the SDK loads on its own. If duplication becomes a problem,
+    // content-hash dedup in the union engine can handle it later.
+    // If settingSourcesOverride is explicitly provided, honour it (the caller knows what
+    // they're doing). Otherwise, always use the full set.
     type SettingSource = "user" | "project" | "local";
-    let settingSources: SettingSource[] = (this.options.settingSourcesOverride ?? ["user", "project", "local"]) as SettingSource[];
-    if (this.options.presetIds && this.options.presetIds.length > 0 && !this.options.settingSourcesOverride) {
-      try {
-        const db = getDb();
-        const presetSources = this.options.presetIds.map((id) => {
-          const row = db.prepare("SELECT source FROM presets WHERE id = ?").get(id) as { source: string } | undefined;
-          return row?.source;
-        }).filter(Boolean) as string[];
-
-        // If a preset is sourced from claude_md_global, exclude "user" from settingSources
-        // (the preset replaces the user-level CLAUDE.md)
-        if (presetSources.includes("claude_md_global")) {
-          settingSources = settingSources.filter((s): s is SettingSource => s !== "user");
-        }
-        if (presetSources.includes("claude_md_project")) {
-          settingSources = settingSources.filter((s): s is SettingSource => s !== "project");
-        }
-        if (presetSources.includes("claude_md_local")) {
-          settingSources = settingSources.filter((s): s is SettingSource => s !== "local");
-        }
-      } catch {
-        // Fall through to defaults
-      }
-    }
+    const settingSources: SettingSource[] = (this.options.settingSourcesOverride ?? ["user", "project", "local"]) as SettingSource[];
 
     return {
       abortController,

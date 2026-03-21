@@ -4,6 +4,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
 import type { RouteRegistrar } from "../server.js";
@@ -236,25 +239,14 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
   // Export/Import (must be before :id routes for POST /api/presets/import)
   // ================================================================
 
-  // POST /api/presets/import — accept Markdown with front-matter
+  // POST /api/presets/import — accept Markdown content with optional front-matter.
+  // Bug: 61bee4e — This endpoint accepts only inline markdown content, not file paths.
+  // File-based imports use POST /api/presets/import-claudemd (controlled safe-path endpoint).
   server.post("/api/presets/import", (req, res) => {
-    const body = (req.body ?? {}) as { markdown?: string; filePath?: string };
-
-    if (typeof body.filePath === "string" && body.filePath) {
-      // Import from file (CLAUDE.md import)
-      try {
-        const db = getDb();
-        const preset = importClaudeMd(body.filePath, db);
-        broadcast("preset:created", preset);
-        res.status(201).json({ preset });
-      } catch (error) {
-        sendJson(res, 400, { error: `Failed to import: ${String(error)}` });
-      }
-      return;
-    }
+    const body = (req.body ?? {}) as { markdown?: string };
 
     if (typeof body.markdown !== "string" || !body.markdown.trim()) {
-      sendJson(res, 400, { error: "markdown or filePath required" });
+      sendJson(res, 400, { error: "markdown content required" });
       return;
     }
 
@@ -321,6 +313,63 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:created", preset);
     res.status(201).json({ preset });
+  });
+
+  // POST /api/presets/import-claudemd — import CLAUDE.md from known safe paths only.
+  // Bug: 61bee4e — Controlled file-based import that only reads from known safe locations,
+  // preventing path traversal. Accepts { source: "global" | "project", cwd?: string }.
+  server.post("/api/presets/import-claudemd", (req, res) => {
+    const body = (req.body ?? {}) as { source?: string; cwd?: string };
+    const source = body.source;
+
+    if (source !== "global" && source !== "project") {
+      sendJson(res, 400, { error: 'source must be "global" or "project"' });
+      return;
+    }
+
+    let filePath: string;
+    if (source === "global") {
+      filePath = path.join(os.homedir(), ".claude", "CLAUDE.md");
+    } else {
+      // Project-level: require cwd and look for <cwd>/CLAUDE.md or <cwd>/.claude/CLAUDE.md
+      const cwd = typeof body.cwd === "string" ? body.cwd : null;
+      if (!cwd) {
+        sendJson(res, 400, { error: "cwd is required for project source" });
+        return;
+      }
+      // Resolve and verify the cwd is a directory to prevent shenanigans
+      const resolvedCwd = path.resolve(cwd);
+      try {
+        const stat = fs.statSync(resolvedCwd);
+        if (!stat.isDirectory()) {
+          sendJson(res, 400, { error: "cwd must be a directory" });
+          return;
+        }
+      } catch {
+        sendJson(res, 400, { error: "cwd directory not found" });
+        return;
+      }
+      // Try .claude/CLAUDE.md first, then root CLAUDE.md
+      const dotClaudePath = path.join(resolvedCwd, ".claude", "CLAUDE.md");
+      const rootPath = path.join(resolvedCwd, "CLAUDE.md");
+      if (fs.existsSync(dotClaudePath)) {
+        filePath = dotClaudePath;
+      } else if (fs.existsSync(rootPath)) {
+        filePath = rootPath;
+      } else {
+        sendJson(res, 404, { error: "No CLAUDE.md found in project" });
+        return;
+      }
+    }
+
+    try {
+      const db = getDb();
+      const preset = importClaudeMd(filePath, db);
+      broadcast("preset:created", preset);
+      res.status(201).json({ preset });
+    } catch (error) {
+      sendJson(res, 400, { error: `Failed to import: ${String(error)}` });
+    }
   });
 
   // ================================================================
@@ -419,28 +468,28 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
   // ================================================================
 
   // GET /api/presets — list all presets
+  // Bug: 61bee4e — Uses aggregate query instead of N+1 per-preset queries.
   server.get("/api/presets", (_req, res) => {
     const db = getDb();
-    const presets = db
-      .prepare("SELECT * FROM presets ORDER BY created_at DESC")
-      .all() as Preset[];
 
-    // Enrich with node count and token estimate
-    const countStmt = db.prepare(
-      "SELECT COUNT(*) as count FROM preset_nodes WHERE preset_id = ?",
-    );
-    const enriched = presets.map((preset) => {
-      const row = countStmt.get(preset.id) as { count: number };
-      const nodes = db
-        .prepare("SELECT * FROM preset_nodes WHERE preset_id = ? ORDER BY position ASC")
-        .all(preset.id) as PresetNode[];
-      const markdown = serializeNodesToMarkdown(nodes);
-      return {
-        ...preset,
-        node_count: row.count,
-        token_estimate: estimateTokens(markdown),
-      };
-    });
+    // Single query: get presets with node count and approximate token estimate.
+    // Token estimate: SUM of body + title character lengths / 3.5 (rough tokenizer heuristic).
+    const enriched = db
+      .prepare(
+        `SELECT p.*,
+                COALESCE(agg.node_count, 0) AS node_count,
+                CAST(CEIL(COALESCE(agg.total_chars, 0) / 3.5) AS INTEGER) AS token_estimate
+         FROM presets p
+         LEFT JOIN (
+           SELECT preset_id,
+                  COUNT(*) AS node_count,
+                  SUM(LENGTH(title) + LENGTH(body)) AS total_chars
+           FROM preset_nodes
+           GROUP BY preset_id
+         ) agg ON agg.preset_id = p.id
+         ORDER BY p.created_at DESC`,
+      )
+      .all() as Array<Preset & { node_count: number; token_estimate: number }>;
 
     res.status(200).json({ presets: enriched });
   });
