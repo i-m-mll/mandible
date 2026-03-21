@@ -60,6 +60,21 @@ import type { GraphNodeType } from './views/graph';
 import { PresetsView } from './views/presets';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
+import {
+  ChatIcon,
+  HistoryIcon,
+  MonitorIcon,
+  IssuesIcon,
+  InboxIcon,
+  AuthIcon,
+  SettingsIcon,
+  PresetsIcon,
+  GraphIcon,
+  SwitchboardIcon,
+  LogsIcon,
+  ProjectsIcon,
+  DiffIcon,
+} from './components/icons/TabIcons';
 
 import './style.css';
 
@@ -517,6 +532,7 @@ function App(): JSX.Element {
   ]);
 
   const badges = useMemo(() => selectBadgeCounts(state), [state]);
+  const headerDisplayMode = (state.settings.header_display_mode ?? 'text') as 'text' | 'icons' | 'both';
 
   // Bug: 72384c5 — flatten work branches into name lists for stale-entry detection in auth view
   const authBranchesByRepo = useMemo(() => {
@@ -936,13 +952,15 @@ function App(): JSX.Element {
       )}
       <header className="app-header" data-tauri-drag-region>
         <div className="brand">Mandible</div>
-        <nav className="tabs">
+        <nav className={`tabs${headerDisplayMode === 'icons' ? ' tabs--icons' : headerDisplayMode === 'both' ? ' tabs--both' : ''}`}>
           <div className="tab-twin">
             <a
               href="#/console"
               className={`tab-twin__btn${route.tab === 'console' ? ' tab-twin__btn--active' : ''}`}
+              title="Chat"
             >
-              Chat
+              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <ChatIcon size={16} />}
+              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Chat</span>}
               {badges.console > 0 && (
                 <span className="tab-badge">{badges.console}</span>
               )}
@@ -950,14 +968,18 @@ function App(): JSX.Element {
             <a
               href="#/chat-history"
               className={`tab-twin__btn${route.tab === 'chat-history' ? ' tab-twin__btn--active' : ''}`}
+              title="History"
             >
-              History
+              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <HistoryIcon size={16} />}
+              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>History</span>}
             </a>
             <a
               href="#/sessions"
               className={`tab-twin__btn${route.tab === 'sessions' ? ' tab-twin__btn--active' : ''}`}
+              title="Monitor"
             >
-              Monitor
+              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <MonitorIcon size={16} />}
+              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Monitor</span>}
               {badges.sessions > 0 && (
                 <span className="tab-badge">{badges.sessions}</span>
               )}
@@ -967,14 +989,18 @@ function App(): JSX.Element {
             <a
               href="#/issues"
               className={`tab-twin__btn${route.tab === 'issues' ? ' tab-twin__btn--active' : ''}`}
+              title="Issues"
             >
-              Issues
+              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <IssuesIcon size={16} />}
+              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Issues</span>}
             </a>
             <a
               href="#/inbox"
               className={`tab-twin__btn${route.tab === 'inbox' ? ' tab-twin__btn--active' : ''}`}
+              title="Inbox"
             >
-              Inbox
+              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <InboxIcon size={16} />}
+              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Inbox</span>}
               {badges.inbox > 0 && (
                 <span className="tab-badge">{badges.inbox}</span>
               )}
@@ -982,18 +1008,18 @@ function App(): JSX.Element {
             <a
               href="#/auth"
               className={`tab-twin__btn${route.tab === 'auth' ? ' tab-twin__btn--active' : ''}`}
+              title="Auth"
             >
-              Auth
+              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <AuthIcon size={16} />}
+              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Auth</span>}
               {badges.auth > 0 && (
                 <span className="tab-badge tab-badge--auth">{badges.auth}</span>
               )}
             </a>
           </div>
           <a href="#/settings" className={route.tab === 'settings' ? 'active' : ''} aria-label="Settings" title="Settings">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={{verticalAlign: 'middle', display: 'inline-block'}}>
-              <path d="M6.5 1.5l-.5 1.5A4.5 4.5 0 0 0 4.5 4l-1.5-.5L1.5 6l1.2.9A4.5 4.5 0 0 0 2.5 8a4.5 4.5 0 0 0 .2 1.1L1.5 10l1.5 2.5 1.5-.5a4.5 4.5 0 0 0 1.5 1l.5 1.5h3l.5-1.5a4.5 4.5 0 0 0 1.5-1l1.5.5 1.5-2.5-1.2-.9A4.5 4.5 0 0 0 13.5 8a4.5 4.5 0 0 0-.2-1.1L14.5 6 13 3.5l-1.5.5A4.5 4.5 0 0 0 10 3L9.5 1.5h-3Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
-              <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.3"/>
-            </svg>
+            {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <SettingsIcon size={16} />}
+            {headerDisplayMode === 'text' && <span>Settings</span>}
           </a>
           <div className="tab-overflow" ref={overflowRef}>
             <button
@@ -1011,14 +1037,16 @@ function App(): JSX.Element {
                   className={route.tab === 'graph' ? 'active' : ''}
                   onClick={() => setShowOverflow(false)}
                 >
-                  Graph
+                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <GraphIcon size={14} />}
+                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Graph</span>}
                 </a>
                 <a
                   href="#/work"
                   className={route.tab === 'work' ? 'active' : ''}
                   onClick={() => setShowOverflow(false)}
                 >
-                  Projects
+                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <ProjectsIcon size={14} />}
+                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Projects</span>}
                   {badges.work > 0 && (
                     <span className="tab-badge">{badges.work}</span>
                   )}
@@ -1028,28 +1056,32 @@ function App(): JSX.Element {
                   className={route.tab === 'review' ? 'active' : ''}
                   onClick={() => setShowOverflow(false)}
                 >
-                  Diff
+                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <DiffIcon size={14} />}
+                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Diff</span>}
                 </a>
                 <a
                   href="#/logs"
                   className={route.tab === 'logs' ? 'active' : ''}
                   onClick={() => setShowOverflow(false)}
                 >
-                  Logs
+                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <LogsIcon size={14} />}
+                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Logs</span>}
                 </a>
                 <a
                   href="#/presets"
                   className={route.tab === 'presets' ? 'active' : ''}
                   onClick={() => setShowOverflow(false)}
                 >
-                  Presets
+                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <PresetsIcon size={14} />}
+                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Presets</span>}
                 </a>
                 <a
                   href="#/switchboard"
                   className={route.tab === 'switchboard' ? 'active' : ''}
                   onClick={() => setShowOverflow(false)}
                 >
-                  Switchboard
+                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <SwitchboardIcon size={14} />}
+                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Switchboard</span>}
                 </a>
               </div>
             )}

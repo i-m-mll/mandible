@@ -5485,6 +5485,26 @@ tr:hover .work-actions__trigger {
 .tab-overflow__menu a:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
 .tab-overflow__menu a.active { color: var(--accent-blue); background: rgba(59,130,246,0.1); }
 
+/* ── Header tab display modes — Bug: 914e9d7 ── */
+
+/* Icons-only mode: tighter padding, icon-sized tabs */
+.tabs--icons .tab-twin__btn { padding: 8px 10px; }
+.tabs--icons .tabs > a { padding: 8px 10px; }
+.tabs--icons .tab-overflow__menu a { display: flex; align-items: center; gap: 6px; }
+
+/* Both mode: icon + text with a small gap */
+.tabs--both .tab-twin__btn { gap: 5px; }
+.tabs--both .tabs > a { gap: 5px; }
+.tabs--both .tab-overflow__menu a { display: flex; align-items: center; gap: 6px; }
+
+/* SVG icons inside tabs: ensure vertical centering */
+.tabs svg,
+.tab-twin__btn svg,
+.tab-overflow__menu svg {
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
 /* ── New session dialog ── */
 
 .new-session-dialog-overlay {
