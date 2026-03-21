@@ -71,6 +71,74 @@ export interface RouteResult {
 }
 
 // ---------------------------------------------------------------------------
+// Convention-Setting Link Types
+// ---------------------------------------------------------------------------
+
+export interface ConventionSettingLink {
+  id: string;
+  node_id: string;
+  setting_key: string;
+  link_type: "references" | "requires" | "configures";
+  created_at: number;
+}
+
+// Bug: 8baedeb — setting patterns for auto-detection of convention-setting links
+const SETTING_PATTERNS: Array<{ pattern: RegExp; settingKey: string; linkType: string }> = [
+  { pattern: /protected.branch/i, settingKey: "protected_branches", linkType: "references" },
+  { pattern: /reaper|idle.threshold|idle.timeout/i, settingKey: "reaper_enabled", linkType: "references" },
+  { pattern: /signing|gpg.sign|yubikey/i, settingKey: "commit_signing", linkType: "references" },
+  { pattern: /notification|notify/i, settingKey: "claude_notifications_enabled", linkType: "references" },
+  { pattern: /quiet.hours/i, settingKey: "quiet_hours", linkType: "references" },
+  { pattern: /pretool|pre.tool|hook/i, settingKey: "pretool_hooks_enabled", linkType: "references" },
+  { pattern: /log.retention/i, settingKey: "log_retention_days", linkType: "references" },
+  { pattern: /theme|catppuccin/i, settingKey: "theme", linkType: "references" },
+  { pattern: /push.*upstream|upstream.*push/i, settingKey: "push_same_name_upstream", linkType: "references" },
+  { pattern: /auto.close.*issue|issue.*auto.close/i, settingKey: "auto_close_issues_on_merge", linkType: "references" },
+];
+
+/**
+ * Scan a node's title + body text for known setting patterns and upsert
+ * convention_setting_links rows accordingly.
+ * Bug: 8baedeb — auto-detection of convention-setting links
+ */
+export function scanForSettingLinks(nodeId: string, text: string, db: Db): ConventionSettingLink[] {
+  const now = Date.now();
+  const links: ConventionSettingLink[] = [];
+
+  // Delete existing auto-detected links for this node, then re-scan
+  db.prepare("DELETE FROM convention_setting_links WHERE node_id = ?").run(nodeId);
+
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO convention_setting_links (id, node_id, setting_key, link_type, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+
+  for (const { pattern, settingKey, linkType } of SETTING_PATTERNS) {
+    if (pattern.test(text)) {
+      const id = randomUUID();
+      insert.run(id, nodeId, settingKey, linkType, now);
+      links.push({ id, node_id: nodeId, setting_key: settingKey, link_type: linkType as ConventionSettingLink["link_type"], created_at: now });
+    }
+  }
+
+  return links;
+}
+
+/**
+ * Scan all nodes in a preset for setting links.
+ * Bug: 8baedeb — bulk scan after import
+ */
+export function scanPresetForSettingLinks(presetId: string, db: Db): void {
+  const nodes = db
+    .prepare("SELECT id, title, body FROM preset_nodes WHERE preset_id = ?")
+    .all(presetId) as Array<{ id: string; title: string; body: string }>;
+
+  for (const node of nodes) {
+    scanForSettingLinks(node.id, `${node.title} ${node.body}`, db);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Markdown Parser
 // ---------------------------------------------------------------------------
 

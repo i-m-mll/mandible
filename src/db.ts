@@ -702,6 +702,24 @@ const MIGRATIONS: Migration[] = [
       )`,
       `CREATE INDEX IF NOT EXISTS idx_preset_diffs_session ON preset_diffs(session_id)`,
     ]
+  },
+  {
+    version: 43,
+    name: "convention_setting_links",
+    // Bug: 8baedeb — convention-configuration linkage for Presets system
+    statements: [
+      `CREATE TABLE IF NOT EXISTS convention_setting_links (
+        id              TEXT PRIMARY KEY,
+        node_id         TEXT NOT NULL REFERENCES preset_nodes(id) ON DELETE CASCADE,
+        setting_key     TEXT NOT NULL,
+        link_type       TEXT NOT NULL DEFAULT 'references'
+                        CHECK(link_type IN ('references', 'requires', 'configures')),
+        created_at      INTEGER NOT NULL,
+        UNIQUE(node_id, setting_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_csl_node ON convention_setting_links(node_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_csl_setting ON convention_setting_links(setting_key)`,
+    ]
   }
 ];
 
