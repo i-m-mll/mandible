@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":1,"timestamp":1774135273,"nonce":"hg9/hPYwWViK9LiOTRgj69U5Ifs=","title":"P2: Message sorting fix — chronological RenderNode array","message":"Part of chat stream UX overhaul. Parent: 763d7f6","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1774135273,"nonce":"pH/GWr01b7gKZvX7u7hjANZdNMo=","added":["feature","parent:763d7f6"],"removed":null}]}
