@@ -87,7 +87,7 @@ const SETTING_PATTERNS: Array<{ pattern: RegExp; settingKey: string; linkType: s
   { pattern: /protected.branch/i, settingKey: "protected_branches", linkType: "references" },
   { pattern: /reaper|idle.threshold|idle.timeout/i, settingKey: "reaper_enabled", linkType: "references" },
   { pattern: /signing|gpg.sign|yubikey/i, settingKey: "commit_signing", linkType: "references" },
-  { pattern: /notification|notify/i, settingKey: "claude_notifications_enabled", linkType: "references" },
+  { pattern: /claude.*(notification|notify)/i, settingKey: "claude_notifications_enabled", linkType: "references" },
   { pattern: /quiet.hours/i, settingKey: "quiet_hours", linkType: "references" },
   { pattern: /pretool|pre.tool|hook/i, settingKey: "pretool_hooks_enabled", linkType: "references" },
   { pattern: /log.retention/i, settingKey: "log_retention_days", linkType: "references" },
@@ -105,12 +105,12 @@ export function scanForSettingLinks(nodeId: string, text: string, db: Db): Conve
   const now = Date.now();
   const links: ConventionSettingLink[] = [];
 
-  // Delete existing auto-detected links for this node, then re-scan
-  db.prepare("DELETE FROM convention_setting_links WHERE node_id = ?").run(nodeId);
+  // Delete only auto-detected links for this node, preserving manual links
+  db.prepare("DELETE FROM convention_setting_links WHERE node_id = ? AND source = 'auto'").run(nodeId);
 
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO convention_setting_links (id, node_id, setting_key, link_type, created_at)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO convention_setting_links (id, node_id, setting_key, link_type, source, created_at)
+     VALUES (?, ?, ?, ?, 'auto', ?)`,
   );
 
   for (const { pattern, settingKey, linkType } of SETTING_PATTERNS) {

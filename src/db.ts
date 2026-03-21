@@ -720,6 +720,15 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_csl_node ON convention_setting_links(node_id)`,
       `CREATE INDEX IF NOT EXISTS idx_csl_setting ON convention_setting_links(setting_key)`,
     ]
+  },
+  {
+    version: 44,
+    name: "convention_setting_links_source",
+    // Bug: 8baedeb — distinguish auto-scanned links from manually created ones
+    // to prevent scanForSettingLinks from deleting manual links on re-scan.
+    statements: [
+      `ALTER TABLE convention_setting_links ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'`,
+    ]
   }
 ];
 

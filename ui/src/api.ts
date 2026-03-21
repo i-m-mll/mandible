@@ -1505,44 +1505,10 @@ export async function validateSessionPresets(sessionId: string): Promise<Session
 }
 
 export async function validatePresetIds(presetIds: string[]): Promise<SessionValidationResult> {
-  // For pre-creation validation, create a temporary session_id concept
-  // We'll call the endpoint with preset_ids as a workaround — but the endpoint
-  // actually expects session_id. For the NewSessionDialog flow, we need a different approach:
-  // We'll use a direct query by posting to a validation check.
-  // Since the server endpoint uses session_id, we'll need to check conventions
-  // for selected presets client-side by fetching all links.
-  const allWarnings: SessionValidationResult['warnings'] = [];
-  for (const presetId of presetIds) {
-    try {
-      const response = await apiGet(`/api/presets/${encodeURIComponent(presetId)}/nodes`);
-      const payload = (await parseMaybeJson(response)) as { nodes?: Array<{ id: string }> };
-      const nodes = payload.nodes ?? [];
-      for (const node of nodes) {
-        const links = await getNodeLinks(node.id);
-        const requiresLinks = links.filter((l) => l.link_type === 'requires');
-        for (const link of requiresLinks) {
-          allWarnings.push({
-            conventionTitle: link.node_title ?? `Node ${link.node_id.slice(0, 8)}`,
-            settingKey: link.setting_key,
-            message: `Convention requires setting "${link.setting_key}" to be configured.`,
-          });
-        }
-      }
-    } catch {
-      // Skip on error
-    }
-  }
-
-  // Deduplicate
-  const seen = new Set<string>();
-  const deduped = allWarnings.filter((w) => {
-    const key = `${w.settingKey}:${w.conventionTitle}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  return { valid: deduped.length === 0, warnings: deduped };
+  // Bug: 8baedeb — delegate to backend endpoint for accurate validation
+  // (client-side approach only checked link existence, not actual setting values)
+  const response = await apiPost('/api/presets/validate-preset-ids', { presetIds });
+  return (await parseMaybeJson(response)) as SessionValidationResult;
 }
 
 export async function getDefaultPresetIds(): Promise<string[]> {

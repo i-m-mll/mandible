@@ -599,6 +599,81 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     });
   });
 
+  // POST /api/presets/validate-preset-ids — validate preset IDs before session creation
+  // Bug: 8baedeb — backend validation for pre-creation flows (NewSessionDialog, etc.)
+  server.post("/api/presets/validate-preset-ids", (req, res) => {
+    const body = (req.body ?? {}) as { presetIds?: unknown };
+
+    if (!Array.isArray(body.presetIds) || body.presetIds.length === 0) {
+      res.status(200).json({ valid: true, warnings: [] });
+      return;
+    }
+
+    const presetIds = (body.presetIds as unknown[]).filter(
+      (id): id is string => typeof id === "string",
+    );
+
+    if (presetIds.length === 0) {
+      res.status(200).json({ valid: true, warnings: [] });
+      return;
+    }
+
+    const db = getDb();
+    const placeholders = presetIds.map(() => "?").join(",");
+
+    // Find all 'requires' links for nodes in those presets
+    const requiresLinks = db
+      .prepare(
+        `SELECT csl.setting_key, pn.title AS convention_title, p.name AS preset_name
+         FROM convention_setting_links csl
+         JOIN preset_nodes pn ON pn.id = csl.node_id
+         JOIN presets p ON p.id = pn.preset_id
+         WHERE csl.link_type = 'requires'
+           AND pn.preset_id IN (${placeholders})`,
+      )
+      .all(...presetIds) as Array<{ setting_key: string; convention_title: string; preset_name: string }>;
+
+    if (requiresLinks.length === 0) {
+      res.status(200).json({ valid: true, warnings: [] });
+      return;
+    }
+
+    // Check which settings exist and are configured
+    const settingKeys = [...new Set(requiresLinks.map((l) => l.setting_key))];
+    const settingPlaceholders = settingKeys.map(() => "?").join(",");
+    const settings = db
+      .prepare(`SELECT key, value FROM settings WHERE key IN (${settingPlaceholders})`)
+      .all(...settingKeys) as Array<{ key: string; value: string }>;
+    const settingMap = new Map(settings.map((s) => [s.key, s.value]));
+
+    const warnings: Array<{ conventionTitle: string; settingKey: string; message: string }> = [];
+
+    for (const link of requiresLinks) {
+      const val = settingMap.get(link.setting_key);
+      if (val === undefined || val === "" || val === "false") {
+        warnings.push({
+          conventionTitle: link.convention_title || link.preset_name,
+          settingKey: link.setting_key,
+          message: `Convention "${link.convention_title || link.preset_name}" requires setting "${link.setting_key}" to be configured.`,
+        });
+      }
+    }
+
+    // Deduplicate by settingKey + conventionTitle
+    const seen = new Set<string>();
+    const dedupedWarnings = warnings.filter((w) => {
+      const key = `${w.settingKey}:${w.conventionTitle}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    res.status(200).json({
+      valid: dedupedWarnings.length === 0,
+      warnings: dedupedWarnings,
+    });
+  });
+
   // ================================================================
   // Preset CRUD
   // ================================================================
