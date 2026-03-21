@@ -29,7 +29,7 @@ import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { registerPresetRoutes } from "./routes/presets.js";
-import { importClaudeMd } from "./presets.js";
+import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
@@ -193,13 +193,26 @@ export async function startDaemon(options = {}) {
     catch (error) {
         logger("warn", "channel_startup_cleanup_failed", { error: String(error) });
     }
-    // Bug: 1a85d82 — Auto-import global CLAUDE.md into presets on startup if none exist yet.
-    // This populates the Convention Library so the Presets tab is useful out of the box.
+    // Bug: 1a85d82 — Auto-import global CLAUDE.md into presets on startup.
+    // Bug: 52b75c0 — Re-import if content has changed (hash comparison), not just if missing.
     try {
-        const existingGlobalPreset = db.prepare("SELECT id FROM presets WHERE source = 'claude_md_global' LIMIT 1").get();
-        if (!existingGlobalPreset) {
-            const globalClaudeMd = path.join(os.homedir(), ".claude", "CLAUDE.md");
-            if (fs.existsSync(globalClaudeMd)) {
+        const globalClaudeMd = path.join(os.homedir(), ".claude", "CLAUDE.md");
+        if (fs.existsSync(globalClaudeMd)) {
+            const content = fs.readFileSync(globalClaudeMd, "utf8");
+            const currentHash = computeContentHash(content);
+            const existingPreset = db.prepare("SELECT id, content_hash FROM presets WHERE source_path = ? LIMIT 1").get(globalClaudeMd);
+            if (existingPreset) {
+                if (existingPreset.content_hash !== currentHash) {
+                    // Content changed — delete old nodes and preset, then re-import
+                    db.prepare("DELETE FROM preset_nodes WHERE preset_id = ?").run(existingPreset.id);
+                    db.prepare("DELETE FROM presets WHERE id = ?").run(existingPreset.id);
+                    importClaudeMd(globalClaudeMd, db);
+                    logger("info", "startup_preset_reimport", { path: globalClaudeMd, reason: "content_changed" });
+                }
+                // else: hashes match, skip (no change)
+            }
+            else {
+                // No preset exists for this path — import fresh
                 importClaudeMd(globalClaudeMd, db);
                 logger("info", "startup_preset_import", { path: globalClaudeMd });
             }
