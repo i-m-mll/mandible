@@ -1,6 +1,7 @@
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
-import type { Preset, PresetWithNodes, PresetNode, LibraryConvention, PresetDiff } from './types/presets';
+import type { PresetWithNodes, PresetDiff } from './types/presets';
+export type { Preset, PresetNode, LibraryConvention } from './types/presets';
 
 export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[]; presets?: T[]; nodes?: T[]; diffs?: T[] };
 
