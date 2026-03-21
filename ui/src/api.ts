@@ -1426,7 +1426,13 @@ export async function getPresetUnion(params: {
   if (params.preset_ids) query.set('preset_ids', params.preset_ids.join(','));
   const qs = query.toString();
   const response = await apiGet(`/api/presets/union${qs ? '?' + qs : ''}`);
-  return (await parseMaybeJson(response)) as PresetUnion;
+  const payload = await parseMaybeJson(response) as Record<string, unknown>;
+  // Server returns { text, tokenEstimate }; map to client type
+  return {
+    systemPrompt: (payload.systemPrompt ?? payload.text ?? '') as string,
+    settingSources: (payload.settingSources ?? []) as string[],
+    totalTokens: (payload.totalTokens ?? payload.tokenEstimate ?? 0) as number,
+  };
 }
 
 export async function getSessionPresets(

@@ -38,12 +38,13 @@ type ContextIndicatorProps = {
 };
 
 export function ContextIndicator({
-  tokenCount,
+  tokenCount = 0,
   modelName,
   variant,
 }: ContextIndicatorProps): JSX.Element {
+  const safeCount = tokenCount ?? 0;
   const contextWindow = lookupContextWindow(modelName);
-  const ratio = contextWindow > 0 ? tokenCount / contextWindow : 0;
+  const ratio = contextWindow > 0 ? safeCount / contextWindow : 0;
   const color = severityColor(ratio);
   const pct = (ratio * 100).toFixed(1);
 
@@ -51,10 +52,10 @@ export function ContextIndicator({
     return (
       <span
         className="context-indicator context-indicator--compact"
-        title={`${tokenCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`}
+        title={`${safeCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`}
         style={{ color }}
       >
-        ~{formatTokenCount(tokenCount)}
+        ~{formatTokenCount(safeCount)}
       </span>
     );
   }
@@ -62,7 +63,7 @@ export function ContextIndicator({
   return (
     <div
       className="context-indicator context-indicator--bar"
-      title={`${tokenCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`}
+      title={`${safeCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`}
     >
       <div
         className="context-indicator__fill"
