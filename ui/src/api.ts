@@ -1461,17 +1461,21 @@ export async function removeSessionPreset(
 }
 
 export async function getDefaultPresetIds(): Promise<string[]> {
-  const response = await apiGet('/api/settings/default_preset_ids');
-  const payload = await parseMaybeJson(response);
-  if (payload && typeof payload === 'object' && 'value' in payload) {
-    const val = (payload as { value?: unknown }).value;
-    if (typeof val === 'string') {
-      try {
-        return JSON.parse(val) as string[];
-      } catch {
-        return val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+  try {
+    const response = await apiGet('/api/settings/default_preset_ids');
+    const payload = await parseMaybeJson(response);
+    if (payload && typeof payload === 'object' && 'value' in payload) {
+      const val = (payload as { value?: unknown }).value;
+      if (typeof val === 'string') {
+        try {
+          return JSON.parse(val) as string[];
+        } catch {
+          return val ? val.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+        }
       }
     }
+  } catch {
+    // Setting doesn't exist yet — return empty defaults
   }
   return [];
 }
