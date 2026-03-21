@@ -227,7 +227,7 @@ function normalizeList(payload) {
   if (Array.isArray(payload)) {
     return payload;
   }
-  return payload.items || payload.sessions || payload.queue || payload.requests || payload.repos || payload.branches || [];
+  return payload.items || payload.sessions || payload.queue || payload.requests || payload.repos || payload.branches || payload.presets || payload.nodes || payload.diffs || [];
 }
 function buildQuery(params) {
   const searchParams = new URLSearchParams();
@@ -856,7 +856,8 @@ async function fetchPresets() {
 }
 async function createPreset(data) {
   const response = await apiPost("/api/presets", data);
-  return await parseMaybeJson(response);
+  const payload = await parseMaybeJson(response);
+  return payload && typeof payload === "object" && "preset" in payload ? payload.preset : payload;
 }
 async function fetchPreset(id2) {
   const response = await apiGet(`/api/presets/${encodeURIComponent(id2)}`);
@@ -864,11 +865,13 @@ async function fetchPreset(id2) {
 }
 async function getPreset(id2) {
   const response = await apiGet(`/api/presets/${encodeURIComponent(id2)}`);
-  return await parseMaybeJson(response);
+  const payload = await parseMaybeJson(response);
+  return payload && typeof payload === "object" && "preset" in payload ? payload.preset : payload;
 }
 async function updatePreset(id2, data) {
-  const response = await apiPatch(`/api/presets/${encodeURIComponent(id2)}`, data);
-  return await parseMaybeJson(response);
+  const response = await apiPut(`/api/presets/${encodeURIComponent(id2)}`, data);
+  const payload = await parseMaybeJson(response);
+  return payload && typeof payload === "object" && "preset" in payload ? payload.preset : payload;
 }
 async function deletePreset(id2) {
   await apiDelete(`/api/presets/${encodeURIComponent(id2)}`);
@@ -886,14 +889,16 @@ async function addPresetNode(presetId, node) {
     `/api/presets/${encodeURIComponent(presetId)}/nodes`,
     node
   );
-  return await parseMaybeJson(response);
+  const payload = await parseMaybeJson(response);
+  return payload && typeof payload === "object" && "node" in payload ? payload.node : payload;
 }
 async function updatePresetNode(presetId, nodeId, data) {
-  const response = await apiPatch(
+  const response = await apiPut(
     `/api/presets/${encodeURIComponent(presetId)}/nodes/${encodeURIComponent(nodeId)}`,
     data
   );
-  return await parseMaybeJson(response);
+  const payload = await parseMaybeJson(response);
+  return payload && typeof payload === "object" && "node" in payload ? payload.node : payload;
 }
 async function deletePresetNode(presetId, nodeId) {
   await apiDelete(
@@ -901,7 +906,7 @@ async function deletePresetNode(presetId, nodeId) {
   );
 }
 async function reorderPresetNode(presetId, data) {
-  await apiPost(
+  await apiPatch(
     `/api/presets/${encodeURIComponent(presetId)}/nodes/reorder`,
     data
   );
@@ -934,7 +939,8 @@ async function exportPreset(id2) {
 }
 async function importPreset(markdown) {
   const response = await apiPost("/api/presets/import", { markdown });
-  return await parseMaybeJson(response);
+  const payload = await parseMaybeJson(response);
+  return payload && typeof payload === "object" && "preset" in payload ? payload.preset : payload;
 }
 async function fetchPresetDiffs(sessionId) {
   const response = await apiGet(
@@ -944,11 +950,12 @@ async function fetchPresetDiffs(sessionId) {
   return normalizeList(payload);
 }
 async function updatePresetDiff(id2, status) {
-  const response = await apiPatch(
+  const response = await apiPut(
     `/api/presets/diffs/${encodeURIComponent(id2)}`,
     { status }
   );
-  return await parseMaybeJson(response);
+  const payload = await parseMaybeJson(response);
+  return payload && typeof payload === "object" && "diff" in payload ? payload.diff : payload;
 }
 async function fetchPresetUnion(sessionId) {
   const response = await apiGet(
@@ -971,12 +978,14 @@ async function getSessionPresets(sessionId) {
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`
   );
   const payload = await parseMaybeJson(response);
-  return Array.isArray(payload) ? payload : [];
+  if (Array.isArray(payload))
+    return payload;
+  return Array.isArray(payload?.presets) ? payload.presets : [];
 }
-async function addSessionPreset(sessionId, presetId, position) {
+async function addSessionPreset(sessionId, presetId, _position) {
   await apiPost(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
-    { preset_id: presetId, position }
+    { presetIds: [presetId] }
   );
 }
 async function removeSessionPreset(sessionId, presetId) {
