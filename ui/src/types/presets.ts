@@ -33,6 +33,8 @@ export type LibraryConvention = {
   preset_id: string;
   preset_name: string;
   source_presets: string[];
+  /** Ancestor titles from root to immediate parent (empty for top-level leaves). */
+  breadcrumb: string[];
 };
 
 export type PresetDiff = {

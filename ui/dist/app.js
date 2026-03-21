@@ -32505,6 +32505,7 @@ function ConventionLibrary({
                 },
                 children: [
                   /* @__PURE__ */ u3("div", { className: "convention-library__card-info", children: [
+                    conv.breadcrumb && conv.breadcrumb.length > 0 && /* @__PURE__ */ u3("span", { className: "convention-library__card-breadcrumb text-muted", children: conv.breadcrumb.join(" \u203A ") }),
                     /* @__PURE__ */ u3("span", { className: "convention-library__card-title", children: conv.title }),
                     !isExpanded && /* @__PURE__ */ u3("span", { className: "convention-library__card-preview text-muted", children: [
                       bodyPreview,
