@@ -341,6 +341,18 @@ fn wait_for_shutdown(port: u16, timeout: Duration) {
 
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            // Set the window and webview background to match the app's dark theme (#0b0f14).
+            // This prevents a white flash in the title-bar area on macOS when using
+            // titleBarStyle: "Transparent" — the native window chrome would otherwise
+            // default to the system light color before the webview paints.
+            // Bug: d41755b — white title bar in Tauri app on macOS
+            if let Some(window) = app.get_webview_window("main") {
+                let dark = tauri::window::Color(11, 15, 20, 255);
+                let _ = window.set_background_color(Some(dark));
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             daemon_status,
             daemon_get_launch_mode,
