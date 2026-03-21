@@ -28,6 +28,7 @@ import { registerWorkUnitRoutes } from "./routes/work-units.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
+import { registerPresetRoutes } from "./routes/presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
@@ -100,6 +101,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
   registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager);
   registerConsoleRoutes(router, sessionManager);
+  // Bug: 61bee4e — preset routes for convention management
+  registerPresetRoutes(router);
   // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
   registerWebhookRoutes(router, sessionRegistry, sessionManager);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint

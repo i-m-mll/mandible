@@ -79,6 +79,12 @@ export function registerConsoleRoutes(
       backend_type: body.backend_type === "pty" || body.backend_type === "sdk" || body.backend_type === "spawn"
         ? body.backend_type
         : (body.command === "claude" ? "sdk" : "spawn"),
+      // Bug: 61bee4e — Accept presetIds for convention presets
+      presetIds: Array.isArray((body as Record<string, unknown>).presetIds)
+        ? ((body as Record<string, unknown>).presetIds as unknown[]).filter(
+            (id): id is string => typeof id === "string",
+          )
+        : undefined,
     };
 
     const session = manager.create(input);

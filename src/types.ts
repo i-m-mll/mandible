@@ -257,6 +257,8 @@ export interface ConsoleSessionInput {
   mandible_session_id?: string | null;
   provider_session_id?: string | null;
   resume_at_message?: string | null;
+  /** Bug: 61bee4e — Preset IDs to associate with this console session */
+  presetIds?: string[];
 }
 
 // --- Structured console stream events ---

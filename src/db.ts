@@ -648,6 +648,60 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS sessions_channel_idx
         ON sessions(channel_connected_at) WHERE channel_connected_at IS NOT NULL`,
     ]
+  },
+  {
+    version: 42,
+    name: "presets",
+    // Bug: 61bee4e — Presets feature: data model for convention presets,
+    // node tree, session associations, and proposed diffs.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS presets (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        source      TEXT NOT NULL DEFAULT 'manual'
+                    CHECK(source IN ('manual', 'claude_md_global', 'claude_md_project', 'claude_md_local')),
+        source_path TEXT,
+        content_hash TEXT NOT NULL DEFAULT '',
+        version     INTEGER NOT NULL DEFAULT 1,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS preset_nodes (
+        id          TEXT PRIMARY KEY,
+        preset_id   TEXT NOT NULL REFERENCES presets(id) ON DELETE CASCADE,
+        parent_id   TEXT REFERENCES preset_nodes(id) ON DELETE CASCADE,
+        position    INTEGER NOT NULL DEFAULT 0,
+        title       TEXT NOT NULL DEFAULT '',
+        body        TEXT NOT NULL DEFAULT '',
+        level       INTEGER NOT NULL DEFAULT 1,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_preset_nodes_preset ON preset_nodes(preset_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_preset_nodes_parent ON preset_nodes(parent_id)`,
+      `CREATE TABLE IF NOT EXISTS session_presets (
+        session_id      TEXT NOT NULL,
+        preset_id       TEXT NOT NULL,
+        preset_version  INTEGER NOT NULL DEFAULT 1,
+        position        INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (session_id, preset_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_session_presets_session ON session_presets(session_id)`,
+      `CREATE TABLE IF NOT EXISTS preset_diffs (
+        id          TEXT PRIMARY KEY,
+        session_id  TEXT NOT NULL,
+        preset_id   TEXT,
+        node_id     TEXT,
+        diff_type   TEXT NOT NULL CHECK(diff_type IN ('add', 'remove', 'modify')),
+        old_content TEXT,
+        new_content TEXT,
+        status      TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK(status IN ('proposed', 'accepted', 'rejected', 'promoted')),
+        created_at  INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_preset_diffs_session ON preset_diffs(session_id)`,
+    ]
   }
 ];
 
