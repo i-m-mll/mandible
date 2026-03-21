@@ -13356,11 +13356,7 @@ function InboxView({
     await onAckAll();
   };
   if (loading && !data) {
-    return /* @__PURE__ */ u3("div", { className: "inbox-sidebar-layout", children: [
-      /* @__PURE__ */ u3("div", { className: "inbox-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: /* @__PURE__ */ u3("div", { className: "inbox-sidebar__header", children: /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "13px", padding: "14px" }, children: "Loading\u2026" }) }) }),
-      /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
-      /* @__PURE__ */ u3("div", { className: "inbox-detail", children: /* @__PURE__ */ u3("div", { className: "inbox-detail__empty", children: /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading inbox\u2026" }) }) })
-    ] });
+    return /* @__PURE__ */ u3("div", { className: "inbox-detail", style: { height: "calc(100vh - 80px)", margin: "-28px -32px -48px" }, children: /* @__PURE__ */ u3("div", { className: "inbox-detail__empty", children: /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading inbox\u2026" }) }) });
   }
   return /* @__PURE__ */ u3("div", { className: "inbox-sidebar-layout", children: [
     /* @__PURE__ */ u3("div", { className: "inbox-sidebar", style: { width: `${sidebarWidth}px`, flexShrink: 0 }, children: [
@@ -33758,7 +33754,7 @@ function applySSEEvent(state, payload) {
   }
 }
 var CACHE_KEY = "mandible_state_cache";
-var CACHE_VERSION = 1;
+var CACHE_VERSION = 2;
 var RECENT_RESOLVED_MS = 36e5;
 var RECENT_HISTORY_MS = 864e5;
 function loadCachedState() {
@@ -33809,7 +33805,12 @@ function saveCachedState(state) {
       workRepos: state.workRepos,
       workBranches: state.workBranches,
       issueRepos: state.issueRepos,
-      conversations: state.conversations
+      conversations: state.conversations,
+      inboxData: state.inboxData,
+      consoleSessions: state.consoleSessions,
+      settings: state.settings,
+      switchboardPairings: state.switchboardPairings,
+      switchboardTemplates: state.switchboardTemplates
     };
     window.localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, state: toCache }));
   } catch {
@@ -34155,7 +34156,12 @@ function App() {
     state.workRepos,
     state.workBranches,
     state.issueRepos,
-    state.conversations
+    state.conversations,
+    state.inboxData,
+    state.consoleSessions,
+    state.settings,
+    state.switchboardPairings,
+    state.switchboardTemplates
   ]);
   const badges = T2(() => selectBadgeCounts(state), [state]);
   const authBranchesByRepo = T2(() => {
