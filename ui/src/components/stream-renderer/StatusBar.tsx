@@ -31,11 +31,12 @@ export function StatusBar({
   modelSaving,
   onChangeModel,
 }: StatusBarProps): JSX.Element {
+  // Bug: 4891ce4 — StatusBar NEVER shows streaming indicators (no pulsing dot,
+  // no streaming label, no timer). Streaming indicator lives inline in StreamRenderer.
+  // StatusBar shows: error state, or "Complete" + duration after result, or nothing during streaming.
   const dotClass = error
     ? 'status-bar__dot status-bar__dot--error'
-    : streaming
-      ? 'status-bar__dot status-bar__dot--streaming'
-      : 'status-bar__dot status-bar__dot--done';
+    : 'status-bar__dot status-bar__dot--done';
 
   // Center: always show model; add cost + turns when available (post-result)
   const centerParts: string[] = [];
@@ -48,31 +49,27 @@ export function StatusBar({
 
   const centerText = centerParts.join(' · ');
 
-  // Right: elapsed seconds while streaming; final duration after completion
+  // Right: final duration after completion only — no timer during streaming
   let rightText = '';
-  if (streaming && elapsedSeconds !== undefined) {
-    rightText = `${elapsedSeconds}s`;
-  } else if (!streaming && durationMs !== undefined) {
+  if (!streaming && durationMs !== undefined) {
     rightText = formatDuration(durationMs);
   }
 
-  // Label text: streaming shows elapsed, error shows error, done shows Complete
-  let labelContent: JSX.Element;
+  // Label text: error shows error, done shows Complete, streaming shows nothing
+  let labelContent: JSX.Element | null;
   if (error) {
     labelContent = <span className="status-bar__error">{error}</span>;
   } else if (streaming) {
-    labelContent = (
-      <span className="status-bar__label">
-        {liveLabel ?? 'Working'}
-      </span>
-    );
+    // During streaming, no label in StatusBar — indicator is inline in the chat
+    labelContent = null;
   } else {
     labelContent = <span className="status-bar__label">Complete</span>;
   }
 
   return (
     <div className="status-bar">
-      <span className={dotClass} aria-hidden="true" />
+      {/* Bug: 4891ce4 — Hide dot entirely during streaming; only show for done/error */}
+      {!streaming && <span className={dotClass} aria-hidden="true" />}
       {labelContent}
       {onChangeModel && backend === 'codex' ? (
         <button

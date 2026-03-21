@@ -86,12 +86,22 @@ function parseModelFromArgs(args: string[]): string | undefined {
 // Bug: 52b75c0 — Removed streamStartAtRef side effect. This function is now pure:
 // it only returns whether streaming is active. Timer start time is derived
 // separately in the timer recovery useEffect to avoid resetting on tab navigation.
+// Bug: 4891ce4 — Improved streaming derivation: also check if the last assistant
+// event has a stop_reason set (meaning the turn completed but no result event was
+// emitted, e.g. due to SSE connection drop between assistant and result events).
 function deriveStreamingState(
   events: StreamEvent[],
   _streamStartAtRef: { current: number | null },
 ): boolean {
   const last = events[events.length - 1];
-  return Boolean(last && last.type !== 'result');
+  if (!last) return false;
+  if (last.type === 'result') return false;
+  // If the last event is an assistant event with a stop_reason, the turn is done
+  if (last.type === 'assistant') {
+    const assistantEvent = last as import('../stream-renderer/types').AssistantEvent;
+    if (assistantEvent.message.stop_reason) return false;
+  }
+  return true;
 }
 
 // Bug: 309dd56 — Flush pending SSE events after hydration, deduplicating against current state.
@@ -728,11 +738,13 @@ export function TerminalPane({
     };
   }, [sessionId]);
 
-  // Bug: 2a04856 — Polling fallback: if streaming stays true for 20s (missed SSE result event,
+  // Bug: 2a04856 — Polling fallback: if streaming stays true for 5s (missed SSE result event,
   // e.g. due to SSE reconnect during daemon rebuild), re-fetch events and check for completion.
+  // Bug: 4891ce4 — Reduced from 20s to 5s so false "Working" indicator clears quickly.
+  // Also adds a staleness heuristic: if no new events arrive for 5s while streaming, re-check.
   useEffect(() => {
     if (!streaming) return;
-    const timer = setTimeout(() => {
+    const check = () => {
       void getConsoleStreamEvents<StreamEvent>(sessionId, 500).then((events) => {
         if (events.length > 0) {
           const last = events[events.length - 1];
@@ -744,7 +756,8 @@ export function TerminalPane({
       }).catch(() => {
         // Non-fatal: will retry on next interval if still streaming
       });
-    }, 20_000);
+    };
+    const timer = setTimeout(check, 5_000);
     return () => clearTimeout(timer);
   }, [streaming, sessionId]);
 
