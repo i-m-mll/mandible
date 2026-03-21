@@ -29,7 +29,6 @@ import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { registerPresetRoutes } from "./routes/presets.js";
-import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
@@ -165,15 +164,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }
   startupInfo = readStartupCommit(logger);
   sse.setStartupCommit(startupInfo);
-
-  // Bug: 61bee4e — Import CLAUDE.md files as presets on startup if not already present.
-  // Checks by source_path to avoid duplicating on every restart; updates content_hash
-  // if the file has changed since last import.
-  try {
-    importClaudeMdOnStartup(db, logger);
-  } catch (error) {
-    logger("warn", "claude_md_import_failed", { error: String(error) });
-  }
 
   // Start conversation ingestion watchers
   try {
@@ -402,57 +392,6 @@ function readStartupCommit(logger: Logger): StartupCommitInfo {
   } catch (error) {
     logger("warn", "startup_commit_failed", { error: String(error) });
     return { hash: "unknown", summary: "unknown", date: "" };
-  }
-}
-
-/**
- * Import known CLAUDE.md files as presets on daemon startup.
- * Checks source_path to avoid duplicating; re-imports if content has changed.
- * Bug: 61bee4e — importClaudeMd existed but was never called on startup.
- */
-function importClaudeMdOnStartup(db: Db, logger: Logger): void {
-  const homeDir = process.env.HOME ?? "";
-  const candidates: string[] = [];
-
-  // Global CLAUDE.md
-  const globalPath = path.join(homeDir, ".claude", "CLAUDE.md");
-  if (fs.existsSync(globalPath)) {
-    candidates.push(globalPath);
-  }
-
-  // Project CLAUDE.md for the Mandible repo itself
-  const mandibleClaudeMd = path.join(MANDIBLE_ROOT, "CLAUDE.md");
-  if (fs.existsSync(mandibleClaudeMd)) {
-    candidates.push(mandibleClaudeMd);
-  }
-
-  for (const filePath of candidates) {
-    try {
-      const existing = db
-        .prepare("SELECT id, content_hash FROM presets WHERE source_path = ?")
-        .get(filePath) as { id: string; content_hash: string } | undefined;
-
-      if (existing) {
-        // Check if content has changed
-        const content = fs.readFileSync(filePath, "utf8");
-        const currentHash = computeContentHash(content);
-        if (currentHash !== existing.content_hash) {
-          // Content changed — delete old preset and re-import
-          db.prepare("DELETE FROM preset_nodes WHERE preset_id = ?").run(existing.id);
-          db.prepare("DELETE FROM session_presets WHERE preset_id = ?").run(existing.id);
-          db.prepare("DELETE FROM presets WHERE id = ?").run(existing.id);
-          importClaudeMd(filePath, db);
-          logger("info", "claude_md_reimported", { path: filePath });
-        }
-        // Otherwise content unchanged — skip
-      } else {
-        // Not imported yet — import
-        importClaudeMd(filePath, db);
-        logger("info", "claude_md_imported", { path: filePath });
-      }
-    } catch (error) {
-      logger("warn", "claude_md_import_single_failed", { path: filePath, error: String(error) });
-    }
   }
 }
 

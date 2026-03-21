@@ -7517,15 +7517,6 @@ tr:hover .work-actions__trigger {
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   padding: 12px;
   font-weight: 500;
-  /* Bug: 61bee4e — <button> elements have UA styles that override inherited color/font.
-     Ensure the library button matches sidebar item styling in dark themes. */
-  background: none;
-  border: none;
-  width: 100%;
-  text-align: left;
-  font-family: var(--font-sans);
-  font-size: 13px;
-  color: var(--text-muted);
 }
 
 .presets-sidebar__item-name {
