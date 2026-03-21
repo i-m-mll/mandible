@@ -742,13 +742,38 @@ export function TerminalPane({
     };
   }, [sessionId]);
 
+  // Bug: 2a54b51 — Derive streamStartAt from stream events so the elapsed timer
+  // survives component re-mounts (tab switches). The synthetic_prompt localId
+  // encodes Date.now() as "sp-<timestamp>-<rand>". Falling back to Date.now()
+  // only if no synthetic prompt is found.
   useEffect(() => {
     if (!streaming) {
       streamStartAtRef.current = null;
       return;
     }
     if (streamStartAtRef.current === null) {
-      streamStartAtRef.current = Date.now();
+      // Scan backwards for the last synthetic_prompt or user text message
+      // to recover the actual activity start time.
+      let recovered = false;
+      for (let i = streamEvents.length - 1; i >= 0; i--) {
+        const ev = streamEvents[i];
+        if (ev.type === 'synthetic_prompt') {
+          const localId = (ev as { localId?: string }).localId;
+          if (localId) {
+            const match = localId.match(/^sp-(\d+)-/);
+            if (match) {
+              streamStartAtRef.current = Number(match[1]);
+              recovered = true;
+              break;
+            }
+          }
+        }
+        // Stop scanning once we hit a result event (previous turn boundary)
+        if (ev.type === 'result') break;
+      }
+      if (!recovered) {
+        streamStartAtRef.current = Date.now();
+      }
     }
     setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1000));
     const interval = window.setInterval(() => {
@@ -757,7 +782,7 @@ export function TerminalPane({
       }
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [streaming]);
+  }, [streaming, streamEvents]);
 
   useEffect(() => {
     if (backendType !== 'sdk') {
