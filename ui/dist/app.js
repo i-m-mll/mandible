@@ -971,7 +971,12 @@ async function getPresetUnion(params) {
     query.set("preset_ids", params.preset_ids.join(","));
   const qs = query.toString();
   const response = await apiGet(`/api/presets/union${qs ? "?" + qs : ""}`);
-  return await parseMaybeJson(response);
+  const payload = await parseMaybeJson(response);
+  return {
+    systemPrompt: payload.systemPrompt ?? payload.text ?? "",
+    settingSources: payload.settingSources ?? [],
+    totalTokens: payload.totalTokens ?? payload.tokenEstimate ?? 0
+  };
 }
 async function getSessionPresets(sessionId) {
   const response = await apiGet(
@@ -22817,12 +22822,13 @@ function severityColor(ratio) {
   return "var(--accent-green)";
 }
 function ContextIndicator({
-  tokenCount,
+  tokenCount = 0,
   modelName,
   variant
 }) {
+  const safeCount = tokenCount ?? 0;
   const contextWindow = lookupContextWindow(modelName);
-  const ratio = contextWindow > 0 ? tokenCount / contextWindow : 0;
+  const ratio = contextWindow > 0 ? safeCount / contextWindow : 0;
   const color2 = severityColor(ratio);
   const pct = (ratio * 100).toFixed(1);
   if (variant === "compact") {
@@ -22830,11 +22836,11 @@ function ContextIndicator({
       "span",
       {
         className: "context-indicator context-indicator--compact",
-        title: `${tokenCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`,
+        title: `${safeCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`,
         style: { color: color2 },
         children: [
           "~",
-          formatTokenCount(tokenCount)
+          formatTokenCount(safeCount)
         ]
       }
     );
@@ -22843,7 +22849,7 @@ function ContextIndicator({
     "div",
     {
       className: "context-indicator context-indicator--bar",
-      title: `${tokenCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`,
+      title: `${safeCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`,
       children: /* @__PURE__ */ u3(
         "div",
         {
