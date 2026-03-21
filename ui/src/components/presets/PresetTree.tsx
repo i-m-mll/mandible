@@ -227,8 +227,8 @@ export function PresetTree({
       onEditingNodeSet(newNode.id);
       setFocusedNodeId(newNode.id);
       announce(`Added child under "${parent.title}"`);
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('Failed to add child node:', err);
     }
   }, [presetId, nodes, onNodeAdded, onEditingNodeSet, onPushUndo, announce]);
 
@@ -252,8 +252,8 @@ export function PresetTree({
       onEditingNodeSet(newNode.id);
       setFocusedNodeId(newNode.id);
       announce(`Added sibling after "${node.title}"`);
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('Failed to add sibling node:', err);
     }
   }, [presetId, nodes, onNodeAdded, onEditingNodeSet, onPushUndo, announce]);
 
@@ -297,6 +297,8 @@ export function PresetTree({
     // Expand parent
     setExpanded((prev) => new Set([...prev, nodeId]));
 
+    // Bug: e20c88e — Atomic split: rollback created children on failure
+    const createdNodes: PresetNode[] = [];
     try {
       for (let i = 0; i < childSections.length; i++) {
         const section = childSections[i];
@@ -307,6 +309,7 @@ export function PresetTree({
           level: node.level + 1,
           position: i,
         });
+        createdNodes.push(newNode);
         onNodeAdded(presetId, newNode);
       }
 
@@ -317,10 +320,20 @@ export function PresetTree({
       onNodeUpdated(presetId, updated);
 
       announce(`Split "${node.title}" into ${childSections.length} children`);
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('Failed to split into children, rolling back:', err);
+      // Rollback: delete any children that were successfully created
+      for (const created of createdNodes) {
+        onNodeDeleted(presetId, created.id);
+        try {
+          await deletePresetNode(presetId, created.id);
+        } catch (rollbackErr) {
+          console.error('Rollback failed for node:', created.id, rollbackErr);
+        }
+      }
+      announce('Split failed — changes reverted');
     }
-  }, [presetId, nodes, onNodeAdded, onNodeUpdated, announce]);
+  }, [presetId, nodes, onNodeAdded, onNodeUpdated, onNodeDeleted, announce]);
 
   const handleCopy = useCallback(async (nodeId: string) => {
     const node = nodes.find((n) => n.id === nodeId);
@@ -552,6 +565,7 @@ export function PresetTree({
 
   // Apply undo/redo command effects
   const applyUndoCommand = useCallback(async (cmd: UndoCommand, isUndo: boolean) => {
+    const op = isUndo ? 'undo' : 'redo';
     switch (cmd.type) {
       case 'edit': {
         const title = isUndo ? cmd.oldTitle : cmd.newTitle;
@@ -559,20 +573,20 @@ export function PresetTree({
         try {
           const updated = await updatePresetNode(presetId, cmd.nodeId, { title, body });
           onNodeUpdated(presetId, updated);
-        } catch {
-          // ignore
+        } catch (err) {
+          console.error(`Failed to ${op} edit:`, err);
         }
         break;
       }
       case 'add': {
         if (isUndo) {
           onNodeDeleted(presetId, cmd.node.id);
-          try { await deletePresetNode(presetId, cmd.node.id); } catch { /* */ }
+          try { await deletePresetNode(presetId, cmd.node.id); } catch (err) { console.error(`Failed to ${op} add (delete):`, err); }
         } else {
           try {
             const newNode = await addPresetNode(presetId, cmd.node);
             onNodeAdded(presetId, newNode);
-          } catch { /* */ }
+          } catch (err) { console.error(`Failed to ${op} add:`, err); }
         }
         break;
       }
@@ -585,10 +599,10 @@ export function PresetTree({
               const restoredChild = await addPresetNode(presetId, child);
               onNodeAdded(presetId, restoredChild);
             }
-          } catch { /* */ }
+          } catch (err) { console.error(`Failed to ${op} delete (restore):`, err); }
         } else {
           onNodeDeleted(presetId, cmd.node.id);
-          try { await deletePresetNode(presetId, cmd.node.id); } catch { /* */ }
+          try { await deletePresetNode(presetId, cmd.node.id); } catch (err) { console.error(`Failed to ${op} delete:`, err); }
         }
         break;
       }
@@ -602,7 +616,7 @@ export function PresetTree({
             newParentId: parentId,
             newPosition: position,
           });
-        } catch { /* */ }
+        } catch (err) { console.error(`Failed to ${op} move:`, err); }
         break;
       }
     }
@@ -622,8 +636,8 @@ export function PresetTree({
       onPushUndo({ type: 'add', node: newNode });
       onEditingNodeSet(newNode.id);
       setFocusedNodeId(newNode.id);
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('Failed to add root section:', err);
     }
   }, [presetId, nodes, onNodeAdded, onEditingNodeSet, onPushUndo]);
 
@@ -632,6 +646,25 @@ export function PresetTree({
     const sourceNode = nodes.find((n) => n.id === sourceId);
     const targetNode = nodes.find((n) => n.id === targetId);
     if (!sourceNode || !targetNode) return;
+
+    // Bug: e20c88e — Prevent dropping a parent into its own descendant (cycle detection)
+    const isDescendant = (ancestorId: string, nodeId: string | null): boolean => {
+      let current = nodeId;
+      while (current) {
+        if (current === ancestorId) return true;
+        const parent = nodes.find((n) => n.id === current);
+        current = parent?.parent_id ?? null;
+      }
+      return false;
+    };
+
+    // For edge drops (top/bottom), the new parent is the target's parent
+    // For center drops, the new parent is the target itself
+    const effectiveNewParent = edge ? targetNode.parent_id : targetNode.id;
+    if (effectiveNewParent && isDescendant(sourceId, effectiveNewParent)) {
+      announce('Cannot move a node into its own descendant');
+      return;
+    }
 
     let newParentId: string | null;
     let newPosition: number;

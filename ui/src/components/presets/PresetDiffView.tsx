@@ -1,6 +1,7 @@
 // Bug: e20c88e — Preset diff view component
 import { useState } from 'preact/hooks';
 import { marked } from 'marked';
+import { sanitizeHtml } from '../../sanitize';
 import type { PresetDiff } from '../../types/presets';
 
 export type PresetDiffViewProps = {
@@ -15,16 +16,6 @@ function renderMarkdown(src: string): string {
   return typeof result === 'string' ? result : '';
 }
 
-function sanitizeInlineHtml(html: string): string {
-  let out = html.replace(
-    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
-    '',
-  );
-  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
-  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
-  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
-  return out;
-}
 
 const CHANGE_TYPE_CLASS: Record<string, string> = {
   added: 'preset-diff__item--added',
@@ -119,7 +110,7 @@ export function PresetDiffView({
                   <div
                     className="preset-diff__old"
                     dangerouslySetInnerHTML={{
-                      __html: sanitizeInlineHtml(renderMarkdown(diff.old_body)),
+                      __html: sanitizeHtml(renderMarkdown(diff.old_body)),
                     }}
                   />
                 )}
@@ -129,7 +120,7 @@ export function PresetDiffView({
                       <div
                         className="preset-diff__old"
                         dangerouslySetInnerHTML={{
-                          __html: sanitizeInlineHtml(renderMarkdown(diff.old_body)),
+                          __html: sanitizeHtml(renderMarkdown(diff.old_body)),
                         }}
                       />
                     )}
@@ -137,7 +128,7 @@ export function PresetDiffView({
                       <div
                         className="preset-diff__new"
                         dangerouslySetInnerHTML={{
-                          __html: sanitizeInlineHtml(renderMarkdown(diff.new_body)),
+                          __html: sanitizeHtml(renderMarkdown(diff.new_body)),
                         }}
                       />
                     )}
@@ -147,7 +138,7 @@ export function PresetDiffView({
                   <div
                     className="preset-diff__new"
                     dangerouslySetInnerHTML={{
-                      __html: sanitizeInlineHtml(renderMarkdown(diff.new_body)),
+                      __html: sanitizeHtml(renderMarkdown(diff.new_body)),
                     }}
                   />
                 )}
@@ -158,7 +149,7 @@ export function PresetDiffView({
                   {diff.old_body ? (
                     <div
                       dangerouslySetInnerHTML={{
-                        __html: sanitizeInlineHtml(renderMarkdown(diff.old_body)),
+                        __html: sanitizeHtml(renderMarkdown(diff.old_body)),
                       }}
                     />
                   ) : (
@@ -169,7 +160,7 @@ export function PresetDiffView({
                   {diff.new_body ? (
                     <div
                       dangerouslySetInnerHTML={{
-                        __html: sanitizeInlineHtml(renderMarkdown(diff.new_body)),
+                        __html: sanitizeHtml(renderMarkdown(diff.new_body)),
                       }}
                     />
                   ) : (

@@ -1,6 +1,5 @@
 // Bug: e20c88e — Promotion/routing dialog for preset diffs
 import { useState } from 'preact/hooks';
-import { marked } from 'marked';
 import type { Preset, PresetDiff } from '../../types/presets';
 
 export type RoutingDialogProps = {
@@ -18,23 +17,6 @@ export type RoutingDialogProps = {
   onProposeClaudeMd: () => void;
   isClaudeMdPreset: boolean;
 };
-
-function renderMarkdown(src: string): string {
-  if (!src) return '';
-  const result = marked.parse(src, { async: false });
-  return typeof result === 'string' ? result : '';
-}
-
-function sanitizeInlineHtml(html: string): string {
-  let out = html.replace(
-    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
-    '',
-  );
-  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
-  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
-  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
-  return out;
-}
 
 export function RoutingDialog({
   isOpen,

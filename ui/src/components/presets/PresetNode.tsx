@@ -1,6 +1,7 @@
 // Bug: e20c88e — Preset tree node component
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
+import { sanitizeHtml } from '../../sanitize';
 import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import { attachClosestEdge, extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
 import type { Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/types';
@@ -35,16 +36,6 @@ function renderMarkdown(src: string): string {
   return typeof result === 'string' ? result : '';
 }
 
-function sanitizeInlineHtml(html: string): string {
-  let out = html.replace(
-    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
-    '',
-  );
-  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
-  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
-  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
-  return out;
-}
 
 export function PresetNodeView({
   node,
@@ -196,7 +187,7 @@ export function PresetNodeView({
   const HeadingTag = `h${Math.min(node.level + 1, 6)}` as keyof JSX.IntrinsicElements;
 
   const renderedBody = renderMarkdown(node.body);
-  const sanitizedBody = sanitizeInlineHtml(renderedBody);
+  const sanitizedBody = sanitizeHtml(renderedBody);
 
   const hasChildren = !isLeaf;
 

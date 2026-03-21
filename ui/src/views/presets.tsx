@@ -86,8 +86,8 @@ export function PresetsView({
       const preset = await createPreset({ name: 'New Preset' });
       dispatch({ type: 'presetCreated', preset });
       setEditingName(preset.id);
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('Failed to create preset:', err);
     }
   }, [dispatch]);
 
@@ -96,8 +96,8 @@ export function PresetsView({
       try {
         await deletePreset(presetId);
         dispatch({ type: 'presetDeleted', presetId });
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error('Failed to delete preset:', err);
       }
       setMenuPresetId(null);
     },
@@ -109,8 +109,8 @@ export function PresetsView({
       try {
         const updated = await updatePreset(presetId, { name } as Partial<Preset>);
         dispatch({ type: 'presetUpdated', preset: updated });
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error('Failed to rename preset:', err);
       }
       setEditingName(null);
     },
@@ -127,8 +127,8 @@ export function PresetsView({
       a.download = `preset-${presetId.slice(0, 8)}.md`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('Failed to export preset:', err);
     }
     setMenuPresetId(null);
   }, []);
@@ -206,8 +206,8 @@ export function PresetsView({
           position: rootNodes.length,
         });
         dispatch({ type: 'nodeAdded', presetId, node: newNode });
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error('Failed to add convention to preset:', err);
       }
     },
     [dispatch, presetsState.selectedPresetId, presetsState.nodes],
@@ -233,8 +233,8 @@ export function PresetsView({
           type: 'presetsPushUndo',
           command: { type: 'add', node: newNode },
         });
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error('Failed to insert from library:', err);
       }
     },
     [dispatch, presetsState.selectedPresetId, presetsState.nodes],
