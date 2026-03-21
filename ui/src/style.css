@@ -853,6 +853,101 @@ tr:last-child td {
   font-size: 11px;
 }
 
+/* Bug: 7e1e035 — Auth request type badges */
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.type-badge--sm {
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.type-badge--merge {
+  background: rgba(77, 163, 255, 0.15);
+  color: var(--accent-blue);
+}
+
+.type-badge--commit {
+  background: rgba(50, 210, 150, 0.15);
+  color: var(--accent-green);
+}
+
+.type-badge--force-push {
+  background: rgba(245, 194, 92, 0.2);
+  color: var(--accent-yellow);
+}
+
+.type-badge--branch-delete {
+  background: rgba(242, 107, 107, 0.15);
+  color: var(--accent-red);
+}
+
+.type-badge--config-change {
+  background: rgba(168, 85, 247, 0.15);
+  color: var(--accent-purple);
+}
+
+.type-badge--preset-promote {
+  background: rgba(168, 85, 247, 0.15);
+  color: var(--accent-purple);
+}
+
+.type-badge--data-delete {
+  background: rgba(242, 107, 107, 0.15);
+  color: var(--accent-red);
+}
+
+.type-detail-summary {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.type-detail-summary .type-badge {
+  margin-right: 8px;
+}
+
+.auth-sidebar-item__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.auth-sidebar-item__title-row .auth-sidebar-item__title {
+  flex: 1;
+  min-width: 0;
+}
+
+.auth-sidebar__type-filter {
+  padding: 0 12px 8px;
+}
+
+.auth-sidebar__type-filter select {
+  width: 100%;
+  background: var(--bg-secondary);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.auth-sidebar__type-filter select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
+}
+
 .stats-bar {
   display: flex;
   gap: 12px;
