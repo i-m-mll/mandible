@@ -17874,6 +17874,30 @@ function SettingsView(props) {
         /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Shell theme, prompt, and multiplexer. Changes take effect in new shell sessions." })
       ] }),
       /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__select-row", children: [
+          /* @__PURE__ */ u3("div", { className: "settings-view__select-info", children: [
+            /* @__PURE__ */ u3("span", { className: "settings-view__select-label", children: "Header tabs" }),
+            /* @__PURE__ */ u3("span", { className: "settings-view__select-desc", children: "Show text labels, icons, or both in header tabs" })
+          ] }),
+          /* @__PURE__ */ u3(
+            "select",
+            {
+              className: "settings-view__select",
+              value: settings.header_display_mode ?? "text",
+              onChange: async (e3) => {
+                try {
+                  await onSave("header_display_mode", e3.target.value);
+                } catch {
+                }
+              },
+              children: [
+                /* @__PURE__ */ u3("option", { value: "text", children: "Text only" }),
+                /* @__PURE__ */ u3("option", { value: "icons", children: "Icons only" }),
+                /* @__PURE__ */ u3("option", { value: "both", children: "Both" })
+              ]
+            }
+          )
+        ] }),
         /* @__PURE__ */ u3(
           SelectInput,
           {
@@ -24304,7 +24328,7 @@ function NewSessionDialog({
     let cancelled = false;
     const loadPresets = async () => {
       try {
-        const [presets, defaults] = await Promise.all([
+        const [presets, defaults2] = await Promise.all([
           getPresets(),
           getDefaultPresetIds()
         ]);
@@ -24313,10 +24337,10 @@ function NewSessionDialog({
         setAllPresets(presets);
         if (initialPresetId) {
           const ids = presets.some((p3) => p3.id === initialPresetId) ? [initialPresetId] : [];
-          const merged = [...ids, ...defaults.filter((d3) => !ids.includes(d3))];
+          const merged = [...ids, ...defaults2.filter((d3) => !ids.includes(d3))];
           setPresetIds(merged.filter((id2) => presets.some((p3) => p3.id === id2)));
         } else {
-          setPresetIds(defaults.filter((id2) => presets.some((p3) => p3.id === id2)));
+          setPresetIds(defaults2.filter((id2) => presets.some((p3) => p3.id === id2)));
         }
         setPresetsLoaded(true);
       } catch {
@@ -34356,6 +34380,119 @@ function saveCachedState(state) {
   }
 }
 
+// ui/src/components/icons/TabIcons.tsx
+var defaults = { size: 16, className: "" };
+function ChatIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: /* @__PURE__ */ u3("path", { d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" }) });
+}
+function HistoryIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }),
+    /* @__PURE__ */ u3("path", { d: "M3 3v5h5" }),
+    /* @__PURE__ */ u3("path", { d: "M12 7v5l4 2" })
+  ] });
+}
+function MonitorIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: /* @__PURE__ */ u3("polyline", { points: "22 12 18 12 15 21 9 3 6 12 2 12" }) });
+}
+function IssuesIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("path", { d: "M8 2l1.88 1.88" }),
+    /* @__PURE__ */ u3("path", { d: "M14.12 3.88 16 2" }),
+    /* @__PURE__ */ u3("path", { d: "M9 7.13v-1a3.003 3.003 0 1 1 6 0v1" }),
+    /* @__PURE__ */ u3("path", { d: "M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6" }),
+    /* @__PURE__ */ u3("path", { d: "M12 20v-9" }),
+    /* @__PURE__ */ u3("path", { d: "M6.53 9C4.6 8.8 3 7.1 3 5" }),
+    /* @__PURE__ */ u3("path", { d: "M6 13H2" }),
+    /* @__PURE__ */ u3("path", { d: "M3 21c0-2.1 1.7-3.9 3.8-4" }),
+    /* @__PURE__ */ u3("path", { d: "M20.97 5c0 2.1-1.6 3.8-3.5 4" }),
+    /* @__PURE__ */ u3("path", { d: "M22 13h-4" }),
+    /* @__PURE__ */ u3("path", { d: "M17.2 17c2.1.1 3.8 1.9 3.8 4" })
+  ] });
+}
+function InboxIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "-0.5 -4 25 25", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("defs", { children: /* @__PURE__ */ u3("clipPath", { id: "tab-inbox-bot-head", children: /* @__PURE__ */ u3("path", { clipRule: "evenodd", d: "M-5-5h34v34H-5z M8.55 1H15.45A2 2 0 0 1 17.45 3V6.5A2 2 0 0 1 15.45 8.5H8.55A2 2 0 0 1 6.55 6.5V3A2 2 0 0 1 8.55 1Z" }) }) }),
+    /* @__PURE__ */ u3("g", { clipPath: "url(#tab-inbox-bot-head)", children: [
+      /* @__PURE__ */ u3("path", { d: "M5.45 4.11 L2 11v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 3H7.24a2 2 0 0 0-1.79 1.11z" }),
+      /* @__PURE__ */ u3("polyline", { points: "22 11 16 11 14 14 10 14 8 11 2 11" })
+    ] }),
+    /* @__PURE__ */ u3("rect", { x: "6.55", y: "1", width: "10.9", height: "7.5", rx: "2" }),
+    /* @__PURE__ */ u3("line", { x1: "9.95", y1: "3.3", x2: "9.95", y2: "5.8" }),
+    /* @__PURE__ */ u3("line", { x1: "14.05", y1: "3.3", x2: "14.05", y2: "5.8" }),
+    /* @__PURE__ */ u3("path", { d: "M12 1V-2.5H9.3" })
+  ] });
+}
+function AuthIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("path", { d: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" }),
+    /* @__PURE__ */ u3("path", { d: "m9 12 2 2 4-4" })
+  ] });
+}
+function SettingsIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 16 16", fill: "none", xmlns: "http://www.w3.org/2000/svg", className, "aria-hidden": "true", style: { verticalAlign: "middle", display: "inline-block" }, children: [
+    /* @__PURE__ */ u3("path", { d: "M6.5 1.5l-.5 1.5A4.5 4.5 0 0 0 4.5 4l-1.5-.5L1.5 6l1.2.9A4.5 4.5 0 0 0 2.5 8a4.5 4.5 0 0 0 .2 1.1L1.5 10l1.5 2.5 1.5-.5a4.5 4.5 0 0 0 1.5 1l.5 1.5h3l.5-1.5a4.5 4.5 0 0 0 1.5-1l1.5.5 1.5-2.5-1.2-.9A4.5 4.5 0 0 0 13.5 8a4.5 4.5 0 0 0-.2-1.1L14.5 6 13 3.5l-1.5.5A4.5 4.5 0 0 0 10 3L9.5 1.5h-3Z", stroke: "currentColor", strokeWidth: "1.3", strokeLinejoin: "round" }),
+    /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "2", stroke: "currentColor", strokeWidth: "1.3" })
+  ] });
+}
+function PresetsIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("polygon", { points: "12 2 2 7 12 12 22 7 12 2" }),
+    /* @__PURE__ */ u3("polyline", { points: "2 17 12 22 22 17" }),
+    /* @__PURE__ */ u3("polyline", { points: "2 12 12 17 22 12" })
+  ] });
+}
+function GraphIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("circle", { cx: "18", cy: "18", r: "3" }),
+    /* @__PURE__ */ u3("circle", { cx: "6", cy: "6", r: "3" }),
+    /* @__PURE__ */ u3("circle", { cx: "18", cy: "6", r: "3" }),
+    /* @__PURE__ */ u3("path", { d: "M6 9v6c0 1.7 1.3 3 3 3h3" }),
+    /* @__PURE__ */ u3("line", { x1: "15", y1: "6", x2: "9", y2: "6" })
+  ] });
+}
+function SwitchboardIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("path", { d: "M8 3 4 7l4 4" }),
+    /* @__PURE__ */ u3("path", { d: "M4 7h16" }),
+    /* @__PURE__ */ u3("path", { d: "m16 21 4-4-4-4" }),
+    /* @__PURE__ */ u3("path", { d: "M20 17H4" })
+  ] });
+}
+function LogsIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("path", { d: "M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" }),
+    /* @__PURE__ */ u3("polyline", { points: "14 2 14 8 20 8" }),
+    /* @__PURE__ */ u3("line", { x1: "16", y1: "13", x2: "8", y2: "13" }),
+    /* @__PURE__ */ u3("line", { x1: "16", y1: "17", x2: "8", y2: "17" }),
+    /* @__PURE__ */ u3("line", { x1: "10", y1: "9", x2: "8", y2: "9" })
+  ] });
+}
+function ProjectsIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: /* @__PURE__ */ u3("path", { d: "m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" }) });
+}
+function DiffIcon(props) {
+  const { size, className } = { ...defaults, ...props };
+  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("circle", { cx: "18", cy: "18", r: "3" }),
+    /* @__PURE__ */ u3("circle", { cx: "6", cy: "6", r: "3" }),
+    /* @__PURE__ */ u3("path", { d: "M13 6h3a2 2 0 0 1 2 2v7" }),
+    /* @__PURE__ */ u3("path", { d: "M6 9v12" })
+  ] });
+}
+
 // ui/src/app.tsx
 var LAST_SEEN_COMMIT_KEY = "mandible-last-seen-commit";
 function getRepoId3(repo) {
@@ -34703,6 +34840,7 @@ function App() {
     state.switchboardTemplates
   ]);
   const badges = T2(() => selectBadgeCounts(state), [state]);
+  const headerDisplayMode = state.settings.header_display_mode ?? "text";
   const authBranchesByRepo = T2(() => {
     const result = {};
     for (const [repoId, branches] of Object.entries(state.workBranches)) {
@@ -35037,15 +35175,17 @@ function App() {
     ] }),
     /* @__PURE__ */ u3("header", { className: "app-header", "data-tauri-drag-region": true, children: [
       /* @__PURE__ */ u3("div", { className: "brand", children: "Mandible" }),
-      /* @__PURE__ */ u3("nav", { className: "tabs", children: [
+      /* @__PURE__ */ u3("nav", { className: `tabs${headerDisplayMode === "icons" ? " tabs--icons" : headerDisplayMode === "both" ? " tabs--both" : ""}`, children: [
         /* @__PURE__ */ u3("div", { className: "tab-twin", children: [
           /* @__PURE__ */ u3(
             "a",
             {
               href: "#/console",
               className: `tab-twin__btn${route.tab === "console" ? " tab-twin__btn--active" : ""}`,
+              title: "Chat",
               children: [
-                "Chat",
+                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(ChatIcon, { size: 16 }),
+                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Chat" }),
                 badges.console > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.console })
               ]
             }
@@ -35055,7 +35195,11 @@ function App() {
             {
               href: "#/chat-history",
               className: `tab-twin__btn${route.tab === "chat-history" ? " tab-twin__btn--active" : ""}`,
-              children: "History"
+              title: "History",
+              children: [
+                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(HistoryIcon, { size: 16 }),
+                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "History" })
+              ]
             }
           ),
           /* @__PURE__ */ u3(
@@ -35063,8 +35207,10 @@ function App() {
             {
               href: "#/sessions",
               className: `tab-twin__btn${route.tab === "sessions" ? " tab-twin__btn--active" : ""}`,
+              title: "Monitor",
               children: [
-                "Monitor",
+                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(MonitorIcon, { size: 16 }),
+                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Monitor" }),
                 badges.sessions > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.sessions })
               ]
             }
@@ -35076,7 +35222,11 @@ function App() {
             {
               href: "#/issues",
               className: `tab-twin__btn${route.tab === "issues" ? " tab-twin__btn--active" : ""}`,
-              children: "Issues"
+              title: "Issues",
+              children: [
+                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(IssuesIcon, { size: 16 }),
+                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Issues" })
+              ]
             }
           ),
           /* @__PURE__ */ u3(
@@ -35084,8 +35234,10 @@ function App() {
             {
               href: "#/inbox",
               className: `tab-twin__btn${route.tab === "inbox" ? " tab-twin__btn--active" : ""}`,
+              title: "Inbox",
               children: [
-                "Inbox",
+                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(InboxIcon, { size: 16 }),
+                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Inbox" }),
                 badges.inbox > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.inbox })
               ]
             }
@@ -35095,17 +35247,19 @@ function App() {
             {
               href: "#/auth",
               className: `tab-twin__btn${route.tab === "auth" ? " tab-twin__btn--active" : ""}`,
+              title: "Auth",
               children: [
-                "Auth",
+                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(AuthIcon, { size: 16 }),
+                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Auth" }),
                 badges.auth > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge tab-badge--auth", children: badges.auth })
               ]
             }
           )
         ] }),
-        /* @__PURE__ */ u3("a", { href: "#/settings", className: route.tab === "settings" ? "active" : "", "aria-label": "Settings", title: "Settings", children: /* @__PURE__ */ u3("svg", { width: "16", height: "16", viewBox: "0 0 16 16", fill: "none", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": "true", style: { verticalAlign: "middle", display: "inline-block" }, children: [
-          /* @__PURE__ */ u3("path", { d: "M6.5 1.5l-.5 1.5A4.5 4.5 0 0 0 4.5 4l-1.5-.5L1.5 6l1.2.9A4.5 4.5 0 0 0 2.5 8a4.5 4.5 0 0 0 .2 1.1L1.5 10l1.5 2.5 1.5-.5a4.5 4.5 0 0 0 1.5 1l.5 1.5h3l.5-1.5a4.5 4.5 0 0 0 1.5-1l1.5.5 1.5-2.5-1.2-.9A4.5 4.5 0 0 0 13.5 8a4.5 4.5 0 0 0-.2-1.1L14.5 6 13 3.5l-1.5.5A4.5 4.5 0 0 0 10 3L9.5 1.5h-3Z", stroke: "currentColor", strokeWidth: "1.3", strokeLinejoin: "round" }),
-          /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "2", stroke: "currentColor", strokeWidth: "1.3" })
-        ] }) }),
+        /* @__PURE__ */ u3("a", { href: "#/settings", className: route.tab === "settings" ? "active" : "", "aria-label": "Settings", title: "Settings", children: [
+          (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(SettingsIcon, { size: 16 }),
+          headerDisplayMode === "text" && /* @__PURE__ */ u3("span", { children: "Settings" })
+        ] }),
         /* @__PURE__ */ u3("div", { className: "tab-overflow", ref: overflowRef, children: [
           /* @__PURE__ */ u3(
             "button",
@@ -35124,7 +35278,10 @@ function App() {
                 href: "#/graph",
                 className: route.tab === "graph" ? "active" : "",
                 onClick: () => setShowOverflow(false),
-                children: "Graph"
+                children: [
+                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(GraphIcon, { size: 14 }),
+                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Graph" })
+                ]
               }
             ),
             /* @__PURE__ */ u3(
@@ -35134,7 +35291,8 @@ function App() {
                 className: route.tab === "work" ? "active" : "",
                 onClick: () => setShowOverflow(false),
                 children: [
-                  "Projects",
+                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(ProjectsIcon, { size: 14 }),
+                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Projects" }),
                   badges.work > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.work })
                 ]
               }
@@ -35145,7 +35303,10 @@ function App() {
                 href: "#/review",
                 className: route.tab === "review" ? "active" : "",
                 onClick: () => setShowOverflow(false),
-                children: "Diff"
+                children: [
+                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(DiffIcon, { size: 14 }),
+                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Diff" })
+                ]
               }
             ),
             /* @__PURE__ */ u3(
@@ -35154,7 +35315,10 @@ function App() {
                 href: "#/logs",
                 className: route.tab === "logs" ? "active" : "",
                 onClick: () => setShowOverflow(false),
-                children: "Logs"
+                children: [
+                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(LogsIcon, { size: 14 }),
+                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Logs" })
+                ]
               }
             ),
             /* @__PURE__ */ u3(
@@ -35163,7 +35327,10 @@ function App() {
                 href: "#/presets",
                 className: route.tab === "presets" ? "active" : "",
                 onClick: () => setShowOverflow(false),
-                children: "Presets"
+                children: [
+                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(PresetsIcon, { size: 14 }),
+                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Presets" })
+                ]
               }
             ),
             /* @__PURE__ */ u3(
@@ -35172,7 +35339,10 @@ function App() {
                 href: "#/switchboard",
                 className: route.tab === "switchboard" ? "active" : "",
                 onClick: () => setShowOverflow(false),
-                children: "Switchboard"
+                children: [
+                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(SwitchboardIcon, { size: 14 }),
+                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Switchboard" })
+                ]
               }
             )
           ] })

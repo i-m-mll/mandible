@@ -921,6 +921,26 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
 
         <div className="settings-view__section-body">
+          {/* Bug: 914e9d7 — Header tab display mode */}
+          <div className="settings-view__select-row">
+            <div className="settings-view__select-info">
+              <span className="settings-view__select-label">Header tabs</span>
+              <span className="settings-view__select-desc">Show text labels, icons, or both in header tabs</span>
+            </div>
+            <select
+              className="settings-view__select"
+              value={settings.header_display_mode ?? 'text'}
+              onChange={async (e) => {
+                try {
+                  await onSave('header_display_mode', (e.target as HTMLSelectElement).value);
+                } catch { /* ignore */ }
+              }}
+            >
+              <option value="text">Text only</option>
+              <option value="icons">Icons only</option>
+              <option value="both">Both</option>
+            </select>
+          </div>
           <SelectInput
             label="Theme"
             desc="Color theme for Neovim, Zellij, and tmux"
