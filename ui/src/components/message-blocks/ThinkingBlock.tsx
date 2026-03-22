@@ -12,7 +12,11 @@ export type ThinkingBlockProps = {
 };
 
 export function ThinkingBlock({ content, defaultCollapsed = true }: ThinkingBlockProps): JSX.Element {
-  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  // Short blocks stay expanded — only collapse if >= 10 lines.
+  // TODO: make this threshold configurable via settings (issue 6a7bedf).
+  const lineCount = content.split('\n').length;
+  const shouldCollapse = defaultCollapsed && lineCount >= 10;
+  const [collapsed, setCollapsed] = useState(shouldCollapse);
 
   return (
     <div className="thinking-block">
