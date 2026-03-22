@@ -4407,9 +4407,11 @@ tr:hover .work-actions__trigger {
   overflow: visible;
 }
 
+/* Bug: bce7370 — B1: Remove per-block extra spacing so History blocks flow
+   tightly like Chat. Turn-level actions are on TurnGroup's MessageActions. */
 .transcript-item {
   position: relative;
-  padding: 0 0 24px;
+  padding: 0;
   overflow: visible;
 }
 
@@ -4466,10 +4468,13 @@ tr:hover .work-actions__trigger {
   border-color: rgba(245, 194, 92, 0.14);
 }
 
+/* Bug: bce7370 — B2: Remove outer bubble styling for tool blocks to prevent
+   double-boxing. ToolUseBlock renders its own card with border/bg. */
 .transcript-item--tool-use .transcript-item__bubble,
 .transcript-item--tool-result .transcript-item__bubble {
-  background: rgba(50, 210, 150, 0.05);
-  border-color: rgba(50, 210, 150, 0.14);
+  background: transparent;
+  border-color: transparent;
+  padding: 0;
 }
 
 .transcript-item--system .transcript-item__bubble,

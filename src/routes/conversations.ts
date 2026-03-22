@@ -69,13 +69,11 @@ function mapConversation(row: ConversationRow) {
   };
 }
 
+// Bug: bce7370 — return metadata_json as a raw string so the client type
+// ConversationBlock.metadata_json (string) receives the correct field name.
+// Previously returned as `metadata` (parsed object), which left the client's
+// `block.metadata_json` undefined, causing all tool-use metadata to be empty.
 function mapBlock(row: BlockRow) {
-  let metadata: unknown = {};
-  try {
-    metadata = JSON.parse(row.metadata_json);
-  } catch {
-    // ignore
-  }
   return {
     id: row.id,
     conversation_id: row.conversation_id,
@@ -86,7 +84,7 @@ function mapBlock(row: BlockRow) {
     position: row.position,
     timestamp: row.timestamp,
     parent_id: row.parent_id,
-    metadata,
+    metadata_json: row.metadata_json,
     dag_uuid: row.dag_uuid ?? null,
     dag_parent_uuid: row.dag_parent_uuid ?? null,
   };
