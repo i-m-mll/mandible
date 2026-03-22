@@ -2,6 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
+import {
+  fetchAuthHooks,
+  createAuthHook,
+  updateAuthHook,
+  deleteAuthHook,
+  type AuthHook,
+} from '../api';
 
 export type AuthRequestType =
   | 'merge'
@@ -977,6 +984,250 @@ function AuthSidebarItem({
   );
 }
 
+/** Hooks management panel — shown when the "Hooks" button in the sidebar is active. */
+function AuthHooksPanel({ onClose }: { onClose: () => void }): JSX.Element {
+  const [hooks, setHooks] = useState<AuthHook[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+
+  // Form fields
+  const [formRepo, setFormRepo] = useState('*');
+  const [formType, setFormType] = useState<AuthRequestType>('merge');
+  const [formCommand, setFormCommand] = useState('');
+  const [formLabel, setFormLabel] = useState('');
+
+  const loadHooks = useCallback(async () => {
+    try {
+      setLoading(true);
+      const data = await fetchAuthHooks();
+      setHooks(data);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load hooks');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void loadHooks(); }, [loadHooks]);
+
+  const resetForm = () => {
+    setFormRepo('*');
+    setFormType('merge');
+    setFormCommand('');
+    setFormLabel('');
+    setEditId(null);
+    setShowForm(false);
+  };
+
+  const handleSave = async () => {
+    try {
+      if (editId) {
+        await updateAuthHook(editId, {
+          repo_pattern: formRepo,
+          auth_type: formType,
+          command: formCommand,
+          label: formLabel,
+        });
+      } else {
+        await createAuthHook({
+          repo_pattern: formRepo,
+          auth_type: formType,
+          command: formCommand,
+          label: formLabel,
+        });
+      }
+      resetForm();
+      await loadHooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save hook');
+    }
+  };
+
+  const handleEdit = (hook: AuthHook) => {
+    setFormRepo(hook.repo_pattern);
+    setFormType(hook.auth_type as AuthRequestType);
+    setFormCommand(hook.command);
+    setFormLabel(hook.label);
+    setEditId(hook.id);
+    setShowForm(true);
+  };
+
+  const handleToggle = async (hook: AuthHook) => {
+    if (hook.builtin) return; // Built-in hooks cannot be toggled
+    try {
+      await updateAuthHook(hook.id, { enabled: !hook.enabled });
+      await loadHooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to toggle hook');
+    }
+  };
+
+  const handleDelete = async (hook: AuthHook) => {
+    if (hook.builtin) return;
+    try {
+      await deleteAuthHook(hook.id);
+      await loadHooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete hook');
+    }
+  };
+
+  return (
+    <div className="auth-hooks-panel">
+      <div className="auth-hooks-panel__header">
+        <h2 className="auth-hooks-panel__title">Auth Hooks</h2>
+        <div className="auth-hooks-panel__actions">
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost"
+            onClick={() => { resetForm(); setShowForm(true); }}
+          >
+            + Add Hook
+          </button>
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="auth-hooks-panel__error">{error}</div>
+      )}
+
+      {showForm && (
+        <div className="auth-hooks-panel__form">
+          <div className="auth-hooks-panel__form-row">
+            <label>Label</label>
+            <input
+              type="text"
+              placeholder="Hook description"
+              value={formLabel}
+              onInput={(e) => setFormLabel((e.target as HTMLInputElement).value)}
+            />
+          </div>
+          <div className="auth-hooks-panel__form-row">
+            <label>Repo pattern</label>
+            <input
+              type="text"
+              placeholder="* for all, or repo name"
+              value={formRepo}
+              onInput={(e) => setFormRepo((e.target as HTMLInputElement).value)}
+            />
+          </div>
+          <div className="auth-hooks-panel__form-row">
+            <label>Auth type</label>
+            <select
+              value={formType}
+              onChange={(e) => setFormType((e.target as HTMLSelectElement).value as AuthRequestType)}
+            >
+              <option value="merge">Merge</option>
+              <option value="commit">Commit</option>
+              <option value="force-push">Force Push</option>
+              <option value="branch-delete">Branch Delete</option>
+              <option value="config-change">Config Change</option>
+              <option value="preset-promote">Preset Promote</option>
+              <option value="data-delete">Data Delete</option>
+            </select>
+          </div>
+          <div className="auth-hooks-panel__form-row">
+            <label>Command</label>
+            <textarea
+              placeholder="Shell command to run after auth action"
+              value={formCommand}
+              rows={3}
+              onInput={(e) => setFormCommand((e.target as HTMLTextAreaElement).value)}
+            />
+          </div>
+          <div className="auth-hooks-panel__form-actions">
+            <button
+              type="button"
+              className="btn btn--sm btn--success"
+              onClick={() => void handleSave()}
+              disabled={!formCommand.trim()}
+            >
+              {editId ? 'Update' : 'Create'}
+            </button>
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost"
+              onClick={resetForm}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="auth-hooks-panel__empty">Loading hooks...</div>
+      ) : hooks.length === 0 ? (
+        <div className="auth-hooks-panel__empty">No hooks configured.</div>
+      ) : (
+        <div className="auth-hooks-panel__list">
+          {hooks.map((hook) => (
+            <div
+              key={hook.id}
+              className={`auth-hooks-panel__item${!hook.enabled ? ' auth-hooks-panel__item--disabled' : ''}${hook.builtin ? ' auth-hooks-panel__item--builtin' : ''}`}
+            >
+              <div className="auth-hooks-panel__item-header">
+                <button
+                  type="button"
+                  className={`auth-hooks-panel__toggle${hook.enabled ? ' auth-hooks-panel__toggle--on' : ''}`}
+                  onClick={() => void handleToggle(hook)}
+                  disabled={hook.builtin}
+                  title={hook.builtin ? 'Built-in hooks are always enabled' : (hook.enabled ? 'Disable' : 'Enable')}
+                >
+                  {hook.enabled ? 'ON' : 'OFF'}
+                </button>
+                <span className="auth-hooks-panel__item-label">
+                  {hook.label || hook.command}
+                </span>
+                {hook.builtin && (
+                  <span className="auth-hooks-panel__builtin-badge">built-in</span>
+                )}
+              </div>
+              <div className="auth-hooks-panel__item-meta">
+                <span className={`type-badge type-badge--sm ${AUTH_TYPE_META[hook.auth_type as AuthRequestType]?.cssClass ?? 'type-badge--merge'}`}>
+                  {AUTH_TYPE_META[hook.auth_type as AuthRequestType]?.label ?? hook.auth_type}
+                </span>
+                <span className="auth-hooks-panel__item-repo">{hook.repo_pattern}</span>
+              </div>
+              <div className="auth-hooks-panel__item-command">
+                <code>{hook.command}</code>
+              </div>
+              {!hook.builtin && (
+                <div className="auth-hooks-panel__item-actions">
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--ghost"
+                    onClick={() => handleEdit(hook)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--sm btn--danger"
+                    onClick={() => void handleDelete(hook)}
+                  >
+                    Delete
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const AUTH_TYPE_OPTIONS: { value: AuthRequestType | 'all'; label: string }[] = [
   { value: 'all', label: 'All types' },
   { value: 'merge', label: 'Merge' },
@@ -1009,6 +1260,9 @@ export function AuthQueueView({
     minWidth: 190,
     storageKey: 'sidebar-width:auth',
   });
+
+  // Hooks panel toggle
+  const [showHooksPanel, setShowHooksPanel] = useState(false);
 
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
@@ -1892,12 +2146,25 @@ export function AuthQueueView({
         </div>
       </div>
 
+      {/* Hooks toggle in sidebar footer */}
+      <div className="auth-sidebar__footer">
+        <button
+          type="button"
+          className={`auth-sidebar__hooks-btn${showHooksPanel ? ' auth-sidebar__hooks-btn--active' : ''}`}
+          onClick={() => setShowHooksPanel((prev) => !prev)}
+        >
+          Hooks
+        </button>
+      </div>
+
       {/* Drag handle */}
       <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
 
       {/* RIGHT detail panel */}
       <div className="auth-detail" style={{ position: 'relative' }}>
-        {!selectedRequest ? (
+        {showHooksPanel ? (
+          <AuthHooksPanel onClose={() => setShowHooksPanel(false)} />
+        ) : !selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">Select a request to view details</p>
           </div>

@@ -1530,3 +1530,47 @@ export async function getDefaultPresetIds(): Promise<string[]> {
   }
   return [];
 }
+
+// --- Auth hooks API (Bug: 242d0c7) ---
+
+export type AuthHook = {
+  id: string;
+  repo_pattern: string;
+  auth_type: string;
+  command: string;
+  label: string;
+  enabled: boolean;
+  builtin: boolean;
+  position: number;
+  created_at: number;
+  updated_at: number;
+};
+
+export type AuthHookInput = {
+  repo_pattern: string;
+  auth_type?: string;
+  command: string;
+  label?: string;
+  enabled?: boolean;
+  position?: number;
+};
+
+export async function fetchAuthHooks(): Promise<AuthHook[]> {
+  const response = await apiGet('/api/auth/hooks');
+  const payload = await parseMaybeJson(response) as { hooks?: AuthHook[] };
+  return payload?.hooks ?? [];
+}
+
+export async function createAuthHook(input: AuthHookInput): Promise<AuthHook> {
+  const response = await apiPost('/api/auth/hooks', input);
+  return (await parseMaybeJson(response)) as AuthHook;
+}
+
+export async function updateAuthHook(id: string, fields: Partial<AuthHookInput> & { enabled?: boolean }): Promise<AuthHook> {
+  const response = await apiPut(`/api/auth/hooks/${id}`, fields);
+  return (await parseMaybeJson(response)) as AuthHook;
+}
+
+export async function deleteAuthHook(id: string): Promise<void> {
+  await apiDelete(`/api/auth/hooks/${id}`);
+}
