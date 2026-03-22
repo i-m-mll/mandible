@@ -22076,8 +22076,15 @@ function useStreamState(events) {
           event: violationEvent
         });
       } else if (event.type === "assistant") {
-        flushPendingTurn();
-        pendingAssistant = event;
+        const ae = event;
+        const newId2 = ae.message?.id;
+        const pendingId = pendingAssistant?.message?.id;
+        if (pendingAssistant && newId2 && pendingId === newId2) {
+          pendingAssistant = ae;
+        } else {
+          flushPendingTurn();
+          pendingAssistant = ae;
+        }
       } else if (event.type === "user") {
         const userEvent = event;
         let hasText = false;
@@ -22138,12 +22145,17 @@ function deriveLiveLabel(turns, streaming) {
   }
   return "Working";
 }
+function computeTotalTokens(usage) {
+  if (!usage)
+    return void 0;
+  return (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.output_tokens ?? 0);
+}
 function deriveTokenCount(turns) {
   for (let i4 = turns.length - 1; i4 >= 0; i4--) {
     const usage = turns[i4].assistantEvent.message.usage;
-    if (usage) {
-      return usage.input_tokens + usage.output_tokens;
-    }
+    const total = computeTotalTokens(usage);
+    if (total !== void 0)
+      return total;
   }
   return void 0;
 }
@@ -22262,7 +22274,7 @@ function StreamRenderer({
         const turnText = turnTextParts.join("\n\n");
         const usage = turn.assistantEvent.message.usage;
         const turnMetadata = {
-          tokenCount: usage ? usage.input_tokens + usage.output_tokens : void 0,
+          tokenCount: computeTotalTokens(usage),
           model: turn.assistantEvent.message.model
         };
         const isSelected = selectedMessageId === turn.id;
@@ -22328,9 +22340,9 @@ function StreamRenderer({
       let found = false;
       for (const node of group.nodes) {
         if (node.kind === "assistant_turn") {
-          const usage = node.turn.assistantEvent.message.usage;
-          if (usage) {
-            sum += usage.input_tokens + usage.output_tokens;
+          const total = computeTotalTokens(node.turn.assistantEvent.message.usage);
+          if (total !== void 0) {
+            sum += total;
             found = true;
           }
         }
