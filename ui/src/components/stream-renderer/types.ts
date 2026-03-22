@@ -171,29 +171,9 @@ export type RenderNodeViolation = {
 export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeViolation;
 
 // ---- Component props ----
-
-export interface TextBlockProps {
-  text: string;
-}
-
-export interface ThinkingBlockProps {
-  thinking: string;
-  defaultExpanded?: boolean;
-}
-
-export interface ToolUseBlockProps {
-  toolName: string;
-  toolUseId: string;
-  input: Record<string, unknown>;
-  result?: ToolResultContentBlock | null;
-  defaultExpanded?: boolean;
-}
-
-export interface FileEditBlockProps {
-  filePath: string;
-  oldString: string;
-  newString: string;
-}
+// NOTE (Bug: bce7370): TextBlockProps, ThinkingBlockProps, ToolUseBlockProps,
+// FileEditBlockProps have moved to ../message-blocks/. These types remain here
+// only for backward compatibility with imports from this module.
 
 export interface MessageGroupProps {
   turn: RenderedTurn;

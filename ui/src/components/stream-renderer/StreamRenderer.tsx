@@ -1,6 +1,7 @@
 // Bug: aa35aeb — Console tab renderer: root component with event parsing and auto-scroll
 // Bug: d744dde — P2: chronological RenderNode array replaces insertionIdx interleaving
 // Bug: a654b69 — P4: automatic message grouping with TurnGroup + sticky speakers
+// Bug: bce7370 — Adapted to use shared message-blocks components
 
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -24,6 +25,9 @@ import { MessageActions } from '../shared/MessageActions';
 import { groupByEntity } from '../shared/groupByEntity';
 import type { NodeGroup } from '../shared/groupByEntity';
 import { PresetViolationBlock } from './PresetViolationBlock';
+import { TurnGroup } from '../message-blocks/TurnGroup';
+import { GroupFooter } from '../message-blocks/GroupFooter';
+import { UserBubble } from '../message-blocks/UserBubble';
 
 // ---- Event parsing hook ----
 
@@ -211,49 +215,6 @@ function formatElapsed(seconds: number): string {
   return `${m}m ${s}s`;
 }
 
-// ---- GroupFooter component (Bug: 35edd3d — Unit B: replace group-level MessageActions) ----
-
-function GroupFooter({ totalTokens, onCopyAll }: { totalTokens?: number; onCopyAll: () => void }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    onCopyAll();
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1200);
-  };
-
-  return (
-    <div className="group-footer">
-      <hr className="group-footer__separator" />
-      <div className="group-footer__row">
-        <button
-          type="button"
-          className="group-footer__btn"
-          onClick={handleCopy}
-          title={copied ? 'Copied' : 'Copy all'}
-          aria-label={copied ? 'Copied' : 'Copy all messages'}
-        >
-          {copied ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-            </svg>
-          )}
-        </button>
-        {totalTokens != null && (
-          <span className="group-footer__stat">
-            {totalTokens.toLocaleString()} tokens
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ---- Root component ----
 
 export function StreamRenderer({
@@ -332,9 +293,7 @@ export function StreamRenderer({
     switch (node.kind) {
       case 'user_message':
         return (
-          <div key={node.key} className="user-prompt-bubble">
-            <div className="user-prompt-bubble__text">{node.text}</div>
-          </div>
+          <UserBubble key={node.key} text={node.text} />
         );
 
       case 'violation':
@@ -410,15 +369,8 @@ export function StreamRenderer({
     return parts.join('\n\n');
   }
 
-  const badgeLabels: Record<string, string> = {
-    user: 'You',
-    assistant: 'Assistant',
-    system: 'System',
-  };
-
   const rendered = groups.map((group) => {
-    const entityClass = `stream-turn--${group.entity}`;
-    const shortClass = group.nodes.length <= 2 ? ' stream-turn--short' : '';
+    const isShort = group.nodes.length <= 2;
 
     // Bug: 35edd3d — Aggregate token count across all assistant turns in the group
     let aggregateTokens: number | undefined;
@@ -437,22 +389,22 @@ export function StreamRenderer({
       if (found) aggregateTokens = sum;
     }
 
+    const footer = group.entity === 'assistant' && group.nodes.length > 1 ? (
+      <GroupFooter
+        totalTokens={aggregateTokens}
+        onCopyAll={() => { navigator.clipboard.writeText(collectGroupText(group)).catch(() => {}); }}
+      />
+    ) : undefined;
+
     return (
-      <div key={group.id} className={`stream-turn ${entityClass}${shortClass}`} style={{ position: 'relative' }}>
-        <div className="stream-turn__speaker">
-          <span className="stream-turn__badge">{badgeLabels[group.entity] ?? group.entity}</span>
-        </div>
-        <div className="stream-turn__body">
-          {group.nodes.map(renderNodeBody)}
-          {/* Bug: 35edd3d — GroupFooter replaces group-level MessageActions for assistant groups */}
-          {group.entity === 'assistant' && group.nodes.length > 1 && (
-            <GroupFooter
-              totalTokens={aggregateTokens}
-              onCopyAll={() => { navigator.clipboard.writeText(collectGroupText(group)).catch(() => {}); }}
-            />
-          )}
-        </div>
-      </div>
+      <TurnGroup
+        key={group.id}
+        speaker={group.entity}
+        isShort={isShort}
+        footer={footer}
+      >
+        {group.nodes.map(renderNodeBody)}
+      </TurnGroup>
     );
   });
 
