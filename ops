@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":1,"timestamp":1774143472,"nonce":"9OkZ3rMS0sXwP0SMaVVv2ppoQes=","title":"Unit C: View inbox button in header actions","message":"Add View inbox next to View history, remove old inline Inbox pill. Parent: 763d7f6","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1774143473,"nonce":"zSxzigNBTd/QS27mg0av0mxLxWw=","added":["feature","parent:763d7f6"],"removed":null}]}
