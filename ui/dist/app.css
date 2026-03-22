@@ -6644,6 +6644,34 @@ tr:hover .work-actions__trigger {
   flex: 1;
   min-width: 0;
 }
+.tool-use-block__more {
+  font-size: 11px;
+  color: var(--accent-blue);
+  opacity: 0.7;
+  margin-left: 4px;
+}
+.tool-use-block__preview {
+  width: 100%;
+  padding: 0 12px 6px 30px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-use-block--collapsed .tool-use-block__header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  user-select: none;
+}
 .tool-use-block__status {
   font-size: 12px;
   flex-shrink: 0;
@@ -7271,7 +7299,8 @@ tr:hover .work-actions__trigger {
 }
 .message-actions {
   position: absolute;
-  top: 6px;
+  top: 50%;
+  transform: translateY(-50%);
   right: 6px;
   display: flex;
   flex-wrap: wrap;
@@ -7400,6 +7429,10 @@ tr:hover .work-actions__trigger {
   transition: opacity 0.15s ease, color 0.15s ease;
 }
 .group-footer__btn:hover {
+  opacity: 1;
+  color: var(--accent-blue);
+}
+.group-footer__btn--selected {
   opacity: 1;
   color: var(--accent-blue);
 }
