@@ -17,6 +17,7 @@
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
 #   --depends-on <id>       Auth request ID that must complete before this one runs
 #   --issue <id>            Issue ID to associate with this auth request (repeatable; required; all associated issues are closed on merge)
+#   --type <type>           Auth request type (default: merge; options: merge, commit, force-push, branch-delete, config-change, preset-promote, data-delete)
 #   --handoff <text>        Post-merge handoff note for next session
 #   --timeout <seconds>     SSE listen timeout (default: 14400 / 4 hours)
 #   --force / -f             Skip CWD validation checks
@@ -42,6 +43,7 @@ usage() {
 
 branch=""
 title=""
+auth_type="merge"
 commit_message=""
 diff_summary=""
 spec_content=""
@@ -58,6 +60,7 @@ force=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --title)          title="$2"; shift 2 ;;
+    --type)           auth_type="$2"; shift 2 ;;
     --commit-message) commit_message="$2"; shift 2 ;;
     --diff-summary)   diff_summary="$2"; shift 2 ;;
     --spec)           spec_content="$2"; shift 2 ;;
@@ -94,6 +97,13 @@ fi
 if [ ${#ISSUES[@]} -eq 0 ]; then
   echo "Error: at least one --issue <id> is required" >&2
   exit 1
+fi
+
+# Validate auth type
+valid_types="merge commit force-push branch-delete config-change preset-promote data-delete"
+if ! echo "$valid_types" | grep -qw "$auth_type"; then
+  echo "Error: invalid --type '$auth_type'. Must be one of: $valid_types" >&2
+  exit 2
 fi
 
 # --- Auto-detect protected branch ---
@@ -283,6 +293,7 @@ payload=$(jq -nc \
   --arg command "$command" \
   --arg cwd "$target_cwd" \
   --arg title "$title" \
+  --arg auth_type "$auth_type" \
   --arg execution_mode "$execution_mode" \
   --arg repo "$repo" \
   --arg base_branch "$base_branch" \
@@ -300,6 +311,7 @@ payload=$(jq -nc \
     command: $command,
     cwd: $cwd,
     title: $title,
+    type: $auth_type,
     execution_mode: $execution_mode,
     repo: $repo,
     base_branch: $base_branch,
