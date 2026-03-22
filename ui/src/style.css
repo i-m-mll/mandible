@@ -6764,6 +6764,38 @@ tr:hover .work-actions__trigger {
   min-width: 0;
 }
 
+/* Bug: 0a1ad82 — Collapsed tool use: "more" label + preview line */
+.tool-use-block__more {
+  font-size: 11px;
+  color: var(--accent-blue);
+  opacity: 0.7;
+  margin-left: 4px;
+}
+
+.tool-use-block__preview {
+  width: 100%;
+  padding: 0 12px 6px 30px; /* align with content after chevron+status+name */
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-use-block--collapsed .tool-use-block__header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  user-select: none;
+}
+
 .tool-use-block__status {
   font-size: 12px;
   flex-shrink: 0;
