@@ -533,9 +533,7 @@ function AuthCard({
     <div className="auth-card__summary">
       <div className="auth-card__row auth-card__row--primary">
         <span className={statusClass}>{statusLabel}</span>
-        {authType !== 'merge' && (
-          <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
-        )}
+        <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
         {/* Bug: a44fd6a — render auth request title as inline markdown */}
         <span
           className="auth-card__title"
@@ -958,11 +956,9 @@ function AuthSidebarItem({
       <span className={`auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}`} />
       <span className="auth-sidebar-item__body">
         <span className="auth-sidebar-item__title-row">
-          {authType !== 'merge' && (
-            <span className={`type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`}>
-              {sidebarTypeMeta.label}
-            </span>
-          )}
+          <span className={`type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`}>
+            {sidebarTypeMeta.label}
+          </span>
           {/* Bug: a44fd6a — render auth sidebar title as inline markdown */}
           <span
             className="auth-sidebar-item__title"
