@@ -2,11 +2,12 @@
 // Bug: bce7370 — Adapted to use shared message-blocks components
 // Bug: 236d03b — Fix 5: Per-block hover overlay with MessageActions
 
+import { useMemo } from 'preact/hooks';
 import type { ContentBlock, MessageGroupProps, ToolResultContentBlock } from './types';
 import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
-import { MessageActions } from '../shared/MessageActions';
+import { MessageActions, type MessageActionsMeta } from '../shared/MessageActions';
 
 /** Extract copyable text from a single content block. */
 function blockCopyText(block: ContentBlock): string {
@@ -21,6 +22,16 @@ function blockCopyText(block: ContentBlock): string {
 export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProps): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
+
+  // Bug: 0a1ad82 — Thread turn-level metadata to per-block MessageActions
+  const turnMeta: MessageActionsMeta | undefined = useMemo(() => {
+    const msg = assistantEvent.message;
+    const usage = msg.usage;
+    const model = msg.model;
+    if (!usage && !model) return undefined;
+    const tokenCount = usage ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : undefined;
+    return { tokenCount, model };
+  }, [assistantEvent]);
 
   function renderBlock(block: ContentBlock, index: number): JSX.Element | null {
     let inner: JSX.Element | null = null;
@@ -77,6 +88,7 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
         {inner}
         <MessageActions
           onCopy={text ? () => { navigator.clipboard.writeText(text).catch(() => {}); } : undefined}
+          metadata={turnMeta}
         />
       </div>
     );

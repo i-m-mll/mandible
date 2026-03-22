@@ -7499,7 +7499,8 @@ tr:hover .work-actions__trigger {
 
 .message-actions {
   position: absolute;
-  top: 6px;
+  top: 50%;
+  transform: translateY(-50%);
   right: 6px;
   display: flex;
   flex-wrap: wrap;
