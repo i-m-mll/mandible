@@ -95,9 +95,21 @@ function useStreamState(events: StreamEvent[]): StreamState {
           event: violationEvent,
         });
       } else if (event.type === 'assistant') {
-        // Flush previous turn before starting a new one
-        flushPendingTurn();
-        pendingAssistant = event as AssistantEvent;
+        // Bug: cad4eef — SDK emits multiple assistant events with the same message.id
+        // as streaming updates (progressive content blocks). Replace in place instead
+        // of flushing, so only the final (most complete) event per message.id is rendered.
+        const ae = event as AssistantEvent;
+        const newId = ae.message?.id;
+        const pendingId = pendingAssistant?.message?.id;
+
+        if (pendingAssistant && newId && pendingId === newId) {
+          // Same turn, streaming update — replace, don't flush
+          pendingAssistant = ae;
+        } else {
+          // Different turn — flush previous, start new
+          flushPendingTurn();
+          pendingAssistant = ae;
+        }
       } else if (event.type === 'user') {
         const userEvent = event as UserEvent;
         // Collect text blocks (top-level user prompt) and tool results (mid-turn).
@@ -172,13 +184,21 @@ function deriveLiveLabel(turns: RenderedTurn[], streaming: boolean): string | un
   return 'Working';
 }
 
+/** Bug: cad4eef — Compute total tokens including cache fields. */
+function computeTotalTokens(usage: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined): number | undefined {
+  if (!usage) return undefined;
+  return (usage.input_tokens ?? 0)
+    + (usage.cache_creation_input_tokens ?? 0)
+    + (usage.cache_read_input_tokens ?? 0)
+    + (usage.output_tokens ?? 0);
+}
+
 /** Bug: 4891ce4 — Extract token count from the last assistant event's usage for inline display. */
 function deriveTokenCount(turns: RenderedTurn[]): number | undefined {
   for (let i = turns.length - 1; i >= 0; i--) {
     const usage = turns[i].assistantEvent.message.usage;
-    if (usage) {
-      return usage.input_tokens + usage.output_tokens;
-    }
+    const total = computeTotalTokens(usage);
+    if (total !== undefined) return total;
   }
   return undefined;
 }
@@ -344,9 +364,7 @@ export function StreamRenderer({
         // Bug: 02d701a — P3: per-turn metadata for hover display
         const usage = turn.assistantEvent.message.usage;
         const turnMetadata = {
-          tokenCount: usage
-            ? usage.input_tokens + usage.output_tokens
-            : undefined,
+          tokenCount: computeTotalTokens(usage),
           model: turn.assistantEvent.message.model,
         };
 
@@ -409,9 +427,9 @@ export function StreamRenderer({
       let found = false;
       for (const node of group.nodes) {
         if (node.kind === 'assistant_turn') {
-          const usage = node.turn.assistantEvent.message.usage;
-          if (usage) {
-            sum += usage.input_tokens + usage.output_tokens;
+          const total = computeTotalTokens(node.turn.assistantEvent.message.usage);
+          if (total !== undefined) {
+            sum += total;
             found = true;
           }
         }
