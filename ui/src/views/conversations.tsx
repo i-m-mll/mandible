@@ -604,6 +604,18 @@ function TranscriptBlockItem({
     }
   };
 
+  // Bug: bce7370 — B3: Compute collapsed label for non-thinking blocks
+  const collapsedLabel = (() => {
+    if (isThinkingBlock) return ''; // ThinkingBlock handles its own
+    if (block.type === 'tool_use') {
+      const toolName = (metadata.tool_name as string | undefined) ?? 'Tool';
+      return `Tool: ${toolName}`;
+    }
+    if (block.type === 'tool_result') return 'Result';
+    if (block.type === 'system' || block.type === 'event') return 'System';
+    return block.type;
+  })();
+
   return (
     <div className={className} onClick={handleClick} data-block-id={block.id}>
       <div className="transcript-item__frame">
@@ -618,35 +630,15 @@ function TranscriptBlockItem({
             // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
             <ThinkingBlock content={block.content} defaultCollapsed={true} />
           ) : collapsed ? (
-            <div className="transcript-item__collapsed-preview" aria-label="Collapsed block">
-              …
+            // Bug: bce7370 — B3: Replace ellipsis with label + "more", same pattern as ThinkingBlock
+            <div className="thinking-block__collapsed" aria-label="Collapsed block">
+              <span className="thinking-block__label">{collapsedLabel}</span>
+              <span className="thinking-block__more">more</span>
             </div>
           ) : (
             renderConversationBlockBody(block, collapsed)
           )}
         </div>
-      </div>
-      <span
-        className="transcript-item__timestamp"
-        title={formatAbsoluteTime(block.timestamp)}
-      >
-        {formatRelativeTime(block.timestamp)}
-      </span>
-      <div className="transcript-item__actions">
-        <CopyButton content={block.content} />
-        <label
-          className={`transcript-item__select${selectMode || isSelected ? ' transcript-item__select--visible' : ''}`}
-          title={isSelected ? 'Deselect block' : 'Select block'}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <input
-            type="checkbox"
-            checked={isSelected}
-            onChange={onToggleSelect}
-            className="block-checkbox"
-            aria-label={isSelected ? 'Deselect block' : 'Select block'}
-          />
-        </label>
       </div>
     </div>
   );

@@ -335,6 +335,24 @@ function conversationBlocksToStreamEvents(
   }
 
   flushAssistant();
+
+  // Bug: bce7370 — B4: Append a synthetic result event so deriveStreamingState
+  // sees the conversation as complete (prevents blinker on loaded history).
+  if (events.length > 0) {
+    events.push({
+      type: 'result',
+      session_id: providerSessionId,
+      subtype: 'success',
+      duration_ms: 0,
+      duration_api_ms: 0,
+      is_error: false,
+      num_turns: 0,
+      result: '',
+      cost_usd: 0,
+      total_cost_usd: 0,
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 },
+    } as unknown as StreamEvent);
+  }
   return events;
 }
 
@@ -698,6 +716,15 @@ export function TerminalPane({
 
     return () => { cancelled = true; };
   }, [providerSessionId, sessionId, resumeAtMessage]);
+
+  // Bug: bce7370 — B4 (belt-and-suspenders): Force streaming=false when the session
+  // is stopped or crashed. Prevents blinker on completed/dead sessions even if
+  // deriveStreamingState incorrectly returns true due to missing result events.
+  useEffect(() => {
+    if (streaming && (sessionStatus === 'stopped' || sessionStatus === 'crashed')) {
+      setStreaming(false);
+    }
+  }, [streaming, sessionStatus]);
 
   // Bug: 2a54b51 — Debounced write of stream events to IndexedDB cache (every 2s while streaming)
   const cacheFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
