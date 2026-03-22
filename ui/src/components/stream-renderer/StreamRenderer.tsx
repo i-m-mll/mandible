@@ -21,7 +21,7 @@ import type {
 } from './types';
 import { MessageGroup } from './MessageGroup';
 // FORBIDDEN (Bug: fbca9d5): No StatusBar import — no UI between stream and input.
-import { MessageActions } from '../shared/MessageActions';
+// Bug: 236d03b — MessageActions import removed; per-block actions now live in MessageGroup.
 import { groupByEntity } from '../shared/groupByEntity';
 import type { NodeGroup } from '../shared/groupByEntity';
 import { PresetViolationBlock } from './PresetViolationBlock';
@@ -335,22 +335,11 @@ export function StreamRenderer({
           isLastStreamingTurn &&
           turn.assistantEvent.message.content.some((b) => b.type === 'thinking');
 
-        // Collect text content for copy action
-        const turnTextParts: string[] = [];
-        for (const block of turn.assistantEvent.message.content) {
-          if (block.type === 'text' && block.text) turnTextParts.push(block.text);
-        }
-        const turnText = turnTextParts.join('\n\n');
-
-        // Bug: 02d701a — P3: per-turn metadata for hover display
-        const usage = turn.assistantEvent.message.usage;
-        const turnMetadata = {
-          tokenCount: computeTotalTokens(usage),
-          model: turn.assistantEvent.message.model,
-        };
-
         const isSelected = selectedMessageId === turn.id;
 
+        // Bug: 236d03b — Fix 5: Group-level MessageActions removed; per-block
+        // MessageActions now live inside MessageGroup. The group-level copy
+        // moves to GroupFooter's always-visible copy button (for multi-block turns).
         return (
           <div
             key={node.key}
@@ -361,11 +350,6 @@ export function StreamRenderer({
               turn={turn}
               isStreaming={isLastStreamingTurn}
               isThinking={isThinking}
-            />
-            <MessageActions
-              onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
-              onInfo={onSelectMessageInfo ? () => onSelectMessageInfo(turn.id) : undefined}
-              metadata={turnMetadata}
             />
           </div>
         );

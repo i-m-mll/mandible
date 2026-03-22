@@ -16427,7 +16427,9 @@ function TextBlock({ content }) {
 
 // ui/src/components/message-blocks/ThinkingBlock.tsx
 function ThinkingBlock({ content, defaultCollapsed = true }) {
-  const [collapsed, setCollapsed] = d2(defaultCollapsed);
+  const lineCount = content.split("\n").length;
+  const shouldCollapse = defaultCollapsed && lineCount >= 10;
+  const [collapsed, setCollapsed] = d2(shouldCollapse);
   return /* @__PURE__ */ u3("div", { className: "thinking-block", children: [
     /* @__PURE__ */ u3("div", { className: "thinking-block__gutter", "aria-hidden": "true", children: /* @__PURE__ */ u3("svg", { viewBox: "0 0 16 16", children: /* @__PURE__ */ u3(
       "path",
@@ -18828,7 +18830,7 @@ function BlockTypeIcon({ type: type2 }) {
       }
     ) });
   }
-  if (type2 === "tool_use" || type2 === "tool_result") {
+  if (type2 === "tool_use") {
     return /* @__PURE__ */ u3("svg", { viewBox: "0 0 16 16", "aria-hidden": "true", children: /* @__PURE__ */ u3(
       "path",
       {
@@ -19125,7 +19127,9 @@ function CopyButton({ content }) {
   );
 }
 function BlockTypeIcon2({ type: type2 }) {
-  if (type2 === "thinking" || type2 === "tool_use" || type2 === "tool_result" || type2 === "system" || type2 === "event") {
+  if (type2 === "thinking")
+    return null;
+  if (type2 === "tool_use" || type2 === "tool_result" || type2 === "system" || type2 === "event") {
     return /* @__PURE__ */ u3(BlockTypeIcon, { type: type2 });
   }
   return null;
@@ -19271,6 +19275,7 @@ function TranscriptBlockItem({
     selectMode ? "transcript-item--selectable" : ""
   ].filter(Boolean).join(" ");
   const isThinkingBlock = block2.type === "thinking";
+  const isSelfCollapsing = isThinkingBlock || block2.type === "tool_use" || block2.type === "tool_result";
   const handleClick = (e3) => {
     if (selectMode) {
       if (e3.shiftKey) {
@@ -19280,7 +19285,7 @@ function TranscriptBlockItem({
       }
       return;
     }
-    if (isCollapsible && !isThinkingBlock) {
+    if (isCollapsible && !isSelfCollapsing) {
       onToggleCollapse();
     }
   };
@@ -19297,20 +19302,31 @@ function TranscriptBlockItem({
       return "System";
     return block2.type;
   })();
-  return /* @__PURE__ */ u3("div", { className, onClick: handleClick, "data-block-id": block2.id, children: /* @__PURE__ */ u3("div", { className: "transcript-item__frame", children: [
-    hasTypeIcon ? /* @__PURE__ */ u3("div", { className: "transcript-item__gutter", "aria-hidden": "true", children: typeIcon }) : null,
-    /* @__PURE__ */ u3("div", { className: "transcript-item__bubble", children: isThinkingBlock ? (
-      // Bug: bce7370 — Fix 1: Render ThinkingBlock directly, bypassing outer collapse.
-      // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
-      /* @__PURE__ */ u3(ThinkingBlock, { content: block2.content, defaultCollapsed: true })
-    ) : collapsed ? (
-      // Bug: bce7370 — B3: Replace ellipsis with label + "more", same pattern as ThinkingBlock
-      /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", "aria-label": "Collapsed block", children: [
-        /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: collapsedLabel }),
-        /* @__PURE__ */ u3("span", { className: "thinking-block__more", children: "more" })
-      ] })
-    ) : renderConversationBlockBody(block2, collapsed) })
-  ] }) });
+  return /* @__PURE__ */ u3("div", { className, onClick: handleClick, "data-block-id": block2.id, style: { position: "relative" }, children: [
+    /* @__PURE__ */ u3("div", { className: "transcript-item__frame", children: [
+      hasTypeIcon ? /* @__PURE__ */ u3("div", { className: "transcript-item__gutter", "aria-hidden": "true", children: typeIcon }) : null,
+      /* @__PURE__ */ u3("div", { className: "transcript-item__bubble", children: isThinkingBlock ? (
+        // Bug: bce7370 — Fix 1: Render ThinkingBlock directly, bypassing outer collapse.
+        // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
+        /* @__PURE__ */ u3(ThinkingBlock, { content: block2.content, defaultCollapsed: true })
+      ) : collapsed ? (
+        // Bug: bce7370 — B3: Replace ellipsis with label + "more", same pattern as ThinkingBlock
+        /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", "aria-label": "Collapsed block", children: [
+          /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: collapsedLabel }),
+          /* @__PURE__ */ u3("span", { className: "thinking-block__more", children: "more" })
+        ] })
+      ) : renderConversationBlockBody(block2, collapsed) })
+    ] }),
+    /* @__PURE__ */ u3(
+      MessageActions,
+      {
+        onCopy: () => {
+          navigator.clipboard.writeText(block2.content).catch(() => {
+          });
+        }
+      }
+    )
+  ] });
 }
 function TranscriptTurnRenderer({
   turn,
@@ -19336,16 +19352,38 @@ function TranscriptTurnRenderer({
     blockCount: b.block_count
   }));
   const isShort = turn.blocks.length <= 2;
+  let aggregateTokens;
+  if (turn.speaker === "assistant" && turn.blocks.length > 1) {
+    let sum = 0;
+    let found = false;
+    for (const block2 of turn.blocks) {
+      const meta = parseMetadata(block2.metadata_json);
+      const usage = meta.token_usage;
+      if (usage) {
+        sum += (usage.input ?? 0) + (usage.output ?? 0);
+        found = true;
+      }
+    }
+    if (found)
+      aggregateTokens = sum;
+  }
+  const groupFooter = turn.speaker === "assistant" && turn.blocks.length > 1 ? /* @__PURE__ */ u3(
+    GroupFooter,
+    {
+      totalTokens: aggregateTokens,
+      onCopyAll: () => {
+        navigator.clipboard.writeText(turnText).catch(() => {
+        });
+      }
+    }
+  ) : void 0;
   const footer = /* @__PURE__ */ u3(k, { children: [
-    /* @__PURE__ */ u3(
+    groupFooter,
+    turnDagUuid && (onResume || onFork) && /* @__PURE__ */ u3(
       MessageActions,
       {
-        onCopy: () => {
-          navigator.clipboard.writeText(turnText).catch(() => {
-          });
-        },
-        onResume: turnDagUuid && onResume ? () => onResume(turnDagUuid) : void 0,
-        onFork: turnDagUuid && onFork ? () => onFork(turnDagUuid) : void 0,
+        onResume: onResume ? () => onResume(turnDagUuid) : void 0,
+        onFork: onFork ? () => onFork(turnDagUuid) : void 0,
         dagUuid: turnDagUuid,
         showResume: !!turnDagUuid,
         showFork: !!turnDagUuid
@@ -23108,15 +23146,29 @@ var import_xterm = __toESM(require_xterm(), 1);
 var import_addon_fit = __toESM(require_addon_fit(), 1);
 
 // ui/src/components/stream-renderer/MessageGroup.tsx
+function blockCopyText(block2) {
+  switch (block2.type) {
+    case "text":
+      return block2.text ?? "";
+    case "thinking":
+      return block2.thinking ?? "";
+    case "tool_use":
+      return JSON.stringify(block2.input, null, 2);
+    default:
+      return "";
+  }
+}
 function MessageGroup({ turn, isStreaming, isThinking }) {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
   function renderBlock(block2, index2) {
+    let inner = null;
     switch (block2.type) {
       case "text":
-        return block2.text.trim() ? /* @__PURE__ */ u3(TextBlock, { content: block2.text }, `text-${index2}`) : null;
+        inner = block2.text.trim() ? /* @__PURE__ */ u3(TextBlock, { content: block2.text }, `text-${index2}`) : null;
+        break;
       case "thinking":
-        return /* @__PURE__ */ u3(
+        inner = /* @__PURE__ */ u3(
           ThinkingBlock,
           {
             content: block2.thinking,
@@ -23124,10 +23176,11 @@ function MessageGroup({ turn, isStreaming, isThinking }) {
           },
           `thinking-${index2}`
         );
+        break;
       case "tool_use": {
         const result = toolResults.get(block2.id) ?? null;
         const isPendingStreaming = isStreaming && result === null;
-        return /* @__PURE__ */ u3(
+        inner = /* @__PURE__ */ u3(
           ToolUseBlock,
           {
             toolName: block2.name,
@@ -23138,10 +23191,26 @@ function MessageGroup({ turn, isStreaming, isThinking }) {
           },
           `tool-${block2.id}`
         );
+        break;
       }
       default:
         return null;
     }
+    if (!inner)
+      return null;
+    const text2 = blockCopyText(block2);
+    return /* @__PURE__ */ u3("div", { className: "message-block-wrapper", style: { position: "relative" }, children: [
+      inner,
+      /* @__PURE__ */ u3(
+        MessageActions,
+        {
+          onCopy: text2 ? () => {
+            navigator.clipboard.writeText(text2).catch(() => {
+            });
+          } : void 0
+        }
+      )
+    ] }, `block-wrap-${index2}`);
   }
   return /* @__PURE__ */ u3("div", { className: "message-group", children: /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) }) });
 }
@@ -23414,44 +23483,20 @@ function StreamRenderer({
         const { turn } = node;
         const isLastStreamingTurn = streaming && node.key === lastAssistantKey;
         const isThinking = isLastStreamingTurn && turn.assistantEvent.message.content.some((b) => b.type === "thinking");
-        const turnTextParts = [];
-        for (const block2 of turn.assistantEvent.message.content) {
-          if (block2.type === "text" && block2.text)
-            turnTextParts.push(block2.text);
-        }
-        const turnText = turnTextParts.join("\n\n");
-        const usage = turn.assistantEvent.message.usage;
-        const turnMetadata = {
-          tokenCount: computeTotalTokens(usage),
-          model: turn.assistantEvent.message.model
-        };
         const isSelected = selectedMessageId === turn.id;
         return /* @__PURE__ */ u3(
           "div",
           {
             className: isSelected ? "stream-turn-node stream-turn--selected" : "stream-turn-node",
             style: { position: "relative" },
-            children: [
-              /* @__PURE__ */ u3(
-                MessageGroup,
-                {
-                  turn,
-                  isStreaming: isLastStreamingTurn,
-                  isThinking
-                }
-              ),
-              /* @__PURE__ */ u3(
-                MessageActions,
-                {
-                  onCopy: () => {
-                    navigator.clipboard.writeText(turnText).catch(() => {
-                    });
-                  },
-                  onInfo: onSelectMessageInfo ? () => onSelectMessageInfo(turn.id) : void 0,
-                  metadata: turnMetadata
-                }
-              )
-            ]
+            children: /* @__PURE__ */ u3(
+              MessageGroup,
+              {
+                turn,
+                isStreaming: isLastStreamingTurn,
+                isThinking
+              }
+            )
           },
           node.key
         );

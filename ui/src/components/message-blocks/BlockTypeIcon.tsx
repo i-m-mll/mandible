@@ -25,7 +25,8 @@ export function BlockTypeIcon({ type }: BlockTypeIconProps): JSX.Element | null 
       </svg>
     );
   }
-  if (type === 'tool_use' || type === 'tool_result') {
+  // Bug: 722e318 — Fix 3: tool_result should have no gutter icon
+  if (type === 'tool_use') {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <path

@@ -4463,9 +4463,12 @@ tr:hover .work-actions__trigger {
   padding: 0;
 }
 
+/* Bug: 722e318 — Fix 1: Remove outer bubble styling for thinking blocks to prevent
+   double-boxing. ThinkingBlock renders its own styled box with gutter icon. */
 .transcript-item--thinking .transcript-item__bubble {
-  background: rgba(245, 194, 92, 0.06);
-  border-color: rgba(245, 194, 92, 0.14);
+  background: transparent;
+  border-color: transparent;
+  padding: 0;
 }
 
 /* Bug: bce7370 — B2: Remove outer bubble styling for tool blocks to prevent
