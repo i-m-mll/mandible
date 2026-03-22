@@ -189,7 +189,15 @@ fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn resolve_daemon_entry(app: &AppHandle) -> Result<PathBuf, String> {
-    // 1. Check bundled sidecar (Tauri resource bundle)
+    // 1. Check Zone 2 mutable runtime (Bug: cc4688b)
+    //    Zone 2 takes priority over everything — it may contain user patches
+    //    that override the bundled or dev builds.
+    let zone2_entry = zone2_runtime_path().join("dist").join("index.js");
+    if zone2_entry.exists() {
+        return Ok(zone2_entry);
+    }
+
+    // 2. Check bundled sidecar (Tauri resource bundle)
     let bundled = app
         .path()
         .resource_dir()
@@ -199,13 +207,6 @@ fn resolve_daemon_entry(app: &AppHandle) -> Result<PathBuf, String> {
         if path.exists() {
             return Ok(path);
         }
-    }
-
-    // 2. Check Zone 2 mutable runtime (Bug: cc4688b)
-    //    Zone 2 takes priority over dev path when available — it may contain patches.
-    let zone2_entry = zone2_runtime_path().join("dist").join("index.js");
-    if zone2_entry.exists() {
-        return Ok(zone2_entry);
     }
 
     // 3. Check dev path (repo root)
