@@ -5407,18 +5407,24 @@ tr:hover .work-actions__trigger {
   margin-bottom: 0;
 }
 
-/* ThinkingBlock — label + more button for collapsed state */
+/* ThinkingBlock — label + chevron for collapsed/expanded state */
+.thinking-block__chevron {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
 .thinking-block__label {
   font-size: 12px;
   color: var(--text-muted);
   letter-spacing: 0.03em;
 }
 
-.thinking-block__more {
-  font-size: 11px;
-  color: var(--text-muted);
-  opacity: 0.7;
-  margin-left: 8px;
+.thinking-block__expanded-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 4px;
 }
 
 /* ToolUseBlock — compact mode for History */
@@ -7531,11 +7537,9 @@ tr:hover .work-actions__trigger {
 
 .message-actions {
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 6px;
   right: 6px;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   background: rgba(17, 24, 33, 0.9);
@@ -7543,8 +7547,6 @@ tr:hover .work-actions__trigger {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   padding: 2px 4px;
-  max-height: calc(100% - 12px);
-  overflow: auto;
   opacity: 0;
   transition: opacity 0.15s ease;
   pointer-events: none;
@@ -7632,13 +7634,16 @@ tr:hover .work-actions__trigger {
 /* Bug: 02d701a — Metadata row below action buttons */
 
 .message-actions__meta {
-  width: 100%;
-  padding: 2px 4px 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--text-muted);
   opacity: 0.7;
-  white-space: nowrap;
-  line-height: 1.4;
+  line-height: 24px;
+  padding: 0 4px;
 }
 
 /* Bug: 02d701a — Selected message highlight */

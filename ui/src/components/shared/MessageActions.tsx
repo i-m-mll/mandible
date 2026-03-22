@@ -82,7 +82,14 @@ export function MessageActions({
 
   return (
     <div className="message-actions" data-dag-uuid={dagUuid}>
-      {/* Primary actions — always visible on hover */}
+      {/* Metadata — subdued text on left */}
+      {metaParts.length > 0 && (
+        <span className="message-actions__meta">
+          {metaParts.join(' \u00b7 ')}
+        </span>
+      )}
+
+      {/* Primary actions — buttons on right */}
       {onCopy && (
         <button
           type="button"
@@ -148,13 +155,6 @@ export function MessageActions({
               )}
             </div>
           )}
-        </div>
-      )}
-
-      {/* Metadata row — subdued line below action buttons */}
-      {metaParts.length > 0 && (
-        <div className="message-actions__meta">
-          {metaParts.join(' \u00b7 ')}
         </div>
       )}
     </div>

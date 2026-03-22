@@ -287,7 +287,7 @@ function CompactToolUseBlock({
         <span className="tool-use-card__name">{toolName}</span>
         {primary && <span className="tool-use-card__arg">{primary}</span>}
         <span className="tool-use-card__expand">
-          {expanded ? 'less' : 'more'}
+          {expanded ? '\u25BE' : '\u25B8'}
         </span>
       </div>
       {expanded && (
@@ -414,7 +414,6 @@ export function ToolUseBlock({
           <span className="tool-use-block__chevron">{'\u25B8'}</span>
           <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
           <span className="tool-use-block__name">{toolName}</span>
-          <span className="tool-use-block__more">more</span>
           {firstInputLine && (
             <div className="tool-use-block__preview">{firstInputLine}</div>
           )}
