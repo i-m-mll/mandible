@@ -7660,6 +7660,12 @@ tr:hover .work-actions__trigger {
   color: var(--accent-blue);
 }
 
+/* Bug: 0a1ad82 — Selected state for select button */
+.group-footer__btn--selected {
+  opacity: 1;
+  color: var(--accent-blue);
+}
+
 .group-footer__stat {
   font-size: 11px;
   color: var(--text-muted);

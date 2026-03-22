@@ -9,9 +9,11 @@ import { useState } from 'preact/hooks';
 export type GroupFooterProps = {
   totalTokens?: number;
   onCopyAll: () => void;
+  onSelect?: () => void;
+  isSelected?: boolean;
 };
 
-export function GroupFooter({ totalTokens, onCopyAll }: GroupFooterProps): JSX.Element {
+export function GroupFooter({ totalTokens, onCopyAll, onSelect, isSelected }: GroupFooterProps): JSX.Element {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -42,6 +44,27 @@ export function GroupFooter({ totalTokens, onCopyAll }: GroupFooterProps): JSX.E
             </svg>
           )}
         </button>
+        {/* Bug: 0a1ad82 — Select button for turn selection */}
+        {onSelect && (
+          <button
+            type="button"
+            className={`group-footer__btn${isSelected ? ' group-footer__btn--selected' : ''}`}
+            onClick={onSelect}
+            title={isSelected ? 'Deselect' : 'Select'}
+            aria-label={isSelected ? 'Deselect turn' : 'Select turn'}
+          >
+            {isSelected ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="3" ry="3" />
+                <polyline points="17 8 10 16 7 13" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="3" ry="3" />
+              </svg>
+            )}
+          </button>
+        )}
         {totalTokens != null && (
           <span className="group-footer__stat">
             {totalTokens.toLocaleString()} tokens
