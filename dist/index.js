@@ -30,6 +30,7 @@ import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { registerPresetRoutes } from "./routes/presets.js";
 import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
+import { registerRuntimeRoutes } from "./routes/runtime.js";
 import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
@@ -85,6 +86,8 @@ export async function startDaemon(options = {}) {
     registerAuthHookRoutes(router);
     // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
     registerWebhookRoutes(router, sessionRegistry, sessionManager);
+    // Bug: cc4688b — Zone 2 mutable runtime routes
+    registerRuntimeRoutes(router);
     // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
     registerConversationRoutes(router, sessionManager);
     // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)
