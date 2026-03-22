@@ -625,7 +625,7 @@ function TranscriptBlockItem({
   })();
 
   return (
-    <div className={className} onClick={handleClick} data-block-id={block.id}>
+    <div className={className} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
       <div className="transcript-item__frame">
         {hasTypeIcon ? (
           <div className="transcript-item__gutter" aria-hidden="true">
@@ -648,6 +648,10 @@ function TranscriptBlockItem({
           )}
         </div>
       </div>
+      {/* Bug: 236d03b — Fix 5: Per-block MessageActions with copy */}
+      <MessageActions
+        onCopy={() => { navigator.clipboard.writeText(block.content).catch(() => {}); }}
+      />
     </div>
   );
 }
@@ -695,17 +699,44 @@ function TranscriptTurnRenderer({
 
   const isShort = turn.blocks.length <= 2;
 
-  // Bug: bce7370 — Use shared TurnGroup layout
+  // Bug: 236d03b — Fix 4: Compute aggregate tokens for GroupFooter from block metadata
+  let aggregateTokens: number | undefined;
+  if (turn.speaker === 'assistant' && turn.blocks.length > 1) {
+    let sum = 0;
+    let found = false;
+    for (const block of turn.blocks) {
+      const meta = parseMetadata(block.metadata_json);
+      const usage = meta.token_usage as { input?: number; output?: number } | undefined;
+      if (usage) {
+        sum += (usage.input ?? 0) + (usage.output ?? 0);
+        found = true;
+      }
+    }
+    if (found) aggregateTokens = sum;
+  }
+
+  // Bug: 236d03b — Fix 5: Group-level copy removed from MessageActions; now in GroupFooter.
+  // Fix 4: GroupFooter with aggregate tokens + copy-all for multi-block assistant turns.
+  const groupFooter = turn.speaker === 'assistant' && turn.blocks.length > 1 ? (
+    <GroupFooter
+      totalTokens={aggregateTokens}
+      onCopyAll={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
+    />
+  ) : undefined;
+
   const footer = (
     <>
-      <MessageActions
-        onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
-        onResume={turnDagUuid && onResume ? () => onResume(turnDagUuid) : undefined}
-        onFork={turnDagUuid && onFork ? () => onFork(turnDagUuid) : undefined}
-        dagUuid={turnDagUuid}
-        showResume={!!turnDagUuid}
-        showFork={!!turnDagUuid}
-      />
+      {groupFooter}
+      {/* Keep fork/resume actions at the turn level (no copy — that's per-block now) */}
+      {turnDagUuid && (onResume || onFork) && (
+        <MessageActions
+          onResume={onResume ? () => onResume(turnDagUuid) : undefined}
+          onFork={onFork ? () => onFork(turnDagUuid) : undefined}
+          dagUuid={turnDagUuid}
+          showResume={!!turnDagUuid}
+          showFork={!!turnDagUuid}
+        />
+      )}
       {forkPoint && turnDagUuid && (
         <BranchSelector
           branchPointUuid={turnDagUuid}

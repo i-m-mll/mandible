@@ -1,40 +1,56 @@
 // Bug: aa35aeb — Console tab renderer: one message group per assistant turn
 // Bug: bce7370 — Adapted to use shared message-blocks components
+// Bug: 236d03b — Fix 5: Per-block hover overlay with MessageActions
 
 import type { ContentBlock, MessageGroupProps, ToolResultContentBlock } from './types';
 import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
+import { MessageActions } from '../shared/MessageActions';
+
+/** Extract copyable text from a single content block. */
+function blockCopyText(block: ContentBlock): string {
+  switch (block.type) {
+    case 'text': return block.text ?? '';
+    case 'thinking': return (block as { type: 'thinking'; thinking: string }).thinking ?? '';
+    case 'tool_use': return JSON.stringify((block as { type: 'tool_use'; input: unknown }).input, null, 2);
+    default: return '';
+  }
+}
 
 export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProps): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
 
   function renderBlock(block: ContentBlock, index: number): JSX.Element | null {
+    let inner: JSX.Element | null = null;
+
     switch (block.type) {
       case 'text':
-        return block.text.trim() ? (
+        inner = block.text.trim() ? (
           <TextBlock key={`text-${index}`} content={block.text} />
         ) : null;
+        break;
 
       case 'thinking':
         // Bug: bce7370 — Fix 5: Keep thinking expanded while actively streaming
         // so the user can see thinking content accumulate. When streaming ends,
         // the block collapses intentionally rather than jarring.
-        return (
+        inner = (
           <ThinkingBlock
             key={`thinking-${index}`}
             content={block.thinking}
             defaultCollapsed={!(isStreaming && isThinking)}
           />
         );
+        break;
 
       case 'tool_use': {
         // Find the matching tool result from the user event
         const result: ToolResultContentBlock | null = toolResults.get(block.id) ?? null;
         // While streaming and no result yet, the tool is in-progress
         const isPendingStreaming = isStreaming && result === null;
-        return (
+        inner = (
           <ToolUseBlock
             key={`tool-${block.id}`}
             toolName={block.name}
@@ -45,11 +61,25 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
             defaultExpanded={isPendingStreaming || result === null}
           />
         );
+        break;
       }
 
       default:
         return null;
     }
+
+    if (!inner) return null;
+
+    // Bug: 236d03b — Fix 5: Wrap each block with per-block MessageActions (copy)
+    const text = blockCopyText(block);
+    return (
+      <div key={`block-wrap-${index}`} className="message-block-wrapper" style={{ position: 'relative' }}>
+        {inner}
+        <MessageActions
+          onCopy={text ? () => { navigator.clipboard.writeText(text).catch(() => {}); } : undefined}
+        />
+      </div>
+    );
   }
 
   return (
