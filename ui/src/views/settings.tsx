@@ -1,18 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import {
+  bootstrapRuntime,
   getBackupStatus,
   getDesktopDaemonStatus,
+  getRuntimeStatus,
   isDesktopShell,
   navigateToDesktopBootstrap,
+  resetRuntime,
   restartDesktopDaemon,
+  rollbackRuntime,
   runBackupNow,
   setDesktopDaemonLaunchMode,
   startDesktopDaemon,
   stopDesktopDaemon,
   updateBackupSettings,
+  updateRuntime,
   type BackupStatus,
   type DesktopDaemonLaunchMode,
   type DesktopDaemonStatus,
+  type RuntimeStatus,
 } from '../api';
 
 export type SettingsViewProps = {
@@ -636,6 +642,251 @@ function BackupSection(): JSX.Element {
   );
 }
 
+// Bug: cc4688b — Zone 2 mutable runtime section
+function RuntimeSection(): JSX.Element {
+  const [status, setStatus] = useState<RuntimeStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [action, setAction] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const next = await getRuntimeStatus();
+      setStatus(next);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load runtime status');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
+
+  const handleBootstrap = useCallback(async () => {
+    setAction('bootstrap');
+    setFeedback(null);
+    try {
+      await bootstrapRuntime();
+      setFeedback('Bootstrap started. This may take a minute...');
+      // Poll for completion
+      const timer = window.setInterval(async () => {
+        try {
+          const next = await getRuntimeStatus();
+          setStatus(next);
+          if (next.available) {
+            window.clearInterval(timer);
+            setFeedback('Zone 2 runtime initialized successfully.');
+            setAction(null);
+          }
+        } catch {
+          // keep polling
+        }
+      }, 3000);
+      // Safety timeout: stop polling after 3 minutes
+      window.setTimeout(() => {
+        window.clearInterval(timer);
+        setAction(null);
+      }, 180_000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Bootstrap failed');
+      setAction(null);
+    }
+  }, []);
+
+  const handleUpdate = useCallback(async () => {
+    setAction('update');
+    setFeedback(null);
+    try {
+      const result = await updateRuntime();
+      if (result.updated) {
+        setFeedback('Update applied successfully.');
+      } else {
+        setFeedback(result.message ?? 'Already up to date.');
+      }
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Update failed');
+    } finally {
+      setAction(null);
+    }
+  }, [refreshStatus]);
+
+  const handleRollback = useCallback(async () => {
+    setAction('rollback');
+    setFeedback(null);
+    try {
+      await rollbackRuntime();
+      setFeedback('Last patch rolled back.');
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Rollback failed');
+    } finally {
+      setAction(null);
+    }
+  }, [refreshStatus]);
+
+  const handleReset = useCallback(async () => {
+    setAction('reset');
+    setFeedback(null);
+    try {
+      await resetRuntime();
+      setFeedback('Reset to upstream complete.');
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reset failed');
+    } finally {
+      setAction(null);
+    }
+  }, [refreshStatus]);
+
+  return (
+    <div className="settings-view__section">
+      <div className="settings-view__section-header">
+        <h3 className="settings-view__section-title">Runtime</h3>
+        <p className="settings-view__section-desc">
+          Zone 2 mutable runtime for self-modification and patching.
+        </p>
+      </div>
+
+      <div className="settings-view__section-body">
+        {/* Install mode */}
+        <div className="settings-view__number-row">
+          <div className="settings-view__number-info">
+            <span className="settings-view__number-label">Install mode</span>
+          </div>
+          <div className="settings-view__number-controls">
+            {loading ? (
+              <span className="text-muted">Loading...</span>
+            ) : (
+              <span>{status?.installMode ?? 'unknown'}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Zone 2 path */}
+        <div className="settings-view__number-row">
+          <div className="settings-view__number-info">
+            <span className="settings-view__number-label">Zone 2 path</span>
+          </div>
+          <div className="settings-view__number-controls">
+            {loading ? (
+              <span className="text-muted">Loading...</span>
+            ) : (
+              <span className="text-muted" style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>
+                {status?.zone2Path ?? 'N/A'}
+                {status?.available ? ' (active)' : ' (not initialized)'}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Git info (only when available) */}
+        {status?.available && (
+          <>
+            <div className="settings-view__number-row">
+              <div className="settings-view__number-info">
+                <span className="settings-view__number-label">Commit</span>
+              </div>
+              <div className="settings-view__number-controls">
+                <span className="text-muted" style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>
+                  {status.commit ? status.commit.slice(0, 12) : 'unknown'}
+                </span>
+                {status.branch && (
+                  <span className="text-muted" style={{ marginLeft: '0.5rem' }}>
+                    ({status.branch})
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="settings-view__number-row">
+              <div className="settings-view__number-info">
+                <span className="settings-view__number-label">Local patches</span>
+              </div>
+              <div className="settings-view__number-controls">
+                <span>{status.patchCount}</span>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Actions */}
+        <div className="settings-view__number-row">
+          <div className="settings-view__number-info">
+            <span className="settings-view__number-label">Actions</span>
+          </div>
+          <div className="settings-view__number-controls" style={{ gap: '0.5rem', display: 'flex', flexWrap: 'wrap' }}>
+            {!status?.available && (
+              <button
+                type="button"
+                className="btn btn--active btn--sm"
+                onClick={handleBootstrap}
+                disabled={loading || action != null}
+              >
+                {action === 'bootstrap' ? '...' : 'Initialize Runtime'}
+              </button>
+            )}
+            {status?.available && (
+              <>
+                <button
+                  type="button"
+                  className="btn btn--active btn--sm"
+                  onClick={handleUpdate}
+                  disabled={loading || action != null}
+                >
+                  {action === 'update' ? '...' : 'Check for Updates'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  onClick={handleRollback}
+                  disabled={loading || action != null || (status.patchCount ?? 0) === 0}
+                >
+                  {action === 'rollback' ? '...' : 'Rollback Last Patch'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  onClick={handleReset}
+                  disabled={loading || action != null}
+                >
+                  {action === 'reset' ? '...' : 'Reset to Upstream'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Feedback / error */}
+        {feedback && (
+          <div className="settings-view__number-row">
+            <div className="settings-view__number-info" />
+            <div className="settings-view__number-controls">
+              <span className="settings-view__feedback settings-view__feedback--success">
+                {feedback}
+              </span>
+            </div>
+          </div>
+        )}
+        {error && (
+          <div className="settings-view__number-row">
+            <div className="settings-view__number-info" />
+            <div className="settings-view__number-controls">
+              <span className="settings-view__feedback settings-view__feedback--error">
+                {error}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsView(props: SettingsViewProps): JSX.Element {
   const { settings, onSave } = props;
   const [protectedBranches, setProtectedBranches] = useState('');
@@ -1039,6 +1290,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
 
       {/* ── Section 7: Backup ── */}
       <BackupSection />
+
+      {/* ── Section 8: Runtime ── Bug: cc4688b */}
+      <RuntimeSection />
     </div>
   );
 }
