@@ -19284,45 +19284,33 @@ function TranscriptBlockItem({
       onToggleCollapse();
     }
   };
-  return /* @__PURE__ */ u3("div", { className, onClick: handleClick, "data-block-id": block2.id, children: [
-    /* @__PURE__ */ u3("div", { className: "transcript-item__frame", children: [
-      hasTypeIcon ? /* @__PURE__ */ u3("div", { className: "transcript-item__gutter", "aria-hidden": "true", children: typeIcon }) : null,
-      /* @__PURE__ */ u3("div", { className: "transcript-item__bubble", children: isThinkingBlock ? (
-        // Bug: bce7370 — Fix 1: Render ThinkingBlock directly, bypassing outer collapse.
-        // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
-        /* @__PURE__ */ u3(ThinkingBlock, { content: block2.content, defaultCollapsed: true })
-      ) : collapsed ? /* @__PURE__ */ u3("div", { className: "transcript-item__collapsed-preview", "aria-label": "Collapsed block", children: "\u2026" }) : renderConversationBlockBody(block2, collapsed) })
-    ] }),
-    /* @__PURE__ */ u3(
-      "span",
-      {
-        className: "transcript-item__timestamp",
-        title: formatAbsoluteTime(block2.timestamp),
-        children: formatRelativeTime4(block2.timestamp)
-      }
-    ),
-    /* @__PURE__ */ u3("div", { className: "transcript-item__actions", children: [
-      /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
-      /* @__PURE__ */ u3(
-        "label",
-        {
-          className: `transcript-item__select${selectMode || isSelected ? " transcript-item__select--visible" : ""}`,
-          title: isSelected ? "Deselect block" : "Select block",
-          onClick: (e3) => e3.stopPropagation(),
-          children: /* @__PURE__ */ u3(
-            "input",
-            {
-              type: "checkbox",
-              checked: isSelected,
-              onChange: onToggleSelect,
-              className: "block-checkbox",
-              "aria-label": isSelected ? "Deselect block" : "Select block"
-            }
-          )
-        }
-      )
-    ] })
-  ] });
+  const collapsedLabel = (() => {
+    if (isThinkingBlock)
+      return "";
+    if (block2.type === "tool_use") {
+      const toolName = metadata.tool_name ?? "Tool";
+      return `Tool: ${toolName}`;
+    }
+    if (block2.type === "tool_result")
+      return "Result";
+    if (block2.type === "system" || block2.type === "event")
+      return "System";
+    return block2.type;
+  })();
+  return /* @__PURE__ */ u3("div", { className, onClick: handleClick, "data-block-id": block2.id, children: /* @__PURE__ */ u3("div", { className: "transcript-item__frame", children: [
+    hasTypeIcon ? /* @__PURE__ */ u3("div", { className: "transcript-item__gutter", "aria-hidden": "true", children: typeIcon }) : null,
+    /* @__PURE__ */ u3("div", { className: "transcript-item__bubble", children: isThinkingBlock ? (
+      // Bug: bce7370 — Fix 1: Render ThinkingBlock directly, bypassing outer collapse.
+      // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
+      /* @__PURE__ */ u3(ThinkingBlock, { content: block2.content, defaultCollapsed: true })
+    ) : collapsed ? (
+      // Bug: bce7370 — B3: Replace ellipsis with label + "more", same pattern as ThinkingBlock
+      /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", "aria-label": "Collapsed block", children: [
+        /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: collapsedLabel }),
+        /* @__PURE__ */ u3("span", { className: "thinking-block__more", children: "more" })
+      ] })
+    ) : renderConversationBlockBody(block2, collapsed) })
+  ] }) });
 }
 function TranscriptTurnRenderer({
   turn,
@@ -24614,6 +24602,21 @@ function conversationBlocksToStreamEvents(providerSessionId, blocks) {
     }
   }
   flushAssistant();
+  if (events.length > 0) {
+    events.push({
+      type: "result",
+      session_id: providerSessionId,
+      subtype: "success",
+      duration_ms: 0,
+      duration_api_ms: 0,
+      is_error: false,
+      num_turns: 0,
+      result: "",
+      cost_usd: 0,
+      total_cost_usd: 0,
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 }
+    });
+  }
   return events;
 }
 function TerminalPane({
@@ -24902,6 +24905,11 @@ function TerminalPane({
       cancelled = true;
     };
   }, [providerSessionId, sessionId, resumeAtMessage]);
+  y2(() => {
+    if (streaming && (sessionStatus === "stopped" || sessionStatus === "crashed")) {
+      setStreaming(false);
+    }
+  }, [streaming, sessionStatus]);
   const cacheFlushTimerRef = A2(null);
   const streamEventsRef = A2(streamEvents);
   streamEventsRef.current = streamEvents;
