@@ -489,6 +489,13 @@ build_dist_if_src_changed() {
 
   err "${DIM_WHITE}[post-merge] src/ changed but no dist commit — rebuilding...${RESET}"
 
+  # Bug: 242d0c7 — run npm install before build to pick up new dependencies
+  # from merged package.json changes. Uses npm install (not npm ci) to avoid
+  # wiping node_modules in worktree-symlinked setups.
+  if ! (cd "$repo_root" && npm install 2>&1 | while IFS= read -r line; do err "${DIM_WHITE}  ${line}${RESET}"; done); then
+    err "${BOLD_YELLOW}[post-merge] npm install failed — attempting build anyway${RESET}"
+  fi
+
   if ! (cd "$repo_root" && npm run build 2>&1 | while IFS= read -r line; do err "${DIM_WHITE}  ${line}${RESET}"; done); then
     err "${BOLD_YELLOW}[post-merge] npm run build failed — dist not updated${RESET}"
     return 1
