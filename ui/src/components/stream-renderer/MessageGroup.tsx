@@ -1,11 +1,12 @@
 // Bug: aa35aeb — Console tab renderer: one message group per assistant turn
+// Bug: bce7370 — Adapted to use shared message-blocks components
 
 import type { ContentBlock, MessageGroupProps, ToolResultContentBlock } from './types';
-import { TextBlock } from './TextBlock';
-import { ThinkingBlock } from './ThinkingBlock';
-import { ToolUseBlock } from './ToolUseBlock';
+import { TextBlock } from '../message-blocks/TextBlock';
+import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
+import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
 
-export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProps): JSX.Element {
+export function MessageGroup({ turn, isStreaming }: MessageGroupProps): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
 
@@ -13,15 +14,15 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
     switch (block.type) {
       case 'text':
         return block.text.trim() ? (
-          <TextBlock key={`text-${index}`} text={block.text} />
+          <TextBlock key={`text-${index}`} content={block.text} />
         ) : null;
 
       case 'thinking':
         return (
           <ThinkingBlock
             key={`thinking-${index}`}
-            thinking={block.thinking}
-            defaultExpanded={false}
+            content={block.thinking}
+            defaultCollapsed={true}
           />
         );
 
@@ -36,7 +37,7 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
             toolName={block.name}
             toolUseId={block.id}
             input={block.input}
-            result={result}
+            result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             // Expand while pending (streaming in progress), collapse after result
             defaultExpanded={isPendingStreaming || result === null}
           />
@@ -48,8 +49,6 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
     }
   }
 
-  // Bug: 4891ce4 — Removed thinking indicator div; replaced by inline
-  // stream-live-indicator at bottom of StreamRenderer scroll area.
   return (
     <div className="message-group">
       <div className="message-group__content">

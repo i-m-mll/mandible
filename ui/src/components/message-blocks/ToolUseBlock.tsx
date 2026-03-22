@@ -1,8 +1,35 @@
-// Bug: aa35aeb — Console tab renderer: collapsible tool call block with result embedding
+// SHARED COMPONENT — used by BOTH Chat (StreamRenderer) and History (conversations.tsx).
+// Changes here affect BOTH views. If you modify rendering for one view,
+// the other MUST update automatically because they use this same component.
+
+// Bug: bce7370 — Unified tool use renderer (full + compact modes)
 
 import { useMemo, useState } from 'preact/hooks';
-import type { ToolResultContent, ToolResultContentBlock, ToolUseBlockProps } from './types';
 import { FileEditBlock } from './FileEditBlock';
+
+// ---- Types ----
+
+export type ToolResultContent =
+  | string
+  | Array<{ type: 'text'; text: string }>
+  | Array<{ type: 'image'; source: { type: string; media_type: string; data: string } }>;
+
+export type ToolResultContentBlock = {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: ToolResultContent;
+  is_error?: boolean;
+};
+
+export type ToolUseBlockProps = {
+  toolName: string;
+  toolUseId?: string;
+  input: Record<string, unknown> | string;
+  result?: ToolResultContentBlock | null;
+  defaultExpanded?: boolean;
+  compact?: boolean;
+  statusEmoji?: string;
+};
 
 // ---- JSON syntax highlighter (inline, no external dep) ----
 
@@ -49,7 +76,6 @@ function hasImages(content: ToolResultContent): boolean {
 }
 
 type ImageSource = { type: string; media_type: string; data: string };
-type ImageItem = { type: 'image'; source: ImageSource };
 
 function extractImages(content: ToolResultContent): ImageSource[] {
   if (!Array.isArray(content)) {
@@ -80,7 +106,7 @@ function getToolDescription(toolName: string, input: Record<string, unknown>): s
     case 'Bash': {
       const cmd = input.command;
       if (typeof cmd === 'string') {
-        return cmd.slice(0, 60) + (cmd.length > 60 ? '…' : '');
+        return cmd.slice(0, 60) + (cmd.length > 60 ? '\u2026' : '');
       }
       return JSON.stringify(input).slice(0, 80);
     }
@@ -109,21 +135,51 @@ function getToolDescription(toolName: string, input: Record<string, unknown>): s
   }
 }
 
+// ---- Primary arg extractor (used in compact mode) ----
+
+function primaryToolArg(toolName: string, input: Record<string, unknown>): string {
+  const priority: string[] = (() => {
+    switch (toolName) {
+      case 'Read': case 'Write': case 'Edit': return ['file_path'];
+      case 'Bash': return ['description', 'command'];
+      case 'Grep': return ['pattern', 'path'];
+      case 'Glob': return ['pattern', 'path'];
+      case 'WebFetch': return ['url'];
+      case 'WebSearch': return ['query'];
+      default: return ['path', 'file_path', 'pattern', 'query', 'url', 'command'];
+    }
+  })();
+  for (const key of priority) {
+    if (typeof input[key] === 'string' && input[key]) {
+      const val = input[key] as string;
+      return val.length > 80 ? val.slice(0, 80) + '\u2026' : val;
+    }
+  }
+  for (const v of Object.values(input)) {
+    if (typeof v === 'string' && v) return v.length > 80 ? v.slice(0, 80) + '\u2026' : v;
+  }
+  return '';
+}
+
 // ---- Status indicator ----
 
 type StatusIndicatorProps = {
   pending: boolean;
   isError: boolean;
+  emoji?: string;
 };
 
-function StatusIndicator({ pending, isError }: StatusIndicatorProps): JSX.Element {
+function StatusIndicator({ pending, isError, emoji }: StatusIndicatorProps): JSX.Element {
+  if (emoji) {
+    return <span className="tool-use-block__status" aria-label="Status">{emoji}</span>;
+  }
   if (pending) {
-    return <span className="tool-use-block__status tool-use-block__status--pending" aria-label="Pending">⏳</span>;
+    return <span className="tool-use-block__status tool-use-block__status--pending" aria-label="Pending">{'\u23F3'}</span>;
   }
   if (isError) {
-    return <span className="tool-use-block__status tool-use-block__status--error" aria-label="Error">✗</span>;
+    return <span className="tool-use-block__status tool-use-block__status--error" aria-label="Error">{'\u2717'}</span>;
   }
-  return <span className="tool-use-block__status tool-use-block__status--ok" aria-label="Done">✓</span>;
+  return <span className="tool-use-block__status tool-use-block__status--ok" aria-label="Done">{'\u2713'}</span>;
 }
 
 // ---- Result rendering ----
@@ -133,7 +189,7 @@ function ToolResult({ result }: { result: ToolResultContentBlock }): JSX.Element
     const text = extractResultText(result.content);
     return (
       <div className="tool-use-block__result tool-result--error">
-        <pre>{text || '(error — no message)'}</pre>
+        <pre>{text || '(error \u2014 no message)'}</pre>
       </div>
     );
   }
@@ -156,7 +212,7 @@ function ToolResult({ result }: { result: ToolResultContentBlock }): JSX.Element
   );
 }
 
-// ---- Special tool renderers ----
+// ---- Special tool renderers (full mode) ----
 
 function BashInputPanel({ input }: { input: Record<string, unknown> }): JSX.Element {
   const command = typeof input.command === 'string' ? input.command : JSON.stringify(input);
@@ -187,6 +243,70 @@ function JsonInputPanel({ input }: { input: Record<string, unknown> }): JSX.Elem
   );
 }
 
+// ---- Compact mode renderer (for History) ----
+
+function CompactToolUseBlock({
+  toolName,
+  input,
+  result,
+  statusEmoji,
+}: {
+  toolName: string;
+  input: Record<string, unknown> | string;
+  result?: ToolResultContentBlock | null;
+  statusEmoji?: string;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const inputObj = typeof input === 'string' ? (() => { try { return JSON.parse(input); } catch { return {}; } })() : input;
+  const primary = primaryToolArg(toolName, inputObj);
+  const hasResult = result != null;
+  const isError = hasResult && result.is_error === true;
+  const isPending = !hasResult;
+
+  // Result summary for compact display
+  const resultSummary = useMemo(() => {
+    if (!result) return null;
+    const text = extractResultText(result.content);
+    if (!text) return null;
+    return text.length > 120 ? text.slice(0, 120) + '\u2026' : text;
+  }, [result]);
+
+  const fullContent = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
+
+  return (
+    <div className="tool-use-block tool-use-block--compact" data-tool={toolName}>
+      <div className="tool-use-card__header">
+        <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
+        <span className="tool-use-card__name">{toolName}</span>
+        {primary && <span className="tool-use-card__arg">{primary}</span>}
+        <button
+          type="button"
+          className="tool-use-card__expand"
+          onClick={(e) => { e.stopPropagation(); setExpanded((p) => !p); }}
+        >
+          {expanded ? 'less' : 'more'}
+        </button>
+      </div>
+      {expanded && (
+        <div className="tool-use-block--compact__body">
+          <pre className="block-pre tool-use-card__full">{fullContent}</pre>
+          {result && (
+            <>
+              <div className="tool-use-block__divider" />
+              <ToolResult result={result} />
+            </>
+          )}
+        </div>
+      )}
+      {!expanded && resultSummary && (
+        <div className="tool-use-block--compact__summary">
+          <span className="tool-use-block--compact__summary-text">{resultSummary}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Main ToolUseBlock ----
 
 export function ToolUseBlock({
@@ -195,7 +315,23 @@ export function ToolUseBlock({
   input,
   result,
   defaultExpanded,
+  compact,
+  statusEmoji,
 }: ToolUseBlockProps): JSX.Element {
+  // Compact mode delegates to a simpler renderer
+  if (compact) {
+    return (
+      <CompactToolUseBlock
+        toolName={toolName}
+        input={input}
+        result={result}
+        statusEmoji={statusEmoji}
+      />
+    );
+  }
+
+  // Full mode (Chat)
+  const inputObj = typeof input === 'string' ? (() => { try { return JSON.parse(input); } catch { return {}; } })() : input;
   const hasResult = result != null;
   const isError = hasResult && (result.is_error === true);
   const isPending = !hasResult;
@@ -204,22 +340,14 @@ export function ToolUseBlock({
   const initialExpanded = defaultExpanded !== undefined ? defaultExpanded : isPending;
   const [expanded, setExpanded] = useState(initialExpanded);
 
-  // Collapse once result arrives (if we were auto-expanded while pending)
-  const prevHasResult = useMemo(() => hasResult, [hasResult]);
-  if (hasResult && !prevHasResult && expanded && defaultExpanded === undefined) {
-    // Can't call setState in render; this is handled via initial state logic.
-    // The component will start expanded (pending) and we don't retroactively collapse.
-    // Users can collapse manually. This matches common tool UX patterns.
-  }
-
-  const description = useMemo(() => getToolDescription(toolName, input), [toolName, input]);
+  const description = useMemo(() => getToolDescription(toolName, inputObj), [toolName, inputObj]);
 
   // Determine which input panel to render
   function renderInputPanel(): JSX.Element {
-    if ((toolName === 'Edit' || toolName === 'MultiEdit') && typeof input.file_path === 'string') {
-      const filePath = input.file_path as string;
-      const oldString = typeof input.old_string === 'string' ? input.old_string : '';
-      const newString = typeof input.new_string === 'string' ? input.new_string : '';
+    if ((toolName === 'Edit' || toolName === 'MultiEdit') && typeof inputObj.file_path === 'string') {
+      const filePath = inputObj.file_path as string;
+      const oldString = typeof inputObj.old_string === 'string' ? inputObj.old_string : '';
+      const newString = typeof inputObj.new_string === 'string' ? inputObj.new_string : '';
       return (
         <FileEditBlock
           filePath={filePath}
@@ -229,12 +357,12 @@ export function ToolUseBlock({
       );
     }
     if (toolName === 'Bash') {
-      return <BashInputPanel input={input} />;
+      return <BashInputPanel input={inputObj} />;
     }
     if (toolName === 'Write') {
-      return <WriteInputPanel input={input} />;
+      return <WriteInputPanel input={inputObj} />;
     }
-    return <JsonInputPanel input={input} />;
+    return <JsonInputPanel input={inputObj} />;
   }
 
   return (
@@ -245,9 +373,9 @@ export function ToolUseBlock({
         onClick={() => setExpanded((prev) => !prev)}
         aria-expanded={expanded}
       >
-        <span className="tool-use-block__chevron">{expanded ? '▾' : '▸'}</span>
+        <span className="tool-use-block__chevron">{expanded ? '\u25BE' : '\u25B8'}</span>
+        <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
         <span className="tool-use-block__name">{toolName}</span>
-        <StatusIndicator pending={isPending} isError={isError} />
         <span className="tool-use-block__desc">{description}</span>
       </button>
       {expanded && (

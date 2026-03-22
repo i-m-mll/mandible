@@ -28,6 +28,15 @@ import {
 import { MessageActions } from '../components/shared/MessageActions';
 import { BranchSelector, type BranchInfo } from '../components/console/BranchSelector';
 import { EntityPill } from '../components/shared/EntityPill';
+// Bug: bce7370 — Shared message-block components
+import {
+  TextBlock,
+  ThinkingBlock,
+  ToolUseBlock,
+  TurnGroup,
+  GroupFooter,
+  BlockTypeIcon as SharedBlockTypeIcon,
+} from '../components/message-blocks';
 
 // Configure marked for safe, synchronous rendering
 marked.setOptions({ async: false, gfm: true, breaks: false });
@@ -271,25 +280,7 @@ export type ConversationsViewProps = {
 };
 
 // ── Markdown renderer ──
-
-/**
- * Render markdown content safely. Uses marked synchronously (marked.parse
- * returns string when async:false). Returns null if the content doesn't look
- * like markdown (no special characters) to avoid wrapping plaintext in a div.
- * Bug: 372edcb — markdown rendering for assistant/user messages
- */
-function MarkdownContent({ content }: { content: string }): JSX.Element {
-  const html = marked.parse(content) as string;
-  // eslint-disable-next-line react/no-danger
-  return (
-    <div
-      className="block-markdown"
-      // marked sanitizes by default; content is from our own DB
-      // eslint-disable-next-line react/no-danger
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
-}
+// Bug: bce7370 — MarkdownContent replaced by shared TextBlock from message-blocks.
 
 /**
  * Strip dangerous tags and attributes from HTML produced by marked.
@@ -383,125 +374,17 @@ function CopyButton({ content }: { content: string }): JSX.Element {
   );
 }
 
+// Bug: bce7370 — BlockTypeIcon now delegates to the shared component from message-blocks.
 function BlockTypeIcon({ type }: { type: BlockType }): JSX.Element | null {
-  if (type === 'thinking') {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="M5.1 12.8c.3.8 1.2 1.2 2.1 1.2h1.6c.9 0 1.8-.4 2.1-1.2M5.8 11.4h4.4M5.3 10.2c-.9-.8-1.6-2-1.6-3.3C3.7 4.2 5.7 2 8 2s4.3 2.2 4.3 4.9c0 1.3-.7 2.5-1.6 3.3-.3.3-.5.7-.5 1.1v.1H5.8v-.1c0-.4-.2-.8-.5-1.1Z"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  }
-  if (type === 'tool_use' || type === 'tool_result') {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path
-          d="m9.9 2.4 1.8 1.8-2 2 1.9 1.9 2-2 1.8 1.8-.8 2.6-2.2 2.1-2.7.9-1.8-1.9.8-2.6-2.1-2.1-2.6.8L3 6.6l.9-2.7 2.1-2.1 2.6-.8Z"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.1"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    );
-  }
-  if (type === 'system' || type === 'event') {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <circle
-          cx="8"
-          cy="8"
-          r="5.4"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.2"
-        />
-        <path
-          d="M8 7.2v3.2M8 5.1h.01"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.4"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
+  // The shared component supports these types directly
+  if (type === 'thinking' || type === 'tool_use' || type === 'tool_result' || type === 'system' || type === 'event') {
+    return <SharedBlockTypeIcon type={type} />;
   }
   return null;
 }
 
 // ── Tool use card ──
-
-/**
- * Extract the primary argument to display in the tool use card.
- * For Read/Write/Edit: file_path. For Grep/Glob: pattern. For Bash: description
- * (trimmed). For WebFetch: url. Fallback: first value or empty.
- * Bug: 372edcb — compact tool card rendering
- */
-function primaryToolArg(toolName: string | undefined, toolInput: unknown): string {
-  if (!toolInput || typeof toolInput !== 'object') return '';
-  const inp = toolInput as Record<string, unknown>;
-  const priority: string[] = (() => {
-    switch (toolName) {
-      case 'Read': case 'Write': case 'Edit': return ['file_path'];
-      case 'Bash': return ['description', 'command'];
-      case 'Grep': return ['pattern', 'path'];
-      case 'Glob': return ['pattern', 'path'];
-      case 'WebFetch': return ['url'];
-      case 'WebSearch': return ['query'];
-      default: return ['path', 'file_path', 'pattern', 'query', 'url', 'command'];
-    }
-  })();
-  for (const key of priority) {
-    if (typeof inp[key] === 'string' && inp[key]) {
-      const val = inp[key] as string;
-      return val.length > 80 ? val.slice(0, 80) + '…' : val;
-    }
-  }
-  // Fallback: first string value
-  for (const v of Object.values(inp)) {
-    if (typeof v === 'string' && v) return v.length > 80 ? v.slice(0, 80) + '…' : v;
-  }
-  return '';
-}
-
-function ToolUseCard({
-  toolName,
-  toolInput,
-  fullContent,
-}: {
-  toolName: string | undefined;
-  toolInput: unknown;
-  fullContent: string;
-}): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const primary = primaryToolArg(toolName, toolInput);
-
-  return (
-    <div className="tool-use-card">
-      <div className="tool-use-card__header">
-        <span className="tool-use-card__name">{toolName ?? 'Tool'}</span>
-        {primary && <span className="tool-use-card__arg">{primary}</span>}
-        <button
-          type="button"
-          className="tool-use-card__expand"
-          onClick={(e) => { e.stopPropagation(); setExpanded((p) => !p); }}
-        >
-          {expanded ? 'less' : 'more'}
-        </button>
-      </div>
-      {expanded && (
-        <pre className="block-pre tool-use-card__full">{fullContent}</pre>
-      )}
-    </div>
-  );
-}
+// Bug: bce7370 — ToolUseCard replaced by shared ToolUseBlock (compact mode) from message-blocks.
 
 function renderConversationBlockBody(
   block: ConversationBlock,
@@ -510,20 +393,29 @@ function renderConversationBlockBody(
   if (collapsed) return null;
   const metadata = parseMetadata(block.metadata_json);
 
+  // Bug: bce7370 — Use shared components for text and tool blocks
   if (block.type === 'assistant_message' || block.type === 'user_message') {
     return (
       <div className="block-content">
-        <MarkdownContent content={block.content} />
+        <TextBlock content={block.content} />
+      </div>
+    );
+  }
+
+  if (block.type === 'thinking') {
+    return (
+      <div className="block-content">
+        <ThinkingBlock content={block.content} defaultCollapsed={false} />
       </div>
     );
   }
 
   if (block.type === 'tool_use') {
-    const toolName = metadata.tool_name as string | undefined;
-    const toolInput = (metadata.tool_input ?? null) as unknown;
+    const toolName = (metadata.tool_name as string | undefined) ?? 'Tool';
+    const toolInput = (metadata.tool_input ?? block.content) as Record<string, unknown> | string;
     return (
       <div className="block-content block-content--mono">
-        <ToolUseCard toolName={toolName} toolInput={toolInput} fullContent={block.content} />
+        <ToolUseBlock toolName={toolName} input={toolInput} compact />
       </div>
     );
   }
@@ -778,12 +670,6 @@ function TranscriptTurnRenderer({
   branchSelections?: Record<string, number>;
   onBranchSelect?: (forkPointUuid: string, index: number, forkPoint: ForkPoint) => void;
 }): JSX.Element {
-  const speakerLabel = turn.speaker === 'user'
-    ? 'You'
-    : turn.speaker === 'assistant'
-      ? 'Assistant'
-      : 'System';
-
   // Collect text content for copy action across all blocks in this turn
   const turnText = turn.blocks.map((b) => b.content).join('\n\n');
   // dag_uuid: use the first block's dag_uuid if available (populated after P1 merges)
@@ -798,43 +684,46 @@ function TranscriptTurnRenderer({
     blockCount: b.block_count,
   }));
 
-  return (
-    <div className={`transcript-turn transcript-turn--${turn.speaker}`}>
-      <div className="transcript-turn__speaker">
-        <span className="transcript-turn__badge">{speakerLabel}</span>
-      </div>
-      <div className="transcript-turn__body" style={{ position: 'relative' }}>
-        {turn.blocks.map((block) => (
-          <TranscriptBlockItem
-            key={block.id}
-            block={block}
-            isSelected={selected.has(block.id)}
-            selectMode={selectMode}
-            onToggleSelect={() => onToggleSelect(block.id)}
-            onShiftSelect={() => onShiftSelect(block.id)}
-            onToggleCollapse={() => onToggleCollapse(block.id)}
-            collapsed={collapsedBlocks.has(block.id)}
-          />
-        ))}
-        <MessageActions
-          onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
-          onResume={turnDagUuid && onResume ? () => onResume(turnDagUuid) : undefined}
-          onFork={turnDagUuid && onFork ? () => onFork(turnDagUuid) : undefined}
-          dagUuid={turnDagUuid}
-          showResume={!!turnDagUuid}
-          showFork={!!turnDagUuid}
+  const isShort = turn.blocks.length <= 2;
+
+  // Bug: bce7370 — Use shared TurnGroup layout
+  const footer = (
+    <>
+      <MessageActions
+        onCopy={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
+        onResume={turnDagUuid && onResume ? () => onResume(turnDagUuid) : undefined}
+        onFork={turnDagUuid && onFork ? () => onFork(turnDagUuid) : undefined}
+        dagUuid={turnDagUuid}
+        showResume={!!turnDagUuid}
+        showFork={!!turnDagUuid}
+      />
+      {forkPoint && turnDagUuid && (
+        <BranchSelector
+          branchPointUuid={turnDagUuid}
+          totalBranches={forkPoint.branches.length}
+          currentIndex={currentBranchIdx}
+          onSelect={(idx) => onBranchSelect?.(turnDagUuid, idx, forkPoint)}
+          branches={branchInfos}
         />
-        {forkPoint && turnDagUuid && (
-          <BranchSelector
-            branchPointUuid={turnDagUuid}
-            totalBranches={forkPoint.branches.length}
-            currentIndex={currentBranchIdx}
-            onSelect={(idx) => onBranchSelect?.(turnDagUuid, idx, forkPoint)}
-            branches={branchInfos}
-          />
-        )}
-      </div>
-    </div>
+      )}
+    </>
+  );
+
+  return (
+    <TurnGroup speaker={turn.speaker} isShort={isShort} footer={footer}>
+      {turn.blocks.map((block) => (
+        <TranscriptBlockItem
+          key={block.id}
+          block={block}
+          isSelected={selected.has(block.id)}
+          selectMode={selectMode}
+          onToggleSelect={() => onToggleSelect(block.id)}
+          onShiftSelect={() => onShiftSelect(block.id)}
+          onToggleCollapse={() => onToggleCollapse(block.id)}
+          collapsed={collapsedBlocks.has(block.id)}
+        />
+      ))}
+    </TurnGroup>
   );
 }
 
@@ -1542,6 +1431,17 @@ function ConversationDetail({
           </div>
         </div>
         <div className="conv-detail__header-right">
+          {/* Bug: bce7370 — Resume button in conversation header */}
+          {conversation.session_id && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => handleResume(conversation.blocks?.[conversation.blocks.length - 1]?.dag_uuid ?? '')}
+              title="Resume this conversation in Console"
+            >
+              Resume
+            </button>
+          )}
           {linkedConsoleSession && (
             <button
               type="button"

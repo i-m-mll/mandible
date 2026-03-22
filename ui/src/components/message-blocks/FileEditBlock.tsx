@@ -1,15 +1,22 @@
-// Bug: aa35aeb — Console tab renderer: diff view for Edit tool calls
+// SHARED COMPONENT — used by BOTH Chat (StreamRenderer) and History (conversations.tsx).
+// Changes here affect BOTH views. If you modify rendering for one view,
+// the other MUST update automatically because they use this same component.
+
+// Bug: bce7370 — Diff view for Edit tool calls (moved from stream-renderer)
 
 import { useMemo } from 'preact/hooks';
-import type { FileEditBlockProps } from './types';
 
 // diff2html bundles its own CSS (imported in style.css via @import)
-// We import the JS API here.
 import { html as diff2htmlHtml } from 'diff2html';
+
+export type FileEditBlockProps = {
+  filePath: string;
+  oldString: string;
+  newString: string;
+};
 
 /**
  * Generate a minimal unified diff string from two string values.
- * We split on newlines and produce a standard unified diff header + hunks.
  */
 function generateUnifiedDiff(filePath: string, oldStr: string, newStr: string): string {
   const oldLines = oldStr.split('\n');
@@ -62,7 +69,6 @@ export function FileEditBlock({ filePath, oldString, newString }: FileEditBlockP
   return (
     <div
       className="file-edit-block"
-      // diff2html output is safe HTML generated from our own diff string
       dangerouslySetInnerHTML={{ __html: diffHtml }}
     />
   );
