@@ -206,9 +206,9 @@ export class AuthHookManager {
       .run(
         id,
         input.repo_pattern,
-        input.auth_type ?? "merge",
+        input.auth_type,
         input.command,
-        input.label ?? "",
+        input.label,
         input.enabled !== false ? 1 : 0,
         input.position ?? 100,
         now,

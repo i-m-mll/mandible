@@ -87,10 +87,16 @@ function parseHookInput(body: Record<string, unknown>): { ok: true; input: AuthH
   if (typeof body.command !== "string" || !body.command.trim()) {
     return { ok: false, error: "command is required (string)" };
   }
+  if (typeof body.label !== "string") {
+    return { ok: false, error: "label is required (string)" };
+  }
 
   const authType = typeof body.auth_type === "string" && VALID_AUTH_TYPES.includes(body.auth_type as AuthRequestType)
     ? (body.auth_type as AuthRequestType)
-    : undefined;
+    : null;
+  if (!authType) {
+    return { ok: false, error: `auth_type is required — must be one of: ${VALID_AUTH_TYPES.join(", ")}` };
+  }
 
   return {
     ok: true,
@@ -98,7 +104,7 @@ function parseHookInput(body: Record<string, unknown>): { ok: true; input: AuthH
       repo_pattern: body.repo_pattern as string,
       auth_type: authType,
       command: body.command as string,
-      label: typeof body.label === "string" ? body.label : undefined,
+      label: body.label as string,
       enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
       position: typeof body.position === "number" && Number.isFinite(body.position) ? body.position : undefined,
     },
