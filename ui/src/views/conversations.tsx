@@ -585,6 +585,10 @@ function TranscriptBlockItem({
     selectMode ? 'transcript-item--selectable' : '',
   ].filter(Boolean).join(' ');
 
+  // Bug: bce7370 — Fix 1: For thinking blocks, skip the outer collapse mechanism
+  // and let the shared ThinkingBlock handle its own collapse UI ("Thinking" + "more").
+  const isThinkingBlock = block.type === 'thinking';
+
   const handleClick = (e: MouseEvent) => {
     if (selectMode) {
       if (e.shiftKey) {
@@ -594,7 +598,8 @@ function TranscriptBlockItem({
       }
       return;
     }
-    if (isCollapsible) {
+    // Don't toggle outer collapse for thinking blocks — ThinkingBlock handles it
+    if (isCollapsible && !isThinkingBlock) {
       onToggleCollapse();
     }
   };
@@ -608,7 +613,11 @@ function TranscriptBlockItem({
           </div>
         ) : null}
         <div className="transcript-item__bubble">
-          {collapsed ? (
+          {isThinkingBlock ? (
+            // Bug: bce7370 — Fix 1: Render ThinkingBlock directly, bypassing outer collapse.
+            // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
+            <ThinkingBlock content={block.content} defaultCollapsed={true} />
+          ) : collapsed ? (
             <div className="transcript-item__collapsed-preview" aria-label="Collapsed block">
               …
             </div>
@@ -976,9 +985,11 @@ function ConversationDetail({
       .then((conv) => {
         if (!active) return;
         setConversation(conv);
+        // Bug: bce7370 — Fix 1: Don't add thinking blocks to the outer collapsed set.
+        // ThinkingBlock now manages its own collapse state internally.
         const defaultCollapsed = new Set<string>();
         for (const block of conv.blocks) {
-          if (block.type === 'thinking' || block.type === 'system') {
+          if (block.type === 'system') {
             defaultCollapsed.add(block.id);
           }
         }

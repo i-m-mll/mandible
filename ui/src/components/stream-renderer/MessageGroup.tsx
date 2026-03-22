@@ -6,7 +6,7 @@ import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
 
-export function MessageGroup({ turn, isStreaming }: MessageGroupProps): JSX.Element {
+export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProps): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
 
@@ -18,11 +18,14 @@ export function MessageGroup({ turn, isStreaming }: MessageGroupProps): JSX.Elem
         ) : null;
 
       case 'thinking':
+        // Bug: bce7370 — Fix 5: Keep thinking expanded while actively streaming
+        // so the user can see thinking content accumulate. When streaming ends,
+        // the block collapses intentionally rather than jarring.
         return (
           <ThinkingBlock
             key={`thinking-${index}`}
             content={block.thinking}
-            defaultCollapsed={true}
+            defaultCollapsed={!(isStreaming && isThinking)}
           />
         );
 

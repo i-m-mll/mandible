@@ -483,10 +483,15 @@ implements
     const hooks = this.buildHooks();
 
     // Bug: 73c06e8 — Thread resume_at_message to SDK for DAG branching
+    // Bug: bce7370 — Fix 4: Always pass `resume` with provider_session_id for
+    // subsequent prompts so the SDK continues the same session instead of creating
+    // a new one per prompt.
     const resumeOpts: Record<string, unknown> = {};
-    if (this.meta.resume_at_message && this.meta.provider_session_id) {
+    if (this.meta.provider_session_id) {
       resumeOpts.resume = this.meta.provider_session_id;
-      resumeOpts.resumeSessionAt = this.meta.resume_at_message;
+      if (this.meta.resume_at_message) {
+        resumeOpts.resumeSessionAt = this.meta.resume_at_message;
+      }
     }
 
     // Bug: 61bee4e — Compute system prompt from presets if presetIds are set
