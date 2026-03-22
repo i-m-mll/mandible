@@ -21903,8 +21903,8 @@ function ToolUseBlock({
         children: [
           /* @__PURE__ */ u3("span", { className: "tool-use-block__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
           /* @__PURE__ */ u3("span", { className: "tool-use-block__name", children: toolName }),
-          /* @__PURE__ */ u3("span", { className: "tool-use-block__desc", children: description }),
-          /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError })
+          /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError }),
+          /* @__PURE__ */ u3("span", { className: "tool-use-block__desc", children: description })
         ]
       }
     ),
@@ -22130,6 +22130,37 @@ function formatElapsed(seconds) {
   const s3 = seconds % 60;
   return `${m4}m ${s3}s`;
 }
+function GroupFooter({ totalTokens, onCopyAll }) {
+  const [copied, setCopied] = d2(false);
+  const handleCopy = () => {
+    onCopyAll();
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+  return /* @__PURE__ */ u3("div", { className: "group-footer", children: [
+    /* @__PURE__ */ u3("hr", { className: "group-footer__separator" }),
+    /* @__PURE__ */ u3("div", { className: "group-footer__row", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "group-footer__btn",
+          onClick: handleCopy,
+          title: copied ? "Copied" : "Copy all",
+          "aria-label": copied ? "Copied" : "Copy all messages",
+          children: copied ? /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: /* @__PURE__ */ u3("polyline", { points: "20 6 9 17 4 12" }) }) : /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", children: [
+            /* @__PURE__ */ u3("rect", { x: "9", y: "9", width: "13", height: "13", rx: "2", ry: "2" }),
+            /* @__PURE__ */ u3("path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" })
+          ] })
+        }
+      ),
+      totalTokens != null && /* @__PURE__ */ u3("span", { className: "group-footer__stat", children: [
+        totalTokens.toLocaleString(),
+        " tokens"
+      ] })
+    ] })
+  ] });
+}
 function StreamRenderer({
   events,
   streaming,
@@ -22266,18 +22297,38 @@ function StreamRenderer({
   };
   const rendered = groups.map((group) => {
     const entityClass = `stream-turn--${group.entity}`;
-    return /* @__PURE__ */ u3("div", { className: `stream-turn ${entityClass}`, style: { position: "relative" }, children: [
-      /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: badgeLabels[group.entity] ?? group.entity }) }),
-      /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: group.nodes.map(renderNodeBody) }),
-      group.nodes.length > 1 && /* @__PURE__ */ u3(
-        MessageActions,
-        {
-          onCopy: () => {
-            navigator.clipboard.writeText(collectGroupText(group)).catch(() => {
-            });
+    const shortClass = group.nodes.length <= 2 ? " stream-turn--short" : "";
+    let aggregateTokens;
+    if (group.entity === "assistant" && group.nodes.length > 1) {
+      let sum = 0;
+      let found = false;
+      for (const node of group.nodes) {
+        if (node.kind === "assistant_turn") {
+          const usage = node.turn.assistantEvent.message.usage;
+          if (usage) {
+            sum += usage.input_tokens + usage.output_tokens;
+            found = true;
           }
         }
-      )
+      }
+      if (found)
+        aggregateTokens = sum;
+    }
+    return /* @__PURE__ */ u3("div", { className: `stream-turn ${entityClass}${shortClass}`, style: { position: "relative" }, children: [
+      /* @__PURE__ */ u3("div", { className: "stream-turn__speaker", children: /* @__PURE__ */ u3("span", { className: "stream-turn__badge", children: badgeLabels[group.entity] ?? group.entity }) }),
+      /* @__PURE__ */ u3("div", { className: "stream-turn__body", children: [
+        group.nodes.map(renderNodeBody),
+        group.entity === "assistant" && group.nodes.length > 1 && /* @__PURE__ */ u3(
+          GroupFooter,
+          {
+            totalTokens: aggregateTokens,
+            onCopyAll: () => {
+              navigator.clipboard.writeText(collectGroupText(group)).catch(() => {
+              });
+            }
+          }
+        )
+      ] })
     ] }, group.id);
   });
   return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
@@ -23922,28 +23973,11 @@ function TerminalPane({
       style: { display: isVisible ? "flex" : "none" },
       children: [
         /* @__PURE__ */ u3("div", { className: "terminal-pane__header", children: [
-          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: [
-            interactionMode === "both" && /* @__PURE__ */ u3(
-              "span",
-              {
-                style: {
-                  background: "rgba(77,163,255,0.12)",
-                  color: "var(--accent-blue)",
-                  padding: "2px 8px",
-                  borderRadius: "999px",
-                  fontSize: "11px",
-                  cursor: "pointer"
-                },
-                onClick: () => {
-                  window.location.hash = "#/inbox";
-                },
-                title: "View inbox",
-                children: "Inbox"
-              }
-            ),
-            /* @__PURE__ */ u3(ViewToggle, { current: viewMode, onChange: onViewModeChange, showTerminal: showDebugTerminal })
-          ] }),
+          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: /* @__PURE__ */ u3(ViewToggle, { current: viewMode, onChange: onViewModeChange, showTerminal: showDebugTerminal }) }),
           /* @__PURE__ */ u3("div", { className: "terminal-pane__header-actions", children: [
+            /* @__PURE__ */ u3("button", { type: "button", className: "terminal-pane__link-btn", onClick: () => {
+              window.location.hash = "#/inbox";
+            }, children: "View inbox" }),
             providerSessionId && /* @__PURE__ */ u3(
               "button",
               {

@@ -247,8 +247,8 @@ export function ToolUseBlock({
       >
         <span className="tool-use-block__chevron">{expanded ? '▾' : '▸'}</span>
         <span className="tool-use-block__name">{toolName}</span>
-        <span className="tool-use-block__desc">{description}</span>
         <StatusIndicator pending={isPending} isError={isError} />
+        <span className="tool-use-block__desc">{description}</span>
       </button>
       {expanded && (
         <div className="tool-use-block__body">
