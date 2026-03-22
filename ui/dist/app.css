@@ -4654,8 +4654,9 @@ tr:hover .work-actions__trigger {
   padding: 0;
 }
 .transcript-item--thinking .transcript-item__bubble {
-  background: rgba(245, 194, 92, 0.06);
-  border-color: rgba(245, 194, 92, 0.14);
+  background: transparent;
+  border-color: transparent;
+  padding: 0;
 }
 .transcript-item--tool-use .transcript-item__bubble,
 .transcript-item--tool-result .transcript-item__bubble {
