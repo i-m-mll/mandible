@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":1,"timestamp":1774197021,"nonce":"jymeiI/wFAEDx6GYLlAb8yAeTFE=","title":"Partition C: Auto-collapse threshold for thinking blocks","message":"Issue 6 from block polish. Parent: bce7370","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1774197021,"nonce":"IWq3mspN7rx5QqIem1DvgpzACmg=","added":["feature","parent:bce7370"],"removed":null}]}
