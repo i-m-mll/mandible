@@ -7343,6 +7343,56 @@ tr:hover .work-actions__trigger {
   background: rgba(77, 163, 255, 0.04);
 }
 
+/* Bug: 35edd3d — Conditional sticky: short groups (<=2 nodes) use static speaker */
+.stream-turn--short .stream-turn__speaker {
+  position: static;
+}
+
+/* Bug: 35edd3d — GroupFooter: always-visible footer for multi-node assistant groups */
+.group-footer {
+  margin-top: 4px;
+}
+
+.group-footer__separator {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin: 4px 0;
+}
+
+.group-footer__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.group-footer__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.group-footer__btn:hover {
+  opacity: 1;
+  color: var(--accent-blue);
+}
+
+.group-footer__stat {
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
 /* ── Toast notifications ── */
 
 .conv-toast {
