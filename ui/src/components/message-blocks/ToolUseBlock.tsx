@@ -273,19 +273,22 @@ function CompactToolUseBlock({
 
   const fullContent = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
 
+  // Bug: 0a1ad82 — Click-anywhere-to-toggle for compact mode
+  const handleCompactClick = (e: MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (expanded && target.closest('.tool-use-block--compact__body')) return;
+    setExpanded((p) => !p);
+  };
+
   return (
-    <div className="tool-use-block tool-use-block--compact" data-tool={toolName}>
+    <div className="tool-use-block tool-use-block--compact" data-tool={toolName} onClick={handleCompactClick} style={{ cursor: 'pointer' }}>
       <div className="tool-use-card__header">
         <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
         <span className="tool-use-card__name">{toolName}</span>
         {primary && <span className="tool-use-card__arg">{primary}</span>}
-        <button
-          type="button"
-          className="tool-use-card__expand"
-          onClick={(e) => { e.stopPropagation(); setExpanded((p) => !p); }}
-        >
+        <span className="tool-use-card__expand">
           {expanded ? 'less' : 'more'}
-        </button>
+        </span>
       </div>
       {expanded && (
         <div className="tool-use-block--compact__body">
@@ -305,6 +308,17 @@ function CompactToolUseBlock({
       )}
     </div>
   );
+}
+
+// ---- Auto-collapse threshold ----
+// Bug: 0a1ad82 — Don't auto-collapse short tool uses (< N lines).
+// TODO: make this threshold configurable via settings.
+const TOOL_USE_AUTO_COLLAPSE_LINES = 5;
+
+/** Count lines in the serialized tool input. */
+function countInputLines(input: Record<string, unknown> | string): number {
+  const text = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
+  return text.split('\n').length;
 }
 
 // ---- Main ToolUseBlock ----
@@ -336,11 +350,24 @@ export function ToolUseBlock({
   const isError = hasResult && (result.is_error === true);
   const isPending = !hasResult;
 
-  // Default: expanded while pending, collapsed after result arrives
-  const initialExpanded = defaultExpanded !== undefined ? defaultExpanded : isPending;
+  // Bug: 0a1ad82 — Auto-collapse threshold: short inputs stay expanded even after result
+  const inputLineCount = useMemo(() => countInputLines(input), [input]);
+  const isShortInput = inputLineCount < TOOL_USE_AUTO_COLLAPSE_LINES;
+
+  // Default: expanded while pending, collapsed after result arrives (unless short)
+  const initialExpanded = defaultExpanded !== undefined
+    ? defaultExpanded
+    : (isPending || isShortInput);
   const [expanded, setExpanded] = useState(initialExpanded);
 
   const description = useMemo(() => getToolDescription(toolName, inputObj), [toolName, inputObj]);
+
+  // Bug: 0a1ad82 — First line of input for collapsed preview
+  const firstInputLine = useMemo(() => {
+    const text = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
+    const line = text.split('\n')[0] ?? '';
+    return line.length > 80 ? line.slice(0, 80) + '\u2026' : line;
+  }, [input]);
 
   // Determine which input panel to render
   function renderInputPanel(): JSX.Element {
@@ -365,29 +392,51 @@ export function ToolUseBlock({
     return <JsonInputPanel input={inputObj} />;
   }
 
+  // Bug: 0a1ad82 — Click-anywhere-to-toggle: entire block is clickable
+  const handleBlockClick = (e: MouseEvent) => {
+    // Don't toggle if user is selecting text or clicking interactive elements inside body
+    const target = e.target as HTMLElement;
+    if (expanded && target.closest('.tool-use-block__body')) return;
+    setExpanded((prev) => !prev);
+  };
+
   return (
-    <div className="tool-use-block" data-tool={toolName} data-id={toolUseId}>
-      <button
-        type="button"
-        className="tool-use-block__header"
-        onClick={() => setExpanded((prev) => !prev)}
-        aria-expanded={expanded}
-      >
-        <span className="tool-use-block__chevron">{expanded ? '\u25BE' : '\u25B8'}</span>
-        <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
-        <span className="tool-use-block__name">{toolName}</span>
-        <span className="tool-use-block__desc">{description}</span>
-      </button>
-      {expanded && (
-        <div className="tool-use-block__body">
-          {renderInputPanel()}
-          {hasResult && (
-            <>
-              <div className="tool-use-block__divider" />
-              <ToolResult result={result} />
-            </>
+    <div
+      className={`tool-use-block${expanded ? '' : ' tool-use-block--collapsed'}`}
+      data-tool={toolName}
+      data-id={toolUseId}
+      onClick={handleBlockClick}
+      style={{ cursor: 'pointer' }}
+    >
+      {/* Bug: 0a1ad82 — Collapsed: two-line display (name + more, then first input line) */}
+      {!expanded ? (
+        <div className="tool-use-block__header" aria-expanded={false}>
+          <span className="tool-use-block__chevron">{'\u25B8'}</span>
+          <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
+          <span className="tool-use-block__name">{toolName}</span>
+          <span className="tool-use-block__more">more</span>
+          {firstInputLine && (
+            <div className="tool-use-block__preview">{firstInputLine}</div>
           )}
         </div>
+      ) : (
+        <>
+          <div className="tool-use-block__header" aria-expanded={true}>
+            <span className="tool-use-block__chevron">{'\u25BE'}</span>
+            <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
+            <span className="tool-use-block__name">{toolName}</span>
+            <span className="tool-use-block__desc">{description}</span>
+          </div>
+          <div className="tool-use-block__body">
+            {renderInputPanel()}
+            {hasResult && (
+              <>
+                <div className="tool-use-block__divider" />
+                <ToolResult result={result} />
+              </>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

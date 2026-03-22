@@ -15218,7 +15218,10 @@ function MessageActions({
         onClick: handleCopy,
         title: copiedFeedback ? "Copied" : "Copy",
         "aria-label": copiedFeedback ? "Copied" : "Copy message",
-        children: copiedFeedback ? "\u2713" : "Copy"
+        children: copiedFeedback ? /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: /* @__PURE__ */ u3("polyline", { points: "20 6 9 17 4 12" }) }) : /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", children: [
+          /* @__PURE__ */ u3("rect", { x: "9", y: "9", width: "13", height: "13", rx: "2", ry: "2" }),
+          /* @__PURE__ */ u3("path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" })
+        ] })
       }
     ),
     hasOverflow && /* @__PURE__ */ u3("div", { className: "message-actions__overflow-wrap", children: [
@@ -18633,23 +18636,18 @@ function CompactToolUseBlock({
     return text2.length > 120 ? text2.slice(0, 120) + "\u2026" : text2;
   }, [result]);
   const fullContent = typeof input === "string" ? input : JSON.stringify(input, null, 2);
-  return /* @__PURE__ */ u3("div", { className: "tool-use-block tool-use-block--compact", "data-tool": toolName, children: [
+  const handleCompactClick = (e3) => {
+    const target = e3.target;
+    if (expanded && target.closest(".tool-use-block--compact__body"))
+      return;
+    setExpanded((p3) => !p3);
+  };
+  return /* @__PURE__ */ u3("div", { className: "tool-use-block tool-use-block--compact", "data-tool": toolName, onClick: handleCompactClick, style: { cursor: "pointer" }, children: [
     /* @__PURE__ */ u3("div", { className: "tool-use-card__header", children: [
       /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError, emoji: statusEmoji }),
       /* @__PURE__ */ u3("span", { className: "tool-use-card__name", children: toolName }),
       primary && /* @__PURE__ */ u3("span", { className: "tool-use-card__arg", children: primary }),
-      /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "tool-use-card__expand",
-          onClick: (e3) => {
-            e3.stopPropagation();
-            setExpanded((p3) => !p3);
-          },
-          children: expanded ? "less" : "more"
-        }
-      )
+      /* @__PURE__ */ u3("span", { className: "tool-use-card__expand", children: expanded ? "less" : "more" })
     ] }),
     expanded && /* @__PURE__ */ u3("div", { className: "tool-use-block--compact__body", children: [
       /* @__PURE__ */ u3("pre", { className: "block-pre tool-use-card__full", children: fullContent }),
@@ -18660,6 +18658,11 @@ function CompactToolUseBlock({
     ] }),
     !expanded && resultSummary && /* @__PURE__ */ u3("div", { className: "tool-use-block--compact__summary", children: /* @__PURE__ */ u3("span", { className: "tool-use-block--compact__summary-text", children: resultSummary }) })
   ] });
+}
+var TOOL_USE_AUTO_COLLAPSE_LINES = 5;
+function countInputLines(input) {
+  const text2 = typeof input === "string" ? input : JSON.stringify(input, null, 2);
+  return text2.split("\n").length;
 }
 function ToolUseBlock({
   toolName,
@@ -18691,9 +18694,16 @@ function ToolUseBlock({
   const hasResult = result != null;
   const isError = hasResult && result.is_error === true;
   const isPending = !hasResult;
-  const initialExpanded = defaultExpanded !== void 0 ? defaultExpanded : isPending;
+  const inputLineCount = T2(() => countInputLines(input), [input]);
+  const isShortInput = inputLineCount < TOOL_USE_AUTO_COLLAPSE_LINES;
+  const initialExpanded = defaultExpanded !== void 0 ? defaultExpanded : isPending || isShortInput;
   const [expanded, setExpanded] = d2(initialExpanded);
   const description = T2(() => getToolDescription(toolName, inputObj), [toolName, inputObj]);
+  const firstInputLine = T2(() => {
+    const text2 = typeof input === "string" ? input : JSON.stringify(input, null, 2);
+    const line = text2.split("\n")[0] ?? "";
+    return line.length > 80 ? line.slice(0, 80) + "\u2026" : line;
+  }, [input]);
   function renderInputPanel() {
     if ((toolName === "Edit" || toolName === "MultiEdit") && typeof inputObj.file_path === "string") {
       const filePath = inputObj.file_path;
@@ -18716,30 +18726,43 @@ function ToolUseBlock({
     }
     return /* @__PURE__ */ u3(JsonInputPanel, { input: inputObj });
   }
-  return /* @__PURE__ */ u3("div", { className: "tool-use-block", "data-tool": toolName, "data-id": toolUseId, children: [
-    /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: "tool-use-block__header",
-        onClick: () => setExpanded((prev) => !prev),
-        "aria-expanded": expanded,
-        children: [
-          /* @__PURE__ */ u3("span", { className: "tool-use-block__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+  const handleBlockClick = (e3) => {
+    const target = e3.target;
+    if (expanded && target.closest(".tool-use-block__body"))
+      return;
+    setExpanded((prev) => !prev);
+  };
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: `tool-use-block${expanded ? "" : " tool-use-block--collapsed"}`,
+      "data-tool": toolName,
+      "data-id": toolUseId,
+      onClick: handleBlockClick,
+      style: { cursor: "pointer" },
+      children: !expanded ? /* @__PURE__ */ u3("div", { className: "tool-use-block__header", "aria-expanded": false, children: [
+        /* @__PURE__ */ u3("span", { className: "tool-use-block__chevron", children: "\u25B8" }),
+        /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError, emoji: statusEmoji }),
+        /* @__PURE__ */ u3("span", { className: "tool-use-block__name", children: toolName }),
+        /* @__PURE__ */ u3("span", { className: "tool-use-block__more", children: "more" }),
+        firstInputLine && /* @__PURE__ */ u3("div", { className: "tool-use-block__preview", children: firstInputLine })
+      ] }) : /* @__PURE__ */ u3(k, { children: [
+        /* @__PURE__ */ u3("div", { className: "tool-use-block__header", "aria-expanded": true, children: [
+          /* @__PURE__ */ u3("span", { className: "tool-use-block__chevron", children: "\u25BE" }),
           /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError, emoji: statusEmoji }),
           /* @__PURE__ */ u3("span", { className: "tool-use-block__name", children: toolName }),
           /* @__PURE__ */ u3("span", { className: "tool-use-block__desc", children: description })
-        ]
-      }
-    ),
-    expanded && /* @__PURE__ */ u3("div", { className: "tool-use-block__body", children: [
-      renderInputPanel(),
-      hasResult && /* @__PURE__ */ u3(k, { children: [
-        /* @__PURE__ */ u3("div", { className: "tool-use-block__divider" }),
-        /* @__PURE__ */ u3(ToolResult, { result })
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "tool-use-block__body", children: [
+          renderInputPanel(),
+          hasResult && /* @__PURE__ */ u3(k, { children: [
+            /* @__PURE__ */ u3("div", { className: "tool-use-block__divider" }),
+            /* @__PURE__ */ u3(ToolResult, { result })
+          ] })
+        ] })
       ] })
-    ] })
-  ] });
+    }
+  );
 }
 
 // ui/src/components/message-blocks/TurnGroup.tsx
@@ -18761,7 +18784,7 @@ function TurnGroup({ speaker, children: children2, footer, isShort }) {
 }
 
 // ui/src/components/message-blocks/GroupFooter.tsx
-function GroupFooter({ totalTokens, onCopyAll }) {
+function GroupFooter({ totalTokens, onCopyAll, onSelect, isSelected }) {
   const [copied, setCopied] = d2(false);
   const handleCopy = () => {
     onCopyAll();
@@ -18783,6 +18806,20 @@ function GroupFooter({ totalTokens, onCopyAll }) {
             /* @__PURE__ */ u3("rect", { x: "9", y: "9", width: "13", height: "13", rx: "2", ry: "2" }),
             /* @__PURE__ */ u3("path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" })
           ] })
+        }
+      ),
+      onSelect && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `group-footer__btn${isSelected ? " group-footer__btn--selected" : ""}`,
+          onClick: onSelect,
+          title: isSelected ? "Deselect" : "Select",
+          "aria-label": isSelected ? "Deselect turn" : "Select turn",
+          children: isSelected ? /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round", children: [
+            /* @__PURE__ */ u3("rect", { x: "3", y: "3", width: "18", height: "18", rx: "3", ry: "3" }),
+            /* @__PURE__ */ u3("polyline", { points: "17 8 10 16 7 13" })
+          ] }) : /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", children: /* @__PURE__ */ u3("rect", { x: "3", y: "3", width: "18", height: "18", rx: "3", ry: "3" }) })
         }
       ),
       totalTokens != null && /* @__PURE__ */ u3("span", { className: "group-footer__stat", children: [
@@ -23161,6 +23198,15 @@ function blockCopyText(block2) {
 function MessageGroup({ turn, isStreaming, isThinking }) {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
+  const turnMeta = T2(() => {
+    const msg = assistantEvent.message;
+    const usage = msg.usage;
+    const model = msg.model;
+    if (!usage && !model)
+      return void 0;
+    const tokenCount = usage ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : void 0;
+    return { tokenCount, model };
+  }, [assistantEvent]);
   function renderBlock(block2, index2) {
     let inner = null;
     switch (block2.type) {
@@ -23207,7 +23253,8 @@ function MessageGroup({ turn, isStreaming, isThinking }) {
           onCopy: text2 ? () => {
             navigator.clipboard.writeText(text2).catch(() => {
             });
-          } : void 0
+          } : void 0,
+          metadata: turnMeta
         }
       )
     ] }, `block-wrap-${index2}`);
