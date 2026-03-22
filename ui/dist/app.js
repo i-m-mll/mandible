@@ -15210,6 +15210,7 @@ function MessageActions({
     metaParts.push(metadata.model);
   }
   return /* @__PURE__ */ u3("div", { className: "message-actions", "data-dag-uuid": dagUuid, children: [
+    metaParts.length > 0 && /* @__PURE__ */ u3("span", { className: "message-actions__meta", children: metaParts.join(" \xB7 ") }),
     onCopy && /* @__PURE__ */ u3(
       "button",
       {
@@ -15266,8 +15267,7 @@ function MessageActions({
           }
         )
       ] })
-    ] }),
-    metaParts.length > 0 && /* @__PURE__ */ u3("div", { className: "message-actions__meta", children: metaParts.join(" \xB7 ") })
+    ] })
   ] });
 }
 
@@ -16453,10 +16453,16 @@ function ThinkingBlock({ content, defaultCollapsed = true }) {
         onClick: () => setCollapsed((prev) => !prev),
         "aria-expanded": !collapsed,
         title: collapsed ? "Expand thinking" : "Collapse thinking",
-        children: collapsed ? /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", children: [
-          /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: "Thinking" }),
-          /* @__PURE__ */ u3("span", { className: "thinking-block__more", children: "more" })
-        ] }) : /* @__PURE__ */ u3("div", { className: "thinking-block__body", children: /* @__PURE__ */ u3("pre", { children: content }) })
+        children: [
+          collapsed ? /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", children: [
+            /* @__PURE__ */ u3("span", { className: "thinking-block__chevron", children: "\u25B8" }),
+            /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: "Thinking" })
+          ] }) : /* @__PURE__ */ u3("div", { className: "thinking-block__expanded-header", children: [
+            /* @__PURE__ */ u3("span", { className: "thinking-block__chevron", children: "\u25BE" }),
+            /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: "Thinking" })
+          ] }),
+          !collapsed && /* @__PURE__ */ u3("div", { className: "thinking-block__body", children: /* @__PURE__ */ u3("pre", { children: content }) })
+        ]
       }
     )
   ] });
@@ -18647,7 +18653,7 @@ function CompactToolUseBlock({
       /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError, emoji: statusEmoji }),
       /* @__PURE__ */ u3("span", { className: "tool-use-card__name", children: toolName }),
       primary && /* @__PURE__ */ u3("span", { className: "tool-use-card__arg", children: primary }),
-      /* @__PURE__ */ u3("span", { className: "tool-use-card__expand", children: expanded ? "less" : "more" })
+      /* @__PURE__ */ u3("span", { className: "tool-use-card__expand", children: expanded ? "\u25BE" : "\u25B8" })
     ] }),
     expanded && /* @__PURE__ */ u3("div", { className: "tool-use-block--compact__body", children: [
       /* @__PURE__ */ u3("pre", { className: "block-pre tool-use-card__full", children: fullContent }),
@@ -18744,7 +18750,6 @@ function ToolUseBlock({
         /* @__PURE__ */ u3("span", { className: "tool-use-block__chevron", children: "\u25B8" }),
         /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError, emoji: statusEmoji }),
         /* @__PURE__ */ u3("span", { className: "tool-use-block__name", children: toolName }),
-        /* @__PURE__ */ u3("span", { className: "tool-use-block__more", children: "more" }),
         firstInputLine && /* @__PURE__ */ u3("div", { className: "tool-use-block__preview", children: firstInputLine })
       ] }) : /* @__PURE__ */ u3(k, { children: [
         /* @__PURE__ */ u3("div", { className: "tool-use-block__header", "aria-expanded": true, children: [
@@ -19347,10 +19352,10 @@ function TranscriptBlockItem({
         // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
         /* @__PURE__ */ u3(ThinkingBlock, { content: block2.content, defaultCollapsed: true })
       ) : collapsed ? (
-        // Bug: bce7370 — B3: Replace ellipsis with label + "more", same pattern as ThinkingBlock
+        // Bug: bce7370 — B3: Collapsed block with chevron indicator
         /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", "aria-label": "Collapsed block", children: [
-          /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: collapsedLabel }),
-          /* @__PURE__ */ u3("span", { className: "thinking-block__more", children: "more" })
+          /* @__PURE__ */ u3("span", { className: "thinking-block__chevron", children: "\u25B8" }),
+          /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: collapsedLabel })
         ] })
       ) : renderConversationBlockBody(block2, collapsed) })
     ] }),
