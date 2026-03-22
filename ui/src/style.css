@@ -4364,6 +4364,11 @@ tr:hover .work-actions__trigger {
   display: flex;
   justify-content: flex-end;
   padding-top: 6px;
+  /* Bug: fbca9d5 — Sticky role pills: pin speaker badge while scrolling (History tab) */
+  position: sticky;
+  top: 0;
+  align-self: start;
+  z-index: 2;
 }
 
 .transcript-turn__badge {
@@ -5868,12 +5873,35 @@ tr:hover .work-actions__trigger {
   flex-shrink: 0;
 }
 
-.terminal-pane__sidebar-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-default);
+/* Bug: 60b1fd7 — Sidebar tab bar */
+.terminal-pane__sidebar-tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.terminal-pane__sidebar-tab {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.terminal-pane__sidebar-tab:hover {
+  color: var(--fg-default);
+  background: rgba(255,255,255,0.04);
+}
+
+.terminal-pane__sidebar-tab--active {
+  color: var(--fg-default);
+  font-weight: 600;
+  background: rgba(255,255,255,0.06);
 }
 
 .terminal-pane__sidebar-close {
@@ -5893,6 +5921,66 @@ tr:hover .work-actions__trigger {
 .terminal-pane__sidebar-close:hover {
   background: rgba(255,255,255,0.06);
   color: var(--fg-default);
+}
+
+/* Bug: 60b1fd7 — MessageInfoPanel styles */
+.message-info-panel {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.message-info-panel__empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px 12px;
+}
+
+.message-info-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.message-info-panel__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.message-info-panel__value {
+  font-size: 13px;
+  color: var(--fg-default);
+  word-break: break-word;
+}
+
+.message-info-panel__value--mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.message-info-panel__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.message-info-panel__tool-pill {
+  display: inline-block;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--accent-blue, #4da3ff);
+  background: rgba(77, 163, 255, 0.1);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 /* Bug: 6634023 — SessionControls adapted for sidebar layout */
@@ -6082,6 +6170,11 @@ tr:hover .work-actions__trigger {
   display: flex;
   justify-content: flex-end;
   padding-top: 6px;
+  /* Bug: fbca9d5 — Sticky role pills: pin speaker badge while scrolling */
+  position: sticky;
+  top: 0;
+  align-self: start;
+  z-index: 2;
 }
 
 .stream-turn__badge {
@@ -6109,6 +6202,14 @@ tr:hover .work-actions__trigger {
 
 .stream-turn__body {
   min-width: 0;
+}
+
+/* Bug: a654b69 — P4: individual nodes within a grouped turn */
+.stream-turn-node {
+  margin-bottom: 8px;
+}
+.stream-turn-node:last-child {
+  margin-bottom: 0;
 }
 
 .stream-live-indicator {
@@ -6471,82 +6572,7 @@ tr:hover .work-actions__trigger {
   font-size: 12px;
 }
 
-/* Status bar — sticky bottom of scroll container */
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 16px;
-  background: rgba(10, 15, 20, 0.92);
-  backdrop-filter: blur(8px);
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-  font-size: 12px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.status-bar__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  display: inline-block;
-  flex-shrink: 0;
-}
-
-.status-bar__dot--streaming {
-  background: var(--accent-blue);
-  animation: stream-pulse 1.4s ease-in-out infinite;
-}
-
-.status-bar__dot--done {
-  background: var(--accent-green);
-}
-
-.status-bar__dot--error {
-  background: var(--accent-red);
-}
-
-.status-bar__label {
-  color: var(--text-primary);
-}
-
-.status-bar__error {
-  color: var(--accent-red);
-  flex: 1;
-}
-
-.status-bar__center {
-  flex: 1;
-  text-align: center;
-}
-
-.status-bar__model-select,
-.status-bar__model-button {
-  appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text-primary);
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 11px;
-  font-family: var(--font-mono);
-}
-
-.status-bar__model-button {
-  cursor: pointer;
-}
-
-.status-bar__model-select:disabled,
-.status-bar__model-button:disabled {
-  opacity: 0.7;
-  cursor: default;
-}
-
-.status-bar__right {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-}
+/* TOMBSTONE (Bug: fbca9d5): .status-bar* CSS deleted — StatusBar removed in P1. */
 
 /* JSON syntax highlighting */
 .json-key     { color: var(--accent-blue); }
@@ -7207,6 +7233,7 @@ tr:hover .work-actions__trigger {
   top: 4px;
   right: 4px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   background: var(--bg-inset, var(--bg-secondary));
@@ -7249,6 +7276,71 @@ tr:hover .work-actions__trigger {
 .message-actions__btn:hover {
   color: var(--accent-blue);
   background: rgba(255, 255, 255, 0.05);
+}
+
+/* Bug: 02d701a — Overflow menu (three-dot / ellipsis) */
+
+.message-actions__overflow-wrap {
+  position: relative;
+}
+
+.message-actions__overflow {
+  font-size: 14px;
+  letter-spacing: 1px;
+  padding: 0 6px;
+}
+
+.message-actions__overflow-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg-inset, var(--bg-secondary));
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 120px;
+  z-index: 10;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.message-actions__overflow-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  transition: color 0.1s ease, background-color 0.1s ease;
+}
+
+.message-actions__overflow-item:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Bug: 02d701a — Metadata row below action buttons */
+
+.message-actions__meta {
+  width: 100%;
+  padding: 2px 4px 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+/* Bug: 02d701a — Selected message highlight */
+
+.stream-turn--selected {
+  border-left: 2px solid var(--accent-blue, #4da3ff);
+  background: rgba(77, 163, 255, 0.04);
 }
 
 /* ── Toast notifications ── */

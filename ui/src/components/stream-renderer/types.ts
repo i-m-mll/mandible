@@ -138,7 +138,37 @@ export type RenderedTurn = {
   assistantEvent: AssistantEvent;
   /** Tool results keyed by tool_use_id for O(1) lookup. */
   toolResults: Map<string, ToolResultContentBlock>;
+  /** Monotonic timestamp when this turn was first built — P3 uses for per-turn elapsed. */
+  receivedAt?: number;
 };
+
+// ---- RenderNode types (Bug: d744dde — chronological message ordering) ----
+
+export type GroupEntity = 'user' | 'assistant' | 'system';
+
+export type RenderNodeAssistantTurn = {
+  kind: 'assistant_turn';
+  key: string;
+  entity: 'assistant';
+  turn: RenderedTurn;
+};
+
+export type RenderNodeUserMessage = {
+  kind: 'user_message';
+  key: string;
+  entity: 'user';
+  text: string;
+  source: 'stream' | 'synthetic';
+};
+
+export type RenderNodeViolation = {
+  kind: 'violation';
+  key: string;
+  entity: 'system';
+  event: PresetViolationEvent;
+};
+
+export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeViolation;
 
 // ---- Component props ----
 
@@ -173,21 +203,7 @@ export interface MessageGroupProps {
   isThinking?: boolean;
 }
 
-export interface StatusBarProps {
-  streaming: boolean;
-  model?: string;
-  backend?: string;
-  totalCostUsd?: number;
-  numTurns?: number;
-  durationMs?: number;
-  error?: string;
-  /** Elapsed seconds since streaming started — shown live while streaming=true. */
-  elapsedSeconds?: number;
-  liveLabel?: string;
-  modelOptions?: string[];
-  modelSaving?: boolean;
-  onChangeModel?: (model: string) => void | Promise<void>;
-}
+// TOMBSTONE (Bug: fbca9d5): StatusBarProps deleted — StatusBar removed in P1.
 
 export interface StreamRendererProps {
   /** Accumulated events from the parent-owned SSE/WebSocket client. */
@@ -196,13 +212,14 @@ export interface StreamRendererProps {
   streaming: boolean;
   elapsedSeconds?: number;
   emptyLabel?: string;
-  /** Optional session metadata for the status bar. */
+  /** Session metadata — slimmed in P1 (Bug: fbca9d5). P3 adds conversationId, onFork. */
   sessionInfo?: {
     sessionId: string;
     backend?: string;
     model?: string;
-    modelOptions?: string[];
-    modelSaving?: boolean;
-    onChangeModel?: (model: string) => void | Promise<void>;
   };
+  /** Bug: 02d701a — P3: callback when user clicks Info on a specific turn. */
+  onSelectMessageInfo?: (turnId: string) => void;
+  /** Bug: 02d701a — P3: currently selected message ID for highlight. */
+  selectedMessageId?: string | null;
 }

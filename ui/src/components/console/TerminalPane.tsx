@@ -14,6 +14,7 @@ import { PermissionDialog } from './PermissionDialog';
 import { SessionControls } from './SessionControls';
 import { PtyBanner } from './PtyBanner';
 import { LivePresetPills } from './LivePresetPills';
+import { MessageInfoPanel } from './MessageInfoPanel';
 import { ContextIndicator } from '../presets/ContextIndicator';
 import {
   getConversation,
@@ -385,6 +386,9 @@ export function TerminalPane({
   const [activeSubagents, setActiveSubagents] = useState<ActiveSubagent[]>([]);
   // Bug: 6634023 — Sidebar state for SessionControls (collapsed by default)
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Bug: 60b1fd7 — Sidebar tab state: settings vs info panel
+  const [sidebarTab, setSidebarTab] = useState<'settings' | 'info'>('settings');
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   // Bug: 11f4f47 — Track preset union token count for ContextIndicator
   const [presetTokenCount, setPresetTokenCount] = useState(0);
   // Bug: 8d3328c — Only PTY sessions have a debug terminal. Spawn sessions
@@ -874,6 +878,17 @@ export function TerminalPane({
     return () => { cancelled = true; };
   }, [backendType, sessionId]);
 
+  // Bug: 60b1fd7 — Selection handler for sidebar info panel
+  const handleSelectMessageInfo = (turnId: string) => {
+    if (selectedMessageId === turnId && sidebarTab === 'info') {
+      setSelectedMessageId(null);
+      return;
+    }
+    setSelectedMessageId(turnId);
+    setSidebarOpen(true);
+    setSidebarTab('info');
+  };
+
   // Bug: 1d286c1 — handleReconnect now calls backend restart API before opening WS.
   // The previous version only opened a new WS but never restarted the PTY process,
   // so reconnect always got immediately rejected by the backend.
@@ -1165,6 +1180,8 @@ export function TerminalPane({
                     backend: providerFamily,
                     model,
                   }}
+                  onSelectMessageInfo={handleSelectMessageInfo}
+                  selectedMessageId={selectedMessageId}
                 />
               </div>
               {/* Bug: 11f4f47 — Context indicator bar above the input area */}
@@ -1225,36 +1242,62 @@ export function TerminalPane({
             </div>
 
             {/* Bug: 6634023 — Collapsible right sidebar for session controls
-                Bug: 52b75c0 — Toggle moved to header; no more floating gear icon */}
+                Bug: 52b75c0 — Toggle moved to header; no more floating gear icon
+                Bug: 60b1fd7 — P5: Tabbed sidebar with settings and info tabs */}
             {sidebarOpen && (
               <div className="terminal-pane__sidebar">
                 <div className="terminal-pane__sidebar-header">
-                  <span className="terminal-pane__sidebar-title">Settings</span>
+                  <div className="terminal-pane__sidebar-tabs">
+                    <button
+                      type="button"
+                      className={`terminal-pane__sidebar-tab${sidebarTab === 'settings' ? ' terminal-pane__sidebar-tab--active' : ''}`}
+                      onClick={() => setSidebarTab('settings')}
+                    >
+                      Settings
+                    </button>
+                    <button
+                      type="button"
+                      className={`terminal-pane__sidebar-tab${sidebarTab === 'info' ? ' terminal-pane__sidebar-tab--active' : ''}`}
+                      onClick={() => setSidebarTab('info')}
+                    >
+                      Info
+                    </button>
+                  </div>
                   <button
                     type="button"
                     className="terminal-pane__sidebar-close"
                     onClick={() => setSidebarOpen(false)}
-                    title="Close settings"
+                    title="Close sidebar"
                   >
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                       <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                     </svg>
                   </button>
                 </div>
-                <SessionControls
-                  sessionId={sessionId}
-                  backendType={backendType}
-                  model={model}
-                  modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
-                  allowedTools={allowedTools}
-                  availableTools={availableTools}
-                  onModelSaved={setModel}
-                />
-                {/* Bug: 11f4f47 — Live preset pills in sidebar for SDK sessions */}
-                {backendType === 'sdk' && (
-                  <LivePresetPills
-                    sessionId={sessionId}
-                    onUnionUpdate={({ totalTokens }) => setPresetTokenCount(totalTokens)}
+                {sidebarTab === 'settings' && (
+                  <>
+                    <SessionControls
+                      sessionId={sessionId}
+                      backendType={backendType}
+                      model={model}
+                      modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
+                      allowedTools={allowedTools}
+                      availableTools={availableTools}
+                      onModelSaved={setModel}
+                    />
+                    {/* Bug: 11f4f47 — Live preset pills in sidebar for SDK sessions */}
+                    {backendType === 'sdk' && (
+                      <LivePresetPills
+                        sessionId={sessionId}
+                        onUnionUpdate={({ totalTokens }) => setPresetTokenCount(totalTokens)}
+                      />
+                    )}
+                  </>
+                )}
+                {sidebarTab === 'info' && (
+                  <MessageInfoPanel
+                    selectedMessageId={selectedMessageId}
+                    streamEvents={streamEvents}
                   />
                 )}
               </div>
