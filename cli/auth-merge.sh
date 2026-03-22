@@ -464,119 +464,9 @@ close_declared_issues() {
   fi
 }
 
-# Bug: b1308c6 — auto-build dist after merge when src/ or ui/src/ changed.
-# If the merged branch contained source changes but no pre-built dist (agents
-# sometimes omit dist from feature branches), run npm run build now so the
-# daemon is restarted with current code. Commits the result with the agent key.
-build_dist_if_src_changed() {
-  local base_commit="$1"
-  local repo_root
-  repo_root=$(git rev-parse --show-toplevel)
-
-  local src_changed
-  src_changed=$(git diff --name-only "${base_commit}" HEAD -- src/ ui/src/)
-  if [[ -z "$src_changed" ]]; then
-    return 0
-  fi
-
-  # Also skip if dist is already up-to-date (was built and committed in the branch)
-  local dist_changed
-  dist_changed=$(git diff --name-only "${base_commit}" HEAD -- dist/ ui/dist/)
-  if [[ -n "$dist_changed" ]]; then
-    err "${DIM_WHITE}[post-merge] dist already built in merged branch — skipping rebuild${RESET}"
-    return 0
-  fi
-
-  err "${DIM_WHITE}[post-merge] src/ changed but no dist commit — rebuilding...${RESET}"
-
-  # Bug: 242d0c7 — run npm install before build to pick up new dependencies
-  # from merged package.json changes. Uses npm install (not npm ci) to avoid
-  # wiping node_modules in worktree-symlinked setups.
-  if ! (cd "$repo_root" && npm install 2>&1 | while IFS= read -r line; do err "${DIM_WHITE}  ${line}${RESET}"; done); then
-    err "${BOLD_YELLOW}[post-merge] npm install failed — attempting build anyway${RESET}"
-  fi
-
-  if ! (cd "$repo_root" && npm run build 2>&1 | while IFS= read -r line; do err "${DIM_WHITE}  ${line}${RESET}"; done); then
-    err "${BOLD_YELLOW}[post-merge] npm run build failed — dist not updated${RESET}"
-    return 1
-  fi
-
-  # Stage tracked dist files (gitignored but tracked via force-add)
-  (cd "$repo_root" && git add -u dist/ ui/dist/) 2>/dev/null || true
-
-  if (cd "$repo_root" && git diff --cached --quiet); then
-    err "${DIM_WHITE}[post-merge] build produced no staged changes${RESET}"
-    return 0
-  fi
-
-  # Commit with agent signing key — this is a build artifact, not a protected merge.
-  # main() already unset GIT_CONFIG_* for the YubiKey merge; re-inject agent key here.
-  local agent_key="${HOME}/.ssh/id_ed25519_agents"
-  local merged_branch
-  merged_branch=$(git log --merges -1 --pretty=format:"%s" | sed 's/Merge branch .//;s/.//')
-  local commit_msg="build dist for ${merged_branch}"
-
-  if [[ -f "$agent_key" ]]; then
-    (cd "$repo_root" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.signingkey \
-      GIT_CONFIG_VALUE_0="${agent_key}" git commit -S -m "${commit_msg}") \
-      && err "${GREEN}[post-merge] dist built and committed (agent-signed)${RESET}" \
-      || err "${BOLD_YELLOW}[post-merge] dist built but commit failed${RESET}"
-  else
-    (cd "$repo_root" && git commit --no-gpg-sign -m "${commit_msg}") \
-      && err "${GREEN}[post-merge] dist built and committed (unsigned — agent key not found)${RESET}" \
-      || err "${BOLD_YELLOW}[post-merge] dist built but commit failed${RESET}"
-  fi
-}
-
-restart_mandible_if_dist_changed() {
-  local base_commit="$1"
-  local server_changed ui_changed
-  server_changed=$(git diff --name-only "${base_commit}" HEAD -- dist/)
-  ui_changed=$(git diff --name-only "${base_commit}" HEAD -- ui/dist/)
-  if [[ -z "$server_changed" && -z "$ui_changed" ]]; then
-    return 0
-  fi
-
-  # Bug: 326a3e2 — notify the UI before restarting so it can show a splash screen
-  local port="${MANDIBLE_PORT:-19420}"
-  if curl -sf --max-time 2 -X POST "http://127.0.0.1:${port}/api/admin/rebuilding" >/dev/null 2>&1; then
-    err "${DIM_WHITE}[post-merge] notified UI of impending restart${RESET}"
-  fi
-
-  # Only kick launchd when the server dist changed — ui/dist/ is served
-  # from disk so the browser picks it up without a full process restart.
-  if [[ -n "$server_changed" ]]; then
-    local uid
-    uid=$(id -u)
-    # Bug: 4980617 — background restart so auth-merge exits first, giving
-    # the executor time to run storeExecutionResult() before daemon dies.
-    # Bug: 72e9f96 — but poll health synchronously so restart failures are
-    # captured in executor output rather than silently lost.
-    (launchctl kickstart -k "gui/${uid}/com.mll.mandible" </dev/null >/dev/null 2>&1) &
-    disown $! 2>/dev/null || true
-    err "${DIM_WHITE}[post-merge] triggered com.mll.mandible restart (dist/ changed)${RESET}"
-
-    # Wait for old daemon to die, then poll health endpoint
-    sleep 3
-    local health_ok=false
-    local attempt
-    for attempt in $(seq 1 15); do
-      if curl -sf --max-time 2 "http://127.0.0.1:${port}/api/health" >/dev/null 2>&1; then
-        health_ok=true
-        break
-      fi
-      sleep 1
-    done
-
-    if [[ "$health_ok" == "true" ]]; then
-      err "${GREEN}[post-merge] Mandible restarted successfully${RESET}"
-    else
-      err "${BOLD_YELLOW}[post-merge] WARNING: Mandible health check failed after 15s — daemon may not have restarted${RESET}"
-    fi
-  else
-    err "${DIM_WHITE}[post-merge] ui/dist/ changed only — no restart needed, browser will reload${RESET}"
-  fi
-}
+# Bug: 4afab83 — post-merge build/restart logic has been moved to the auth_hooks
+# system in the Mandible daemon. Hooks are configured per-repo in the auth_hooks
+# table and run automatically after successful auth actions.
 
 main() {
   if ! git rev-parse --git-dir >/dev/null 2>&1; then
@@ -685,8 +575,7 @@ main() {
         close_declared_issues
         cleanup_merged_worktrees "${sources[0]}"
       fi
-      build_dist_if_src_changed "$pre_merge_head"
-      restart_mandible_if_dist_changed "$pre_merge_head"
+      # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
     else
       err "${RED}git commit failed.${RESET}"
@@ -813,8 +702,7 @@ main() {
       auto_close_issues "$target" "$pre_merge_head"
       close_declared_issues
       cleanup_merged_worktrees "$source"
-      build_dist_if_src_changed "$pre_merge_head"
-      restart_mandible_if_dist_changed "$pre_merge_head"
+      # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
     fi
 
@@ -828,8 +716,7 @@ main() {
           auto_close_issues "$target" "$pre_merge_head"
           close_declared_issues
           cleanup_merged_worktrees "$source"
-          build_dist_if_src_changed "$pre_merge_head"
-          restart_mandible_if_dist_changed "$pre_merge_head"
+          # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
           exit 0
         else
           err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
@@ -881,8 +768,7 @@ main() {
   for source in "${succeeded[@]}"; do
     cleanup_merged_worktrees "$source"
   done
-  build_dist_if_src_changed "$pre_merge_head"
-  restart_mandible_if_dist_changed "$pre_merge_head"
+  # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
 }
 
 main "$@"
