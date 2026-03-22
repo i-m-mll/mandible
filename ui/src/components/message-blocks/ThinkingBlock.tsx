@@ -41,10 +41,16 @@ export function ThinkingBlock({ content, defaultCollapsed = true }: ThinkingBloc
       >
         {collapsed ? (
           <div className="thinking-block__collapsed">
+            <span className="thinking-block__chevron">{'\u25B8'}</span>
             <span className="thinking-block__label">Thinking</span>
-            <span className="thinking-block__more">more</span>
           </div>
         ) : (
+          <div className="thinking-block__expanded-header">
+            <span className="thinking-block__chevron">{'\u25BE'}</span>
+            <span className="thinking-block__label">Thinking</span>
+          </div>
+        )}
+        {!collapsed && (
           <div className="thinking-block__body">
             <pre>{content}</pre>
           </div>

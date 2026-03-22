@@ -638,10 +638,10 @@ function TranscriptBlockItem({
             // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
             <ThinkingBlock content={block.content} defaultCollapsed={true} />
           ) : collapsed ? (
-            // Bug: bce7370 — B3: Replace ellipsis with label + "more", same pattern as ThinkingBlock
+            // Bug: bce7370 — B3: Collapsed block with chevron indicator
             <div className="thinking-block__collapsed" aria-label="Collapsed block">
+              <span className="thinking-block__chevron">{'\u25B8'}</span>
               <span className="thinking-block__label">{collapsedLabel}</span>
-              <span className="thinking-block__more">more</span>
             </div>
           ) : (
             renderConversationBlockBody(block, collapsed)
