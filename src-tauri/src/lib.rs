@@ -189,6 +189,7 @@ fn desktop_config_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn resolve_daemon_entry(app: &AppHandle) -> Result<PathBuf, String> {
+    // 1. Check bundled sidecar (Tauri resource bundle)
     let bundled = app
         .path()
         .resource_dir()
@@ -200,6 +201,14 @@ fn resolve_daemon_entry(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
 
+    // 2. Check Zone 2 mutable runtime (Bug: cc4688b)
+    //    Zone 2 takes priority over dev path when available — it may contain patches.
+    let zone2_entry = zone2_runtime_path().join("dist").join("index.js");
+    if zone2_entry.exists() {
+        return Ok(zone2_entry);
+    }
+
+    // 3. Check dev path (repo root)
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or_else(|| "failed to resolve repo root".to_string())?
@@ -210,6 +219,102 @@ fn resolve_daemon_entry(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     Err("dist/index.js not found; build the daemon before launching the desktop shell".to_string())
+}
+
+/// Platform-specific Zone 2 runtime path.
+/// Bug: cc4688b — Zone 2 mutable runtime infrastructure
+fn zone2_runtime_path() -> PathBuf {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library")
+            .join("Application Support")
+            .join("Mandible")
+            .join("runtime")
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        home.join(".local")
+            .join("share")
+            .join("mandible")
+            .join("runtime")
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join("AppData").join("Roaming"))
+            .join("Mandible")
+            .join("runtime")
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        home.join(".local")
+            .join("share")
+            .join("mandible")
+            .join("runtime")
+    }
+}
+
+/// Bug: cc4688b — Zone 2 status: returns path and whether it exists
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct Zone2Status {
+    path: String,
+    available: bool,
+}
+
+#[command]
+fn zone2_status() -> Zone2Status {
+    let zone2 = zone2_runtime_path();
+    let available = zone2.join("dist").join("index.js").exists();
+    Zone2Status {
+        path: zone2.display().to_string(),
+        available,
+    }
+}
+
+/// Bug: cc4688b — trigger Zone 2 bootstrap by calling the daemon API
+#[command]
+async fn zone2_bootstrap() -> Result<String, String> {
+    let port = daemon_port();
+
+    // Use a simple TCP-based HTTP POST (no external HTTP crate dependency)
+    let addr = format!("127.0.0.1:{port}");
+    let addr = addr
+        .to_socket_addrs()
+        .map_err(|e| format!("failed to resolve address: {e}"))?
+        .next()
+        .ok_or_else(|| "no address resolved".to_string())?;
+
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(2000))
+        .map_err(|e| format!("failed to connect to daemon: {e}"))?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+    let request = format!(
+        "POST /api/runtime/bootstrap HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("failed to send request: {e}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| format!("failed to read response: {e}"))?;
+
+    if response.contains("200") {
+        Ok("Bootstrap request sent successfully".to_string())
+    } else {
+        Err(format!("Bootstrap request failed: {response}"))
+    }
 }
 
 fn resolve_node_binary(app: &AppHandle) -> Result<PathBuf, String> {
@@ -359,7 +464,9 @@ pub fn run() {
             daemon_set_launch_mode,
             daemon_start,
             daemon_stop,
-            daemon_restart
+            daemon_restart,
+            zone2_status,
+            zone2_bootstrap
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mandible app");
