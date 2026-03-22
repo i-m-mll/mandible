@@ -1035,25 +1035,12 @@ export function TerminalPane({
           cannot cover it; users can switch to rich view even when disconnected. */}
       <div className="terminal-pane__header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {interactionMode === 'both' && (
-            <span
-              style={{
-                background: 'rgba(77,163,255,0.12)',
-                color: 'var(--accent-blue)',
-                padding: '2px 8px',
-                borderRadius: '999px',
-                fontSize: '11px',
-                cursor: 'pointer',
-              }}
-              onClick={() => { window.location.hash = '#/inbox'; }}
-              title="View inbox"
-            >
-              Inbox
-            </span>
-          )}
           <ViewToggle current={viewMode} onChange={onViewModeChange} showTerminal={showDebugTerminal} />
         </div>
         <div className="terminal-pane__header-actions">
+          <button type="button" className="terminal-pane__link-btn" onClick={() => { window.location.hash = '#/inbox'; }}>
+            View inbox
+          </button>
           {providerSessionId && (
             <button
               type="button"
