@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":1,"timestamp":1774201410,"nonce":"ui7xulGHcCcQuy9S9R+Qs8YX/rQ=","title":"Hover overlay icons/metadata/select, tool collapse UX, overlay positioning, vertical centering","message":"6 issues in one partition. Parent: bce7370","files":null}]}
+{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1774201410,"nonce":"vUclgZ16WVfZ4RxTViYraDVXcN4=","added":["feature","parent:bce7370"],"removed":null}]}
