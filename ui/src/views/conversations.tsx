@@ -375,9 +375,13 @@ function CopyButton({ content }: { content: string }): JSX.Element {
 }
 
 // Bug: bce7370 — BlockTypeIcon now delegates to the shared component from message-blocks.
+// Bug: 722e318 — Fix 1: Suppress outer gutter icon for thinking (ThinkingBlock has its own).
+//                Fix 3: Suppress gutter icon for tool_result (only tool_use gets wrench).
 function BlockTypeIcon({ type }: { type: BlockType }): JSX.Element | null {
-  // The shared component supports these types directly
-  if (type === 'thinking' || type === 'tool_use' || type === 'tool_result' || type === 'system' || type === 'event') {
+  // thinking: ThinkingBlock renders its own lightbulb gutter — skip outer icon
+  // tool_result: shared BlockTypeIcon now returns null for this type
+  if (type === 'thinking') return null;
+  if (type === 'tool_use' || type === 'tool_result' || type === 'system' || type === 'event') {
     return <SharedBlockTypeIcon type={type} />;
   }
   return null;
@@ -588,6 +592,10 @@ function TranscriptBlockItem({
   // Bug: bce7370 — Fix 1: For thinking blocks, skip the outer collapse mechanism
   // and let the shared ThinkingBlock handle its own collapse UI ("Thinking" + "more").
   const isThinkingBlock = block.type === 'thinking';
+  // Bug: 722e318 — Fix 2: tool_use and tool_result also manage their own collapse
+  // internally (ToolUseBlock has its own expand/collapse). Suppress outer collapse
+  // to prevent the "implosion" where clicking hides the rich component.
+  const isSelfCollapsing = isThinkingBlock || block.type === 'tool_use' || block.type === 'tool_result';
 
   const handleClick = (e: MouseEvent) => {
     if (selectMode) {
@@ -598,8 +606,8 @@ function TranscriptBlockItem({
       }
       return;
     }
-    // Don't toggle outer collapse for thinking blocks — ThinkingBlock handles it
-    if (isCollapsible && !isThinkingBlock) {
+    // Don't toggle outer collapse for blocks that manage their own collapse
+    if (isCollapsible && !isSelfCollapsing) {
       onToggleCollapse();
     }
   };
