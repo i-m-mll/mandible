@@ -9611,3 +9611,229 @@ h6.preset-node__title {
   font-family: var(--font-mono);
   font-size: 10px;
 }
+
+/* --- Auth Hooks Panel (Bug: 242d0c7) --- */
+
+.auth-sidebar__footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.auth-sidebar__hooks-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  width: 100%;
+  transition: background 0.15s, color 0.15s;
+}
+
+.auth-sidebar__hooks-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.auth-sidebar__hooks-btn--active {
+  background: rgba(168, 85, 247, 0.15);
+  border-color: rgba(168, 85, 247, 0.3);
+  color: var(--accent-purple);
+}
+
+.auth-hooks-panel {
+  padding: 20px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.auth-hooks-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.auth-hooks-panel__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.auth-hooks-panel__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.auth-hooks-panel__error {
+  background: rgba(242, 107, 107, 0.1);
+  border: 1px solid rgba(242, 107, 107, 0.3);
+  color: var(--accent-red);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+.auth-hooks-panel__form {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.auth-hooks-panel__form-row {
+  margin-bottom: 10px;
+}
+
+.auth-hooks-panel__form-row label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.auth-hooks-panel__form-row input,
+.auth-hooks-panel__form-row select,
+.auth-hooks-panel__form-row textarea {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.auth-hooks-panel__form-row textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.auth-hooks-panel__form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.auth-hooks-panel__empty {
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: center;
+  padding: 32px 16px;
+}
+
+.auth-hooks-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auth-hooks-panel__item {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.auth-hooks-panel__item--disabled {
+  opacity: 0.5;
+}
+
+.auth-hooks-panel__item--builtin {
+  border-color: rgba(168, 85, 247, 0.2);
+}
+
+.auth-hooks-panel__item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.auth-hooks-panel__toggle {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.auth-hooks-panel__toggle--on {
+  background: rgba(50, 210, 150, 0.15);
+  border-color: rgba(50, 210, 150, 0.3);
+  color: var(--accent-green);
+}
+
+.auth-hooks-panel__toggle:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.auth-hooks-panel__item-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-hooks-panel__builtin-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent-purple);
+  background: rgba(168, 85, 247, 0.1);
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.auth-hooks-panel__item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.auth-hooks-panel__item-repo {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.auth-hooks-panel__item-command {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+
+.auth-hooks-panel__item-command code {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.auth-hooks-panel__item-actions {
+  display: flex;
+  gap: 6px;
+}

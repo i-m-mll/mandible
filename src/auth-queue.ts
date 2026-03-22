@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
+import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
 import { getDb, resolvePrefix } from "./db.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import type {
@@ -42,6 +43,7 @@ export interface AuthQueueOptions {
   ttlMs?: number;
   broadcast?: (event: SseEvent) => void;
   executor?: typeof executeAuthCommand;
+  hookManager?: AuthHookManager;
 }
 
 export class AuthQueue {
@@ -50,6 +52,7 @@ export class AuthQueue {
   private readonly ttlMs: number;
   private readonly broadcast: (event: SseEvent) => void;
   private readonly executor: typeof executeAuthCommand;
+  private readonly hookManager: AuthHookManager;
   private readonly inFlight = new Map<string, Promise<void>>();
   private executionChain: Promise<void> = Promise.resolve();
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
@@ -60,6 +63,7 @@ export class AuthQueue {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.broadcast = options.broadcast ?? defaultBroadcast;
     this.executor = options.executor ?? executeAuthCommand;
+    this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.ensureSchema();
     this.recoverStuckRequests();
     this.startExpiryTimer();
@@ -790,6 +794,39 @@ export class AuthQueue {
             cwd: request.cwd,
             onOutput: (chunk) => this.handleOutput(chunk)
           });
+
+          // Bug: 4afab83 — run post-auth hooks after successful execution,
+          // BEFORE reporting completion. Hook failures don't change the
+          // auth result (the merge already succeeded).
+          if (result.exit_code === 0) {
+            try {
+              const hookResults = await this.hookManager.executeHooks(
+                { ...request, ...this.getRequest(request.id) } as AuthRequest,
+                (hookLabel, text) => {
+                  this.handleOutput({
+                    request_id: request.id,
+                    stream: "stderr",
+                    text: `[hook: ${hookLabel}] ${text}`,
+                    timestamp: Date.now(),
+                  });
+                },
+              );
+              for (const hr of hookResults) {
+                const status = hr.exit_code === 0 ? "ok" : `failed (exit ${hr.exit_code})`;
+                this.handleOutput({
+                  request_id: request.id,
+                  stream: "stderr",
+                  text: `[hook: ${hr.label}] ${status} (${hr.duration_ms}ms)\n`,
+                  timestamp: Date.now(),
+                });
+              }
+            } catch (hookError) {
+              console.warn(
+                `[auth-queue] hook execution failed for request ${request.id}: ${hookError instanceof Error ? hookError.message : String(hookError)}`
+              );
+            }
+          }
+
           this.storeExecutionResult(request.id, result, null);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Execution failed.";

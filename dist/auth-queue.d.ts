@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { executeAuthCommand } from "./auth-executor.js";
+import { AuthHookManager } from "./auth-hooks.js";
 import type { AuthRequest, AuthRequestInput, AuthRequestStatus, SseEvent } from "./types.js";
 export declare class AuthQueueError extends Error {
     readonly code: "not_found" | "invalid_status" | "invalid_command";
@@ -12,6 +13,7 @@ export interface AuthQueueOptions {
     ttlMs?: number;
     broadcast?: (event: SseEvent) => void;
     executor?: typeof executeAuthCommand;
+    hookManager?: AuthHookManager;
 }
 export declare class AuthQueue {
     private readonly db;
@@ -19,6 +21,7 @@ export declare class AuthQueue {
     private readonly ttlMs;
     private readonly broadcast;
     private readonly executor;
+    private readonly hookManager;
     private readonly inFlight;
     private executionChain;
     private expiryTimer;

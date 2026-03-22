@@ -337,3 +337,30 @@ export interface WebhookEventRow {
     delivered_at: number | null;
     delivered_to: string | null;
 }
+export interface AuthHook {
+    id: string;
+    repo_pattern: string;
+    auth_type: AuthRequestType;
+    command: string;
+    label: string;
+    enabled: boolean;
+    builtin: boolean;
+    position: number;
+    created_at: number;
+    updated_at: number;
+}
+export interface AuthHookInput {
+    repo_pattern: string;
+    auth_type: AuthRequestType;
+    command: string;
+    label: string;
+    enabled?: boolean;
+    position?: number;
+}
+export interface AuthHookExecutionResult {
+    hook_id: string;
+    label: string;
+    exit_code: number | null;
+    output: string;
+    duration_ms: number;
+}

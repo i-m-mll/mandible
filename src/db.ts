@@ -737,6 +737,42 @@ const MIGRATIONS: Migration[] = [
     statements: [
       `ALTER TABLE auth_requests ADD COLUMN type TEXT NOT NULL DEFAULT 'merge'`
     ]
+  },
+  {
+    version: 46,
+    name: "auth_hooks",
+    // Bug: 4afab83 — configurable post-auth-action hooks, replacing hardcoded
+    // build/restart logic in auth-merge.sh.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS auth_hooks (
+        id            TEXT PRIMARY KEY,
+        repo_pattern  TEXT NOT NULL DEFAULT '*',
+        auth_type     TEXT NOT NULL DEFAULT 'merge',
+        command       TEXT NOT NULL,
+        label         TEXT NOT NULL DEFAULT '',
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        builtin       INTEGER NOT NULL DEFAULT 0,
+        position      INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_hooks_repo_type
+        ON auth_hooks(repo_pattern, auth_type)`,
+      // Seed the built-in Mandible post-merge hook
+      `INSERT INTO auth_hooks (id, repo_pattern, auth_type, command, label, enabled, builtin, position, created_at, updated_at)
+       VALUES (
+         'builtin-mandible-rebuild',
+         'mandible',
+         'merge',
+         'npm install && npm run build',
+         'Rebuild Mandible after merge',
+         1,
+         1,
+         0,
+         CAST(strftime('%s','now') * 1000 AS INTEGER),
+         CAST(strftime('%s','now') * 1000 AS INTEGER)
+       )`
+    ]
   }
 ];
 

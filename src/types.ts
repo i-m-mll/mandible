@@ -409,3 +409,35 @@ export interface WebhookEventRow {
   delivered_at: number | null;
   delivered_to: string | null;
 }
+
+// --- Auth hook types (Bug: 4afab83) ---
+
+export interface AuthHook {
+  id: string;
+  repo_pattern: string;        // glob pattern matching repo name, or "*" for all repos
+  auth_type: AuthRequestType;  // which auth action type triggers this hook
+  command: string;             // shell command to run in the repo directory
+  label: string;               // human-readable description
+  enabled: boolean;
+  builtin: boolean;            // true for system-seeded hooks (non-deletable)
+  position: number;            // execution order (lower = first)
+  created_at: number;
+  updated_at: number;
+}
+
+export interface AuthHookInput {
+  repo_pattern: string;
+  auth_type: AuthRequestType;
+  command: string;
+  label: string;
+  enabled?: boolean;
+  position?: number;
+}
+
+export interface AuthHookExecutionResult {
+  hook_id: string;
+  label: string;
+  exit_code: number | null;
+  output: string;
+  duration_ms: number;
+}
