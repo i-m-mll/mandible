@@ -60,10 +60,12 @@ __export(api_exports, {
   approveAuthRequest: () => approveAuthRequest,
   buildQuery: () => buildQuery,
   closeConsoleSession: () => closeConsoleSession,
+  createAuthHook: () => createAuthHook,
   createConsoleSession: () => createConsoleSession,
   createNodeLink: () => createNodeLink,
   createPreset: () => createPreset,
   createSwitchboardTemplate: () => createSwitchboardTemplate,
+  deleteAuthHook: () => deleteAuthHook,
   deletePreset: () => deletePreset,
   deletePresetNode: () => deletePresetNode,
   deleteSettingLink: () => deleteSettingLink,
@@ -72,6 +74,7 @@ __export(api_exports, {
   dismissAuthRequest: () => dismissAuthRequest,
   exportConversationBlocks: () => exportConversationBlocks,
   exportPreset: () => exportPreset,
+  fetchAuthHooks: () => fetchAuthHooks,
   fetchConventionLibrary: () => fetchConventionLibrary,
   fetchPreset: () => fetchPreset,
   fetchPresetDiffs: () => fetchPresetDiffs,
@@ -154,6 +157,7 @@ __export(api_exports, {
   triggerIngestion: () => triggerIngestion,
   triggerWorkScan: () => triggerWorkScan,
   unstarChat: () => unstarChat,
+  updateAuthHook: () => updateAuthHook,
   updateAuthRequestField: () => updateAuthRequestField,
   updateBackupSettings: () => updateBackupSettings,
   updateConsoleSession: () => updateConsoleSession,
@@ -1052,6 +1056,22 @@ async function getDefaultPresetIds() {
   } catch {
   }
   return [];
+}
+async function fetchAuthHooks() {
+  const response = await apiGet("/api/auth/hooks");
+  const payload = await parseMaybeJson(response);
+  return payload?.hooks ?? [];
+}
+async function createAuthHook(input) {
+  const response = await apiPost("/api/auth/hooks", input);
+  return await parseMaybeJson(response);
+}
+async function updateAuthHook(id2, fields) {
+  const response = await apiPut(`/api/auth/hooks/${id2}`, fields);
+  return await parseMaybeJson(response);
+}
+async function deleteAuthHook(id2) {
+  await apiDelete(`/api/auth/hooks/${id2}`);
 }
 var DEFAULT_HEADERS, getPresets;
 var init_api = __esm({
@@ -11371,6 +11391,7 @@ function EntityPillList({ children: children2 }) {
 }
 
 // ui/src/views/auth.tsx
+init_api();
 function getAuthId(request) {
   return request.id || request.request_id || "";
 }
@@ -11747,7 +11768,7 @@ function AuthCard({
   const summaryContent = /* @__PURE__ */ u3("div", { className: "auth-card__summary", children: [
     /* @__PURE__ */ u3("div", { className: "auth-card__row auth-card__row--primary", children: [
       /* @__PURE__ */ u3("span", { className: statusClass2, children: statusLabel }),
-      authType !== "merge" && /* @__PURE__ */ u3("span", { className: `type-badge ${typeMeta.cssClass}`, children: typeMeta.label }),
+      /* @__PURE__ */ u3("span", { className: `type-badge ${typeMeta.cssClass}`, children: typeMeta.label }),
       /* @__PURE__ */ u3(
         "span",
         {
@@ -12036,7 +12057,7 @@ function AuthSidebarItem({
         /* @__PURE__ */ u3("span", { className: `auth-sidebar-item__dot auth-sidebar-item__dot--${dotStatus}` }),
         /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__body", children: [
           /* @__PURE__ */ u3("span", { className: "auth-sidebar-item__title-row", children: [
-            authType !== "merge" && /* @__PURE__ */ u3("span", { className: `type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`, children: sidebarTypeMeta.label }),
+            /* @__PURE__ */ u3("span", { className: `type-badge type-badge--sm ${sidebarTypeMeta.cssClass}`, children: sidebarTypeMeta.label }),
             /* @__PURE__ */ u3(
               "span",
               {
@@ -12052,6 +12073,247 @@ function AuthSidebarItem({
       ]
     }
   );
+}
+function AuthHooksPanel({ onClose }) {
+  const [hooks, setHooks] = d2([]);
+  const [loading, setLoading] = d2(true);
+  const [error, setError] = d2(null);
+  const [showForm, setShowForm] = d2(false);
+  const [editId, setEditId] = d2(null);
+  const [formRepo, setFormRepo] = d2("*");
+  const [formType, setFormType] = d2("merge");
+  const [formCommand, setFormCommand] = d2("");
+  const [formLabel, setFormLabel] = d2("");
+  const loadHooks = q2(async () => {
+    try {
+      setLoading(true);
+      const data = await fetchAuthHooks();
+      setHooks(data);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load hooks");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  y2(() => {
+    void loadHooks();
+  }, [loadHooks]);
+  const resetForm = () => {
+    setFormRepo("*");
+    setFormType("merge");
+    setFormCommand("");
+    setFormLabel("");
+    setEditId(null);
+    setShowForm(false);
+  };
+  const handleSave = async () => {
+    try {
+      if (editId) {
+        await updateAuthHook(editId, {
+          repo_pattern: formRepo,
+          auth_type: formType,
+          command: formCommand,
+          label: formLabel
+        });
+      } else {
+        await createAuthHook({
+          repo_pattern: formRepo,
+          auth_type: formType,
+          command: formCommand,
+          label: formLabel
+        });
+      }
+      resetForm();
+      await loadHooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save hook");
+    }
+  };
+  const handleEdit = (hook) => {
+    setFormRepo(hook.repo_pattern);
+    setFormType(hook.auth_type);
+    setFormCommand(hook.command);
+    setFormLabel(hook.label);
+    setEditId(hook.id);
+    setShowForm(true);
+  };
+  const handleToggle = async (hook) => {
+    if (hook.builtin)
+      return;
+    try {
+      await updateAuthHook(hook.id, { enabled: !hook.enabled });
+      await loadHooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to toggle hook");
+    }
+  };
+  const handleDelete = async (hook) => {
+    if (hook.builtin)
+      return;
+    try {
+      await deleteAuthHook(hook.id);
+      await loadHooks();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete hook");
+    }
+  };
+  return /* @__PURE__ */ u3("div", { className: "auth-hooks-panel", children: [
+    /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__header", children: [
+      /* @__PURE__ */ u3("h2", { className: "auth-hooks-panel__title", children: "Auth Hooks" }),
+      /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__actions", children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--sm btn--ghost",
+            onClick: () => {
+              resetForm();
+              setShowForm(true);
+            },
+            children: "+ Add Hook"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--sm btn--ghost",
+            onClick: onClose,
+            children: "Close"
+          }
+        )
+      ] })
+    ] }),
+    error && /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__error", children: error }),
+    showForm && /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__form", children: [
+      /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__form-row", children: [
+        /* @__PURE__ */ u3("label", { children: "Label" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "text",
+            placeholder: "Hook description",
+            value: formLabel,
+            onInput: (e3) => setFormLabel(e3.target.value)
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__form-row", children: [
+        /* @__PURE__ */ u3("label", { children: "Repo pattern" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            type: "text",
+            placeholder: "* for all, or repo name",
+            value: formRepo,
+            onInput: (e3) => setFormRepo(e3.target.value)
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__form-row", children: [
+        /* @__PURE__ */ u3("label", { children: "Auth type" }),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            value: formType,
+            onChange: (e3) => setFormType(e3.target.value),
+            children: [
+              /* @__PURE__ */ u3("option", { value: "merge", children: "Merge" }),
+              /* @__PURE__ */ u3("option", { value: "commit", children: "Commit" }),
+              /* @__PURE__ */ u3("option", { value: "force-push", children: "Force Push" }),
+              /* @__PURE__ */ u3("option", { value: "branch-delete", children: "Branch Delete" }),
+              /* @__PURE__ */ u3("option", { value: "config-change", children: "Config Change" }),
+              /* @__PURE__ */ u3("option", { value: "preset-promote", children: "Preset Promote" }),
+              /* @__PURE__ */ u3("option", { value: "data-delete", children: "Data Delete" })
+            ]
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__form-row", children: [
+        /* @__PURE__ */ u3("label", { children: "Command" }),
+        /* @__PURE__ */ u3(
+          "textarea",
+          {
+            placeholder: "Shell command to run after auth action",
+            value: formCommand,
+            rows: 3,
+            onInput: (e3) => setFormCommand(e3.target.value)
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__form-actions", children: [
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--sm btn--success",
+            onClick: () => void handleSave(),
+            disabled: !formCommand.trim(),
+            children: editId ? "Update" : "Create"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--sm btn--ghost",
+            onClick: resetForm,
+            children: "Cancel"
+          }
+        )
+      ] })
+    ] }),
+    loading ? /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__empty", children: "Loading hooks..." }) : hooks.length === 0 ? /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__empty", children: "No hooks configured." }) : /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__list", children: hooks.map((hook) => /* @__PURE__ */ u3(
+      "div",
+      {
+        className: `auth-hooks-panel__item${!hook.enabled ? " auth-hooks-panel__item--disabled" : ""}${hook.builtin ? " auth-hooks-panel__item--builtin" : ""}`,
+        children: [
+          /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__item-header", children: [
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: `auth-hooks-panel__toggle${hook.enabled ? " auth-hooks-panel__toggle--on" : ""}`,
+                onClick: () => void handleToggle(hook),
+                disabled: hook.builtin,
+                title: hook.builtin ? "Built-in hooks are always enabled" : hook.enabled ? "Disable" : "Enable",
+                children: hook.enabled ? "ON" : "OFF"
+              }
+            ),
+            /* @__PURE__ */ u3("span", { className: "auth-hooks-panel__item-label", children: hook.label || hook.command }),
+            hook.builtin && /* @__PURE__ */ u3("span", { className: "auth-hooks-panel__builtin-badge", children: "built-in" })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__item-meta", children: [
+            /* @__PURE__ */ u3("span", { className: `type-badge type-badge--sm ${AUTH_TYPE_META[hook.auth_type]?.cssClass ?? "type-badge--merge"}`, children: AUTH_TYPE_META[hook.auth_type]?.label ?? hook.auth_type }),
+            /* @__PURE__ */ u3("span", { className: "auth-hooks-panel__item-repo", children: hook.repo_pattern })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__item-command", children: /* @__PURE__ */ u3("code", { children: hook.command }) }),
+          !hook.builtin && /* @__PURE__ */ u3("div", { className: "auth-hooks-panel__item-actions", children: [
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "btn btn--sm btn--ghost",
+                onClick: () => handleEdit(hook),
+                children: "Edit"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "btn btn--sm btn--danger",
+                onClick: () => void handleDelete(hook),
+                children: "Delete"
+              }
+            )
+          ] })
+        ]
+      },
+      hook.id
+    )) })
+  ] });
 }
 var AUTH_TYPE_OPTIONS = [
   { value: "all", label: "All types" },
@@ -12082,6 +12344,7 @@ function AuthQueueView({
     minWidth: 190,
     storageKey: "sidebar-width:auth"
   });
+  const [showHooksPanel, setShowHooksPanel] = d2(false);
   const [filterMode, setFilterMode] = d2("active");
   const [typeFilter, setTypeFilter] = d2("all");
   const [repoFilter, setRepoFilter] = d2(null);
@@ -12764,9 +13027,18 @@ function AuthQueueView({
         getAuthId(request)
       )) })
     ] }),
+    /* @__PURE__ */ u3("div", { className: "auth-sidebar__footer", children: /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: `auth-sidebar__hooks-btn${showHooksPanel ? " auth-sidebar__hooks-btn--active" : ""}`,
+        onClick: () => setShowHooksPanel((prev) => !prev),
+        children: "Hooks"
+      }
+    ) }),
     /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleSidebarMouseDown }),
     /* @__PURE__ */ u3("div", { className: "auth-detail", style: { position: "relative" }, children: [
-      !selectedRequest ? /* @__PURE__ */ u3("div", { className: "auth-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select a request to view details" }) }) : (() => {
+      showHooksPanel ? /* @__PURE__ */ u3(AuthHooksPanel, { onClose: () => setShowHooksPanel(false) }) : !selectedRequest ? /* @__PURE__ */ u3("div", { className: "auth-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select a request to view details" }) }) : (() => {
         const request = selectedRequest;
         const id2 = getAuthId(request);
         const status = getAuthStatus(request);
@@ -15210,6 +15482,7 @@ function MessageActions({
     metaParts.push(metadata.model);
   }
   return /* @__PURE__ */ u3("div", { className: "message-actions", "data-dag-uuid": dagUuid, children: [
+    metaParts.length > 0 && /* @__PURE__ */ u3("span", { className: "message-actions__meta", children: metaParts.join(" \xB7 ") }),
     onCopy && /* @__PURE__ */ u3(
       "button",
       {
@@ -15266,8 +15539,7 @@ function MessageActions({
           }
         )
       ] })
-    ] }),
-    metaParts.length > 0 && /* @__PURE__ */ u3("div", { className: "message-actions__meta", children: metaParts.join(" \xB7 ") })
+    ] })
   ] });
 }
 
@@ -16453,10 +16725,16 @@ function ThinkingBlock({ content, defaultCollapsed = true }) {
         onClick: () => setCollapsed((prev) => !prev),
         "aria-expanded": !collapsed,
         title: collapsed ? "Expand thinking" : "Collapse thinking",
-        children: collapsed ? /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", children: [
-          /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: "Thinking" }),
-          /* @__PURE__ */ u3("span", { className: "thinking-block__more", children: "more" })
-        ] }) : /* @__PURE__ */ u3("div", { className: "thinking-block__body", children: /* @__PURE__ */ u3("pre", { children: content }) })
+        children: [
+          collapsed ? /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", children: [
+            /* @__PURE__ */ u3("span", { className: "thinking-block__chevron", children: "\u25B8" }),
+            /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: "Thinking" })
+          ] }) : /* @__PURE__ */ u3("div", { className: "thinking-block__expanded-header", children: [
+            /* @__PURE__ */ u3("span", { className: "thinking-block__chevron", children: "\u25BE" }),
+            /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: "Thinking" })
+          ] }),
+          !collapsed && /* @__PURE__ */ u3("div", { className: "thinking-block__body", children: /* @__PURE__ */ u3("pre", { children: content }) })
+        ]
       }
     )
   ] });
@@ -18647,7 +18925,7 @@ function CompactToolUseBlock({
       /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError, emoji: statusEmoji }),
       /* @__PURE__ */ u3("span", { className: "tool-use-card__name", children: toolName }),
       primary && /* @__PURE__ */ u3("span", { className: "tool-use-card__arg", children: primary }),
-      /* @__PURE__ */ u3("span", { className: "tool-use-card__expand", children: expanded ? "less" : "more" })
+      /* @__PURE__ */ u3("span", { className: "tool-use-card__expand", children: expanded ? "\u25BE" : "\u25B8" })
     ] }),
     expanded && /* @__PURE__ */ u3("div", { className: "tool-use-block--compact__body", children: [
       /* @__PURE__ */ u3("pre", { className: "block-pre tool-use-card__full", children: fullContent }),
@@ -18744,7 +19022,6 @@ function ToolUseBlock({
         /* @__PURE__ */ u3("span", { className: "tool-use-block__chevron", children: "\u25B8" }),
         /* @__PURE__ */ u3(StatusIndicator, { pending: isPending, isError, emoji: statusEmoji }),
         /* @__PURE__ */ u3("span", { className: "tool-use-block__name", children: toolName }),
-        /* @__PURE__ */ u3("span", { className: "tool-use-block__more", children: "more" }),
         firstInputLine && /* @__PURE__ */ u3("div", { className: "tool-use-block__preview", children: firstInputLine })
       ] }) : /* @__PURE__ */ u3(k, { children: [
         /* @__PURE__ */ u3("div", { className: "tool-use-block__header", "aria-expanded": true, children: [
@@ -19347,10 +19624,10 @@ function TranscriptBlockItem({
         // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
         /* @__PURE__ */ u3(ThinkingBlock, { content: block2.content, defaultCollapsed: true })
       ) : collapsed ? (
-        // Bug: bce7370 — B3: Replace ellipsis with label + "more", same pattern as ThinkingBlock
+        // Bug: bce7370 — B3: Collapsed block with chevron indicator
         /* @__PURE__ */ u3("div", { className: "thinking-block__collapsed", "aria-label": "Collapsed block", children: [
-          /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: collapsedLabel }),
-          /* @__PURE__ */ u3("span", { className: "thinking-block__more", children: "more" })
+          /* @__PURE__ */ u3("span", { className: "thinking-block__chevron", children: "\u25B8" }),
+          /* @__PURE__ */ u3("span", { className: "thinking-block__label", children: collapsedLabel })
         ] })
       ) : renderConversationBlockBody(block2, collapsed) })
     ] }),

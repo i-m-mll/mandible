@@ -29,6 +29,7 @@ import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
 import { registerBackupRoutes, startBackupScheduler, stopBackupScheduler } from "./routes/backup.js";
 import { registerPresetRoutes } from "./routes/presets.js";
+import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
 import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
@@ -80,6 +81,8 @@ export async function startDaemon(options = {}) {
     registerConsoleRoutes(router, sessionManager);
     // Bug: 61bee4e — preset routes for convention management
     registerPresetRoutes(router);
+    // Bug: 4afab83 — auth hooks CRUD routes
+    registerAuthHookRoutes(router);
     // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
     registerWebhookRoutes(router, sessionRegistry, sessionManager);
     // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
