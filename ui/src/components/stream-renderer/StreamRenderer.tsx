@@ -130,15 +130,35 @@ function useStreamState(events: StreamEvent[]): StreamState {
           }
         }
         if (hasText) {
-          // User text message: flush pending turn, emit user_message node
-          flushPendingTurn();
-          nodes.push({
-            kind: 'user_message',
-            key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
-            entity: 'user',
-            text: textParts.join('\n'),
-            source: 'stream',
-          });
+          const joinedText = textParts.join('\n');
+          // Bug: bce7370 — Fix 3: Deduplicate user text events against existing
+          // synthetic_prompt nodes. The SDK echoes the user prompt back as a real
+          // user event, but we already created a synthetic node for it on submission.
+          // If a matching synthetic exists, replace it with the real event (preserving
+          // position) instead of creating a duplicate.
+          const existingSyntheticIdx = nodes.findIndex(
+            (n) => n.kind === 'user_message' && n.source === 'synthetic' && n.text === joinedText,
+          );
+          if (existingSyntheticIdx >= 0) {
+            // Replace synthetic with the real stream event, keeping position
+            nodes[existingSyntheticIdx] = {
+              kind: 'user_message',
+              key: userEvent.uuid ?? nodes[existingSyntheticIdx].key,
+              entity: 'user',
+              text: joinedText,
+              source: 'stream',
+            };
+          } else {
+            // No matching synthetic — emit user_message node
+            flushPendingTurn();
+            nodes.push({
+              kind: 'user_message',
+              key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+              entity: 'user',
+              text: joinedText,
+              source: 'stream',
+            });
+          }
         }
         // If only tool_results (no text), silently accumulate in pendingResults — no visible node
       } else if (event.type === 'result') {
@@ -188,12 +208,14 @@ function deriveLiveLabel(turns: RenderedTurn[], streaming: boolean): string | un
   return 'Working';
 }
 
-/** Bug: cad4eef — Compute total tokens including cache fields. */
+/** Bug: cad4eef — Compute per-turn token count for display.
+ *  Bug: bce7370 — Fix 6: Exclude cache_creation and cache_read tokens from the
+ *  displayed count. These represent the system prompt/context cache size (e.g.,
+ *  ~21K tokens from CLAUDE.md presets), not the actual tokens consumed for THIS
+ *  turn. Showing input_tokens + output_tokens gives a meaningful per-turn number. */
 function computeTotalTokens(usage: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } | undefined): number | undefined {
   if (!usage) return undefined;
   return (usage.input_tokens ?? 0)
-    + (usage.cache_creation_input_tokens ?? 0)
-    + (usage.cache_read_input_tokens ?? 0)
     + (usage.output_tokens ?? 0);
 }
 

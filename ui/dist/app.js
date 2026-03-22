@@ -19270,6 +19270,7 @@ function TranscriptBlockItem({
     isErrorEvent ? "transcript-item--error" : "",
     selectMode ? "transcript-item--selectable" : ""
   ].filter(Boolean).join(" ");
+  const isThinkingBlock = block2.type === "thinking";
   const handleClick = (e3) => {
     if (selectMode) {
       if (e3.shiftKey) {
@@ -19279,14 +19280,18 @@ function TranscriptBlockItem({
       }
       return;
     }
-    if (isCollapsible) {
+    if (isCollapsible && !isThinkingBlock) {
       onToggleCollapse();
     }
   };
   return /* @__PURE__ */ u3("div", { className, onClick: handleClick, "data-block-id": block2.id, children: [
     /* @__PURE__ */ u3("div", { className: "transcript-item__frame", children: [
       hasTypeIcon ? /* @__PURE__ */ u3("div", { className: "transcript-item__gutter", "aria-hidden": "true", children: typeIcon }) : null,
-      /* @__PURE__ */ u3("div", { className: "transcript-item__bubble", children: collapsed ? /* @__PURE__ */ u3("div", { className: "transcript-item__collapsed-preview", "aria-label": "Collapsed block", children: "\u2026" }) : renderConversationBlockBody(block2, collapsed) })
+      /* @__PURE__ */ u3("div", { className: "transcript-item__bubble", children: isThinkingBlock ? (
+        // Bug: bce7370 — Fix 1: Render ThinkingBlock directly, bypassing outer collapse.
+        // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
+        /* @__PURE__ */ u3(ThinkingBlock, { content: block2.content, defaultCollapsed: true })
+      ) : collapsed ? /* @__PURE__ */ u3("div", { className: "transcript-item__collapsed-preview", "aria-label": "Collapsed block", children: "\u2026" }) : renderConversationBlockBody(block2, collapsed) })
     ] }),
     /* @__PURE__ */ u3(
       "span",
@@ -19586,7 +19591,7 @@ function ConversationDetail({
       setConversation(conv);
       const defaultCollapsed = /* @__PURE__ */ new Set();
       for (const block2 of conv.blocks) {
-        if (block2.type === "thinking" || block2.type === "system") {
+        if (block2.type === "system") {
           defaultCollapsed.add(block2.id);
         }
       }
@@ -23115,7 +23120,7 @@ var import_xterm = __toESM(require_xterm(), 1);
 var import_addon_fit = __toESM(require_addon_fit(), 1);
 
 // ui/src/components/stream-renderer/MessageGroup.tsx
-function MessageGroup({ turn, isStreaming }) {
+function MessageGroup({ turn, isStreaming, isThinking }) {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
   function renderBlock(block2, index2) {
@@ -23127,7 +23132,7 @@ function MessageGroup({ turn, isStreaming }) {
           ThinkingBlock,
           {
             content: block2.thinking,
-            defaultCollapsed: true
+            defaultCollapsed: !(isStreaming && isThinking)
           },
           `thinking-${index2}`
         );
@@ -23270,14 +23275,28 @@ function useStreamState(events) {
           }
         }
         if (hasText) {
-          flushPendingTurn();
-          nodes.push({
-            kind: "user_message",
-            key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
-            entity: "user",
-            text: textParts.join("\n"),
-            source: "stream"
-          });
+          const joinedText = textParts.join("\n");
+          const existingSyntheticIdx = nodes.findIndex(
+            (n2) => n2.kind === "user_message" && n2.source === "synthetic" && n2.text === joinedText
+          );
+          if (existingSyntheticIdx >= 0) {
+            nodes[existingSyntheticIdx] = {
+              kind: "user_message",
+              key: userEvent.uuid ?? nodes[existingSyntheticIdx].key,
+              entity: "user",
+              text: joinedText,
+              source: "stream"
+            };
+          } else {
+            flushPendingTurn();
+            nodes.push({
+              kind: "user_message",
+              key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+              entity: "user",
+              text: joinedText,
+              source: "stream"
+            });
+          }
         }
       } else if (event.type === "result") {
         resultEvent = event;
@@ -23320,7 +23339,7 @@ function deriveLiveLabel(turns, streaming) {
 function computeTotalTokens(usage) {
   if (!usage)
     return void 0;
-  return (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.output_tokens ?? 0);
+  return (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
 }
 function deriveTokenCount(turns) {
   for (let i4 = turns.length - 1; i4 >= 0; i4--) {
