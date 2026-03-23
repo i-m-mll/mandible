@@ -1,0 +1,9 @@
+{
+  "label": "Core Concepts",
+  "order": [
+    "architecture",
+    "agent-tiers",
+    "work-units",
+    "real-time-events"
+  ]
+}

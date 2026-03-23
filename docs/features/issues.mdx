@@ -1,0 +1,55 @@
+---
+title: Issue Tracking
+description: Browse and manage git-bug issues across all your repositories.
+---
+
+# Issue Tracking
+
+The Issues tab is Mandible's interface to [git-bug](https://github.com/git-bug/git-bug), a distributed issue tracker that stores issues as git refs inside your repositories. No external service required — issues live alongside your code.
+
+## Layout
+
+The view is split into a resizable sidebar (issue list) and a detail panel.
+
+### Sidebar
+
+- **Search filter** — free-text search across issue titles and IDs.
+- **Repo filter** — autocomplete dropdown to narrow to a single repository. Mandible scans all repos registered in your `repos.toml` and any repo that has had a session.
+- **Status pills** — toggle between All, Open, Merged, and Closed. Issues have a three-state lifecycle: open issues are active work; merged issues were closed via `mandible auth merge` (they carry a `merged` label); closed issues were manually closed without a merge.
+- **Label pills** — filter by label: `umbrella`, `feature`, `bug` (displayed as "bug" but stored as `error` internally), `deferred`.
+- **Parent filter** — when viewing an umbrella issue, the "Show children" button narrows the list to its child issues.
+
+Issues are sorted newest-first.
+
+### Detail panel
+
+Selecting an issue shows:
+
+- **Title** (rendered as inline Markdown), status pill, label pills.
+- **Work unit status** — if the issue has an assigned work unit, this line shows the branch, assignment state (committed/assigned), and agent liveness (active, idle, or unassigned).
+- **Action buttons**:
+  - *Open in Console* — if an SDK session is actively working on this issue.
+  - *Resume Work* — if a continuation (handoff note) exists but no agent is running. Spawns a new SDK session from the Console.
+  - *Start Agent* — if no session or continuation exists. Also spawns an SDK session.
+- **Description** — the issue body, rendered as Markdown.
+- **Activity timeline** — a chronological feed of comments, session starts, auth request submissions, and handoff notes, all interleaved by timestamp.
+- **Related entities** — linked sessions, auth requests, and conversations shown as clickable pills that navigate to their respective tabs.
+- **Close/Reopen** and **Add Comment** buttons at the bottom.
+
+## Deep linking
+
+Other tabs (Monitor, Inbox, Graph) link to issues via `EntityPill` components. Clicking a pill navigates to the Issues tab with the correct repo and issue pre-selected. If the issue scanner's cache is cold, Mandible triggers a rescan automatically.
+
+## CLI
+
+Issues can also be managed from the command line:
+
+```bash
+mandible issue new -t 'Title' -m 'Body' --label feature
+mandible issue list --status open
+mandible issue show <id>
+mandible issue close <id>
+mandible issue comment <id> -m 'Comment'
+```
+
+See the CLI reference for the full command set.

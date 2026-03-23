@@ -1,0 +1,211 @@
+# Real-time events
+
+Mandible uses Server-Sent Events (SSE) to push every state mutation to connected clients. The dashboard subscribes on load and re-renders immediately when events arrive. No polling loop is needed --- though a 10-second fallback poll exists as a safety net.
+
+## Connecting
+
+Open an SSE connection to the events endpoint:
+
+```bash
+curl -N http://localhost:19420/api/events
+```
+
+You'll receive a stream of `data:` lines, each containing a JSON event:
+
+```
+: connected
+
+: heartbeat 1711123456789
+
+data: {"type":"session:registered","data":{...},"timestamp":"2026-03-22T10:00:00.000Z"}
+
+data: {"type":"auth:new","data":{...},"timestamp":"2026-03-22T10:00:01.000Z"}
+```
+
+Lines beginning with `:` are SSE comments. The `: connected` comment confirms the connection. Heartbeat comments are sent every 15 seconds to keep the connection alive through proxies and NAT gateways that kill idle connections.
+
+## Event format
+
+Every event has three fields:
+
+```json
+{
+  "type": "session:registered",
+  "data": { ... },
+  "timestamp": "2026-03-22T10:00:00.000Z"
+}
+```
+
+- **`type`** --- A colon-delimited string identifying the event. The prefix before the first colon is the topic (e.g., `session`, `auth`, `console`).
+- **`data`** --- The event payload. Structure varies by event type.
+- **`timestamp`** --- ISO 8601 timestamp of when the event was emitted.
+
+## Topic filtering
+
+You can subscribe to a subset of events by passing topic prefixes as query parameters:
+
+```bash
+# Only auth events
+curl -N "http://localhost:19420/api/events?topic=auth:"
+
+# Auth and session events
+curl -N "http://localhost:19420/api/events?topic=auth:&topic=session:"
+
+# Multiple topics in one parameter (comma-separated)
+curl -N "http://localhost:19420/api/events?topic=auth:,session:"
+```
+
+Topic matching is prefix-based: `topic=auth:` matches `auth:new`, `auth:resolved`, `auth:deleted`, `auth:output`, and any other event whose type starts with `auth:`.
+
+Without a topic parameter, the client receives all events.
+
+### POST subscription
+
+For clients that need to subscribe with a request body (e.g., when the topic list is long), use the POST endpoint:
+
+```bash
+curl -N -X POST http://localhost:19420/api/events/subscribe \
+  -H 'Content-Type: application/json' \
+  -d '{"topics": ["auth:", "session:", "console:"]}'
+```
+
+## Event types by topic
+
+### `session:` --- Session lifecycle
+
+| Event | Description | Data |
+|---|---|---|
+| `session:registered` | New session discovered or registered | Session object |
+| `session:updated` | Session metadata changed (task, branch, status, etc.) | Session object |
+| `session:ended` | Session ended normally | Session object |
+| `session:child:added` | Child session added to a parent | `{ parent_id, child }` |
+| `session:child:ended` | Child session ended | `{ parent_id, child }` |
+| `session:discovery:completed` | Process scan finished | `{ discovered, dead_reaped, already_tracked, ... }` |
+| `session:metadata-warning` | Terminal metadata enrichment issue | `{ session_id, message }` |
+
+### `auth:` --- Auth queue
+
+| Event | Description | Data |
+|---|---|---|
+| `auth:new` | New auth request submitted | Auth request object |
+| `auth:resolved` | Request completed, rejected, expired, or dismissed | Auth request object |
+| `auth:deleted` | Request deleted from the queue | `{ id, reason }` |
+| `auth:output` | Execution output chunk (stdout/stderr during merge) | `{ request_id, stream, text }` |
+
+### `console:` --- Console sessions
+
+| Event | Description | Data |
+|---|---|---|
+| `console:session:created` | New console session created | `{ session }` |
+| `console:session:deleted` | Console session removed | `{ id }` |
+| `console:session:updated` | Console session metadata changed | `{ session }` |
+| `console:session:started` | Console session process started | `{ id, pid, started_at }` |
+| `console:session:stopped` | Console session process stopped | `{ id, exit_code, stopped_at }` |
+| `console:session:exit` | Console session process exited | `{ id, exit_code, signal }` |
+| `console:stream_event` | Structured event from SDK session | `{ session_id, event }` |
+| `console:subagent:start` | SDK sub-agent spawned | `{ session_id, agent_id }` |
+| `console:subagent:stop` | SDK sub-agent stopped | `{ session_id, agent_id }` |
+| `console:permission:request` | Tool permission request from SDK session | `{ session_id, request }` |
+| `console:inbox:badge` | Inbox item received for console session | `{ count }` |
+
+### `channel:` --- Channel server sessions
+
+| Event | Description | Data |
+|---|---|---|
+| `channel:session:connected` | MCP channel session connected | `{ session_id, ... }` |
+| `channel:session:disconnected` | MCP channel session disconnected | `{ session_id }` |
+
+### `push:` --- Push sync
+
+| Event | Description | Data |
+|---|---|---|
+| `push:started` | Batch push initiated | `{ session_id, repo_count }` |
+| `push:repo:progress` | Individual repo push started | `{ repo_id, repo_name }` |
+| `push:repo:complete` | Individual repo push finished | Push result object |
+| `push:complete` | Batch push finished | Session result summary |
+| `push:error` | Push error occurred | `{ error }` |
+| `push:auth:pending` | SSH auth pending (YubiKey touch) | `{ hosts }` |
+| `push:auth:complete` | SSH auth completed | `{}` |
+
+### `reaper:` --- Session reaper
+
+| Event | Description | Data |
+|---|---|---|
+| `reaper:tick` | Reaper scan completed | `{ dead_reaped, active_remaining, ... }` |
+
+### `daemon:` --- Daemon lifecycle
+
+| Event | Description | Data |
+|---|---|---|
+| `daemon:reloaded` | Daemon recently restarted | `{ commit_hash, commit_summary, uptime, recent_requests, bug_refs }` |
+
+### `mandible:` --- System operations
+
+| Event | Description | Data |
+|---|---|---|
+| `mandible:rebuilding` | Daemon rebuild triggered | `{}` |
+
+## The heartbeat
+
+Every 15 seconds, the SSE manager sends a comment line to all connected clients:
+
+```
+: heartbeat 1711123456789
+```
+
+This serves two purposes:
+
+1. **Keep-alive** --- prevents proxies, load balancers, and OS-level TCP timeouts from killing idle connections
+2. **Connection health** --- if the client stops receiving heartbeats, the connection is dead and should be reconnected
+
+The dashboard uses the absence of heartbeats to detect disconnection and fall back to polling.
+
+## Fallback polling
+
+If the SSE connection fails or isn't available (e.g., behind a proxy that strips SSE), the dashboard falls back to polling the HTTP API at 10-second intervals. This is a safety net --- it's slower and generates more load than SSE, but ensures the dashboard always reflects current state.
+
+The SSE connection is preferred and re-established automatically when possible.
+
+## Daemon reload detection
+
+When the daemon restarts (e.g., after an update), clients that connect within the first 60 seconds of uptime receive a special `daemon:reloaded` event. This event includes:
+
+- The commit hash and summary of the running Mandible version
+- The daemon uptime at the time of connection
+- Any auth requests that completed recently (within the 60-second window)
+- Bug references from those requests (for issue auto-close notification)
+
+The dashboard uses this to show a "daemon restarted" notification with version info and any merge results that the user might have missed during the restart.
+
+## Client implementation notes
+
+When building an SSE client for Mandible:
+
+1. **Connect to `/api/events`** with appropriate topic filters
+2. **Parse `data:` lines** as JSON --- each line is one complete event
+3. **Ignore `:` lines** (comments and heartbeats)
+4. **Handle reconnection** --- the `EventSource` API (browser) or equivalent does this automatically. Mandible doesn't use event IDs or `Last-Event-Id` replay, so reconnected clients may miss events during the gap. Poll the relevant HTTP endpoint once on reconnection to catch up.
+5. **Filter by `type`** in your handler --- even with topic filtering, you'll receive multiple event types per topic
+
+```javascript
+const source = new EventSource('/api/events?topic=auth:,session:');
+
+source.onmessage = (event) => {
+  const parsed = JSON.parse(event.data);
+
+  switch (parsed.type) {
+    case 'session:registered':
+      // Handle new session
+      break;
+    case 'auth:resolved':
+      // Handle auth completion
+      break;
+    // ...
+  }
+};
+
+source.onerror = () => {
+  // Connection lost --- EventSource will auto-reconnect.
+  // Optionally poll HTTP endpoints to catch up on missed events.
+};
+```

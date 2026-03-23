@@ -1,0 +1,251 @@
+# Sessions API
+
+Sessions represent agent processes tracked by Mandible. Sessions are registered by the `mandible wrap` command or by agent hooks, and are tracked through their lifecycle.
+
+## Types
+
+Session statuses: `active`, `idle`, `ended`, `dead`.
+
+## Endpoints
+
+### POST /api/sessions/register
+
+Register a new session with Mandible.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Session UUID |
+| `app` | string | yes | Application name (`claude`, `codex`, `gemini`, etc.) |
+| `pid` | number | no | Process ID |
+| `pid_start` | string | no | Process start time |
+| `cwd` | string | no | Working directory |
+| `branch` | string | no | Git branch |
+| `worktree` | string | no | Git worktree path |
+| `terminal` | string | no | Terminal emulator name |
+| `multiplexer` | string | no | Terminal multiplexer (`zellij`, `tmux`) |
+| `nav_session` | string | no | Multiplexer session name |
+| `nav_tab` | string | no | Multiplexer tab/window name |
+| `nav_pane_id` | string | no | Multiplexer pane ID |
+| `nav_extra` | object | no | Additional navigation metadata |
+
+**Response:** `200 OK` — session object.
+
+```bash
+curl -X POST http://localhost:19420/api/sessions/register \
+  -H 'Content-Type: application/json' \
+  -d '{"id": "abc-123", "app": "claude", "pid": 12345, "cwd": "/path/to/repo"}'
+```
+
+### GET /api/sessions
+
+List sessions with optional filtering.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `status` | string | Filter by status: `active`, `ended`, `dead` |
+| `app` | string | Filter by application name |
+| `parent_id` | string | Filter by parent session ID (use `null` for top-level only) |
+| `include` | string | `issues` for open issues, `all_issues` for all linked issues |
+
+**Response:** `200 OK` — array of session objects. When `include=issues`, each session includes `issues` and `projects` arrays.
+
+```bash
+curl http://localhost:19420/api/sessions?status=active
+curl http://localhost:19420/api/sessions?include=issues
+```
+
+### GET /api/sessions/:id
+
+Get a single session by ID. Supports prefix matching.
+
+**Response:** `200 OK` — session object.
+
+**Error responses:**
+- `404` — Not found
+- `409` — Ambiguous prefix
+
+```bash
+curl http://localhost:19420/api/sessions/abc123
+```
+
+### PATCH /api/sessions/:id
+
+Update session fields.
+
+**Request body:** Any of:
+
+| Field | Type | Description |
+|---|---|---|
+| `continuation` | string | Handoff notes for the next session |
+| `task` | string | Current task description |
+| `pinned` | number | Pin state (0 or 1) |
+| `starred` | number | Star state (0 or 1) |
+
+**Response:** `200 OK` — updated session object.
+
+```bash
+curl -X PATCH http://localhost:19420/api/sessions/abc123 \
+  -H 'Content-Type: application/json' \
+  -d '{"task": "Fixing auth bugs"}'
+```
+
+### PATCH /api/sessions/:id/end
+
+End a session.
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | Terminal status: `ended` (default) or `dead` |
+
+**Response:** `200 OK` — updated session object.
+
+```bash
+curl -X PATCH http://localhost:19420/api/sessions/abc123/end \
+  -H 'Content-Type: application/json' \
+  -d '{"status": "ended"}'
+```
+
+### POST /api/sessions/:id/children
+
+Register a child session (subagent).
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | Child session ID |
+| `app` | string | yes | Application name |
+| `agent_type` | string | no | Agent type |
+| `description` | string | no | Description of the child's task |
+
+**Response:** `200 OK` — child session object.
+
+### PATCH /api/sessions/:id/children/:childId
+
+Update a child session's status.
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | New status (default: `ended`) |
+
+**Response:** `200 OK` — updated child session.
+
+### GET /api/sessions/:id/tree
+
+Get the full session tree (parent + all children).
+
+**Response:** `200 OK` — tree object.
+
+### POST /api/sessions/:id/navigate
+
+Navigate the terminal multiplexer to this session's pane.
+
+**Response:** `200 OK` or `500` if navigation fails.
+
+```json
+{ "ok": true }
+```
+
+### POST /api/sessions/:id/kill
+
+Kill the session's process. Writes a reaper notice before sending the signal.
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### GET /api/sessions/by-pid/:pid
+
+Look up a session by process ID.
+
+**Response:** `200 OK` — session object, or `404` if no active session matches.
+
+```bash
+curl http://localhost:19420/api/sessions/by-pid/12345
+```
+
+### GET /api/sessions/pinned
+
+Get IDs of all pinned sessions.
+
+**Response:** `200 OK`
+
+```json
+{ "ids": ["abc-123", "def-456"] }
+```
+
+### GET /api/sessions/channel-connected
+
+List sessions connected via the MCP channel server.
+
+**Response:** `200 OK`
+
+```json
+{
+  "sessions": [{
+    "id": "...",
+    "app": "claude-channel",
+    "status": "active",
+    "branch": "feature/foo",
+    "is_alive": true,
+    "tools_called": ["Read", "Edit"],
+    "last_tool_call_in_memory": 1711234567890
+  }]
+}
+```
+
+### POST /api/sessions/:id/channel-tool-call
+
+Record a tool call for a channel-connected session (used for liveness tracking).
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `tool_name` | string | Name of the tool called |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### POST /api/sessions/:id/issues
+
+Link a session to an issue.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `issue_id` | string | yes | Issue ID (git-bug prefix) |
+| `repo_id` | string | yes | Repository identifier |
+| `repo_name` | string | no | Repository display name |
+
+**Response:** `200 OK`
+
+```json
+{ "session_id": "...", "issue_id": "abc1234", "repo_id": "mandible", "created_at": 1711234567890 }
+```
+
+### GET /api/sessions/:id/issues
+
+Get all issues linked to a session.
+
+**Response:** `200 OK` — array of `{ session_id, issue_id, repo_id, created_at }`.
+
+### POST /api/sessions/discover
+
+Trigger session discovery (scan for running agent processes).
+
+**Response:** `200 OK` — discovery result, or `501` if discovery is not configured.

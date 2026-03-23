@@ -1,0 +1,56 @@
+---
+title: Batch Push
+description: Push branches and git-bug refs across all repositories in one operation.
+---
+
+# Batch Push
+
+The Batch Push feature lets you push branches, git-bug refs, and git notes across multiple repositories in a single operation, authenticated with one YubiKey touch.
+
+## How it works
+
+1. **SSH pre-authentication** — Before any git push runs, Mandible establishes SSH ControlMaster connections to every unique SSH host across your repos. This is the single point where YubiKey authentication happens. All subsequent pushes reuse the established connections.
+
+2. **Per-repo push** — Each repository is pushed sequentially. For each repo, Mandible pushes:
+   - **Branches** — either just the default branch (`current` scope) or all branches that are ahead of their upstream (`all_ahead` scope).
+   - **git-bug refs** (`refs/bugs/*`) — if any exist in the repo.
+   - **git notes** (`refs/notes/*`) — if any exist in the repo.
+
+3. **Post-push rescan** — After all repos complete, Mandible triggers a work-scanner rescan to update ahead/behind counts in the Projects tab.
+
+## Scopes
+
+| Scope | Behavior |
+|-------|----------|
+| `current` | Push only the default branch of each repo. |
+| `all_ahead` | Push every branch that has commits ahead of its upstream tracking branch. |
+
+## Progress and errors
+
+Push operations broadcast SSE events as they proceed:
+
+- `push:auth:pending` / `push:auth:complete` — SSH pre-auth phase (the UI shows a YubiKey prompt banner during this window).
+- `push:repo:progress` — a repo is about to be pushed.
+- `push:repo:complete` — a repo finished (may include per-branch errors).
+- `push:complete` — the entire session finished.
+- `push:error` — a fatal error (e.g., SSH pre-auth failure, session timeout).
+
+Per-branch failures do not abort the session. If one branch in a repo fails to push, the error is recorded and the remaining branches and repos continue.
+
+## Timeouts
+
+- Per-repo timeout: 30 seconds.
+- Session timeout: 10 minutes.
+- SSH pre-auth timeout: 2 minutes (to allow time for YubiKey interaction).
+
+## Push history
+
+Every push session is recorded in the `push_history` table with repo ID, scope, status, and result JSON. This is currently used for internal state tracking; a history UI may be added later.
+
+## API
+
+```
+POST /api/push          — start a batch push session (body: { scope, repo_ids? })
+POST /api/push/:repoId  — push a single repo
+GET  /api/push/status   — current push session status
+```

@@ -1,0 +1,173 @@
+# Work units
+
+Work units are Mandible's reconciliation layer. They join three trees that are naturally separate --- issues (tracked in git-bug), branches (tracked in git), and sessions (tracked in Mandible) --- into a single entity with a lifecycle.
+
+## The problem they solve
+
+Without work units, these questions require manual cross-referencing:
+
+- "Is anyone currently working on issue #abc123?" --- check sessions, check branches, hope they match
+- "What happened to the work on `feature/refactor-auth`?" --- check git log, check session history, check if anyone left notes
+- "This session ended mid-work. How does the next agent pick up where it left off?" --- read the conversation, figure it out
+
+Work units make these queries trivial. Each work unit represents one unit of implementation work: one issue, one branch, zero or more sessions, with a clear state at all times.
+
+## Anatomy of a work unit
+
+A work unit has:
+
+| Field | Description |
+|---|---|
+| `id` | Unique identifier (UUID) |
+| `issue_id` | The git-bug issue this work unit tracks |
+| `repo_id` | The repository the issue belongs to |
+| `branch` | The git branch where work happens |
+| `parent_branch` | The branch this feature branch was created from |
+| `kind` | `solo` (standalone) or `partition` (part of a larger effort) |
+| `state` | Current lifecycle state (see below) |
+| `assigned_session_id` | The session currently working on this unit |
+| `continuation` | Handoff notes for the next session |
+| `continuation_by` | Who wrote the continuation |
+| `continuation_at` | When the continuation was written |
+| `auth_request_id` | The auth request for merging this branch |
+| `created_at` | When the work unit was registered |
+| `activated_at` | When work first started |
+| `last_commit_at` | Timestamp of the last commit on the branch |
+| `resolved_at` | When the work unit was resolved |
+
+## Lifecycle states
+
+```
+         +-------+
+         | open  |
+         +---+---+
+             |
+     (agent commits)
+             |
+         +---v-------+
+         | committed |
+         +---+-------+
+             |
+     (auth merge completes)
+             |
+         +---v-------+
+         | resolved  |
+         +-----------+
+
+    At any point:
+         +---+-------+
+         | abandoned |
+         +-----------+
+    (branch deleted, issue closed
+     without merge, or manual)
+```
+
+### open
+
+The work unit exists and has a branch, but no commits have landed yet. An agent may or may not be assigned.
+
+### committed
+
+At least one commit exists on the branch. The work is in progress or ready for review. This state is detected automatically by the reconciler.
+
+### resolved
+
+The auth merge completed successfully. The branch has been merged into the protected branch. Issues referenced via `Bug:` trailers are auto-closed.
+
+### abandoned
+
+The branch was deleted, the issue was closed without a merge, or the work was explicitly abandoned. This is a terminal state.
+
+## How work units are created
+
+Work units are registered through the `wt` (worktree) command when an issue ID is provided:
+
+```bash
+wt feature/my-feature --issue abc1234
+```
+
+This:
+
+1. Creates a git worktree for the feature branch
+2. Registers a work unit in Mandible linking the issue, branch, and repo
+3. Writes an `.issue` file in the worktree root for auto-discovery
+
+The `.issue` file allows `agent-commit` to automatically find the issue ID without requiring `--issue` on every commit.
+
+## Liveness
+
+A key design decision: liveness is derived at query time, never stored as a state field.
+
+When the dashboard or API needs to know "is someone actively working on this?", it joins the work unit to the sessions table and checks:
+
+- Is `assigned_session_id` set?
+- Is that session's status `active`?
+- For channel sessions: is `channel_last_tool_call` recent?
+- For console sessions: is the backend currently processing?
+
+This avoids stale-state problems. If an agent crashes, the session eventually transitions to `dead` (via the reaper), and the next liveness query correctly reports no active agent --- without any explicit state update on the work unit.
+
+## The reconciler
+
+The reconciler runs periodically and performs three passes:
+
+### Pass 1: Dead session cleanup
+
+When a session dies (PID vanishes) or ends normally, the reconciler clears `assigned_session_id` on its work units. The work unit remains in its current state (`open` or `committed`) but shows as unassigned in liveness queries. A new session can pick it up.
+
+### Pass 2: Abandoned branch detection
+
+If a work unit is in the `committed` state but its branch has been deleted from the repository, the reconciler moves it to `abandoned`. This catches cases where a branch was cleaned up without going through the normal merge flow.
+
+### Pass 3: Auto-commit detection
+
+If a work unit is `open` but its branch has new commits (detected by comparing the branch HEAD to what was recorded), the reconciler transitions it to `committed`. This handles the common case where an agent starts committing before explicitly updating the work unit state.
+
+## Continuations
+
+When a session ends with work still in progress, it can write a continuation --- a handoff note for the next session on the same branch:
+
+```bash
+curl -s -X PATCH http://localhost:19420/api/sessions/$MANDIBLE_SESSION_ID \
+  -H 'Content-Type: application/json' \
+  -d '{"continuation": "Refactored auth module. Tests pass. Still need to update the CLI wrapper and add integration tests for the new token refresh flow."}'
+```
+
+The continuation is stored on the work unit (not the session), so it persists across session lifetimes. When a new session starts on the same branch, the continuation appears in its inbox.
+
+Continuations are acknowledged by the receiving session:
+
+```bash
+mandible inbox ack continuation <session-id>
+```
+
+## Work units and the auth queue
+
+When an agent submits an auth request for a branch that has a work unit, the work unit's `auth_request_id` field is set. This links the work lifecycle to the merge lifecycle:
+
+- When the auth merge completes, the work unit transitions to `resolved`
+- Issues linked via `Bug:` trailers in the commit message are auto-closed
+- The auth result (success/failure) is delivered to the next session's inbox
+
+## Kind: solo vs. partition
+
+Work units have a `kind` field:
+
+- **`solo`**: A standalone unit of work. One issue, one branch, one merge.
+- **`partition`**: Part of a larger coordinated effort (like a bigbuild). Multiple partition work units share a parent issue and merge into an integration branch before the final merge to the protected branch.
+
+For partitioned work, the orchestrating agent creates an umbrella issue and partition work units for each sub-task. Agents work on their partitions independently, merge into the integration branch, and a single auth request covers the final merge.
+
+## Querying work units
+
+The API exposes work units at `/api/work-units`:
+
+```bash
+# List all work units (with optional state/repo filters)
+curl http://localhost:19420/api/work-units?state=open&repo_id=abc
+
+# Get a specific work unit with liveness data
+curl http://localhost:19420/api/work-units/unit-id-here
+```
+
+The response includes a `liveness` overlay with `has_live_agent`, `agent_session_id`, `agent_status`, `is_processing`, and `last_activity` --- all derived at query time.

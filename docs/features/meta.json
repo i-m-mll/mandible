@@ -1,0 +1,17 @@
+{
+  "title": "Features",
+  "pages": [
+    "auth-queue",
+    "console",
+    "conversations",
+    "presets",
+    "sessions",
+    "issues",
+    "inbox",
+    "graph",
+    "switchboard",
+    "push-sync",
+    "settings",
+    "other"
+  ]
+}

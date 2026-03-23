@@ -1,0 +1,353 @@
+# Auth Queue API
+
+The auth queue manages protected-branch merges and other authenticated actions. Agents submit requests; the user approves via the dashboard or terminal.
+
+## Types
+
+Auth request types: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `preset-promote`, `data-delete`.
+
+Auth request statuses: `pending`, `executing`, `approved`, `completed`, `rejected`, `expired`, `dismissed`.
+
+## Endpoints
+
+### POST /api/auth/request
+
+Submit a new auth request.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `command` | string | yes | Shell command to execute on approval |
+| `title` | string | yes | Dashboard display title |
+| `type` | string | no | Auth request type (default: `merge`) |
+| `session_id` | string | no | Submitting session ID |
+| `cwd` | string | no | Working directory for command execution |
+| `repo` | string | no | Repository name (auto-derived from `cwd` if missing) |
+| `base_branch` | string | no | Target branch |
+| `head_branch` | string | no | Source branch |
+| `files_changed` | number | no | Number of files changed |
+| `additions` | number | no | Lines added |
+| `deletions` | number | no | Lines deleted |
+| `diff_summary` | string | no | Unified diff content |
+| `commit_message` | string | no | Commit message or log summary |
+| `spec_content` | string | no | Specification or design notes |
+| `post_merge_handoff` | string | no | Handoff note for next session |
+| `issues` | string[] | no | Issue IDs to close on merge |
+| `depends_on_id` | string | no | Auth request ID that must complete first |
+| `execution_mode` | string | no | `daemon` or `remote` |
+
+**Response:** `201 Created`
+
+```json
+{ "request_id": "a1b2c3d4-..." }
+```
+
+**Error responses:**
+- `400` — Invalid payload
+- `409` — Duplicate request exists (returns `request_id` and `status` of existing request)
+
+```bash
+curl -X POST http://localhost:19420/api/auth/request \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "command": "mandible auth merge feature/foo --into main",
+    "title": "Merge feature/foo: add widget",
+    "type": "merge",
+    "cwd": "/path/to/repo",
+    "repo": "myrepo",
+    "base_branch": "main",
+    "head_branch": "feature/foo",
+    "issues": ["abc1234"]
+  }'
+```
+
+### GET /api/auth/request/:id
+
+Get details of a single auth request. Supports prefix matching on the ID.
+
+**Response:** `200 OK`
+
+```json
+{
+  "request_id": "a1b2c3d4-...",
+  "type": "merge",
+  "status": "pending",
+  "output": null,
+  "exit_code": null,
+  "error": null,
+  "repo": "myrepo",
+  "base_branch": "main",
+  "head_branch": "feature/foo",
+  "files_changed": 3,
+  "additions": 45,
+  "deletions": 12,
+  "diff_summary": "...",
+  "commit_message": "...",
+  "spec_content": null,
+  "post_merge_handoff": null,
+  "issue_ids": null,
+  "issues": ["abc1234"],
+  "depends_on_id": null,
+  "depends_on_status": null,
+  "execution_mode": "daemon"
+}
+```
+
+**Error responses:**
+- `404` — Not found
+- `409` — Ambiguous prefix (matches multiple requests)
+
+```bash
+curl http://localhost:19420/api/auth/request/a1b2c3d4
+```
+
+### PUT /api/auth/request/:id
+
+Update a pending or failed auth request. Only specific fields can be updated.
+
+**Request body:** Any subset of the fields from POST (except `session_id`). Additionally accepts `status: "pending"` to reset a failed request.
+
+**Response:** `200 OK` with the updated request object.
+
+**Error responses:**
+- `400` — Validation error (descriptive message returned)
+- `404` — Not found
+- `409` — Invalid status transition
+- `422` — Invalid command
+
+```bash
+curl -X PUT http://localhost:19420/api/auth/request/a1b2c3d4 \
+  -H 'Content-Type: application/json' \
+  -d '{"title": "Updated title", "diff_summary": "..."}'
+```
+
+### DELETE /api/auth/request/:id
+
+Delete an auth request. Requires a reason.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reason` | string | yes | Reason for deletion |
+
+**Response:** `200 OK`
+
+```json
+{ "request_id": "a1b2c3d4-...", "deleted": true }
+```
+
+```bash
+curl -X DELETE http://localhost:19420/api/auth/request/a1b2c3d4 \
+  -H 'Content-Type: application/json' \
+  -d '{"reason": "Branch was rebased"}'
+```
+
+### GET /api/auth/queue
+
+List active (non-terminal) auth requests.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `type` | string | Filter by auth request type |
+
+**Response:** `200 OK`
+
+```json
+{
+  "requests": [
+    {
+      "id": "...",
+      "type": "merge",
+      "status": "pending",
+      "depends_on_id": null,
+      "depends_on_status": null,
+      ...
+    }
+  ]
+}
+```
+
+```bash
+curl http://localhost:19420/api/auth/queue
+curl http://localhost:19420/api/auth/queue?type=merge
+```
+
+### GET /api/auth/history
+
+List completed/terminal auth requests.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `type` | string | Filter by auth request type |
+| `limit` | number | Max results (default: 50, max: 200) |
+
+**Response:** `200 OK` — same shape as `/api/auth/queue`.
+
+```bash
+curl http://localhost:19420/api/auth/history?limit=10
+```
+
+### POST /api/auth/request/:id/approve
+
+Approve a pending auth request. Transitions status to `executing`.
+
+**Response:** `202 Accepted`
+
+```json
+{ "request_id": "...", "status": "executing" }
+```
+
+### POST /api/auth/request/:id/reject
+
+Reject an auth request.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reason` | string | no | Rejection reason |
+
+**Response:** `200 OK`
+
+```json
+{ "request_id": "...", "status": "rejected", "error": "reason text" }
+```
+
+### POST /api/auth/request/:id/skip
+
+Skip an auth request (defer for later).
+
+**Response:** `200 OK`
+
+```json
+{ "request_id": "...", "status": "dismissed" }
+```
+
+### POST /api/auth/request/:id/retry
+
+Retry a failed auth request. Resets status to `pending`.
+
+**Response:** `200 OK`
+
+```json
+{ "request_id": "...", "status": "pending" }
+```
+
+### POST /api/auth/request/:id/requeue
+
+Requeue an auth request.
+
+**Response:** `200 OK`
+
+```json
+{ "request_id": "...", "status": "pending" }
+```
+
+### POST /api/auth/request/:id/dismiss
+
+Dismiss an auth request.
+
+**Response:** `200 OK`
+
+```json
+{ "request_id": "...", "status": "dismissed" }
+```
+
+### POST /api/auth/request/:id/output
+
+Append execution output to an auth request (used by the executor during command execution).
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `chunk` | string | yes | Output text to append |
+
+**Response:** `202 Accepted`
+
+```json
+{ "request_id": "...", "ok": true }
+```
+
+### POST /api/auth/request/:id/result
+
+Record the final result of an auth request execution.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `exit_code` | number | yes | Process exit code |
+| `output` | string | yes | Final output text |
+| `error` | string | no | Error message |
+
+**Response:** `200 OK`
+
+```json
+{ "request_id": "...", "status": "completed" }
+```
+
+## Auth Hooks
+
+Auth hooks are commands that run automatically after successful auth actions. They are configured per-repo and per-action-type.
+
+### GET /api/auth/hooks
+
+List all auth hooks.
+
+**Response:** `200 OK`
+
+```json
+{ "hooks": [{ "id": "...", "repo_pattern": "*", "auth_type": "merge", "command": "npm run build", "label": "Build", "enabled": true, "position": 0 }] }
+```
+
+### GET /api/auth/hooks/:id
+
+Get a single hook.
+
+**Response:** `200 OK` — hook object.
+
+### POST /api/auth/hooks
+
+Create a new hook.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `repo_pattern` | string | yes | Glob pattern for repo name (`*` for all) |
+| `auth_type` | string | yes | Auth request type that triggers this hook |
+| `command` | string | yes | Shell command to run |
+| `label` | string | yes | Human-readable description |
+| `enabled` | boolean | no | Whether the hook is active (default: true) |
+| `position` | number | no | Execution order |
+
+**Response:** `201 Created` — hook object.
+
+```bash
+curl -X POST http://localhost:19420/api/auth/hooks \
+  -H 'Content-Type: application/json' \
+  -d '{"repo_pattern": "mandible", "auth_type": "merge", "command": "npm run build && npm start", "label": "Rebuild and restart"}'
+```
+
+### PUT /api/auth/hooks/:id
+
+Update an existing hook. Accepts any subset of the creation fields.
+
+**Response:** `200 OK` — updated hook object.
+
+### DELETE /api/auth/hooks/:id
+
+Delete a hook. Built-in hooks cannot be deleted (returns `403`).
+
+**Response:** `200 OK`
+
+```json
+{ "deleted": true }
+```
