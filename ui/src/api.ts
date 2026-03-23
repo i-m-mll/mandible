@@ -635,7 +635,7 @@ export async function startConsoleSession(sessionId: string): Promise<void> {
   await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
 }
 
-export type ConsoleBackendType = 'pty' | 'sdk';
+export type ConsoleBackendType = 'pty' | 'sdk' | 'spawn';
 export type ConsolePermissionDecision = 'deny' | 'allow' | 'allow_always';
 
 export type ConsolePermissionRequest = {
@@ -667,6 +667,7 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
+  channelEnabled?: boolean,
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -695,8 +696,12 @@ export async function createConsoleSession(
     auto_restart?: boolean;
     is_operator?: boolean;
     backend_type?: ConsoleBackendType;
+    channel_enabled?: boolean;
   };
   const body: SessionBody = { label, command: '', args: [] };
+  if (channelEnabled) {
+    body.channel_enabled = true;
+  }
   if (kind === 'operator') {
     body.command = 'claude';
     body.args = backendType === 'sdk' ? [] : ['--dangerously-skip-permissions'];
@@ -710,11 +715,11 @@ export async function createConsoleSession(
   } else if (backend === 'codex') {
     body.command = 'codex';
     body.args = [];
-    body.backend_type = 'pty';
+    body.backend_type = 'spawn';
   } else if (backend === 'gemini') {
     body.command = 'gemini';
     body.args = ['-y'];
-    body.backend_type = 'pty';
+    body.backend_type = 'spawn';
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }

@@ -819,19 +819,22 @@ function App(): JSX.Element {
     backend,
     kind,
     backend_type,
+    channel_enabled,
     presetIds,
   }: {
     label: string;
     backend: string;
     kind: string;
-    backend_type: 'pty' | 'sdk';
+    backend_type: 'pty' | 'sdk' | 'spawn';
+    channel_enabled?: boolean;
     presetIds?: string[];
   }) => {
     try {
-      const result = await createConsoleSession(label, backend, kind, backend_type);
+      const result = await createConsoleSession(label, backend, kind, backend_type, channel_enabled);
       const session = {
         pinned: false,
         unread_count: 0,
+        channel_enabled: channel_enabled ?? false,
         ...result.session,
         agent_type: (kind === 'operator' ? 'operator' : backend) as ConsoleSession['agent_type'],
       } as ConsoleSession;
