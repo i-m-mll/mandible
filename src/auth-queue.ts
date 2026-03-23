@@ -799,9 +799,18 @@ export class AuthQueue {
           // BEFORE reporting completion. Hook failures don't change the
           // auth result (the merge already succeeded).
           if (result.exit_code === 0) {
+            const mergedRequest = { ...request, ...this.getRequest(request.id) } as AuthRequest;
+            const isSelfMerge = mergedRequest.repo === "mandible";
+
+            // Bug: 87dfff0 — broadcast rebuilding SSE before hooks so the
+            // UI shows the splash screen during the build step.
+            if (isSelfMerge) {
+              this.broadcast({ event: "mandible:rebuilding", data: {} });
+            }
+
             try {
               const hookResults = await this.hookManager.executeHooks(
-                { ...request, ...this.getRequest(request.id) } as AuthRequest,
+                mergedRequest,
                 (hookLabel, text) => {
                   this.handleOutput({
                     request_id: request.id,
@@ -824,6 +833,13 @@ export class AuthQueue {
               console.warn(
                 `[auth-queue] hook execution failed for request ${request.id}: ${hookError instanceof Error ? hookError.message : String(hookError)}`
               );
+            }
+
+            // Bug: 87dfff0 — after hooks complete (build finished), schedule
+            // a graceful exit so launchd respawns with the new code.
+            if (isSelfMerge) {
+              console.log("[auth-queue] self-merge detected, scheduling daemon restart");
+              setTimeout(() => process.exit(0), 500);
             }
           }
 
