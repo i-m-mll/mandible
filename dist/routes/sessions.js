@@ -287,13 +287,14 @@ export function registerSessionRoutes(server, registry = new SessionRegistry(get
         const id = resolveSessionId(rawId, res);
         if (!id)
             return;
+        // Bug: 7ab2f3e — Accept optional tool_input/tool_output for event bridge
         const body = readBody(req);
         const toolName = body.tool_name ?? "unknown";
         const channelRegistry = getChannelRegistry();
         // Get current session branch/cwd from DB
         const session = registry.getSession(id);
         channelRegistry.register(id, session?.cwd ?? null, session?.branch ?? null);
-        channelRegistry.recordToolCall(id, toolName);
+        channelRegistry.recordToolCall(id, toolName, body.tool_input, body.tool_output);
         sendJson(res, 200, { ok: true });
     });
     server.get("/api/sessions/by-pid/:pid", (req, res) => {

@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import pty from "node-pty";
 import { RingBuffer } from "../ring-buffer.js";
+import { computePresetUnion } from "../presets.js";
+import { getDb } from "../db.js";
 import { normalizeCodexStreamLine, normalizeGeminiStreamLine, } from "./normalizers.js";
 const STREAM_EVENTS_LIMIT = 2000;
 const MAX_RESTART_ATTEMPTS = 5;
@@ -24,12 +26,18 @@ export class PTYBackend extends EventEmitter {
     onExitDisposable = null;
     restartAttempts = 0;
     logger;
+    /** Bug: 790433d — Preset IDs for PTY sessions, applied at launch via --append-system-prompt */
+    presetIds = [];
     constructor(meta, logger) {
         super();
         this.id = meta.id;
         this.meta = meta;
         this.ringBuffer = new RingBuffer();
         this.logger = logger;
+    }
+    /** Bug: 790433d — Set preset IDs before start(). PTY presets are locked for session lifetime. */
+    setPresetIds(ids) {
+        this.presetIds = [...ids];
     }
     start() {
         if (this.ptyProc) {
@@ -481,7 +489,7 @@ export class PTYBackend extends EventEmitter {
     }
     buildLaunchArgs() {
         if (this.meta.command === "claude") {
-            const args = this.stripArgValue(this.meta.args, ["-p", "--print", "--resume", "--output-format", "--model"]);
+            const args = this.stripArgValue(this.meta.args, ["-p", "--print", "--resume", "--output-format", "--model", "--append-system-prompt"]);
             const sanitized = args.filter((arg) => arg !== "--verbose");
             const model = this.extractModel(this.meta.args);
             if (model) {
@@ -489,6 +497,23 @@ export class PTYBackend extends EventEmitter {
             }
             if (this.meta.provider_session_id) {
                 sanitized.push("--resume", this.meta.provider_session_id);
+            }
+            // Bug: b5aba0e — channel-enabled PTY: inject MCP channel server flag
+            if (this.meta.channel_enabled) {
+                sanitized.push("--dangerously-load-development-channels", "server:mandible");
+            }
+            // Bug: 790433d — Append preset union as system prompt for PTY sessions
+            if (this.presetIds.length > 0) {
+                try {
+                    const db = getDb();
+                    const union = computePresetUnion(this.presetIds, db);
+                    if (union.text) {
+                        sanitized.push("--append-system-prompt", union.text);
+                    }
+                }
+                catch (err) {
+                    this.logger("warn", "pty_preset_union_failed", { id: this.id, error: String(err) });
+                }
             }
             return sanitized;
         }
@@ -532,6 +557,10 @@ export class PTYBackend extends EventEmitter {
             cleaned[k] = v;
         }
         Object.assign(cleaned, extraEnv);
+        // Bug: b5aba0e — channel-enabled PTY: expose session ID for channel server discovery
+        if (this.meta.channel_enabled) {
+            cleaned["MANDIBLE_SESSION_ID"] = this.meta.mandible_session_id ?? this.id;
+        }
         return cleaned;
     }
     makeUserEvent(prompt, sessionId) {

@@ -14,7 +14,11 @@ export declare class PTYBackend extends EventEmitter implements AgenticBackend {
     private onExitDisposable;
     private restartAttempts;
     private logger;
+    /** Bug: 790433d — Preset IDs for PTY sessions, applied at launch via --append-system-prompt */
+    private presetIds;
     constructor(meta: ConsoleSession, logger: Logger);
+    /** Bug: 790433d — Set preset IDs before start(). PTY presets are locked for session lifetime. */
+    setPresetIds(ids: string[]): void;
     start(): void;
     stop(signal?: string): void;
     destroy(): void;

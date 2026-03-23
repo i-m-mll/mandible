@@ -25,7 +25,7 @@ export interface BackendStatusEvent {
     started_at?: number | null;
     stopped_at?: number | null;
 }
-export type BackendMetaUpdate = Partial<Pick<ConsoleSession, "label" | "args" | "cwd" | "provider_session_id" | "cols" | "rows" | "status" | "pid" | "exit_code" | "started_at" | "stopped_at" | "updated_at" | "allowed_tools" | "mandible_session_id" | "resume_at_message">>;
+export type BackendMetaUpdate = Partial<Pick<ConsoleSession, "label" | "args" | "cwd" | "provider_session_id" | "cols" | "rows" | "status" | "pid" | "exit_code" | "started_at" | "stopped_at" | "updated_at" | "allowed_tools" | "mandible_session_id" | "resume_at_message" | "channel_enabled">>;
 export interface AgenticBackend extends EventEmitter {
     readonly id: string;
     meta: ConsoleSession;

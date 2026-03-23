@@ -104,6 +104,7 @@ __export(api_exports, {
   getIssueRepos: () => getIssueRepos,
   getIssueSessions: () => getIssueSessions,
   getLogs: () => getLogs,
+  getMessageParams: () => getMessageParams,
   getNodeLinks: () => getNodeLinks,
   getPreset: () => getPreset,
   getPresetUnion: () => getPresetUnion,
@@ -598,8 +599,11 @@ async function restartConsoleSession(sessionId) {
 async function startConsoleSession(sessionId) {
   await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
 }
-async function createConsoleSession(label, backend, kind, backendType) {
+async function createConsoleSession(label, backend, kind, backendType, options2) {
   const body = { label, command: "", args: [] };
+  if (options2?.channel_enabled) {
+    body.channel_enabled = true;
+  }
   if (kind === "operator") {
     body.command = "claude";
     body.args = backendType === "sdk" ? [] : ["--dangerously-skip-permissions"];
@@ -613,11 +617,11 @@ async function createConsoleSession(label, backend, kind, backendType) {
   } else if (backend === "codex") {
     body.command = "codex";
     body.args = [];
-    body.backend_type = "pty";
+    body.backend_type = "spawn";
   } else if (backend === "gemini") {
     body.command = "gemini";
     body.args = ["-y"];
-    body.backend_type = "pty";
+    body.backend_type = "spawn";
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
@@ -672,6 +676,14 @@ async function getConsoleSessionUsage(sessionId) {
     return payload;
   }
   return payload.usage ?? [];
+}
+async function getMessageParams(sessionId, messageIndex) {
+  const qs = messageIndex !== void 0 ? `?message_index=${messageIndex}` : "";
+  const response = await apiGet(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/params${qs}`
+  );
+  const payload = await parseMaybeJson(response);
+  return payload.params;
 }
 async function getBackupStatus() {
   const response = await apiGet("/api/backup/status");
@@ -24129,7 +24141,38 @@ function StreamRenderer({
 }
 
 // ui/src/components/console/ViewToggle.tsx
-function ViewToggle({ current, onChange, showTerminal = true }) {
+function ViewToggle({
+  current,
+  onChange,
+  showTerminal = true,
+  channelEnabled = false,
+  unseenEventCount = 0
+}) {
+  if (channelEnabled && showTerminal) {
+    return /* @__PURE__ */ u3("div", { className: "view-toggle", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `view-toggle__btn${current === "terminal" ? " view-toggle__btn--active" : ""}`,
+          onClick: () => onChange("terminal"),
+          children: "Terminal"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `view-toggle__btn view-toggle__btn--events${current === "events" ? " view-toggle__btn--active" : ""}`,
+          onClick: () => onChange("events"),
+          children: [
+            "Events",
+            unseenEventCount > 0 && /* @__PURE__ */ u3("span", { className: "view-toggle__badge" })
+          ]
+        }
+      )
+    ] });
+  }
   if (!showTerminal) {
     return null;
   }
@@ -24153,6 +24196,159 @@ function ViewToggle({ current, onChange, showTerminal = true }) {
       }
     )
   ] });
+}
+
+// ui/src/components/console/ChannelEventsPane.tsx
+function extractChannelEvents(events) {
+  const result = [];
+  for (let i4 = 0; i4 < events.length; i4++) {
+    const event = events[i4];
+    if (event.type !== "system" || event.subtype !== "channel_event")
+      continue;
+    const channelData = event.channel_event ?? event;
+    const eventType = String(event.event_type ?? channelData.event_type ?? "unknown");
+    let label = eventType;
+    if (eventType === "tool_call") {
+      label = String(channelData.tool_name ?? event.tool_name ?? "tool_call");
+    } else if (eventType === "notification") {
+      label = String(channelData.notification_type ?? event.notification_type ?? "notification");
+    } else if (eventType === "connect") {
+      label = "Channel connected";
+    } else if (eventType === "disconnect") {
+      label = "Channel disconnected";
+    }
+    result.push({
+      key: `ch-${i4}`,
+      eventType,
+      label,
+      timestamp: String(event.timestamp ?? channelData.timestamp ?? (/* @__PURE__ */ new Date()).toISOString()),
+      payload: channelData
+    });
+  }
+  return result;
+}
+function formatTimestamp(iso) {
+  try {
+    const d3 = new Date(iso);
+    return d3.toLocaleTimeString(void 0, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return iso;
+  }
+}
+function EventIcon({ eventType }) {
+  if (eventType === "tool_call") {
+    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M14.3 2.3a1 1 0 0 0-1.4 0L10 5.2 8.8 4l2.9-2.9a1 1 0 0 0-1.1-1.6A5 5 0 0 0 4.5 6L1.3 9.2a2.5 2.5 0 0 0 3.5 3.5L8 9.5a5 5 0 0 0 6.5-6.1 1 1 0 0 0-.2-1.1z",
+        fill: "currentColor",
+        opacity: "0.7"
+      }
+    ) });
+  }
+  if (eventType === "notification") {
+    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M8 1a1 1 0 0 1 1 1v.3A4.5 4.5 0 0 1 12.5 7v2.5l1.3 1.3a.5.5 0 0 1-.4.9H2.6a.5.5 0 0 1-.4-.9L3.5 9.5V7A4.5 4.5 0 0 1 7 2.3V2a1 1 0 0 1 1-1zm-1.5 12a1.5 1.5 0 0 0 3 0h-3z",
+        fill: "currentColor",
+        opacity: "0.7"
+      }
+    ) });
+  }
+  if (eventType === "connect") {
+    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M6.4 9.6a3 3 0 0 0 4.2 0l2-2a3 3 0 1 0-4.2-4.2l-1 1M9.6 6.4a3 3 0 0 0-4.2 0l-2 2a3 3 0 1 0 4.2 4.2l1-1",
+        stroke: "currentColor",
+        "stroke-width": "1.5",
+        "stroke-linecap": "round",
+        opacity: "0.7"
+      }
+    ) });
+  }
+  if (eventType === "disconnect") {
+    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M6.4 9.6a3 3 0 0 0 4.2 0l2-2a3 3 0 1 0-4.2-4.2M9.6 6.4a3 3 0 0 0-4.2 0l-2 2a3 3 0 1 0 4.2 4.2M2 2l12 12",
+        stroke: "currentColor",
+        "stroke-width": "1.5",
+        "stroke-linecap": "round",
+        opacity: "0.7"
+      }
+    ) });
+  }
+  return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: [
+    /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "6", stroke: "currentColor", "stroke-width": "1.5", opacity: "0.5" }),
+    /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "2", fill: "currentColor", opacity: "0.5" })
+  ] });
+}
+function ChannelEventsPane({ streamEvents, onEventCountChange }) {
+  const [expandedKeys, setExpandedKeys] = d2(/* @__PURE__ */ new Set());
+  const scrollRef = A2(null);
+  const wasAtBottomRef = A2(true);
+  const channelEvents = extractChannelEvents(streamEvents);
+  y2(() => {
+    onEventCountChange?.(channelEvents.length);
+  }, [channelEvents.length, onEventCountChange]);
+  y2(() => {
+    const el = scrollRef.current;
+    if (!el)
+      return;
+    if (wasAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [channelEvents.length]);
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el)
+      return;
+    const threshold = 40;
+    wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  };
+  const toggleExpand = (key2) => {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key2)) {
+        next.delete(key2);
+      } else {
+        next.add(key2);
+      }
+      return next;
+    });
+  };
+  if (channelEvents.length === 0) {
+    return /* @__PURE__ */ u3("div", { className: "channel-events-pane channel-events-pane--empty", children: /* @__PURE__ */ u3("div", { className: "channel-events-pane__empty-message", children: "No channel events yet. Events will appear here when the channel connection is active." }) });
+  }
+  return /* @__PURE__ */ u3("div", { className: "channel-events-pane", ref: scrollRef, onScroll: handleScroll, children: channelEvents.map((event) => {
+    const isExpanded = expandedKeys.has(event.key);
+    return /* @__PURE__ */ u3(
+      "div",
+      {
+        className: `channel-events-pane__card${isExpanded ? " channel-events-pane__card--expanded" : ""}`,
+        children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "channel-events-pane__card-header",
+              onClick: () => toggleExpand(event.key),
+              children: [
+                /* @__PURE__ */ u3(EventIcon, { eventType: event.eventType }),
+                /* @__PURE__ */ u3("span", { className: "channel-events-pane__card-label", children: event.label }),
+                /* @__PURE__ */ u3("span", { className: "channel-events-pane__card-time", children: formatTimestamp(event.timestamp) }),
+                /* @__PURE__ */ u3("span", { className: `channel-events-pane__card-chevron${isExpanded ? " channel-events-pane__card-chevron--open" : ""}`, children: /* @__PURE__ */ u3("svg", { width: "10", height: "10", viewBox: "0 0 10 10", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M3 4l2 2 2-2", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round" }) }) })
+              ]
+            }
+          ),
+          isExpanded && /* @__PURE__ */ u3("div", { className: "channel-events-pane__card-body", children: /* @__PURE__ */ u3("pre", { className: "channel-events-pane__card-json", children: JSON.stringify(event.payload, null, 2) }) })
+        ]
+      },
+      event.key
+    );
+  }) });
 }
 
 // ui/src/components/console/PermissionDialog.tsx
@@ -24626,6 +24822,7 @@ function PresetPillSelector({
 // ui/src/components/console/LivePresetPills.tsx
 function LivePresetPills({
   sessionId,
+  readOnly = false,
   onUnionUpdate
 }) {
   const [allPresets, setAllPresets] = d2([]);
@@ -24674,7 +24871,8 @@ function LivePresetPills({
       }
       const union = await getPresetUnion({ session_id: sessionId });
       await updateConsoleSessionOptions(sessionId, {
-        systemPrompt: union.systemPrompt
+        systemPrompt: union.systemPrompt,
+        presetIds: nextIds
       });
       onUnionUpdate?.({ totalTokens: union.totalTokens });
     } catch {
@@ -24688,8 +24886,21 @@ function LivePresetPills({
     ] });
   }
   return /* @__PURE__ */ u3("div", { className: "session-controls__field", style: { marginTop: "12px" }, children: [
-    /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Presets" }),
-    /* @__PURE__ */ u3(
+    /* @__PURE__ */ u3("span", { className: "session-controls__label", children: [
+      "Presets",
+      readOnly && /* @__PURE__ */ u3(
+        "span",
+        {
+          className: "session-controls__lock-icon",
+          title: "Restart session to change presets",
+          children: " \u{1F512}"
+        }
+      )
+    ] }),
+    readOnly ? /* @__PURE__ */ u3("div", { className: "session-controls__preset-readonly", children: selectedIds.length === 0 ? /* @__PURE__ */ u3("span", { className: "session-controls__placeholder", children: "No presets selected" }) : selectedIds.map((id2) => {
+      const preset = allPresets.find((p3) => p3.id === id2);
+      return /* @__PURE__ */ u3("span", { className: "session-controls__preset-pill", children: preset?.name ?? id2.slice(0, 8) }, id2);
+    }) }) : /* @__PURE__ */ u3(
       PresetPillSelector,
       {
         selectedPresetIds: selectedIds,
@@ -25215,7 +25426,8 @@ function TerminalPane({
   isVisible,
   viewMode,
   onViewModeChange,
-  resumeAtMessage
+  resumeAtMessage,
+  channelEnabled = false
 }) {
   const containerRef = A2(null);
   const termRef = A2(null);
@@ -25242,6 +25454,15 @@ function TerminalPane({
   const [sidebarTab, setSidebarTab] = d2("settings");
   const [selectedMessageId, setSelectedMessageId] = d2(null);
   const [presetTokenCount, setPresetTokenCount] = d2(0);
+  const [channelEventCount, setChannelEventCount] = d2(0);
+  const [unseenEventCount, setUnseenEventCount] = d2(0);
+  const lastSeenEventCountRef = A2(0);
+  y2(() => {
+    if (viewMode === "events") {
+      setUnseenEventCount(0);
+      lastSeenEventCountRef.current = channelEventCount;
+    }
+  }, [viewMode, channelEventCount]);
   const showDebugTerminal = backendType === "pty";
   const providerFamily = isOperator ? "claude" : command;
   const availableTools = collectAvailableTools(streamEvents);
@@ -25757,7 +25978,16 @@ function TerminalPane({
       style: { display: isVisible ? "flex" : "none" },
       children: [
         /* @__PURE__ */ u3("div", { className: "terminal-pane__header", children: [
-          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: /* @__PURE__ */ u3(ViewToggle, { current: viewMode, onChange: onViewModeChange, showTerminal: showDebugTerminal }) }),
+          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: /* @__PURE__ */ u3(
+            ViewToggle,
+            {
+              current: viewMode,
+              onChange: onViewModeChange,
+              showTerminal: showDebugTerminal,
+              channelEnabled,
+              unseenEventCount
+            }
+          ) }),
           /* @__PURE__ */ u3("div", { className: "terminal-pane__header-actions", children: [
             /* @__PURE__ */ u3("button", { type: "button", className: "terminal-pane__link-btn", onClick: () => {
               window.location.hash = "#/inbox";
@@ -25795,6 +26025,19 @@ function TerminalPane({
               style: { display: viewMode === "terminal" ? "flex" : "none", flex: 1 }
             }
           ),
+          channelEnabled && viewMode === "events" && /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "hidden", display: "flex" }, children: /* @__PURE__ */ u3(
+            ChannelEventsPane,
+            {
+              streamEvents,
+              onEventCountChange: (count) => {
+                setChannelEventCount(count);
+                if (viewMode !== "events") {
+                  const newEvents = count - lastSeenEventCountRef.current;
+                  setUnseenEventCount(Math.max(0, newEvents));
+                }
+              }
+            }
+          ) }),
           showReconnectOverlay && viewMode === "terminal" && !showDebugStart && /* @__PURE__ */ u3("div", { className: "terminal-pane__reconnect-overlay", children: [
             /* @__PURE__ */ u3("span", { children: wsStatus === "error" ? "Debug terminal connection error" : "Debug terminal disconnected" }),
             /* @__PURE__ */ u3(
@@ -25982,10 +26225,11 @@ function TerminalPane({
                     onModelSaved: setModel
                   }
                 ),
-                backendType === "sdk" && /* @__PURE__ */ u3(
+                (backendType === "sdk" || backendType === "pty") && /* @__PURE__ */ u3(
                   LivePresetPills,
                   {
                     sessionId,
+                    readOnly: backendType !== "sdk",
                     onUnionUpdate: ({ totalTokens }) => setPresetTokenCount(totalTokens)
                   }
                 )
@@ -26078,6 +26322,8 @@ function NewSessionDialog({
   const [kind, setKind] = d2("agent");
   const [backend, setBackend] = d2("claude");
   const [transport, setTransport] = d2("sdk");
+  const [channelEnabled, setChannelEnabled] = d2(false);
+  const [hasApiKey, setHasApiKey] = d2(null);
   const [presetIds, setPresetIds] = d2([]);
   const [allPresets, setAllPresets] = d2([]);
   const [presetsLoaded, setPresetsLoaded] = d2(false);
@@ -26117,7 +26363,30 @@ function NewSessionDialog({
     };
   }, [open, initialPresetId]);
   y2(() => {
-    if (!presetsLoaded || presetIds.length === 0 || transport !== "sdk") {
+    if (!open)
+      return;
+    let cancelled = false;
+    void getSettings().then((settings) => {
+      if (cancelled)
+        return;
+      const apiKeyConfigured = Boolean(
+        settings.anthropic_api_key || settings.ANTHROPIC_API_KEY
+      );
+      setHasApiKey(apiKeyConfigured);
+      if (!apiKeyConfigured) {
+        setTransport("pty");
+        setChannelEnabled(true);
+      }
+    }).catch(() => {
+      if (!cancelled)
+        setHasApiKey(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+  y2(() => {
+    if (!presetsLoaded || presetIds.length === 0 || backend !== "claude") {
       setValidationWarnings([]);
       return;
     }
@@ -26133,7 +26402,7 @@ function NewSessionDialog({
     return () => {
       cancelled = true;
     };
-  }, [presetIds, presetsLoaded, transport]);
+  }, [presetIds, presetsLoaded, backend]);
   y2(() => {
     if (kind === "operator" && backend !== "claude") {
       setBackend("claude");
@@ -26148,6 +26417,7 @@ function NewSessionDialog({
   if (!open)
     return null;
   const isSDK = transport === "sdk";
+  const supportsPresets = backend === "claude";
   const handleSubmit = (e3) => {
     e3.preventDefault();
     if (!label.trim())
@@ -26157,12 +26427,14 @@ function NewSessionDialog({
       backend,
       kind,
       backend_type: transport,
-      presetIds: isSDK ? presetIds : void 0
+      channel_enabled: channelEnabled || void 0,
+      presetIds: supportsPresets ? presetIds : void 0
     });
     setLabel("");
     setKind("agent");
     setBackend("claude");
     setTransport("sdk");
+    setChannelEnabled(false);
     setPresetIds([]);
     setPresetsLoaded(false);
     setValidationWarnings([]);
@@ -26236,7 +26508,22 @@ function NewSessionDialog({
               title: "Claude SDK",
               description: "Structured events, Mandible permissions, and SDK-native session control.",
               selected: transport === "sdk",
-              onClick: () => setTransport("sdk")
+              onClick: () => {
+                setTransport("sdk");
+                setChannelEnabled(false);
+              }
+            }
+          ),
+          /* @__PURE__ */ u3(
+            OptionCard,
+            {
+              title: "PTY + Channel",
+              description: "Your Claude Code CLI with Mandible channel integration. Uses your OAuth login. Terminal + structured events.",
+              selected: transport === "pty" && channelEnabled,
+              onClick: () => {
+                setTransport("pty");
+                setChannelEnabled(true);
+              }
             }
           ),
           /* @__PURE__ */ u3(
@@ -26244,13 +26531,16 @@ function NewSessionDialog({
             {
               title: "PTY",
               description: "Classic terminal transport with a raw debug terminal fallback.",
-              selected: transport === "pty",
-              onClick: () => setTransport("pty")
+              selected: transport === "pty" && !channelEnabled,
+              onClick: () => {
+                setTransport("pty");
+                setChannelEnabled(false);
+              }
             }
           )
         ] })
       ] }),
-      isSDK && presetsLoaded && /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+      supportsPresets && presetsLoaded && /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
         /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Presets" }),
         /* @__PURE__ */ u3(
           PresetPillSelector,
@@ -26260,6 +26550,8 @@ function NewSessionDialog({
             presets: allPresets
           }
         ),
+        !isSDK && /* @__PURE__ */ u3("div", { className: "new-session-dialog__preset-note", children: "Presets will be applied at session start. Restart session to change." }),
+        isSDK && /* @__PURE__ */ u3("div", { className: "new-session-dialog__preset-note new-session-dialog__preset-note--muted", children: "Presets can be changed mid-conversation." }),
         validationWarnings.length > 0 && /* @__PURE__ */ u3("div", { className: "new-session-dialog__validation-warnings", children: validationWarnings.map((w3, i4) => /* @__PURE__ */ u3("div", { className: "new-session-dialog__validation-warning", children: [
           /* @__PURE__ */ u3("span", { className: "new-session-dialog__validation-warning-icon", children: "\u26A0" }),
           /* @__PURE__ */ u3("span", { children: [
@@ -26403,7 +26695,8 @@ function ConsoleView({
         isVisible: session.id === activeSessionId,
         viewMode: getViewMode(session.id),
         onViewModeChange: (mode) => handleViewModeChange(session.id, mode),
-        resumeAtMessage: session.resume_at_message
+        resumeAtMessage: session.resume_at_message,
+        channelEnabled: !!session.channel_enabled
       },
       session.id
     )) }),
@@ -35788,13 +36081,15 @@ function App() {
     backend,
     kind,
     backend_type,
+    channel_enabled,
     presetIds
   }) => {
     try {
-      const result = await createConsoleSession(label, backend, kind, backend_type);
+      const result = await createConsoleSession(label, backend, kind, backend_type, { channel_enabled });
       const session = {
         pinned: false,
         unread_count: 0,
+        channel_enabled: channel_enabled ?? false,
         ...result.session,
         agent_type: kind === "operator" ? "operator" : backend
       };

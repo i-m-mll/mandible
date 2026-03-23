@@ -196,6 +196,8 @@ export interface ConsoleSession {
     resume_at_message: string | null;
     /** Derived from command and is_operator. Not stored in DB. */
     agent_type: 'claude' | 'codex' | 'gemini' | 'operator' | 'shell';
+    /** Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity. */
+    channel_enabled: boolean;
     /** Bug: 81c9d85 — derived from backend.processing, not stored in DB. */
     is_processing?: boolean;
 }
@@ -215,6 +217,8 @@ export interface ConsoleSessionInput {
     mandible_session_id?: string | null;
     provider_session_id?: string | null;
     resume_at_message?: string | null;
+    /** Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity. */
+    channel_enabled?: boolean;
     /** Bug: 61bee4e — Preset IDs to associate with this console session */
     presetIds?: string[];
 }

@@ -38,6 +38,8 @@ export declare class SDKBackend extends EventEmitter implements AgenticBackend, 
     private activeQuery;
     private abortController;
     private destroyed;
+    /** Bug: 790433d — Message index counter for parameter snapshots */
+    private messageIndex;
     /** Bug: 81c9d85 — expose processing state for is_processing on ConsoleSession */
     get isProcessing(): boolean;
     constructor(meta: ConsoleSession, logger: Logger, sessionRegistry?: SessionRegistry);
@@ -62,6 +64,21 @@ export declare class SDKBackend extends EventEmitter implements AgenticBackend, 
     private processPromptQueue;
     private runPrompt;
     private buildQueryOptions;
+    /**
+     * Bug: a432b63 — Build MCP server configs for the Mandible channel server.
+     *
+     * The channel server provides inside-out integration: the agent can query
+     * Mandible for inbox items, work units, issues, and submit auth requests.
+     * This is complementary to SDK hooks which provide outside-in control
+     * (permissions, abort, cost tracking).
+     *
+     * The channel server is spawned as a stdio subprocess by the SDK. It reads
+     * MANDIBLE_SESSION_ID from env to link itself to the existing SDK session.
+     * The ChannelRegistry uses upsert semantics, so double-registration from
+     * both the SDK hook (ensureMandibleSession) and the channel server startup
+     * is safe — the channel server's registration becomes a no-op update.
+     */
+    private buildChannelMcpServers;
     private buildHooks;
     private handleToolPermission;
     private normalizeSDKEvent;
@@ -80,6 +97,12 @@ export declare class SDKBackend extends EventEmitter implements AgenticBackend, 
     private storeAndBroadcast;
     private buildUsageRow;
     private cancelActiveQuery;
+    /**
+     * Bug: 790433d — Snapshot the effective config for the current message index.
+     * Uses a keyframe/delta model: only writes a row when the parameters differ
+     * from the last snapshot (or on the first prompt).
+     */
+    private snapshotMessageParams;
     private resolveAllPendingPermissions;
     private emitMetaUpdate;
     private emitStatus;

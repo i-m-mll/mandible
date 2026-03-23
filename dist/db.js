@@ -788,6 +788,36 @@ const MIGRATIONS = [
             `CREATE INDEX IF NOT EXISTS idx_runtime_patches_source
         ON runtime_patches(source)`,
         ]
+    },
+    {
+        version: 48,
+        name: "console_channel_enabled",
+        // Bug: b5aba0e — channel-enabled PTY sessions: add channel_enabled flag
+        statements: [
+            `ALTER TABLE console_sessions ADD COLUMN channel_enabled INTEGER NOT NULL DEFAULT 0`,
+        ]
+    },
+    {
+        // Bug: 790433d — Per-prompt parameter snapshots (keyframe/delta model)
+        version: 49,
+        name: "message_params",
+        statements: [
+            `CREATE TABLE IF NOT EXISTS message_params (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id      TEXT NOT NULL,
+        message_index   INTEGER NOT NULL,
+        model           TEXT,
+        permission_mode TEXT,
+        max_turns       INTEGER,
+        max_cost_usd    REAL,
+        preset_ids      TEXT,
+        allowed_tools   TEXT,
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(session_id, message_index)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_message_params_session
+        ON message_params(session_id, message_index DESC)`,
+        ]
     }
 ];
 export function getDbPath() {
