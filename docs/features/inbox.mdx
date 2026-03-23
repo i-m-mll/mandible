@@ -51,7 +51,7 @@ The **Ack All** button in the sidebar action bar dismisses all continuations and
 
 ## API
 
-The inbox is backed by `GET /api/inbox`, which aggregates data from the sessions, auth_requests, work_units, and preset_diffs tables. The `?branch=` query parameter filters to a specific branch (used by the session-start hook to show only relevant items).
+The inbox is backed by `GET /api/inbox`, which aggregates data from sessions, auth requests, work units, and preset diffs. The `?branch=` query parameter filters to a specific branch.
 
 Acknowledgments:
 

@@ -45,4 +45,4 @@ Repo and branch filters are applied server-side (the API query); the status filt
 GET /api/graph?since=3d&repo=mandible&branch=feature/foo&status=open&limit=50
 ```
 
-Returns `{ nodes: [...], edges: [...] }`. The server assembles nodes from the sessions table, the issue scanner's in-memory cache, and the auth_requests table, then computes edges from session_issues, parent_id relationships, and Bug: trailer parsing. Results are capped at `limit` (default 50, max 500).
+Returns `{ nodes: [...], edges: [...] }`. The server assembles nodes from sessions, issues, and auth requests, then computes edges from their relationships. Results are capped at `limit` (default 50, max 500).

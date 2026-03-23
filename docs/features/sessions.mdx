@@ -18,13 +18,13 @@ Each row represents one session. Columns:
 | **Project** | Repository name pills extracted from the session's working directory. Branch name shown below when available. |
 | **Children** | Count of subagent sessions spawned by this parent. |
 | **Duration** | Wall-clock time since the session started (or total duration if ended). |
-| **Inactive** | Minutes since the last real user interaction. Based on JSONL transcript modification time, not database writes — so background metadata updates don't reset the counter. Sessions past the reap threshold (default 30 minutes) get a warning highlight. |
+| **Inactive** | Minutes since the last real user interaction. Sessions approaching the reap threshold get a warning highlight. |
 | **Task** | The session's task/intent, rendered as inline Markdown. Linked issue pills appear below it. |
 | **Actions** | Context menu with Pin/Unpin, Go to (conversation), Copy CWD, Open in Finder, Copy branch, and Kill. |
 
 ## Session tree
 
-Sessions that were spawned as subagents appear as children of their parent. Click the expand toggle on a parent row to reveal the tree. The tree hierarchy is derived from the `parent_id` relationship in the sessions table.
+Sessions that were spawned as subagents appear as children of their parent. Click the expand toggle on a parent row to reveal the tree.
 
 ## Active vs. ended
 
