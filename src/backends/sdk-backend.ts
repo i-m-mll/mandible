@@ -1,10 +1,14 @@
 // Bug: 9bf8b4c — Claude Agent SDK backend for Console
+import { existsSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type {
   CanUseTool,
   HookCallbackMatcher,
   HookInput,
+  McpStdioServerConfig,
   Options as ClaudeSDKOptions,
   PermissionMode as ClaudePermissionMode,
   PermissionResult,
@@ -519,6 +523,11 @@ implements
     type SettingSource = "user" | "project" | "local";
     const settingSources: SettingSource[] = (this.options.settingSourcesOverride ?? ["user", "project", "local"]) as SettingSource[];
 
+    // Bug: a432b63 — Inject Mandible channel MCP server into SDK sessions
+    // for inside-out integration (agent queries Mandible via channel tools).
+    // Complementary to SDK hooks which provide outside-in control.
+    const mcpServers = this.buildChannelMcpServers();
+
     return {
       abortController,
       cwd,
@@ -540,7 +549,52 @@ implements
       canUseTool: this.handleToolPermission,
       hooks,
       agentProgressSummaries: true,
+      ...(mcpServers ? { mcpServers } : {}),
       ...resumeOpts,
+    };
+  }
+
+  /**
+   * Bug: a432b63 — Build MCP server configs for the Mandible channel server.
+   *
+   * The channel server provides inside-out integration: the agent can query
+   * Mandible for inbox items, work units, issues, and submit auth requests.
+   * This is complementary to SDK hooks which provide outside-in control
+   * (permissions, abort, cost tracking).
+   *
+   * The channel server is spawned as a stdio subprocess by the SDK. It reads
+   * MANDIBLE_SESSION_ID from env to link itself to the existing SDK session.
+   * The ChannelRegistry uses upsert semantics, so double-registration from
+   * both the SDK hook (ensureMandibleSession) and the channel server startup
+   * is safe — the channel server's registration becomes a no-op update.
+   */
+  private buildChannelMcpServers(): Record<string, McpStdioServerConfig> | null {
+    // Resolve the channel server path relative to the compiled output.
+    // At runtime, __dirname is dist/backends/ and the channel server is at
+    // dist/channel-server/index.js.
+    const channelServerPath = resolve(dirname(fileURLToPath(import.meta.url)), "../channel-server/index.js");
+
+    if (!existsSync(channelServerPath)) {
+      this.logger(
+        "warn",
+        `Channel server not found at ${channelServerPath} — skipping MCP injection for session ${this.id}`,
+      );
+      return null;
+    }
+
+    const sessionId = this.meta.mandible_session_id ?? this.id;
+    const cwd = this.meta.cwd ?? process.cwd();
+
+    return {
+      mandible: {
+        type: "stdio",
+        command: process.execPath,
+        args: [channelServerPath],
+        env: {
+          MANDIBLE_SESSION_ID: sessionId,
+          CLAUDE_CWD: cwd,
+        },
+      },
     };
   }
 
