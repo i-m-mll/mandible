@@ -152,7 +152,7 @@ export function NewSessionDialog({
 
   // Bug: 8baedeb — validate selected presets for unsatisfied setting requirements
   useEffect(() => {
-    if (!presetsLoaded || presetIds.length === 0 || transport !== 'sdk') {
+    if (!presetsLoaded || presetIds.length === 0 || backend !== 'claude') {
       setValidationWarnings([]);
       return;
     }
@@ -165,7 +165,7 @@ export function NewSessionDialog({
       if (!cancelled) setValidationWarnings([]);
     });
     return () => { cancelled = true; };
-  }, [presetIds, presetsLoaded, transport]);
+  }, [presetIds, presetsLoaded, backend]);
 
   useEffect(() => {
     if (kind === 'operator' && backend !== 'claude') {
@@ -184,6 +184,8 @@ export function NewSessionDialog({
   if (!open) return null;
 
   const isSDK = transport === 'sdk';
+  // Bug: 790433d — Presets are supported for both SDK and PTY Claude sessions
+  const supportsPresets = backend === 'claude';
 
   const handleSubmit = (e: Event) => {
     e.preventDefault();
@@ -193,7 +195,7 @@ export function NewSessionDialog({
       backend,
       kind,
       backend_type: transport,
-      presetIds: isSDK ? presetIds : undefined,
+      presetIds: supportsPresets ? presetIds : undefined,
     });
     setLabel('');
     setKind('agent');
@@ -293,8 +295,8 @@ export function NewSessionDialog({
             </div>
           )}
 
-          {/* Bug: 11f4f47 — Preset selector shown only for SDK sessions */}
-          {isSDK && presetsLoaded && (
+          {/* Bug: 790433d — Preset selector shown for all Claude sessions (SDK + PTY) */}
+          {supportsPresets && presetsLoaded && (
             <div className="new-session-dialog__field">
               <div className="new-session-dialog__label">Presets</div>
               <PresetPillSelector
@@ -302,6 +304,17 @@ export function NewSessionDialog({
                 onChange={setPresetIds}
                 presets={allPresets}
               />
+              {/* Bug: 790433d — Mode-specific note about preset mutability */}
+              {!isSDK && (
+                <div className="new-session-dialog__preset-note">
+                  Presets will be applied at session start. Restart session to change.
+                </div>
+              )}
+              {isSDK && (
+                <div className="new-session-dialog__preset-note new-session-dialog__preset-note--muted">
+                  Presets can be changed mid-conversation.
+                </div>
+              )}
               {/* Bug: 8baedeb — validation warnings for unconfigured required settings */}
               {validationWarnings.length > 0 && (
                 <div className="new-session-dialog__validation-warnings">

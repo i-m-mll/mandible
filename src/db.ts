@@ -798,6 +798,32 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_runtime_patches_source
         ON runtime_patches(source)`,
     ]
+  },
+  {
+    // Bug: 790433d — Per-prompt parameter snapshots (keyframe/delta model)
+    // Stores the effective config at each prompt boundary. Only written when
+    // parameters change (or on the first prompt), so consecutive identical
+    // configs are not duplicated — the "keyframe" lookup finds the nearest
+    // snapshot at or before a given message index.
+    version: 49,
+    name: "message_params",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS message_params (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id      TEXT NOT NULL,
+        message_index   INTEGER NOT NULL,
+        model           TEXT,
+        permission_mode TEXT,
+        max_turns       INTEGER,
+        max_cost_usd    REAL,
+        preset_ids      TEXT,
+        allowed_tools   TEXT,
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(session_id, message_index)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_message_params_session
+        ON message_params(session_id, message_index DESC)`,
+    ]
   }
 ];
 

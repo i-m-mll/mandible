@@ -5,6 +5,8 @@ import pty from "node-pty";
 import type { WebSocket } from "ws";
 import type { AgenticBackend, BackendMetaUpdate, BackendStatusEvent } from "../agentic-backend.js";
 import { RingBuffer } from "../ring-buffer.js";
+import { computePresetUnion } from "../presets.js";
+import { getDb } from "../db.js";
 import type {
   ConsoleSession,
   ConsoleSessionStatus,
@@ -42,6 +44,8 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   private onExitDisposable: IDisposable | null = null;
   private restartAttempts = 0;
   private logger: Logger;
+  /** Bug: 790433d — Preset IDs for PTY sessions, applied at launch via --append-system-prompt */
+  private presetIds: string[] = [];
 
   constructor(meta: ConsoleSession, logger: Logger) {
     super();
@@ -49,6 +53,11 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.meta = meta;
     this.ringBuffer = new RingBuffer();
     this.logger = logger;
+  }
+
+  /** Bug: 790433d — Set preset IDs before start(). PTY presets are locked for session lifetime. */
+  setPresetIds(ids: string[]): void {
+    this.presetIds = [...ids];
   }
 
   start(): void {
@@ -548,7 +557,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
 
   private buildLaunchArgs(): string[] {
     if (this.meta.command === "claude") {
-      const args = this.stripArgValue(this.meta.args, ["-p", "--print", "--resume", "--output-format", "--model"]);
+      const args = this.stripArgValue(this.meta.args, ["-p", "--print", "--resume", "--output-format", "--model", "--append-system-prompt"]);
       const sanitized = args.filter((arg) => arg !== "--verbose");
       const model = this.extractModel(this.meta.args);
       if (model) {
@@ -556,6 +565,18 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       }
       if (this.meta.provider_session_id) {
         sanitized.push("--resume", this.meta.provider_session_id);
+      }
+      // Bug: 790433d — Append preset union as system prompt for PTY sessions
+      if (this.presetIds.length > 0) {
+        try {
+          const db = getDb();
+          const union = computePresetUnion(this.presetIds, db);
+          if (union.text) {
+            sanitized.push("--append-system-prompt", union.text);
+          }
+        } catch (err) {
+          this.logger("warn", "pty_preset_union_failed", { id: this.id, error: String(err) });
+        }
       }
       return sanitized;
     }

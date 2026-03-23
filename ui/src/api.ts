@@ -660,6 +660,8 @@ export type ConsoleSessionOptions = {
   allowedTools?: string[];
   maxTurns?: number;
   maxCostUsd?: number;
+  /** Bug: 790433d — Preset IDs for dynamic preset switching (SDK only) */
+  presetIds?: string[];
 };
 
 export async function createConsoleSession(
@@ -825,6 +827,37 @@ export async function getConsoleSessionUsage<T = Record<string, unknown>>(
     return payload;
   }
   return payload.usage ?? [];
+}
+
+// ── Message params API (Bug: 790433d) ──
+
+export type MessageParams = {
+  id: number;
+  session_id: string;
+  message_index: number;
+  model: string | null;
+  permission_mode: string | null;
+  max_turns: number | null;
+  max_cost_usd: number | null;
+  preset_ids: string | null;
+  allowed_tools: string | null;
+  created_at: number;
+};
+
+/**
+ * Keyframe lookup: returns the effective parameters at a given message index.
+ * If no message_index is provided, returns all snapshots for the session.
+ */
+export async function getMessageParams(
+  sessionId: string,
+  messageIndex?: number,
+): Promise<MessageParams | MessageParams[] | null> {
+  const qs = messageIndex !== undefined ? `?message_index=${messageIndex}` : '';
+  const response = await apiGet(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/params${qs}`,
+  );
+  const payload = await parseMaybeJson(response) as { params: MessageParams | MessageParams[] | null };
+  return payload.params;
 }
 
 // ── Backup API ──
