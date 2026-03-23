@@ -5,6 +5,7 @@ import { type SDKBackendOptions } from "./backends/sdk-backend.js";
 import type { ConsoleSession, ConsoleSessionInput, Logger } from "./types.js";
 export declare class SessionManager {
     private sessions;
+    private channelBridges;
     private logger;
     private sessionRegistry;
     constructor(_db: unknown, logger: Logger, sessionRegistry?: SessionRegistry);

@@ -8,8 +8,24 @@
 // Liveness is based on last_tool_call freshness rather than PID, since
 // channel sessions run in a separate process that Mandible doesn't own.
 
+import { EventEmitter } from "node:events";
 import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
+
+// Bug: 7ab2f3e — Channel event types emitted by ChannelRegistry for bridging
+// into PTYBackend's stream.
+export type ChannelEventType = "connect" | "tool_call" | "notification" | "disconnect";
+
+export interface ChannelEvent {
+  event_type: ChannelEventType;
+  session_id: string;
+  timestamp: number;
+  tool_name?: string;
+  tool_input?: unknown;
+  tool_output?: unknown;
+  notification_type?: string;
+  notification_content?: string;
+}
 
 /** In-memory representation of a channel-connected session. */
 export interface ChannelSession {
@@ -30,8 +46,12 @@ const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
  * this registry is a lightweight overlay tracking channel-specific metadata
  * (tool call recency, which tools have been used).
  */
-class ChannelRegistry {
+class ChannelRegistry extends EventEmitter {
   private sessions = new Map<string, ChannelSession>();
+
+  constructor() {
+    super();
+  }
 
   /**
    * Register or update a channel session. Called on first tool invocation
@@ -75,6 +95,14 @@ class ChannelRegistry {
       branch,
     });
 
+    // Bug: 7ab2f3e — Emit typed event for channel event bridge
+    const connectEvent: ChannelEvent = {
+      event_type: "connect",
+      session_id: sessionId,
+      timestamp: now,
+    };
+    this.emit("channel_event", connectEvent);
+
     return session;
   }
 
@@ -82,7 +110,18 @@ class ChannelRegistry {
    * Record a tool call for a channel session. Updates last_tool_call and
    * adds the tool name to the set of tools called.
    */
-  recordToolCall(sessionId: string, toolName: string): void {
+  /**
+   * Record a tool call for a channel session. Updates last_tool_call and
+   * adds the tool name to the set of tools called.
+   *
+   * Bug: 7ab2f3e — Extended with optional input/output for event bridge.
+   */
+  recordToolCall(
+    sessionId: string,
+    toolName: string,
+    toolInput?: unknown,
+    toolOutput?: unknown,
+  ): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     session.last_tool_call = Date.now();
@@ -100,10 +139,51 @@ class ChannelRegistry {
     } catch {
       // Best effort
     }
+
+    // Bug: 7ab2f3e — Emit typed event for channel event bridge
+    const toolEvent: ChannelEvent = {
+      event_type: "tool_call",
+      session_id: sessionId,
+      timestamp: session.last_tool_call,
+      tool_name: toolName,
+      tool_input: toolInput,
+      tool_output: toolOutput,
+    };
+    this.emit("channel_event", toolEvent);
+  }
+
+  /**
+   * Record a notification sent to a channel session.
+   * Bug: 7ab2f3e — Emits a channel_event for the event bridge.
+   */
+  recordNotification(
+    sessionId: string,
+    notificationType: string,
+    notificationContent?: string,
+  ): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+
+    const notifEvent: ChannelEvent = {
+      event_type: "notification",
+      session_id: sessionId,
+      timestamp: Date.now(),
+      notification_type: notificationType,
+      notification_content: notificationContent,
+    };
+    this.emit("channel_event", notifEvent);
   }
 
   /** Disconnect a channel session (e.g., on MCP server shutdown). */
   disconnect(sessionId: string): void {
+    // Bug: 7ab2f3e — Emit disconnect event before removing from map
+    const disconnectEvent: ChannelEvent = {
+      event_type: "disconnect",
+      session_id: sessionId,
+      timestamp: Date.now(),
+    };
+    this.emit("channel_event", disconnectEvent);
+
     this.sessions.delete(sessionId);
     broadcast("channel:session:disconnected", { session_id: sessionId });
   }

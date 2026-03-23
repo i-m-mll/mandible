@@ -1,10 +1,14 @@
 // Bug: 9bf8b4c — Claude Agent SDK backend for Console
+import { existsSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type {
   CanUseTool,
   HookCallbackMatcher,
   HookInput,
+  McpStdioServerConfig,
   Options as ClaudeSDKOptions,
   PermissionMode as ClaudePermissionMode,
   PermissionResult,
@@ -93,6 +97,8 @@ implements
   private activeQuery: ClaudeQuery | null = null;
   private abortController: AbortController | null = null;
   private destroyed = false;
+  /** Bug: 790433d — Message index counter for parameter snapshots */
+  private messageIndex = 0;
 
   /** Bug: 81c9d85 — expose processing state for is_processing on ConsoleSession */
   get isProcessing(): boolean {
@@ -317,6 +323,27 @@ implements
         this.logger("warn", "sdk_set_model_failed", { id: this.id, model: options.model });
       });
     }
+
+    // Bug: 790433d — Dynamic preset switching: recompute preset union and emit
+    // a system event. The new system prompt takes effect on the NEXT query.
+    if (options.presetIds !== undefined) {
+      const presetNames: string[] = [];
+      try {
+        const db = getDb();
+        for (const pid of options.presetIds) {
+          const row = db.prepare("SELECT name FROM presets WHERE id = ?").get(pid) as { name: string } | undefined;
+          if (row) presetNames.push(row.name);
+        }
+      } catch {
+        // DB not available — names will be empty
+      }
+      this.storeAndBroadcast({
+        type: "system",
+        subtype: "preset_changed",
+        session_id: this.meta.provider_session_id ?? this.id,
+        data: { presetIds: options.presetIds, presetNames },
+      } as unknown as ConsoleStreamEvent);
+    }
   }
 
   getPendingPermissions(): PermissionRequest[] {
@@ -424,6 +451,10 @@ implements
     this.abortController = abortController;
     this.activeQuery = query;
 
+    // Bug: 790433d — Snapshot the effective parameters for this prompt (keyframe model)
+    this.snapshotMessageParams();
+    this.messageIndex++;
+
     // Bug: 6634023 — The SDK event stream does not echo the user's prompt back.
     // Synthesize a user event so the prompt appears in the event log for hydration,
     // replay, and "View history" consistency.
@@ -519,6 +550,11 @@ implements
     type SettingSource = "user" | "project" | "local";
     const settingSources: SettingSource[] = (this.options.settingSourcesOverride ?? ["user", "project", "local"]) as SettingSource[];
 
+    // Bug: a432b63 — Inject Mandible channel MCP server into SDK sessions
+    // for inside-out integration (agent queries Mandible via channel tools).
+    // Complementary to SDK hooks which provide outside-in control.
+    const mcpServers = this.buildChannelMcpServers();
+
     return {
       abortController,
       cwd,
@@ -540,7 +576,52 @@ implements
       canUseTool: this.handleToolPermission,
       hooks,
       agentProgressSummaries: true,
+      ...(mcpServers ? { mcpServers } : {}),
       ...resumeOpts,
+    };
+  }
+
+  /**
+   * Bug: a432b63 — Build MCP server configs for the Mandible channel server.
+   *
+   * The channel server provides inside-out integration: the agent can query
+   * Mandible for inbox items, work units, issues, and submit auth requests.
+   * This is complementary to SDK hooks which provide outside-in control
+   * (permissions, abort, cost tracking).
+   *
+   * The channel server is spawned as a stdio subprocess by the SDK. It reads
+   * MANDIBLE_SESSION_ID from env to link itself to the existing SDK session.
+   * The ChannelRegistry uses upsert semantics, so double-registration from
+   * both the SDK hook (ensureMandibleSession) and the channel server startup
+   * is safe — the channel server's registration becomes a no-op update.
+   */
+  private buildChannelMcpServers(): Record<string, McpStdioServerConfig> | null {
+    // Resolve the channel server path relative to the compiled output.
+    // At runtime, __dirname is dist/backends/ and the channel server is at
+    // dist/channel-server/index.js.
+    const channelServerPath = resolve(dirname(fileURLToPath(import.meta.url)), "../channel-server/index.js");
+
+    if (!existsSync(channelServerPath)) {
+      this.logger(
+        "warn",
+        `Channel server not found at ${channelServerPath} — skipping MCP injection for session ${this.id}`,
+      );
+      return null;
+    }
+
+    const sessionId = this.meta.mandible_session_id ?? this.id;
+    const cwd = this.meta.cwd ?? process.cwd();
+
+    return {
+      mandible: {
+        type: "stdio",
+        command: process.execPath,
+        args: [channelServerPath],
+        env: {
+          MANDIBLE_SESSION_ID: sessionId,
+          CLAUDE_CWD: cwd,
+        },
+      },
     };
   }
 
@@ -1069,6 +1150,71 @@ implements
       query.close();
     } catch {
       // Ignore close failures during shutdown.
+    }
+  }
+
+  /**
+   * Bug: 790433d — Snapshot the effective config for the current message index.
+   * Uses a keyframe/delta model: only writes a row when the parameters differ
+   * from the last snapshot (or on the first prompt).
+   */
+  private snapshotMessageParams(): void {
+    try {
+      const db = getDb();
+      const model = this.options.model ?? this.extractModel(this.meta.args) ?? null;
+      const permissionMode = this.options.permissionMode ?? "default";
+      const maxTurns = this.options.maxTurns ?? null;
+      const maxCostUsd = this.options.maxCostUsd ?? null;
+      const presetIds = this.options.presetIds ?? [];
+      const allowedTools = [...this.autoAllowedTools];
+
+      // Check if params differ from the last snapshot
+      const lastRow = db.prepare(
+        `SELECT model, permission_mode, max_turns, max_cost_usd, preset_ids, allowed_tools
+         FROM message_params
+         WHERE session_id = ?
+         ORDER BY message_index DESC
+         LIMIT 1`,
+      ).get(this.id) as {
+        model: string | null;
+        permission_mode: string | null;
+        max_turns: number | null;
+        max_cost_usd: number | null;
+        preset_ids: string | null;
+        allowed_tools: string | null;
+      } | undefined;
+
+      const presetIdsJson = JSON.stringify(presetIds);
+      const allowedToolsJson = JSON.stringify(allowedTools);
+
+      if (lastRow) {
+        const same =
+          lastRow.model === model &&
+          lastRow.permission_mode === permissionMode &&
+          lastRow.max_turns === maxTurns &&
+          lastRow.max_cost_usd === maxCostUsd &&
+          lastRow.preset_ids === presetIdsJson &&
+          lastRow.allowed_tools === allowedToolsJson;
+        if (same) return; // Inherit from previous — no new row needed
+      }
+
+      db.prepare(
+        `INSERT OR REPLACE INTO message_params
+         (session_id, message_index, model, permission_mode, max_turns, max_cost_usd, preset_ids, allowed_tools, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        this.id,
+        this.messageIndex,
+        model,
+        permissionMode,
+        maxTurns,
+        maxCostUsd,
+        presetIdsJson,
+        allowedToolsJson,
+        Math.floor(Date.now() / 1000),
+      );
+    } catch (err) {
+      this.logger("warn", "sdk_snapshot_params_failed", { id: this.id, error: String(err) });
     }
   }
 

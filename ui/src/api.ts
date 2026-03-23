@@ -635,7 +635,7 @@ export async function startConsoleSession(sessionId: string): Promise<void> {
   await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
 }
 
-export type ConsoleBackendType = 'pty' | 'sdk';
+export type ConsoleBackendType = 'pty' | 'sdk' | 'spawn';
 export type ConsolePermissionDecision = 'deny' | 'allow' | 'allow_always';
 
 export type ConsolePermissionRequest = {
@@ -660,6 +660,8 @@ export type ConsoleSessionOptions = {
   allowedTools?: string[];
   maxTurns?: number;
   maxCostUsd?: number;
+  /** Bug: 790433d — Preset IDs for dynamic preset switching (SDK only) */
+  presetIds?: string[];
 };
 
 export async function createConsoleSession(
@@ -667,6 +669,7 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
+  options?: { channel_enabled?: boolean },
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -695,8 +698,12 @@ export async function createConsoleSession(
     auto_restart?: boolean;
     is_operator?: boolean;
     backend_type?: ConsoleBackendType;
+    channel_enabled?: boolean;
   };
   const body: SessionBody = { label, command: '', args: [] };
+  if (options?.channel_enabled) {
+    body.channel_enabled = true;
+  }
   if (kind === 'operator') {
     body.command = 'claude';
     body.args = backendType === 'sdk' ? [] : ['--dangerously-skip-permissions'];
@@ -710,11 +717,11 @@ export async function createConsoleSession(
   } else if (backend === 'codex') {
     body.command = 'codex';
     body.args = [];
-    body.backend_type = 'pty';
+    body.backend_type = 'spawn';
   } else if (backend === 'gemini') {
     body.command = 'gemini';
     body.args = ['-y'];
-    body.backend_type = 'pty';
+    body.backend_type = 'spawn';
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
@@ -825,6 +832,37 @@ export async function getConsoleSessionUsage<T = Record<string, unknown>>(
     return payload;
   }
   return payload.usage ?? [];
+}
+
+// ── Message params API (Bug: 790433d) ──
+
+export type MessageParams = {
+  id: number;
+  session_id: string;
+  message_index: number;
+  model: string | null;
+  permission_mode: string | null;
+  max_turns: number | null;
+  max_cost_usd: number | null;
+  preset_ids: string | null;
+  allowed_tools: string | null;
+  created_at: number;
+};
+
+/**
+ * Keyframe lookup: returns the effective parameters at a given message index.
+ * If no message_index is provided, returns all snapshots for the session.
+ */
+export async function getMessageParams(
+  sessionId: string,
+  messageIndex?: number,
+): Promise<MessageParams | MessageParams[] | null> {
+  const qs = messageIndex !== undefined ? `?message_index=${messageIndex}` : '';
+  const response = await apiGet(
+    `/api/console/sessions/${encodeURIComponent(sessionId)}/params${qs}`,
+  );
+  const payload = await parseMaybeJson(response) as { params: MessageParams | MessageParams[] | null };
+  return payload.params;
 }
 
 // ── Backup API ──

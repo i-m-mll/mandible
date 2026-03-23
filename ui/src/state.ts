@@ -40,9 +40,12 @@ type ConsoleSession = {
   started_at: number | null;
   stopped_at: number | null;
   backend_type: 'pty' | 'sdk' | 'spawn';
+  // Bug: b5e1c51 — Whether this PTY session has channel integration (Terminal + Events)
+  channel_enabled?: boolean;
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
   resume_at_message?: string | null;
+  channel_enabled?: boolean;
 };
 
 export type { ConsoleSession };

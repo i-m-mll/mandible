@@ -1,9 +1,10 @@
 // Bug: 11f4f47 — NewSessionDialog with preset selector for SDK sessions
 // Bug: 8baedeb — session validation warnings for convention-setting links
+// Bug: b5e1c51 — PTY+Channel transport option for channel-connected sessions
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useState } from 'preact/hooks';
 import type { Preset, SessionValidationWarning } from '../../api';
-import { getPresets, getDefaultPresetIds, validatePresetIds } from '../../api';
+import { getPresets, getDefaultPresetIds, getSettings, validatePresetIds } from '../../api';
 import { PresetPillSelector } from '../presets/PresetPillSelector';
 
 type AgentKind = 'agent' | 'operator';
@@ -18,6 +19,7 @@ type NewSessionDialogProps = {
     backend: Backend;
     kind: AgentKind;
     backend_type: Transport;
+    channel_enabled?: boolean;
     presetIds?: string[];
   }) => void;
   /** Pre-selected preset ID from navigation (e.g., "Start Chat" from Presets tab). */
@@ -105,6 +107,9 @@ export function NewSessionDialog({
   const [kind, setKind] = useState<AgentKind>('agent');
   const [backend, setBackend] = useState<Backend>('claude');
   const [transport, setTransport] = useState<Transport>('sdk');
+  // Bug: b5e1c51 — Channel-enabled flag for PTY+Channel transport
+  const [channelEnabled, setChannelEnabled] = useState(false);
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const [presetIds, setPresetIds] = useState<string[]>([]);
   const [allPresets, setAllPresets] = useState<Preset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
@@ -150,9 +155,30 @@ export function NewSessionDialog({
     return () => { cancelled = true; };
   }, [open, initialPresetId]);
 
+  // Bug: b5e1c51 — Check if API key is configured to determine default transport
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void getSettings().then((settings) => {
+      if (cancelled) return;
+      const apiKeyConfigured = Boolean(
+        settings.anthropic_api_key || settings.ANTHROPIC_API_KEY,
+      );
+      setHasApiKey(apiKeyConfigured);
+      // Set default transport based on API key availability
+      if (!apiKeyConfigured) {
+        setTransport('pty');
+        setChannelEnabled(true);
+      }
+    }).catch(() => {
+      if (!cancelled) setHasApiKey(null);
+    });
+    return () => { cancelled = true; };
+  }, [open]);
+
   // Bug: 8baedeb — validate selected presets for unsatisfied setting requirements
   useEffect(() => {
-    if (!presetsLoaded || presetIds.length === 0 || transport !== 'sdk') {
+    if (!presetsLoaded || presetIds.length === 0 || backend !== 'claude') {
       setValidationWarnings([]);
       return;
     }
@@ -165,7 +191,7 @@ export function NewSessionDialog({
       if (!cancelled) setValidationWarnings([]);
     });
     return () => { cancelled = true; };
-  }, [presetIds, presetsLoaded, transport]);
+  }, [presetIds, presetsLoaded, backend]);
 
   useEffect(() => {
     if (kind === 'operator' && backend !== 'claude') {
@@ -184,6 +210,8 @@ export function NewSessionDialog({
   if (!open) return null;
 
   const isSDK = transport === 'sdk';
+  // Bug: 790433d — Presets are supported for both SDK and PTY Claude sessions
+  const supportsPresets = backend === 'claude';
 
   const handleSubmit = (e: Event) => {
     e.preventDefault();
@@ -193,12 +221,14 @@ export function NewSessionDialog({
       backend,
       kind,
       backend_type: transport,
-      presetIds: isSDK ? presetIds : undefined,
+      channel_enabled: channelEnabled || undefined,
+      presetIds: supportsPresets ? presetIds : undefined,
     });
     setLabel('');
     setKind('agent');
     setBackend('claude');
     setTransport('sdk');
+    setChannelEnabled(false);
     setPresetIds([]);
     setPresetsLoaded(false);
     setValidationWarnings([]);
@@ -281,20 +311,26 @@ export function NewSessionDialog({
                   title="Claude SDK"
                   description="Structured events, Mandible permissions, and SDK-native session control."
                   selected={transport === 'sdk'}
-                  onClick={() => setTransport('sdk')}
+                  onClick={() => { setTransport('sdk'); setChannelEnabled(false); }}
+                />
+                <OptionCard
+                  title="PTY + Channel"
+                  description="Your Claude Code CLI with Mandible channel integration. Uses your OAuth login. Terminal + structured events."
+                  selected={transport === 'pty' && channelEnabled}
+                  onClick={() => { setTransport('pty'); setChannelEnabled(true); }}
                 />
                 <OptionCard
                   title="PTY"
                   description="Classic terminal transport with a raw debug terminal fallback."
-                  selected={transport === 'pty'}
-                  onClick={() => setTransport('pty')}
+                  selected={transport === 'pty' && !channelEnabled}
+                  onClick={() => { setTransport('pty'); setChannelEnabled(false); }}
                 />
               </div>
             </div>
           )}
 
-          {/* Bug: 11f4f47 — Preset selector shown only for SDK sessions */}
-          {isSDK && presetsLoaded && (
+          {/* Bug: 790433d — Preset selector shown for all Claude sessions (SDK + PTY) */}
+          {supportsPresets && presetsLoaded && (
             <div className="new-session-dialog__field">
               <div className="new-session-dialog__label">Presets</div>
               <PresetPillSelector
@@ -302,6 +338,17 @@ export function NewSessionDialog({
                 onChange={setPresetIds}
                 presets={allPresets}
               />
+              {/* Bug: 790433d — Mode-specific note about preset mutability */}
+              {!isSDK && (
+                <div className="new-session-dialog__preset-note">
+                  Presets will be applied at session start. Restart session to change.
+                </div>
+              )}
+              {isSDK && (
+                <div className="new-session-dialog__preset-note new-session-dialog__preset-note--muted">
+                  Presets can be changed mid-conversation.
+                </div>
+              )}
               {/* Bug: 8baedeb — validation warnings for unconfigured required settings */}
               {validationWarnings.length > 0 && (
                 <div className="new-session-dialog__validation-warnings">

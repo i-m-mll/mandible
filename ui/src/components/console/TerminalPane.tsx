@@ -10,6 +10,7 @@ import type { ConsolePermissionRequest } from '../../api';
 import { StreamRenderer } from '../stream-renderer/StreamRenderer';
 import type { StreamEvent, ToolResultContentBlock } from '../stream-renderer/types';
 import { ViewToggle } from './ViewToggle';
+import { ChannelEventsPane } from './ChannelEventsPane';
 import { PermissionDialog } from './PermissionDialog';
 import { SessionControls } from './SessionControls';
 import { PtyBanner } from './PtyBanner';
@@ -30,7 +31,7 @@ import {
 import type { PresetUnion } from '../../api';
 import { getCachedEvents, setCachedEvents, openStreamCache } from '../../stream-cache';
 
-type ViewMode = 'terminal' | 'rich';
+type ViewMode = 'terminal' | 'rich' | 'events';
 type ActiveSubagent = {
   agent_id: string;
   agent_type: string;
@@ -54,6 +55,8 @@ type TerminalPaneProps = {
   onViewModeChange: (mode: ViewMode) => void;
   // Bug: e4845f6 — DAG leaf for history-first hydration path filtering
   resumeAtMessage?: string | null;
+  // Bug: b5e1c51 — Channel-enabled PTY sessions get Terminal + Events tabs
+  channelEnabled?: boolean;
 };
 
 const MODEL_OPTIONS: Record<string, string[]> = {
@@ -371,6 +374,7 @@ export function TerminalPane({
   viewMode,
   onViewModeChange,
   resumeAtMessage,
+  channelEnabled = false,
 }: TerminalPaneProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -409,6 +413,19 @@ export function TerminalPane({
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   // Bug: 11f4f47 — Track preset union token count for ContextIndicator
   const [presetTokenCount, setPresetTokenCount] = useState(0);
+  // Bug: b5e1c51 — Unseen channel event badge tracking
+  const [channelEventCount, setChannelEventCount] = useState(0);
+  const [unseenEventCount, setUnseenEventCount] = useState(0);
+  const lastSeenEventCountRef = useRef(0);
+
+  // Reset unseen count when Events tab is activated
+  useEffect(() => {
+    if (viewMode === 'events') {
+      setUnseenEventCount(0);
+      lastSeenEventCountRef.current = channelEventCount;
+    }
+  }, [viewMode, channelEventCount]);
+
   // Bug: 8d3328c — Only PTY sessions have a debug terminal. Spawn sessions
   // have no terminal emulation. Operator sessions always use SDK now (not spawn).
   const showDebugTerminal = backendType === 'pty';
@@ -1062,7 +1079,13 @@ export function TerminalPane({
           cannot cover it; users can switch to rich view even when disconnected. */}
       <div className="terminal-pane__header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <ViewToggle current={viewMode} onChange={onViewModeChange} showTerminal={showDebugTerminal} />
+          <ViewToggle
+            current={viewMode}
+            onChange={onViewModeChange}
+            showTerminal={showDebugTerminal}
+            channelEnabled={channelEnabled}
+            unseenEventCount={unseenEventCount}
+          />
         </div>
         <div className="terminal-pane__header-actions">
           <button type="button" className="terminal-pane__link-btn" onClick={() => { window.location.hash = '#/inbox'; }}>
@@ -1106,6 +1129,22 @@ export function TerminalPane({
             ref={containerRef}
             style={{ display: viewMode === 'terminal' ? 'flex' : 'none', flex: 1 }}
           />
+        )}
+
+        {/* Bug: b5e1c51 — Channel events pane for PTY+Channel sessions */}
+        {channelEnabled && viewMode === 'events' && (
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
+            <ChannelEventsPane
+              streamEvents={streamEvents}
+              onEventCountChange={(count) => {
+                setChannelEventCount(count);
+                if (viewMode !== 'events') {
+                  const newEvents = count - lastSeenEventCountRef.current;
+                  setUnseenEventCount(Math.max(0, newEvents));
+                }
+              }}
+            />
+          </div>
         )}
 
         {/* Reconnect overlay — only covers the body area, not the header */}
@@ -1299,10 +1338,11 @@ export function TerminalPane({
                       availableTools={availableTools}
                       onModelSaved={setModel}
                     />
-                    {/* Bug: 11f4f47 — Live preset pills in sidebar for SDK sessions */}
-                    {backendType === 'sdk' && (
+                    {/* Bug: 790433d — Preset pills in sidebar for both SDK and PTY sessions */}
+                    {(backendType === 'sdk' || backendType === 'pty') && (
                       <LivePresetPills
                         sessionId={sessionId}
+                        readOnly={backendType !== 'sdk'}
                         onUnionUpdate={({ totalTokens }) => setPresetTokenCount(totalTokens)}
                       />
                     )}

@@ -1,3 +1,15 @@
+import { EventEmitter } from "node:events";
+export type ChannelEventType = "connect" | "tool_call" | "notification" | "disconnect";
+export interface ChannelEvent {
+    event_type: ChannelEventType;
+    session_id: string;
+    timestamp: number;
+    tool_name?: string;
+    tool_input?: unknown;
+    tool_output?: unknown;
+    notification_type?: string;
+    notification_content?: string;
+}
 /** In-memory representation of a channel-connected session. */
 export interface ChannelSession {
     session_id: string;
@@ -13,8 +25,9 @@ export interface ChannelSession {
  * this registry is a lightweight overlay tracking channel-specific metadata
  * (tool call recency, which tools have been used).
  */
-declare class ChannelRegistry {
+declare class ChannelRegistry extends EventEmitter {
     private sessions;
+    constructor();
     /**
      * Register or update a channel session. Called on first tool invocation
      * from the MCP channel server.
@@ -24,7 +37,18 @@ declare class ChannelRegistry {
      * Record a tool call for a channel session. Updates last_tool_call and
      * adds the tool name to the set of tools called.
      */
-    recordToolCall(sessionId: string, toolName: string): void;
+    /**
+     * Record a tool call for a channel session. Updates last_tool_call and
+     * adds the tool name to the set of tools called.
+     *
+     * Bug: 7ab2f3e — Extended with optional input/output for event bridge.
+     */
+    recordToolCall(sessionId: string, toolName: string, toolInput?: unknown, toolOutput?: unknown): void;
+    /**
+     * Record a notification sent to a channel session.
+     * Bug: 7ab2f3e — Emits a channel_event for the event bridge.
+     */
+    recordNotification(sessionId: string, notificationType: string, notificationContent?: string): void;
     /** Disconnect a channel session (e.g., on MCP server shutdown). */
     disconnect(sessionId: string): void;
     /** Get a specific channel session, or null if not connected. */

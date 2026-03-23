@@ -79,6 +79,8 @@ export function registerConsoleRoutes(
       backend_type: body.backend_type === "pty" || body.backend_type === "sdk" || body.backend_type === "spawn"
         ? body.backend_type
         : (body.command === "claude" ? "sdk" : "spawn"),
+      // Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity
+      channel_enabled: (body as Record<string, unknown>).channel_enabled === true,
       // Bug: 61bee4e — Accept presetIds for convention presets
       presetIds: Array.isArray((body as Record<string, unknown>).presetIds)
         ? ((body as Record<string, unknown>).presetIds as unknown[]).filter(
@@ -145,6 +147,29 @@ export function registerConsoleRoutes(
     }
 
     const body = (req.body ?? {}) as SDKBackendOptions;
+
+    // Bug: 790433d — Persist presetIds changes to session_presets table
+    if (body.presetIds !== undefined) {
+      const db = getDb();
+      db.prepare("DELETE FROM session_presets WHERE session_id = ?").run(id);
+      if (body.presetIds.length > 0) {
+        const insertPreset = db.prepare(
+          `INSERT OR IGNORE INTO session_presets (session_id, preset_id, preset_version, position)
+           VALUES (?, ?, ?, ?)`,
+        );
+        const presetTx = db.transaction(() => {
+          for (let i = 0; i < body.presetIds!.length; i++) {
+            const presetRow = db.prepare("SELECT version FROM presets WHERE id = ?")
+              .get(body.presetIds![i]) as { version: number } | undefined;
+            if (presetRow) {
+              insertPreset.run(id, body.presetIds![i], presetRow.version, i);
+            }
+          }
+        });
+        presetTx();
+      }
+    }
+
     const nextSession = manager.updateOptions(id, body);
     res.status(200).json({ session: nextSession });
   });
@@ -241,6 +266,44 @@ export function registerConsoleRoutes(
     res.status(200).json({
       events: sliced,
     });
+  });
+
+  // ------------------------------------------------------------------
+  // GET /api/console/sessions/:id/params — per-message parameter snapshot
+  // Bug: 790433d — keyframe lookup: returns the nearest snapshot at or before
+  // the requested message_index.
+  // ------------------------------------------------------------------
+  server.get("/api/console/sessions/:id/params", (req, res) => {
+    const id = req.params.id;
+    const session = manager.get(id);
+    if (!session) {
+      sendJson(res, 404, { error: "not_found" });
+      return;
+    }
+    const query = req.query ?? {};
+    const messageIndex = typeof query.message_index === "string"
+      ? Number.parseInt(query.message_index, 10)
+      : null;
+
+    const db = getDb();
+    if (messageIndex !== null && Number.isFinite(messageIndex)) {
+      // Keyframe lookup: find the most recent snapshot at or before this index
+      const row = db.prepare(
+        `SELECT * FROM message_params
+         WHERE session_id = ? AND message_index <= ?
+         ORDER BY message_index DESC
+         LIMIT 1`,
+      ).get(id, messageIndex);
+      res.status(200).json({ params: row ?? null });
+    } else {
+      // Return all snapshots for this session
+      const rows = db.prepare(
+        `SELECT * FROM message_params
+         WHERE session_id = ?
+         ORDER BY message_index ASC`,
+      ).all(id);
+      res.status(200).json({ params: rows });
+    }
   });
 
   server.get("/api/console/sessions/:id/permissions", (req, res) => {

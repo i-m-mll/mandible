@@ -17,6 +17,7 @@ import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend, type SDKBackendOptions } from "./backends/sdk-backend.js";
 import { SpawnBackend } from "./backends/spawn-backend.js";
+import { bridgeChannelEvents, type ChannelBridgeHandle } from "./channel-event-bridge.js";
 import type {
   ConsoleInteractionMode,
   ConsoleSession,
@@ -50,6 +51,7 @@ interface ConsoleSessionRow {
   allowed_tools: string | null;
   mandible_session_id: string | null;
   resume_at_message: string | null;
+  channel_enabled: number;
 }
 
 interface ConsoleSessionUsageRow {
@@ -145,6 +147,7 @@ function rowToSession(row: ConsoleSessionRow): ConsoleSession {
     allowed_tools: parseAllowedTools(row.allowed_tools),
     mandible_session_id: row.mandible_session_id ?? null,
     resume_at_message: row.resume_at_message ?? null,
+    channel_enabled: Boolean(row.channel_enabled),
     agent_type: computeAgentType(row.command, is_operator),
   };
 }
@@ -165,6 +168,10 @@ function serializeSessionField(key: keyof BackendMetaUpdate, value: unknown): un
   if (key === "allowed_tools") {
     return Array.isArray(value) ? JSON.stringify(value) : null;
   }
+  // Bug: b5aba0e — boolean fields stored as INTEGER in SQLite
+  if (key === "channel_enabled") {
+    return value ? 1 : 0;
+  }
   return value;
 }
 
@@ -178,6 +185,8 @@ function readNumber(value: unknown): number {
 
 export class SessionManager {
   private sessions: Map<string, AgenticBackend> = new Map();
+  // Bug: 7ab2f3e — Track channel bridge handles for cleanup
+  private channelBridges: Map<string, ChannelBridgeHandle> = new Map();
   private logger: Logger;
   private sessionRegistry: SessionRegistry | null;
 
@@ -236,13 +245,14 @@ export class SessionManager {
 
     const provider_session_id = input.provider_session_id ?? null;
     const resume_at_message = input.resume_at_message ?? null;
+    const channel_enabled = input.channel_enabled ? 1 : 0;
 
     db.prepare(
       `INSERT INTO console_sessions
          (id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
           status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
-          backend_type, allowed_tools, mandible_session_id, resume_at_message)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          backend_type, allowed_tools, mandible_session_id, resume_at_message, channel_enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       input.label,
@@ -261,7 +271,8 @@ export class SessionManager {
       backend_type,
       allowed_tools ? JSON.stringify(allowed_tools) : null,
       input.mandible_session_id ?? null,
-      resume_at_message
+      resume_at_message,
+      channel_enabled
     );
 
     const session = rowToSession({
@@ -288,6 +299,7 @@ export class SessionManager {
       allowed_tools: allowed_tools ? JSON.stringify(allowed_tools) : null,
       mandible_session_id: input.mandible_session_id ?? null,
       resume_at_message,
+      channel_enabled,
     });
 
     // Bug: 61bee4e — Store preset associations and pass presetIds to backend
@@ -313,6 +325,12 @@ export class SessionManager {
     // Bug: 61bee4e — If presetIds are set, update the SDK backend options
     if (input.presetIds && input.presetIds.length > 0 && backend instanceof SDKBackend) {
       backend.updateOptions({ presetIds: input.presetIds });
+    }
+
+    // Bug: 790433d — If presetIds are set on a PTY session, pass them so the
+    // preset union is appended at launch via --append-system-prompt
+    if (input.presetIds && input.presetIds.length > 0 && backend instanceof PTYBackend) {
+      backend.setPresetIds(input.presetIds);
     }
 
     this.sessions.set(id, backend);
@@ -341,6 +359,12 @@ export class SessionManager {
   delete(id: string): void {
     const session = this.requireSession(id);
     session.destroy();
+    // Bug: 7ab2f3e — Clean up channel bridge if present
+    const bridge = this.channelBridges.get(id);
+    if (bridge) {
+      bridge.dispose();
+      this.channelBridges.delete(id);
+    }
     getDb().prepare("DELETE FROM console_sessions WHERE id = ?").run(id);
     this.sessions.delete(id);
     broadcast("console:session:deleted", { id });
@@ -519,6 +543,16 @@ export class SessionManager {
   }
 
   close(): void {
+    // Bug: 7ab2f3e — Dispose all channel bridges before destroying sessions
+    for (const bridge of this.channelBridges.values()) {
+      try {
+        bridge.dispose();
+      } catch {
+        // Best effort
+      }
+    }
+    this.channelBridges.clear();
+
     for (const session of this.sessions.values()) {
       try {
         session.destroy();
@@ -582,6 +616,21 @@ export class SessionManager {
         request,
       });
     });
+
+    // Bug: 7ab2f3e — Wire channel event bridge for PTY backends with a
+    // mandible_session_id. The bridge listens for ChannelRegistry events
+    // and injects them into the backend's stream. Handles late registration
+    // (channel session may not exist yet when the PTY starts) with a 30s
+    // timeout. Non-channel PTY sessions are unaffected — the bridge simply
+    // never receives events for their session ID.
+    if (backend instanceof PTYBackend && backend.meta.mandible_session_id) {
+      const handle = bridgeChannelEvents(
+        backend,
+        backend.meta.mandible_session_id,
+        this.logger,
+      );
+      this.channelBridges.set(backend.id, handle);
+    }
   }
 
   private applyMetaUpdate(id: string, fields: BackendMetaUpdate): void {

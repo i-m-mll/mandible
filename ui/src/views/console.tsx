@@ -6,7 +6,7 @@ import { ConsoleSubTabBar } from '../components/console/ConsoleSubTabBar';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 
-type ViewMode = 'terminal' | 'rich';
+type ViewMode = 'terminal' | 'rich' | 'events';
 
 type ConsoleViewProps = {
   sessions: ConsoleSession[];
@@ -17,7 +17,8 @@ type ConsoleViewProps = {
     label: string;
     backend: string;
     kind: string;
-    backend_type: 'pty' | 'sdk';
+    backend_type: 'pty' | 'sdk' | 'spawn';
+    channel_enabled?: boolean;
     presetIds?: string[];
   }) => void;
   isActive: boolean;
@@ -137,6 +138,7 @@ export function ConsoleView({
               viewMode={getViewMode(session.id)}
               onViewModeChange={(mode) => handleViewModeChange(session.id, mode)}
               resumeAtMessage={session.resume_at_message}
+              channelEnabled={!!session.channel_enabled}
             />
           ))
         )}
