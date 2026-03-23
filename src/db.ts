@@ -798,6 +798,14 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_runtime_patches_source
         ON runtime_patches(source)`,
     ]
+  },
+  {
+    version: 48,
+    name: "console_channel_enabled",
+    // Bug: b5aba0e — channel-enabled PTY sessions: add channel_enabled flag
+    statements: [
+      `ALTER TABLE console_sessions ADD COLUMN channel_enabled INTEGER NOT NULL DEFAULT 0`,
+    ]
   }
 ];
 

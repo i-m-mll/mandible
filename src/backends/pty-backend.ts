@@ -557,6 +557,10 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       if (this.meta.provider_session_id) {
         sanitized.push("--resume", this.meta.provider_session_id);
       }
+      // Bug: b5aba0e — channel-enabled PTY: inject MCP channel server flag
+      if (this.meta.channel_enabled) {
+        sanitized.push("--dangerously-load-development-channels", "server:mandible");
+      }
       return sanitized;
     }
     if (this.meta.command === "gemini") {
@@ -597,6 +601,10 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       cleaned[k] = v;
     }
     Object.assign(cleaned, extraEnv);
+    // Bug: b5aba0e — channel-enabled PTY: expose session ID for channel server discovery
+    if (this.meta.channel_enabled) {
+      cleaned["MANDIBLE_SESSION_ID"] = this.meta.mandible_session_id ?? this.id;
+    }
     return cleaned;
   }
 

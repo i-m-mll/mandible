@@ -43,6 +43,7 @@ type ConsoleSession = {
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
   resume_at_message?: string | null;
+  channel_enabled?: boolean;
 };
 
 export type { ConsoleSession };

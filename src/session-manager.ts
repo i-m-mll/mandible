@@ -50,6 +50,7 @@ interface ConsoleSessionRow {
   allowed_tools: string | null;
   mandible_session_id: string | null;
   resume_at_message: string | null;
+  channel_enabled: number;
 }
 
 interface ConsoleSessionUsageRow {
@@ -145,6 +146,7 @@ function rowToSession(row: ConsoleSessionRow): ConsoleSession {
     allowed_tools: parseAllowedTools(row.allowed_tools),
     mandible_session_id: row.mandible_session_id ?? null,
     resume_at_message: row.resume_at_message ?? null,
+    channel_enabled: Boolean(row.channel_enabled),
     agent_type: computeAgentType(row.command, is_operator),
   };
 }
@@ -164,6 +166,10 @@ function stripModelArgs(args: string[]): string[] {
 function serializeSessionField(key: keyof BackendMetaUpdate, value: unknown): unknown {
   if (key === "allowed_tools") {
     return Array.isArray(value) ? JSON.stringify(value) : null;
+  }
+  // Bug: b5aba0e — boolean fields stored as INTEGER in SQLite
+  if (key === "channel_enabled") {
+    return value ? 1 : 0;
   }
   return value;
 }
@@ -236,13 +242,14 @@ export class SessionManager {
 
     const provider_session_id = input.provider_session_id ?? null;
     const resume_at_message = input.resume_at_message ?? null;
+    const channel_enabled = input.channel_enabled ? 1 : 0;
 
     db.prepare(
       `INSERT INTO console_sessions
          (id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
           status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
-          backend_type, allowed_tools, mandible_session_id, resume_at_message)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          backend_type, allowed_tools, mandible_session_id, resume_at_message, channel_enabled)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       input.label,
@@ -261,7 +268,8 @@ export class SessionManager {
       backend_type,
       allowed_tools ? JSON.stringify(allowed_tools) : null,
       input.mandible_session_id ?? null,
-      resume_at_message
+      resume_at_message,
+      channel_enabled
     );
 
     const session = rowToSession({
@@ -288,6 +296,7 @@ export class SessionManager {
       allowed_tools: allowed_tools ? JSON.stringify(allowed_tools) : null,
       mandible_session_id: input.mandible_session_id ?? null,
       resume_at_message,
+      channel_enabled,
     });
 
     // Bug: 61bee4e — Store preset associations and pass presetIds to backend
