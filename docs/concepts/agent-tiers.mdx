@@ -1,0 +1,111 @@
+# Agent tiers
+
+Mandible manages agents at four tiers of integration. Each tier reflects how much control and visibility Mandible has over the agent process. The tiers aren't a quality ranking --- they're a practical distinction based on the connection method.
+
+## Tier overview
+
+### SDK (first-class)
+
+**Connection**: Spawned by Mandible's Console via the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`).
+
+The SDK backend starts a Claude instance as a child process with a structured JSON event stream. Every event --- thinking blocks, tool calls, tool results, content blocks --- is captured, parsed, and stored. Mandible has full lifecycle control: start, stop, abort, resume.
+
+This is the intended primary workflow. All new capabilities (permission gating, cost tracking, conversation branching, work unit assignment, auto-resume) target SDK sessions first.
+
+**Key details**:
+- Backend type: `sdk`
+- Event format: Claude Agent SDK structured stream events
+- Lifecycle: full control (start/stop/abort/resume)
+- Rich data: thinking blocks, tool calls with inputs and results, content blocks, token usage
+- Permission gating: tool calls can require dashboard approval before execution
+- Conversation branching: resume from any message in the conversation DAG
+- Provider session ID: tracked for conversation continuity
+
+### Channel (1.5-class)
+
+**Connection**: External Claude CLI sessions connected via `claude --channels server:mandible`.
+
+The MCP channel server runs as a stdio subprocess spawned by Claude Code. It's a stateless adapter --- all state lives in the Mandible daemon. The channel server exposes Mandible operations as MCP tools and forwards SSE events as MCP notifications.
+
+Channel sessions can't be started or stopped by Mandible (the user controls the CLI process), but they get rich tool-mediated access to Mandible's features: inbox checking, issue listing, work unit requests, auth submission, and status reporting.
+
+**Key details**:
+- Backend type: N/A (external process, not managed by Console)
+- Communication: MCP protocol over stdio (JSON-RPC)
+- Lifecycle: none (external process)
+- Tools available: `mandible_check_inbox`, `mandible_report_status`, `mandible_submit_auth`, `mandible_get_issues`, `mandible_request_work`
+- Notifications: `auth_resolved`, `inbox_item`, `work_assigned`, `work_updated`
+- Liveness: derived from tool call timestamps (`channel_last_tool_call`)
+- Visual indicator: purple link badge in the Sessions tab
+
+### PTY (second-class)
+
+**Connection**: Spawned by Mandible's Console via `node-pty`.
+
+PTY sessions are pseudo-terminal processes. Mandible starts the command, captures stdout/stderr through the PTY, and streams it to xterm.js over WebSocket. Process-level signals (SIGTERM, SIGINT) are the only lifecycle control.
+
+Used for agents without SDK support (Codex, Gemini), shell sessions, and any command-line tool you want to run from the dashboard.
+
+**Key details**:
+- Backend type: `pty`
+- Communication: WebSocket (terminal I/O)
+- Lifecycle: process-level (start/stop via signals)
+- Terminal: full ANSI/VT100 via xterm.js, with 512 KB ring buffer history
+- Auto-restart: configurable (the operator session uses this)
+- Resize: terminal dimensions synced between dashboard and PTY
+
+### External (third-class)
+
+**Connection**: Discovered via process scan or registered by shell hooks.
+
+Mandible scans running processes for known agent patterns (`claude`, `codex`, `gemini`) and matches them to registered repository worktrees. Sessions can also self-register via the HTTP API (which is what `mandible wrap` does).
+
+External sessions have the least visibility. Mandible knows the PID, working directory, and branch --- enough for liveness tracking and dashboard display, but nothing about what the agent is actually doing.
+
+**Key details**:
+- Backend type: N/A (external process, not managed by Console)
+- Communication: HTTP API (registration), process scan (discovery)
+- Lifecycle: none (PID monitoring only)
+- Data: PID, working directory, branch, terminal multiplexer metadata
+- The `mandible wrap` command improves this with session ID generation, multiplexer detection, and orphan-watcher cleanup
+
+## Feature matrix
+
+| Feature | SDK | Channel | PTY | External |
+|---|:---:|:---:|:---:|:---:|
+| Start/stop from dashboard | Yes | -- | Yes | -- |
+| Structured events | Yes | -- | -- | -- |
+| Tool call tracking | Yes | Yes | -- | -- |
+| Permission gating | Yes | -- | -- | -- |
+| Cost tracking (tokens) | Yes | -- | -- | -- |
+| Conversation branching | Yes | -- | -- | -- |
+| Terminal rendering | Yes | -- | Yes | -- |
+| Inbox access | Yes | Yes | -- | -- |
+| Work unit assignment | Yes | Yes | -- | -- |
+| Auth submission | Yes | Yes | -- | -- |
+| Issue browsing | Yes | Yes | -- | -- |
+| Status reporting | Yes | Yes | -- | -- |
+| PID liveness | Yes | Yes | Yes | Yes |
+| Branch detection | Yes | Yes | Yes | Yes |
+| Session discovery | -- | -- | -- | Yes |
+| Auto-restart | -- | -- | Yes | -- |
+
+"Yes" means the feature works at that tier. "--" means it's not available or not applicable.
+
+## Design philosophy
+
+The tier system follows a principle of **graceful degradation**: the more integration surface an agent offers, the more Mandible can do with it. But every agent gets at least basic tracking.
+
+Feature development targets SDK first. If a feature can be exposed through MCP tools, it's added to the Channel tier. PTY sessions get whatever can be inferred from terminal output. External sessions get PID monitoring.
+
+The practical implication: if you're starting a new workflow, use SDK sessions. If you have existing Claude CLI sessions you want to connect, use the Channel. For everything else, Mandible will do what it can.
+
+## The upgrade path
+
+Sessions naturally upgrade:
+
+- **External to Channel**: Restart the Claude session with `--channels server:mandible`
+- **Any to SDK**: Use "Resume Work" from the Issues tab, which always spawns an SDK session
+- **PTY to SDK**: For Claude sessions, recreate as SDK type in the Console
+
+There's no downgrade. Once you have richer integration, there's no reason to go back.

@@ -1,0 +1,110 @@
+# First run
+
+After [installing](/docs/getting-started/installation) and building Mandible, start the daemon and take a tour of the dashboard.
+
+## Starting the daemon
+
+```bash
+npm start
+# or directly:
+node dist/index.js
+```
+
+The daemon logs structured JSON to stderr. On startup you'll see:
+
+```
+{"level":"info","message":"server_started","time":"...","port":19420}
+```
+
+Open the dashboard at [http://localhost:19420](http://localhost:19420).
+
+## What happens on first start
+
+The daemon performs several initialization steps:
+
+1. **Database creation** --- If `~/.cache/mandible/mandible.db` doesn't exist, it creates the database and runs all schema migrations (currently 31 migrations covering sessions, auth requests, conversations, work units, console sessions, switchboard, and more).
+
+2. **Session discovery** --- Scans running processes for known agent patterns (Claude, Codex, Gemini) and matches them against registered repository worktrees. Any running agents found are registered as sessions.
+
+3. **Conversation ingestion** --- Sets up file watchers on `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.gemini/tmp/` to detect new and changed conversation transcripts. Existing transcripts are indexed on first run.
+
+4. **Issue scanning** --- After a 2-second delay (to avoid blocking startup), scans all registered repositories for git-bug issues. Rescans every 5 minutes thereafter.
+
+5. **Reaper timer** --- Starts the periodic dead-session reaper, which checks PIDs and marks vanished sessions as dead.
+
+6. **Preset import** --- If `~/.claude/CLAUDE.md` exists, imports it into the presets system (a convention management feature for agent instructions).
+
+## Dashboard tour
+
+The dashboard is a Preact single-page app with tab-based navigation. The primary tabs are:
+
+### Sessions
+
+The default view. Shows all tracked agent sessions in a tree structure (parent sessions with their children). Each session card shows:
+
+- **Status indicator** --- green (active), gray (ended), red (dead)
+- **App type** --- Claude, Codex, Gemini, or a custom label
+- **Branch and working directory** --- what the agent is working on
+- **Task** --- a user-set description of what the session is doing
+- **Terminal navigation** --- "Go to" button to jump to the session's Zellij/tmux pane
+- **Actions** --- pin (protect from reaper), kill, navigate
+
+### Auth
+
+The auth queue. Shows pending merge requests submitted by agents, with:
+
+- **Diff summary** --- files changed, additions, deletions
+- **Spec content** --- the agent's description of the work
+- **Commit message** --- what will go into the merge commit
+- **Linked issues** --- git-bug issues that will be auto-closed on merge
+- **Approve/Reject** --- triggers the merge with your signing key, or rejects with a reason
+
+Completed and rejected requests stay in the history below the queue.
+
+### Chat History
+
+The conversation browser. Lists all ingested transcripts with:
+
+- **Filtering** --- by source (Claude/Codex/Gemini), model, branch, starred status
+- **Search** --- title search across all conversations
+- **Conversation detail** --- renders all blocks (user messages, assistant responses, thinking, tool calls, tool results) with syntax highlighting
+- **Export** --- Markdown, MDX, or JSON with block-type filtering
+- **Starring** --- mark conversations for later reference, with optional notes
+
+### Console
+
+The embedded terminal manager. Includes:
+
+- **Operator session** --- a persistent shell session (auto-restarts on exit)
+- **On-demand sessions** --- spawn Claude, Codex, or shell sessions with full PTY emulation
+- **SDK sessions** --- Claude sessions backed by the Agent SDK with structured event streams, permission gating, and cost tracking
+- **Rich chat view** --- for SDK sessions, a parallel structured view alongside the terminal showing thinking blocks, tool calls, and content blocks
+
+### Issues
+
+Aggregated git-bug issues from all registered repositories. Grouped by repo with open/closed counts. Click through to see issue details, comments, labels, and linked sessions.
+
+### Additional tabs (overflow menu)
+
+- **Projects** --- registered git repositories with branch lists, ahead/behind counts, dirty state, worktree detection
+- **Graph** --- D3 force-directed knowledge graph connecting sessions, issues, and auth requests
+- **Review** --- side-by-side or unified diff viewer for any repo/base/head combination
+- **Inbox** --- continuations (session handoff notes), auth results, and open issues needing attention
+- **Switchboard** --- symlink pairing manager with setup/teardown hooks
+- **Settings** --- reaper timeouts, notification preferences, theme, quiet hours, pre-tool hooks
+
+## Registering repositories
+
+Mandible discovers repositories automatically from the working directories of tracked sessions. When an agent runs in a git repository, that repo is added to the project registry.
+
+You can also register repos manually by adding an agent session in any git directory --- the repo will be picked up on the next work scan.
+
+Once a repo is registered, Mandible tracks its branches, worktrees, ahead/behind counts, and dirty state. If the repo uses git-bug, its issues are indexed and appear in the Issues tab.
+
+## Process lifecycle
+
+The daemon writes a PID file on startup and removes it on shutdown. It handles `SIGINT` and `SIGTERM` gracefully, closing WebSocket connections, stopping file watchers, flushing the database, and shutting down the HTTP server.
+
+A self-health-check runs every 30 seconds to verify the server is still accepting connections. If the listen socket dies silently (which can happen when OS-level errors don't emit Node.js events), the daemon exits for supervisor restart.
+
+If you need to run Mandible as a persistent service, any process supervisor (launchd on macOS, systemd on Linux) works. Point it at `node dist/index.js` in the Mandible directory.

@@ -1,0 +1,114 @@
+# Installation
+
+Mandible runs as a Node.js daemon on your workstation. There's no hosted version --- it's designed to be local-first, managing agent sessions and auth requests for repositories on your machine.
+
+## System requirements
+
+- **Node.js** 18 or later (uses ESM, `node:` built-in imports, and `structuredClone`)
+- **macOS** (primary target; Linux should work but is untested)
+- **git** (for branch scanning, worktree detection, and auth merges)
+- **git-bug** (optional but recommended; provides the local issue tracking that Mandible indexes)
+- **A C++ toolchain** for native modules (`node-pty` and `better-sqlite3` compile from source)
+
+### Optional
+
+- **YubiKey or GPG signing key** for authenticated merges (the auth queue works without one, but merges won't be cryptographically signed)
+- **Zellij or tmux** for terminal multiplexer integration (session navigation, pane discovery)
+- **Tauri CLI** (`@tauri-apps/cli`) if you want the native macOS desktop wrapper
+
+## Clone and build
+
+```bash
+git clone <repo-url> mandible
+cd mandible
+npm install
+npm run build
+```
+
+The install step compiles two native modules: `better-sqlite3` (SQLite bindings) and `node-pty` (pseudo-terminal support for the Console). A `postinstall` script runs `scripts/fix-pty-permissions.js` to set correct permissions on the `node-pty` binary.
+
+The build step does three things:
+
+1. Compiles the daemon TypeScript to `dist/` via `tsc`
+2. Compiles the MCP channel server TypeScript to `dist/channel-server/`
+3. Bundles the Preact SPA into `ui/dist/` via esbuild
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `MANDIBLE_PORT` | `19420` | HTTP/SSE/WebSocket port the daemon listens on |
+| `MANDIBLE_DB` | `~/.cache/mandible/mandible.db` | Path to the SQLite database |
+| `LOG_LEVEL` | `info` | Logging verbosity: `debug`, `info`, `warn`, `error` |
+
+The daemon binds to `127.0.0.1` only --- it is not accessible from other machines on the network.
+
+## Verify the installation
+
+```bash
+# Start the daemon
+npm start
+
+# In another terminal, check the health endpoint
+curl http://localhost:19420/api/health
+```
+
+You should see a JSON response like:
+
+```json
+{
+  "status": "ok",
+  "uptime": 1.234,
+  "version": "0.1.0",
+  "startup_commit": {
+    "hash": "bd1a661...",
+    "summary": "last commit message",
+    "date": "2026-03-22 ..."
+  }
+}
+```
+
+The `startup_commit` field shows the Mandible commit that's currently running, useful for verifying you're on the right version after an update.
+
+## Database location
+
+On first start, the daemon creates a SQLite database at `~/.cache/mandible/mandible.db`. This database stores:
+
+- Session records (active, ended, dead)
+- Auth request queue and history
+- Conversation transcripts (gzip-compressed)
+- Work unit state
+- Console session configuration
+- Settings and preferences
+- Switchboard pairings
+- Push history
+
+The database uses WAL (Write-Ahead Logging) mode for fast concurrent reads from the dashboard while the daemon writes. Schema migrations are applied automatically on startup --- you never need to run them manually.
+
+## Development mode
+
+For working on Mandible itself:
+
+```bash
+# Watch both TypeScript and UI for changes
+npm run dev
+
+# Or watch just the UI (faster iteration on dashboard changes)
+npm run build:watch
+
+# Run tests
+npm test
+```
+
+The `dev` command runs `tsc --watch` and `esbuild --watch` in parallel. UI changes are rebuilt in milliseconds; TypeScript changes require a daemon restart to take effect.
+
+## Tauri desktop wrapper (optional)
+
+Mandible includes an optional Tauri shell that wraps the dashboard in a native macOS window:
+
+```bash
+npm run tauri       # Development mode
+npm run tauri:build # Build the .app bundle
+```
+
+The Tauri wrapper is currently a thin launcher --- it opens a WebView pointed at the daemon URL. The daemon must be running separately. A future version will bundle the daemon as a sidecar process.

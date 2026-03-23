@@ -1,0 +1,134 @@
+# Agent integration
+
+Mandible interacts with AI coding agents at four tiers of integration, each with different capabilities and trade-offs. This page gives you enough to get started with each one. For the full feature matrix, see [Agent tiers](/docs/concepts/agent-tiers).
+
+## The four tiers at a glance
+
+| Tier | How it connects | Lifecycle control | Rich data | Use case |
+|---|---|---|---|---|
+| **SDK** | Console spawns via Agent SDK | Full (start/stop/abort/resume) | Structured events, permissions, costs | Primary workflow |
+| **Channel** | `claude --channels server:mandible` | None (external process) | Tools, inbox, work units | Existing CLI sessions |
+| **PTY** | Console spawns via node-pty | Process-level (start/stop/signal) | Terminal I/O | Codex, Gemini, shell |
+| **External** | Process scan + registration hooks | None | PID liveness only | Auto-discovered sessions |
+
+## SDK sessions (first-class)
+
+The richest integration. You spawn these from the Console tab in the dashboard.
+
+SDK sessions use the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) to start a Claude instance with full structured event streaming. Mandible receives every event --- thinking blocks, tool calls, tool results, content blocks --- and renders them in a rich chat view alongside the terminal.
+
+What you get:
+
+- **Lifecycle control** --- start, stop, abort, and resume from the dashboard
+- **Permission gating** --- tool calls can require approval before execution
+- **Cost tracking** --- input/output token counts per turn
+- **Conversation branching** --- resume from any message in the conversation tree
+- **Structured events** --- every content block, tool call, and thinking step is individually rendered and searchable
+- **Work unit integration** --- sessions can be assigned to work units and report progress
+
+To spawn an SDK session, open the Console tab and create a new session with the backend type set to `sdk`.
+
+## Channel sessions (1.5-class)
+
+For Claude Code sessions you've already started in your terminal. The MCP channel server bridges your running session to Mandible without requiring you to restart it.
+
+### Connecting
+
+Start (or restart) Claude Code with the channel flag:
+
+```bash
+claude --channels server:mandible
+```
+
+This launches Mandible's MCP channel server as a stdio subprocess. The channel server:
+
+1. Registers the session with Mandible's daemon
+2. Exposes Mandible operations as MCP tools the agent can call
+3. Forwards SSE events from Mandible as MCP notifications
+
+### Available MCP tools
+
+Once connected, the agent has access to these tools:
+
+- **`mandible_check_inbox`** --- Check for pending items: work unit assignments, auth results, continuations from previous sessions
+- **`mandible_report_status`** --- Report current work status (visible in the dashboard)
+- **`mandible_submit_auth`** --- Submit an auth request for a protected-branch merge
+- **`mandible_get_issues`** --- List open issues available for work
+- **`mandible_request_work`** --- Request a work-unit assignment from Mandible
+
+### Notifications
+
+The channel server subscribes to Mandible's SSE event stream and forwards relevant events as MCP notifications:
+
+- `auth_resolved` --- An auth request has been approved or rejected
+- `inbox_item` --- A new item in the session's inbox
+- `work_assigned` --- A work unit has been assigned
+- `work_updated` --- A work unit's state has changed
+
+### Liveness tracking
+
+Tool invocations are recorded for liveness tracking. Channel-connected sessions appear in the Sessions tab with a link badge, and their last tool call timestamp is used to determine if the session is still active.
+
+## PTY sessions (second-class)
+
+For agents that don't have SDK or MCP channel support --- Codex, Gemini, custom scripts, or plain shell sessions.
+
+PTY sessions are spawned from the Console tab with the backend type set to `pty`. Mandible starts the command in a pseudo-terminal (via `node-pty`), streams the output to xterm.js in the dashboard over WebSocket, and provides process-level lifecycle control.
+
+What you get:
+
+- **Terminal rendering** --- full ANSI/VT100 support via xterm.js
+- **WebSocket streaming** --- output is streamed in real-time with a 512 KB ring buffer for history
+- **Process control** --- start, stop (SIGTERM/SIGINT), restart
+- **Resize** --- terminal dimensions are synchronized between the dashboard and the PTY
+- **Auto-restart** --- optionally restart the process on exit (useful for operator sessions)
+
+What you don't get: structured events, tool-level tracking, work unit integration, or permission gating. The agent is a black box --- Mandible sees terminal output and nothing more.
+
+## External sessions (third-class)
+
+Sessions that Mandible discovers on its own, without any explicit integration from the agent side.
+
+### Process discovery
+
+The session discovery system periodically scans running processes for known agent patterns:
+
+- Processes matching `claude` are registered as Claude sessions
+- Processes matching `codex` are registered as Codex sessions
+- Processes matching `gemini` are registered as Gemini sessions
+
+Discovered processes are matched against registered repository worktrees by their working directory. If a process is running in a known worktree, it's registered as an active session.
+
+### The `mandible wrap` command
+
+For slightly better tracking of external sessions, wrap the agent invocation:
+
+```bash
+mandible wrap -- claude
+mandible wrap -- codex exec "fix the bug"
+mandible wrap --app codex --id my-session-123 -- codex
+```
+
+The wrapper:
+
+1. Generates (or accepts) a session ID
+2. Registers the session with Mandible on startup
+3. Detects the terminal multiplexer (Zellij/tmux) for navigation metadata
+4. Sets `MANDIBLE_SESSION_ID` in the environment for hooks to discover
+5. Sets `AI_AGENT_SIGNING=1` so the shell uses the software signing key instead of YubiKey
+6. Spawns an orphan watcher process that deregisters the session when the agent exits
+7. Execs the wrapped command (full TTY passthrough)
+
+### Session registration hooks
+
+Claude Code supports `UserPromptSubmit` and `PreToolUse` hooks. Mandible's hook scripts (in the `hooks/` directory) can register sessions, check inbox, and enforce workflow conventions --- but this integration is best-effort and depends on the agent's hook configuration.
+
+## Upgrading between tiers
+
+The tiers aren't permanent assignments. A session that starts as External (discovered via process scan) can be "upgraded" in several ways:
+
+- **External to Channel**: Restart the Claude session with `--channels server:mandible`
+- **Any tier to SDK**: Use "Resume Work" from the Issues tab --- this always spawns a new SDK session, regardless of what the previous session was
+- **PTY to SDK**: Create a new Console session with `sdk` backend type for the same work
+
+The general recommendation: use SDK sessions for new work when possible, Channel for existing CLI sessions you want to connect, PTY for non-Claude agents, and let External handle everything else automatically.
