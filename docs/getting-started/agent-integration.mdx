@@ -40,11 +40,7 @@ Start (or restart) Claude Code with the channel flag:
 claude --channels server:mandible
 ```
 
-This launches Mandible's MCP channel server as a stdio subprocess. The channel server:
-
-1. Registers the session with Mandible's daemon
-2. Exposes Mandible operations as MCP tools the agent can call
-3. Forwards SSE events from Mandible as MCP notifications
+This connects the session to Mandible via the MCP channel server. Once connected, the session is registered with Mandible, gains access to Mandible tools, and receives real-time notifications.
 
 ### Available MCP tools
 
@@ -67,7 +63,7 @@ The channel server subscribes to Mandible's SSE event stream and forwards releva
 
 ### Liveness tracking
 
-Tool invocations are recorded for liveness tracking. Channel-connected sessions appear in the Sessions tab with a link badge, and their last tool call timestamp is used to determine if the session is still active.
+Channel-connected sessions appear in the Sessions tab with a link badge. Mandible tracks when the session last used a tool to determine whether it's still active.
 
 ## PTY sessions (second-class)
 
@@ -91,13 +87,7 @@ Sessions that Mandible discovers on its own, without any explicit integration fr
 
 ### Process discovery
 
-The session discovery system periodically scans running processes for known agent patterns:
-
-- Processes matching `claude` are registered as Claude sessions
-- Processes matching `codex` are registered as Codex sessions
-- Processes matching `gemini` are registered as Gemini sessions
-
-Discovered processes are matched against registered repository worktrees by their working directory. If a process is running in a known worktree, it's registered as an active session.
+Mandible periodically scans running processes for known agent patterns (Claude, Codex, Gemini). Discovered processes are matched to registered repositories by their working directory and automatically registered as sessions.
 
 ### The `mandible wrap` command
 
@@ -109,15 +99,7 @@ mandible wrap -- codex exec "fix the bug"
 mandible wrap --app codex --id my-session-123 -- codex
 ```
 
-The wrapper:
-
-1. Generates (or accepts) a session ID
-2. Registers the session with Mandible on startup
-3. Detects the terminal multiplexer (Zellij/tmux) for navigation metadata
-4. Sets `MANDIBLE_SESSION_ID` in the environment for hooks to discover
-5. Sets `AI_AGENT_SIGNING=1` so the shell uses the software signing key instead of YubiKey
-6. Spawns an orphan watcher process that deregisters the session when the agent exits
-7. Execs the wrapped command (full TTY passthrough)
+The wrapper registers the session with Mandible on startup, detects the terminal multiplexer for navigation, configures the environment for agent signing, and automatically deregisters the session when the agent exits. The wrapped command runs with full TTY passthrough.
 
 ### Session registration hooks
 

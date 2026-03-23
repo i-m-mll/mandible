@@ -25,7 +25,7 @@ This is the intended primary workflow. All new capabilities (permission gating, 
 
 **Connection**: External Claude CLI sessions connected via `claude --channels server:mandible`.
 
-The MCP channel server runs as a stdio subprocess spawned by Claude Code. It's a stateless adapter --- all state lives in the Mandible daemon. The channel server exposes Mandible operations as MCP tools and forwards SSE events as MCP notifications.
+The MCP channel server bridges Claude Code to Mandible. It exposes Mandible operations as MCP tools the agent can call and forwards real-time events as MCP notifications.
 
 Channel sessions can't be started or stopped by Mandible (the user controls the CLI process), but they get rich tool-mediated access to Mandible's features: inbox checking, issue listing, work unit requests, auth submission, and status reporting.
 
@@ -35,7 +35,7 @@ Channel sessions can't be started or stopped by Mandible (the user controls the 
 - Lifecycle: none (external process)
 - Tools available: `mandible_check_inbox`, `mandible_report_status`, `mandible_submit_auth`, `mandible_get_issues`, `mandible_request_work`
 - Notifications: `auth_resolved`, `inbox_item`, `work_assigned`, `work_updated`
-- Liveness: derived from tool call timestamps (`channel_last_tool_call`)
+- Liveness: derived from tool call timestamps
 - Visual indicator: purple link badge in the Sessions tab
 
 ### PTY (second-class)

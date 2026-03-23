@@ -105,6 +105,6 @@ Once a repo is registered, Mandible tracks its branches, worktrees, ahead/behind
 
 The daemon writes a PID file on startup and removes it on shutdown. It handles `SIGINT` and `SIGTERM` gracefully, closing WebSocket connections, stopping file watchers, flushing the database, and shutting down the HTTP server.
 
-A self-health-check runs every 30 seconds to verify the server is still accepting connections. If the listen socket dies silently (which can happen when OS-level errors don't emit Node.js events), the daemon exits for supervisor restart.
+A periodic self-health-check verifies the server is still accepting connections. If the check fails, the daemon exits so a process supervisor can restart it.
 
 If you need to run Mandible as a persistent service, any process supervisor (launchd on macOS, systemd on Linux) works. Point it at `node dist/index.js` in the Mandible directory.

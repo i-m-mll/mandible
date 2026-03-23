@@ -41,42 +41,13 @@ The daemon is a Node.js process that serves the HTTP API, the SSE event stream, 
 
 ### No framework
 
-There's no Express, Fastify, or Koa. The HTTP server is a custom router implementation that compiles route patterns (with `:param` extraction) into regexes at registration time. Each module registers its routes against a shared `Router` instance during startup. The router handles JSON body parsing for POST/PATCH/PUT/DELETE methods, query string extraction, and wraps responses in an Express-like `res.status(code).json(payload)` API.
+The HTTP server uses a lightweight custom router rather than Express or similar frameworks. Each feature module registers its routes at startup, and the router handles parameter extraction, body parsing, and JSON responses.
 
-### Startup sequence
+### Startup and shutdown
 
-When `startDaemon()` runs:
+On startup, the daemon opens the database, starts the HTTP server, and initializes all background services: conversation ingestion, session discovery, issue scanning, the dead-session reaper, the work-unit reconciler, and the backup scheduler. Each service starts in the background without blocking the server.
 
-1. Opens the SQLite database (creates it if needed, runs migrations)
-2. Creates the SSE manager and starts the 15-second heartbeat
-3. Registers all route modules (auth, sessions, chats, work, issues, inbox, console, settings, switchboard, graph, work-units, webhooks, runtime, conversations, backup, presets, auth-hooks)
-4. Creates the session manager (console session lifecycle) and wires up late-bound dependencies
-5. Starts the HTTP server, writes the PID file
-6. Initializes the console session manager (reconciles DB state, restarts operator session if configured)
-7. Starts conversation ingestion file watchers (chokidar)
-8. Runs a startup issue scan across all repos (deferred by 2 seconds)
-9. Runs a startup session discovery (process scan for agents)
-10. Clears stale channel metadata from a previous daemon run
-11. Imports `~/.claude/CLAUDE.md` into the presets system (if changed)
-12. Starts the reaper timer (periodic dead session cleanup)
-13. Starts the channel registry pruner (every 5 minutes)
-14. Starts the work unit reconciler (every 60 seconds)
-15. Starts the backup scheduler
-
-### Shutdown
-
-The daemon handles `SIGINT` and `SIGTERM` gracefully. On shutdown it:
-
-- Closes console sessions (stops PTY processes)
-- Closes all WebSocket connections
-- Closes all SSE connections
-- Stops file watchers, timers, and schedulers
-- Destroys all open HTTP connections (prevents CLOSE_WAIT port lingering)
-- Closes the HTTP server
-- Closes the SQLite database
-- Removes the PID file
-
-A 5-second hard deadline prevents zombie processes if graceful shutdown stalls. A second signal during shutdown forces immediate exit.
+The daemon shuts down gracefully on `SIGINT` or `SIGTERM`, closing connections, stopping background services, and cleaning up the PID file. A hard deadline prevents the process from hanging if graceful shutdown stalls.
 
 ## SQLite
 
@@ -84,36 +55,22 @@ Mandible uses `better-sqlite3` for synchronous database access. The database run
 
 ### Schema migrations
 
-The schema is maintained through numbered migrations in `src/db.ts`. Each migration has a version number, a name, and an array of SQL statements. On startup, the daemon checks the current schema version in the `meta` table and applies any outstanding migrations.
+The schema is maintained through numbered migrations applied automatically on startup. You never need to run migrations manually --- the daemon detects the current version and applies any outstanding changes.
 
-Current schema covers: sessions, auth requests, branches, conversations, conversation blocks, starred chats, console sessions, push history, switchboard pairings, settings, backups, presets, preset nodes, work units, session-issue links, runtime configuration, and auth hooks.
+### Data storage
 
-### Data storage patterns
-
-- **Session records** store PID, working directory, branch, terminal multiplexer metadata, status, and timestamps
-- **Conversations** are stored with gzip-compressed content (blocks are individually compressed in the `conversation_blocks` table) to keep the database compact as transcript history grows
-- **Auth requests** track the full lifecycle: pending, executing, completed/rejected/expired, with diff summaries, specs, commit messages, and execution output
-- **Work units** join issues, branches, and sessions with a state machine (open, committed, resolved, abandoned)
+- **Sessions** --- status, working directory, branch, and liveness metadata
+- **Conversations** --- compressed transcripts with individually stored blocks, keeping the database compact as history grows
+- **Auth requests** --- the full request lifecycle with diffs, specs, and execution output
+- **Work units** --- the join between issues, branches, and sessions with lifecycle state tracking
 
 ## The SPA
 
-The dashboard is a Preact application bundled with esbuild. It uses hash-based routing (`#/sessions`, `#/auth`, `#/console`, etc.) and communicates with the daemon entirely through the HTTP API and SSE event stream.
+The dashboard is a Preact single-page application bundled with esbuild. It uses hash-based routing and communicates with the daemon through the HTTP API and SSE event stream.
 
-### Key UI libraries
+Key libraries: **xterm.js** for terminal emulation, **D3** for the knowledge graph, **diff2html** for diff rendering, and **marked** for Markdown. The SPA rebuilds in milliseconds during development via esbuild's watch mode.
 
-- **Preact** --- lightweight React-compatible framework (3 KB gzipped)
-- **xterm.js** --- terminal emulator for the Console tab, connected via WebSocket
-- **D3** --- force-directed graph rendering for the knowledge graph
-- **diff2html** --- syntax-highlighted diff rendering for the Review tab
-- **marked** + **DOMPurify** --- Markdown rendering with sanitization
-
-### Build pipeline
-
-esbuild bundles the SPA in a single pass. In watch mode, rebuilds complete in milliseconds. The daemon serves the built files from `ui/dist/` as static assets, with `ui/index.html` as the SPA entry point. PWA files (manifest, service worker, icons) are served from `ui/`.
-
-### State management
-
-The SPA uses Preact's built-in state management (hooks, context) rather than an external state library. SSE events are dispatched to an internal event bus, and components subscribe to the event types they care about. This keeps the UI reactive without polling --- when the daemon broadcasts a state change, the relevant component re-renders immediately.
+The UI is fully reactive --- SSE events from the daemon trigger immediate re-renders without polling.
 
 ## Communication protocols
 
@@ -131,7 +88,7 @@ See [Real-time events](/docs/concepts/real-time-events) for the full topic list 
 
 ### WebSocket
 
-WebSocket connections on `/terminal/:sessionId` carry PTY I/O for console sessions. Terminal output from the `node-pty` process streams to connected xterm.js instances in real-time, and keyboard input flows back. A 512 KB ring buffer per session provides scroll-back history for late-connecting clients.
+WebSocket connections carry terminal I/O for console sessions. Terminal output streams to the dashboard in real-time, and keyboard input flows back. A per-session ring buffer provides scroll-back history for clients that connect mid-session.
 
 ## Tauri wrapper
 
@@ -141,8 +98,6 @@ A planned Level 2 integration would bundle the daemon as a Tauri sidecar, starti
 
 ## Process model
 
-Mandible runs as a single Node.js process. There's no clustering or worker threads --- the synchronous SQLite access and the event-driven HTTP server are fast enough for a single-user workstation.
+Mandible runs as a single Node.js process. Background services (session discovery, issue scanning, conversation ingestion, etc.) run on periodic timers within the same process.
 
-Background tasks (session discovery, issue scanning, work unit reconciliation, dead session reaping, channel pruning, conversation ingestion) run on `setInterval` timers with `unref()` so they don't prevent clean process exit.
-
-The one exception to single-process is the Console: PTY sessions are child processes managed by `node-pty`, and SDK sessions are child processes managed by the Claude Agent SDK. These are tracked by the session manager and cleaned up on daemon shutdown.
+The exception is the Console: PTY and SDK sessions are child processes managed by the daemon and cleaned up on shutdown.
