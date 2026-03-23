@@ -4,6 +4,14 @@
     "auth-queue",
     "console",
     "conversations",
-    "presets"
+    "presets",
+    "sessions",
+    "issues",
+    "inbox",
+    "graph",
+    "switchboard",
+    "push-sync",
+    "settings",
+    "other"
   ]
 }

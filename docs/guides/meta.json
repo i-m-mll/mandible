@@ -2,6 +2,7 @@
   "title": "Guides",
   "pages": [
     "auth-workflow",
-    "building-presets"
+    "building-presets",
+    "desktop-app"
   ]
 }
