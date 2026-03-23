@@ -806,6 +806,28 @@ const MIGRATIONS: Migration[] = [
     statements: [
       `ALTER TABLE console_sessions ADD COLUMN channel_enabled INTEGER NOT NULL DEFAULT 0`,
     ]
+  },
+  {
+    // Bug: 790433d — Per-prompt parameter snapshots (keyframe/delta model)
+    version: 49,
+    name: "message_params",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS message_params (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id      TEXT NOT NULL,
+        message_index   INTEGER NOT NULL,
+        model           TEXT,
+        permission_mode TEXT,
+        max_turns       INTEGER,
+        max_cost_usd    REAL,
+        preset_ids      TEXT,
+        allowed_tools   TEXT,
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE(session_id, message_index)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_message_params_session
+        ON message_params(session_id, message_index DESC)`,
+    ]
   }
 ];
 

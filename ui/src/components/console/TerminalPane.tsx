@@ -1338,10 +1338,11 @@ export function TerminalPane({
                       availableTools={availableTools}
                       onModelSaved={setModel}
                     />
-                    {/* Bug: 11f4f47 — Live preset pills in sidebar for SDK sessions */}
-                    {backendType === 'sdk' && (
+                    {/* Bug: 790433d — Preset pills in sidebar for both SDK and PTY sessions */}
+                    {(backendType === 'sdk' || backendType === 'pty') && (
                       <LivePresetPills
                         sessionId={sessionId}
+                        readOnly={backendType !== 'sdk'}
                         onUnionUpdate={({ totalTokens }) => setPresetTokenCount(totalTokens)}
                       />
                     )}

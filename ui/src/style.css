@@ -6068,6 +6068,44 @@ tr:hover .work-actions__trigger {
   text-decoration: underline;
 }
 
+/* Bug: 790433d — preset note below selector */
+.new-session-dialog__preset-note {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-warning, #ffa500);
+  line-height: 1.4;
+}
+
+.new-session-dialog__preset-note--muted {
+  color: var(--text-secondary, rgba(255, 255, 255, 0.45));
+}
+
+/* Bug: 790433d — locked preset pills in sidebar (read-only) */
+.session-controls__lock-icon {
+  font-size: 11px;
+  margin-left: 4px;
+  opacity: 0.6;
+}
+
+.session-controls__preset-readonly {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0;
+}
+
+.session-controls__preset-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.6));
+  cursor: default;
+}
+
 .permission-dialog-overlay {
   position: absolute;
   inset: 0;

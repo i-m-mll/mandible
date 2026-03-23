@@ -327,6 +327,12 @@ export class SessionManager {
       backend.updateOptions({ presetIds: input.presetIds });
     }
 
+    // Bug: 790433d — If presetIds are set on a PTY session, pass them so the
+    // preset union is appended at launch via --append-system-prompt
+    if (input.presetIds && input.presetIds.length > 0 && backend instanceof PTYBackend) {
+      backend.setPresetIds(input.presetIds);
+    }
+
     this.sessions.set(id, backend);
     this.wireBackend(backend);
 
