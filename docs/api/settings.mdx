@@ -1,0 +1,88 @@
+# Settings API
+
+Key-value settings stored in the Mandible database. Settings control daemon behavior, reaper configuration, UI preferences, and backup scheduling.
+
+## Endpoints
+
+### GET /api/settings
+
+Get all settings as a key-value object.
+
+**Response:** `200 OK`
+
+```json
+{
+  "theme": "dark",
+  "reaper_enabled": "true",
+  "reaper_claude_idle_minutes": "30",
+  "protected_branches": "main,develop",
+  "backup.enabled": "true",
+  "backup.interval_hours": "6"
+}
+```
+
+```bash
+curl http://localhost:19420/api/settings
+```
+
+### GET /api/settings/:key
+
+Get a single setting value.
+
+**Response:** `200 OK`
+
+```json
+{ "key": "theme", "value": "dark" }
+```
+
+**Error:** `404` if the key does not exist.
+
+```bash
+curl http://localhost:19420/api/settings/theme
+```
+
+### PUT /api/settings/:key
+
+Create or update a setting. All values are stored as strings.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `value` | string | yes | Setting value |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true, "key": "theme", "value": "dark" }
+```
+
+**Side effects:**
+
+- **Tier 2 settings** (`theme`, `prompt`, `multiplexer`): also written to `~/.config/dotfiles.conf` as environment variables.
+- **Reaper settings** (`reaper_enabled`, `reaper_claude_idle_minutes`, `reaper_codex_idle_minutes`, `reaper_dry_run`, `reaper_cleanup_orphan_mcps`): also written to `~/.config/claude-reaper/config`.
+- **`reaper_enabled`**: additionally loads/unloads the reaper launchd job.
+
+```bash
+curl -X PUT http://localhost:19420/api/settings/reaper_enabled \
+  -H 'Content-Type: application/json' \
+  -d '{"value": "true"}'
+```
+
+## Known Setting Keys
+
+| Key | Default | Description |
+|---|---|---|
+| `theme` | — | UI theme |
+| `prompt` | — | Shell prompt style |
+| `multiplexer` | — | Preferred multiplexer |
+| `protected_branches` | `main,develop` | Comma-separated list of protected branches |
+| `reaper_enabled` | `true` | Enable/disable the idle session reaper |
+| `reaper_claude_idle_minutes` | — | Idle threshold for Claude sessions |
+| `reaper_codex_idle_minutes` | — | Idle threshold for Codex sessions |
+| `reaper_dry_run` | — | Reaper dry-run mode |
+| `reaper_cleanup_orphan_mcps` | — | Clean up orphaned MCP processes |
+| `auto_close_issues_on_merge` | `true` | Auto-close Bug:-referenced issues after merge |
+| `backup.enabled` | `true` | Enable scheduled backups |
+| `backup.interval_hours` | `6` | Hours between backups |
+| `console_pinned_sessions` | `[]` | JSON array of pinned console session IDs |

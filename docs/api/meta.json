@@ -1,0 +1,14 @@
+{
+  "title": "API Reference",
+  "pages": [
+    "auth",
+    "sessions",
+    "console",
+    "conversations",
+    "presets",
+    "inbox",
+    "runtime",
+    "settings",
+    "system"
+  ]
+}

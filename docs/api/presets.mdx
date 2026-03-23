@@ -1,0 +1,404 @@
+# Presets API
+
+Presets are structured convention documents (parsed from Markdown with heading hierarchy) that define agent behavior rules. They can be attached to Console sessions and composed via union.
+
+## Endpoints
+
+### Preset CRUD
+
+#### GET /api/presets
+
+List all presets with node count and token estimates.
+
+**Response:** `200 OK`
+
+```json
+{
+  "presets": [{
+    "id": "...",
+    "name": "Global Conventions",
+    "description": "...",
+    "source": "claude_md_global",
+    "node_count": 25,
+    "token_estimate": 3500,
+    "version": 3,
+    "created_at": 1711234567890,
+    "updated_at": 1711234567890
+  }]
+}
+```
+
+#### POST /api/presets
+
+Create a new preset.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Preset name |
+| `description` | string | no | Description |
+| `content` | string | no | Markdown content (parsed into node tree) |
+| `source` | string | no | `manual`, `claude_md_global`, `claude_md_project`, `claude_md_local` |
+| `source_path` | string | no | File path if imported from disk |
+
+**Response:** `201 Created`
+
+```json
+{ "preset": { "id": "...", "name": "...", ... } }
+```
+
+#### GET /api/presets/:id
+
+Get a preset with its full node tree.
+
+**Response:** `200 OK`
+
+```json
+{
+  "preset": { "id": "...", "name": "...", ... },
+  "nodes": [{
+    "id": "...",
+    "preset_id": "...",
+    "parent_id": null,
+    "position": 0,
+    "title": "Hard Constraints",
+    "body": "Inviolable rules...",
+    "level": 2
+  }]
+}
+```
+
+#### PUT /api/presets/:id
+
+Update preset metadata (name, description).
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | New name |
+| `description` | string | New description |
+
+**Response:** `200 OK` — updated preset.
+
+#### DELETE /api/presets/:id
+
+Delete a preset and all its nodes, links, session associations, and diffs.
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### Node Operations
+
+#### GET /api/presets/:id/nodes
+
+List nodes for a preset.
+
+**Response:** `200 OK`
+
+```json
+{ "nodes": [{ "id": "...", "title": "...", "body": "...", "level": 2, "position": 0, ... }] }
+```
+
+#### PUT /api/presets/:id/nodes
+
+Bulk replace the entire node tree. Accepts either a Markdown string or a nodes array.
+
+**Request body (option A):**
+
+| Field | Type | Description |
+|---|---|---|
+| `markdown` | string | Markdown to parse into nodes |
+
+**Request body (option B):**
+
+| Field | Type | Description |
+|---|---|---|
+| `nodes` | array | Array of node objects |
+
+**Response:** `200 OK` — array of new nodes.
+
+#### POST /api/presets/:id/nodes
+
+Add a single node.
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `parent_id` | string | Parent node ID |
+| `position` | number | Sort position |
+| `title` | string | Node heading |
+| `body` | string | Node content |
+| `level` | number | Heading level (1-6) |
+
+**Response:** `201 Created` — node object.
+
+#### PUT /api/presets/:id/nodes/:nodeId
+
+Update a single node.
+
+**Request body:** Same fields as POST (all optional).
+
+**Response:** `200 OK` — updated node.
+
+#### DELETE /api/presets/:id/nodes/:nodeId
+
+Delete a node and all its children (recursive cascade).
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+#### PATCH /api/presets/:id/nodes/reorder
+
+Move a node to a new parent and/or position.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `nodeId` | string | yes | Node to move |
+| `newParentId` | string or null | no | New parent (null for root) |
+| `newPosition` | number | no | New sort position |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### Union
+
+#### GET /api/presets/union?session_id=X
+
+Compute the union of all presets attached to a session.
+
+**Response:** `200 OK` — merged preset content.
+
+### Convention Library
+
+#### GET /api/presets/library
+
+Search leaf nodes across all presets (deduplicated by content hash).
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `q` | string | Search query (matches title and body) |
+| `limit` | number | Max results (default: 100, max: 500) |
+| `offset` | number | Skip first N results |
+
+**Response:** `200 OK`
+
+```json
+{
+  "nodes": [{
+    "id": "...",
+    "title": "Commit Signing",
+    "body": "...",
+    "preset_name": "Global Conventions",
+    "source_preset_id": "...",
+    "breadcrumb": ["Hard Constraints", "Version Control"]
+  }]
+}
+```
+
+### Diffs
+
+Diffs track proposed changes to presets from workflow violations or manual edits.
+
+#### GET /api/presets/diffs?session_id=X
+
+List diffs for a session.
+
+**Response:** `200 OK`
+
+```json
+{ "diffs": [{ "id": "...", "diff_type": "add", "status": "proposed", "new_content": "...", ... }] }
+```
+
+#### POST /api/presets/diffs
+
+Create a diff.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `session_id` | string | yes | Session that generated the diff |
+| `preset_id` | string | no | Target preset |
+| `node_id` | string | no | Target node |
+| `diff_type` | string | yes | `add`, `remove`, or `modify` |
+| `old_content` | string | no | Previous content |
+| `new_content` | string | no | Proposed content |
+
+**Response:** `201 Created` — diff object.
+
+#### PUT /api/presets/diffs/:id
+
+Update diff status.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `status` | string | yes | `proposed`, `accepted`, `rejected`, or `promoted` |
+
+**Response:** `200 OK` — updated diff.
+
+### Import
+
+#### POST /api/presets/import
+
+Import a preset from inline Markdown content (with optional front-matter for name/description).
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `markdown` | string | yes | Markdown content |
+
+**Response:** `201 Created` — preset object.
+
+#### POST /api/presets/import-claudemd
+
+Import CLAUDE.md from known safe paths only (prevents path traversal).
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `source` | string | yes | `global` or `project` |
+| `cwd` | string | conditional | Required for `project` source |
+
+**Response:** `201 Created` — preset object.
+
+```bash
+curl -X POST http://localhost:19420/api/presets/import-claudemd \
+  -H 'Content-Type: application/json' \
+  -d '{"source": "global"}'
+```
+
+### Export
+
+#### GET /api/presets/:id/export
+
+Export a preset as Markdown with front-matter.
+
+**Response:** `200 OK`
+
+```json
+{ "markdown": "---\nname: My Preset\nversion: 3\n---\n\n# Hard Constraints\n..." }
+```
+
+### Violations
+
+#### POST /api/presets/violations
+
+Report a workflow violation. Routes the violation to the best matching preset and creates a diff.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `sessionId` | string | yes | Session ID |
+| `context` | object | yes | Violation context |
+| `context.repo` | string | no | Repository name |
+| `context.tool` | string | no | Tool name |
+| `context.filePath` | string | no | File path |
+| `context.conventionText` | string | no | Convention text |
+
+**Response:** `201 Created`
+
+```json
+{
+  "diff": { "id": "...", "diff_type": "add", ... },
+  "routing": { "recommendedPresetId": "...", ... }
+}
+```
+
+### Convention-Setting Links
+
+Links between convention nodes and configuration settings.
+
+#### GET /api/presets/links?setting_key=X
+
+Find conventions linked to a setting key.
+
+**Response:** `200 OK`
+
+```json
+{ "links": [{ "id": "...", "node_id": "...", "setting_key": "reaper_enabled", "link_type": "requires", "node_title": "...", ... }] }
+```
+
+#### GET /api/presets/nodes/:nodeId/links
+
+Get links for a specific node.
+
+**Response:** `200 OK`
+
+```json
+{ "links": [{ "id": "...", "setting_key": "...", "link_type": "references", ... }] }
+```
+
+#### POST /api/presets/nodes/:nodeId/links
+
+Create a manual link.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `settingKey` | string | yes | Setting key |
+| `linkType` | string | no | `references`, `requires`, or `configures` (default: `references`) |
+
+**Response:** `201 Created` — link object.
+
+#### DELETE /api/presets/links/:id
+
+Remove a link.
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### Validation
+
+#### GET /api/presets/validate-session?session_id=X
+
+Check for unsatisfied `requires` links in a session's active presets.
+
+**Response:** `200 OK`
+
+```json
+{
+  "valid": false,
+  "warnings": [{
+    "conventionTitle": "Commit Signing",
+    "settingKey": "gpg_key",
+    "message": "Convention \"Commit Signing\" requires setting \"gpg_key\" to be configured."
+  }]
+}
+```
+
+#### POST /api/presets/validate-preset-ids
+
+Validate preset IDs before session creation (same validation as above, but accepts preset IDs directly).
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `presetIds` | string[] | yes | Preset IDs to validate |
+
+**Response:** `200 OK` — same shape as validate-session.

@@ -1,0 +1,60 @@
+# agent-commit
+
+Commit wrapper that enforces issue linkage. Every commit made by an agent must reference at least one git-bug issue via `Bug:` trailers.
+
+`agent-commit` lives in `~/.dotfiles/bin/` (not in the Mandible repo). It is part of the dotfiles tooling but integrates tightly with Mandible for session-issue linking and work-unit activation.
+
+## Usage
+
+```
+agent-commit --issue <id> [-m <message>] [--amend]
+agent-commit --issue <id1> --issue <id2> [-m <message>]
+```
+
+## Options
+
+| Flag | Description |
+|---|---|
+| `--issue <id>` | Issue ID (required, repeatable for multi-issue commits) |
+| `-m <message>` | Commit summary line (falls back to issue title from git-bug if omitted) |
+| `--amend` | Amend the previous commit |
+
+## Commit Message Format
+
+The tool constructs commit messages in this format:
+
+```
+<summary>
+
+Bug: <id1>
+Bug: <id2>
+Co-authored-by: Claude Opus 4.6 <noreply@anthropic.com>
+```
+
+## Behavior
+
+1. **Issue discovery**: If no `--issue` flags are passed, walks from CWD up to git root looking for a `.issue` file (created by the `wt --issue` worktree command).
+
+2. **Protected branch guard**: Refuses to commit to the protected branch (`develop` if it exists, otherwise `main`).
+
+3. **Staging check**: Verifies that changes are staged (unless `--amend`).
+
+4. **Message resolution**: If `-m` is omitted, fetches the issue title from git-bug.
+
+5. **Commit**: Runs `git commit` with the constructed message.
+
+6. **Mandible integration** (non-fatal, skipped if daemon is unreachable):
+   - Links the session to the issue(s) via `POST /api/sessions/$MANDIBLE_SESSION_ID/issues`
+   - Activates work units via `POST /api/work-units/activate`
+
+## Environment
+
+| Variable | Description |
+|---|---|
+| `MANDIBLE_SESSION_ID` | Session ID for issue linking (set by `mandible wrap`) |
+
+## Related Tools
+
+- **`wt`** (dotfiles): Creates worktrees with `--issue` flag that writes a `.issue` file for auto-discovery.
+- **`mandible issue`**: Issue management CLI.
+- **`mandible auth request`**: Submits merge requests that reference `Bug:` trailers for auto-closure.

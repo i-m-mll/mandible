@@ -1,0 +1,130 @@
+# Inbox API
+
+The inbox aggregates items needing attention: session continuations, auth results, work units, open issues, and webhook events. Agents query the inbox at session start to pick up pending work.
+
+## Endpoints
+
+### GET /api/inbox
+
+Get pending inbox items, optionally filtered by branch and repo.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `branch` | string | Filter by git branch |
+| `repo` | string | Filter by repository path or name |
+| `session_id` | string | Exclude continuations from this session |
+
+**Response:** `200 OK`
+
+```json
+{
+  "continuations": [{
+    "session_id": "abc-123",
+    "continuation": "Left off implementing the retry logic. Next: add exponential backoff.",
+    "branch": "feature/retries",
+    "ended_at": "2025-03-20T10:30:00Z"
+  }],
+  "auth_results": [{
+    "id": "def-456",
+    "title": "Merge feature/retries",
+    "status": "completed",
+    "exit_code": 0,
+    "error": null,
+    "head_branch": "feature/retries",
+    "resolved_at": 1711234567890,
+    "post_merge_handoff": null,
+    "issue_ids": ["abc1234"]
+  }],
+  "open_issues": [{
+    "id": "abc1234",
+    "title": "Add retry logic",
+    "labels": ["feature"]
+  }],
+  "work_units": [{
+    "id": "...",
+    "issue_id": "abc1234",
+    "state": "open",
+    "liveness": {
+      "has_live_agent": false,
+      "agent_session_id": null,
+      "is_processing": false
+    }
+  }],
+  "work_unit_continuations": [{
+    "id": "...",
+    "continuation": "Paused at step 3. Resume with...",
+    "liveness": { "has_live_agent": false }
+  }],
+  "pending_webhooks": [{
+    "id": "...",
+    "source": "github",
+    "event_type": "pull_request",
+    "title": "PR #42 review requested",
+    "priority": "normal",
+    "target_branch": "feature/retries"
+  }],
+  "total": 5
+}
+```
+
+```bash
+curl "http://localhost:19420/api/inbox?branch=feature/retries&repo=/path/to/repo"
+```
+
+### GET /api/inbox/global
+
+Get all unacknowledged items across all branches and repos. Same response shape as `/api/inbox` but with additional fields:
+
+- Continuations include `repo` (derived from cwd)
+- Auth results include `repo` and `base_branch`
+- Open issues include `repo_id` and `repo_name`
+
+```bash
+curl http://localhost:19420/api/inbox/global
+```
+
+### POST /api/inbox/:type/:id/ack
+
+Acknowledge an inbox item.
+
+**Path params:**
+
+| Param | Values | Description |
+|---|---|---|
+| `type` | `continuation`, `auth_result` | Item type |
+| `id` | string | Item ID (supports prefix matching) |
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `session_id` | string | ID of the acknowledging session |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+**Error responses:**
+- `400` — Invalid type
+- `404` — Not found or already acknowledged
+- `409` — Ambiguous prefix
+
+```bash
+curl -X POST http://localhost:19420/api/inbox/continuation/abc123/ack \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id": "my-session-id"}'
+```
+
+### POST /api/inbox/ack-all
+
+Acknowledge all unacknowledged continuations and auth results at once.
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```

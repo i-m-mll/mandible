@@ -1,0 +1,227 @@
+# mandible CLI
+
+The `mandible` command is a dispatcher that routes to subcommands. All subcommands communicate with the Mandible daemon at `http://localhost:19420`.
+
+## Global Environment
+
+| Variable | Description |
+|---|---|
+| `MANDIBLE_PORT` | Daemon port (default: `19420`) |
+| `MANDIBLE_BASE` | Daemon base URL (default: `http://localhost:19420`) |
+| `MANDIBLE_SESSION_ID` | Current session ID (set by `mandible wrap`) |
+| `MANDIBLE_DB` | Database path (default: `~/.cache/mandible/mandible.db`) |
+
+## Subcommands
+
+### mandible wrap
+
+Process lifecycle wrapper for agent sessions. Registers the session with Mandible on start and deregisters when the wrapped process exits.
+
+```
+mandible wrap [--app NAME] [--id ID] -- command [args...]
+```
+
+**Options:**
+
+| Flag | Description |
+|---|---|
+| `--app NAME` | Application name (auto-detected from command if omitted) |
+| `--id ID` | Session UUID (auto-generated if omitted) |
+
+**Examples:**
+
+```bash
+mandible wrap -- claude --dangerously-skip-permissions
+mandible wrap -- codex exec "fix the bug"
+mandible wrap --app codex --id my-session-123 -- codex
+```
+
+**Behavior:**
+
+1. Infers `app` from the command basename if not specified (`claude*` -> `claude`, `codex*` -> `codex`).
+2. Generates a UUID session ID if not provided.
+3. Exports `MANDIBLE_SESSION_ID` and `AI_AGENT_SIGNING=1` for child processes.
+4. Detects `--dangerously-skip-permissions` flags and exports `CLAUDE_SKIP_PERMISSIONS=1`.
+5. Collects environment data: terminal emulator, multiplexer, git branch, multiplexer pane metadata.
+6. Registers the session via `POST /api/sessions/register`.
+7. Spawns a background watcher that deregisters via `PATCH /api/sessions/:id/end` when the process exits.
+8. Uses `exec` to replace itself with the wrapped command (full TTY passthrough).
+
+### mandible task
+
+Set the task description on the current session.
+
+```
+mandible task "Fixing SSE bugs"
+mandible task --clear
+```
+
+Walks the PPID chain to find an active session via `GET /api/sessions/by-pid/:pid`, then patches the `task` field via `PATCH /api/sessions/:id`.
+
+### mandible inbox
+
+Query and manage the session inbox.
+
+```
+mandible inbox                         Pretty-print pending items for current branch
+mandible inbox check                   Machine-friendly one-liner (for hooks)
+mandible inbox add "text"              Create git-bug reminder with 'reminder' label
+mandible inbox ack <type> <id>         Acknowledge an item (type: continuation|auth_result)
+mandible inbox watch <request-id>      Poll until auth request resolves (timeout: 30 min)
+```
+
+**Subcommands:**
+
+| Command | Description |
+|---|---|
+| *(none)* | Pretty-print continuations, auth results, and open issues for the current branch |
+| `check` | Machine-friendly summary line for use in shell hooks |
+| `add "text"` | Create a git-bug issue with the `reminder` label |
+| `ack <type> <id>` | Acknowledge a continuation or auth result |
+| `watch <id>` | Poll `GET /api/auth/request/:id` every 5 seconds until resolved or timeout |
+
+### mandible issue
+
+Issue management wrapper around git-bug with Mandible integration.
+
+```
+mandible issue new -t <title> -m <body> [--label <label>]...
+mandible issue list [--status open|closed|all]
+mandible issue show <id>
+mandible issue close <id> [--commit <sha>]
+mandible issue open <id>
+mandible issue comment <id> -m <text>
+mandible issue label add <id> <label>
+mandible issue label rm <id> <label>
+```
+
+**Subcommands:**
+
+| Command | Description |
+|---|---|
+| `new` | Create a new issue with title, body, and optional labels |
+| `list` | List issues (default: open only) |
+| `show` | Show issue details |
+| `close` | Close an issue, recording the resolving commit SHA. Adds a git-bug comment, appends a git note, and reports the resolution to the Mandible API. |
+| `open` | Reopen a closed issue |
+| `comment` | Add a comment to an issue |
+| `label add` | Add a label |
+| `label rm` | Remove a label |
+
+### mandible auth request
+
+Submit an auth request and optionally watch for resolution.
+
+```
+mandible auth request <branch> --title <text> [options]
+```
+
+**Required:**
+
+| Arg | Description |
+|---|---|
+| `<branch>` | Branch to merge into the protected branch |
+| `--title <text>` | Dashboard title |
+
+**Options:**
+
+| Flag | Description |
+|---|---|
+| `--type <type>` | Auth request type (default: `merge`). Options: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `preset-promote`, `data-delete` |
+| `--issue <id>` | Issue ID to close on merge (repeatable, required) |
+| `--commit-message <text>` | Override commit message (auto-generated from git log) |
+| `--diff-summary <text>` | Override diff (auto-generated, truncated at 100KB) |
+| `--spec <text>` | Spec/design notes |
+| `--handoff <text>` | Post-merge handoff note for next session |
+| `--depends-on <id>` | Auth request ID that must complete first |
+| `--repo <name>` | Override auto-detected repo name |
+| `--cwd <path>` | Override auto-detected protected branch worktree path |
+| `--target <branch>` | Override auto-detected target branch |
+| `--timeout <seconds>` | SSE watch timeout (default: 14400 / 4 hours) |
+| `--no-watch` | Submit only, do not poll for resolution |
+| `--force` / `-f` | Skip CWD validation checks |
+
+**Auto-detection:**
+
+The script auto-detects:
+- Protected branch (`develop` if it exists, otherwise `main`)
+- Protected branch worktree path (from `git worktree list`)
+- Repo name (from git common dir)
+- Diff stats and unified diff
+- Commit message summary (from git log)
+
+**Pre-flight checks:**
+
+1. Validates CWD is on the protected branch
+2. Validates the source branch exists
+3. Verifies the branch has unique commits
+4. Checks that the protected branch worktree is clean (auto-fixes if possible)
+5. Runs `pre-auth-check` for dry-run merge conflict detection
+
+**Resolution watching:**
+
+Unless `--no-watch` is specified, connects to the SSE stream at `/api/events?topic=auth:` and waits for `auth:resolved` events matching the request ID. Falls back to a single poll on connection loss.
+
+**Fallback on Mandible unreachable:**
+
+If the daemon is not running, spawns `mandible auth merge` in a Zellij pane (preferred) or tmux pane.
+
+### mandible auth merge
+
+Interactive merge command for protected branches. Requires user authentication via YubiKey.
+
+```
+mandible auth merge <source-branch>
+mandible auth merge <source-branch> --into <target>
+mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
+```
+
+**Options:**
+
+| Flag | Description |
+|---|---|
+| `--into <branch>` | Target branch (default: auto-detected protected branch) |
+| `--hierarchical` | Merge multiple branches sequentially |
+
+**Behavior:**
+
+1. Strips agent git config overrides (merges use user's YubiKey, not agent key).
+2. Detects and resumes in-progress merges (`MERGE_HEAD`).
+3. Runs pre-auth-check for clean working tree and conflict detection.
+4. Shows a summary box with diff stats per source branch.
+5. Prompts for confirmation (reads from `/dev/tty`).
+6. Performs `git merge --no-ff --no-edit -S` (signed merge).
+7. Auto-resolves conflicts in generated dist files (takes `--theirs`).
+8. Verifies the merge is not empty (tree differs from parent).
+9. Auto-closes issues referenced via `Bug:` trailers in merged commits.
+10. Closes issues declared in the auth request's `issues` field.
+11. Cleans up merged branch worktrees (via `dwt`).
+
+### mandible search
+
+Search conversation history across all providers.
+
+```
+mandible search "<query>" [options]
+```
+
+**Options:**
+
+| Flag | Description |
+|---|---|
+| `--provider <name>` | Filter: `claude`, `gemini`, `codex`, or `all` (default: `all`) |
+| `--role <role>` | Filter: `user` or `assistant` |
+| `--since Nd` | Only conversations from last N days |
+| `--limit N` | Max results (default: 20) |
+| `--title` | Search conversation titles only (fast, no decompression) |
+
+**Examples:**
+
+```bash
+mandible search "worktree merge"
+mandible search "auth request" --provider claude --since 7d
+mandible search "training loss" --role assistant --limit 5
+mandible search "bigbuild" --title
+```
+
+Searches the SQLite database directly, decompressing gzip-compressed blocks via Python.

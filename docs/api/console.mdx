@@ -1,0 +1,325 @@
+# Console API
+
+The Console manages first-class (SDK) and second-class (PTY) agent sessions spawned from the Mandible dashboard. Console sessions have full lifecycle control: create, start, stop, restart, resize, send prompts, and manage permissions.
+
+## Types
+
+Console session statuses: `running`, `stopped`, `crashed`.
+
+Interaction modes: `inbox_only`, `direct`, `both`.
+
+Backend types: `sdk`, `pty`, `spawn`.
+
+## Endpoints
+
+### GET /api/console/sessions
+
+List all console sessions.
+
+**Response:** `200 OK`
+
+```json
+{
+  "sessions": [{
+    "id": "...",
+    "label": "Claude Agent",
+    "command": "claude",
+    "status": "running",
+    "backend_type": "sdk",
+    "is_operator": false,
+    "is_processing": true,
+    ...
+  }]
+}
+```
+
+### POST /api/console/sessions
+
+Create a new console session. SDK and spawn sessions start immediately. PTY sessions for structured chat (claude, codex, gemini) wait until explicitly started unless `is_operator` is true.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes | Display name |
+| `command` | string | yes | Command to run (`claude`, `codex`, `gemini`, or any shell command) |
+| `args` | string[] | no | Command arguments |
+| `cwd` | string | no | Working directory (default: daemon cwd) |
+| `env` | object | no | Extra environment variables |
+| `cols` | number | no | Terminal columns (default: 120) |
+| `rows` | number | no | Terminal rows (default: 30) |
+| `auto_restart` | boolean | no | Restart on crash (default: false) |
+| `is_operator` | boolean | no | Whether this is the operator session |
+| `interaction_mode` | string | no | `inbox_only`, `direct`, or `both` (default: `both`) |
+| `backend_type` | string | no | `sdk`, `pty`, or `spawn` (default: `sdk` for `claude`, `spawn` otherwise) |
+| `presetIds` | string[] | no | Convention preset IDs to attach |
+
+**Response:** `201 Created`
+
+```json
+{ "session": { "id": "...", "label": "Claude Agent", "status": "running", ... } }
+```
+
+```bash
+curl -X POST http://localhost:19420/api/console/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"label": "Debug helper", "command": "claude", "backend_type": "sdk"}'
+```
+
+### GET /api/console/sessions/:id
+
+Get a single console session. Includes `is_processing` for SDK sessions.
+
+**Response:** `200 OK`
+
+```json
+{ "session": { "id": "...", "status": "running", "is_processing": false, ... } }
+```
+
+### PATCH /api/console/sessions/:id
+
+Update session configuration (label, model).
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `label` | string | New display name |
+| `model` | string | Model override (modifies `args` to include `--model`) |
+
+**Response:** `200 OK`
+
+```json
+{ "session": { ... } }
+```
+
+### PATCH /api/console/sessions/:id/options
+
+Update SDK backend options (allowed tools, permissions policy, etc.).
+
+**Request body:** SDK backend options object.
+
+**Response:** `200 OK`
+
+```json
+{ "session": { ... } }
+```
+
+### DELETE /api/console/sessions/:id
+
+Stop and delete a console session. Operator sessions cannot be deleted (returns `403`).
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### POST /api/console/sessions/:id/start
+
+Start a stopped session.
+
+**Response:** `200 OK` — session object.
+
+**Error:** `400` if already running.
+
+### POST /api/console/sessions/:id/stop
+
+Stop a running session.
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `signal` | string | Signal to send (default: platform default) |
+
+**Response:** `200 OK` — session object.
+
+**Error:** `400` if not running.
+
+### POST /api/console/sessions/:id/restart
+
+Stop (if running) and restart a session. Clears the ring buffer and stream events.
+
+**Response:** `200 OK` — session object.
+
+### POST /api/console/sessions/:id/resize
+
+Resize the PTY terminal.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `cols` | number | yes | New column count |
+| `rows` | number | yes | New row count |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### POST /api/console/sessions/:id/prompt
+
+Send a prompt to an SDK or spawn session.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `prompt` | string | yes | Prompt text |
+
+**Response:** `202 Accepted`
+
+```json
+{ "ok": true }
+```
+
+**Error:** `400` if the backend does not support prompts.
+
+### GET /api/console/sessions/:id/events
+
+Get historical stream events for a session.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `limit` | number | Max events (default: 500, max: 2000) |
+
+**Response:** `200 OK`
+
+```json
+{ "events": [{ "type": "...", "data": { ... }, "timestamp": "..." }, ...] }
+```
+
+### GET /api/console/sessions/:id/buffer
+
+Get the raw ring buffer snapshot (PTY sessions).
+
+**Response:** `200 OK`
+
+```json
+{ "data": "<base64-encoded>", "bytes": 4096 }
+```
+
+### GET /api/console/sessions/:id/permissions
+
+Get pending permission requests for an SDK session.
+
+**Response:** `200 OK`
+
+```json
+{ "requests": [{ "id": "...", "tool_name": "Edit", "description": "...", ... }] }
+```
+
+### POST /api/console/sessions/:id/permission/:requestId
+
+Resolve a permission request.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `decision` | string | yes | `allow`, `deny`, or `allow_always` |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### GET /api/console/sessions/:id/usage
+
+Get token usage statistics for an SDK session.
+
+**Response:** `200 OK`
+
+```json
+{ "usage": { "input_tokens": 1234, "output_tokens": 567, ... } }
+```
+
+### GET /api/console/pinned
+
+Get ordered list of pinned console session IDs.
+
+**Response:** `200 OK`
+
+```json
+{ "ids": ["session-1", "session-2"] }
+```
+
+### PUT /api/console/pinned
+
+Replace the pinned session list.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ids` | string[] | yes | Ordered session IDs |
+
+**Response:** `200 OK`
+
+```json
+{ "ids": ["session-1", "session-2"] }
+```
+
+### GET /api/console/operator
+
+Get the operator session.
+
+**Response:** `200 OK`
+
+```json
+{ "session": { ... } }
+```
+
+Returns `{ "session": null }` if no operator session exists.
+
+### POST /api/console/operator/restart
+
+Kill and restart the operator session.
+
+**Response:** `200 OK` — operator session object.
+
+## Session-Preset Association
+
+Console sessions can have convention presets attached.
+
+### GET /api/console/sessions/:id/presets
+
+Get presets attached to a session.
+
+**Response:** `200 OK`
+
+```json
+{ "presets": [{ "session_id": "...", "preset_id": "...", "name": "...", "position": 0, ... }] }
+```
+
+### POST /api/console/sessions/:id/presets
+
+Add presets to a session.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `presetIds` | string[] | yes | Preset IDs to attach |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### DELETE /api/console/sessions/:id/presets/:presetId
+
+Remove a preset from a session.
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```

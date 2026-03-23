@@ -1,0 +1,250 @@
+# Conversations API
+
+Conversations are ingested from local agent chat logs (Claude Code, Codex, Gemini) and stored in the Mandible database. The API provides listing, filtering, export, and DAG-based branching.
+
+## Endpoints
+
+### GET /api/conversations
+
+List conversations with pagination, filtering, and sorting.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `page` | number | Page number (default: 1) |
+| `limit` | number | Results per page (default: 50, max: 200) |
+| `source` | string | Filter by source (`claude_code`, `codex`, `gemini`) |
+| `starred` | string | `true` or `false` |
+| `search` | string | Title substring search |
+| `session_id` | string | Filter by linked session ID |
+| `branch` | string | Filter by git branch |
+| `model` | string | Filter by model (substring match) |
+| `sort` | string | Sort field: `started_at`, `ended_at`, `title`, `block_count`, `created_at`, `updated_at`, `source` |
+| `order` | string | `asc` or `desc` (default: `desc`) |
+| `group` | string | `true` to group parent/child conversations (excludes subagents, adds `children_count`) |
+| `exclude_subagents` | string | `true` to hide child conversations |
+| `parent_id` | string | List only children of a specific parent |
+
+**Response:** `200 OK`
+
+```json
+{
+  "conversations": [{
+    "id": "...",
+    "source": "claude_code",
+    "title": "Fix auth bug",
+    "started_at": "2025-03-20T10:30:00Z",
+    "block_count": 42,
+    "starred": false,
+    "model": "claude-opus-4-6",
+    "children_count": 0,
+    ...
+  }],
+  "total": 150,
+  "page": 1,
+  "limit": 50,
+  "pages": 3
+}
+```
+
+```bash
+curl "http://localhost:19420/api/conversations?source=claude_code&starred=true&limit=10"
+```
+
+### GET /api/conversations/:id
+
+Get a full conversation with blocks and children.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `leaf` | string | DAG UUID of a leaf node for path resolution (returns only blocks on the path from root to leaf) |
+
+**Response:** `200 OK`
+
+```json
+{
+  "conversation": { "id": "...", "title": "...", "children_count": 2, ... },
+  "blocks": [{
+    "id": "...",
+    "type": "user_message",
+    "role": "user",
+    "content": "Fix the bug in auth.ts",
+    "position": 0,
+    "timestamp": "...",
+    "metadata_json": "{}",
+    "dag_uuid": "...",
+    "dag_parent_uuid": null
+  }],
+  "children": [{
+    "id": "...",
+    "title": "Subagent: research",
+    "block_count": 10,
+    "duration_seconds": 120
+  }]
+}
+```
+
+### GET /api/conversations/:id/blocks
+
+Get blocks with type filtering and pagination.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `page` | number | Page number (default: 1) |
+| `limit` | number | Results per page (default: 100, max: 500) |
+| `type` | string | Comma-separated block types (e.g., `user_message,assistant_message`) |
+
+**Response:** `200 OK`
+
+```json
+{
+  "blocks": [{ ... }],
+  "total": 100,
+  "page": 1,
+  "limit": 100,
+  "pages": 1
+}
+```
+
+### PATCH /api/conversations/:id
+
+Update conversation metadata.
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `starred` | boolean | Star/unstar |
+| `label` | string or null | Custom label |
+| `notes` | string or null | User notes |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+Broadcasts `conversation:updated` SSE event.
+
+### POST /api/conversations/:id/export
+
+Export a conversation in markdown, MDX, or JSON format.
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `format` | string | `markdown`, `mdx`, or `json` (default: `markdown`) |
+| `block_types` | string[] | Optional filter for block types |
+
+**Response:** `200 OK`
+
+```json
+{
+  "format": "markdown",
+  "content_type": "text/markdown",
+  "content": "# Fix auth bug\n\n...",
+  "block_count": 42
+}
+```
+
+```bash
+curl -X POST http://localhost:19420/api/conversations/abc123/export \
+  -H 'Content-Type: application/json' \
+  -d '{"format": "mdx", "block_types": ["user_message", "assistant_message"]}'
+```
+
+### GET /api/conversations/:id/forks
+
+Get fork points in the conversation DAG (places where the conversation branches).
+
+**Response:** `200 OK`
+
+```json
+{
+  "forks": [{
+    "parent_dag_uuid": "...",
+    "branches": [{
+      "dag_uuid": "...",
+      "first_text": "Let me try a different approach...",
+      "block_count": 15
+    }]
+  }]
+}
+```
+
+### POST /api/conversations/:id/fork
+
+Fork a conversation at a specific message using the Claude Agent SDK.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message_dag_uuid` | string | yes | DAG UUID of the message to fork at |
+
+**Response:** `200 OK`
+
+```json
+{ "session_id": "new-session-id" }
+```
+
+### POST /api/conversations/:id/resume
+
+Resume a conversation from a specific message by creating a new Console SDK session.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `message_dag_uuid` | string | yes | DAG UUID of the message to resume from |
+| `label` | string | no | Label for the new session |
+
+**Response:** `200 OK`
+
+```json
+{ "console_session_id": "new-console-session-id" }
+```
+
+### GET /api/conversations/sources
+
+List ingestion sources with statistics.
+
+**Response:** `200 OK`
+
+```json
+{
+  "sources": [{
+    "source": "claude_code",
+    "count": 150,
+    "latest_started": "2025-03-20T10:30:00Z",
+    "total_blocks": 5000,
+    "starred_count": 12
+  }]
+}
+```
+
+### POST /api/conversations/ingest
+
+Manually trigger re-ingestion of chat logs from all sources.
+
+**Response:** `200 OK` — ingestion result.
+
+### POST /api/conversations/export/transform
+
+Transform exported content using Claude CLI (AI-powered transformation).
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `content` | string | yes | Content to transform |
+| `prompt` | string | yes | Transformation instructions |
+| `timeout_ms` | number | no | Timeout in milliseconds |
+
+**Response:** `200 OK` — transformation result.

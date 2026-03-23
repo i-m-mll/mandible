@@ -1,0 +1,197 @@
+# System API
+
+Health checks, daemon logs, SSE event streaming, backup management, and administrative operations.
+
+## Health
+
+### GET /api/health
+
+Health check endpoint.
+
+**Response:** `200 OK`
+
+```json
+{
+  "status": "ok",
+  "uptime": 3600.5,
+  "version": "1.0.0",
+  "commit": {
+    "hash": "abc1234",
+    "summary": "feat: add widget",
+    "date": "2025-03-20"
+  },
+  "sse_clients": 2
+}
+```
+
+```bash
+curl http://localhost:19420/api/health
+```
+
+## Server-Sent Events (SSE)
+
+### GET /api/events
+
+Subscribe to the SSE event stream. Long-lived connection. Heartbeat comments are sent every 15 seconds to keep the connection alive.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `topic` | string | Topic prefix filter (e.g., `auth:` for auth events only). Multiple topics separated by commas. |
+
+**Event format:**
+
+```
+data: {"type":"auth:resolved","data":{"request_id":"...","status":"completed"},"timestamp":"2025-03-20T10:30:00Z"}
+```
+
+**Event types:**
+
+| Type | Description |
+|---|---|
+| `auth:resolved` | Auth request reached terminal state |
+| `conversation:updated` | Conversation metadata changed |
+| `preset:created` | New preset created |
+| `preset:updated` | Preset content changed |
+| `preset:deleted` | Preset deleted |
+| `preset:diff:created` | New convention diff proposed |
+| `preset:diff:resolved` | Convention diff resolved |
+| `preset:violation` | Workflow violation detected |
+| `daemon:reloaded` | Daemon restarted (includes recent auth results) |
+| `mandible:rebuilding` | Daemon is about to restart for a rebuild |
+
+```bash
+curl -N http://localhost:19420/api/events
+curl -N "http://localhost:19420/api/events?topic=auth:"
+```
+
+### POST /api/events/subscribe
+
+Alternative SSE subscription that accepts topic configuration in the request body (for clients that cannot set query params on EventSource).
+
+**Request body or query params:** Same topic filtering as GET.
+
+## Logs
+
+### GET /api/system/logs
+
+Tail the structured NDJSON daemon log file.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `level` | string | Minimum log level: `debug`, `info` (default), `warn`, `error` |
+| `limit` | number | Max entries (default: 200, max: 1000) |
+| `offset` | number | Skip first N entries (default: 0) |
+
+**Response:** `200 OK`
+
+```json
+{
+  "entries": [{
+    "level": "info",
+    "message": "Server started on port 19420",
+    "time": "2025-03-20T10:30:00Z"
+  }],
+  "total": 500,
+  "limit": 200,
+  "offset": 0,
+  "log_file": "/Users/user/.cache/mandible/launchd-stderr.log",
+  "exists": true
+}
+```
+
+```bash
+curl "http://localhost:19420/api/system/logs?level=warn&limit=50"
+```
+
+## Backup
+
+### GET /api/backup/status
+
+Get backup scheduler status.
+
+**Response:** `200 OK`
+
+```json
+{
+  "enabled": true,
+  "interval_hours": 6,
+  "last_run_at": 1711234567890,
+  "last_size_bytes": 524288,
+  "last_error": null
+}
+```
+
+### POST /api/backup/run
+
+Trigger an immediate backup.
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true, "size_bytes": 524288 }
+```
+
+Or on failure:
+
+```json
+{ "ok": false, "error": "mandible-backup not found" }
+```
+
+### PUT /api/backup/settings
+
+Update backup configuration. Reschedules the backup timer.
+
+**Request body:**
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | boolean | Enable/disable scheduled backups |
+| `interval_hours` | number | Hours between backups |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+```bash
+curl -X PUT http://localhost:19420/api/backup/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled": true, "interval_hours": 12}'
+```
+
+## Administrative
+
+### POST /api/admin/rebuilding
+
+Broadcast a `mandible:rebuilding` SSE event to all connected clients. Called by the post-merge hook before initiating a daemon restart so the UI can show a splash screen.
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+### POST /api/system/open-path
+
+Open a file or directory in Finder (macOS). Path must be under a known repo root (security restriction).
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | yes | Path to open |
+
+**Response:** `200 OK`
+
+```json
+{ "ok": true }
+```
+
+**Error responses:**
+- `403` — Path not under a known repo root
+- `404` — Path not found
