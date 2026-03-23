@@ -17,6 +17,7 @@ import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend, type SDKBackendOptions } from "./backends/sdk-backend.js";
 import { SpawnBackend } from "./backends/spawn-backend.js";
+import { bridgeChannelEvents, type ChannelBridgeHandle } from "./channel-event-bridge.js";
 import type {
   ConsoleInteractionMode,
   ConsoleSession,
@@ -184,6 +185,8 @@ function readNumber(value: unknown): number {
 
 export class SessionManager {
   private sessions: Map<string, AgenticBackend> = new Map();
+  // Bug: 7ab2f3e — Track channel bridge handles for cleanup
+  private channelBridges: Map<string, ChannelBridgeHandle> = new Map();
   private logger: Logger;
   private sessionRegistry: SessionRegistry | null;
 
@@ -350,6 +353,12 @@ export class SessionManager {
   delete(id: string): void {
     const session = this.requireSession(id);
     session.destroy();
+    // Bug: 7ab2f3e — Clean up channel bridge if present
+    const bridge = this.channelBridges.get(id);
+    if (bridge) {
+      bridge.dispose();
+      this.channelBridges.delete(id);
+    }
     getDb().prepare("DELETE FROM console_sessions WHERE id = ?").run(id);
     this.sessions.delete(id);
     broadcast("console:session:deleted", { id });
@@ -528,6 +537,16 @@ export class SessionManager {
   }
 
   close(): void {
+    // Bug: 7ab2f3e — Dispose all channel bridges before destroying sessions
+    for (const bridge of this.channelBridges.values()) {
+      try {
+        bridge.dispose();
+      } catch {
+        // Best effort
+      }
+    }
+    this.channelBridges.clear();
+
     for (const session of this.sessions.values()) {
       try {
         session.destroy();
@@ -591,6 +610,21 @@ export class SessionManager {
         request,
       });
     });
+
+    // Bug: 7ab2f3e — Wire channel event bridge for PTY backends with a
+    // mandible_session_id. The bridge listens for ChannelRegistry events
+    // and injects them into the backend's stream. Handles late registration
+    // (channel session may not exist yet when the PTY starts) with a 30s
+    // timeout. Non-channel PTY sessions are unaffected — the bridge simply
+    // never receives events for their session ID.
+    if (backend instanceof PTYBackend && backend.meta.mandible_session_id) {
+      const handle = bridgeChannelEvents(
+        backend,
+        backend.meta.mandible_session_id,
+        this.logger,
+      );
+      this.channelBridges.set(backend.id, handle);
+    }
   }
 
   private applyMetaUpdate(id: string, fields: BackendMetaUpdate): void {
