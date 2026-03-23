@@ -1,9 +1,10 @@
 // Bug: 11f4f47 — NewSessionDialog with preset selector for SDK sessions
 // Bug: 8baedeb — session validation warnings for convention-setting links
+// Bug: b5e1c51 — PTY+Channel transport option for channel-connected sessions
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useState } from 'preact/hooks';
 import type { Preset, SessionValidationWarning } from '../../api';
-import { getPresets, getDefaultPresetIds, validatePresetIds } from '../../api';
+import { getPresets, getDefaultPresetIds, getSettings, validatePresetIds } from '../../api';
 import { PresetPillSelector } from '../presets/PresetPillSelector';
 
 type AgentKind = 'agent' | 'operator';
@@ -18,6 +19,7 @@ type NewSessionDialogProps = {
     backend: Backend;
     kind: AgentKind;
     backend_type: Transport;
+    channel_enabled?: boolean;
     presetIds?: string[];
   }) => void;
   /** Pre-selected preset ID from navigation (e.g., "Start Chat" from Presets tab). */
@@ -105,6 +107,9 @@ export function NewSessionDialog({
   const [kind, setKind] = useState<AgentKind>('agent');
   const [backend, setBackend] = useState<Backend>('claude');
   const [transport, setTransport] = useState<Transport>('sdk');
+  // Bug: b5e1c51 — Channel-enabled flag for PTY+Channel transport
+  const [channelEnabled, setChannelEnabled] = useState(false);
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const [presetIds, setPresetIds] = useState<string[]>([]);
   const [allPresets, setAllPresets] = useState<Preset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
@@ -150,6 +155,27 @@ export function NewSessionDialog({
     return () => { cancelled = true; };
   }, [open, initialPresetId]);
 
+  // Bug: b5e1c51 — Check if API key is configured to determine default transport
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void getSettings().then((settings) => {
+      if (cancelled) return;
+      const apiKeyConfigured = Boolean(
+        settings.anthropic_api_key || settings.ANTHROPIC_API_KEY,
+      );
+      setHasApiKey(apiKeyConfigured);
+      // Set default transport based on API key availability
+      if (!apiKeyConfigured) {
+        setTransport('pty');
+        setChannelEnabled(true);
+      }
+    }).catch(() => {
+      if (!cancelled) setHasApiKey(null);
+    });
+    return () => { cancelled = true; };
+  }, [open]);
+
   // Bug: 8baedeb — validate selected presets for unsatisfied setting requirements
   useEffect(() => {
     if (!presetsLoaded || presetIds.length === 0 || transport !== 'sdk') {
@@ -193,12 +219,14 @@ export function NewSessionDialog({
       backend,
       kind,
       backend_type: transport,
+      channel_enabled: channelEnabled || undefined,
       presetIds: isSDK ? presetIds : undefined,
     });
     setLabel('');
     setKind('agent');
     setBackend('claude');
     setTransport('sdk');
+    setChannelEnabled(false);
     setPresetIds([]);
     setPresetsLoaded(false);
     setValidationWarnings([]);
@@ -281,13 +309,19 @@ export function NewSessionDialog({
                   title="Claude SDK"
                   description="Structured events, Mandible permissions, and SDK-native session control."
                   selected={transport === 'sdk'}
-                  onClick={() => setTransport('sdk')}
+                  onClick={() => { setTransport('sdk'); setChannelEnabled(false); }}
+                />
+                <OptionCard
+                  title="PTY + Channel"
+                  description="Your Claude Code CLI with Mandible channel integration. Uses your OAuth login. Terminal + structured events."
+                  selected={transport === 'pty' && channelEnabled}
+                  onClick={() => { setTransport('pty'); setChannelEnabled(true); }}
                 />
                 <OptionCard
                   title="PTY"
                   description="Classic terminal transport with a raw debug terminal fallback."
-                  selected={transport === 'pty'}
-                  onClick={() => setTransport('pty')}
+                  selected={transport === 'pty' && !channelEnabled}
+                  onClick={() => { setTransport('pty'); setChannelEnabled(false); }}
                 />
               </div>
             </div>
