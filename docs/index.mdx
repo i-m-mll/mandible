@@ -1,0 +1,38 @@
+# Mandible
+
+Mandible is a local-first control plane for AI coding agents. It runs as a daemon on your workstation, tracking agent sessions across Claude Code, Codex, and Gemini, gating protected-branch merges behind hardware key authentication, and providing a web dashboard for managing it all from one place.
+
+Everything stays on your machine. No cloud services, no external databases, no telemetry. Mandible uses a local SQLite database and communicates with agents through process discovery, a CLI wrapper, an MCP channel server, and an embedded console with the Claude Agent SDK.
+
+## What it does
+
+**[Auth queue](/docs/features/auth-queue)** --- Agents submit merge requests for protected branches. You review diffs, specs, and linked issues in the dashboard, then approve with a YubiKey touch. The merge happens with your GPG signature, the result is delivered to the agent's next session.
+
+**[Session tracking](/docs/features/sessions)** --- Every running agent session is tracked with PID-level liveness monitoring, terminal multiplexer integration, and automatic dead-session reaping. The dashboard shows what's running, where, and on what branch.
+
+**[Conversation browser](/docs/features/conversations)** --- Transcripts from Claude Code, Codex, and Gemini are ingested and indexed as they're written. Search, star, annotate, and export conversations. View tool usage, thinking blocks, and structured events inline.
+
+**[Console](/docs/features/console)** --- Spawn and manage agent sessions directly from the dashboard. PTY-backed terminals with xterm.js rendering, SDK-backed sessions with structured event streams, or both. Permission gating, cost tracking, and conversation branching included.
+
+**[Work units](/docs/concepts/work-units)** --- A reconciliation layer that joins issues (git-bug), branches (git worktrees), and sessions into a single lifecycle. Track what's being worked on, by whom, and what state it's in.
+
+**[Issue tracking](/docs/features/issues)** --- Aggregates git-bug issues from all registered repositories. Issues are linked to sessions and auth requests, and automatically closed when referenced in merge commits.
+
+**[Real-time events](/docs/concepts/real-time-events)** --- Server-Sent Events push every state mutation to the dashboard. No polling required (though fallback polling is there as a safety net).
+
+## Getting started
+
+New to Mandible? Start here:
+
+1. **[Installation](/docs/getting-started/installation)** --- System requirements, building from source, environment variables.
+2. **[First run](/docs/getting-started/first-run)** --- Starting the daemon, touring the dashboard, registering repositories.
+3. **[Agent integration](/docs/getting-started/agent-integration)** --- Connecting Claude Code, Codex, and other agents to Mandible.
+
+## Core concepts
+
+If you want to understand how Mandible works under the hood:
+
+- **[Architecture](/docs/concepts/architecture)** --- Daemon, SPA, Tauri, SQLite, SSE, WebSocket, and how they fit together.
+- **[Agent tiers](/docs/concepts/agent-tiers)** --- SDK, Channel, PTY, and External --- four levels of integration with different capabilities.
+- **[Work units](/docs/concepts/work-units)** --- The issue-branch-session join layer that tracks work lifecycle.
+- **[Real-time events](/docs/concepts/real-time-events)** --- SSE topics, heartbeats, and client subscription patterns.

@@ -1,0 +1,103 @@
+# Architecture
+
+Mandible is three things: a Node.js daemon, a browser-based SPA, and optionally a Tauri native wrapper. They communicate over HTTP, Server-Sent Events, and WebSocket, all on a single port.
+
+## System overview
+
+```
++---------------------------------------------------+
+|              Tauri Shell (optional)                |
+|  +---------------------------------------------+  |
+|  |       Preact SPA (esbuild, xterm.js)        |  |
+|  |  Sessions | Auth | Console | Issues | ...   |  |
+|  +--------------------+------------------------+  |
+|                       | HTTP / SSE / WebSocket    |
+|  +--------------------+------------------------+  |
+|  |        Node.js Daemon (TypeScript)           |  |
+|  |                                              |  |
+|  |  Router -> Routes (auth, sessions, work, ...) |
+|  |  SSE Manager -> Real-time event broadcast    |  |
+|  |  PTY Manager -> node-pty terminal sessions   |  |
+|  |  Session Registry -> lifecycle tracking      |  |
+|  |  Auth Queue -> merge request state machine   |  |
+|  |  Work Scanner -> git repo/branch scanning    |  |
+|  |  Issue Scanner -> git-bug ref parsing        |  |
+|  |  Ingestion -> conversation file watching     |  |
+|  |  Push Manager -> SSH batch push              |  |
+|  |  Session Discovery -> process scanning       |  |
+|  |  Reaper Timer -> dead session cleanup        |  |
+|  |  Nav Enricher -> terminal metadata           |  |
+|  |  Work Unit Reconciler -> state consistency   |  |
+|  |  Channel Registry -> MCP session tracking    |  |
+|  |                                              |  |
+|  |  SQLite (better-sqlite3, WAL mode)           |  |
+|  +----------------------------------------------+  |
++-----------------------------------------------------+
+```
+
+## The daemon
+
+The daemon is a Node.js process that serves the HTTP API, the SSE event stream, the WebSocket terminal connections, and the static SPA files --- all from a single `http.Server` on port 19420 (configurable via `MANDIBLE_PORT`).
+
+### No framework
+
+The HTTP server uses a lightweight custom router rather than Express or similar frameworks. Each feature module registers its routes at startup, and the router handles parameter extraction, body parsing, and JSON responses.
+
+### Startup and shutdown
+
+On startup, the daemon opens the database, starts the HTTP server, and initializes all background services: conversation ingestion, session discovery, issue scanning, the dead-session reaper, the work-unit reconciler, and the backup scheduler. Each service starts in the background without blocking the server.
+
+The daemon shuts down gracefully on `SIGINT` or `SIGTERM`, closing connections, stopping background services, and cleaning up the PID file. A hard deadline prevents the process from hanging if graceful shutdown stalls.
+
+## SQLite
+
+Mandible uses `better-sqlite3` for synchronous database access. The database runs in WAL (Write-Ahead Logging) mode, which allows concurrent reads from the dashboard while the daemon writes.
+
+### Schema migrations
+
+The schema is maintained through numbered migrations applied automatically on startup. You never need to run migrations manually --- the daemon detects the current version and applies any outstanding changes.
+
+### Data storage
+
+- **Sessions** --- status, working directory, branch, and liveness metadata
+- **Conversations** --- compressed transcripts with individually stored blocks, keeping the database compact as history grows
+- **Auth requests** --- the full request lifecycle with diffs, specs, and execution output
+- **Work units** --- the join between issues, branches, and sessions with lifecycle state tracking
+
+## The SPA
+
+The dashboard is a Preact single-page application bundled with esbuild. It uses hash-based routing and communicates with the daemon through the HTTP API and SSE event stream.
+
+Key libraries: **xterm.js** for terminal emulation, **D3** for the knowledge graph, **diff2html** for diff rendering, and **marked** for Markdown. The SPA rebuilds in milliseconds during development via esbuild's watch mode.
+
+The UI is fully reactive --- SSE events from the daemon trigger immediate re-renders without polling.
+
+## Communication protocols
+
+### HTTP API
+
+The daemon exposes a REST-ish JSON API under `/api/`. All routes return JSON responses. The API is the primary interface for both the SPA and external tools (the `mandible` CLI, curl, agent hooks).
+
+### Server-Sent Events (SSE)
+
+The SSE endpoint at `/api/events` pushes every state mutation as a typed event. Clients can subscribe to specific topic prefixes (e.g., `topic=auth:` to receive only auth-related events, or `topic=session:` for session changes). Without a topic filter, clients receive everything.
+
+Events include a `type` field (like `session:created`, `auth:approved`, `console:output`), a `data` payload, and an ISO 8601 timestamp. A 15-second heartbeat comment keeps connections alive through proxies and load balancers.
+
+See [Real-time events](/docs/concepts/real-time-events) for the full topic list and subscription patterns.
+
+### WebSocket
+
+WebSocket connections carry terminal I/O for console sessions. Terminal output streams to the dashboard in real-time, and keyboard input flows back. A per-session ring buffer provides scroll-back history for clients that connect mid-session.
+
+## Tauri wrapper
+
+The optional Tauri shell provides a native macOS window via WebView. Currently it's a thin launcher (Level 1) --- it opens a window pointed at the running daemon. The daemon must be started separately.
+
+A planned Level 2 integration would bundle the daemon as a Tauri sidecar, starting and stopping it with the application lifecycle. This is tracked as an open issue but is not yet implemented.
+
+## Process model
+
+Mandible runs as a single Node.js process. Background services (session discovery, issue scanning, conversation ingestion, etc.) run on periodic timers within the same process.
+
+The exception is the Console: PTY and SDK sessions are child processes managed by the daemon and cleaned up on shutdown.
