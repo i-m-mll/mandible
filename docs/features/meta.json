@@ -1,0 +1,9 @@
+{
+  "title": "Features",
+  "pages": [
+    "auth-queue",
+    "console",
+    "conversations",
+    "presets"
+  ]
+}

@@ -1,0 +1,206 @@
+# Conversations
+
+Mandible ingests, stores, and indexes conversations from every AI agent you use — Claude Code, Codex, and Gemini. Each conversation is broken into typed blocks (user messages, assistant responses, tool calls, thinking, etc.) and stored in a queryable SQLite database with full-text search, filtering, and export capabilities.
+
+## Ingestion Pipeline
+
+Conversations are ingested automatically. The daemon watches the filesystem for session transcript files and processes them as they appear or change.
+
+### Watch Paths
+
+The ingestion service monitors three directories:
+
+| Agent | Directory | File Pattern |
+|-------|-----------|--------------|
+| Claude Code | `~/.claude/projects/` | `**/*.jsonl` |
+| Codex | `~/.codex/sessions/` | `**/*.jsonl` |
+| Gemini | `~/.gemini/tmp/` | `**/chats/*.json` |
+
+Each directory is watched via `chokidar` with write-finish detection (stabilityThreshold: 1 second). New files and file modifications both trigger ingestion.
+
+### How Ingestion Works
+
+When a new or modified transcript file is detected, the ingestion service parses it into normalized blocks using the appropriate parser (Claude, Codex, or Gemini). Files still being written are debounced to avoid partial reads.
+
+For active sessions where new messages are being appended, only the new blocks are processed --- the service avoids re-parsing the entire file. If a file has been modified in a non-append way, it's re-ingested from scratch. Block content is compressed before storage, reducing database size significantly.
+
+The dashboard updates in real time as conversations are ingested via SSE events.
+
+### Periodic Reconciliation
+
+The ingestion service periodically scans all watched directories to catch files that the filesystem watcher might have missed, cleans up empty conversations (except starred ones), and re-ingests any out-of-date files.
+
+### Manual Trigger
+
+You can force a full re-ingestion of all sources:
+
+```
+POST /api/conversations/ingest
+```
+
+This bypasses debouncing and mtime checks, re-parsing every file from scratch. Useful after database corruption or parser updates.
+
+## Block Types
+
+Every conversation is a sequence of blocks. Each block has a `type`, a `role`, content, and optional metadata.
+
+| Type | Role | Description |
+|------|------|-------------|
+| `user_message` | `user` | A prompt or message from the user. |
+| `assistant_message` | `assistant` | A response from the AI agent. |
+| `thinking` | `assistant` | Extended thinking / chain-of-thought content. |
+| `tool_use` | `assistant` | A tool call initiated by the agent. Metadata includes the tool name, input, and call ID. |
+| `tool_result` | `tool` | The result returned by a tool. Linked to its `tool_use` block via `parent_id`. |
+| `system` | `system` | System-level events (session start, configuration, etc.). |
+| `event` | varies | Lifecycle events that don't fit other categories. |
+
+### Block Metadata
+
+Each block carries a `metadata_json` field with type-specific data:
+- **tool_use**: `tool_name`, `tool_id`, `tool_input`.
+- **tool_result**: `tool_output`, `duration_ms`.
+- **assistant_message**: `model`, `token_usage` (input/output/cache_read counts).
+- **Any block**: `source_event_type` (the raw event type from the source format), `visibility` (hint for default show/hide in UI), `truncated` flag, `signature`.
+
+## Filtering and Search
+
+The conversations list supports rich filtering via query parameters:
+
+```
+GET /api/conversations?source=claude_code&starred=true&search=refactor&branch=feature/auth&model=opus
+```
+
+Available filters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Filter by agent source: `claude_code`, `codex`, `gemini`. |
+| `starred` | `true` or `false` — filter by starred status. |
+| `search` | Full-text search in conversation titles (SQL LIKE). |
+| `session_id` | Filter by the agent session ID that produced the conversation. |
+| `branch` | Filter by the git branch the session was working on. |
+| `model` | Filter by model name (partial match). |
+| `sort` | Sort field: `started_at` (default), `ended_at`, `title`, `block_count`, `created_at`, `updated_at`, `source`. |
+| `order` | Sort direction: `desc` (default) or `asc`. |
+| `page` / `limit` | Pagination (default: page 1, limit 50, max 200). |
+
+### Sub-agent Grouping
+
+Conversations from sub-agents (spawned by a parent agent session) are linked to their parent via `parent_conversation_id`. The list API supports two modes for handling these:
+
+- `?exclude_subagents=true` — Hides sub-agent conversations from the main list.
+- `?group=true` — Same as exclude_subagents, but each parent conversation includes a `children_count` field.
+- `?parent_id=<id>` — Lists only children of a specific parent conversation.
+
+When viewing a single conversation, its children are returned alongside the blocks with duration and block count metadata.
+
+### Block-Level Filtering
+
+Individual blocks within a conversation can be filtered by type:
+
+```
+GET /api/conversations/:id/blocks?type=user_message,assistant_message&page=1&limit=100
+```
+
+This is useful for extracting just the dialogue (excluding tool calls and thinking) or just the tool calls.
+
+## Starring
+
+Conversations can be starred for preservation and quick access:
+
+```
+PATCH /api/conversations/:id
+{ "starred": true }
+```
+
+Starred conversations are protected from cleanup — they won't be deleted during reconciliation even if their source file is removed or becomes empty. You can also attach a custom label and free-form notes to any conversation.
+
+## Export
+
+Conversations can be exported in three formats:
+
+```
+POST /api/conversations/:id/export
+{ "format": "markdown", "block_types": ["user_message", "assistant_message"] }
+```
+
+### Markdown
+
+Standard Markdown with a metadata header. Thinking blocks are wrapped in `<details>` tags. Tool calls are wrapped in code blocks inside `<details>`.
+
+### MDX
+
+Component-based format using custom tags (`<ChatLog>`, `<ChatMessage>`, `<ChatThinking>`, `<ToolUse>`, `<ToolResult>`). Suitable for rendering in documentation sites or React applications.
+
+### JSON
+
+Raw structured data — the full conversation object and all blocks with their metadata. Best for programmatic consumption.
+
+All formats support optional `block_types` filtering so you can export just the parts you care about.
+
+### AI Transform
+
+Exported content can be passed through an AI transform pipeline:
+
+```
+POST /api/conversations/export/transform
+{ "content": "...", "prompt": "Summarize this conversation as a design document" }
+```
+
+This sends the content through the Claude CLI with a custom prompt, returning the transformed output. Useful for generating summaries, extracting action items, or reformatting conversations for different audiences.
+
+## DAG / Branching
+
+Claude Code conversations have an internal DAG structure. Each message group has a `dag_uuid` and a `dag_parent_uuid`, forming a tree where the conversation can branch at any point (when the user retries a prompt or the agent takes a different path).
+
+### Viewing Branches
+
+By default, the conversation API returns all blocks in position order (the flat, chronological view). To view a specific branch path through the DAG:
+
+```
+GET /api/conversations/:id?leaf=<dag_uuid>
+```
+
+This walks backward from the specified leaf `dag_uuid` to the root via `dag_parent_uuid` links, returning only the blocks on that path. If the `dag_uuid` doesn't match any block (older conversations without DAG data), it falls back to returning all blocks.
+
+### Fork Points
+
+To discover where a conversation branches:
+
+```
+GET /api/conversations/:id/forks
+```
+
+Returns an array of fork points, each containing:
+- `parent_dag_uuid` — The message where the branch occurs.
+- `branches` — An array of child branches, each with its `dag_uuid`, a preview of the first assistant text (first 60 characters), and a block count.
+
+### Forking and Resuming
+
+You can create a new session that branches from a specific point in a conversation:
+
+**Fork** (creates a new SDK session ID via the Claude Agent SDK):
+```
+POST /api/conversations/:id/fork
+{ "message_dag_uuid": "..." }
+```
+
+**Resume** (creates a new Console session that continues from a specific message):
+```
+POST /api/conversations/:id/resume
+{ "message_dag_uuid": "...", "label": "Optional label" }
+```
+
+Resume creates an SDK-backend console session with `resume_at_message` set, so the Claude Agent SDK picks up the conversation from that point. The new session inherits the original session's provider session ID for continuity.
+
+## Compression
+
+Block content is stored compressed in the database, reducing storage size by approximately 76% compared to raw text. Compression and decompression are transparent --- the API and export functions handle it automatically.
+
+## Sources Summary
+
+```
+GET /api/conversations/sources
+```
+
+Returns aggregate statistics per ingestion source: conversation count, latest timestamps, total block count, and starred count. Useful for the dashboard's source overview panel.

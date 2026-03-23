@@ -1,0 +1,299 @@
+# Presets
+
+Presets are Mandible's system for managing, composing, and versioning agent conventions — the instructions that shape how AI agents behave. If you've used `CLAUDE.md` files, presets are the structured, version-tracked, composable evolution of that concept.
+
+A preset is a tree of convention nodes parsed from Markdown. Nodes follow the heading hierarchy, and each node can be individually edited, moved, or linked to system settings. Multiple presets can be composed into a single system prompt for a console session, with automatic deduplication to avoid redundancy.
+
+## Core Concepts
+
+### Presets
+
+A preset is a named collection of convention nodes with metadata:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Human-readable name (e.g., "Global CLAUDE.md", "feedbax CLAUDE.md"). |
+| `description` | Optional description of the preset's purpose. |
+| `source` | How the preset was created: `manual`, `claude_md_global`, `claude_md_project`, or `claude_md_local`. |
+| `source_path` | The file path the preset was imported from (null for manually created presets). |
+| `content_hash` | Content fingerprint used for deduplication when composing presets. |
+| `version` | Integer version that increments on every node tree update. |
+
+### Nodes
+
+Each preset is a tree of nodes. A node corresponds to a section in the Markdown source:
+
+| Field | Description |
+|-------|-------------|
+| `title` | The heading text (empty string for the synthetic root node). |
+| `body` | Everything between this heading and the next heading at the same or higher level. |
+| `level` | Heading depth: 0 for the root, 1 for `#`, 2 for `##`, etc. |
+| `parent_id` | The nearest ancestor node with a lower heading level. |
+| `position` | Sort order within the tree. |
+
+The tree structure is derived from Markdown heading hierarchy. A `## Subsection` under a `# Section` becomes a child of that section's node. Content before the first heading becomes a synthetic root node at level 0.
+
+Code blocks are handled correctly — headings inside fenced code blocks (`` ``` ``) are not parsed as nodes.
+
+### Session-Preset Associations
+
+Presets are attached to console sessions via the `session_presets` table. Each association records:
+- Which preset is attached.
+- The preset version at the time of attachment (for detecting drift).
+- The position in the composition order.
+
+When a session starts, the attached presets are composed into a single system prompt using the union engine (see below).
+
+## Tree Editor
+
+The preset tree editor is the primary interface for viewing and modifying presets. It renders the node tree with drag-and-drop reordering, inline editing, and hierarchical navigation.
+
+### Viewing
+
+```
+GET /api/presets/:id
+```
+
+Returns the preset metadata and its full node tree. Nodes are ordered by `position` and nested by `parent_id`.
+
+### Editing Nodes
+
+Individual nodes can be created, updated, or deleted:
+
+- **Create**: `POST /api/presets/:id/nodes` — Adds a new node with a specified parent, position, title, body, and level.
+- **Update**: `PUT /api/presets/:id/nodes/:nodeId` — Modifies a node's title, body, level, parent, or position.
+- **Delete**: `DELETE /api/presets/:id/nodes/:nodeId` — Removes the node and recursively deletes all its children.
+- **Reorder**: `PATCH /api/presets/:id/nodes/reorder` — Moves a node to a new parent and/or position within the tree.
+
+### Bulk Replace
+
+The entire node tree can be replaced at once, either from raw node data or by re-parsing Markdown:
+
+```
+PUT /api/presets/:id/nodes
+{ "markdown": "# New content\n\n..." }
+```
+
+or
+
+```
+PUT /api/presets/:id/nodes
+{ "nodes": [{ "title": "Section", "body": "...", "level": 1, "position": 0 }, ...] }
+```
+
+This atomically deletes all existing nodes and inserts the new tree. The preset's content hash and version are updated in the same transaction.
+
+## Convention Library
+
+The convention library provides a searchable index of all leaf nodes across all presets. A "leaf node" is a node with no children — the most granular unit of convention content.
+
+```
+GET /api/presets/library?q=signing&limit=100&offset=0
+```
+
+Results include:
+- The node's title, body, and level.
+- The parent preset's name and ID.
+- A **breadcrumb** — the chain of ancestor titles from the root to the node (e.g., `["Hard Constraints", "Version Control & Signing"]`). This gives context for where the convention lives in its preset's hierarchy.
+
+Results are deduplicated by content hash, so identical conventions appearing in multiple presets are shown once.
+
+## CLAUDE.md Import
+
+Presets can be created by importing existing `CLAUDE.md` files. Two import modes are available:
+
+### Inline Import
+
+```
+POST /api/presets/import
+{ "markdown": "# My Conventions\n\n..." }
+```
+
+Accepts raw Markdown content with optional YAML front-matter for name and description:
+
+```markdown
+---
+name: My Project Conventions
+description: Conventions for the foo project
+---
+
+# Build
+
+Always run `npm test` before committing.
+```
+
+### File-Based Import
+
+```
+POST /api/presets/import-claudemd
+{ "source": "global" }
+```
+
+or
+
+```
+POST /api/presets/import-claudemd
+{ "source": "project", "cwd": "/path/to/repo" }
+```
+
+This reads from known safe paths only:
+- **global** — `~/.claude/CLAUDE.md`
+- **project** — `<cwd>/.claude/CLAUDE.md` or `<cwd>/CLAUDE.md` (checked in that order)
+
+The source type is automatically inferred from the file path:
+- `~/.claude/CLAUDE.md` or `~/.dotfiles/...CLAUDE.md` -> `claude_md_global`
+- `<repo>/.claude/CLAUDE.md` or `<repo>/CLAUDE.md` -> `claude_md_project`
+- Nested `CLAUDE.md` in subdirectories -> `claude_md_local`
+
+The preset name is derived from the path (e.g., "Global CLAUDE.md", "mandible CLAUDE.md").
+
+## Composition and Union
+
+The real power of presets is composition. A console session can have multiple presets attached, and the union engine computes a single system prompt from them.
+
+### How Union Works
+
+```
+GET /api/presets/union?session_id=<id>
+```
+
+1. The session's presets are loaded in position order.
+2. Each preset's node tree is serialized back to Markdown.
+3. **Deduplication**: If two presets produce identical Markdown, the duplicate is skipped. This handles the case where the same conventions appear in both a global and a project preset.
+4. The remaining Markdown chunks are joined with `---` separators.
+
+The result includes a `tokenEstimate` --- a rough estimate of how many tokens the composed text will consume.
+
+### Token Estimation
+
+Every preset listing includes a token estimate so you can see at a glance how much context budget each preset consumes.
+
+Model context windows for reference:
+- Opus: 1,000,000 tokens
+- Sonnet: 250,000 tokens
+- Haiku: 200,000 tokens
+
+## Convention-Setting Links
+
+Convention nodes can be linked to Mandible settings, creating a bidirectional relationship between "what the convention says" and "what configuration enables it."
+
+### Link Types
+
+| Type | Meaning |
+|------|---------|
+| `references` | The convention mentions or discusses this setting. Informational. |
+| `requires` | The convention requires this setting to be configured for the convention to be effective. |
+| `configures` | The convention directly configures or controls this setting's value. |
+
+### Auto-Detection
+
+When nodes are created, updated, or imported, Mandible scans the title and body for known patterns and automatically creates `references` links. Detected patterns include:
+
+- Protected branch mentions -> `protected_branches`
+- Reaper/idle timeout references -> `reaper_enabled`
+- Signing/GPG/YubiKey discussions -> `commit_signing`
+- Push upstream conventions -> `push_same_name_upstream`
+- Auto-close issue policies -> `auto_close_issues_on_merge`
+- And several more system-specific patterns.
+
+Auto-detected links are tagged with `source: 'auto'` and replaced on each scan. Manual links persist across scans.
+
+### Manual Links
+
+You can create manual links between any node and any setting key:
+
+```
+POST /api/presets/nodes/:nodeId/links
+{ "settingKey": "my_custom_setting", "linkType": "requires" }
+```
+
+### Session Validation
+
+Before or during a session, you can check whether all `requires` links are satisfied:
+
+```
+GET /api/presets/validate-session?session_id=<id>
+```
+
+This checks every `requires` link in the session's active presets and reports warnings for settings that are missing, empty, or set to `false`. The same validation is available for preset ID lists before session creation:
+
+```
+POST /api/presets/validate-preset-ids
+{ "presetIds": ["id1", "id2"] }
+```
+
+## Preset Diffs
+
+When an agent detects a workflow violation or discovers a convention that should be codified, it can propose a preset diff — a change to an existing preset or a new convention to add.
+
+### Creating Diffs
+
+```
+POST /api/presets/diffs
+{
+  "session_id": "...",
+  "preset_id": "...",
+  "diff_type": "add",
+  "new_content": "Always run lint before committing."
+}
+```
+
+Diff types: `add` (new convention), `remove` (remove a convention), `modify` (change existing text).
+
+### Diff Lifecycle
+
+Each diff has a status:
+- **proposed** — The diff has been suggested but not reviewed.
+- **accepted** — The user approved the diff and it was applied to the preset.
+- **rejected** — The user declined the diff.
+- **promoted** — The diff was promoted beyond the session scope (e.g., from a project preset to the global preset). This transition requires an auth request of type `preset-promote`.
+
+### Violation-Driven Routing
+
+When an agent reports a workflow violation, Mandible routes the proposed fix to the most appropriate preset:
+
+```
+POST /api/presets/violations
+{
+  "sessionId": "...",
+  "context": {
+    "repo": "mandible",
+    "tool": "Bash",
+    "filePath": "/src/server.ts",
+    "conventionText": "Always use agent-commit instead of raw git commit"
+  }
+}
+```
+
+The routing logic finds the most relevant preset by matching the violation context against each preset's content and repository, returning the best match with a confidence level (high/medium/low).
+
+The result includes both the created diff and the routing recommendation, so the dashboard can show where the new convention would land.
+
+## Export
+
+Presets can be exported as Markdown with YAML front-matter:
+
+```
+GET /api/presets/:id/export
+```
+
+Returns:
+
+```markdown
+---
+name: My Conventions
+version: 3
+source: manual
+description: Project-specific agent rules
+---
+
+# Build
+
+Always run tests before committing.
+
+## Linting
+
+Use ESLint with the project's config.
+```
+
+This format can be re-imported via `POST /api/presets/import` to transfer conventions between Mandible instances or share them with others.
