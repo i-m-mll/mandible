@@ -1,0 +1,199 @@
+# Console
+
+The Console is Mandible's built-in agent management surface. It spawns, controls, and monitors AI agent sessions — Claude, Codex, Gemini, or arbitrary shell processes — from the dashboard. Each console session has a backend that handles process lifecycle, I/O, and event streaming.
+
+## Backends
+
+Console sessions use one of three backend types, chosen at creation time based on the command and configuration.
+
+### SDK Backend
+
+The SDK backend uses the `@anthropic-ai/claude-agent-sdk` to communicate with Claude directly via the programmatic API. This is the richest integration tier — it provides structured event streams, tool-call visibility, permission gating, cost tracking, and conversation branching.
+
+**When it's used:** Sessions with `command: "claude"` default to the SDK backend. It's also the backend for sessions created via "Resume Work" from the Issues tab.
+
+**Key capabilities:**
+- Structured message stream (assistant messages, tool calls, thinking blocks, results) rather than raw terminal output.
+- Permission requests surface in the dashboard — the user can allow, deny, or "allow always" for each tool.
+- Cost tracking with per-turn token usage and cumulative spend.
+- Session continuity — prompts queue and process sequentially, and the session auto-stops when the queue drains.
+- DAG branching support — resume a conversation from a specific message or fork at a branch point.
+- Subagent tracking — the backend monitors `SubagentStart`/`SubagentStop` hooks to maintain a tree of active subagents.
+
+**How it works internally:** When you send a prompt, the SDK backend calls `sdk.query()` with the prompt and options (model, system prompt, permissions, allowed tools). It then iterates the async message stream, normalizing each SDK event into Mandible's `ConsoleStreamEvent` format. Events are stored in an in-memory log (capped at 2,000 entries) and broadcast to connected WebSocket clients.
+
+### PTY Backend
+
+The PTY backend spawns the agent as a pseudo-terminal process via `node-pty`. This provides raw terminal I/O — the same experience as running the command in a terminal emulator.
+
+**When it's used:** Sessions with `command: "codex"`, `command: "gemini"`, or any non-Claude command. Also used when the `backend_type` is explicitly set to `"pty"`.
+
+**Key capabilities:**
+- Full terminal emulation (colors, cursor movement, screen clearing).
+- Ring buffer stores the last ~128KB of terminal output for late-joining clients.
+- Output is parsed line-by-line through normalizers that extract structured events from Codex and Gemini's terminal output.
+- Process management: auto-restart on crash (up to 5 attempts with exponential backoff), SIGHUP for clean restarts.
+
+**Trade-offs vs. SDK:** The PTY backend has no visibility into individual tool calls, token usage, or permission requests. It's process-level control — start, stop, signal, read output. Use it when the SDK backend isn't available for the agent type.
+
+### Spawn Backend
+
+The Spawn backend is a lightweight process runner that uses `child_process.spawn` instead of a pseudo-terminal. It captures stdout and stderr as structured events without terminal emulation overhead.
+
+**When it's used:** Non-interactive processes, background tasks, and cases where PTY overhead is unnecessary.
+
+## Creating Sessions
+
+Sessions are created via the API or the dashboard UI.
+
+```
+POST /api/console/sessions
+```
+
+Required fields:
+- `label` — A display name for the session.
+- `command` — The executable to run (`claude`, `codex`, `gemini`, or a shell command).
+
+Key optional fields:
+- `args` — Command-line arguments (array of strings).
+- `cwd` — Working directory for the process.
+- `env` — Additional environment variables (merged with the daemon's environment).
+- `backend_type` — Override the default backend selection: `"sdk"`, `"pty"`, or `"spawn"`.
+- `auto_restart` — Whether to restart the process automatically on crash (default: false, except for the operator session).
+- `is_operator` — Marks this as the system operator session (there can be only one).
+- `interaction_mode` — Controls how the session receives input: `"direct"` (prompts only), `"inbox_only"` (webhook events only), or `"both"`.
+- `allowed_tools` — An array of tool names pre-approved for automatic use (SDK backend only).
+- `presetIds` — Preset IDs whose convention content is computed into the system prompt (SDK backend only).
+- `provider_session_id` and `resume_at_message` — For resuming an existing Claude conversation at a specific point in its DAG.
+
+### Agent Type Detection
+
+The session's `agent_type` is derived from the command:
+- `claude` command -> `claude` type
+- `codex` command -> `codex` type
+- `gemini` command -> `gemini` type
+- `is_operator: true` -> `operator` type (regardless of command)
+- Anything else -> `shell` type
+
+### The Operator Session
+
+One console session can be marked as the **operator**. The operator is a special long-lived session with `auto_restart: true` and full permissions (`--dangerously-skip-permissions`). It's the primary Claude session for system-level tasks. The operator cannot be deleted (only stopped and restarted).
+
+## Terminal vs. Rich View
+
+How a session appears in the dashboard depends on its backend type.
+
+**PTY sessions** render as a terminal emulator. You see the full terminal output, including ANSI colors, cursor movement, and interactive prompts. Input goes through the terminal — type and press Enter, just like a local terminal.
+
+**SDK sessions** render as a structured conversation. Messages are displayed as distinct blocks:
+- **User messages** — Your prompts, with the input text.
+- **Assistant messages** — Claude's responses, with full Markdown rendering.
+- **Thinking blocks** — Extended thinking content, shown in collapsible sections.
+- **Tool use blocks** — Each tool call with its name, input parameters, and result.
+- **System messages** — Session lifecycle events (start, subagent spawn/stop, init).
+- **Result blocks** — Turn summaries with duration, cost, and token usage.
+
+Both views share the same underlying event streaming infrastructure. The difference is in how the frontend renders the events.
+
+## Streaming and Event Architecture
+
+Console sessions stream events to connected clients via WebSocket. When a client connects:
+
+1. It receives an `init` message with the full session metadata.
+2. It receives the buffered event history (up to 2,000 events for SDK, or the ring buffer snapshot for PTY).
+3. It receives live events as they occur.
+
+Events are typed — each has a `type` field (`assistant`, `user`, `thinking`, `tool_use`, `tool_result`, `system`, `result`, `stream_event`) and a `session_id` linking it back to the provider session. The SDK backend normalizes Claude's native event types into this common format so the frontend doesn't need to handle provider-specific event shapes.
+
+### IndexedDB Cache
+
+The dashboard caches conversation events in IndexedDB on the client side. When you navigate away from a session and come back, the UI can hydrate from the local cache instantly while re-establishing the WebSocket connection for live updates. This eliminates the blank-screen delay on reconnect for sessions with long histories.
+
+## Permissions
+
+SDK backend sessions support granular tool-use permissions. When Claude wants to use a tool that isn't in the `allowed_tools` list and the permission mode is not `bypassPermissions`, the backend pauses execution and surfaces a permission request.
+
+Permission requests appear in the dashboard and via the API (`GET /api/console/sessions/:id/permissions`). Each request includes:
+- The tool name and input parameters.
+- A human-readable title and description.
+- The file path being accessed (if applicable).
+- The reason the tool was blocked.
+- Suggestions for permission updates.
+
+The user can respond with one of three decisions:
+- **Allow** — Permit this specific tool call. Execution resumes.
+- **Deny** — Block the tool call. The SDK receives a denial message and continues with that context.
+- **Allow Always** — Permit this tool call and add the tool to the session's `allowed_tools` list so future uses don't need approval.
+
+Permissions time out after 2 minutes if no decision is made (the tool call is denied by default).
+
+### Permission Modes
+
+Sessions can run in one of three permission modes:
+
+- **`default`** — Standard permission gating. Unknown tools require approval.
+- **`acceptEdits`** — File-editing tools are auto-approved; others still require approval.
+- **`bypassPermissions`** — All tools are auto-approved. This is what the operator session uses.
+
+## Cost Tracking
+
+SDK backend sessions track token usage and cost per turn. After each Claude response, a usage record is stored with:
+- Input, output, and cache tokens (creation and read).
+- Cumulative cost in USD.
+- Turn duration and count.
+- Per-model usage breakdown (when multiple models are used in a single session via subagents).
+- Error status and result subtype.
+
+Usage data is available via `GET /api/console/sessions/:id/usage` and displayed in the session detail view.
+
+## Session Lifecycle
+
+Sessions follow a simple lifecycle:
+
+1. **Created** — Session metadata is stored. For SDK/spawn backends, the session starts immediately (they wait for the first prompt rather than allocating a process upfront). For PTY backends, an explicit start is needed.
+2. **Running** — The backend is active and processing or waiting for input.
+3. **Stopped** — The backend has stopped. SDK sessions auto-stop when the prompt queue drains. PTY sessions stop when the process exits.
+4. **Crashed** — The process exited unexpectedly. If `auto_restart` is enabled, the backend attempts to restart (up to 5 times with exponential backoff).
+
+Sessions can be started, stopped, and restarted via the API:
+- `POST /api/console/sessions/:id/start`
+- `POST /api/console/sessions/:id/stop`
+- `POST /api/console/sessions/:id/restart` — Clears the event buffer and ring buffer for a fresh start.
+
+### Mandible Session Integration
+
+Console sessions are linked to Mandible's session registry. When the SDK backend receives a `SessionStart` hook from Claude, it registers (or finds) a Mandible session for that provider session ID. This links the console session to the broader session tracking system — active/idle status, last-activity timestamps, and inbox delivery all flow through this connection.
+
+## Sending Prompts
+
+For SDK and spawn backends, you can send prompts programmatically:
+
+```
+POST /api/console/sessions/:id/prompt
+```
+
+```json
+{ "prompt": "Your message here" }
+```
+
+Prompts queue internally and process sequentially. If the session isn't running, sending a prompt auto-starts it. The SDK backend synthesizes a user event for the prompt so it appears in the event log alongside the assistant's response.
+
+For PTY backends, input goes through the terminal write interface (WebSocket binary frames or `POST` with raw text). This is raw terminal I/O — no structured prompt/response boundary.
+
+## Configuration Updates
+
+SDK backend sessions support runtime option updates:
+
+```
+PATCH /api/console/sessions/:id/options
+```
+
+Updatable options:
+- `model` — Switch the model mid-session.
+- `permissionMode` — Change the permission level.
+- `allowedTools` — Update the auto-approved tool list.
+- `systemPrompt` — Override the system prompt.
+- `maxTurns` and `maxCostUsd` — Set turn and cost limits.
+- `presetIds` — Change which presets contribute to the system prompt.
+
+These updates take effect on the next prompt. Model and permission mode changes are also pushed to an active SDK query if one is in progress.

@@ -1,0 +1,227 @@
+# Auth Queue
+
+The auth queue is Mandible's mechanism for gating destructive or privileged operations behind user authentication. When an agent needs to perform an action that requires elevated trust — merging into a protected branch, force-pushing, deleting data — it submits an auth request. The request enters a queue visible in the dashboard, where the user reviews it and either approves (triggering execution with their signing key) or rejects it.
+
+This decouples the agent's work from the moment of authentication. The agent submits and moves on; the user authenticates when they're ready.
+
+## Auth Request Types
+
+Every auth request carries a `type` field that describes what kind of operation is being requested. The queue supports seven types:
+
+| Type | Description |
+|------|-------------|
+| `merge` | Merge a feature/integration branch into the protected branch. This is by far the most common type. |
+| `commit` | Create a signed commit on a protected branch (rare — most commits go on feature branches with the agent key). |
+| `force-push` | Force-push to a branch. Destructive by nature, so it requires explicit approval. |
+| `branch-delete` | Delete a branch. Used for cleanup after merges. |
+| `config-change` | Modify a configuration that affects system behavior (e.g., Mandible settings, signing config). |
+| `preset-promote` | Promote a preset diff into a permanent convention. Requires user review because it changes future agent behavior. |
+| `data-delete` | Delete stored data (conversations, sessions, etc.). Irreversible, so it's gated. |
+
+The type defaults to `merge` if not specified, which maintains backward compatibility with older CLI versions.
+
+## Request Lifecycle
+
+An auth request moves through a well-defined state machine:
+
+```
+pending → executing → completed (exit_code 0 = success, non-zero = failure)
+pending → rejected
+pending → expired (TTL exceeded, default 24 hours)
+pending → dismissed (manually dismissed by user or auto-dismissed after a sibling succeeds)
+completed (failed) → pending (via retry)
+expired → pending (via retry)
+```
+
+### Statuses
+
+- **pending** — Waiting for the user to act. The request is visible in the dashboard queue.
+- **executing** — The user approved and the command is running. Output streams to the dashboard in real time.
+- **completed** — Execution finished. Check `exit_code`: 0 means success, anything else is a failure. Failed completions stay visible in the queue so the user can retry or dismiss them.
+- **rejected** — The user explicitly declined the request.
+- **expired** — The request sat in `pending` for longer than the TTL (24 hours by default) without action. Expiry is checked every 30 seconds.
+- **dismissed** — Removed from the active queue without execution. This happens in two cases: the user manually dismisses it, or a sibling request for the same branch merge succeeded (auto-dismiss).
+
+## Submitting Requests
+
+Requests are typically submitted via the `mandible auth request` CLI command, which handles metadata collection (diff stats, commit messages, issue IDs, specs) and posts to the API. The raw API endpoint is:
+
+```
+POST /api/auth/request
+```
+
+Required fields:
+- `command` — The shell command to execute upon approval (e.g., `mandible auth merge feature/my-branch`).
+- `title` — A human-readable description shown in the dashboard.
+
+Key optional fields:
+- `type` — One of the seven auth request types. Defaults to `merge`.
+- `session_id` — Links the request to the agent session that submitted it.
+- `repo`, `base_branch`, `head_branch` — Branch metadata for merge requests.
+- `diff_summary` — A text summary of the changes being merged.
+- `commit_message` — The proposed merge commit message, including `Bug:` trailers.
+- `spec_content` — A specification explaining the intent and design decisions.
+- `issues` — An array of issue IDs to close on successful merge.
+- `depends_on_id` — Another auth request ID that must complete first (dependency chaining).
+- `execution_mode` — `"daemon"` (default, Mandible executes locally) or `"remote"` (an external process manages execution).
+
+### Duplicate Detection
+
+The queue automatically detects duplicate submissions. If an agent accidentally submits the same request twice (retry logic, curl fallback, etc.), the API returns `409 Conflict` with the existing request's ID so the agent can update it via `PUT` instead of creating a duplicate.
+
+Duplicates are detected by two signals:
+1. **Same branch pair** — If a pending/approved request already targets the same `head_branch` and `base_branch`, it's a duplicate regardless of which session submitted it.
+2. **Same session + title** — If the same session already has a pending request with the same title.
+
+### Bug Reference Verification
+
+For merge requests, the queue verifies that every non-merge commit in the branch range contains a `Bug:` trailer linking it to an issue. Commits missing this reference cause the submission to be rejected with a descriptive error listing the offending commits. This enforces the work-tracking convention that every unit of work has an associated issue.
+
+## Reviewing and Acting on Requests
+
+The dashboard displays the auth queue with all active requests. For each request, the user sees:
+
+- Title and type
+- Repository and branch information
+- Diff summary (files changed, additions, deletions)
+- The specification, if one was attached
+- Linked issue IDs
+- Dependency status (if the request depends on another)
+
+### Available Actions
+
+**Approve** (`POST /api/auth/request/:id/approve`) — Transitions the request to `executing` and spawns the command. The command runs in a clean environment with agent-key signing overrides stripped, ensuring the user's signing key (YubiKey) is used for the actual operation. Output streams in real time via SSE.
+
+**Reject** (`POST /api/auth/request/:id/reject`) — Declines the request with an optional reason. The result is delivered to the agent's inbox.
+
+**Skip** (`POST /api/auth/request/:id/skip`) — Moves the request to the back of the queue without rejecting it. Useful when you want to approve a different request first.
+
+**Dismiss** (`POST /api/auth/request/:id/dismiss`) — Removes the request from the active queue. Unlike rejection, dismissal is silent — no inbox delivery. Used for cleaning up stale or superseded requests.
+
+**Retry** (`POST /api/auth/request/:id/retry`) — Resets a failed or expired request back to `pending` with a fresh TTL. The user can then approve it again.
+
+**Delete** (`DELETE /api/auth/request/:id`) — Permanently removes the request from the database. Requires a reason. This is the nuclear option; prefer dismiss for most cases.
+
+## Execution
+
+When a request is approved, Mandible spawns the command as a child process. The execution environment is carefully prepared:
+
+1. **Agent signing overrides are stripped.** The `CLAUDECODE`, `GIT_CONFIG_COUNT`, and all `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` environment variables are removed. This ensures git operations use the user's configured signing key (the YubiKey ED25519-SK) rather than the agent's key.
+
+2. **The auth request ID is injected.** `MANDIBLE_AUTH_REQUEST_ID` is set so the merge script can query the API for request-specific metadata (issues to close, spec content, etc.).
+
+3. **Auto-confirm is enabled.** `AUTH_MERGE_AUTO_CONFIRM=1` is set so the merge script does not prompt for interactive confirmation (the user already confirmed via the dashboard).
+
+4. **Output streams in real time.** Both stdout and stderr are captured and broadcast via SSE (`auth:output` events). The UI shows a live terminal-like view of the execution.
+
+5. **Timeout enforcement.** Commands are killed after 10 minutes (with a 5-second grace period between SIGTERM and SIGKILL). This prevents stuck merges from blocking the queue indefinitely.
+
+### Execution Modes
+
+Requests have an `execution_mode` field:
+
+- **`daemon`** (default) — Mandible spawns and manages the command locally. This is the standard flow.
+- **`remote`** — An external process manages execution. Mandible only tracks state transitions (pending, approved, completed). The external process reports output and results via the API. Used for operations that run on a different machine.
+
+### Serialized Execution
+
+Auth commands execute sequentially, not in parallel. Each command must complete before the next one starts. This prevents conflicts between concurrent merges and ensures the queue processes in a predictable order.
+
+## Post-Execution Hooks
+
+After a successful execution (exit code 0), Mandible runs any configured auth hooks before reporting the result. Hooks are configurable shell commands that run in the repository directory with metadata injected via environment variables.
+
+See [Auth Hooks](#hooks) below for the full hook system.
+
+## Hooks
+
+Auth hooks are shell commands that run automatically after a successful auth operation. They replace what used to be hardcoded logic in the merge script (like "rebuild dist if source changed" or "restart the daemon if dist changed").
+
+### Hook Properties
+
+| Field | Description |
+|-------|-------------|
+| `repo_pattern` | A glob pattern matching repository names, or `*` for all repos. |
+| `auth_type` | Which auth request type triggers this hook (e.g., `merge`, `commit`). |
+| `command` | The shell command to execute. Runs via `bash -c`. |
+| `label` | A human-readable description shown in the dashboard and execution output. |
+| `enabled` | Whether the hook is active. Disabled hooks are skipped during execution. |
+| `builtin` | System-seeded hooks that cannot be deleted (only disabled). |
+| `position` | Execution order — lower values run first. |
+
+### Hook Environment
+
+Hooks receive these environment variables:
+
+- `MANDIBLE_AUTH_REQUEST_ID` — The completed auth request's ID.
+- `MANDIBLE_AUTH_TYPE` — The type of auth action (merge, commit, etc.).
+- `MANDIBLE_AUTH_REPO` — The repository name.
+- `MANDIBLE_AUTH_BRANCH` — The head branch.
+- `MANDIBLE_AUTH_BASE_BRANCH` — The base (target) branch.
+- `MANDIBLE_HOOK_ID` — The hook's ID.
+- `MANDIBLE_HOOK_LABEL` — The hook's label.
+
+### Execution Behavior
+
+- Hooks run **sequentially** in position order.
+- Each hook has a **5-minute timeout** (SIGTERM, then SIGKILL after 5 seconds).
+- Hook failures do **not** change the auth result. The merge already succeeded — hooks are post-merge side effects. A failing hook is logged and reported in the output, but the auth request still shows as completed successfully.
+- Hook output is streamed to the same SSE channel as the main execution, prefixed with `[hook: <label>]`.
+
+### Managing Hooks
+
+Hooks are managed via the API:
+
+- `GET /api/auth/hooks` — List all hooks.
+- `POST /api/auth/hooks` — Create a new hook.
+- `PUT /api/auth/hooks/:id` — Update a hook.
+- `DELETE /api/auth/hooks/:id` — Delete a hook (fails for built-in hooks; disable them instead).
+
+## Dependency Chains
+
+Auth requests can declare a dependency on another request via `depends_on_id`. The dashboard shows the dependency status alongside the request, so the user knows which requests need to be approved first.
+
+Dependencies are informational — Mandible does not enforce ordering automatically. The user is responsible for approving requests in the correct order. However, the dashboard surfaces dependency status so this is straightforward in practice.
+
+## Auto-Dismiss on Success
+
+When a merge request completes successfully, Mandible automatically dismisses any other pending, expired, or failed requests targeting the same branch pair. These are stale duplicates — retries, corrected resubmissions — and approving them would waste a YubiKey tap on a branch that has already been merged and deleted.
+
+## Work Unit Resolution
+
+On successful merge (exit code 0), the queue automatically resolves associated work units:
+
+1. Work units whose `auth_request_id` matches the completed request.
+2. Work units whose `branch` matches the request's `head_branch`.
+3. Work units linked to issue IDs found in `Bug:` trailers of the commit message or in the request's `issues` array.
+
+This closes the loop between the auth queue, the issue tracker, and the work-unit lifecycle.
+
+## Stuck Request Recovery
+
+Mandible handles cases where requests get stuck in the `executing` or `approved` state (typically because the daemon was killed mid-execution):
+
+**At startup:**
+- Requests with output containing merge evidence ("Merge made by" or "Fast-forward") are marked as completed successfully.
+- Requests with no output that have been stuck for more than 5 minutes are marked as failed with an explanation.
+
+**During runtime:**
+- Every 30 seconds, the expiry timer checks for requests stuck in `approved`/`executing` with no output for more than 10 minutes and marks them as interrupted.
+
+This ensures the queue never gets permanently stuck, even after unclean daemon restarts.
+
+## Result Delivery
+
+After an auth request resolves (completed, rejected, dismissed, expired), the result is broadcast via SSE (`auth:resolved` event) and delivered to the submitting agent's inbox. The next time the agent starts a session, the session-start hook picks up inbox items and surfaces the result.
+
+## SSE Events
+
+The auth queue broadcasts these SSE event types:
+
+| Event | When |
+|-------|------|
+| `auth:new` | A new request is submitted or a failed request is retried. |
+| `auth:updated` | Request metadata is modified (title, diff, spec, etc.). |
+| `auth:output` | Execution output chunk (stdout/stderr). |
+| `auth:resolved` | Request reached a terminal state (completed, rejected, dismissed, expired). |
+| `auth:deleted` | Request was permanently deleted. |

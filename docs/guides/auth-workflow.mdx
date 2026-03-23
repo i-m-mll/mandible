@@ -1,0 +1,230 @@
+# Auth Workflow: End to End
+
+This guide walks through the complete lifecycle of an authenticated operation, from the moment an agent finishes work on a feature branch to the result being delivered back to the agent's inbox.
+
+## 1. Agent Completes Work on a Feature Branch
+
+The agent has been working in a feature branch worktree — say `feature/add-dark-mode`. It has made commits using the agent signing key (via `agent-commit --issue <id>`), each with a `Bug:` trailer linking to the tracking issue. The work is done, tests pass, and the agent is ready to merge into the protected branch.
+
+At this point, the agent cannot merge directly. The protected branch requires user authentication (a YubiKey signature). So it submits an auth request.
+
+## 2. Submitting the Auth Request
+
+The agent runs:
+
+```bash
+mandible auth request feature/add-dark-mode \
+  --title "Merge feature/add-dark-mode: dark mode support" \
+  --issue abc1234 \
+  --spec "Adds dark mode toggle to the settings panel. Uses CSS custom properties for theme switching. Preserves user preference in localStorage." \
+  --no-watch
+```
+
+The `mandible auth request` CLI does several things automatically:
+
+1. **Detects the protected branch** (e.g., `main`) and the repository name.
+2. **Computes diff stats** — files changed, lines added, lines deleted.
+3. **Generates a diff summary** from `git diff --stat` and `git log`.
+4. **Extracts issue IDs** from `Bug:` trailers in the commit range.
+5. **Verifies every commit has a `Bug:` reference.** If any commits are missing references, the submission is rejected with a list of offending commits.
+6. **Checks for duplicates.** If a pending request for this branch already exists, the CLI reports it rather than creating a duplicate.
+7. **Posts to the Mandible API** (`POST /api/auth/request`) with all the collected metadata.
+
+The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
+
+### What Gets Submitted
+
+The API receives a payload roughly like:
+
+```json
+{
+  "command": "mandible auth merge feature/add-dark-mode",
+  "title": "Merge feature/add-dark-mode: dark mode support",
+  "type": "merge",
+  "repo": "my-app",
+  "base_branch": "main",
+  "head_branch": "feature/add-dark-mode",
+  "cwd": "/path/to/repo",
+  "files_changed": 12,
+  "additions": 340,
+  "deletions": 45,
+  "diff_summary": "src/theme.ts | 120 ++++...\nsrc/settings.tsx | 85 +++...",
+  "commit_message": "feat: dark mode support\n\nBug: abc1234",
+  "spec_content": "Adds dark mode toggle to the settings panel...",
+  "issues": ["abc1234"],
+  "session_id": "sess-xyz",
+  "execution_mode": "daemon"
+}
+```
+
+The request enters the queue with status `pending`.
+
+## 3. Request Appears in the Dashboard
+
+The Mandible dashboard shows the auth queue with all pending requests. The new request appears with:
+
+- The title and type (merge).
+- Repository and branch names.
+- A diff summary showing what changed.
+- The specification explaining the intent.
+- Linked issue IDs.
+- A timestamp and expiry countdown (24 hours from submission).
+
+The dashboard receives the `auth:new` SSE event in real time, so it updates instantly.
+
+## 4. User Reviews the Request
+
+The user examines the request in the dashboard. They can see:
+
+- **Diff stats** — How many files changed, lines added/deleted. A quick sanity check.
+- **Diff summary** — The git stat output showing which files were touched.
+- **Specification** — The agent's explanation of what the changes do and why. For non-trivial work, this is the primary review surface.
+- **Commit messages** — The messages from each commit in the branch.
+- **Linked issues** — Click through to the issue details for full context.
+- **Dependency status** — If this request depends on another (e.g., a prerequisite merge), the status of that dependency is shown.
+
+If something looks wrong, the user can:
+- **Update the request** (`PUT /api/auth/request/:id`) to correct metadata before approving.
+- **Reject it** with a reason that gets delivered to the agent.
+- **Skip it** to review other requests first.
+- **Dismiss it** to remove it from the queue entirely.
+
+## 5. User Approves
+
+The user clicks Approve. This triggers `POST /api/auth/request/:id/approve`.
+
+The request transitions from `pending` to `executing`.
+
+## 6. Execution
+
+Mandible spawns the merge command as a child process. The execution environment is carefully prepared:
+
+### Environment Sanitization
+
+The daemon strips all agent signing overrides from the environment:
+- `CLAUDECODE` is removed.
+- `GIT_CONFIG_COUNT` and all `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` variables are removed.
+
+This ensures the git merge uses the user's configured signing key — the YubiKey ED25519-SK — rather than the agent's key. The merge command is `mandible auth merge feature/add-dark-mode`, which internally runs `git merge --gpg-sign`.
+
+### YubiKey Authentication
+
+At this point, the user's YubiKey needs to be connected and responsive. The merge command triggers a signing operation that requires a physical touch of the YubiKey. This is the authentication moment — the user has reviewed the changes in the dashboard and now physically confirms the merge.
+
+### Output Streaming
+
+As the merge command runs, its stdout and stderr are captured and broadcast via SSE (`auth:output` events). The dashboard shows a live terminal-like view:
+
+```
+Executing merge command...
+Merge made by the 'ort' strategy.
+ src/theme.ts     | 120 ++++++++++++++++++++++++++++++++++++++++++++++++
+ src/settings.tsx |  85 ++++++++++++++++++++++++++++++++++
+ ...
+ 12 files changed, 340 insertions(+), 45 deletions(-)
+```
+
+### Timeout
+
+If the merge doesn't complete within 10 minutes (e.g., the YubiKey isn't connected, git hangs on a network operation), the process is killed with SIGTERM, followed by SIGKILL after 5 seconds. The request is marked as failed.
+
+## 7. Post-Merge Hooks
+
+After a successful merge (exit code 0), Mandible runs any configured auth hooks. For example, a repository might have hooks that:
+
+- Rebuild dist files if source changed.
+- Restart the Mandible daemon if its own dist changed.
+- Push to a remote.
+- Notify a CI system.
+
+Hooks run sequentially. Their output is streamed to the same SSE channel, prefixed with `[hook: <label>]`:
+
+```
+[hook: rebuild-dist] Building dist...
+[hook: rebuild-dist] ok (2340ms)
+[hook: restart-daemon] Restarting mandible daemon...
+[hook: restart-daemon] ok (890ms)
+```
+
+Hook failures are logged but don't change the auth result — the merge already succeeded.
+
+## 8. Result Recording
+
+The command's exit code is stored. For a successful merge:
+- Status becomes `completed` with `exit_code: 0`.
+- `resolved_at` is set.
+
+The auth queue broadcasts an `auth:resolved` SSE event.
+
+### Auto-Dismiss Duplicates
+
+If there are other pending or failed requests targeting the same branch merge (retries, corrected resubmissions), they're automatically dismissed. The branch has been merged and deleted — approving stale duplicates would waste a YubiKey tap on a branch that no longer exists.
+
+### Work Unit Resolution
+
+Mandible resolves associated work units:
+1. Any work unit with `auth_request_id` matching this request.
+2. Any work unit whose `branch` matches `feature/add-dark-mode`.
+3. Any work unit linked to issue `abc1234` (from the `Bug:` trailer).
+
+This closes the loop between the auth queue, the issue tracker, and the work-unit lifecycle.
+
+## 9. Result Delivery
+
+The result is delivered to the agent via two channels:
+
+### SSE (Real-Time)
+
+The `auth:resolved` event is broadcast immediately. Any dashboard client or SSE listener connected at that moment receives it.
+
+### Inbox (Asynchronous)
+
+The result is placed in the Mandible inbox for the session that submitted the request. The next time the agent starts a session, the session-start hook calls `mandible inbox` and picks up the result:
+
+```
+Auth request completed: Merge feature/add-dark-mode: dark mode support
+Status: success (exit_code 0)
+```
+
+This asynchronous delivery model means the agent doesn't need to be running when the merge happens. It can submit the request and shut down. The result will be waiting when it comes back.
+
+## What If Something Goes Wrong?
+
+### Merge Conflict
+
+If the merge has conflicts, the command exits with a non-zero code. The request is marked as `completed` with a non-zero `exit_code`, and the error output shows the conflict details. The user can:
+- Have the agent resolve conflicts on the feature branch.
+- Retry the request after resolution.
+
+### YubiKey Not Present
+
+If the YubiKey isn't connected when the merge runs, git will hang waiting for the signing key. The 10-minute timeout catches this — the request fails with a timeout error. Connect the YubiKey and retry.
+
+### Daemon Crash During Execution
+
+If the Mandible daemon is killed mid-execution (e.g., by its own post-merge hook restarting it), the request gets stuck in `executing` status. On the next daemon startup, the recovery logic handles this:
+- If the output contains merge evidence ("Merge made by" or "Fast-forward"), the request is marked as completed successfully.
+- If there's no output and it's been stuck for more than 5 minutes, it's marked as failed (interrupted).
+
+During normal runtime, the expiry timer checks every 30 seconds for requests stuck in `executing` for more than 10 minutes and recovers them.
+
+### Request Expires
+
+If nobody acts on a request for 24 hours, it expires automatically. The agent receives an expiry notification in its inbox. It can resubmit if the work is still relevant.
+
+## Checking Status Manually
+
+If you need to check on a request outside the dashboard:
+
+```bash
+# By request ID
+curl -s http://localhost:19420/api/auth/request/<id>
+
+# List all active requests
+curl -s http://localhost:19420/api/auth/queue
+
+# List resolved history
+curl -s http://localhost:19420/api/auth/history?limit=10
+```
+
+The queue endpoint returns pending, executing, recently resolved, and failed requests — everything the user might need to act on.
