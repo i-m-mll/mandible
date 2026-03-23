@@ -337,7 +337,8 @@ export function registerSessionRoutes(
     const id = resolveSessionId(rawId, res);
     if (!id) return;
 
-    const body = readBody<{ tool_name?: string }>(req);
+    // Bug: 7ab2f3e — Accept optional tool_input/tool_output for event bridge
+    const body = readBody<{ tool_name?: string; tool_input?: unknown; tool_output?: unknown }>(req);
     const toolName = body.tool_name ?? "unknown";
 
     const channelRegistry = getChannelRegistry();
@@ -345,7 +346,7 @@ export function registerSessionRoutes(
     // Get current session branch/cwd from DB
     const session = registry.getSession(id);
     channelRegistry.register(id, session?.cwd ?? null, session?.branch ?? null);
-    channelRegistry.recordToolCall(id, toolName);
+    channelRegistry.recordToolCall(id, toolName, body.tool_input, body.tool_output);
 
     sendJson(res, 200, { ok: true });
   });
