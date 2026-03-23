@@ -58,6 +58,7 @@ __export(api_exports, {
   addSessionPreset: () => addSessionPreset,
   addSwitchboardPairing: () => addSwitchboardPairing,
   approveAuthRequest: () => approveAuthRequest,
+  bootstrapRuntime: () => bootstrapRuntime,
   buildQuery: () => buildQuery,
   closeConsoleSession: () => closeConsoleSession,
   createAuthHook: () => createAuthHook,
@@ -111,6 +112,8 @@ __export(api_exports, {
   getRepoBranches: () => getRepoBranches,
   getReviewDiff: () => getReviewDiff,
   getReviewSpec: () => getReviewSpec,
+  getRuntimePatches: () => getRuntimePatches,
+  getRuntimeStatus: () => getRuntimeStatus,
   getSessionIssues: () => getSessionIssues,
   getSessionPresets: () => getSessionPresets,
   getSessions: () => getSessions,
@@ -136,11 +139,13 @@ __export(api_exports, {
   rejectAuthRequest: () => rejectAuthRequest,
   removeSessionPreset: () => removeSessionPreset,
   reorderPresetNode: () => reorderPresetNode,
+  resetRuntime: () => resetRuntime,
   respondToConsolePermission: () => respondToConsolePermission,
   restartConsoleSession: () => restartConsoleSession,
   restartDesktopDaemon: () => restartDesktopDaemon,
   resumeConversation: () => resumeConversation,
   retryAuthRequest: () => retryAuthRequest,
+  rollbackRuntime: () => rollbackRuntime,
   runBackupNow: () => runBackupNow,
   scanIssueRepo: () => scanIssueRepo,
   scanIssues: () => scanIssues,
@@ -167,6 +172,7 @@ __export(api_exports, {
   updatePresetDiff: () => updatePresetDiff,
   updatePresetNode: () => updatePresetNode,
   updatePresetNodes: () => updatePresetNodes,
+  updateRuntime: () => updateRuntime,
   updateSetting: () => updateSetting,
   updateStarredChat: () => updateStarredChat,
   updateSwitchboardPairing: () => updateSwitchboardPairing,
@@ -1072,6 +1078,30 @@ async function updateAuthHook(id2, fields) {
 }
 async function deleteAuthHook(id2) {
   await apiDelete(`/api/auth/hooks/${id2}`);
+}
+async function getRuntimeStatus() {
+  const response = await apiGet("/api/runtime/status");
+  return await parseMaybeJson(response);
+}
+async function getRuntimePatches() {
+  const response = await apiGet("/api/runtime/patches");
+  return await parseMaybeJson(response);
+}
+async function bootstrapRuntime() {
+  const response = await apiPost("/api/runtime/bootstrap");
+  return await parseMaybeJson(response);
+}
+async function updateRuntime() {
+  const response = await apiPost("/api/runtime/update");
+  return await parseMaybeJson(response);
+}
+async function rollbackRuntime() {
+  const response = await apiPost("/api/runtime/rollback");
+  return await parseMaybeJson(response);
+}
+async function resetRuntime() {
+  const response = await apiPost("/api/runtime/reset");
+  return await parseMaybeJson(response);
 }
 var DEFAULT_HEADERS, getPresets;
 var init_api = __esm({
@@ -21342,6 +21372,188 @@ function BackupSection() {
     ] })
   ] });
 }
+function RuntimeSection() {
+  const [status, setStatus] = d2(null);
+  const [loading, setLoading] = d2(true);
+  const [action, setAction] = d2(null);
+  const [error, setError] = d2(null);
+  const [feedback, setFeedback] = d2(null);
+  const refreshStatus = q2(async () => {
+    try {
+      const next = await getRuntimeStatus();
+      setStatus(next);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load runtime status");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  y2(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
+  const handleBootstrap = q2(async () => {
+    setAction("bootstrap");
+    setFeedback(null);
+    try {
+      await bootstrapRuntime();
+      setFeedback("Bootstrap started. This may take a minute...");
+      const timer2 = window.setInterval(async () => {
+        try {
+          const next = await getRuntimeStatus();
+          setStatus(next);
+          if (next.available) {
+            window.clearInterval(timer2);
+            setFeedback("Zone 2 runtime initialized successfully.");
+            setAction(null);
+          }
+        } catch {
+        }
+      }, 3e3);
+      window.setTimeout(() => {
+        window.clearInterval(timer2);
+        setAction(null);
+      }, 18e4);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Bootstrap failed");
+      setAction(null);
+    }
+  }, []);
+  const handleUpdate = q2(async () => {
+    setAction("update");
+    setFeedback(null);
+    try {
+      const result = await updateRuntime();
+      if (result.updated) {
+        setFeedback("Update applied successfully.");
+      } else {
+        setFeedback(result.message ?? "Already up to date.");
+      }
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Update failed");
+    } finally {
+      setAction(null);
+    }
+  }, [refreshStatus]);
+  const handleRollback = q2(async () => {
+    setAction("rollback");
+    setFeedback(null);
+    try {
+      await rollbackRuntime();
+      setFeedback("Last patch rolled back.");
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Rollback failed");
+    } finally {
+      setAction(null);
+    }
+  }, [refreshStatus]);
+  const handleReset = q2(async () => {
+    setAction("reset");
+    setFeedback(null);
+    try {
+      await resetRuntime();
+      setFeedback("Reset to upstream complete.");
+      await refreshStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Reset failed");
+    } finally {
+      setAction(null);
+    }
+  }, [refreshStatus]);
+  return /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+    /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+      /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Runtime" }),
+      /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Zone 2 mutable runtime for self-modification and patching." })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: "Install mode" }) }),
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: loading ? /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading..." }) : /* @__PURE__ */ u3("span", { children: status?.installMode ?? "unknown" }) })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: "Zone 2 path" }) }),
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: loading ? /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading..." }) : /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontSize: "0.85em", wordBreak: "break-all" }, children: [
+          status?.zone2Path ?? "N/A",
+          status?.available ? " (active)" : " (not initialized)"
+        ] }) })
+      ] }),
+      status?.available && /* @__PURE__ */ u3(k, { children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+          /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: "Commit" }) }),
+          /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: [
+            /* @__PURE__ */ u3("span", { className: "text-muted", style: { fontFamily: "monospace", fontSize: "0.85em" }, children: status.commit ? status.commit.slice(0, 12) : "unknown" }),
+            status.branch && /* @__PURE__ */ u3("span", { className: "text-muted", style: { marginLeft: "0.5rem" }, children: [
+              "(",
+              status.branch,
+              ")"
+            ] })
+          ] })
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+          /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: "Local patches" }) }),
+          /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: /* @__PURE__ */ u3("span", { children: status.patchCount }) })
+        ] })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: "Actions" }) }),
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", style: { gap: "0.5rem", display: "flex", flexWrap: "wrap" }, children: [
+          !status?.available && /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "btn btn--active btn--sm",
+              onClick: handleBootstrap,
+              disabled: loading || action != null,
+              children: action === "bootstrap" ? "..." : "Initialize Runtime"
+            }
+          ),
+          status?.available && /* @__PURE__ */ u3(k, { children: [
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "btn btn--active btn--sm",
+                onClick: handleUpdate,
+                disabled: loading || action != null,
+                children: action === "update" ? "..." : "Check for Updates"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "btn btn--sm",
+                onClick: handleRollback,
+                disabled: loading || action != null || (status.patchCount ?? 0) === 0,
+                children: action === "rollback" ? "..." : "Rollback Last Patch"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "btn btn--sm",
+                onClick: handleReset,
+                disabled: loading || action != null,
+                children: action === "reset" ? "..." : "Reset to Upstream"
+              }
+            )
+          ] })
+        ] })
+      ] }),
+      feedback && /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-info" }),
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: /* @__PURE__ */ u3("span", { className: "settings-view__feedback settings-view__feedback--success", children: feedback }) })
+      ] }),
+      error && /* @__PURE__ */ u3("div", { className: "settings-view__number-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-info" }),
+        /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: /* @__PURE__ */ u3("span", { className: "settings-view__feedback settings-view__feedback--error", children: error }) })
+      ] })
+    ] })
+  ] });
+}
 function SettingsView(props) {
   const { settings, onSave } = props;
   const [protectedBranches, setProtectedBranches] = d2("");
@@ -21738,7 +21950,8 @@ function SettingsView(props) {
         }
       ) })
     ] }),
-    /* @__PURE__ */ u3(BackupSection, {})
+    /* @__PURE__ */ u3(BackupSection, {}),
+    /* @__PURE__ */ u3(RuntimeSection, {})
   ] });
 }
 

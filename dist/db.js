@@ -763,6 +763,31 @@ const MIGRATIONS = [
          CAST(strftime('%s','now') * 1000 AS INTEGER)
        )`
         ]
+    },
+    {
+        version: 47,
+        name: "runtime_patches",
+        // Bug: cc4688b — Zone 2 mutable runtime: audit table for applied patches
+        statements: [
+            `CREATE TABLE IF NOT EXISTS runtime_patches (
+        id            TEXT PRIMARY KEY,
+        fingerprint   TEXT,
+        commit_hash   TEXT NOT NULL,
+        parent_hash   TEXT,
+        diff_summary  TEXT,
+        diff_stat     TEXT,
+        applied_at    INTEGER NOT NULL,
+        reverted_at   INTEGER,
+        source        TEXT NOT NULL CHECK(source IN ('agent','known_fix','manual','upstream_update')),
+        session_id    TEXT,
+        submitted     INTEGER NOT NULL DEFAULT 0,
+        submission_url TEXT
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_runtime_patches_applied
+        ON runtime_patches(applied_at DESC)`,
+            `CREATE INDEX IF NOT EXISTS idx_runtime_patches_source
+        ON runtime_patches(source)`,
+        ]
     }
 ];
 export function getDbPath() {
