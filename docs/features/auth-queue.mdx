@@ -90,7 +90,7 @@ The dashboard displays the auth queue with all active requests. For each request
 
 ### Available Actions
 
-**Approve** (`POST /api/auth/request/:id/approve`) — Transitions the request to `executing` and spawns the command. The command runs in a clean environment with agent-key signing overrides stripped, ensuring the user's signing key (YubiKey) is used for the actual operation. Output streams in real time via SSE.
+**Approve** (`POST /api/auth/request/:id/approve`) — Starts execution. The environment is sanitized so the operation uses your signing key (not the agent's). Output streams in real time via SSE.
 
 **Reject** (`POST /api/auth/request/:id/reject`) — Declines the request with an optional reason. The result is delivered to the agent's inbox.
 
@@ -104,17 +104,7 @@ The dashboard displays the auth queue with all active requests. For each request
 
 ## Execution
 
-When a request is approved, Mandible spawns the command as a child process. The execution environment is carefully prepared:
-
-1. **Agent signing overrides are stripped.** The `CLAUDECODE`, `GIT_CONFIG_COUNT`, and all `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` environment variables are removed. This ensures git operations use the user's configured signing key (the YubiKey ED25519-SK) rather than the agent's key.
-
-2. **The auth request ID is injected.** `MANDIBLE_AUTH_REQUEST_ID` is set so the merge script can query the API for request-specific metadata (issues to close, spec content, etc.).
-
-3. **Auto-confirm is enabled.** `AUTH_MERGE_AUTO_CONFIRM=1` is set so the merge script does not prompt for interactive confirmation (the user already confirmed via the dashboard).
-
-4. **Output streams in real time.** Both stdout and stderr are captured and broadcast via SSE (`auth:output` events). The UI shows a live terminal-like view of the execution.
-
-5. **Timeout enforcement.** Commands are killed after 10 minutes (with a 5-second grace period between SIGTERM and SIGKILL). This prevents stuck merges from blocking the queue indefinitely.
+When a request is approved, Mandible spawns the command in a sanitized environment. Agent signing overrides are stripped so the operation uses your signing key, and output streams to the dashboard in real time. Commands that don't complete within the timeout are terminated to prevent the queue from blocking.
 
 ### Execution Modes
 
@@ -189,24 +179,13 @@ When a merge request completes successfully, Mandible automatically dismisses an
 
 ## Work Unit Resolution
 
-On successful merge (exit code 0), the queue automatically resolves associated work units:
-
-1. Work units whose `auth_request_id` matches the completed request.
-2. Work units whose `branch` matches the request's `head_branch`.
-3. Work units linked to issue IDs found in `Bug:` trailers of the commit message or in the request's `issues` array.
+On successful merge, the queue automatically resolves associated work units --- those linked to the request directly, those on the merged branch, and those linked to issues referenced in the commit message.
 
 This closes the loop between the auth queue, the issue tracker, and the work-unit lifecycle.
 
 ## Stuck Request Recovery
 
-Mandible handles cases where requests get stuck in the `executing` or `approved` state (typically because the daemon was killed mid-execution):
-
-**At startup:**
-- Requests with output containing merge evidence ("Merge made by" or "Fast-forward") are marked as completed successfully.
-- Requests with no output that have been stuck for more than 5 minutes are marked as failed with an explanation.
-
-**During runtime:**
-- Every 30 seconds, the expiry timer checks for requests stuck in `approved`/`executing` with no output for more than 10 minutes and marks them as interrupted.
+Mandible automatically recovers requests that get stuck due to daemon crashes or other interruptions. On startup, it examines incomplete requests and determines whether they actually succeeded (by checking for merge evidence in the output) or should be marked as failed. During runtime, a periodic check catches requests that have been stuck too long and marks them as interrupted.
 
 This ensures the queue never gets permanently stuck, even after unclean daemon restarts.
 

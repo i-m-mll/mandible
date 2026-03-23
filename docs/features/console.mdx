@@ -20,7 +20,7 @@ The SDK backend uses the `@anthropic-ai/claude-agent-sdk` to communicate with Cl
 - DAG branching support — resume a conversation from a specific message or fork at a branch point.
 - Subagent tracking — the backend monitors `SubagentStart`/`SubagentStop` hooks to maintain a tree of active subagents.
 
-**How it works internally:** When you send a prompt, the SDK backend calls `sdk.query()` with the prompt and options (model, system prompt, permissions, allowed tools). It then iterates the async message stream, normalizing each SDK event into Mandible's `ConsoleStreamEvent` format. Events are stored in an in-memory log (capped at 2,000 entries) and broadcast to connected WebSocket clients.
+When you send a prompt, the SDK backend communicates with Claude, normalizes the event stream into a common format, and broadcasts events to connected dashboard clients in real-time.
 
 ### PTY Backend
 
@@ -30,8 +30,8 @@ The PTY backend spawns the agent as a pseudo-terminal process via `node-pty`. Th
 
 **Key capabilities:**
 - Full terminal emulation (colors, cursor movement, screen clearing).
-- Ring buffer stores the last ~128KB of terminal output for late-joining clients.
-- Output is parsed line-by-line through normalizers that extract structured events from Codex and Gemini's terminal output.
+- A ring buffer stores recent terminal output for clients that connect mid-session.
+- Output normalizers extract structured events from Codex and Gemini's terminal output where possible.
 - Process management: auto-restart on crash (up to 5 attempts with exponential backoff), SIGHUP for clean restarts.
 
 **Trade-offs vs. SDK:** The PTY backend has no visibility into individual tool calls, token usage, or permission requests. It's process-level control — start, stop, signal, read output. Use it when the SDK backend isn't available for the agent type.
@@ -97,17 +97,9 @@ Both views share the same underlying event streaming infrastructure. The differe
 
 ## Streaming and Event Architecture
 
-Console sessions stream events to connected clients via WebSocket. When a client connects:
+Console sessions stream events to connected clients via WebSocket. When a client connects, it receives the session metadata, buffered event history, and then live events as they occur. All events use a common typed format regardless of the backend.
 
-1. It receives an `init` message with the full session metadata.
-2. It receives the buffered event history (up to 2,000 events for SDK, or the ring buffer snapshot for PTY).
-3. It receives live events as they occur.
-
-Events are typed — each has a `type` field (`assistant`, `user`, `thinking`, `tool_use`, `tool_result`, `system`, `result`, `stream_event`) and a `session_id` linking it back to the provider session. The SDK backend normalizes Claude's native event types into this common format so the frontend doesn't need to handle provider-specific event shapes.
-
-### IndexedDB Cache
-
-The dashboard caches conversation events in IndexedDB on the client side. When you navigate away from a session and come back, the UI can hydrate from the local cache instantly while re-establishing the WebSocket connection for live updates. This eliminates the blank-screen delay on reconnect for sessions with long histories.
+The dashboard caches events locally so that navigating away from a session and back restores the view instantly while the live connection re-establishes.
 
 ## Permissions
 
@@ -162,7 +154,7 @@ Sessions can be started, stopped, and restarted via the API:
 
 ### Mandible Session Integration
 
-Console sessions are linked to Mandible's session registry. When the SDK backend receives a `SessionStart` hook from Claude, it registers (or finds) a Mandible session for that provider session ID. This links the console session to the broader session tracking system — active/idle status, last-activity timestamps, and inbox delivery all flow through this connection.
+Console sessions are automatically linked to Mandible's session registry. This connects the console session to the broader tracking system --- active/idle status, last-activity timestamps, and inbox delivery all flow through this link.
 
 ## Sending Prompts
 

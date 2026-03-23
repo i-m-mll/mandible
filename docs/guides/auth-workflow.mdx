@@ -20,15 +20,7 @@ mandible auth request feature/add-dark-mode \
   --no-watch
 ```
 
-The `mandible auth request` CLI does several things automatically:
-
-1. **Detects the protected branch** (e.g., `main`) and the repository name.
-2. **Computes diff stats** — files changed, lines added, lines deleted.
-3. **Generates a diff summary** from `git diff --stat` and `git log`.
-4. **Extracts issue IDs** from `Bug:` trailers in the commit range.
-5. **Verifies every commit has a `Bug:` reference.** If any commits are missing references, the submission is rejected with a list of offending commits.
-6. **Checks for duplicates.** If a pending request for this branch already exists, the CLI reports it rather than creating a duplicate.
-7. **Posts to the Mandible API** (`POST /api/auth/request`) with all the collected metadata.
+The `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, checks for duplicate requests, and submits everything to the Mandible API.
 
 The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
 
@@ -101,11 +93,7 @@ Mandible spawns the merge command as a child process. The execution environment 
 
 ### Environment Sanitization
 
-The daemon strips all agent signing overrides from the environment:
-- `CLAUDECODE` is removed.
-- `GIT_CONFIG_COUNT` and all `GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` variables are removed.
-
-This ensures the git merge uses the user's configured signing key — the YubiKey ED25519-SK — rather than the agent's key. The merge command is `mandible auth merge feature/add-dark-mode`, which internally runs `git merge --gpg-sign`.
+The daemon strips agent signing overrides from the environment before running the merge command. This ensures the merge uses your signing key (YubiKey) rather than the agent's software key.
 
 ### YubiKey Authentication
 
@@ -202,11 +190,7 @@ If the YubiKey isn't connected when the merge runs, git will hang waiting for th
 
 ### Daemon Crash During Execution
 
-If the Mandible daemon is killed mid-execution (e.g., by its own post-merge hook restarting it), the request gets stuck in `executing` status. On the next daemon startup, the recovery logic handles this:
-- If the output contains merge evidence ("Merge made by" or "Fast-forward"), the request is marked as completed successfully.
-- If there's no output and it's been stuck for more than 5 minutes, it's marked as failed (interrupted).
-
-During normal runtime, the expiry timer checks every 30 seconds for requests stuck in `executing` for more than 10 minutes and recovers them.
+If the Mandible daemon is killed mid-execution (e.g., by its own post-merge hook restarting it), the request gets stuck in `executing` status. On the next startup, Mandible's recovery logic examines the output to determine whether the merge actually succeeded, and marks the request accordingly. During normal runtime, a periodic check catches any requests that remain stuck and recovers them.
 
 ### Request Expires
 

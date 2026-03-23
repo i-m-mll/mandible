@@ -20,25 +20,15 @@ Each directory is watched via `chokidar` with write-finish detection (stabilityT
 
 ### How Ingestion Works
 
-1. **File detection** — A new or modified file is detected in a watched directory.
-2. **Debounce** — Changes are debounced for 2 seconds to avoid re-ingesting a file that's still being written to.
-3. **Mtime check** — If the file's mtime hasn't changed since the last ingestion, skip it (no work to do).
-4. **Parsing** — The appropriate parser (Claude, Codex, or Gemini) reads the file and produces a normalized `ParseResult` containing conversation metadata and an ordered list of blocks.
-5. **Empty check** — Empty sessions (no meaningful content) are skipped. If a previously-ingested file becomes empty, the stale database entry is removed (unless it's starred).
-6. **Hash check** — If the content hash matches what's already in the database, only the mtime is updated.
-7. **Delta ingestion** — For existing conversations where new blocks have been appended (the common case for active sessions), only the new blocks are compressed and inserted. This avoids re-processing the entire file on every append.
-8. **Full re-ingestion** — If the file has been truncated or modified in a non-append way, the existing data is deleted and everything is re-ingested from scratch.
-9. **Compression** — Block content is gzip-compressed asynchronously before entering the database transaction. This reduces DB size by roughly 76% and keeps the event loop responsive during burst ingestion.
-10. **SSE broadcast** — A `conversation:new` or `conversation:updated` event is broadcast so the dashboard updates in real time.
+When a new or modified transcript file is detected, the ingestion service parses it into normalized blocks using the appropriate parser (Claude, Codex, or Gemini). Files still being written are debounced to avoid partial reads.
+
+For active sessions where new messages are being appended, only the new blocks are processed --- the service avoids re-parsing the entire file. If a file has been modified in a non-append way, it's re-ingested from scratch. Block content is compressed before storage, reducing database size significantly.
+
+The dashboard updates in real time as conversations are ingested via SSE events.
 
 ### Periodic Reconciliation
 
-Every 60 seconds, the ingestion service runs a full reconciliation pass:
-- Scans all watched directories for files that might have been missed by the filesystem watcher.
-- Cleans up conversations with zero blocks (except starred ones).
-- Queues any out-of-date files for re-ingestion.
-
-The reconciliation scan uses an async file walker that yields to the event loop every 50 directory entries, so the HTTP server stays responsive during startup scans of large directories.
+The ingestion service periodically scans all watched directories to catch files that the filesystem watcher might have missed, cleans up empty conversations (except starred ones), and re-ingests any out-of-date files.
 
 ### Manual Trigger
 
@@ -205,9 +195,7 @@ Resume creates an SDK-backend console session with `resume_at_message` set, so t
 
 ## Compression
 
-Block content is stored as gzip-compressed BLOBs in SQLite. Compression happens asynchronously before the database transaction to avoid blocking the event loop. Decompression is transparent — the API and export functions decompress on read, and the `compressed` flag on each block row indicates whether the content needs decompression.
-
-This reduces database size by approximately 76% compared to storing raw text, with negligible CPU overhead (gzip level 6, the default balance of speed and ratio).
+Block content is stored compressed in the database, reducing storage size by approximately 76% compared to raw text. Compression and decompression are transparent --- the API and export functions handle it automatically.
 
 ## Sources Summary
 

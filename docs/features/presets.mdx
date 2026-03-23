@@ -2,7 +2,7 @@
 
 Presets are Mandible's system for managing, composing, and versioning agent conventions — the instructions that shape how AI agents behave. If you've used `CLAUDE.md` files, presets are the structured, version-tracked, composable evolution of that concept.
 
-A preset is a tree of convention nodes parsed from Markdown. Nodes have parent-child relationships derived from heading hierarchy, and each node can be individually edited, moved, or linked to system settings. Multiple presets can be composed into a single system prompt for a console session, with content-hash deduplication to avoid redundancy.
+A preset is a tree of convention nodes parsed from Markdown. Nodes follow the heading hierarchy, and each node can be individually edited, moved, or linked to system settings. Multiple presets can be composed into a single system prompt for a console session, with automatic deduplication to avoid redundancy.
 
 ## Core Concepts
 
@@ -16,7 +16,7 @@ A preset is a named collection of convention nodes with metadata:
 | `description` | Optional description of the preset's purpose. |
 | `source` | How the preset was created: `manual`, `claude_md_global`, `claude_md_project`, or `claude_md_local`. |
 | `source_path` | The file path the preset was imported from (null for manually created presets). |
-| `content_hash` | SHA-256 of the serialized Markdown content. Used for deduplication in union computation. |
+| `content_hash` | Content fingerprint used for deduplication when composing presets. |
 | `version` | Integer version that increments on every node tree update. |
 
 ### Nodes
@@ -159,14 +159,14 @@ GET /api/presets/union?session_id=<id>
 
 1. The session's presets are loaded in position order.
 2. Each preset's node tree is serialized back to Markdown.
-3. **Content-hash deduplication**: If two presets produce identical Markdown (same SHA-256), the duplicate is skipped. This handles the case where the same conventions appear in both a global and a project preset.
+3. **Deduplication**: If two presets produce identical Markdown, the duplicate is skipped. This handles the case where the same conventions appear in both a global and a project preset.
 4. The remaining Markdown chunks are joined with `---` separators.
 
-The result includes a `tokenEstimate` computed as `ceil(text.length / 3.5)` — a rough heuristic for Claude's tokenizer.
+The result includes a `tokenEstimate` --- a rough estimate of how many tokens the composed text will consume.
 
 ### Token Estimation
 
-Every preset listing includes a `token_estimate` computed from the aggregate character length of its node titles and bodies. The estimation uses the same `length / 3.5` heuristic as the union engine. This lets you see at a glance how much context budget each preset consumes.
+Every preset listing includes a token estimate so you can see at a glance how much context budget each preset consumes.
 
 Model context windows for reference:
 - Opus: 1,000,000 tokens
@@ -265,12 +265,7 @@ POST /api/presets/violations
 }
 ```
 
-The routing algorithm:
-1. Loads the session's active presets.
-2. Skips global presets (user-driven promotion is a separate workflow).
-3. Computes a Jaccard similarity score between the violation text and each preset's node content.
-4. Adds a bonus for project presets that match the repo context.
-5. Returns the best match with a confidence level (high/medium/low).
+The routing logic finds the most relevant preset by matching the violation context against each preset's content and repository, returning the best match with a confidence level (high/medium/low).
 
 The result includes both the created diff and the routing recommendation, so the dashboard can show where the new convention would land.
 
