@@ -1,0 +1,62 @@
+---
+title: Inbox
+description: Continuations, auth results, work-unit handoffs, and other actionable items.
+---
+
+# Inbox
+
+The Inbox collects everything that needs your attention: session handoff notes, auth request results, open issues on the current branch, work-unit continuations, and preset diff proposals. It is the primary mechanism for asynchronous communication between agents and the user.
+
+## Layout
+
+Sidebar-plus-detail, like the Issues tab. The sidebar lists all inbox items with color-coded type badges; the detail panel shows the full content of the selected item.
+
+### Filtering
+
+A chip-based filter bar sits at the top of the sidebar. Type to search, and an autocomplete dropdown offers matching repo names and branch names extracted from the current inbox items. Add multiple chips to narrow by both repo and branch simultaneously. Remove chips with the x button or by pressing Backspace in the empty input.
+
+Items are sorted by time (newest first). Null-time items (e.g., issues without a timestamp) sink to the bottom.
+
+## Item types
+
+### Continuations
+
+When an agent session ends with unfinished work, it writes a **continuation** — free-text handoff notes describing what was done and what remains. Continuations appear in the inbox with a blue badge.
+
+The detail panel shows the continuation text, the branch and repo it was working on, and when the session ended. Click **Acknowledge** to dismiss it.
+
+### Auth results
+
+After you approve or reject an auth request via the dashboard or terminal, the result is delivered to the inbox. Completed merges show a green badge; rejections and expirations show red; dismissals show grey.
+
+The detail panel shows the request title, branch, base branch, resolution time, exit code, and any error output. A link to the Auth tab is provided for cross-reference. Click **Acknowledge** to dismiss.
+
+### Work-unit continuations
+
+Similar to session continuations, but tied to a work unit rather than a specific session. These represent handoff notes left on an issue's work unit when the assigned agent finishes without completing the task. They appear with an amber "Handoff" badge.
+
+The detail panel shows the branch, linked issue, handoff timestamp, and the continuation text. A **Resume** button spawns a new SDK session to pick up where the previous agent left off, pre-loaded with the handoff context. A **View Issue** link navigates to the Issues tab.
+
+### Open issues
+
+Issues on the current branch that are still open appear in the inbox as a reminder. They show a purple badge and link through to the Issues tab.
+
+### Preset diffs
+
+When an agent proposes changes to a preset's conventions, the diff is delivered as an inbox item with a yellow badge. The detail panel shows the preset name, description, and status (pending/accepted/rejected), with a link to review the diff in the Presets tab.
+
+## Acknowledge All
+
+The **Ack All** button in the sidebar action bar dismisses all continuations and auth results at once. Issues and work-unit handoffs are not affected — they require explicit action.
+
+## API
+
+The inbox is backed by `GET /api/inbox`, which aggregates data from the sessions, auth_requests, work_units, and preset_diffs tables. The `?branch=` query parameter filters to a specific branch (used by the session-start hook to show only relevant items).
+
+Acknowledgments:
+
+```
+POST /api/inbox/ack/continuation/:session_id
+POST /api/inbox/ack/auth_result/:request_id
+POST /api/inbox/ack/all
+```

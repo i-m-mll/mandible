@@ -1,0 +1,95 @@
+---
+title: Desktop App
+description: Running Mandible as a native macOS application with Tauri.
+---
+
+# Desktop App
+
+Mandible ships as a Tauri 2 native application. The desktop shell wraps the same web dashboard in a native macOS window and adds daemon lifecycle management — you can start, stop, and restart the Mandible daemon directly from the app without touching the terminal.
+
+## Architecture
+
+The desktop app has two components:
+
+1. **Tauri shell** (Rust) — a thin native wrapper that provides a transparent-titlebar window, daemon process management commands, and Zone 2 runtime resolution. It does not bundle its own web server; instead, it connects to the same `localhost:19420` daemon that the browser dashboard uses.
+
+2. **Mandible daemon** (Node.js) — the same server process that runs when you do `npm start`. The Tauri shell can launch it as a child process, monitor its health, and restart it.
+
+## Daemon lifecycle
+
+When the desktop app opens, it checks whether the daemon is already running by hitting `GET /api/health` on port 19420. The behavior depends on the **launch mode** setting:
+
+| Mode | Behavior |
+|------|----------|
+| **on_demand** (default) | If the daemon isn't running, the app starts it automatically and waits for the health check to pass. |
+| **manual** | The app shows a bootstrap screen with a Start button. You control when the daemon starts. |
+
+The launch mode is stored in `~/Library/Application Support/bio.mll.mandible/desktop.json` and can be changed from Settings > Mandible Daemon.
+
+### Health states
+
+The daemon status indicator in Settings shows one of:
+
+| State | Meaning |
+|-------|---------|
+| **Running** | Health check passes. Everything is normal. |
+| **Starting** | The daemon process exists but hasn't reported healthy yet. |
+| **Stopped** | No PID file and no process listening on the port. |
+| **Stale PID** | A PID file exists but the process is gone. Typically means the daemon crashed. Starting will clean up the stale file. |
+| **Port conflict** | Something is listening on port 19420, but it's not responding as a Mandible daemon. |
+
+### Controls
+
+From Settings > Mandible Daemon:
+
+- **Start** — launch the daemon (disabled if already running).
+- **Restart** — stop, then start. Navigates to the bootstrap screen during the restart.
+- **Stop** — send SIGTERM and wait up to 4 seconds for shutdown.
+- **View logs** — navigate to the Logs tab.
+
+## Zone 2: Mutable runtime
+
+Zone 2 is Mandible's self-modification layer. Instead of requiring a full rebuild for every code change, Zone 2 maintains a separate mutable copy of the daemon source that can be patched, updated, and rolled back independently.
+
+### Resolution chain
+
+When the Tauri shell starts the daemon, it looks for `dist/index.js` in this order:
+
+1. **Zone 2 runtime** — `~/Library/Application Support/Mandible/runtime/dist/index.js` (macOS). Takes priority because it may contain user patches.
+2. **Bundled sidecar** — the Tauri resource bundle (for distributed `.app` builds).
+3. **Dev path** — the repo root `dist/index.js` (for development).
+
+### Managing Zone 2
+
+From Settings > Runtime:
+
+- **Initialize Runtime** — clones the Mandible repo into the Zone 2 path, builds it, and activates it. After initialization, the daemon will load from Zone 2 on next start.
+- **Check for Updates** — pulls the latest upstream and rebuilds.
+- **Rollback Last Patch** — reverts the most recent local patch (useful if a self-applied change breaks something).
+- **Reset to Upstream** — discards all local patches and resets to upstream HEAD.
+
+The Runtime section also shows the current install mode (dev/bundled/zone2), the Zone 2 filesystem path, the current commit hash and branch, and the number of local patches applied.
+
+### Platform paths
+
+| OS | Zone 2 path |
+|----|-------------|
+| macOS | `~/Library/Application Support/Mandible/runtime/` |
+| Linux | `~/.local/share/mandible/runtime/` |
+| Windows | `%APPDATA%/Mandible/runtime/` |
+
+## Building the desktop app
+
+```bash
+# Prerequisites: Rust toolchain, Tauri CLI
+npm install
+npm run build
+cd src-tauri
+cargo tauri build
+```
+
+The build produces a `.app` bundle and `.dmg` in `src-tauri/target/release/bundle/`. The app is ad-hoc signed (no Apple Developer certificate required for personal use).
+
+## Window configuration
+
+The app opens at 1400x900 with a transparent title bar (macOS-native traffic lights, no title text). The background color is set to `#0b0f14` to match the dashboard theme and prevent a white flash during startup.

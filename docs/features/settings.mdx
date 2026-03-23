@@ -1,0 +1,111 @@
+---
+title: Settings
+description: All configurable options in the Mandible dashboard.
+---
+
+# Settings
+
+The Settings tab exposes all of Mandible's configurable options, organized into sections. Changes take effect immediately unless noted otherwise.
+
+## Notifications
+
+Desktop alerts for agent tools.
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Claude notifications | Toggle | Show a macOS notification when Claude Code stops and is waiting for input. |
+| Codex notifications | Toggle | Same, for Codex CLI. |
+| Sound | Select | macOS system sound to play with notifications. Options: Blow, Glass, Ping, Pop, Purr, Sosumi, Submarine, Tink. |
+| Quiet hours | Text | Suppress notifications during a time window (format: `HH:MM-HH:MM`, e.g., `22:00-08:00`). |
+
+## Mandible Daemon
+
+Only visible when running inside the desktop app (Tauri shell). See [Desktop App](/docs/guides/desktop-app) for details.
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Launch mode | Select | `on_demand` starts the daemon automatically when the app opens. `manual` leaves it stopped until you start it explicitly. |
+| Start / Restart / Stop | Buttons | Direct lifecycle control over the daemon process. |
+
+## Process Management
+
+Automatic cleanup of idle agent processes.
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Reaper | Toggle | Enable/disable automatic termination of idle Claude/Codex processes in multiplexer panes. |
+| Claude idle threshold | Number (min) | Minutes of inactivity before Claude is reaped. Range: 5-480. |
+| Codex idle threshold | Number (min) | Same, for Codex. |
+| Dry run | Toggle | Log what would be reaped without actually terminating. Useful for tuning thresholds. |
+| Cleanup orphan MCPs | Toggle | Terminate MCP server processes whose parent has exited. |
+
+Reaper settings are dual-written to `~/.config/claude-reaper/config` so the launchd-based reaper job picks them up outside the dashboard.
+
+## Agent Hooks
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| PreToolUse hooks | Toggle | Safety hooks that block dangerous git operations (merge into protected branch, raw commit without `agent-commit`, etc.). Disabling removes safety guards. |
+| Subagent panes | Toggle | Spawn Zellij panes for subagent output streams. Requires Zellij and the `zj-control` plugin. |
+
+## Conversation Branching
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Resume conflict policy | Select | What happens when you resume a conversation that's already active in Console. Options: *Ask me each time* (prompt), *Auto-fork* (create a new branch), *Allow concurrent* (resume in-place). |
+
+## Work Queue
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Auto-resume policy | Select | How to handle work-unit continuations. Currently only *Manual* (user clicks Resume from the Inbox or Issues tab). |
+
+## Appearance
+
+These settings affect the shell environment, not the dashboard itself. Changes require a new shell session.
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Header tabs | Select | Show text labels, icons, or both in dashboard header tabs. Takes effect immediately. |
+| Theme | Select | Color theme applied to Neovim, Zellij, and tmux. Options include Catppuccin variants, Tokyo Night, Gruvbox, Nord. |
+| Prompt | Select | Shell prompt engine: powerlevel10k or starship. |
+| Multiplexer | Select | Terminal multiplexer preference: zellij, tmux, both, or none. |
+
+## Version Control
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Protected branches | Text | Comma-separated branch names pinned in the Work tab and used as the baseline for ahead/behind counts (e.g., `main, develop`). |
+
+## Maintenance
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Log retention | Number (days) | How many days to keep Mandible logs. Range: 1-365. |
+
+## Backup
+
+Automatic metadata dumps to `private/backups/`.
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Automatic backup | Toggle | Run `mandible-backup` on a schedule. |
+| Interval | Select | 6h, 12h, or 24h. |
+| Run Now | Button | Trigger an immediate backup. |
+
+Status shows when the last backup ran and its file size.
+
+## Runtime
+
+Zone 2 mutable runtime for self-modification and patching. See [Desktop App](/docs/guides/desktop-app) for the full Zone 2 explanation.
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| Install mode | Read-only | How Mandible was installed (dev, bundled, zone2). |
+| Zone 2 path | Read-only | Filesystem path to the mutable runtime directory. |
+| Commit / Branch | Read-only | Current git state of the Zone 2 checkout. |
+| Local patches | Read-only | Number of patches applied on top of upstream. |
+| Initialize Runtime | Button | Bootstrap Zone 2 (clone repo, build, activate). |
+| Check for Updates | Button | Pull latest upstream and rebuild. |
+| Rollback Last Patch | Button | Revert the most recent local patch. |
+| Reset to Upstream | Button | Discard all local patches and reset to upstream HEAD. |

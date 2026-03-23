@@ -1,0 +1,47 @@
+---
+title: Session Monitor
+description: Live overview of all agent sessions across your machine.
+---
+
+# Session Monitor
+
+The Session Monitor (previously called "Sessions") is the landing page of the Mandible dashboard. It shows every agent session Mandible knows about — Claude Code, Codex, Gemini, SDK-spawned agents, channel-connected sessions, and externally-discovered processes — in a single table.
+
+## What you see
+
+Each row represents one session. Columns:
+
+| Column | Meaning |
+|--------|---------|
+| **Status** | Colored dot: green (active), yellow (idle), red (ended/dead), grey (reaped). A pin icon appears if the session is pinned; a link badge appears for channel-connected sessions. |
+| **App** | Two-letter badge identifying the agent type (e.g. `CL` for Claude, `CX` for Codex). |
+| **Project** | Repository name pills extracted from the session's working directory. Branch name shown below when available. |
+| **Children** | Count of subagent sessions spawned by this parent. |
+| **Duration** | Wall-clock time since the session started (or total duration if ended). |
+| **Inactive** | Minutes since the last real user interaction. Based on JSONL transcript modification time, not database writes — so background metadata updates don't reset the counter. Sessions past the reap threshold (default 30 minutes) get a warning highlight. |
+| **Task** | The session's task/intent, rendered as inline Markdown. Linked issue pills appear below it. |
+| **Actions** | Context menu with Pin/Unpin, Go to (conversation), Copy CWD, Open in Finder, Copy branch, and Kill. |
+
+## Session tree
+
+Sessions that were spawned as subagents appear as children of their parent. Click the expand toggle on a parent row to reveal the tree. The tree hierarchy is derived from the `parent_id` relationship in the sessions table.
+
+## Active vs. ended
+
+Active sessions (including their entire subtree if any child is still alive) appear in the main table. When every session in a tree has ended, the tree moves into a collapsible "Ended" section at the bottom. Dead/reaped sessions are auto-hidden 10 minutes after they end to keep the table tidy.
+
+## Pinning
+
+Pin a session from the context menu to float it to the top of the active list. Pinned sessions are visually marked with a pin icon and persist their state across page reloads. This is useful for keeping an orchestrating agent visible while many subagents come and go.
+
+## Reaping
+
+Mandible's reaper module (configurable in [Settings](/docs/features/settings)) automatically terminates idle agent processes after a configurable threshold. The Monitor highlights sessions approaching the threshold with a yellow warning. Reaped sessions show a `reaped` badge in the Inactive column.
+
+## Channel-connected sessions
+
+Sessions connected via the MCP channel server (`claude --channels server:mandible`) show a purple link badge next to their status dot. These sessions self-register with Mandible and get tool-usage-based liveness tracking, but Mandible does not control their lifecycle.
+
+## Deep linking
+
+Other parts of the dashboard (Issues, Inbox, Graph) can link to a specific session. When you follow such a link, the Monitor scrolls to and briefly highlights the target row.
