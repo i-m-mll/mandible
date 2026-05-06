@@ -404,4 +404,104 @@ describe("auth queue", () => {
     expect(updated.status).toBe("pending");
     expect(updated.issues).toEqual(["umbrella789"]);
   });
+
+  // Bug: 93c57c4 — outcome field tests
+  describe("outcome field in resolved payload", () => {
+    it("resolvedPayload has outcome=succeeded when completed with exit_code=0", () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({ broadcast: (e) => events.push(e) });
+
+      const request = queue.submit({ command: "echo ok", title: "Success" });
+      queue.setResult(request.id, 0, "ok");
+
+      const resolved = events.find((e) => e.event === "auth:resolved");
+      expect(resolved).toBeTruthy();
+      const data = resolved!.data as Record<string, unknown>;
+      expect(data.outcome).toBe("succeeded");
+      expect(data.status).toBe("completed");
+    });
+
+    it("resolvedPayload has outcome=failed when completed with exit_code=1", () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({ broadcast: (e) => events.push(e) });
+
+      const request = queue.submit({ command: "echo fail", title: "Failure" });
+      queue.setResult(request.id, 1, "error output", "command failed");
+
+      const resolved = events.find((e) => e.event === "auth:resolved");
+      expect(resolved).toBeTruthy();
+      const data = resolved!.data as Record<string, unknown>;
+      expect(data.outcome).toBe("failed");
+      expect(data.status).toBe("completed");
+    });
+
+    it("resolvedPayload has outcome=rejected when request is rejected", () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({ broadcast: (e) => events.push(e) });
+
+      const request = queue.submit({ command: "echo nope", title: "Reject" });
+      queue.reject(request.id, "Not approved");
+
+      const resolved = events.find((e) => e.event === "auth:resolved");
+      expect(resolved).toBeTruthy();
+      const data = resolved!.data as Record<string, unknown>;
+      expect(data.outcome).toBe("rejected");
+      expect(data.status).toBe("rejected");
+    });
+
+    it("resolvedPayload has outcome=dismissed when request is dismissed", () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({ broadcast: (e) => events.push(e) });
+
+      const request = queue.submit({ command: "echo dismiss", title: "Dismiss" });
+      queue.dismiss(request.id);
+
+      const resolved = events.find((e) => e.event === "auth:resolved");
+      expect(resolved).toBeTruthy();
+      const data = resolved!.data as Record<string, unknown>;
+      expect(data.outcome).toBe("dismissed");
+      expect(data.status).toBe("dismissed");
+    });
+
+    it("resolvedPayload has outcome=null when request is still pending (non-terminal state)", () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({ broadcast: (e) => events.push(e) });
+
+      // Use execution_mode=remote so it stays in executing without running
+      const request = queue.submit({
+        command: "echo pending",
+        title: "Pending",
+        execution_mode: "remote"
+      });
+      queue.approve(request.id);
+
+      // auth:new fires but not auth:resolved yet — check the request directly
+      const fetched = queue.getRequest(request.id);
+      expect(fetched?.status).toBe("executing");
+      // No auth:resolved event should have fired yet
+      const resolved = events.find((e) => e.event === "auth:resolved");
+      expect(resolved).toBeUndefined();
+    });
+
+    it("resolvedPayload has outcome=expired when request expires", () => {
+      let now = 0;
+      const events: SseEvent[] = [];
+      const queue = createQueue({
+        ttlMs: 10,
+        now: () => now,
+        broadcast: (e) => events.push(e)
+      });
+
+      const request = queue.submit({ command: "echo stale", title: "Stale" });
+
+      now = 20; // trigger expiry
+      queue.expireStale();
+
+      const resolved = events.find((e) => e.event === "auth:resolved");
+      expect(resolved).toBeTruthy();
+      const data = resolved!.data as Record<string, unknown>;
+      expect(data.outcome).toBe("expired");
+      expect(data.status).toBe("expired");
+    });
+  });
 });

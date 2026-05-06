@@ -3,7 +3,7 @@ import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
-import type { AuthRequestStatus, WebhookEventRow } from "../types.js";
+import type { AuthRequestOutcome, AuthRequestStatus, WebhookEventRow } from "../types.js";
 import {
   mapWorkUnitRow,
   computeLiveness,
@@ -95,6 +95,19 @@ interface AuthResultRow {
   base_branch: string | null;
   post_merge_handoff: string | null;
   issue_ids: string | null;
+}
+
+// Bug: 93c57c4 — derive outcome from lifecycle status + exit_code at read time.
+function computeOutcome(row: AuthResultRow): AuthRequestOutcome {
+  switch (row.status) {
+    case "rejected":  return "rejected";
+    case "dismissed": return "dismissed";
+    case "expired":   return "expired";
+    case "completed":
+      return (row.exit_code != null && row.exit_code !== 0) ? "failed" : "succeeded";
+    default:
+      return null;
+  }
 }
 
 // Bug: f3dbb3e — mapWorkUnitRow and computeLiveness extracted to work-unit-utils.ts
@@ -260,6 +273,7 @@ export function registerInboxRoutes(
         id: row.id,
         title: row.title,
         status: row.status,
+        outcome: computeOutcome(row),
         exit_code: row.exit_code,
         error: row.error,
         head_branch: row.head_branch,
@@ -356,6 +370,7 @@ export function registerInboxRoutes(
         id: row.id,
         title: row.title,
         status: row.status,
+        outcome: computeOutcome(row),
         exit_code: row.exit_code,
         error: row.error,
         head_branch: row.head_branch,

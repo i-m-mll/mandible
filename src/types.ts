@@ -89,6 +89,15 @@ export type AuthRequestStatus =
   | "expired"
   | "completed"
   | "dismissed";
+// Bug: 93c57c4 — outcome is the terminal result of an auth request, distinct from lifecycle status.
+// null means the request has not yet reached a terminal state.
+export type AuthRequestOutcome =
+  | "succeeded"   // completed with exit_code === 0
+  | "failed"      // completed with exit_code !== 0
+  | "rejected"    // user rejected
+  | "dismissed"   // dismissed without executing
+  | "expired"     // TTL elapsed before execution
+  | null;         // still in lifecycle (pending / executing / approved)
 export type AuthExecutionMode = "daemon" | "remote";
 // Bug: dd21c1e — generalize auth queue to support action types beyond merges
 export type AuthRequestType = "merge" | "commit" | "force-push" | "branch-delete" | "config-change" | "preset-promote" | "data-delete";
