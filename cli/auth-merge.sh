@@ -349,7 +349,18 @@ cleanup_merged_worktrees() {
   done
 }
 
+# Bug: 49e81d9 — skip auto-close for issues with the `coordination` label.
+# Returns 0 (true) if the issue has the coordination label, 1 otherwise.
+# Used by auto_close_issues and close_declared_issues to guard closures.
+has_coordination_label() {
+  local id="$1"
+  local labels
+  labels=$(git-bug bug show "$id" 2>/dev/null | grep -Ei '^labels:' | sed 's/^[Ll]abels:[[:space:]]*//')
+  [[ "$labels" == *coordination* ]]
+}
+
 # Bug: 670e375 — auto-close issues referenced in Bug: trailers after merge
+# Bug: 49e81d9 — coordination-labeled issues are skipped (project-spanning, never auto-close)
 auto_close_issues() {
   local target="$1"
   local base_commit="$2"  # commit before merge (ORIG_HEAD)
@@ -385,6 +396,11 @@ auto_close_issues() {
   local id
   local closed=0
   for id in $issue_ids; do
+    # Bug: 49e81d9 — coordination issues are project-spanning and must never auto-close
+    if has_coordination_label "$id"; then
+      err "${DIM_WHITE}[auto-close] skipping coordination issue ${id}${RESET}"
+      continue
+    fi
     if git-bug bug status close "$id" 2>/dev/null; then
       # Bug: e32ee8b — mark as "merged" (closed + merged label = three-state lifecycle)
       git-bug bug label new "$id" merged 2>/dev/null || true
@@ -412,6 +428,7 @@ auto_close_issues() {
 # Bug: 297677f — close issues declared in the auth request's issues field.
 # These are issue IDs explicitly listed by the submitter (e.g., umbrella issues
 # in bigbuild workflows) that should be closed on merge, independent of Bug: trailers.
+# Bug: 49e81d9 — coordination-labeled issues are skipped (project-spanning, never auto-close)
 close_declared_issues() {
   # Requires MANDIBLE_AUTH_REQUEST_ID to be set by the executor
   local request_id="${MANDIBLE_AUTH_REQUEST_ID:-}"
@@ -447,6 +464,11 @@ close_declared_issues() {
   local id
   local closed=0
   for id in $ids; do
+    # Bug: 49e81d9 — coordination issues are project-spanning and must never auto-close
+    if has_coordination_label "$id"; then
+      err "${DIM_WHITE}[issues] skipping coordination issue ${id}${RESET}"
+      continue
+    fi
     if git-bug bug status close "$id" 2>/dev/null; then
       git-bug bug label new "$id" merged 2>/dev/null || true
 
