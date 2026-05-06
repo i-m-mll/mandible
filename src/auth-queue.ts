@@ -9,6 +9,7 @@ import type {
   AuthOutputChunk,
   AuthRequest,
   AuthRequestInput,
+  AuthRequestOutcome,
   AuthRequestStatus,
   AuthRequestType,
   SseEvent
@@ -1033,11 +1034,31 @@ export class AuthQueue {
     }
   }
 
+  // Bug: 93c57c4 — derive outcome from lifecycle status + exit_code at read time.
+  // Consumers should use `outcome` to determine the terminal result of a request;
+  // `status` is reserved for lifecycle state (pending → executing → completed, etc.).
+  private computeOutcome(request: AuthRequest): AuthRequestOutcome {
+    switch (request.status) {
+      case "rejected":
+        return "rejected";
+      case "dismissed":
+        return "dismissed";
+      case "expired":
+        return "expired";
+      case "completed":
+        return (request.exit_code != null && request.exit_code !== 0) ? "failed" : "succeeded";
+      default:
+        // pending, executing, approved — still in lifecycle
+        return null;
+    }
+  }
+
   private buildResolvedPayload(request: AuthRequest): Record<string, unknown> {
     return {
       request_id: request.id,
       type: request.type,
       status: request.status,
+      outcome: this.computeOutcome(request),
       exit_code: request.exit_code,
       error: request.error,
       resolved_at: request.resolved_at
