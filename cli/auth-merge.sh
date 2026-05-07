@@ -326,13 +326,11 @@ cleanup_merged_worktrees() {
   local branch="$1"
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  # dwt is in the bin/ directory, which is ../../../../bin/ relative to cli/
-  local dwt="${script_dir}/../../../../bin/dwt"
-  # Normalize the path
-  dwt="$(cd "$(dirname "$dwt")" && pwd)/$(basename "$dwt")"
+  # dwt is vendored alongside this script in cli/
+  local dwt="${script_dir}/dwt"
 
-  # Only attempt cleanup if dwt exists
-  [[ -x "$dwt" ]] || return 0
+  # Only attempt cleanup if dwt exists (absent = broken Mandible install, not a normal skip)
+  [[ -x "$dwt" ]] || { err "warning: vendored dwt not found at ${dwt}; skipping worktree cleanup"; return 0; }
 
   # Clean the merged branch's worktree (if it has one)
   "$dwt" "$branch" 2>/dev/null || true
