@@ -221,7 +221,12 @@ export class AuthQueue {
       exit_code: null,
       output: "",
       error: null,
-      acknowledged_by: null
+      acknowledged_by: null,
+      // Bug: 4e32923 — scope auth result delivery to the originating session +
+      // its repo root, with null falling back to legacy broadcast behaviour.
+      target_session_id: payload.target_session_id ?? null,
+      target_repo_root: payload.target_repo_root ?? null,
+      delivered_at: null
     };
 
     const stmt = this.db.prepare(
@@ -257,7 +262,10 @@ export class AuthQueue {
         exit_code,
         output,
         error,
-        acknowledged_by
+        acknowledged_by,
+        target_session_id,
+        target_repo_root,
+        delivered_at
       ) VALUES (
         @id,
         @session_id,
@@ -290,7 +298,10 @@ export class AuthQueue {
         @exit_code,
         @output,
         @error,
-        @acknowledged_by
+        @acknowledged_by,
+        @target_session_id,
+        @target_repo_root,
+        @delivered_at
       )`
     );
 
@@ -553,6 +564,37 @@ export class AuthQueue {
     });
 
     return dismissed;
+  }
+
+  /**
+   * Bug: 4e32923 — mark an auth request as delivered to the owning session via
+   * the MCP channel server. Once set, the row drops out of the owner's tier-1
+   * inbox and won't escalate to tiers 2/3. Idempotent: re-delivery is a no-op
+   * (existing delivered_at is preserved). Returns true if a row was updated,
+   * false if the request is unknown.
+   */
+  markDelivered(id: string): boolean {
+    const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+    if (!resolved.ok) {
+      return false;
+    }
+    const now = this.now();
+    const result = this.db
+      .prepare(
+        "UPDATE auth_requests SET delivered_at = ?, updated_at = ? " +
+          "WHERE id = ? AND delivered_at IS NULL"
+      )
+      .run(now, now, resolved.id);
+    // changes === 0 either means unknown id or already delivered; both are
+    // acceptable terminal states for an idempotent endpoint, so we return
+    // true so long as the row exists.
+    if (result.changes === 0) {
+      const exists = this.db
+        .prepare("SELECT 1 FROM auth_requests WHERE id = ?")
+        .get(resolved.id);
+      return exists != null;
+    }
+    return true;
   }
 
   delete(id: string, reason: string): void {
@@ -1061,7 +1103,17 @@ export class AuthQueue {
       outcome: this.computeOutcome(request),
       exit_code: request.exit_code,
       error: request.error,
-      resolved_at: request.resolved_at
+      resolved_at: request.resolved_at,
+      // Bug: 4e32923 — include title and head_branch so the channel-server
+      // can build a meaningful `notifications/claude/channel` payload without
+      // a follow-up fetch. Pre-existing logging-message formatter already
+      // reads these fields; they were missing from the payload before.
+      title: request.title ?? null,
+      head_branch: request.head_branch ?? null,
+      // Bug: 4e32923 — emit owner session id so the MCP channel server can
+      // filter auth:resolved events to only the originating session (and
+      // legacy unscoped rows still broadcast via target_session_id == null).
+      target_session_id: request.target_session_id
     };
   }
 
@@ -1092,6 +1144,9 @@ export class AuthQueue {
   }
 
   private ensureSchema(): void {
+    // Bug: 4e32923 — include scoping columns in the fresh-DB fallback schema.
+    // The MIGRATIONS array (src/db.ts) is the canonical source of truth; this
+    // path only fires for ad-hoc test DBs that bypass openDb().
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS auth_requests (
         id TEXT PRIMARY KEY,
@@ -1125,7 +1180,10 @@ export class AuthQueue {
         exit_code INTEGER,
         output TEXT NOT NULL DEFAULT '',
         error TEXT,
-        acknowledged_by TEXT
+        acknowledged_by TEXT,
+        target_session_id TEXT,
+        target_repo_root TEXT,
+        delivered_at INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS idx_auth_requests_status_created
@@ -1209,6 +1267,10 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     exit_code: row.exit_code == null ? null : Number(row.exit_code),
     output: String(row.output ?? ""),
     error: row.error == null ? null : String(row.error),
-    acknowledged_by: row.acknowledged_by == null ? null : String(row.acknowledged_by)
+    acknowledged_by: row.acknowledged_by == null ? null : String(row.acknowledged_by),
+    // Bug: 4e32923 — owner session + repo root + channel-delivery watermark.
+    target_session_id: row.target_session_id == null ? null : String(row.target_session_id),
+    target_repo_root: row.target_repo_root == null ? null : String(row.target_repo_root),
+    delivered_at: row.delivered_at == null ? null : Number(row.delivered_at)
   };
 }

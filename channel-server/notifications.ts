@@ -1,8 +1,20 @@
 // Bug: 1d652d5 — SSE listener that bridges Mandible events to MCP notifications
+// Bug: 4e32923 — scoped delivery: forward auth:resolved / auth:completed only
+// when the event's target_session_id matches this channel's MANDIBLE_SESSION_ID
+// (or is null, meaning legacy/unscoped). On a match we also POST to
+// /api/inbox/delivered/<id> so the row drops out of the owner's tier-1 inbox.
+//
+// Auth events (auth:resolved / auth:completed) are delivered as Claude Code
+// **channel events** — `notifications/claude/channel` — which the agent
+// processes as if a prompt was typed at the terminal, triggering an immediate
+// turn. Other event types (inbox:updated, work_unit:*) remain logging messages
+// and surface only on the next user prompt. The channel-event method and
+// `experimental: { 'claude/channel': {} }` capability are the canonical pattern
+// used by the first-party Discord / Telegram / fakechat plugins shipped with
+// claude-plugins-official.
 //
 // Connects to Mandible's SSE endpoint (GET /api/events) and translates
-// relevant event types into MCP logging messages that Claude Code receives
-// as channel notifications.
+// relevant event types into MCP notifications.
 
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import http from "node:http";
@@ -18,14 +30,168 @@ export interface NotificationBridge {
 }
 
 /**
+ * POST /api/inbox/delivered/<id> — best-effort fire-and-forget. The endpoint
+ * is idempotent so a missed call only means the row will keep surfacing on
+ * the owner's tier-1 inbox until escalation or manual ack.
+ * Bug: 4e32923
+ */
+export function markDelivered(requestId: string): void {
+  if (!requestId) return;
+  const url = new URL(`/api/inbox/delivered/${encodeURIComponent(requestId)}`, MANDIBLE_BASE);
+  const req = http.request(
+    {
+      method: "POST",
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      headers: { "Content-Length": "0" },
+    },
+    (res) => {
+      // Drain to free the socket; status codes are advisory only.
+      res.resume();
+    },
+  );
+  req.on("error", () => {
+    // Daemon down or transient: idempotent endpoint means we'll be re-notified
+    // on reconnect (or the item escalates to tier 2 after the grace window).
+  });
+  req.end();
+}
+
+/** Bug: 4e32923 — payload shape for a Claude Code channel event. */
+export interface ChannelEventPayload {
+  content: string;
+  meta?: Record<string, string>;
+}
+
+/**
+ * Bug: 4e32923 — pure event-dispatch function extracted so unit tests can
+ * drive it without standing up an SSE connection or a real MCP server.
+ *
+ * Behaviour:
+ *   - `auth:resolved` / `auth:completed`: filter by `target_session_id`, then
+ *     route through `sendChannelEvent` so Claude Code wakes the agent
+ *     immediately (channel events are processed like an inbound prompt, not
+ *     passive context). Filter rules:
+ *     - null → broadcast (legacy / unscoped)
+ *     - matches ownSessionId → forward + markDelivered
+ *     - mismatch → drop
+ *     - ownSessionId itself null → broadcast (defensive)
+ *   - `inbox:updated` / `console:inbox:badge` / `work_unit:*` → forward via
+ *     `sendNotification` as a logging message (passive — surfaces on the next
+ *     user prompt). These do not need an immediate-turn wake-up.
+ *
+ * @param event — raw SSE event payload from Mandible.
+ * @param ownSessionId — this channel's Mandible session id.
+ * @param sendNotification — callback that forwards a (category, message) pair
+ *   as an MCP logging message (production wraps `server.sendLoggingMessage`).
+ *   Used for passive context (inbox / work-unit updates).
+ * @param sendChannelEvent — callback that forwards a channel-event payload via
+ *   `notifications/claude/channel` (production wraps `server.notification`).
+ *   Used for auth resolutions so the agent turns immediately. If omitted (e.g.
+ *   in legacy callers / tests not exercising this path), auth events fall back
+ *   to `sendNotification` so behaviour matches pre-channel-event delivery.
+ * @param onDelivered — callback fired when an auth:resolved event matches and
+ *   delivery should be recorded. Defaults to the live HTTP POST. Tests inject
+ *   a spy to capture the request_id.
+ */
+export function dispatchEvent(
+  event: MandibleSSEEvent,
+  ownSessionId: string | null,
+  sendNotification: (category: string, message: string) => void,
+  sendChannelEvent?: (payload: ChannelEventPayload) => void,
+  onDelivered: (requestId: string) => void = markDelivered,
+): void {
+  const { type, data } = event;
+
+  if (type === "auth:resolved" || type === "auth:completed") {
+    const payload = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+    const target = payload.target_session_id;
+    const targetSessionId = typeof target === "string" ? target : null;
+    const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
+
+    // Bug: 4e32923 — auth resolutions get channel-event delivery so the agent
+    // wakes immediately. Fall back to sendNotification when no channel-event
+    // sender is wired (tests / legacy callers / capability not yet negotiated).
+    const deliverAuth = (): void => {
+      if (sendChannelEvent) {
+        sendChannelEvent(buildAuthChannelEvent(type, data));
+      } else {
+        sendNotification("auth_resolved", formatAuthResolved(data));
+      }
+    };
+
+    if (targetSessionId == null) {
+      // Legacy / unscoped row: keep current broadcast behaviour for safety.
+      deliverAuth();
+    } else if (ownSessionId != null && targetSessionId === ownSessionId) {
+      // Owner match: forward AND record delivery so the owner's tier-1
+      // inbox empties without requiring a manual ack.
+      deliverAuth();
+      onDelivered(requestId);
+    } else if (ownSessionId == null) {
+      // We don't know our own session id — best-effort fall back to broadcast
+      // so the user still hears about resolutions in unconfigured setups.
+      deliverAuth();
+    }
+    // else: mismatch, drop entirely (intended target is a different session).
+  } else if (
+    type === "console:inbox:badge" ||
+    type === "inbox:updated"
+  ) {
+    sendNotification("inbox_item", formatInboxUpdate(data));
+  } else if (type === "work_unit:assigned") {
+    sendNotification("work_assigned", formatWorkAssigned(data));
+  } else if (type === "work_unit:updated") {
+    sendNotification("work_updated", formatWorkUpdated(data));
+  }
+  // Other event types (session:*, daemon:*, etc.) are not forwarded
+}
+
+/**
+ * Bug: 4e32923 — send a Claude Code channel event via the low-level MCP
+ * `notification()` API. The `notifications/claude/channel` method is the
+ * canonical channel-event entry point (matched by Discord, Telegram, and
+ * fakechat reference plugins in claude-plugins-official). Claude Code wakes
+ * the agent and processes `content` as if it had been typed at the terminal.
+ *
+ * Requires the server to advertise `experimental: { 'claude/channel': {} }`
+ * in its capabilities — see `channel-server/index.ts`. Without that, Claude
+ * Code may ignore the notification (the server-side `assertNotificationCapability`
+ * does NOT gate this method, so the call still goes out; only the client's
+ * dispatcher cares).
+ */
+export function sendChannelNotification(mcpServer: Server, payload: ChannelEventPayload): void {
+  mcpServer
+    .notification({
+      method: "notifications/claude/channel",
+      params: {
+        content: payload.content,
+        ...(payload.meta ? { meta: payload.meta } : {}),
+      },
+    })
+    .catch(() => {
+      // Client may not be connected yet, or the channel capability may not
+      // have been negotiated — fire-and-forget like the logging path.
+    });
+}
+
+/**
  * Creates an SSE listener that bridges Mandible events to MCP notifications.
  *
  * We use raw http.get() rather than EventSource because Node.js does not have
  * a built-in EventSource and adding a polyfill dependency is unnecessary for
  * this simple chunked-transfer use case.
+ *
+ * @param mcpServer — MCP server instance for sending notifications.
+ * @param ownSessionId — this channel's Mandible session id, used to filter
+ *   auth:resolved events. Captured at startup from MANDIBLE_SESSION_ID. If
+ *   null, the bridge falls back to legacy broadcast behaviour (every event
+ *   is forwarded), which is the right thing for unscoped daemons.
  */
 export function createNotificationBridge(
   mcpServer: Server,
+  ownSessionId: string | null = null,
 ): NotificationBridge {
   let running = false;
   let currentReq: http.ClientRequest | null = null;
@@ -109,22 +275,16 @@ export function createNotificationBridge(
   }
 
   function handleEvent(event: MandibleSSEEvent): void {
-    const { type, data } = event;
+    // Bug: 4e32923 — delegate to the pure dispatchEvent helper so the filter
+    // logic is unit-testable without standing up an SSE / MCP transport. Auth
+    // events flow through `sendChannelEvent` (notifications/claude/channel) so
+    // Claude Code wakes the agent immediately; non-auth events stay on the
+    // passive logging path.
+    dispatchEvent(event, ownSessionId, sendNotification, sendChannelEvent);
+  }
 
-    // Route specific Mandible event types to MCP notifications
-    if (type === "auth:resolved" || type === "auth:completed") {
-      sendNotification("auth_resolved", formatAuthResolved(data));
-    } else if (
-      type === "console:inbox:badge" ||
-      type === "inbox:updated"
-    ) {
-      sendNotification("inbox_item", formatInboxUpdate(data));
-    } else if (type === "work_unit:assigned") {
-      sendNotification("work_assigned", formatWorkAssigned(data));
-    } else if (type === "work_unit:updated") {
-      sendNotification("work_updated", formatWorkUpdated(data));
-    }
-    // Other event types (session:*, daemon:*, etc.) are not forwarded
+  function sendChannelEvent(payload: ChannelEventPayload): void {
+    sendChannelNotification(mcpServer, payload);
   }
 
   function sendNotification(category: string, message: string): void {
@@ -162,6 +322,52 @@ export function createNotificationBridge(
 }
 
 // --- Event formatters ---
+
+/**
+ * Bug: 4e32923 — build the channel-event payload (content + meta) for an
+ * auth resolution. The content string is what Claude Code injects as a
+ * synthetic user message; the meta record carries machine-readable fields
+ * (request_id, branch, status, exit_code, outcome) so the agent can act
+ * without re-fetching. Meta values are coerced to strings per the
+ * `notifications/claude/channel` schema.
+ */
+export function buildAuthChannelEvent(
+  type: "auth:resolved" | "auth:completed",
+  data: unknown,
+): ChannelEventPayload {
+  const d = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+  const requestId = typeof d.request_id === "string" ? d.request_id : "";
+  const status = typeof d.status === "string" ? d.status : "unknown";
+  const title = typeof d.title === "string" ? d.title : "";
+  const branch = typeof d.head_branch === "string" ? d.head_branch : "";
+  const exitCode = typeof d.exit_code === "number" ? d.exit_code : null;
+  const outcome = typeof d.outcome === "string" ? d.outcome : null;
+  const errorText = typeof d.error === "string" ? d.error : "";
+
+  const headlineParts: string[] = [`Mandible auth request ${status}`];
+  if (branch) headlineParts.push(`for branch ${branch}`);
+  if (title) headlineParts.push(`(${title})`);
+  if (exitCode !== null) headlineParts.push(`exit ${exitCode}`);
+
+  const lines: string[] = [headlineParts.join(" ")];
+  if (errorText) lines.push(`Error: ${errorText}`);
+  lines.push(
+    "Use mandible_check_inbox if you need additional details. Delivery has been recorded; the result will not surface again on this session's inbox.",
+  );
+
+  const meta: Record<string, string> = {
+    source: "mandible",
+    event_type: type,
+    status,
+  };
+  if (requestId) meta.request_id = requestId;
+  if (branch) meta.head_branch = branch;
+  if (title) meta.title = title;
+  if (outcome) meta.outcome = outcome;
+  if (exitCode !== null) meta.exit_code = String(exitCode);
+
+  return { content: lines.join("\n"), meta };
+}
 
 function formatAuthResolved(data: unknown): string {
   if (!data || typeof data !== "object") {
