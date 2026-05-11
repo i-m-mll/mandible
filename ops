@@ -1,1 +1,1 @@
-{"author":{"id":"89da5fec8eff6d69dbcdd68f81be7e9163b16f34b17e978ecf3554487379f453"},"ops":[{"type":5,"timestamp":1773948766,"nonce":"DGHxDVbP1ftoHeH2+qGugyuy1bo=","added":["umbrella"],"removed":null}]}
+{"author":{"id":"973fc03426eba9a243913e0f6e6823e102397744f60a9ab11c882af948c310c4"},"ops":[{"type":3,"timestamp":1778519711,"nonce":"1DWAmp1CH6y3zNzi6d4OzGQbti8=","message":"`4e32923` adds two configurable inbox grace settings under this umbrella: `inbox.project_grace_days` (default 7) and `inbox.global_grace_days` (default 30).","files":null}]}
