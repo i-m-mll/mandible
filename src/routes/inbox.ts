@@ -513,6 +513,58 @@ export function registerInboxRoutes(
     });
   });
 
+  // Bug: 4e32923 — GET /api/inbox/undelivered?target_session_id=<id> returns
+  // the set of resolved auth_requests owned by <id> that have not yet been
+  // marked delivered. The channel server calls this on startup so a previous
+  // session's session-id (e.g. after a Claude Code resume that preserves
+  // MANDIBLE_SESSION_ID) can replay any auth results that resolved while the
+  // SSE listener was offline — before subscribing to the live event stream.
+  //
+  // Returns a minimal record set: id, head_branch, status, exit_code,
+  // resolved_at, title — enough to build a channel-event payload without a
+  // second fetch. Rows still subject to tier-1 ownership: target_session_id
+  // must match and delivered_at must be NULL. Legacy unscoped rows
+  // (target_session_id IS NULL) are intentionally excluded — they belong to
+  // every session and are delivered live, not replayed.
+  server.get("/api/inbox/undelivered", (req, res) => {
+    const targetSessionId = getQueryParam(req, "target_session_id") ?? "";
+    if (!targetSessionId) {
+      sendJson(res, 400, { error: "missing target_session_id" });
+      return;
+    }
+    const rows = db
+      .prepare(
+        `SELECT id, head_branch, status, exit_code, resolved_at, title, target_session_id
+         FROM auth_requests
+         WHERE target_session_id = ?
+           AND delivered_at IS NULL
+           AND resolved_at IS NOT NULL
+           AND acknowledged_by IS NULL
+           AND status IN ('completed', 'rejected', 'expired', 'dismissed')
+         ORDER BY resolved_at ASC`
+      )
+      .all(targetSessionId) as Array<{
+        id: string;
+        head_branch: string | null;
+        status: AuthRequestStatus;
+        exit_code: number | null;
+        resolved_at: number | null;
+        title: string | null;
+        target_session_id: string | null;
+      }>;
+    sendJson(res, 200, {
+      undelivered: rows.map((row) => ({
+        id: row.id,
+        head_branch: row.head_branch,
+        status: row.status,
+        exit_code: row.exit_code,
+        resolved_at: row.resolved_at,
+        title: row.title,
+        target_session_id: row.target_session_id,
+      })),
+    });
+  });
+
   // Bug: 4e32923 — POST /api/inbox/delivered/:id marks an auth_request as
   // delivered to its owner session via the MCP channel server. Idempotent:
   // re-delivery returns 204 without further work. Once marked, the row stops

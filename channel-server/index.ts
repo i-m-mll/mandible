@@ -12,11 +12,18 @@
 //   3. Communicates over stdio (stdin/stdout JSON-RPC)
 
 import { execSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerTools } from "./tools.js";
-import { createNotificationBridge } from "./notifications.js";
+import {
+  buildAuthChannelEvent,
+  createNotificationBridge,
+  sendChannelNotification,
+} from "./notifications.js";
 import * as client from "./client.js";
+import type { UndeliveredAuthResult } from "./types.js";
 
 const INSTRUCTIONS = `You are connected to Mandible, a local agent control plane. Mandible tracks your work via issues, branches, and work units.
 
@@ -108,6 +115,21 @@ async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
+  // Bug: 4e32923 — startup catch-up. If a resumed session brings back a
+  // MANDIBLE_SESSION_ID that owns auth_results which resolved while this
+  // process was not running, replay them as channel events before
+  // subscribing to live SSE. Errors are non-fatal; the worst case is that
+  // those rows escalate to tier-2 on the next session start.
+  if (sessionId) {
+    await runStartupCatchUp({
+      sessionId,
+      mcpServer: server.server,
+      fetchUndelivered: client.fetchUndeliveredAuthResults,
+      markDelivered: client.markAuthDelivered,
+      log: (msg) => process.stderr.write(msg),
+    });
+  }
+
   // Start listening for Mandible events after MCP connection is established
   bridge.start();
 
@@ -127,7 +149,61 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-main().catch((err) => {
-  process.stderr.write(`Fatal: ${err}\n`);
-  process.exit(1);
-});
+/**
+ * Bug: 4e32923 — exported (with injectable deps) for unit testing. Walks the
+ * list of undelivered auth_results owned by this session id, sends each as a
+ * channel event, and POSTs delivery acknowledgement back to Mandible. Best
+ * effort: any single failure (network, daemon down, missing row) is logged
+ * and skipped — never propagated, so bridge startup is never blocked.
+ */
+export async function runStartupCatchUp(args: {
+  sessionId: string;
+  mcpServer: Server;
+  fetchUndelivered: (sessionId: string) => Promise<UndeliveredAuthResult[]>;
+  markDelivered: (requestId: string) => Promise<void>;
+  log: (line: string) => void;
+}): Promise<void> {
+  const { sessionId, mcpServer, fetchUndelivered, markDelivered, log } = args;
+  let rows: UndeliveredAuthResult[];
+  try {
+    rows = await fetchUndelivered(sessionId);
+  } catch (err) {
+    log(`Warning: channel-server startup catch-up fetch failed: ${err}\n`);
+    return;
+  }
+  if (rows.length === 0) return;
+
+  log(`channel-server startup catch-up: replaying ${rows.length} undelivered auth result(s)\n`);
+  for (const row of rows) {
+    const payload = buildAuthChannelEvent("auth:resolved", {
+      request_id: row.id,
+      status: row.status,
+      head_branch: row.head_branch,
+      title: row.title,
+      exit_code: row.exit_code,
+      // resolved_at omitted from the formatter's input — meta carries enough
+      // for the agent to ground itself; the timestamp is implicit.
+    });
+    sendChannelNotification(mcpServer, payload);
+    try {
+      await markDelivered(row.id);
+    } catch (err) {
+      log(`Warning: failed to mark auth_request ${row.id} delivered: ${err}\n`);
+      // Continue: the row will resurface on the next session start (still
+      // tier 1 until the project grace window elapses).
+    }
+  }
+}
+
+// Bug: 4e32923 — only run main() when invoked as the CLI entrypoint, not when
+// imported by tests. Module loading must remain side-effect-free so test files
+// can exercise `runStartupCatchUp` without spawning a stdio MCP server.
+const invokedAsCli =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedAsCli) {
+  main().catch((err) => {
+    process.stderr.write(`Fatal: ${err}\n`);
+    process.exit(1);
+  });
+}

@@ -516,6 +516,274 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
   });
 });
 
+// --- Undelivered endpoint + startup catch-up tests ----------------------
+
+describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
+  let db: InstanceType<typeof Database>;
+  let registerInboxRoutes: typeof import("../src/routes/inbox.js")["registerInboxRoutes"];
+
+  beforeEach(async () => {
+    db = setupInMemoryDb();
+    registerInboxRoutes = (await import("../src/routes/inbox.js")).registerInboxRoutes;
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function callUndelivered(query: Record<string, string>): {
+    status: number;
+    body: { undelivered: Array<{ id: string; target_session_id: string | null }> } | { error: string };
+  } {
+    let handler: ((req: unknown, res: unknown) => void) | undefined;
+    const server = {
+      get: (path: string, h: (req: unknown, res: unknown) => void) => {
+        if (path === "/api/inbox/undelivered") handler = h;
+      },
+      post: () => {},
+    };
+    const fakeIssueScanner = { getRepoSummaries: () => [] };
+    registerInboxRoutes(server, {} as never, fakeIssueScanner as never, undefined, undefined);
+    if (!handler) throw new Error("/api/inbox/undelivered handler not registered");
+    let capturedStatus = 0;
+    let capturedBody: unknown = null;
+    handler({ query }, {
+      status: (code: number) => { capturedStatus = code; },
+      json: (body: unknown) => { capturedBody = body; },
+    });
+    return { status: capturedStatus, body: capturedBody as { undelivered: Array<{ id: string; target_session_id: string | null }> } | { error: string } };
+  }
+
+  it("returns 400 when target_session_id is missing", () => {
+    const { status, body } = callUndelivered({});
+    expect(status).toBe(400);
+    expect((body as { error: string }).error).toContain("target_session_id");
+  });
+
+  it("returns undelivered rows owned by target_session_id, ordered oldest first", () => {
+    seedSession(db, "owner", "/repo/A");
+    const now = Date.now();
+    seedAuthRow(db, {
+      id: "r-new",
+      target_session_id: "owner",
+      target_repo_root: "/repo/A",
+      resolved_at: now - 30_000,
+    });
+    seedAuthRow(db, {
+      id: "r-old",
+      target_session_id: "owner",
+      target_repo_root: "/repo/A",
+      resolved_at: now - 60_000,
+    });
+    const { status, body } = callUndelivered({ target_session_id: "owner" });
+    expect(status).toBe(200);
+    const rows = (body as { undelivered: Array<{ id: string }> }).undelivered;
+    // ORDER BY resolved_at ASC ⇒ oldest first
+    expect(rows.map((r) => r.id)).toEqual(["r-old", "r-new"]);
+  });
+
+  it("excludes already-delivered rows", () => {
+    seedSession(db, "owner", "/repo/A");
+    const now = Date.now();
+    seedAuthRow(db, {
+      id: "r-undelivered",
+      target_session_id: "owner",
+      target_repo_root: "/repo/A",
+      resolved_at: now - 30_000,
+    });
+    seedAuthRow(db, {
+      id: "r-delivered",
+      target_session_id: "owner",
+      target_repo_root: "/repo/A",
+      resolved_at: now - 60_000,
+      delivered_at: now - 50_000,
+    });
+    const { body } = callUndelivered({ target_session_id: "owner" });
+    const ids = (body as { undelivered: Array<{ id: string }> }).undelivered.map((r) => r.id);
+    expect(ids).toEqual(["r-undelivered"]);
+  });
+
+  it("excludes legacy unscoped rows even when they share the project", () => {
+    seedSession(db, "owner", "/repo/A");
+    const now = Date.now();
+    seedAuthRow(db, {
+      id: "r-legacy",
+      target_session_id: null,
+      target_repo_root: null,
+      resolved_at: now - 30_000,
+    });
+    const { body } = callUndelivered({ target_session_id: "owner" });
+    expect((body as { undelivered: Array<unknown> }).undelivered).toEqual([]);
+  });
+
+  it("excludes rows owned by a different session", () => {
+    seedSession(db, "owner", "/repo/A");
+    seedSession(db, "other", "/repo/A");
+    const now = Date.now();
+    seedAuthRow(db, {
+      id: "r-other",
+      target_session_id: "other",
+      target_repo_root: "/repo/A",
+      resolved_at: now - 30_000,
+    });
+    const { body } = callUndelivered({ target_session_id: "owner" });
+    expect((body as { undelivered: Array<unknown> }).undelivered).toEqual([]);
+  });
+});
+
+describe("channel-server startup catch-up (Bug: 4e32923)", () => {
+  it("fetches undelivered rows, sends channel events, and marks each delivered", async () => {
+    const mod = await import("../channel-server/index.js");
+    const sent: Array<{ method?: string; params?: unknown }> = [];
+    const delivered: string[] = [];
+    const mockServer = {
+      notification: async (notif: { method?: string; params?: unknown }) => {
+        sent.push(notif);
+      },
+    } as unknown as Parameters<typeof mod.runStartupCatchUp>[0]["mcpServer"];
+
+    await mod.runStartupCatchUp({
+      sessionId: "session-A",
+      mcpServer: mockServer,
+      fetchUndelivered: async (id) => {
+        expect(id).toBe("session-A");
+        return [
+          {
+            id: "r1",
+            head_branch: "feature/x",
+            status: "completed",
+            exit_code: 0,
+            resolved_at: 1,
+            title: "Merge feature/x",
+            target_session_id: "session-A",
+          },
+          {
+            id: "r2",
+            head_branch: "feature/y",
+            status: "rejected",
+            exit_code: 1,
+            resolved_at: 2,
+            title: "Merge feature/y",
+            target_session_id: "session-A",
+          },
+        ];
+      },
+      markDelivered: async (id) => {
+        delivered.push(id);
+      },
+      log: () => {},
+    });
+
+    expect(sent.map((n) => n.method)).toEqual([
+      "notifications/claude/channel",
+      "notifications/claude/channel",
+    ]);
+    expect(delivered).toEqual(["r1", "r2"]);
+    // The first channel event should encode the branch and status.
+    const firstParams = sent[0].params as { content: string; meta: Record<string, string> };
+    expect(firstParams.content).toContain("feature/x");
+    expect(firstParams.meta.status).toBe("completed");
+  });
+
+  it("logs and exits cleanly when the fetch fails (Mandible down)", async () => {
+    const mod = await import("../channel-server/index.js");
+    const sent: unknown[] = [];
+    const delivered: string[] = [];
+    const logs: string[] = [];
+    const mockServer = {
+      notification: async (notif: unknown) => {
+        sent.push(notif);
+      },
+    } as unknown as Parameters<typeof mod.runStartupCatchUp>[0]["mcpServer"];
+
+    await mod.runStartupCatchUp({
+      sessionId: "session-A",
+      mcpServer: mockServer,
+      fetchUndelivered: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+      markDelivered: async () => {
+        throw new Error("should not be called");
+      },
+      log: (line) => logs.push(line),
+    });
+    expect(sent).toHaveLength(0);
+    expect(delivered).toHaveLength(0);
+    expect(logs.join("")).toContain("ECONNREFUSED");
+  });
+
+  it("is a no-op when there are no undelivered rows", async () => {
+    const mod = await import("../channel-server/index.js");
+    const sent: unknown[] = [];
+    const logs: string[] = [];
+    const mockServer = {
+      notification: async (notif: unknown) => {
+        sent.push(notif);
+      },
+    } as unknown as Parameters<typeof mod.runStartupCatchUp>[0]["mcpServer"];
+
+    await mod.runStartupCatchUp({
+      sessionId: "session-A",
+      mcpServer: mockServer,
+      fetchUndelivered: async () => [],
+      markDelivered: async () => {
+        throw new Error("should not be called");
+      },
+      log: (line) => logs.push(line),
+    });
+    expect(sent).toHaveLength(0);
+    // No log line should claim we replayed anything.
+    expect(logs.join("")).not.toMatch(/replaying/);
+  });
+
+  it("continues replaying when a single markDelivered call fails", async () => {
+    const mod = await import("../channel-server/index.js");
+    const sent: unknown[] = [];
+    const delivered: string[] = [];
+    const logs: string[] = [];
+    const mockServer = {
+      notification: async (notif: unknown) => {
+        sent.push(notif);
+      },
+    } as unknown as Parameters<typeof mod.runStartupCatchUp>[0]["mcpServer"];
+
+    await mod.runStartupCatchUp({
+      sessionId: "session-A",
+      mcpServer: mockServer,
+      fetchUndelivered: async () => [
+        {
+          id: "r1",
+          head_branch: null,
+          status: "completed",
+          exit_code: 0,
+          resolved_at: 1,
+          title: null,
+          target_session_id: "session-A",
+        },
+        {
+          id: "r2",
+          head_branch: null,
+          status: "completed",
+          exit_code: 0,
+          resolved_at: 2,
+          title: null,
+          target_session_id: "session-A",
+        },
+      ],
+      markDelivered: async (id) => {
+        if (id === "r1") throw new Error("transient");
+        delivered.push(id);
+      },
+      log: (line) => logs.push(line),
+    });
+    // Both events were sent regardless.
+    expect(sent).toHaveLength(2);
+    // Only r2 marked delivered (r1 raised); r1 will resurface next start.
+    expect(delivered).toEqual(["r2"]);
+    expect(logs.join("")).toContain("r1");
+  });
+});
+
 // --- CLI submission payload test ----------------------------------------
 
 describe("auth route accepts target_session_id / target_repo_root from CLI", () => {
