@@ -69,6 +69,27 @@ export async function checkInbox(branch, repo) {
 export async function checkInboxGlobal() {
     return request("GET", "/api/inbox/global");
 }
+/**
+ * Bug: 4e32923 — fetch resolved auth_requests owned by `sessionId` that have
+ * not yet been delivered. Called once at channel-server startup so a resumed
+ * session can replay auth results that resolved while its SSE listener was
+ * offline. Returns an empty list (not an error) if Mandible has no rows.
+ */
+export async function fetchUndeliveredAuthResults(sessionId) {
+    const params = new URLSearchParams({ target_session_id: sessionId });
+    const res = await request("GET", `/api/inbox/undelivered?${params.toString()}`);
+    return res.undelivered;
+}
+/**
+ * Bug: 4e32923 — mark an auth_request as delivered via the canonical
+ * POST /api/inbox/delivered/<id> endpoint. Idempotent (204 on first delivery,
+ * 204 on subsequent calls). Used by the startup catch-up path; live SSE
+ * delivery uses the lower-level `markDelivered` in notifications.ts which
+ * fires-and-forgets without awaiting a response.
+ */
+export async function markAuthDelivered(requestId) {
+    await request("POST", `/api/inbox/delivered/${encodeURIComponent(requestId)}`);
+}
 // --- Issues ---
 export async function getIssues(filters) {
     const params = new URLSearchParams();

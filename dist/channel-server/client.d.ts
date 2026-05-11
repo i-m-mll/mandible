@@ -1,4 +1,4 @@
-import type { InboxResponse, AuthQueueResponse, IssueRepoSummary, WorkUnitsResponse, AuthSubmitResponse, SessionUpdateResponse } from "./types.js";
+import type { InboxResponse, AuthQueueResponse, IssueRepoSummary, WorkUnitsResponse, AuthSubmitResponse, SessionUpdateResponse, UndeliveredAuthResult } from "./types.js";
 export declare class MandibleClientError extends Error {
     readonly statusCode: number | null;
     readonly cause?: unknown | undefined;
@@ -6,6 +6,21 @@ export declare class MandibleClientError extends Error {
 }
 export declare function checkInbox(branch?: string, repo?: string): Promise<InboxResponse>;
 export declare function checkInboxGlobal(): Promise<InboxResponse>;
+/**
+ * Bug: 4e32923 — fetch resolved auth_requests owned by `sessionId` that have
+ * not yet been delivered. Called once at channel-server startup so a resumed
+ * session can replay auth results that resolved while its SSE listener was
+ * offline. Returns an empty list (not an error) if Mandible has no rows.
+ */
+export declare function fetchUndeliveredAuthResults(sessionId: string): Promise<UndeliveredAuthResult[]>;
+/**
+ * Bug: 4e32923 — mark an auth_request as delivered via the canonical
+ * POST /api/inbox/delivered/<id> endpoint. Idempotent (204 on first delivery,
+ * 204 on subsequent calls). Used by the startup catch-up path; live SSE
+ * delivery uses the lower-level `markDelivered` in notifications.ts which
+ * fires-and-forgets without awaiting a response.
+ */
+export declare function markAuthDelivered(requestId: string): Promise<void>;
 export declare function getIssues(filters?: {
     repo?: string;
     status?: string;
