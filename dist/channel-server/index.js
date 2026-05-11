@@ -11,15 +11,16 @@
 //   2. Forwards Mandible SSE events as MCP notifications
 //   3. Communicates over stdio (stdin/stdout JSON-RPC)
 import { execSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerTools } from "./tools.js";
-import { createNotificationBridge } from "./notifications.js";
+import { buildAuthChannelEvent, createNotificationBridge, sendChannelNotification, } from "./notifications.js";
 import * as client from "./client.js";
 const INSTRUCTIONS = `You are connected to Mandible, a local agent control plane. Mandible tracks your work via issues, branches, and work units.
 
 When you receive a Mandible notification:
-- auth_resolved: An auth request (protected-branch merge) has been approved or rejected. Check the result and proceed accordingly.
+- A "Mandible auth request ..." channel event (delivered immediately, like a fresh user prompt): An auth request you submitted has been approved or rejected. The event meta carries request_id, head_branch, status, outcome, and exit_code. Proceed accordingly — the delivery has been recorded and the item will not surface again on your inbox.
 - inbox_item: A work item needs attention — a continuation from a previous session, an unassigned issue, or a work-unit update. Use mandible_check_inbox for details.
 - work_assigned: A work unit has been assigned to your session. Read the issue description and begin work.
 - work_updated: A work unit's state has changed. Check if it affects your current work.
@@ -36,7 +37,13 @@ async function main() {
     const sessionId = process.env.MANDIBLE_SESSION_ID ??
         process.env.SESSION_ID ??
         null;
-    // Create the MCP server with channel capability
+    // Create the MCP server with channel capability.
+    // Bug: 4e32923 — advertise `experimental: { 'claude/channel': {} }` so
+    // Claude Code accepts `notifications/claude/channel` events from this
+    // server (channel-event delivery for auth resolutions). The capability
+    // shape matches the first-party Discord / Telegram / fakechat plugins
+    // in claude-plugins-official. Without this declaration Claude Code's
+    // dispatcher would treat the notification as unsupported.
     const server = new McpServer({
         name: "mandible",
         version: "0.1.0",
@@ -44,6 +51,9 @@ async function main() {
         capabilities: {
             tools: {},
             logging: {},
+            experimental: {
+                "claude/channel": {},
+            },
         },
         instructions: INSTRUCTIONS,
     });
@@ -81,10 +91,26 @@ async function main() {
     registerTools(server, sessionId);
     // Set up the SSE → MCP notification bridge
     // Access the underlying Server instance for sendLoggingMessage
-    const bridge = createNotificationBridge(server.server);
+    // Bug: 4e32923 — pass own session id so the bridge filters auth:resolved
+    // events to this session (or broadcasts legacy/unscoped rows).
+    const bridge = createNotificationBridge(server.server, sessionId);
     // Connect via stdio transport
     const transport = new StdioServerTransport();
     await server.connect(transport);
+    // Bug: 4e32923 — startup catch-up. If a resumed session brings back a
+    // MANDIBLE_SESSION_ID that owns auth_results which resolved while this
+    // process was not running, replay them as channel events before
+    // subscribing to live SSE. Errors are non-fatal; the worst case is that
+    // those rows escalate to tier-2 on the next session start.
+    if (sessionId) {
+        await runStartupCatchUp({
+            sessionId,
+            mcpServer: server.server,
+            fetchUndelivered: client.fetchUndeliveredAuthResults,
+            markDelivered: client.markAuthDelivered,
+            log: (msg) => process.stderr.write(msg),
+        });
+    }
     // Start listening for Mandible events after MCP connection is established
     bridge.start();
     // Log to stderr (stdout is reserved for MCP protocol)
@@ -98,7 +124,55 @@ async function main() {
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
 }
-main().catch((err) => {
-    process.stderr.write(`Fatal: ${err}\n`);
-    process.exit(1);
-});
+/**
+ * Bug: 4e32923 — exported (with injectable deps) for unit testing. Walks the
+ * list of undelivered auth_results owned by this session id, sends each as a
+ * channel event, and POSTs delivery acknowledgement back to Mandible. Best
+ * effort: any single failure (network, daemon down, missing row) is logged
+ * and skipped — never propagated, so bridge startup is never blocked.
+ */
+export async function runStartupCatchUp(args) {
+    const { sessionId, mcpServer, fetchUndelivered, markDelivered, log } = args;
+    let rows;
+    try {
+        rows = await fetchUndelivered(sessionId);
+    }
+    catch (err) {
+        log(`Warning: channel-server startup catch-up fetch failed: ${err}\n`);
+        return;
+    }
+    if (rows.length === 0)
+        return;
+    log(`channel-server startup catch-up: replaying ${rows.length} undelivered auth result(s)\n`);
+    for (const row of rows) {
+        const payload = buildAuthChannelEvent("auth:resolved", {
+            request_id: row.id,
+            status: row.status,
+            head_branch: row.head_branch,
+            title: row.title,
+            exit_code: row.exit_code,
+            // resolved_at omitted from the formatter's input — meta carries enough
+            // for the agent to ground itself; the timestamp is implicit.
+        });
+        sendChannelNotification(mcpServer, payload);
+        try {
+            await markDelivered(row.id);
+        }
+        catch (err) {
+            log(`Warning: failed to mark auth_request ${row.id} delivered: ${err}\n`);
+            // Continue: the row will resurface on the next session start (still
+            // tier 1 until the project grace window elapses).
+        }
+    }
+}
+// Bug: 4e32923 — only run main() when invoked as the CLI entrypoint, not when
+// imported by tests. Module loading must remain side-effect-free so test files
+// can exercise `runStartupCatchUp` without spawning a stdio MCP server.
+const invokedAsCli = process.argv[1] !== undefined &&
+    import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedAsCli) {
+    main().catch((err) => {
+        process.stderr.write(`Fatal: ${err}\n`);
+        process.exit(1);
+    });
+}

@@ -125,3 +125,20 @@ export interface MandibleSSEEvent {
     data: unknown;
     timestamp: string;
 }
+/**
+ * Bug: 4e32923 — minimal auth_result record returned by
+ * GET /api/inbox/undelivered. Used at channel-server startup to replay any
+ * auth resolutions that landed while the SSE listener was offline.
+ */
+export interface UndeliveredAuthResult {
+    id: string;
+    head_branch: string | null;
+    status: string;
+    exit_code: number | null;
+    resolved_at: number | null;
+    title: string | null;
+    target_session_id: string | null;
+}
+export interface UndeliveredResponse {
+    undelivered: UndeliveredAuthResult[];
+}
