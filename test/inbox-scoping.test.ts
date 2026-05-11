@@ -328,65 +328,156 @@ describe("AuthQueue.markDelivered (powers /api/inbox/delivered/:id)", () => {
 
 // --- Channel-server filter tests ----------------------------------------
 
+interface ChannelEventCapture {
+  content: string;
+  meta?: Record<string, string>;
+}
+
 describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
   async function getDispatch() {
     return (await import("../channel-server/notifications.js")).dispatchEvent;
   }
 
-  it("forwards events when target_session_id matches own session", async () => {
+  it("delivers auth events via the channel-event sender when target_session_id matches", async () => {
     const dispatchEvent = await getDispatch();
     const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
     const delivered: string[] = [];
     dispatchEvent(
-      { type: "auth:resolved", data: { request_id: "r-match", target_session_id: "session-A", status: "completed" }, timestamp: "" },
+      { type: "auth:resolved", data: { request_id: "r-match", target_session_id: "session-A", status: "completed", head_branch: "feature/x", title: "Merge feature/x" }, timestamp: "" },
       "session-A",
       (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
       (id) => delivered.push(id),
     );
-    expect(notes.map((n) => n.category)).toEqual(["auth_resolved"]);
+    // Auth events should NOT use the passive logging path.
+    expect(notes).toHaveLength(0);
+    expect(channelEvents).toHaveLength(1);
+    expect(channelEvents[0].content).toContain("Mandible auth request completed");
+    expect(channelEvents[0].content).toContain("feature/x");
+    expect(channelEvents[0].meta).toMatchObject({
+      source: "mandible",
+      event_type: "auth:resolved",
+      request_id: "r-match",
+      status: "completed",
+      head_branch: "feature/x",
+      title: "Merge feature/x",
+    });
     expect(delivered).toEqual(["r-match"]);
   });
 
   it("drops events when target_session_id is a different session", async () => {
     const dispatchEvent = await getDispatch();
     const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
     const delivered: string[] = [];
     dispatchEvent(
       { type: "auth:resolved", data: { request_id: "r-other", target_session_id: "session-B", status: "completed" }, timestamp: "" },
       "session-A",
       (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
       (id) => delivered.push(id),
     );
     expect(notes).toHaveLength(0);
+    expect(channelEvents).toHaveLength(0);
     expect(delivered).toHaveLength(0);
   });
 
-  it("forwards legacy (null target_session_id) events to every channel and does NOT mark delivered", async () => {
+  it("legacy (null target_session_id) events use channel delivery but do NOT mark delivered", async () => {
     const dispatchEvent = await getDispatch();
     const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
     const delivered: string[] = [];
     dispatchEvent(
       { type: "auth:resolved", data: { request_id: "r-legacy", target_session_id: null, status: "completed" }, timestamp: "" },
       "session-A",
       (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
       (id) => delivered.push(id),
     );
-    expect(notes.map((n) => n.category)).toEqual(["auth_resolved"]);
+    expect(notes).toHaveLength(0);
+    expect(channelEvents).toHaveLength(1);
+    expect(channelEvents[0].meta).toMatchObject({ event_type: "auth:resolved" });
     expect(delivered).toHaveLength(0); // legacy rows aren't owned, so no delivery watermark
   });
 
   it("falls back to broadcast when this channel does not know its own session id", async () => {
     const dispatchEvent = await getDispatch();
     const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
     const delivered: string[] = [];
     dispatchEvent(
       { type: "auth:resolved", data: { request_id: "r-anonymous", target_session_id: "session-B", status: "completed" }, timestamp: "" },
       null,
       (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
       (id) => delivered.push(id),
     );
-    expect(notes).toHaveLength(1);
-    expect(delivered).toHaveLength(0); // unscoped daemon: don't claim ownership
+    // Without our own session id we still surface via channel events, but
+    // we never claim ownership (no delivery watermark).
+    expect(notes).toHaveLength(0);
+    expect(channelEvents).toHaveLength(1);
+    expect(delivered).toHaveLength(0);
+  });
+
+  it("falls back to the logging sender when no channel-event sender is wired", async () => {
+    const dispatchEvent = await getDispatch();
+    const notes: Array<{ category: string }> = [];
+    const delivered: string[] = [];
+    dispatchEvent(
+      { type: "auth:resolved", data: { request_id: "r-legacy-call", target_session_id: "session-A", status: "completed" }, timestamp: "" },
+      "session-A",
+      (category, _message) => notes.push({ category }),
+      undefined, // no sendChannelEvent — caller didn't wire it
+      (id) => delivered.push(id),
+    );
+    // Auth must still reach the agent somehow; fall back to logging.
+    expect(notes.map((n) => n.category)).toEqual(["auth_resolved"]);
+    expect(delivered).toEqual(["r-legacy-call"]);
+  });
+
+  it("non-auth events stay on the passive logging path even when channel-event sender is wired", async () => {
+    const dispatchEvent = await getDispatch();
+    const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
+    dispatchEvent(
+      { type: "inbox:updated", data: { total: 3 }, timestamp: "" },
+      "session-A",
+      (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
+    );
+    dispatchEvent(
+      { type: "work_unit:assigned", data: { issue_id: "abc", branch: "feature/x" }, timestamp: "" },
+      "session-A",
+      (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
+    );
+    expect(notes.map((n) => n.category)).toEqual(["inbox_item", "work_assigned"]);
+    expect(channelEvents).toHaveLength(0);
+  });
+
+  it("buildAuthChannelEvent produces a content string with branch + status and a meta record", async () => {
+    const mod = await import("../channel-server/notifications.js");
+    const payload = mod.buildAuthChannelEvent("auth:resolved", {
+      request_id: "abc",
+      status: "rejected",
+      head_branch: "feature/y",
+      title: "Merge feature/y",
+      exit_code: 1,
+      error: "user rejected",
+    });
+    expect(payload.content).toContain("Mandible auth request rejected");
+    expect(payload.content).toContain("feature/y");
+    expect(payload.content).toContain("Error: user rejected");
+    expect(payload.meta).toMatchObject({
+      source: "mandible",
+      event_type: "auth:resolved",
+      status: "rejected",
+      request_id: "abc",
+      head_branch: "feature/y",
+      title: "Merge feature/y",
+      exit_code: "1",
+    });
   });
 
   it("markDelivered helper hits the canonical /api/inbox/delivered/:id path", async () => {

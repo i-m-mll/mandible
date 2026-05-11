@@ -21,7 +21,7 @@ import * as client from "./client.js";
 const INSTRUCTIONS = `You are connected to Mandible, a local agent control plane. Mandible tracks your work via issues, branches, and work units.
 
 When you receive a Mandible notification:
-- auth_resolved: An auth request (protected-branch merge) has been approved or rejected. Check the result and proceed accordingly.
+- A "Mandible auth request ..." channel event (delivered immediately, like a fresh user prompt): An auth request you submitted has been approved or rejected. The event meta carries request_id, head_branch, status, outcome, and exit_code. Proceed accordingly — the delivery has been recorded and the item will not surface again on your inbox.
 - inbox_item: A work item needs attention — a continuation from a previous session, an unassigned issue, or a work-unit update. Use mandible_check_inbox for details.
 - work_assigned: A work unit has been assigned to your session. Read the issue description and begin work.
 - work_updated: A work unit's state has changed. Check if it affects your current work.
@@ -41,7 +41,13 @@ async function main(): Promise<void> {
     process.env.SESSION_ID ??
     null;
 
-  // Create the MCP server with channel capability
+  // Create the MCP server with channel capability.
+  // Bug: 4e32923 — advertise `experimental: { 'claude/channel': {} }` so
+  // Claude Code accepts `notifications/claude/channel` events from this
+  // server (channel-event delivery for auth resolutions). The capability
+  // shape matches the first-party Discord / Telegram / fakechat plugins
+  // in claude-plugins-official. Without this declaration Claude Code's
+  // dispatcher would treat the notification as unsupported.
   const server = new McpServer(
     {
       name: "mandible",
@@ -51,6 +57,9 @@ async function main(): Promise<void> {
       capabilities: {
         tools: {},
         logging: {},
+        experimental: {
+          "claude/channel": {},
+        },
       },
       instructions: INSTRUCTIONS,
     },

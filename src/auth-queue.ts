@@ -1104,6 +1104,12 @@ export class AuthQueue {
       exit_code: request.exit_code,
       error: request.error,
       resolved_at: request.resolved_at,
+      // Bug: 4e32923 — include title and head_branch so the channel-server
+      // can build a meaningful `notifications/claude/channel` payload without
+      // a follow-up fetch. Pre-existing logging-message formatter already
+      // reads these fields; they were missing from the payload before.
+      title: request.title ?? null,
+      head_branch: request.head_branch ?? null,
       // Bug: 4e32923 — emit owner session id so the MCP channel server can
       // filter auth:resolved events to only the originating session (and
       // legacy unscoped rows still broadcast via target_session_id == null).
