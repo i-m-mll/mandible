@@ -1,4 +1,8 @@
 // Bug: 1d652d5 — SSE listener that bridges Mandible events to MCP notifications
+// Bug: 4e32923 — scoped delivery: forward auth:resolved / auth:completed only
+// when the event's target_session_id matches this channel's MANDIBLE_SESSION_ID
+// (or is null, meaning legacy/unscoped). On a match we also POST to
+// /api/inbox/delivered/<id> so the row drops out of the owner's tier-1 inbox.
 //
 // Connects to Mandible's SSE endpoint (GET /api/events) and translates
 // relevant event types into MCP logging messages that Claude Code receives
@@ -18,14 +22,50 @@ export interface NotificationBridge {
 }
 
 /**
+ * POST /api/inbox/delivered/<id> — best-effort fire-and-forget. The endpoint
+ * is idempotent so a missed call only means the row will keep surfacing on
+ * the owner's tier-1 inbox until escalation or manual ack.
+ * Bug: 4e32923
+ */
+export function markDelivered(requestId: string): void {
+  if (!requestId) return;
+  const url = new URL(`/api/inbox/delivered/${encodeURIComponent(requestId)}`, MANDIBLE_BASE);
+  const req = http.request(
+    {
+      method: "POST",
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      headers: { "Content-Length": "0" },
+    },
+    (res) => {
+      // Drain to free the socket; status codes are advisory only.
+      res.resume();
+    },
+  );
+  req.on("error", () => {
+    // Daemon down or transient: idempotent endpoint means we'll be re-notified
+    // on reconnect (or the item escalates to tier 2 after the grace window).
+  });
+  req.end();
+}
+
+/**
  * Creates an SSE listener that bridges Mandible events to MCP notifications.
  *
  * We use raw http.get() rather than EventSource because Node.js does not have
  * a built-in EventSource and adding a polyfill dependency is unnecessary for
  * this simple chunked-transfer use case.
+ *
+ * @param mcpServer — MCP server instance for sending notifications.
+ * @param ownSessionId — this channel's Mandible session id, used to filter
+ *   auth:resolved events. Captured at startup from MANDIBLE_SESSION_ID. If
+ *   null, the bridge falls back to legacy broadcast behaviour (every event
+ *   is forwarded), which is the right thing for unscoped daemons.
  */
 export function createNotificationBridge(
   mcpServer: Server,
+  ownSessionId: string | null = null,
 ): NotificationBridge {
   let running = false;
   let currentReq: http.ClientRequest | null = null;
@@ -113,7 +153,29 @@ export function createNotificationBridge(
 
     // Route specific Mandible event types to MCP notifications
     if (type === "auth:resolved" || type === "auth:completed") {
-      sendNotification("auth_resolved", formatAuthResolved(data));
+      // Bug: 4e32923 — scope by target_session_id. If the auth_request belongs
+      // to a different session, drop the event silently so we do not spam
+      // every channel-connected agent with results meant for someone else.
+      // target_session_id === null means legacy/unscoped: broadcast as before.
+      const payload = (data && typeof data === "object") ? (data as Record<string, unknown>) : {};
+      const target = payload.target_session_id;
+      const targetSessionId = typeof target === "string" ? target : null;
+      const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
+
+      if (targetSessionId == null) {
+        // Legacy / unscoped row: keep current broadcast behaviour for safety.
+        sendNotification("auth_resolved", formatAuthResolved(data));
+      } else if (ownSessionId != null && targetSessionId === ownSessionId) {
+        // Owner match: forward AND record delivery so the owner's tier-1
+        // inbox empties without requiring a manual ack.
+        sendNotification("auth_resolved", formatAuthResolved(data));
+        markDelivered(requestId);
+      } else if (ownSessionId == null) {
+        // We don't know our own session id — best-effort fall back to broadcast
+        // so the user still hears about resolutions in unconfigured setups.
+        sendNotification("auth_resolved", formatAuthResolved(data));
+      }
+      // else: mismatch, drop entirely (intended target is a different session).
     } else if (
       type === "console:inbox:badge" ||
       type === "inbox:updated"

@@ -279,6 +279,20 @@ command="${HOME}/.dotfiles/bin/mandible auth merge ${branch} --into ${base_branc
 head_branch="$branch"
 execution_mode="daemon"
 
+# --- Bug: 4e32923 — scoped delivery fields ---
+# target_session_id: the Mandible session that owns this request (so the MCP
+# channel server can forward the auth:resolved event only to it).
+# target_repo_root: the protected-branch worktree path. Used for tier-2 inbox
+# scoping (any session in the same project) once the project grace window passes.
+target_session_id="${MANDIBLE_SESSION_ID:-}"
+target_repo_root=""
+if git_common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+  # --git-common-dir resolves to the main worktree's .git, so the repo root is
+  # its parent. This intentionally matches the same heuristic used to detect
+  # `repo` above (basename of that dirname), so the two values stay aligned.
+  target_repo_root=$(dirname "$git_common")
+fi
+
 # --- Build issues JSON array ---
 # Bug: 297677f — serialize --issue flags into a JSON array for the API
 
@@ -306,6 +320,8 @@ payload=$(jq -nc \
   --arg spec_content "$spec_content" \
   --arg post_merge_handoff "$post_merge_handoff" \
   --arg depends_on_id "$depends_on_id" \
+  --arg target_session_id "$target_session_id" \
+  --arg target_repo_root "$target_repo_root" \
   --argjson issues "$issues_json" \
   '{
     command: $command,
@@ -324,7 +340,9 @@ payload=$(jq -nc \
     spec_content: $spec_content,
     post_merge_handoff: (if $post_merge_handoff == "" then null else $post_merge_handoff end),
     issues: $issues,
-    depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end)
+    depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
+    target_session_id: (if $target_session_id == "" then null else $target_session_id end),
+    target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end)
   }')
 
 # Bug: de8d29c — use -w to capture HTTP status separately so we can distinguish

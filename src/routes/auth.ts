@@ -319,7 +319,11 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     post_merge_handoff: typeof body.post_merge_handoff === "string" ? body.post_merge_handoff : (body.post_merge_handoff === null ? null : undefined),
     issues: parseStringArray(body.issues),
     depends_on_id: typeof body.depends_on_id === "string" ? body.depends_on_id : (body.depends_on_id === null ? null : undefined),
-    execution_mode: executionMode
+    execution_mode: executionMode,
+    // Bug: 4e32923 — accept scoping fields from the CLI; null/missing means
+    // legacy behaviour (broadcast on resolution, no tier-1 ownership).
+    target_session_id: typeof body.target_session_id === "string" ? body.target_session_id : null,
+    target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null
   };
 }
 

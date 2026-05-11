@@ -91,7 +91,9 @@ async function main(): Promise<void> {
 
   // Set up the SSE → MCP notification bridge
   // Access the underlying Server instance for sendLoggingMessage
-  const bridge = createNotificationBridge(server.server);
+  // Bug: 4e32923 — pass own session id so the bridge filters auth:resolved
+  // events to this session (or broadcasts legacy/unscoped rows).
+  const bridge = createNotificationBridge(server.server, sessionId);
 
   // Connect via stdio transport
   const transport = new StdioServerTransport();
