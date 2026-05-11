@@ -51,6 +51,67 @@ export function markDelivered(requestId: string): void {
 }
 
 /**
+ * Bug: 4e32923 — pure event-dispatch function extracted so unit tests can
+ * drive it without standing up an SSE connection or a real MCP server.
+ *
+ * Behaviour:
+ *   - `auth:resolved` / `auth:completed`: filter by `target_session_id`.
+ *     - null → broadcast (legacy / unscoped)
+ *     - matches ownSessionId → forward + markDelivered
+ *     - mismatch → drop
+ *     - ownSessionId itself null → broadcast (defensive)
+ *   - `inbox:updated` / `console:inbox:badge` / `work_unit:*` → forward as-is
+ *
+ * @param event — raw SSE event payload from Mandible.
+ * @param ownSessionId — this channel's Mandible session id.
+ * @param sendNotification — callback that forwards a (category, message) pair
+ *   as an MCP logging message (the production callback wraps server.sendLoggingMessage).
+ * @param onDelivered — callback fired when an auth:resolved event matches and
+ *   delivery should be recorded. Defaults to the live HTTP POST. Tests inject
+ *   a spy to capture the request_id.
+ */
+export function dispatchEvent(
+  event: MandibleSSEEvent,
+  ownSessionId: string | null,
+  sendNotification: (category: string, message: string) => void,
+  onDelivered: (requestId: string) => void = markDelivered,
+): void {
+  const { type, data } = event;
+
+  if (type === "auth:resolved" || type === "auth:completed") {
+    const payload = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+    const target = payload.target_session_id;
+    const targetSessionId = typeof target === "string" ? target : null;
+    const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
+
+    if (targetSessionId == null) {
+      // Legacy / unscoped row: keep current broadcast behaviour for safety.
+      sendNotification("auth_resolved", formatAuthResolved(data));
+    } else if (ownSessionId != null && targetSessionId === ownSessionId) {
+      // Owner match: forward AND record delivery so the owner's tier-1
+      // inbox empties without requiring a manual ack.
+      sendNotification("auth_resolved", formatAuthResolved(data));
+      onDelivered(requestId);
+    } else if (ownSessionId == null) {
+      // We don't know our own session id — best-effort fall back to broadcast
+      // so the user still hears about resolutions in unconfigured setups.
+      sendNotification("auth_resolved", formatAuthResolved(data));
+    }
+    // else: mismatch, drop entirely (intended target is a different session).
+  } else if (
+    type === "console:inbox:badge" ||
+    type === "inbox:updated"
+  ) {
+    sendNotification("inbox_item", formatInboxUpdate(data));
+  } else if (type === "work_unit:assigned") {
+    sendNotification("work_assigned", formatWorkAssigned(data));
+  } else if (type === "work_unit:updated") {
+    sendNotification("work_updated", formatWorkUpdated(data));
+  }
+  // Other event types (session:*, daemon:*, etc.) are not forwarded
+}
+
+/**
  * Creates an SSE listener that bridges Mandible events to MCP notifications.
  *
  * We use raw http.get() rather than EventSource because Node.js does not have
@@ -149,44 +210,9 @@ export function createNotificationBridge(
   }
 
   function handleEvent(event: MandibleSSEEvent): void {
-    const { type, data } = event;
-
-    // Route specific Mandible event types to MCP notifications
-    if (type === "auth:resolved" || type === "auth:completed") {
-      // Bug: 4e32923 — scope by target_session_id. If the auth_request belongs
-      // to a different session, drop the event silently so we do not spam
-      // every channel-connected agent with results meant for someone else.
-      // target_session_id === null means legacy/unscoped: broadcast as before.
-      const payload = (data && typeof data === "object") ? (data as Record<string, unknown>) : {};
-      const target = payload.target_session_id;
-      const targetSessionId = typeof target === "string" ? target : null;
-      const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
-
-      if (targetSessionId == null) {
-        // Legacy / unscoped row: keep current broadcast behaviour for safety.
-        sendNotification("auth_resolved", formatAuthResolved(data));
-      } else if (ownSessionId != null && targetSessionId === ownSessionId) {
-        // Owner match: forward AND record delivery so the owner's tier-1
-        // inbox empties without requiring a manual ack.
-        sendNotification("auth_resolved", formatAuthResolved(data));
-        markDelivered(requestId);
-      } else if (ownSessionId == null) {
-        // We don't know our own session id — best-effort fall back to broadcast
-        // so the user still hears about resolutions in unconfigured setups.
-        sendNotification("auth_resolved", formatAuthResolved(data));
-      }
-      // else: mismatch, drop entirely (intended target is a different session).
-    } else if (
-      type === "console:inbox:badge" ||
-      type === "inbox:updated"
-    ) {
-      sendNotification("inbox_item", formatInboxUpdate(data));
-    } else if (type === "work_unit:assigned") {
-      sendNotification("work_assigned", formatWorkAssigned(data));
-    } else if (type === "work_unit:updated") {
-      sendNotification("work_updated", formatWorkUpdated(data));
-    }
-    // Other event types (session:*, daemon:*, etc.) are not forwarded
+    // Bug: 4e32923 — delegate to the pure dispatchEvent helper so the filter
+    // logic is unit-testable without standing up an SSE / MCP transport.
+    dispatchEvent(event, ownSessionId, sendNotification);
   }
 
   function sendNotification(category: string, message: string): void {
