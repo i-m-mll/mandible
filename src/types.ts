@@ -135,6 +135,13 @@ export interface AuthRequest {
   output: string;
   error: string | null;
   acknowledged_by: string | null;
+  // Bug: 4e32923 — owner session + repo for scoped channel delivery and
+  // tiered inbox escalation. delivered_at is set by the MCP channel server
+  // when it forwards the auth:resolved event to the owner; once set, the
+  // item is removed from the owner's tier-1 inbox.
+  target_session_id: string | null;
+  target_repo_root: string | null;
+  delivered_at: number | null;
 }
 
 export interface AuthRequestInput {
@@ -156,6 +163,10 @@ export interface AuthRequestInput {
   issues?: string[] | null;
   depends_on_id?: string | null;
   execution_mode?: AuthExecutionMode;
+  // Bug: 4e32923 — scoping fields supplied by the submitting CLI; if null,
+  // delivery falls back to legacy broadcast behaviour (pre-migration rows).
+  target_session_id?: string | null;
+  target_repo_root?: string | null;
 }
 
 export interface AuthOutputChunk {
