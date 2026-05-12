@@ -894,15 +894,25 @@ export class AuthQueue {
               );
             }
 
-            // Bug: 87dfff0 — after hooks complete (build finished), schedule
-            // a graceful exit so launchd respawns with the new code.
-            if (isSelfMerge) {
-              console.log("[auth-queue] self-merge detected, scheduling daemon restart");
-              setTimeout(() => process.exit(0), 500);
-            }
           }
 
+          // Store result and broadcast auth:resolved BEFORE scheduling
+          // any self-rebuild exit, so the channel server receives the
+          // SSE event while the daemon is still alive.
           this.storeExecutionResult(request.id, result, null);
+
+          // Bug: 87dfff0 — after hooks complete (build finished), schedule
+          // a graceful exit so launchd respawns with the new code.
+          // Bug: 03d6cb0 — delay increased to 2s (from 0.5s) and moved
+          // after storeExecutionResult so the auth:resolved SSE broadcast
+          // has time to reach the channel server before the daemon exits.
+          if (result.exit_code === 0) {
+            const mergedForRestart = { ...request, ...this.getRequest(request.id) } as AuthRequest;
+            if (mergedForRestart.repo === "mandible") {
+              console.log("[auth-queue] self-merge detected, scheduling daemon restart (2s delay for event delivery)");
+              setTimeout(() => process.exit(0), 2000);
+            }
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : "Execution failed.";
           this.storeExecutionResult(request.id, null, message);

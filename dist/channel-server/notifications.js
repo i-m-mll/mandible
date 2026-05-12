@@ -187,12 +187,19 @@ export function sendChannelNotification(mcpServer, payload) {
  *   (CLAUDE_CODE_SESSION_ID), used as a secondary matching criterion when
  *   target_session_id doesn't match the current session (e.g. after a
  *   Claude Code resume that regenerates the session id).
+ * @param onReconnect — Bug: 03d6cb0 — optional callback invoked on each
+ *   successful SSE reconnect. Used to replay undelivered auth results that
+ *   were broadcast while the connection was down (e.g. during a self-rebuild).
  */
-export function createNotificationBridge(mcpServer, ownSessionId = null, ownConversationId = null) {
+export function createNotificationBridge(mcpServer, ownSessionId = null, ownConversationId = null, onReconnect) {
     let running = false;
     let currentReq = null;
     let reconnectTimer = null;
     let reconnectDelay = RECONNECT_DELAY_MS;
+    // Bug: 03d6cb0 — track whether this is the first connection (startup)
+    // vs a reconnection. The startup catch-up runs separately in index.ts;
+    // the onReconnect callback only fires on subsequent reconnects.
+    let hasConnectedBefore = false;
     function connect() {
         if (!running)
             return;
@@ -205,6 +212,17 @@ export function createNotificationBridge(mcpServer, ownSessionId = null, ownConv
             }
             // Reset backoff on successful connection
             reconnectDelay = RECONNECT_DELAY_MS;
+            // Bug: 03d6cb0 — on reconnect (not first connect), run catch-up
+            // to replay any auth results missed during the connection gap.
+            if (hasConnectedBefore && onReconnect) {
+                try {
+                    onReconnect();
+                }
+                catch {
+                    // Best effort — don't let catch-up failures break the SSE stream
+                }
+            }
+            hasConnectedBefore = true;
             let buffer = "";
             res.setEncoding("utf8");
             res.on("data", (chunk) => {
@@ -415,4 +433,3 @@ function formatWorkUpdated(data) {
         parts.push(`state: ${state}`);
     return parts.join(" — ");
 }
-// test: no-session event verification (will revert)

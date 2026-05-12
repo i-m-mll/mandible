@@ -117,7 +117,23 @@ async function main(): Promise<void> {
   // Bug: 4e32923 — pass own session id so the bridge filters auth:resolved
   // events to this session (or broadcasts legacy/unscoped rows).
   // Bug: 6d7411b — pass conversation id for secondary matching across resumes.
-  const bridge = createNotificationBridge(server.server, sessionId, conversationId);
+  // Bug: 03d6cb0 — pass onReconnect callback to catch up on auth results
+  // missed during SSE connection gaps (e.g. daemon self-rebuild).
+  const onReconnect = sessionId
+    ? () => {
+        runStartupCatchUp({
+          sessionId,
+          conversationId,
+          mcpServer: server.server,
+          fetchUndelivered: client.fetchUndeliveredAuthResults,
+          markDelivered: client.markAuthDelivered,
+          log: (msg) => process.stderr.write(msg),
+        }).catch((err) => {
+          process.stderr.write(`Warning: SSE reconnect catch-up failed: ${err}\n`);
+        });
+      }
+    : undefined;
+  const bridge = createNotificationBridge(server.server, sessionId, conversationId, onReconnect);
 
   // Connect via stdio transport
   const transport = new StdioServerTransport();

@@ -610,4 +610,119 @@ describe("auth queue", () => {
       expect(errorOutput).not.toContain("line 10\n");
     });
   });
+
+  // Bug: 03d6cb0 — self-rebuild delay: auth:resolved must broadcast BEFORE
+  // the daemon schedules a process.exit for self-merges.
+  describe("self-rebuild event ordering", () => {
+    it("broadcasts auth:resolved before scheduling self-rebuild exit", async () => {
+      const events: SseEvent[] = [];
+      let exitScheduled = false;
+      let resolvedBeforeExit = false;
+
+      // Mock setTimeout to detect when process.exit is scheduled
+      const originalSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
+        // The self-rebuild uses a 2000ms timeout for process.exit
+        if (ms === 2000) {
+          exitScheduled = true;
+          // Don't actually call process.exit — just record it
+          return originalSetTimeout(() => {}, 0);
+        }
+        return originalSetTimeout(fn, ms);
+      };
+      globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
+
+      try {
+        const queue = createQueue({
+          broadcast: (event) => {
+            events.push(event);
+            if (event.event === "auth:resolved") {
+              // At the moment auth:resolved fires, exit should NOT yet be scheduled
+              resolvedBeforeExit = !exitScheduled;
+            }
+          },
+          executor: async () => ({
+            exit_code: 0,
+            signal: null,
+            stdout: "Merge made by recursive.\n",
+            stderr: "",
+            output: "Merge made by recursive.\n",
+            started_at: Date.now(),
+            finished_at: Date.now()
+          })
+        });
+
+        const request = queue.submit({
+          command: "mandible auth merge main",
+          title: "Self-merge",
+          repo: "mandible",
+          base_branch: "main",
+          head_branch: "feature/self-fix",
+          execution_mode: "daemon"
+        });
+
+        queue.approve(request.id);
+        await waitForStatus(queue, request.id, "completed");
+        // Give the post-execution code time to run (setTimeout scheduling)
+        await new Promise((resolve) => originalSetTimeout(resolve, 100));
+
+        // Verify auth:resolved was broadcast
+        expect(events.some((e) => e.event === "auth:resolved")).toBe(true);
+        // Verify it fired before the exit was scheduled
+        expect(resolvedBeforeExit).toBe(true);
+        // Verify exit WAS scheduled (the self-rebuild detection works)
+        expect(exitScheduled).toBe(true);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+      }
+    });
+
+    it("uses a 2-second delay for self-rebuild exit to allow event delivery", async () => {
+      let exitDelayMs: number | undefined;
+
+      const originalSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
+        // Capture the delay used for the self-rebuild exit
+        if (ms !== undefined && ms >= 1000) {
+          exitDelayMs = ms;
+          return originalSetTimeout(() => {}, 0);
+        }
+        return originalSetTimeout(fn, ms);
+      };
+      globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
+
+      try {
+        const queue = createQueue({
+          executor: async () => ({
+            exit_code: 0,
+            signal: null,
+            stdout: "Merge made by recursive.\n",
+            stderr: "",
+            output: "Merge made by recursive.\n",
+            started_at: Date.now(),
+            finished_at: Date.now()
+          })
+        });
+
+        const request = queue.submit({
+          command: "mandible auth merge main",
+          title: "Self-merge delay test",
+          repo: "mandible",
+          base_branch: "main",
+          head_branch: "feature/delay-test",
+          execution_mode: "daemon"
+        });
+
+        queue.approve(request.id);
+        await waitForStatus(queue, request.id, "completed");
+        await new Promise((resolve) => originalSetTimeout(resolve, 100));
+
+        // Bug: 03d6cb0 — the delay must be >= 2000ms to give the channel
+        // server time to receive and process the auth:resolved event.
+        expect(exitDelayMs).toBe(2000);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+      }
+    });
+  });
 });
