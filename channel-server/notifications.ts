@@ -443,4 +443,3 @@ function formatWorkUpdated(data: unknown): string {
 
   return parts.join(" — ");
 }
-// test: no-session event verification (will revert)
