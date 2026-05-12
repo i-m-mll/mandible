@@ -25,10 +25,10 @@ export interface ChannelEventPayload {
  *     route through `sendChannelEvent` so Claude Code wakes the agent
  *     immediately (channel events are processed like an inbound prompt, not
  *     passive context). Filter rules:
- *     - null → broadcast (legacy / unscoped)
- *     - matches ownSessionId → forward + markDelivered
+ *     - null → passive log only (legacy / unscoped — Bug: 210ffa1)
+ *     - matches ownSessionId → forward via channel event + markDelivered
  *     - mismatch → drop
- *     - ownSessionId itself null → broadcast (defensive)
+ *     - ownSessionId itself null → passive log only (Bug: 210ffa1)
  *   - `inbox:updated` / `console:inbox:badge` / `work_unit:*` → forward via
  *     `sendNotification` as a logging message (passive — surfaces on the next
  *     user prompt). These do not need an immediate-turn wake-up.

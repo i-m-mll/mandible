@@ -52,7 +52,9 @@ export async function startDaemon(options = {}) {
     // Create router and register all partition routes
     const router = new Router();
     const sessionRegistry = new SessionRegistry(db);
-    registerAuthRoutes(router);
+    // Bug: 4e32923 — capture the auth queue so the inbox route can mark
+    // auth_requests as delivered when the channel server forwards the event.
+    const authQueue = registerAuthRoutes(router);
     registerChatRoutes(router);
     const workScanner = registerWorkRoutes(router);
     registerReviewRoutes(router, workScanner);
@@ -78,7 +80,7 @@ export async function startDaemon(options = {}) {
     // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
     issueDeps.sessionManager = sessionManager;
     registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
-    registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager);
+    registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager, authQueue);
     registerConsoleRoutes(router, sessionManager);
     // Bug: 61bee4e — preset routes for convention management
     registerPresetRoutes(router);
@@ -96,7 +98,13 @@ export async function startDaemon(options = {}) {
     });
     const navEnricher = new NavMetadataEnricher(sessionRegistry, logger);
     navEnricher.start();
-    const server = createServer({ db, sse, logger, version, router, getStartupInfo: () => startupInfo });
+    // Bug: 4db692a — expose auth queue's rebuilding state to the health endpoint
+    // so the UI doesn't reload while the daemon is still alive but about to restart.
+    const server = createServer({
+        db, sse, logger, version, router,
+        getStartupInfo: () => startupInfo,
+        isRebuilding: () => authQueue.isRebuilding,
+    });
     // Attach WebSocket upgrade handler for console backend sessions (Bug: e980dd8)
     const wss = new WebSocketServer({ noServer: true });
     attachWebSocketUpgrade(server, (req, socket, head) => {

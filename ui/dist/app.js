@@ -35816,19 +35816,26 @@ function App() {
     if (!rebuilding)
       return;
     const POLL_MS = 2e3;
+    let intervalId = null;
     const startTimer = window.setTimeout(() => {
-      const interval2 = window.setInterval(async () => {
+      intervalId = window.setInterval(async () => {
         try {
           const res = await fetch("/api/health");
           if (res.ok) {
+            const data = await res.json();
+            if (data.rebuilding)
+              return;
             window.location.reload();
           }
         } catch {
         }
       }, POLL_MS);
-      return () => window.clearInterval(interval2);
     }, 1e3);
-    return () => window.clearTimeout(startTimer);
+    return () => {
+      window.clearTimeout(startTimer);
+      if (intervalId !== null)
+        window.clearInterval(intervalId);
+    };
   }, [rebuilding]);
   y2(() => {
     const timer2 = window.setTimeout(() => {

@@ -25,7 +25,10 @@ export declare class AuthQueue {
     private readonly inFlight;
     private executionChain;
     private expiryTimer;
+    private _rebuilding;
     constructor(options?: AuthQueueOptions);
+    /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
+    get isRebuilding(): boolean;
     private startExpiryTimer;
     /**
      * Recover auth requests that got stuck in 'approved' status because the
@@ -61,6 +64,14 @@ export declare class AuthQueue {
     retry(id: string): AuthRequest;
     requeue(id: string): AuthRequest;
     dismiss(id: string): AuthRequest;
+    /**
+     * Bug: 4e32923 — mark an auth request as delivered to the owning session via
+     * the MCP channel server. Once set, the row drops out of the owner's tier-1
+     * inbox and won't escalate to tiers 2/3. Idempotent: re-delivery is a no-op
+     * (existing delivered_at is preserved). Returns true if a row was updated,
+     * false if the request is unknown.
+     */
+    markDelivered(id: string): boolean;
     delete(id: string, reason: string): void;
     approve(id: string): AuthRequest;
     reject(id: string, reason?: string): AuthRequest;
@@ -90,6 +101,7 @@ export declare class AuthQueue {
      * Bug: 8a281b3
      */
     private resolveWorkUnitsOnMerge;
+    private computeOutcome;
     private buildResolvedPayload;
     private isFailedLike;
     private requireRequest;

@@ -13,6 +13,7 @@ export interface HealthResponse {
     uptime: number;
     version: string;
     startup_commit: StartupCommitInfo;
+    rebuilding?: boolean;
 }
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type Logger = (level: LogLevel, message: string, details?: Record<string, unknown>) => void;
@@ -64,6 +65,7 @@ export interface StarredChat {
     created_at: string;
 }
 export type AuthRequestStatus = "pending" | "executing" | "approved" | "rejected" | "expired" | "completed" | "dismissed";
+export type AuthRequestOutcome = "succeeded" | "failed" | "rejected" | "dismissed" | "expired" | null;
 export type AuthExecutionMode = "daemon" | "remote";
 export type AuthRequestType = "merge" | "commit" | "force-push" | "branch-delete" | "config-change" | "preset-promote" | "data-delete";
 export interface AuthRequest {
@@ -99,6 +101,9 @@ export interface AuthRequest {
     output: string;
     error: string | null;
     acknowledged_by: string | null;
+    target_session_id: string | null;
+    target_repo_root: string | null;
+    delivered_at: number | null;
 }
 export interface AuthRequestInput {
     session_id?: string | null;
@@ -119,6 +124,8 @@ export interface AuthRequestInput {
     issues?: string[] | null;
     depends_on_id?: string | null;
     execution_mode?: AuthExecutionMode;
+    target_session_id?: string | null;
+    target_repo_root?: string | null;
 }
 export interface AuthOutputChunk {
     request_id: string;
