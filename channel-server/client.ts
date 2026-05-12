@@ -115,8 +115,12 @@ export async function checkInboxGlobal(): Promise<InboxResponse> {
  */
 export async function fetchUndeliveredAuthResults(
   sessionId: string,
+  conversationId?: string | null,
 ): Promise<UndeliveredAuthResult[]> {
   const params = new URLSearchParams({ target_session_id: sessionId });
+  // Bug: 6d7411b — pass conversation_id so the server can also match auth
+  // requests submitted under a previous session id for the same conversation.
+  if (conversationId) params.set("conversation_id", conversationId);
   const res = await request<UndeliveredResponse>(
     "GET",
     `/api/inbox/undelivered?${params.toString()}`,
@@ -220,6 +224,8 @@ export async function registerSession(payload: {
   status?: string;
   cwd?: string | null;
   branch?: string | null;
+  // Bug: 6d7411b — conversation_id for cross-resume matching
+  conversation_id?: string | null;
 }): Promise<SessionUpdateResponse> {
   return request<SessionUpdateResponse>(
     "POST",

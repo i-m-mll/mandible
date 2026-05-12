@@ -285,6 +285,10 @@ execution_mode="daemon"
 # target_repo_root: the protected-branch worktree path. Used for tier-2 inbox
 # scoping (any session in the same project) once the project grace window passes.
 target_session_id="${MANDIBLE_SESSION_ID:-}"
+# Bug: 6d7411b — conversation_id persists across Claude Code resumes, unlike
+# MANDIBLE_SESSION_ID which is regenerated on each channel-server restart.
+# Stored alongside the auth request so the new session can match on it.
+conversation_id="${CLAUDE_CODE_SESSION_ID:-}"
 target_repo_root=""
 if git_common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
   # --git-common-dir resolves to the main worktree's .git, so the repo root is
@@ -322,6 +326,7 @@ payload=$(jq -nc \
   --arg depends_on_id "$depends_on_id" \
   --arg target_session_id "$target_session_id" \
   --arg target_repo_root "$target_repo_root" \
+  --arg conversation_id "$conversation_id" \
   --argjson issues "$issues_json" \
   '{
     command: $command,
@@ -342,7 +347,8 @@ payload=$(jq -nc \
     issues: $issues,
     depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
     target_session_id: (if $target_session_id == "" then null else $target_session_id end),
-    target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end)
+    target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
+    conversation_id: (if $conversation_id == "" then null else $conversation_id end)
   }')
 
 # Bug: de8d29c — use -w to capture HTTP status separately so we can distinguish

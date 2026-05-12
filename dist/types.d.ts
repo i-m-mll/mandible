@@ -104,6 +104,7 @@ export interface AuthRequest {
     target_session_id: string | null;
     target_repo_root: string | null;
     delivered_at: number | null;
+    conversation_id: string | null;
 }
 export interface AuthRequestInput {
     session_id?: string | null;
@@ -126,6 +127,7 @@ export interface AuthRequestInput {
     execution_mode?: AuthExecutionMode;
     target_session_id?: string | null;
     target_repo_root?: string | null;
+    conversation_id?: string | null;
 }
 export interface AuthOutputChunk {
     request_id: string;

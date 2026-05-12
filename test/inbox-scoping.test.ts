@@ -438,6 +438,102 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
     expect(delivered).toEqual(["r-legacy-call"]);
   });
 
+  // Bug: 6d7411b — conversation_id matching tests
+  it("delivers auth events via conversation_id when target_session_id mismatches but conversation_id matches", async () => {
+    const dispatchEvent = await getDispatch();
+    const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
+    const delivered: string[] = [];
+    dispatchEvent(
+      { type: "auth:resolved", data: { request_id: "r-conv", target_session_id: "old-session", conversation_id: "conv-123", status: "completed", head_branch: "feature/z", title: "Merge feature/z" }, timestamp: "" },
+      "new-session",  // different from target_session_id
+      (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
+      (id) => delivered.push(id),
+      "conv-123",  // matches conversation_id in event
+    );
+    // Should deliver via channel event (conversation_id match)
+    expect(notes).toHaveLength(0);
+    expect(channelEvents).toHaveLength(1);
+    expect(channelEvents[0].content).toContain("Mandible auth request completed");
+    expect(channelEvents[0].content).toContain("feature/z");
+    expect(delivered).toEqual(["r-conv"]);
+  });
+
+  it("drops events when both target_session_id and conversation_id mismatch", async () => {
+    const dispatchEvent = await getDispatch();
+    const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
+    const delivered: string[] = [];
+    dispatchEvent(
+      { type: "auth:resolved", data: { request_id: "r-mismatch", target_session_id: "other-session", conversation_id: "conv-other", status: "completed" }, timestamp: "" },
+      "my-session",
+      (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
+      (id) => delivered.push(id),
+      "conv-mine",  // different from event's conversation_id
+    );
+    expect(notes).toHaveLength(0);
+    expect(channelEvents).toHaveLength(0);
+    expect(delivered).toHaveLength(0);
+  });
+
+  it("prefers target_session_id match over conversation_id (session match takes priority)", async () => {
+    const dispatchEvent = await getDispatch();
+    const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
+    const delivered: string[] = [];
+    dispatchEvent(
+      { type: "auth:resolved", data: { request_id: "r-both", target_session_id: "session-A", conversation_id: "conv-A", status: "completed", head_branch: "feature/w" }, timestamp: "" },
+      "session-A",
+      (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
+      (id) => delivered.push(id),
+      "conv-A",
+    );
+    // Session match path should fire (not conversation_id path — same result, but verifies ordering)
+    expect(channelEvents).toHaveLength(1);
+    expect(delivered).toEqual(["r-both"]);
+  });
+
+  it("does not match on conversation_id when ownConversationId is null", async () => {
+    const dispatchEvent = await getDispatch();
+    const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
+    const delivered: string[] = [];
+    dispatchEvent(
+      { type: "auth:resolved", data: { request_id: "r-noconv", target_session_id: "other-session", conversation_id: "conv-123", status: "completed" }, timestamp: "" },
+      "my-session",
+      (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
+      (id) => delivered.push(id),
+      null,  // no conversation_id on this channel
+    );
+    // Should drop (no session match, no conversation_id match)
+    expect(notes).toHaveLength(0);
+    expect(channelEvents).toHaveLength(0);
+    expect(delivered).toHaveLength(0);
+  });
+
+  it("does not match when event has no conversation_id but channel has one", async () => {
+    const dispatchEvent = await getDispatch();
+    const notes: Array<{ category: string }> = [];
+    const channelEvents: ChannelEventCapture[] = [];
+    const delivered: string[] = [];
+    dispatchEvent(
+      { type: "auth:resolved", data: { request_id: "r-noevtconv", target_session_id: "other-session", status: "completed" }, timestamp: "" },
+      "my-session",
+      (category, _message) => notes.push({ category }),
+      (payload) => channelEvents.push(payload),
+      (id) => delivered.push(id),
+      "conv-mine",
+    );
+    // Should drop (no session match, event lacks conversation_id)
+    expect(notes).toHaveLength(0);
+    expect(channelEvents).toHaveLength(0);
+    expect(delivered).toHaveLength(0);
+  });
+
   it("non-auth events stay on the passive logging path even when channel-event sender is wired", async () => {
     const dispatchEvent = await getDispatch();
     const notes: Array<{ category: string }> = [];
@@ -665,6 +761,65 @@ describe("GET /api/inbox/undelivered (Bug: 4e32923)", () => {
     expect((body as { undelivered: Array<unknown> }).undelivered).toEqual([]);
   });
 
+  // Bug: 6d7411b — conversation_id matching in undelivered endpoint
+  it("returns rows matching conversation_id even when target_session_id differs", () => {
+    seedSession(db, "new-session", "/repo/A");
+    const now = Date.now();
+    // Auth request submitted under old session, with conversation_id
+    seedAuthRow(db, {
+      id: "r-conv-match",
+      target_session_id: "old-session",
+      target_repo_root: "/repo/A",
+      resolved_at: now - 30_000,
+    });
+    // Set conversation_id on the auth request
+    db.prepare("UPDATE auth_requests SET conversation_id = ? WHERE id = ?")
+      .run("conv-persistent", "r-conv-match");
+
+    const { status, body } = callUndelivered({
+      target_session_id: "new-session",
+      conversation_id: "conv-persistent",
+    });
+    expect(status).toBe(200);
+    const rows = (body as { undelivered: Array<{ id: string }> }).undelivered;
+    expect(rows.map((r) => r.id)).toEqual(["r-conv-match"]);
+  });
+
+  it("returns rows matching target_session_id even without conversation_id param", () => {
+    seedSession(db, "owner", "/repo/A");
+    const now = Date.now();
+    seedAuthRow(db, {
+      id: "r-session-only",
+      target_session_id: "owner",
+      target_repo_root: "/repo/A",
+      resolved_at: now - 30_000,
+    });
+
+    const { status, body } = callUndelivered({ target_session_id: "owner" });
+    expect(status).toBe(200);
+    const rows = (body as { undelivered: Array<{ id: string }> }).undelivered;
+    expect(rows.map((r) => r.id)).toEqual(["r-session-only"]);
+  });
+
+  it("does not return rows when conversation_id does not match", () => {
+    const now = Date.now();
+    seedAuthRow(db, {
+      id: "r-no-match",
+      target_session_id: "other-session",
+      target_repo_root: "/repo/A",
+      resolved_at: now - 30_000,
+    });
+    db.prepare("UPDATE auth_requests SET conversation_id = ? WHERE id = ?")
+      .run("conv-other", "r-no-match");
+
+    const { status, body } = callUndelivered({
+      target_session_id: "my-session",
+      conversation_id: "conv-mine",
+    });
+    expect(status).toBe(200);
+    expect((body as { undelivered: Array<unknown> }).undelivered).toEqual([]);
+  });
+
   it("excludes rows owned by a different session", () => {
     seedSession(db, "owner", "/repo/A");
     seedSession(db, "other", "/repo/A");
@@ -785,6 +940,48 @@ describe("channel-server startup catch-up (Bug: 4e32923)", () => {
     expect(logs.join("")).not.toMatch(/replaying/);
   });
 
+  // Bug: 6d7411b — startup catch-up passes conversation_id to fetchUndelivered
+  it("passes conversationId to fetchUndelivered for cross-resume matching", async () => {
+    const mod = await import("../channel-server/index.js");
+    const sent: Array<{ method?: string; params?: unknown }> = [];
+    const delivered: string[] = [];
+    const fetchCalls: Array<{ sessionId: string; conversationId?: string | null }> = [];
+    const mockServer = {
+      notification: async (notif: { method?: string; params?: unknown }) => {
+        sent.push(notif);
+      },
+    } as unknown as Parameters<typeof mod.runStartupCatchUp>[0]["mcpServer"];
+
+    await mod.runStartupCatchUp({
+      sessionId: "new-session",
+      conversationId: "conv-persistent",
+      mcpServer: mockServer,
+      fetchUndelivered: async (id, convId) => {
+        fetchCalls.push({ sessionId: id, conversationId: convId });
+        return [
+          {
+            id: "r1",
+            head_branch: "feature/x",
+            status: "completed",
+            exit_code: 0,
+            resolved_at: 1,
+            title: "Merge feature/x",
+            target_session_id: "old-session",
+          },
+        ];
+      },
+      markDelivered: async (id) => {
+        delivered.push(id);
+      },
+      log: () => {},
+    });
+
+    // Verify conversation_id was passed through
+    expect(fetchCalls).toEqual([{ sessionId: "new-session", conversationId: "conv-persistent" }]);
+    expect(sent).toHaveLength(1);
+    expect(delivered).toEqual(["r1"]);
+  });
+
   it("continues replaying when a single markDelivered call fails", async () => {
     const mod = await import("../channel-server/index.js");
     const sent: unknown[] = [];
@@ -836,6 +1033,23 @@ describe("channel-server startup catch-up (Bug: 4e32923)", () => {
 // --- CLI submission payload test ----------------------------------------
 
 describe("auth route accepts target_session_id / target_repo_root from CLI", () => {
+  it("parseAuthRequestPayload preserves conversation_id (Bug: 6d7411b)", async () => {
+    const db = new Database(":memory:");
+    const queue = new AuthQueue({ db });
+
+    const req = queue.submit({
+      command: "mandible auth merge feature/conv",
+      title: "Test conversation_id",
+      target_session_id: "session-X",
+      target_repo_root: "/Users/me/repo",
+      conversation_id: "conv-persistent-123",
+    });
+    expect(req.conversation_id).toBe("conv-persistent-123");
+
+    const back = queue.getRequest(req.id);
+    expect(back?.conversation_id).toBe("conv-persistent-123");
+  });
+
   it("parseAuthRequestPayload preserves the scoping fields", async () => {
     // Re-import to make sure we get the current module.
     const mod = await import("../src/routes/auth.js");

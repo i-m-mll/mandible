@@ -10,8 +10,9 @@ import type { UndeliveredAuthResult } from "./types.js";
  */
 export declare function runStartupCatchUp(args: {
     sessionId: string;
+    conversationId?: string | null;
     mcpServer: Server;
-    fetchUndelivered: (sessionId: string) => Promise<UndeliveredAuthResult[]>;
+    fetchUndelivered: (sessionId: string, conversationId?: string | null) => Promise<UndeliveredAuthResult[]>;
     markDelivered: (requestId: string) => Promise<void>;
     log: (line: string) => void;
 }): Promise<void>;

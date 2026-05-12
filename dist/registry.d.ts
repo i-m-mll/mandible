@@ -20,6 +20,7 @@ export interface SessionInput {
     parent_id?: string | null;
     agent_type?: string | null;
     description?: string | null;
+    conversation_id?: string | null;
 }
 export interface NavMetadataUpdate {
     nav_tab?: string | null;
