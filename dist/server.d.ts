@@ -38,6 +38,7 @@ export interface ServerOptions {
     version: string;
     router: Router;
     getStartupInfo: () => StartupCommitInfo | null;
+    isRebuilding?: () => boolean;
 }
 export declare function createServer(options: ServerOptions): http.Server;
 export interface StartServerOptions {

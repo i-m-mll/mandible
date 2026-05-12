@@ -28,6 +28,10 @@ export class AuthQueue {
     inFlight = new Map();
     executionChain = Promise.resolve();
     expiryTimer = null;
+    // Bug: 4db692a — tracks whether the daemon is about to restart after a
+    // self-merge. Exposed via isRebuilding so the health endpoint can include
+    // it in the response, preventing the UI from reloading prematurely.
+    _rebuilding = false;
     constructor(options = {}) {
         this.db = options.db ?? getDb();
         this.now = options.now ?? (() => Date.now());
@@ -38,6 +42,10 @@ export class AuthQueue {
         this.ensureSchema();
         this.recoverStuckRequests();
         this.startExpiryTimer();
+    }
+    /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
+    get isRebuilding() {
+        return this._rebuilding;
     }
     startExpiryTimer() {
         this.expiryTimer = setInterval(() => this.expireStale(), 30_000);
@@ -162,7 +170,12 @@ export class AuthQueue {
             exit_code: null,
             output: "",
             error: null,
-            acknowledged_by: null
+            acknowledged_by: null,
+            // Bug: 4e32923 — scope auth result delivery to the originating session +
+            // its repo root, with null falling back to legacy broadcast behaviour.
+            target_session_id: payload.target_session_id ?? null,
+            target_repo_root: payload.target_repo_root ?? null,
+            delivered_at: null
         };
         const stmt = this.db.prepare(`INSERT INTO auth_requests (
         id,
@@ -196,7 +209,10 @@ export class AuthQueue {
         exit_code,
         output,
         error,
-        acknowledged_by
+        acknowledged_by,
+        target_session_id,
+        target_repo_root,
+        delivered_at
       ) VALUES (
         @id,
         @session_id,
@@ -229,7 +245,10 @@ export class AuthQueue {
         @exit_code,
         @output,
         @error,
-        @acknowledged_by
+        @acknowledged_by,
+        @target_session_id,
+        @target_repo_root,
+        @delivered_at
       )`);
         stmt.run({
             ...request,
@@ -434,6 +453,34 @@ export class AuthQueue {
         });
         return dismissed;
     }
+    /**
+     * Bug: 4e32923 — mark an auth request as delivered to the owning session via
+     * the MCP channel server. Once set, the row drops out of the owner's tier-1
+     * inbox and won't escalate to tiers 2/3. Idempotent: re-delivery is a no-op
+     * (existing delivered_at is preserved). Returns true if a row was updated,
+     * false if the request is unknown.
+     */
+    markDelivered(id) {
+        const resolved = resolvePrefix(this.db, "auth_requests", "id", id);
+        if (!resolved.ok) {
+            return false;
+        }
+        const now = this.now();
+        const result = this.db
+            .prepare("UPDATE auth_requests SET delivered_at = ?, updated_at = ? " +
+            "WHERE id = ? AND delivered_at IS NULL")
+            .run(now, now, resolved.id);
+        // changes === 0 either means unknown id or already delivered; both are
+        // acceptable terminal states for an idempotent endpoint, so we return
+        // true so long as the row exists.
+        if (result.changes === 0) {
+            const exists = this.db
+                .prepare("SELECT 1 FROM auth_requests WHERE id = ?")
+                .get(resolved.id);
+            return exists != null;
+        }
+        return true;
+    }
     delete(id, reason) {
         const request = this.requireRequest(id);
         this.db.prepare("DELETE FROM auth_requests WHERE id = ?").run(id);
@@ -610,8 +657,18 @@ export class AuthQueue {
                 // BEFORE reporting completion. Hook failures don't change the
                 // auth result (the merge already succeeded).
                 if (result.exit_code === 0) {
+                    const mergedRequest = { ...request, ...this.getRequest(request.id) };
+                    const isSelfMerge = mergedRequest.repo === "mandible";
+                    // Bug: 87dfff0 — broadcast rebuilding SSE before hooks so the
+                    // UI shows the splash screen during the build step.
+                    // Bug: 4db692a — also set the _rebuilding flag so the health
+                    // endpoint returns rebuilding:true, preventing premature reload.
+                    if (isSelfMerge) {
+                        this._rebuilding = true;
+                        this.broadcast({ event: "mandible:rebuilding", data: {} });
+                    }
                     try {
-                        const hookResults = await this.hookManager.executeHooks({ ...request, ...this.getRequest(request.id) }, (hookLabel, text) => {
+                        const hookResults = await this.hookManager.executeHooks(mergedRequest, (hookLabel, text) => {
                             this.handleOutput({
                                 request_id: request.id,
                                 stream: "stderr",
@@ -631,6 +688,12 @@ export class AuthQueue {
                     }
                     catch (hookError) {
                         console.warn(`[auth-queue] hook execution failed for request ${request.id}: ${hookError instanceof Error ? hookError.message : String(hookError)}`);
+                    }
+                    // Bug: 87dfff0 — after hooks complete (build finished), schedule
+                    // a graceful exit so launchd respawns with the new code.
+                    if (isSelfMerge) {
+                        console.log("[auth-queue] self-merge detected, scheduling daemon restart");
+                        setTimeout(() => process.exit(0), 500);
                     }
                 }
                 this.storeExecutionResult(request.id, result, null);
@@ -662,9 +725,16 @@ export class AuthQueue {
         // treated by isFailedLike as "no exit code yet" which makes completed+null
         // look like a successful completion, hiding the failure from the user.
         const exitCode = result != null ? (result.exit_code ?? 1) : 1;
+        // Bug: 929c6d0 — when the executor ran but exited non-zero, populate the
+        // error column with the tail of the captured output so the agent receiving
+        // the auth:resolved event can diagnose without a follow-up API call.
+        let errorText = error;
+        if (errorText == null && exitCode !== 0 && result != null) {
+            errorText = tailLines(result.output, 20);
+        }
         this.db
             .prepare("UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, error = ? WHERE id = ?")
-            .run(now, now, exitCode, error, id);
+            .run(now, now, exitCode, errorText, id);
         const completed = this.requireRequest(id);
         this.broadcast({
             event: "auth:resolved",
@@ -773,14 +843,52 @@ export class AuthQueue {
             console.log(`[auth-queue] resolved ${resolvedIds.size} work unit(s) after successful merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`);
         }
     }
+    // Bug: 93c57c4 — derive outcome from lifecycle status + exit_code at read time.
+    // Consumers should use `outcome` to determine the terminal result of a request;
+    // `status` is reserved for lifecycle state (pending → executing → completed, etc.).
+    computeOutcome(request) {
+        switch (request.status) {
+            case "rejected":
+                return "rejected";
+            case "dismissed":
+                return "dismissed";
+            case "expired":
+                return "expired";
+            case "completed":
+                return (request.exit_code != null && request.exit_code !== 0) ? "failed" : "succeeded";
+            default:
+                // pending, executing, approved — still in lifecycle
+                return null;
+        }
+    }
     buildResolvedPayload(request) {
+        // Bug: 929c6d0 — include tail of executor output when exit_code > 0 so the
+        // agent receiving the event can diagnose without a follow-up API call. The
+        // `error` field carries the stored error message (which now includes the
+        // tail output for daemon-executed requests). `error_output` is a separate
+        // field with the raw tail in case consumers want the unprocessed output.
+        const errorOutput = (request.exit_code != null && request.exit_code !== 0 && request.output)
+            ? tailLines(request.output, 20)
+            : null;
         return {
             request_id: request.id,
             type: request.type,
             status: request.status,
+            outcome: this.computeOutcome(request),
             exit_code: request.exit_code,
             error: request.error,
-            resolved_at: request.resolved_at
+            error_output: errorOutput,
+            resolved_at: request.resolved_at,
+            // Bug: 4e32923 — include title and head_branch so the channel-server
+            // can build a meaningful `notifications/claude/channel` payload without
+            // a follow-up fetch. Pre-existing logging-message formatter already
+            // reads these fields; they were missing from the payload before.
+            title: request.title ?? null,
+            head_branch: request.head_branch ?? null,
+            // Bug: 4e32923 — emit owner session id so the MCP channel server can
+            // filter auth:resolved events to only the originating session (and
+            // legacy unscoped rows still broadcast via target_session_id == null).
+            target_session_id: request.target_session_id
         };
     }
     isFailedLike(request) {
@@ -805,6 +913,9 @@ export class AuthQueue {
         return request;
     }
     ensureSchema() {
+        // Bug: 4e32923 — include scoping columns in the fresh-DB fallback schema.
+        // The MIGRATIONS array (src/db.ts) is the canonical source of truth; this
+        // path only fires for ad-hoc test DBs that bypass openDb().
         this.db.exec(`
       CREATE TABLE IF NOT EXISTS auth_requests (
         id TEXT PRIMARY KEY,
@@ -838,7 +949,10 @@ export class AuthQueue {
         exit_code INTEGER,
         output TEXT NOT NULL DEFAULT '',
         error TEXT,
-        acknowledged_by TEXT
+        acknowledged_by TEXT,
+        target_session_id TEXT,
+        target_repo_root TEXT,
+        delivered_at INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS idx_auth_requests_status_created
@@ -848,6 +962,15 @@ export class AuthQueue {
         ON auth_requests(status, skipped_at, created_at);
     `);
     }
+}
+// Bug: 929c6d0 — extract the last N lines from a string for error output summaries.
+function tailLines(text, n) {
+    if (!text || !text.trim())
+        return null;
+    const lines = text.split("\n");
+    const tail = lines.slice(-n);
+    const result = tail.join("\n").trim();
+    return result || null;
 }
 // Bug: ba9687f — extract issue IDs from Bug: trailers in commit messages
 function extractIssueIdsFromCommitMessage(commitMessage) {
@@ -920,6 +1043,10 @@ function mapRow(row) {
         exit_code: row.exit_code == null ? null : Number(row.exit_code),
         output: String(row.output ?? ""),
         error: row.error == null ? null : String(row.error),
-        acknowledged_by: row.acknowledged_by == null ? null : String(row.acknowledged_by)
+        acknowledged_by: row.acknowledged_by == null ? null : String(row.acknowledged_by),
+        // Bug: 4e32923 — owner session + repo root + channel-delivery watermark.
+        target_session_id: row.target_session_id == null ? null : String(row.target_session_id),
+        target_repo_root: row.target_repo_root == null ? null : String(row.target_repo_root),
+        delivered_at: row.delivered_at == null ? null : Number(row.delivered_at)
     };
 }

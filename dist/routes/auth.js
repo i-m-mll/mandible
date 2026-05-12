@@ -63,6 +63,10 @@ export function registerAuthRoutes(app, queue = new AuthQueue()) {
             const dep = queue.getRequest(request.depends_on_id);
             dependsOnStatus = dep ? dep.status : null;
         }
+        // Bug: 929c6d0 — include error_output: tail of executor output for failed requests
+        const errorOutput = (request.exit_code != null && request.exit_code !== 0 && request.output)
+            ? tailLines(request.output, 20)
+            : null;
         res.json({
             request_id: request.id,
             type: request.type,
@@ -70,6 +74,7 @@ export function registerAuthRoutes(app, queue = new AuthQueue()) {
             output: request.output,
             exit_code: request.exit_code,
             error: request.error,
+            error_output: errorOutput,
             repo: request.repo ?? null,
             base_branch: request.base_branch ?? null,
             head_branch: request.head_branch ?? null,
@@ -84,7 +89,10 @@ export function registerAuthRoutes(app, queue = new AuthQueue()) {
             issues: request.issues ?? null,
             depends_on_id: request.depends_on_id ?? null,
             depends_on_status: dependsOnStatus,
-            execution_mode: request.execution_mode
+            execution_mode: request.execution_mode,
+            // Bug: 4e32923 — include scoping fields omitted from the original response literal
+            target_session_id: request.target_session_id ?? null,
+            delivered_at: request.delivered_at ?? null
         });
     });
     app.put("/api/auth/request/:id", (req, res) => {
@@ -285,7 +293,11 @@ function parseAuthRequestPayload(body) {
         post_merge_handoff: typeof body.post_merge_handoff === "string" ? body.post_merge_handoff : (body.post_merge_handoff === null ? null : undefined),
         issues: parseStringArray(body.issues),
         depends_on_id: typeof body.depends_on_id === "string" ? body.depends_on_id : (body.depends_on_id === null ? null : undefined),
-        execution_mode: executionMode
+        execution_mode: executionMode,
+        // Bug: 4e32923 — accept scoping fields from the CLI; null/missing means
+        // legacy behaviour (broadcast on resolution, no tier-1 ownership).
+        target_session_id: typeof body.target_session_id === "string" ? body.target_session_id : null,
+        target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null
     };
 }
 // Bug: 297677f — parse a string array field (for issues)
@@ -454,6 +466,15 @@ function handleQueueError(error, res) {
         }
     }
     res.status(500).json({ error: "Unexpected auth queue error." });
+}
+// Bug: 929c6d0 — extract the last N lines from a string for error output summaries.
+function tailLines(text, n) {
+    if (!text || !text.trim())
+        return null;
+    const lines = text.split("\n");
+    const tail = lines.slice(-n);
+    const result = tail.join("\n").trim();
+    return result || null;
 }
 function verifyBugReferences(payload) {
     const { cwd, head_branch, base_branch } = payload;

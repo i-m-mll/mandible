@@ -818,6 +818,30 @@ const MIGRATIONS = [
             `CREATE INDEX IF NOT EXISTS idx_message_params_session
         ON message_params(session_id, message_index DESC)`,
         ]
+    },
+    {
+        // Bug: 4e32923 — scoped auth-result delivery: target session + repo root,
+        // and a delivered_at watermark set when the MCP channel server forwards
+        // the auth:resolved event to the originating session. Inbox queries use
+        // these to drive the three-tier escalation model (owner → project → global).
+        // Also seeds the two grace-window settings (project: 7d, global: 30d).
+        version: 50,
+        name: "auth_request_target_scoping",
+        statements: [
+            `ALTER TABLE auth_requests ADD COLUMN target_session_id TEXT`,
+            `ALTER TABLE auth_requests ADD COLUMN target_repo_root TEXT`,
+            `ALTER TABLE auth_requests ADD COLUMN delivered_at INTEGER`,
+            `CREATE INDEX IF NOT EXISTS idx_auth_requests_target_session
+        ON auth_requests(target_session_id) WHERE target_session_id IS NOT NULL`,
+            `CREATE INDEX IF NOT EXISTS idx_auth_requests_target_repo
+        ON auth_requests(target_repo_root) WHERE target_repo_root IS NOT NULL`,
+            `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('inbox.project_grace_days', '7',
+               CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+            `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('inbox.global_grace_days', '30',
+               CAST(strftime('%s','now') * 1000 AS INTEGER))`
+        ]
     }
 ];
 export function getDbPath() {

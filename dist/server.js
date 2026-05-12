@@ -115,14 +115,20 @@ export class Router {
     }
 }
 export function createServer(options) {
-    const { sse, logger, version, router, getStartupInfo } = options;
+    const { sse, logger, version, router, getStartupInfo, isRebuilding } = options;
     router.get("/api/health", (_req, res) => {
         const startupCommit = getStartupInfo() ?? { hash: "unknown", summary: "unknown", date: "" };
+        // Bug: 4db692a — include rebuilding flag so the UI health poll can
+        // distinguish "daemon still alive during build" from "daemon restarted
+        // with new code". Only included when true to keep the common-case
+        // response small.
+        const rebuilding = isRebuilding?.() ?? false;
         const payload = {
             status: "ok",
             uptime: process.uptime(),
             version,
-            startup_commit: startupCommit
+            startup_commit: startupCommit,
+            ...(rebuilding ? { rebuilding: true } : {})
         };
         res.json(payload);
     });
