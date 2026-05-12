@@ -126,7 +126,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const navEnricher = new NavMetadataEnricher(sessionRegistry, logger);
   navEnricher.start();
 
-  const server = createServer({ db, sse, logger, version, router, getStartupInfo: () => startupInfo });
+  // Bug: 4db692a — expose auth queue's rebuilding state to the health endpoint
+  // so the UI doesn't reload while the daemon is still alive but about to restart.
+  const server = createServer({
+    db, sse, logger, version, router,
+    getStartupInfo: () => startupInfo,
+    isRebuilding: () => authQueue.isRebuilding,
+  });
 
   // Attach WebSocket upgrade handler for console backend sessions (Bug: e980dd8)
   const wss = new WebSocketServer({ noServer: true });

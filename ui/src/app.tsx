@@ -488,25 +488,38 @@ function App(): JSX.Element {
     return () => window.clearInterval(timer);
   }, []);
 
-  // Bug: 326a3e2 — poll /api/health every 2s while rebuilding; reload when server responds
+  // Bug: 326a3e2 — poll /api/health every 2s while rebuilding; reload when server responds.
+  // Bug: 4db692a — the health response includes a `rebuilding` flag while the
+  // daemon is still alive but about to restart after a self-merge. The poll must
+  // wait until the daemon responds WITHOUT the rebuilding flag (i.e., the new
+  // instance has started). Also fixed: the inner setInterval cleanup was returned
+  // from the setTimeout callback (dead code) instead of being tracked for the
+  // useEffect cleanup.
   useEffect(() => {
     if (!rebuilding) return;
     const POLL_MS = 2_000;
+    let intervalId: ReturnType<typeof window.setInterval> | null = null;
     // Give the daemon a moment to shut down before starting to poll
     const startTimer = window.setTimeout(() => {
-      const interval = window.setInterval(async () => {
+      intervalId = window.setInterval(async () => {
         try {
           const res = await fetch('/api/health');
           if (res.ok) {
+            const data = await res.json();
+            // Don't reload while the old daemon is still alive and rebuilding —
+            // wait for the NEW daemon instance (which won't have rebuilding set).
+            if (data.rebuilding) return;
             window.location.reload();
           }
         } catch {
           // Server not yet up — keep polling
         }
       }, POLL_MS);
-      return () => window.clearInterval(interval);
     }, 1_000);
-    return () => window.clearTimeout(startTimer);
+    return () => {
+      window.clearTimeout(startTimer);
+      if (intervalId !== null) window.clearInterval(intervalId);
+    };
   }, [rebuilding]);
 
   // Persist cacheable state to localStorage for stale-while-revalidate on next load.
