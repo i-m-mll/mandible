@@ -95,7 +95,10 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       issues: request.issues ?? null,
       depends_on_id: request.depends_on_id ?? null,
       depends_on_status: dependsOnStatus,
-      execution_mode: request.execution_mode
+      execution_mode: request.execution_mode,
+      // Bug: 4e32923 — include scoping fields omitted from the original response literal
+      target_session_id: request.target_session_id ?? null,
+      delivered_at: request.delivered_at ?? null
     });
   });
 
