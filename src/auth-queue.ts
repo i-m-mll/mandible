@@ -57,6 +57,10 @@ export class AuthQueue {
   private readonly inFlight = new Map<string, Promise<void>>();
   private executionChain: Promise<void> = Promise.resolve();
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
+  // Bug: 4db692a — tracks whether the daemon is about to restart after a
+  // self-merge. Exposed via isRebuilding so the health endpoint can include
+  // it in the response, preventing the UI from reloading prematurely.
+  private _rebuilding = false;
 
   constructor(options: AuthQueueOptions = {}) {
     this.db = options.db ?? getDb();
@@ -68,6 +72,11 @@ export class AuthQueue {
     this.ensureSchema();
     this.recoverStuckRequests();
     this.startExpiryTimer();
+  }
+
+  /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
+  get isRebuilding(): boolean {
+    return this._rebuilding;
   }
 
   private startExpiryTimer(): void {
@@ -847,7 +856,10 @@ export class AuthQueue {
 
             // Bug: 87dfff0 — broadcast rebuilding SSE before hooks so the
             // UI shows the splash screen during the build step.
+            // Bug: 4db692a — also set the _rebuilding flag so the health
+            // endpoint returns rebuilding:true, preventing premature reload.
             if (isSelfMerge) {
+              this._rebuilding = true;
               this.broadcast({ event: "mandible:rebuilding", data: {} });
             }
 
