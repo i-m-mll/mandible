@@ -78,8 +78,11 @@ export declare function sendChannelNotification(mcpServer: Server, payload: Chan
  *   (CLAUDE_CODE_SESSION_ID), used as a secondary matching criterion when
  *   target_session_id doesn't match the current session (e.g. after a
  *   Claude Code resume that regenerates the session id).
+ * @param onReconnect — Bug: 03d6cb0 — optional callback invoked on each
+ *   successful SSE reconnect. Used to replay undelivered auth results that
+ *   were broadcast while the connection was down (e.g. during a self-rebuild).
  */
-export declare function createNotificationBridge(mcpServer: Server, ownSessionId?: string | null, ownConversationId?: string | null): NotificationBridge;
+export declare function createNotificationBridge(mcpServer: Server, ownSessionId?: string | null, ownConversationId?: string | null, onReconnect?: () => void): NotificationBridge;
 /**
  * Bug: 4e32923 — build the channel-event payload (content + meta) for an
  * auth resolution. The content string is what Claude Code injects as a
