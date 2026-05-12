@@ -47,7 +47,7 @@ export interface ChannelEventPayload {
  *   delivery should be recorded. Defaults to the live HTTP POST. Tests inject
  *   a spy to capture the request_id.
  */
-export declare function dispatchEvent(event: MandibleSSEEvent, ownSessionId: string | null, sendNotification: (category: string, message: string) => void, sendChannelEvent?: (payload: ChannelEventPayload) => void, onDelivered?: (requestId: string) => void): void;
+export declare function dispatchEvent(event: MandibleSSEEvent, ownSessionId: string | null, sendNotification: (category: string, message: string) => void, sendChannelEvent?: (payload: ChannelEventPayload) => void, onDelivered?: (requestId: string) => void, ownConversationId?: string | null): void;
 /**
  * Bug: 4e32923 — send a Claude Code channel event via the low-level MCP
  * `notification()` API. The `notifications/claude/channel` method is the
@@ -74,8 +74,12 @@ export declare function sendChannelNotification(mcpServer: Server, payload: Chan
  *   auth:resolved events. Captured at startup from MANDIBLE_SESSION_ID. If
  *   null, the bridge falls back to legacy broadcast behaviour (every event
  *   is forwarded), which is the right thing for unscoped daemons.
+ * @param ownConversationId — Bug: 6d7411b — this channel's conversation id
+ *   (CLAUDE_CODE_SESSION_ID), used as a secondary matching criterion when
+ *   target_session_id doesn't match the current session (e.g. after a
+ *   Claude Code resume that regenerates the session id).
  */
-export declare function createNotificationBridge(mcpServer: Server, ownSessionId?: string | null): NotificationBridge;
+export declare function createNotificationBridge(mcpServer: Server, ownSessionId?: string | null, ownConversationId?: string | null): NotificationBridge;
 /**
  * Bug: 4e32923 — build the channel-event payload (content + meta) for an
  * auth resolution. The content string is what Claude Code injects as a

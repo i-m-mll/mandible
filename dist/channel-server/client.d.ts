@@ -12,7 +12,7 @@ export declare function checkInboxGlobal(): Promise<InboxResponse>;
  * session can replay auth results that resolved while its SSE listener was
  * offline. Returns an empty list (not an error) if Mandible has no rows.
  */
-export declare function fetchUndeliveredAuthResults(sessionId: string): Promise<UndeliveredAuthResult[]>;
+export declare function fetchUndeliveredAuthResults(sessionId: string, conversationId?: string | null): Promise<UndeliveredAuthResult[]>;
 /**
  * Bug: 4e32923 — mark an auth_request as delivered via the canonical
  * POST /api/inbox/delivered/<id> endpoint. Idempotent (204 on first delivery,
@@ -60,6 +60,7 @@ export declare function registerSession(payload: {
     status?: string;
     cwd?: string | null;
     branch?: string | null;
+    conversation_id?: string | null;
 }): Promise<SessionUpdateResponse>;
 /** Bug: 0b454df — notify Mandible that a channel tool was called. */
 export declare function recordChannelToolCall(sessionId: string, toolName: string): Promise<void>;

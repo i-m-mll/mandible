@@ -76,13 +76,19 @@ export function markDelivered(requestId) {
  *   delivery should be recorded. Defaults to the live HTTP POST. Tests inject
  *   a spy to capture the request_id.
  */
-export function dispatchEvent(event, ownSessionId, sendNotification, sendChannelEvent, onDelivered = markDelivered) {
+export function dispatchEvent(event, ownSessionId, sendNotification, sendChannelEvent, onDelivered = markDelivered, 
+// Bug: 6d7411b — conversation_id persists across Claude Code resumes.
+// When target_session_id doesn't match (session was restarted), fall back
+// to matching on conversation_id so auth results still reach the right agent.
+ownConversationId = null) {
     const { type, data } = event;
     if (type === "auth:resolved" || type === "auth:completed") {
         const payload = data && typeof data === "object" ? data : {};
         const target = payload.target_session_id;
         const targetSessionId = typeof target === "string" ? target : null;
         const requestId = typeof payload.request_id === "string" ? payload.request_id : "";
+        // Bug: 6d7411b — read conversation_id from the event data for secondary matching.
+        const eventConversationId = typeof payload.conversation_id === "string" ? payload.conversation_id : null;
         // Bug: 4e32923 — auth resolutions get channel-event delivery so the agent
         // wakes immediately. Fall back to sendNotification when no channel-event
         // sender is wired (tests / legacy callers / capability not yet negotiated).
@@ -103,6 +109,18 @@ export function dispatchEvent(event, ownSessionId, sendNotification, sendChannel
         else if (ownSessionId != null && targetSessionId === ownSessionId) {
             // Owner match: forward AND record delivery so the owner's tier-1
             // inbox empties without requiring a manual ack.
+            deliverAuth();
+            onDelivered(requestId);
+        }
+        else if (
+        // Bug: 6d7411b — conversation_id fallback: if target_session_id doesn't
+        // match (session was restarted) but the event carries the same
+        // conversation_id as this channel, treat as owner match. This covers
+        // auth requests submitted under a previous MANDIBLE_SESSION_ID for the
+        // same Claude Code conversation.
+        ownConversationId != null &&
+            eventConversationId != null &&
+            eventConversationId === ownConversationId) {
             deliverAuth();
             onDelivered(requestId);
         }
@@ -165,8 +183,12 @@ export function sendChannelNotification(mcpServer, payload) {
  *   auth:resolved events. Captured at startup from MANDIBLE_SESSION_ID. If
  *   null, the bridge falls back to legacy broadcast behaviour (every event
  *   is forwarded), which is the right thing for unscoped daemons.
+ * @param ownConversationId — Bug: 6d7411b — this channel's conversation id
+ *   (CLAUDE_CODE_SESSION_ID), used as a secondary matching criterion when
+ *   target_session_id doesn't match the current session (e.g. after a
+ *   Claude Code resume that regenerates the session id).
  */
-export function createNotificationBridge(mcpServer, ownSessionId = null) {
+export function createNotificationBridge(mcpServer, ownSessionId = null, ownConversationId = null) {
     let running = false;
     let currentReq = null;
     let reconnectTimer = null;
@@ -240,7 +262,7 @@ export function createNotificationBridge(mcpServer, ownSessionId = null) {
         // events flow through `sendChannelEvent` (notifications/claude/channel) so
         // Claude Code wakes the agent immediately; non-auth events stay on the
         // passive logging path.
-        dispatchEvent(event, ownSessionId, sendNotification, sendChannelEvent);
+        dispatchEvent(event, ownSessionId, sendNotification, sendChannelEvent, markDelivered, ownConversationId);
     }
     function sendChannelEvent(payload) {
         sendChannelNotification(mcpServer, payload);
@@ -393,3 +415,4 @@ function formatWorkUpdated(data) {
         parts.push(`state: ${state}`);
     return parts.join(" — ");
 }
+// test: no-session event verification (will revert)

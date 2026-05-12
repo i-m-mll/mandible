@@ -842,6 +842,23 @@ const MIGRATIONS = [
        VALUES ('inbox.global_grace_days', '30',
                CAST(strftime('%s','now') * 1000 AS INTEGER))`
         ]
+    },
+    {
+        // Bug: 6d7411b — conversation_id persistence: Claude Code's
+        // CLAUDE_CODE_SESSION_ID persists across resumes (unlike MANDIBLE_SESSION_ID
+        // which changes on each channel-server restart). Storing it on both sessions
+        // and auth_requests enables delivery matching when the channel session id
+        // has changed but the conversation is the same.
+        version: 51,
+        name: "conversation_id",
+        statements: [
+            `ALTER TABLE sessions ADD COLUMN conversation_id TEXT`,
+            `ALTER TABLE auth_requests ADD COLUMN conversation_id TEXT`,
+            `CREATE INDEX IF NOT EXISTS idx_auth_requests_conversation_id
+        ON auth_requests(conversation_id) WHERE conversation_id IS NOT NULL`,
+            `CREATE INDEX IF NOT EXISTS idx_sessions_conversation_id
+        ON sessions(conversation_id) WHERE conversation_id IS NOT NULL`
+        ]
     }
 ];
 export function getDbPath() {

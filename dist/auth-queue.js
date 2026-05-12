@@ -175,7 +175,9 @@ export class AuthQueue {
             // its repo root, with null falling back to legacy broadcast behaviour.
             target_session_id: payload.target_session_id ?? null,
             target_repo_root: payload.target_repo_root ?? null,
-            delivered_at: null
+            delivered_at: null,
+            // Bug: 6d7411b — conversation_id persists across Claude Code resumes
+            conversation_id: payload.conversation_id ?? null
         };
         const stmt = this.db.prepare(`INSERT INTO auth_requests (
         id,
@@ -212,7 +214,8 @@ export class AuthQueue {
         acknowledged_by,
         target_session_id,
         target_repo_root,
-        delivered_at
+        delivered_at,
+        conversation_id
       ) VALUES (
         @id,
         @session_id,
@@ -248,7 +251,8 @@ export class AuthQueue {
         @acknowledged_by,
         @target_session_id,
         @target_repo_root,
-        @delivered_at
+        @delivered_at,
+        @conversation_id
       )`);
         stmt.run({
             ...request,
@@ -888,7 +892,10 @@ export class AuthQueue {
             // Bug: 4e32923 — emit owner session id so the MCP channel server can
             // filter auth:resolved events to only the originating session (and
             // legacy unscoped rows still broadcast via target_session_id == null).
-            target_session_id: request.target_session_id
+            target_session_id: request.target_session_id,
+            // Bug: 6d7411b — emit conversation_id so the channel server can match
+            // events across session restarts within the same conversation.
+            conversation_id: request.conversation_id
         };
     }
     isFailedLike(request) {
@@ -952,7 +959,8 @@ export class AuthQueue {
         acknowledged_by TEXT,
         target_session_id TEXT,
         target_repo_root TEXT,
-        delivered_at INTEGER
+        delivered_at INTEGER,
+        conversation_id TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_auth_requests_status_created
@@ -1047,6 +1055,8 @@ function mapRow(row) {
         // Bug: 4e32923 — owner session + repo root + channel-delivery watermark.
         target_session_id: row.target_session_id == null ? null : String(row.target_session_id),
         target_repo_root: row.target_repo_root == null ? null : String(row.target_repo_root),
-        delivered_at: row.delivered_at == null ? null : Number(row.delivered_at)
+        delivered_at: row.delivered_at == null ? null : Number(row.delivered_at),
+        // Bug: 6d7411b — conversation_id for cross-resume matching
+        conversation_id: row.conversation_id == null ? null : String(row.conversation_id)
     };
 }

@@ -37,6 +37,11 @@ async function main() {
     const sessionId = process.env.MANDIBLE_SESSION_ID ??
         process.env.SESSION_ID ??
         null;
+    // Bug: 6d7411b — CLAUDE_CODE_SESSION_ID is the conversation/chat ID that
+    // persists across Claude Code resumes, unlike MANDIBLE_SESSION_ID which is
+    // regenerated on each channel-server restart. Used as a secondary matching
+    // criterion for auth event delivery.
+    const conversationId = process.env.CLAUDE_CODE_SESSION_ID ?? null;
     // Create the MCP server with channel capability.
     // Bug: 4e32923 — advertise `experimental: { 'claude/channel': {} }` so
     // Claude Code accepts `notifications/claude/channel` events from this
@@ -80,6 +85,7 @@ async function main() {
                 status: "active",
                 cwd,
                 branch,
+                conversation_id: conversationId,
             });
         }
         catch {
@@ -93,7 +99,8 @@ async function main() {
     // Access the underlying Server instance for sendLoggingMessage
     // Bug: 4e32923 — pass own session id so the bridge filters auth:resolved
     // events to this session (or broadcasts legacy/unscoped rows).
-    const bridge = createNotificationBridge(server.server, sessionId);
+    // Bug: 6d7411b — pass conversation id for secondary matching across resumes.
+    const bridge = createNotificationBridge(server.server, sessionId, conversationId);
     // Connect via stdio transport
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -105,6 +112,7 @@ async function main() {
     if (sessionId) {
         await runStartupCatchUp({
             sessionId,
+            conversationId,
             mcpServer: server.server,
             fetchUndelivered: client.fetchUndeliveredAuthResults,
             markDelivered: client.markAuthDelivered,
@@ -132,10 +140,10 @@ async function main() {
  * and skipped — never propagated, so bridge startup is never blocked.
  */
 export async function runStartupCatchUp(args) {
-    const { sessionId, mcpServer, fetchUndelivered, markDelivered, log } = args;
+    const { sessionId, conversationId, mcpServer, fetchUndelivered, markDelivered, log } = args;
     let rows;
     try {
-        rows = await fetchUndelivered(sessionId);
+        rows = await fetchUndelivered(sessionId, conversationId);
     }
     catch (err) {
         log(`Warning: channel-server startup catch-up fetch failed: ${err}\n`);

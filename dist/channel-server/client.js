@@ -75,8 +75,12 @@ export async function checkInboxGlobal() {
  * session can replay auth results that resolved while its SSE listener was
  * offline. Returns an empty list (not an error) if Mandible has no rows.
  */
-export async function fetchUndeliveredAuthResults(sessionId) {
+export async function fetchUndeliveredAuthResults(sessionId, conversationId) {
     const params = new URLSearchParams({ target_session_id: sessionId });
+    // Bug: 6d7411b — pass conversation_id so the server can also match auth
+    // requests submitted under a previous session id for the same conversation.
+    if (conversationId)
+        params.set("conversation_id", conversationId);
     const res = await request("GET", `/api/inbox/undelivered?${params.toString()}`);
     return res.undelivered;
 }

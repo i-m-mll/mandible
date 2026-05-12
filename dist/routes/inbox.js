@@ -403,20 +403,47 @@ authQueue) {
     // every session and are delivered live, not replayed.
     server.get("/api/inbox/undelivered", (req, res) => {
         const targetSessionId = getQueryParam(req, "target_session_id") ?? "";
+        // Bug: 6d7411b — conversation_id is a secondary matching criterion. When
+        // Claude Code resumes, the session id changes but the conversation id
+        // persists. Passing both lets the query return auth requests submitted
+        // under a previous session id for the same conversation.
+        const conversationId = getQueryParam(req, "conversation_id") ?? "";
         if (!targetSessionId) {
             sendJson(res, 400, { error: "missing target_session_id" });
             return;
         }
-        const rows = db
-            .prepare(`SELECT id, head_branch, status, exit_code, resolved_at, title, target_session_id
+        // Bug: 6d7411b — match on EITHER target_session_id OR conversation_id so
+        // auth requests submitted under a previous session id (before a resume)
+        // are still discoverable by the new session.
+        let sql;
+        let params;
+        if (conversationId) {
+            sql =
+                `SELECT id, head_branch, status, exit_code, resolved_at, title, target_session_id
+         FROM auth_requests
+         WHERE (target_session_id = ? OR conversation_id = ?)
+           AND delivered_at IS NULL
+           AND resolved_at IS NOT NULL
+           AND acknowledged_by IS NULL
+           AND status IN ('completed', 'rejected', 'expired', 'dismissed')
+         ORDER BY resolved_at ASC`;
+            params = [targetSessionId, conversationId];
+        }
+        else {
+            sql =
+                `SELECT id, head_branch, status, exit_code, resolved_at, title, target_session_id
          FROM auth_requests
          WHERE target_session_id = ?
            AND delivered_at IS NULL
            AND resolved_at IS NOT NULL
            AND acknowledged_by IS NULL
            AND status IN ('completed', 'rejected', 'expired', 'dismissed')
-         ORDER BY resolved_at ASC`)
-            .all(targetSessionId);
+         ORDER BY resolved_at ASC`;
+            params = [targetSessionId];
+        }
+        const rows = db
+            .prepare(sql)
+            .all(...params);
         sendJson(res, 200, {
             undelivered: rows.map((row) => ({
                 id: row.id,

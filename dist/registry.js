@@ -425,11 +425,12 @@ export class SessionRegistry {
             parent_id = ?,
             agent_type = ?,
             description = ?,
+            conversation_id = COALESCE(?, conversation_id),
             updated_at = ?,
             ended_at = ?
           WHERE id = ?
           `)
-                .run(input.app, input.pid ?? null, pidStart, input.cwd ?? null, input.branch ?? null, input.worktree ?? null, input.terminal ?? null, multiplexer, navSession, navState.navTab, navPaneId, navExtra, navState.status, navState.attempts, navState.lastError, navState.lastAttemptAt, navState.nextRetryAt, input.task ?? null, status, input.parent_id ?? null, input.agent_type ?? null, input.description ?? null, now, status === "active" ? null : now, input.id);
+                .run(input.app, input.pid ?? null, pidStart, input.cwd ?? null, input.branch ?? null, input.worktree ?? null, input.terminal ?? null, multiplexer, navSession, navState.navTab, navPaneId, navExtra, navState.status, navState.attempts, navState.lastError, navState.lastAttemptAt, navState.nextRetryAt, input.task ?? null, status, input.parent_id ?? null, input.agent_type ?? null, input.description ?? null, input.conversation_id ?? null, now, status === "active" ? null : now, input.id);
             const session = this.getSession(input.id);
             if (session) {
                 broadcast("session:updated", session);
@@ -442,11 +443,11 @@ export class SessionRegistry {
           nav_session, nav_tab, nav_pane_id, nav_extra, nav_metadata_status,
           nav_metadata_attempts, nav_metadata_last_error, nav_metadata_last_attempt_at,
           nav_metadata_next_retry_at, task, status, parent_id,
-          agent_type, description, created_at, updated_at, ended_at
+          agent_type, description, conversation_id, created_at, updated_at, ended_at
         ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )`)
-            .run(input.id, input.app, input.pid ?? null, pidStart, input.cwd ?? null, input.branch ?? null, input.worktree ?? null, input.terminal ?? null, multiplexer, navSession, navState.navTab, navPaneId, navExtra, navState.status, navState.attempts, navState.lastError, navState.lastAttemptAt, navState.nextRetryAt, input.task ?? null, status, input.parent_id ?? null, input.agent_type ?? null, input.description ?? null, now, now, status === "active" ? null : now);
+            .run(input.id, input.app, input.pid ?? null, pidStart, input.cwd ?? null, input.branch ?? null, input.worktree ?? null, input.terminal ?? null, multiplexer, navSession, navState.navTab, navPaneId, navExtra, navState.status, navState.attempts, navState.lastError, navState.lastAttemptAt, navState.nextRetryAt, input.task ?? null, status, input.parent_id ?? null, input.agent_type ?? null, input.description ?? null, input.conversation_id ?? null, now, now, status === "active" ? null : now);
         const session = this.getSession(input.id);
         if (!session) {
             throw new Error("Failed to register session");

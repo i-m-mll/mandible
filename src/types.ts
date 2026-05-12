@@ -146,6 +146,8 @@ export interface AuthRequest {
   target_session_id: string | null;
   target_repo_root: string | null;
   delivered_at: number | null;
+  // Bug: 6d7411b — conversation_id persists across Claude Code resumes
+  conversation_id: string | null;
 }
 
 export interface AuthRequestInput {
@@ -171,6 +173,8 @@ export interface AuthRequestInput {
   // delivery falls back to legacy broadcast behaviour (pre-migration rows).
   target_session_id?: string | null;
   target_repo_root?: string | null;
+  // Bug: 6d7411b — conversation_id persists across Claude Code resumes
+  conversation_id?: string | null;
 }
 
 export interface AuthOutputChunk {
