@@ -343,6 +343,9 @@ export function buildAuthChannelEvent(
   const exitCode = typeof d.exit_code === "number" ? d.exit_code : null;
   const outcome = typeof d.outcome === "string" ? d.outcome : null;
   const errorText = typeof d.error === "string" ? d.error : "";
+  // Bug: 929c6d0 — error_output carries the tail of executor stdout/stderr
+  // so the agent can diagnose failed auth requests without a follow-up fetch.
+  const errorOutput = typeof d.error_output === "string" ? d.error_output : "";
 
   const headlineParts: string[] = [`Mandible auth request ${status}`];
   if (branch) headlineParts.push(`for branch ${branch}`);
@@ -351,6 +354,11 @@ export function buildAuthChannelEvent(
 
   const lines: string[] = [headlineParts.join(" ")];
   if (errorText) lines.push(`Error: ${errorText}`);
+  // Bug: 929c6d0 — include executor output when it differs from the error
+  // message (error may be a brief summary, error_output is the raw tail).
+  if (errorOutput && errorOutput !== errorText) {
+    lines.push(`Output (last lines):\n${errorOutput}`);
+  }
   lines.push(
     "Use mandible_check_inbox if you need additional details. Delivery has been recorded; the result will not surface again on this session's inbox.",
   );
@@ -365,6 +373,7 @@ export function buildAuthChannelEvent(
   if (title) meta.title = title;
   if (outcome) meta.outcome = outcome;
   if (exitCode !== null) meta.exit_code = String(exitCode);
+  if (errorOutput) meta.error_output = errorOutput;
 
   return { content: lines.join("\n"), meta };
 }

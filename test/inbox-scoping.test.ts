@@ -480,6 +480,53 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
     });
   });
 
+  // Bug: 929c6d0 — error_output in channel events
+  it("buildAuthChannelEvent includes error_output in content and meta when present", async () => {
+    const mod = await import("../channel-server/notifications.js");
+    const payload = mod.buildAuthChannelEvent("auth:resolved", {
+      request_id: "def",
+      status: "completed",
+      head_branch: "feature/z",
+      title: "Merge feature/z",
+      exit_code: 1,
+      outcome: "failed",
+      error: "merge failed",
+      error_output: "fatal: not a git repository\nfatal: merge conflict in src/main.ts",
+    });
+    expect(payload.content).toContain("Error: merge failed");
+    expect(payload.content).toContain("Output (last lines):");
+    expect(payload.content).toContain("fatal: merge conflict in src/main.ts");
+    expect(payload.meta?.error_output).toContain("fatal: merge conflict");
+    expect(payload.meta?.outcome).toBe("failed");
+  });
+
+  it("buildAuthChannelEvent omits error_output section when error_output matches error", async () => {
+    const mod = await import("../channel-server/notifications.js");
+    const sameText = "fatal: merge failed";
+    const payload = mod.buildAuthChannelEvent("auth:resolved", {
+      request_id: "ghi",
+      status: "completed",
+      exit_code: 1,
+      error: sameText,
+      error_output: sameText,
+    });
+    // When error and error_output are identical, don't duplicate in content
+    expect(payload.content).toContain("Error: fatal: merge failed");
+    expect(payload.content).not.toContain("Output (last lines):");
+  });
+
+  it("buildAuthChannelEvent omits error_output when not present (success case)", async () => {
+    const mod = await import("../channel-server/notifications.js");
+    const payload = mod.buildAuthChannelEvent("auth:resolved", {
+      request_id: "jkl",
+      status: "completed",
+      exit_code: 0,
+      outcome: "succeeded",
+    });
+    expect(payload.content).not.toContain("Output (last lines):");
+    expect(payload.meta?.error_output).toBeUndefined();
+  });
+
   it("markDelivered helper hits the canonical /api/inbox/delivered/:id path", async () => {
     // Skip if the live Mandible daemon is already bound to 19420 — running the
     // tests against the production daemon would pollute its state and we don't
