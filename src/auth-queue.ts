@@ -922,11 +922,19 @@ export class AuthQueue {
     // look like a successful completion, hiding the failure from the user.
     const exitCode = result != null ? (result.exit_code ?? 1) : 1;
 
+    // Bug: 929c6d0 — when the executor ran but exited non-zero, populate the
+    // error column with the tail of the captured output so the agent receiving
+    // the auth:resolved event can diagnose without a follow-up API call.
+    let errorText = error;
+    if (errorText == null && exitCode !== 0 && result != null) {
+      errorText = tailLines(result.output, 20);
+    }
+
     this.db
       .prepare(
         "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, error = ? WHERE id = ?"
       )
-      .run(now, now, exitCode, error, id);
+      .run(now, now, exitCode, errorText, id);
 
     const completed = this.requireRequest(id);
     this.broadcast({
@@ -1096,6 +1104,15 @@ export class AuthQueue {
   }
 
   private buildResolvedPayload(request: AuthRequest): Record<string, unknown> {
+    // Bug: 929c6d0 — include tail of executor output when exit_code > 0 so the
+    // agent receiving the event can diagnose without a follow-up API call. The
+    // `error` field carries the stored error message (which now includes the
+    // tail output for daemon-executed requests). `error_output` is a separate
+    // field with the raw tail in case consumers want the unprocessed output.
+    const errorOutput = (request.exit_code != null && request.exit_code !== 0 && request.output)
+      ? tailLines(request.output, 20)
+      : null;
+
     return {
       request_id: request.id,
       type: request.type,
@@ -1103,6 +1120,7 @@ export class AuthQueue {
       outcome: this.computeOutcome(request),
       exit_code: request.exit_code,
       error: request.error,
+      error_output: errorOutput,
       resolved_at: request.resolved_at,
       // Bug: 4e32923 — include title and head_branch so the channel-server
       // can build a meaningful `notifications/claude/channel` payload without
@@ -1193,6 +1211,15 @@ export class AuthQueue {
         ON auth_requests(status, skipped_at, created_at);
     `);
   }
+}
+
+// Bug: 929c6d0 — extract the last N lines from a string for error output summaries.
+function tailLines(text: string, n: number): string | null {
+  if (!text || !text.trim()) return null;
+  const lines = text.split("\n");
+  const tail = lines.slice(-n);
+  const result = tail.join("\n").trim();
+  return result || null;
 }
 
 // Bug: ba9687f — extract issue IDs from Bug: trailers in commit messages

@@ -74,6 +74,11 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       dependsOnStatus = dep ? dep.status : null;
     }
 
+    // Bug: 929c6d0 — include error_output: tail of executor output for failed requests
+    const errorOutput = (request.exit_code != null && request.exit_code !== 0 && request.output)
+      ? tailLines(request.output, 20)
+      : null;
+
     res.json({
       request_id: request.id,
       type: request.type,
@@ -81,6 +86,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       output: request.output,
       exit_code: request.exit_code,
       error: request.error,
+      error_output: errorOutput,
       repo: request.repo ?? null,
       base_branch: request.base_branch ?? null,
       head_branch: request.head_branch ?? null,
@@ -518,6 +524,15 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
   }
 
   res.status(500).json({ error: "Unexpected auth queue error." });
+}
+
+// Bug: 929c6d0 — extract the last N lines from a string for error output summaries.
+function tailLines(text: string, n: number): string | null {
+  if (!text || !text.trim()) return null;
+  const lines = text.split("\n");
+  const tail = lines.slice(-n);
+  const result = tail.join("\n").trim();
+  return result || null;
 }
 
 function verifyBugReferences(

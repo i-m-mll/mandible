@@ -504,4 +504,110 @@ describe("auth queue", () => {
       expect(data.status).toBe("expired");
     });
   });
+
+  // Bug: 929c6d0 — error output in resolved payload and error field
+  describe("error output in resolved events", () => {
+    it("includes error_output in resolved payload when exit_code is non-zero", () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({ broadcast: (e) => events.push(e) });
+
+      const request = queue.submit({ command: "echo fail", title: "Failure" });
+      // Append some output as if the executor streamed it — this goes into the
+      // DB output column. setResult with a non-empty output replaces it, so we
+      // pass the same content through setResult to simulate what happens when
+      // the executor finishes (output is the accumulated buffer).
+      const output = "line 1\nline 2\nline 3\nerror: merge conflict\n";
+      queue.setResult(request.id, 1, output, "command failed");
+
+      const resolved = events.find((e) => e.event === "auth:resolved");
+      expect(resolved).toBeTruthy();
+      const data = resolved!.data as Record<string, unknown>;
+      expect(data.error_output).toBeTruthy();
+      expect(String(data.error_output)).toContain("error: merge conflict");
+    });
+
+    it("does not include error_output when exit_code is 0", () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({ broadcast: (e) => events.push(e) });
+
+      const request = queue.submit({ command: "echo ok", title: "Success" });
+      queue.appendOutput(request.id, "Merge made by recursive.\n");
+      queue.setResult(request.id, 0, "ok");
+
+      const resolved = events.find((e) => e.event === "auth:resolved");
+      expect(resolved).toBeTruthy();
+      const data = resolved!.data as Record<string, unknown>;
+      expect(data.error_output).toBeNull();
+    });
+
+    it("populates error field with tail of output for daemon-executed failures", async () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({
+        broadcast: (e) => events.push(e),
+        executor: async () => ({
+          exit_code: 1,
+          signal: null,
+          stdout: "",
+          stderr: "fatal: not a git repo\nfatal: merge failed\n",
+          output: "fatal: not a git repo\nfatal: merge failed\n",
+          started_at: Date.now(),
+          finished_at: Date.now()
+        })
+      });
+
+      const request = queue.submit({
+        command: "git merge --gpg-sign feature/x",
+        title: "Merge feature/x"
+      });
+      queue.approve(request.id);
+      await waitForStatus(queue, request.id, "completed");
+
+      const completed = queue.getRequest(request.id);
+      expect(completed?.exit_code).toBe(1);
+      // Bug: 929c6d0 — error field should now contain the tail of executor output
+      expect(completed?.error).toBeTruthy();
+      expect(completed?.error).toContain("fatal: merge failed");
+    });
+
+    it("preserves explicit error message over output tail when executor throws", async () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({
+        broadcast: (e) => events.push(e),
+        executor: async () => {
+          throw new Error("Spawn failed: ENOENT");
+        }
+      });
+
+      const request = queue.submit({
+        command: "nonexistent-command",
+        title: "Bad command"
+      });
+      queue.approve(request.id);
+      await waitForStatus(queue, request.id, "completed");
+
+      const completed = queue.getRequest(request.id);
+      expect(completed?.exit_code).toBe(1);
+      // When the executor throws, the error message from the exception is used
+      expect(completed?.error).toBe("Spawn failed: ENOENT");
+    });
+
+    it("error_output is truncated to last 20 lines", () => {
+      const events: SseEvent[] = [];
+      const queue = createQueue({ broadcast: (e) => events.push(e) });
+
+      const request = queue.submit({ command: "echo fail", title: "Long output" });
+      // Generate 30 lines of output (no trailing newline so split gives exactly 30)
+      const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
+      queue.setResult(request.id, 1, lines, "failed");
+
+      const resolved = events.find((e) => e.event === "auth:resolved");
+      expect(resolved).toBeTruthy();
+      const data = resolved!.data as Record<string, unknown>;
+      const errorOutput = String(data.error_output);
+      // Should contain lines 11-30 but not lines 1-10
+      expect(errorOutput).toContain("line 30");
+      expect(errorOutput).toContain("line 11");
+      expect(errorOutput).not.toContain("line 10\n");
+    });
+  });
 });
