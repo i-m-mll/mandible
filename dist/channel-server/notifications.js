@@ -53,11 +53,13 @@ export function markDelivered(requestId) {
  *   - `auth:resolved` / `auth:completed`: filter by `target_session_id`, then
  *     route through `sendChannelEvent` so Claude Code wakes the agent
  *     immediately (channel events are processed like an inbound prompt, not
- *     passive context). Filter rules:
+ *     passive context). Filter rules (in priority order):
  *     - null → passive log only (legacy / unscoped — Bug: 210ffa1)
  *     - matches ownSessionId → forward via channel event + markDelivered
- *     - mismatch → drop
+ *     - conversation_id matches ownConversationId (session mismatch) →
+ *       passive log only, no markDelivered (Bug: 66865dd, refines 6d7411b)
  *     - ownSessionId itself null → passive log only (Bug: 210ffa1)
+ *     - otherwise → drop
  *   - `inbox:updated` / `console:inbox:badge` / `work_unit:*` → forward via
  *     `sendNotification` as a logging message (passive — surfaces on the next
  *     user prompt). These do not need an immediate-turn wake-up.
@@ -113,16 +115,16 @@ ownConversationId = null) {
             onDelivered(requestId);
         }
         else if (
-        // Bug: 6d7411b — conversation_id fallback: if target_session_id doesn't
-        // match (session was restarted) but the event carries the same
-        // conversation_id as this channel, treat as owner match. This covers
-        // auth requests submitted under a previous MANDIBLE_SESSION_ID for the
-        // same Claude Code conversation.
+        // Bug: 66865dd — conversation_id match with session_id mismatch: passive
+        // log only (no channel event wake-up, no markDelivered). The same
+        // conversation can be resumed in two sessions doing different work — a
+        // full channel event would be noisy and confusing. Leave the item in
+        // inbox for the original session; just inform this session passively.
+        // Refines 6d7411b which originally treated this as a full owner match.
         ownConversationId != null &&
             eventConversationId != null &&
             eventConversationId === ownConversationId) {
-            deliverAuth();
-            onDelivered(requestId);
+            sendNotification("auth_resolved", formatConversationIdMatch(data));
         }
         else if (ownSessionId == null) {
             // Bug: 210ffa1 — we don't know our own session id: passive log only.
@@ -392,6 +394,27 @@ function formatAuthResolved(data) {
     if (d.error)
         parts.push(`Error: ${String(d.error)}`);
     return parts.join(" — ");
+}
+/**
+ * Bug: 66865dd — format a passive notification for a conversation_id match
+ * (session_id mismatch). Includes title, branch, status, and a qualifier
+ * explaining this was submitted by a previous session of the same conversation.
+ */
+function formatConversationIdMatch(data) {
+    if (!data || typeof data !== "object") {
+        return "An auth request from a previous session of this conversation has been resolved. Use mandible_check_inbox if relevant to your current work.";
+    }
+    const d = data;
+    const status = String(d.status ?? "unknown");
+    const title = d.title ? String(d.title) : "";
+    const branch = d.head_branch ? String(d.head_branch) : "";
+    const parts = [`Auth request ${status}`];
+    if (title)
+        parts.push(`"${title}"`);
+    if (branch)
+        parts.push(`for branch ${branch}`);
+    parts.push("— this was submitted by a previous session of this conversation. Use mandible_check_inbox if relevant to your current work.");
+    return parts.join(" ");
 }
 function formatInboxUpdate(data) {
     if (!data || typeof data !== "object") {

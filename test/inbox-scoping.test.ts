@@ -438,26 +438,44 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
     expect(delivered).toEqual(["r-legacy-call"]);
   });
 
-  // Bug: 6d7411b — conversation_id matching tests
-  it("delivers auth events via conversation_id when target_session_id mismatches but conversation_id matches", async () => {
+  // Bug: 66865dd — conversation_id match downgrades to passive log (refines 6d7411b)
+  it("uses passive log (not channel event) when conversation_id matches but target_session_id mismatches", async () => {
     const dispatchEvent = await getDispatch();
-    const notes: Array<{ category: string }> = [];
+    const notes: Array<{ category: string; message: string }> = [];
     const channelEvents: ChannelEventCapture[] = [];
     const delivered: string[] = [];
     dispatchEvent(
       { type: "auth:resolved", data: { request_id: "r-conv", target_session_id: "old-session", conversation_id: "conv-123", status: "completed", head_branch: "feature/z", title: "Merge feature/z" }, timestamp: "" },
       "new-session",  // different from target_session_id
-      (category, _message) => notes.push({ category }),
+      (category, message) => notes.push({ category, message }),
       (payload) => channelEvents.push(payload),
       (id) => delivered.push(id),
       "conv-123",  // matches conversation_id in event
     );
-    // Should deliver via channel event (conversation_id match)
-    expect(notes).toHaveLength(0);
-    expect(channelEvents).toHaveLength(1);
-    expect(channelEvents[0].content).toContain("Mandible auth request completed");
-    expect(channelEvents[0].content).toContain("feature/z");
-    expect(delivered).toEqual(["r-conv"]);
+    // Bug: 66865dd — conversation_id match uses passive log, NOT channel event
+    expect(channelEvents).toHaveLength(0);
+    expect(delivered).toHaveLength(0);  // no markDelivered — leave in inbox for original session
+    expect(notes).toHaveLength(1);
+    expect(notes[0].category).toBe("auth_resolved");
+    expect(notes[0].message).toContain("feature/z");
+    expect(notes[0].message).toContain("completed");
+    expect(notes[0].message).toContain("Merge feature/z");
+  });
+
+  it("conversation_id match notification contains qualifying 'previous session' language", async () => {
+    const dispatchEvent = await getDispatch();
+    const notes: Array<{ category: string; message: string }> = [];
+    dispatchEvent(
+      { type: "auth:resolved", data: { request_id: "r-conv-msg", target_session_id: "old-session", conversation_id: "conv-456", status: "rejected", head_branch: "feature/abc", title: "Merge feature/abc" }, timestamp: "" },
+      "new-session",
+      (category, message) => notes.push({ category, message }),
+      () => {},
+      () => {},
+      "conv-456",
+    );
+    expect(notes).toHaveLength(1);
+    expect(notes[0].message).toContain("previous session");
+    expect(notes[0].message).toContain("mandible_check_inbox");
   });
 
   it("drops events when both target_session_id and conversation_id mismatch", async () => {
