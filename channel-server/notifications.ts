@@ -73,10 +73,10 @@ export interface ChannelEventPayload {
  *     route through `sendChannelEvent` so Claude Code wakes the agent
  *     immediately (channel events are processed like an inbound prompt, not
  *     passive context). Filter rules:
- *     - null → broadcast (legacy / unscoped)
- *     - matches ownSessionId → forward + markDelivered
+ *     - null → passive log only (legacy / unscoped — Bug: 210ffa1)
+ *     - matches ownSessionId → forward via channel event + markDelivered
  *     - mismatch → drop
- *     - ownSessionId itself null → broadcast (defensive)
+ *     - ownSessionId itself null → passive log only (Bug: 210ffa1)
  *   - `inbox:updated` / `console:inbox:badge` / `work_unit:*` → forward via
  *     `sendNotification` as a logging message (passive — surfaces on the next
  *     user prompt). These do not need an immediate-turn wake-up.
@@ -122,17 +122,20 @@ export function dispatchEvent(
     };
 
     if (targetSessionId == null) {
-      // Legacy / unscoped row: keep current broadcast behaviour for safety.
-      deliverAuth();
+      // Bug: 210ffa1 — legacy / unscoped row: passive log only (no agent wake-up).
+      // Now that auth requests reliably include target_session_id, unscoped
+      // events should not wake every running session.
+      sendNotification("auth_resolved", formatAuthResolved(data));
     } else if (ownSessionId != null && targetSessionId === ownSessionId) {
       // Owner match: forward AND record delivery so the owner's tier-1
       // inbox empties without requiring a manual ack.
       deliverAuth();
       onDelivered(requestId);
     } else if (ownSessionId == null) {
-      // We don't know our own session id — best-effort fall back to broadcast
-      // so the user still hears about resolutions in unconfigured setups.
-      deliverAuth();
+      // Bug: 210ffa1 — we don't know our own session id: passive log only.
+      // Without a session id we can't confirm ownership, so don't wake the
+      // agent with a channel event.
+      sendNotification("auth_resolved", formatAuthResolved(data));
     }
     // else: mismatch, drop entirely (intended target is a different session).
   } else if (

@@ -383,7 +383,7 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
     expect(delivered).toHaveLength(0);
   });
 
-  it("legacy (null target_session_id) events use channel delivery but do NOT mark delivered", async () => {
+  it("legacy (null target_session_id) events use passive logging, not channel delivery (Bug: 210ffa1)", async () => {
     const dispatchEvent = await getDispatch();
     const notes: Array<{ category: string }> = [];
     const channelEvents: ChannelEventCapture[] = [];
@@ -395,13 +395,14 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
       (payload) => channelEvents.push(payload),
       (id) => delivered.push(id),
     );
-    expect(notes).toHaveLength(0);
-    expect(channelEvents).toHaveLength(1);
-    expect(channelEvents[0].meta).toMatchObject({ event_type: "auth:resolved" });
+    // Bug: 210ffa1 — unscoped events downgraded to passive log (no agent wake-up).
+    expect(notes).toHaveLength(1);
+    expect(notes[0].category).toBe("auth_resolved");
+    expect(channelEvents).toHaveLength(0);
     expect(delivered).toHaveLength(0); // legacy rows aren't owned, so no delivery watermark
   });
 
-  it("falls back to broadcast when this channel does not know its own session id", async () => {
+  it("falls back to passive logging when this channel does not know its own session id (Bug: 210ffa1)", async () => {
     const dispatchEvent = await getDispatch();
     const notes: Array<{ category: string }> = [];
     const channelEvents: ChannelEventCapture[] = [];
@@ -413,10 +414,11 @@ describe("channel-server auth:resolved filter (Bug: 4e32923)", () => {
       (payload) => channelEvents.push(payload),
       (id) => delivered.push(id),
     );
-    // Without our own session id we still surface via channel events, but
-    // we never claim ownership (no delivery watermark).
-    expect(notes).toHaveLength(0);
-    expect(channelEvents).toHaveLength(1);
+    // Bug: 210ffa1 — without our own session id, use passive log only
+    // (no channel event wake-up, no delivery watermark).
+    expect(notes).toHaveLength(1);
+    expect(notes[0].category).toBe("auth_resolved");
+    expect(channelEvents).toHaveLength(0);
     expect(delivered).toHaveLength(0);
   });
 
