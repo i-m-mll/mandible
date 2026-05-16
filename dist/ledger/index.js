@@ -6,6 +6,7 @@ export * from "./git-bug-hash.js";
 export * from "./git-bug-importer.js";
 export * from "./git-bug-labels.js";
 export * from "./ids.js";
+export * from "./issue-migration.js";
 export * from "./projects.js";
 export * from "./store.js";
 export * from "./sync-runner.js";

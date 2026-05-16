@@ -10,6 +10,8 @@ export const LEDGER_ID_PREFIXES = [
     "cnf",
     "xref",
     "job",
+    "rec",
+    "mis",
 ];
 const TIME_WIDTH = 10;
 const RANDOM_BYTES = 10;

@@ -1210,6 +1210,60 @@ const MIGRATIONS = [
             `CREATE INDEX IF NOT EXISTS idx_ledger_sync_jobs_project
         ON ledger_sync_jobs(project_id, checkout_id, updated_at DESC)`
         ]
+    },
+    {
+        version: 57,
+        name: "ledger_migration_gate",
+        // Bug: 59d527a — migration/read-cutover gates and shadow reconciliation.
+        statements: [
+            `CREATE TABLE IF NOT EXISTS settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+            `INSERT OR IGNORE INTO settings (key, value, updated_at)
+        VALUES ('ledger.issues.read_mode', 'scanner', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+            `INSERT OR IGNORE INTO settings (key, value, updated_at)
+        VALUES ('ledger.issues.write_mode', 'git_bug', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+            `INSERT OR IGNORE INTO settings (key, value, updated_at)
+        VALUES ('ledger.issues.shadow_report_enabled', 'true', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+            `INSERT OR IGNORE INTO settings (key, value, updated_at)
+        VALUES ('ledger.issues.fallback_on_ledger_error', 'true', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+            `CREATE TABLE IF NOT EXISTS ledger_reconciliation_reports (
+        id TEXT PRIMARY KEY,
+        read_mode TEXT NOT NULL CHECK(read_mode IN ('scanner','shadow','ledger')),
+        status TEXT NOT NULL CHECK(status IN ('running','clean','mismatch','failed')),
+        scanner_issue_count INTEGER NOT NULL DEFAULT 0,
+        ledger_issue_count INTEGER NOT NULL DEFAULT 0,
+        scanner_open_count INTEGER NOT NULL DEFAULT 0,
+        ledger_open_count INTEGER NOT NULL DEFAULT 0,
+        scanner_closed_count INTEGER NOT NULL DEFAULT 0,
+        ledger_closed_count INTEGER NOT NULL DEFAULT 0,
+        mismatch_count INTEGER NOT NULL DEFAULT 0,
+        summary_json TEXT NOT NULL DEFAULT '{}',
+        error TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_reconciliation_reports_status
+        ON ledger_reconciliation_reports(status, finished_at DESC)`,
+            `CREATE TABLE IF NOT EXISTS ledger_reconciliation_mismatches (
+        id TEXT PRIMARY KEY,
+        report_id TEXT NOT NULL REFERENCES ledger_reconciliation_reports(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL DEFAULT '',
+        repo_id TEXT NOT NULL DEFAULT '',
+        issue_ref TEXT NOT NULL DEFAULT '',
+        mismatch_type TEXT NOT NULL,
+        scanner_value_json TEXT NOT NULL DEFAULT 'null',
+        ledger_value_json TEXT NOT NULL DEFAULT 'null',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_reconciliation_mismatches_report
+        ON ledger_reconciliation_mismatches(report_id, mismatch_type)`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_reconciliation_mismatches_issue
+        ON ledger_reconciliation_mismatches(repo_id, issue_ref)`
+        ]
     }
 ];
 export function getDbPath() {

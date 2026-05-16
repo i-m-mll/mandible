@@ -1,4 +1,4 @@
-export declare const LEDGER_ID_PREFIXES: readonly ["prj", "chk", "iss", "com", "evt", "out", "rel", "cnf", "xref", "job"];
+export declare const LEDGER_ID_PREFIXES: readonly ["prj", "chk", "iss", "com", "evt", "out", "rel", "cnf", "xref", "job", "rec", "mis"];
 export type LedgerIdPrefix = (typeof LEDGER_ID_PREFIXES)[number];
 export interface LedgerIdOptions {
     now?: number;

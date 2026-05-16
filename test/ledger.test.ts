@@ -65,6 +65,8 @@ describe("ledger schema", () => {
       "ledger_outbox",
       "ledger_project_checkouts",
       "ledger_projects",
+      "ledger_reconciliation_mismatches",
+      "ledger_reconciliation_reports",
       "ledger_sync_jobs",
     ]);
 
@@ -89,7 +91,7 @@ describe("ledger schema", () => {
     const version = upgradeDb.prepare(
       "SELECT value FROM meta WHERE key = 'schema_version'",
     ).get() as { value: string };
-    expect(version.value).toBe("56");
+    expect(version.value).toBe("57");
     expect(upgradeDb.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issues'",
     ).get()).toBeTruthy();
