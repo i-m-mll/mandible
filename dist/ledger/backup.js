@@ -13,4 +13,10 @@ export const LEDGER_BACKUP_TABLES = [
     "ledger_sync_jobs",
     "ledger_reconciliation_reports",
     "ledger_reconciliation_mismatches",
+    "ledger_work_unit_issue_links",
+    "ledger_session_issue_links",
+    "ledger_auth_issue_links",
+    "ledger_commit_issue_links",
+    "ledger_operational_link_reports",
+    "ledger_operational_link_mismatches",
 ];

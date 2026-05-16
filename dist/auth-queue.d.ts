@@ -100,6 +100,8 @@ export declare class AuthQueue {
     private executeInBackground;
     private handleOutput;
     private storeExecutionResult;
+    private syncLedgerLinksForRequest;
+    private applyLedgerCompletionForRequest;
     private autoDismissDuplicates;
     /**
      * When an auth request completes successfully (exit_code=0), resolve
@@ -110,6 +112,7 @@ export declare class AuthQueue {
      * Bug: 8a281b3
      */
     private resolveWorkUnitsOnMerge;
+    private tableExists;
     private computeOutcome;
     private buildResolvedPayload;
     private isFailedLike;

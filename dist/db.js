@@ -1264,6 +1264,86 @@ const MIGRATIONS = [
             `CREATE INDEX IF NOT EXISTS idx_ledger_reconciliation_mismatches_issue
         ON ledger_reconciliation_mismatches(repo_id, issue_ref)`
         ]
+    },
+    {
+        version: 58,
+        name: "ledger_operational_links",
+        // Bug: e8c1d43 — canonical issue links for work units, sessions, auth, and commits.
+        statements: [
+            `CREATE TABLE IF NOT EXISTS ledger_work_unit_issue_links (
+        work_unit_id TEXT NOT NULL REFERENCES work_units(id) ON DELETE CASCADE,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,
+        link_type TEXT NOT NULL DEFAULT 'work_unit_tracks',
+        source TEXT NOT NULL DEFAULT 'system',
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (work_unit_id, issue_id, link_type)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_work_unit_issue_issue
+        ON ledger_work_unit_issue_links(issue_id)`,
+            `CREATE TABLE IF NOT EXISTS ledger_session_issue_links (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,
+        link_type TEXT NOT NULL DEFAULT 'worked_on',
+        source TEXT NOT NULL DEFAULT 'system',
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (session_id, issue_id, link_type)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_session_issue_issue
+        ON ledger_session_issue_links(issue_id)`,
+            `CREATE TABLE IF NOT EXISTS ledger_auth_issue_links (
+        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,
+        link_type TEXT NOT NULL DEFAULT 'references',
+        source TEXT NOT NULL DEFAULT 'auth_queue',
+        created_at INTEGER NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (auth_request_id, issue_id, link_type)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_auth_issue_issue
+        ON ledger_auth_issue_links(issue_id)`,
+            `CREATE TABLE IF NOT EXISTS ledger_commit_issue_links (
+        commit_sha TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,
+        link_type TEXT NOT NULL DEFAULT 'fixed_by',
+        source TEXT NOT NULL DEFAULT 'auth_queue',
+        created_at INTEGER NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (commit_sha, issue_id, link_type)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_commit_issue_issue
+        ON ledger_commit_issue_links(issue_id)`,
+            `CREATE TABLE IF NOT EXISTS ledger_operational_link_reports (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL CHECK(status IN ('clean','incomplete','failed')),
+        resolved_count INTEGER NOT NULL DEFAULT 0,
+        unresolved_count INTEGER NOT NULL DEFAULT 0,
+        ambiguous_count INTEGER NOT NULL DEFAULT 0,
+        source_counts_json TEXT NOT NULL DEFAULT '{}',
+        error TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_operational_link_reports_status
+        ON ledger_operational_link_reports(status, finished_at DESC)`,
+            `CREATE TABLE IF NOT EXISTS ledger_operational_link_mismatches (
+        id TEXT PRIMARY KEY,
+        report_id TEXT NOT NULL REFERENCES ledger_operational_link_reports(id) ON DELETE CASCADE,
+        source_table TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        repo_id TEXT NOT NULL DEFAULT '',
+        issue_ref TEXT NOT NULL DEFAULT '',
+        mismatch_type TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_operational_link_mismatches_report
+        ON ledger_operational_link_mismatches(report_id, source_table, mismatch_type)`
+        ]
     }
 ];
 export function getDbPath() {
@@ -1338,6 +1418,10 @@ export function migrate(db) {
     if (pending.some((m) => m.version === 36)) {
         ensureConversationBlockDagColumns(db);
     }
+    // Bug: e8c1d43 — link existing work_units to canonical ledger issues.
+    if (pending.some((m) => m.version === 58)) {
+        ensureWorkUnitLedgerIssueColumn(db);
+    }
     // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
     if (pending.some((m) => m.version === 26)) {
         const rows = db.prepare("SELECT session_id, repo_id, repo_name FROM session_projects WHERE repo_name LIKE '.%' OR repo_id LIKE '.%'").all();
@@ -1405,6 +1489,22 @@ function ensureConversationBlockDagColumns(db) {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_blocks_dag_parent
       ON conversation_blocks(conversation_id, dag_parent_uuid)
       WHERE dag_parent_uuid IS NOT NULL`);
+}
+function ensureWorkUnitLedgerIssueColumn(db) {
+    const table = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_units'")
+        .get();
+    if (!table)
+        return;
+    const columns = db
+        .prepare("PRAGMA table_info(work_units)")
+        .all();
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has("ledger_issue_id")) {
+        db.exec("ALTER TABLE work_units ADD COLUMN ledger_issue_id TEXT REFERENCES ledger_issues(id)");
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_work_units_ledger_issue
+      ON work_units(ledger_issue_id) WHERE ledger_issue_id IS NOT NULL`);
 }
 /**
  * Backfill session_projects rows where repo_id is a branch/worktree name

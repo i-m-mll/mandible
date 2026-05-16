@@ -7,6 +7,11 @@ const LEDGER_EVENT_SSE_TYPES = {
     "outbox.updated": "ledger:outbox:updated",
     "conflict.created": "ledger:conflict:created",
     "external_ref.recorded": "ledger:external_ref:recorded",
+    "work_unit.issue_linked": "ledger:work_unit:linked",
+    "session.issue_linked": "ledger:session:linked",
+    "auth_request.issue_linked": "ledger:auth:linked",
+    "auth_request.completed": "ledger:auth:completed",
+    "commit.issue_linked": "ledger:commit:linked",
 };
 export function ledgerSseTypeForEvent(eventType) {
     return LEDGER_EVENT_SSE_TYPES[eventType] ?? "ledger:event:created";

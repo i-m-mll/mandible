@@ -5,6 +5,10 @@ import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
 import { getDb, resolvePrefix } from "./db.js";
+import {
+  applyAuthRequestLedgerCompletion,
+  syncAuthRequestLedgerLinks,
+} from "./ledger/operational-links.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import type {
   AuthOutputChunk,
@@ -151,6 +155,7 @@ export class AuthQueue {
         successUpdate.run(now, now, row.id);
         const recovered = this.getRequest(String(row.id));
         if (recovered) {
+          this.applyLedgerCompletionForRequest(recovered);
           this.broadcast({
             event: "auth:resolved",
             data: this.buildResolvedPayload(recovered)
@@ -371,6 +376,8 @@ export class AuthQueue {
       issues: request.issues ? JSON.stringify(request.issues) : null
     });
 
+    this.syncLedgerLinksForRequest(request, false);
+
     this.broadcast({
       event: "auth:new",
       data: { request }
@@ -496,6 +503,7 @@ export class AuthQueue {
       .run(...values);
 
     const updated = this.getRequest(id)!;
+    this.syncLedgerLinksForRequest(updated, false);
     const eventType = resetToPending ? "auth:new"
       : dismissFromApproved ? "auth:resolved"
       : "auth:updated";
@@ -1047,15 +1055,51 @@ export class AuthQueue {
     // would waste a YubiKey tap on a branch that no longer exists.
     if (exitCode === 0) {
       this.autoDismissDuplicates(completed);
+      this.applyLedgerCompletionForRequest(completed);
       // Bug: 8a281b3 — resolve work units on successful auth merge (best-effort;
       // work_units table may not exist in test DBs or fresh installs mid-migration)
-      try {
-        this.resolveWorkUnitsOnMerge(completed);
-      } catch (err) {
-        console.warn(
-          `[auth-queue] failed to resolve work units after merge: ${err instanceof Error ? err.message : String(err)}`
-        );
+      if (this.tableExists("work_units")) {
+        try {
+          this.resolveWorkUnitsOnMerge(completed);
+        } catch (err) {
+          console.warn(
+            `[auth-queue] failed to resolve work units after merge: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       }
+    }
+  }
+
+  private syncLedgerLinksForRequest(request: AuthRequest, recordEvent: boolean): void {
+    try {
+      syncAuthRequestLedgerLinks(this.db, {
+        auth_request_id: request.id,
+        repo_ref: request.repo ?? request.cwd ?? request.target_repo_root ?? null,
+        issue_ids: request.issue_ids ?? null,
+        issues: request.issues ?? null,
+        commit_message: request.commit_message,
+        recordEvent,
+      });
+    } catch {
+      // Ledger tables are optional during staged migration and in fallback test DBs.
+    }
+  }
+
+  private applyLedgerCompletionForRequest(request: AuthRequest): void {
+    try {
+      applyAuthRequestLedgerCompletion(this.db, {
+        auth_request_id: request.id,
+        repo_ref: request.repo ?? request.cwd ?? request.target_repo_root ?? null,
+        issue_ids: request.issue_ids ?? null,
+        issues: request.issues ?? null,
+        commit_message: request.commit_message,
+        approval_source: request.approval_source,
+        approval_lease_id: request.approval_lease_id,
+      });
+    } catch (error) {
+      console.warn(
+        `[auth-queue] failed to apply ledger completion for ${request.id}: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
@@ -1176,11 +1220,47 @@ export class AuthQueue {
       }
     }
 
+    // 4. Match by canonical ledger links, covering auth requests that were
+    // linked by ledger issue ID rather than by legacy git-bug prefixes.
+    if (
+      this.tableExists("ledger_auth_issue_links") &&
+      this.tableExists("ledger_work_unit_issue_links")
+    ) {
+      const byLedgerIssue = this.db.prepare(
+        `SELECT DISTINCT wu.id
+         FROM ledger_auth_issue_links ail
+         JOIN work_units wu ON wu.ledger_issue_id = ail.issue_id
+         WHERE ail.auth_request_id = ?
+           AND ail.link_type IN ('resolves', 'fixed_by')
+           AND wu.state IN ('open', 'committed')
+         UNION
+         SELECT DISTINCT wu.id
+         FROM ledger_auth_issue_links ail
+         JOIN ledger_work_unit_issue_links wil ON wil.issue_id = ail.issue_id
+         JOIN work_units wu ON wu.id = wil.work_unit_id
+         WHERE ail.auth_request_id = ?
+           AND ail.link_type IN ('resolves', 'fixed_by')
+           AND wu.state IN ('open', 'committed')`
+      ).all(completed.id, completed.id) as Array<{ id: string }>;
+
+      for (const row of byLedgerIssue) {
+        if (!resolvedIds.has(row.id)) {
+          resolveStmt.run(now, row.id);
+          resolvedIds.add(row.id);
+        }
+      }
+    }
+
     if (resolvedIds.size > 0) {
       console.log(
         `[auth-queue] resolved ${resolvedIds.size} work unit(s) after successful merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`
       );
     }
+  }
+
+  private tableExists(table: string): boolean {
+    const row = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+    return Boolean(row);
   }
 
   // Bug: 93c57c4 — derive outcome from lifecycle status + exit_code at read time.

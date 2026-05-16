@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
+import { linkWorkUnitToLedgerIssue } from "../ledger/operational-links.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
@@ -59,6 +60,24 @@ function sendJson(res: ResponseLike, code: number, payload: unknown): void {
   res.status(code).json(payload);
 }
 
+function linkLedgerIssue(
+  db: ReturnType<typeof getDb>,
+  workUnitId: string,
+  issueId: string,
+  repoId: string,
+): string | null {
+  try {
+    const result = linkWorkUnitToLedgerIssue(db, {
+      work_unit_id: workUnitId,
+      issue_ref: issueId,
+      repo_ref: repoId,
+    });
+    return result.ok ? result.issue_id : null;
+  } catch {
+    return null;
+  }
+}
+
 export function registerWorkUnitRoutes(
   server: RouteRegistrar,
   sessionRegistry: SessionRegistry,
@@ -82,12 +101,18 @@ export function registerWorkUnitRoutes(
     // Check for existing open/committed work unit for this issue+repo
     const existing = db
       .prepare(
-        "SELECT id, state FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')"
+        "SELECT id, state, ledger_issue_id FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')"
       )
-      .get(body.issue_id, body.repo_id) as { id: string; state: string } | undefined;
+      .get(body.issue_id, body.repo_id) as { id: string; state: string; ledger_issue_id: string | null } | undefined;
 
     if (existing) {
-      sendJson(res, 200, { id: existing.id, state: existing.state, existing: true });
+      const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, body.repo_id) ?? existing.ledger_issue_id;
+      sendJson(res, 200, {
+        id: existing.id,
+        state: existing.state,
+        existing: true,
+        ledger_issue_id: ledgerIssueId,
+      });
       return;
     }
 
@@ -111,7 +136,8 @@ export function registerWorkUnitRoutes(
       now,
     );
 
-    sendJson(res, 201, { id });
+    const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, body.repo_id);
+    sendJson(res, 201, { id, ledger_issue_id: ledgerIssueId });
   });
 
   // POST /api/work-units/activate — mark as committed, update timestamps
@@ -132,9 +158,9 @@ export function registerWorkUnitRoutes(
     // Find existing open work unit for this issue+repo
     const existing = db
       .prepare(
-        "SELECT id, state FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed') ORDER BY created_at DESC LIMIT 1"
+        "SELECT id, state, ledger_issue_id FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed') ORDER BY created_at DESC LIMIT 1"
       )
-      .get(body.issue_id, body.repo_id) as { id: string; state: string } | undefined;
+      .get(body.issue_id, body.repo_id) as { id: string; state: string; ledger_issue_id: string | null } | undefined;
 
     if (existing) {
       // Update to committed state, update timestamps
@@ -159,7 +185,8 @@ export function registerWorkUnitRoutes(
         `UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`
       ).run(...params);
 
-      sendJson(res, 200, { id: existing.id, state: "committed" });
+      const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, body.repo_id) ?? existing.ledger_issue_id;
+      sendJson(res, 200, { id: existing.id, state: "committed", ledger_issue_id: ledgerIssueId });
     } else {
       // No existing work unit — create one in committed state (auto-claim)
       const id = randomUUID();
@@ -177,7 +204,8 @@ export function registerWorkUnitRoutes(
         now,
       );
 
-      sendJson(res, 201, { id, state: "committed" });
+      const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, body.repo_id);
+      sendJson(res, 201, { id, state: "committed", ledger_issue_id: ledgerIssueId });
     }
   });
 

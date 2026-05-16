@@ -2,11 +2,25 @@ import { getDb, resolvePrefix } from "../db.js";
 import { navigateToSession } from "../navigate.js";
 import { SessionRegistry, syncPinnedPanesTsv, } from "../registry.js";
 import { getChannelRegistry, getChannelConnectedSessionsFromDb, } from "../channel-registry.js";
+import { linkSessionToLedgerIssue } from "../ledger/operational-links.js";
 function readBody(req) {
     return (req.body ?? {});
 }
 function sendJson(res, code, payload) {
     res.status(code).json(payload);
+}
+function linkSessionLedgerIssue(sessionId, issueId, repoId) {
+    try {
+        const result = linkSessionToLedgerIssue(getDb(), {
+            session_id: sessionId,
+            issue_ref: issueId,
+            repo_ref: repoId,
+        });
+        return result.ok ? result.issue_id : null;
+    }
+    catch {
+        return null;
+    }
 }
 function parseStatus(value) {
     if (value === "active" || value === "ended" || value === "dead") {
@@ -439,11 +453,13 @@ export function registerSessionRoutes(server, registry = new SessionRegistry(get
         db.prepare(`INSERT INTO session_projects (session_id, repo_id, repo_name, created_at)
        VALUES (?, ?, ?, ?)
        ON CONFLICT DO NOTHING`).run(sessionId, canonicalRepoId, repoName, now);
+        const ledgerIssueId = linkSessionLedgerIssue(sessionId, body.issue_id, canonicalRepoId);
         sendJson(res, 200, {
             session_id: sessionId,
             issue_id: body.issue_id,
             repo_id: canonicalRepoId,
             created_at: now,
+            ledger_issue_id: ledgerIssueId,
         });
     });
     // GET /api/sessions/:id/issues — get linked issues for a session

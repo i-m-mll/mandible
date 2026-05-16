@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
+import { linkWorkUnitToLedgerIssue } from "../ledger/operational-links.js";
 import { mapWorkUnitRow as mapRow, enrichWithLiveness, } from "../work-unit-utils.js";
 const VALID_STATES = new Set(["open", "committed", "resolved", "abandoned"]);
 function readBody(req) {
@@ -7,6 +8,19 @@ function readBody(req) {
 }
 function sendJson(res, code, payload) {
     res.status(code).json(payload);
+}
+function linkLedgerIssue(db, workUnitId, issueId, repoId) {
+    try {
+        const result = linkWorkUnitToLedgerIssue(db, {
+            work_unit_id: workUnitId,
+            issue_ref: issueId,
+            repo_ref: repoId,
+        });
+        return result.ok ? result.issue_id : null;
+    }
+    catch {
+        return null;
+    }
 }
 export function registerWorkUnitRoutes(server, sessionRegistry, sessionManager) {
     const db = getDb();
@@ -23,10 +37,16 @@ export function registerWorkUnitRoutes(server, sessionRegistry, sessionManager) 
         }
         // Check for existing open/committed work unit for this issue+repo
         const existing = db
-            .prepare("SELECT id, state FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')")
+            .prepare("SELECT id, state, ledger_issue_id FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')")
             .get(body.issue_id, body.repo_id);
         if (existing) {
-            sendJson(res, 200, { id: existing.id, state: existing.state, existing: true });
+            const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, body.repo_id) ?? existing.ledger_issue_id;
+            sendJson(res, 200, {
+                id: existing.id,
+                state: existing.state,
+                existing: true,
+                ledger_issue_id: ledgerIssueId,
+            });
             return;
         }
         const id = randomUUID();
@@ -36,7 +56,8 @@ export function registerWorkUnitRoutes(server, sessionRegistry, sessionManager) 
             : "solo";
         db.prepare(`INSERT INTO work_units (id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(id, body.issue_id, body.repo_id, body.branch ?? null, body.parent_branch ?? null, kind, body.assigned_session_id ?? null, now);
-        sendJson(res, 201, { id });
+        const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, body.repo_id);
+        sendJson(res, 201, { id, ledger_issue_id: ledgerIssueId });
     });
     // POST /api/work-units/activate — mark as committed, update timestamps
     server.post("/api/work-units/activate", (req, res) => {
@@ -52,7 +73,7 @@ export function registerWorkUnitRoutes(server, sessionRegistry, sessionManager) 
         const now = Date.now();
         // Find existing open work unit for this issue+repo
         const existing = db
-            .prepare("SELECT id, state FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed') ORDER BY created_at DESC LIMIT 1")
+            .prepare("SELECT id, state, ledger_issue_id FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed') ORDER BY created_at DESC LIMIT 1")
             .get(body.issue_id, body.repo_id);
         if (existing) {
             // Update to committed state, update timestamps
@@ -72,14 +93,16 @@ export function registerWorkUnitRoutes(server, sessionRegistry, sessionManager) 
             }
             params.push(existing.id);
             db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`).run(...params);
-            sendJson(res, 200, { id: existing.id, state: "committed" });
+            const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, body.repo_id) ?? existing.ledger_issue_id;
+            sendJson(res, 200, { id: existing.id, state: "committed", ledger_issue_id: ledgerIssueId });
         }
         else {
             // No existing work unit — create one in committed state (auto-claim)
             const id = randomUUID();
             db.prepare(`INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, assigned_session_id, created_at, activated_at, last_commit_at)
          VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?)`).run(id, body.issue_id, body.repo_id, body.branch ?? null, body.assigned_session_id ?? null, now, now, now);
-            sendJson(res, 201, { id, state: "committed" });
+            const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, body.repo_id);
+            sendJson(res, 201, { id, state: "committed", ledger_issue_id: ledgerIssueId });
         }
     });
     // POST /api/work-units/release — set state back to open (for abandoned worktrees)

@@ -13,6 +13,8 @@ export const LEDGER_ID_PREFIXES = [
   "job",
   "rec",
   "mis",
+  "opb",
+  "opm",
 ] as const;
 
 export type LedgerIdPrefix = (typeof LEDGER_ID_PREFIXES)[number];

@@ -100,6 +100,16 @@ export interface MarkOutboxPatch {
     last_attempt_at?: number | null;
     error?: string | null;
 }
+export interface RecordLedgerEventInput extends LedgerActorInput {
+    entity_type: string;
+    entity_id: string;
+    event_type: string;
+    source?: LedgerEventSource;
+    payload?: Record<string, unknown>;
+    project_id: string;
+    occurred_at?: number;
+    enqueueOutbox?: boolean;
+}
 export declare class LedgerStore {
     private readonly db;
     private readonly outboxAdapters;
@@ -111,7 +121,8 @@ export declare class LedgerStore {
         changed: boolean;
         issue: LedgerIssue;
     };
-    setIssueStatus(id: string, status: LedgerIssueStatus, resolution?: LedgerIssueResolution | null, actor?: LedgerActorInput): LedgerIssue;
+    setIssueStatus(id: string, status: LedgerIssueStatus, resolution?: LedgerIssueResolution | null, actor?: LedgerActorInput, source?: LedgerEventSource): LedgerIssue;
+    recordEvent(input: RecordLedgerEventInput): LedgerEvent;
     addComment(issueId: string, input: AddLedgerCommentInput): LedgerComment;
     setLabel(issueId: string, label: string, present: boolean, source?: LedgerEventSource, actor?: LedgerActorInput): {
         changed: boolean;

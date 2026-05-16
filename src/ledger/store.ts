@@ -127,6 +127,17 @@ export interface MarkOutboxPatch {
   error?: string | null;
 }
 
+export interface RecordLedgerEventInput extends LedgerActorInput {
+  entity_type: string;
+  entity_id: string;
+  event_type: string;
+  source?: LedgerEventSource;
+  payload?: Record<string, unknown>;
+  project_id: string;
+  occurred_at?: number;
+  enqueueOutbox?: boolean;
+}
+
 export class LedgerStore {
   private readonly db: Db;
   private readonly outboxAdapters: string[];
@@ -345,6 +356,7 @@ export class LedgerStore {
     status: LedgerIssueStatus,
     resolution: LedgerIssueResolution | null = null,
     actor: LedgerActorInput = {},
+    source: LedgerEventSource = "mandible",
   ): LedgerIssue {
     const existing = this.requireIssue(id);
     const emitted: LedgerSsePayload[] = [];
@@ -363,7 +375,7 @@ export class LedgerStore {
         event_type: "issue.updated",
         actor_id: normalizedActor.actor_id,
         actor_type: normalizedActor.actor_type,
-        source: "mandible",
+        source,
         payload: { issue_id: id, status, resolution },
         project_id: existing.project_id,
         occurred_at: now,
@@ -375,6 +387,29 @@ export class LedgerStore {
     const issue = run();
     emitLedgerEvents(emitted, this.broadcaster);
     return issue;
+  }
+
+  recordEvent(input: RecordLedgerEventInput): LedgerEvent {
+    const emitted: LedgerSsePayload[] = [];
+    const now = input.occurred_at ?? Date.now();
+    const actor = normalizeActor(input);
+    const source = input.source ?? "system";
+
+    const event = this.db.transaction(() => this.insertEvent({
+      entity_type: input.entity_type,
+      entity_id: input.entity_id,
+      event_type: input.event_type,
+      actor_id: actor.actor_id,
+      actor_type: actor.actor_type,
+      source,
+      payload: input.payload ?? {},
+      project_id: input.project_id,
+      occurred_at: now,
+      enqueueOutbox: input.enqueueOutbox,
+    }))();
+    emitted.push({ event, payload: input.payload ?? { entity_id: input.entity_id } });
+    emitLedgerEvents(emitted, this.broadcaster);
+    return event;
   }
 
   addComment(issueId: string, input: AddLedgerCommentInput): LedgerComment {

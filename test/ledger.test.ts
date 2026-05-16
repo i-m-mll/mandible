@@ -54,7 +54,9 @@ describe("ledger schema", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ledger_%' ORDER BY name",
     ).all() as Array<{ name: string }>;
     expect(tables.map((row) => row.name)).toEqual([
+      "ledger_auth_issue_links",
       "ledger_comments",
+      "ledger_commit_issue_links",
       "ledger_conflicts",
       "ledger_events",
       "ledger_external_refs",
@@ -62,12 +64,16 @@ describe("ledger schema", () => {
       "ledger_issue_relationships",
       "ledger_issues",
       "ledger_labels",
+      "ledger_operational_link_mismatches",
+      "ledger_operational_link_reports",
       "ledger_outbox",
       "ledger_project_checkouts",
       "ledger_projects",
       "ledger_reconciliation_mismatches",
       "ledger_reconciliation_reports",
+      "ledger_session_issue_links",
       "ledger_sync_jobs",
+      "ledger_work_unit_issue_links",
     ]);
 
     const indexes = db.prepare(
@@ -91,7 +97,7 @@ describe("ledger schema", () => {
     const version = upgradeDb.prepare(
       "SELECT value FROM meta WHERE key = 'schema_version'",
     ).get() as { value: string };
-    expect(version.value).toBe("57");
+    expect(version.value).toBe("58");
     expect(upgradeDb.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issues'",
     ).get()).toBeTruthy();

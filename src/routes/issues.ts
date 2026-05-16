@@ -17,6 +17,10 @@ import {
   updateLedgerIssueMigrationConfig,
   type LedgerIssueMigrationConfig,
 } from "../ledger/issue-migration.js";
+import {
+  linkCommitToLedgerIssue,
+  resolveOperationalIssueRef,
+} from "../ledger/operational-links.js";
 import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
 
 export interface RouteHandler<Request = unknown, Response = unknown> {
@@ -150,6 +154,20 @@ function ledgerWriteUnavailable(res: unknown, mode: string): boolean {
     return true;
   }
   return false;
+}
+
+function tableExists(db: Db, table: string): boolean {
+  const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+  return Boolean(row);
+}
+
+function resolveContextLedgerIssueId(db: Db, issueId: string, repoId: string): string | null {
+  try {
+    const resolved = resolveOperationalIssueRef(db, issueId, repoId);
+    return resolved.ok ? resolved.issue_id : null;
+  } catch {
+    return null;
+  }
 }
 
 interface ResolvedRouteIssue {
@@ -349,12 +367,26 @@ export function registerIssueRoutes(
     }
 
     const db = getDb();
+    const resolvedAt = Date.now();
     db.prepare(
       `INSERT OR IGNORE INTO issue_resolutions (issue_id, commit_sha, repo_id, resolved_at)
        VALUES (?, ?, ?, ?)`
-    ).run(issue_id, commit_sha, repo_id, Date.now());
+    ).run(issue_id, commit_sha, repo_id, resolvedAt);
 
-    sendJson(res, 200, { ok: true });
+    let ledgerIssueId: string | null = null;
+    try {
+      const result = linkCommitToLedgerIssue(db, {
+        commit_sha,
+        issue_ref: issue_id,
+        repo_ref: repo_id,
+        now: resolvedAt,
+      });
+      ledgerIssueId = result.ok ? result.issue_id : null;
+    } catch {
+      ledgerIssueId = null;
+    }
+
+    sendJson(res, 200, { ok: true, ledger_issue_id: ledgerIssueId });
   });
 
   // GET /api/issues/resolutions/:issueId — get resolutions for an issue
@@ -573,15 +605,25 @@ export function registerIssueRoutes(
       return;
     }
     const { repoId, issue } = resolvedIssue.resolved;
+    const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
 
     // 2. Work unit for this issue+repo
-    const workUnitRow = db
-      .prepare(
-        `SELECT * FROM work_units
-         WHERE issue_id = ? AND repo_id = ?
-         ORDER BY created_at DESC LIMIT 1`
-      )
-      .get(issue.id, repoId) as Record<string, unknown> | undefined;
+    const workUnitRow = ledgerIssueId
+      ? db
+          .prepare(
+            `SELECT * FROM work_units
+             WHERE ledger_issue_id = ? OR (issue_id = ? AND repo_id = ?)
+             ORDER BY CASE WHEN ledger_issue_id = ? THEN 0 ELSE 1 END, created_at DESC
+             LIMIT 1`
+          )
+          .get(ledgerIssueId, issue.id, repoId, ledgerIssueId) as Record<string, unknown> | undefined
+      : db
+          .prepare(
+            `SELECT * FROM work_units
+             WHERE issue_id = ? AND repo_id = ?
+             ORDER BY created_at DESC LIMIT 1`
+          )
+          .get(issue.id, repoId) as Record<string, unknown> | undefined;
 
     // Bug: f3dbb3e — use canonical liveness computation from work-unit-utils
     let workUnit: Record<string, unknown> | null = null;
@@ -616,22 +658,42 @@ export function registerIssueRoutes(
         state: wu.state,
         continuation: wu.continuation,
         assigned_session_id: wu.assigned_session_id,
+        ledger_issue_id: wu.ledger_issue_id,
         liveness,
       };
     }
 
-    // 3. Linked sessions via session_issues
-    const sessionLinks = db
+    // 3. Linked sessions via canonical ledger links plus legacy session_issues.
+    const sessionLinksById = new Map<string, Record<string, unknown>>();
+    const legacySessionLinks = db
       .prepare(
-        `SELECT si.session_id, s.status, s.created_at, s.app
+        `SELECT si.session_id, s.status, s.created_at, s.app, si.created_at AS link_created_at
          FROM session_issues si
          LEFT JOIN sessions s ON s.id = si.session_id
          WHERE si.issue_id = ? AND si.repo_id = ?
          ORDER BY si.created_at ASC`
       )
       .all(issue.id, repoId) as Array<Record<string, unknown>>;
+    for (const row of legacySessionLinks) {
+      sessionLinksById.set(String(row.session_id ?? ""), row);
+    }
+    if (ledgerIssueId && tableExists(db, "ledger_session_issue_links")) {
+      const ledgerSessionLinks = db
+        .prepare(
+          `SELECT l.session_id, s.status, s.created_at, s.app, l.created_at AS link_created_at
+           FROM ledger_session_issue_links l
+           LEFT JOIN sessions s ON s.id = l.session_id
+           WHERE l.issue_id = ?
+           ORDER BY l.created_at ASC`
+        )
+        .all(ledgerIssueId) as Array<Record<string, unknown>>;
+      for (const row of ledgerSessionLinks) {
+        const sessionId = String(row.session_id ?? "");
+        if (!sessionLinksById.has(sessionId)) sessionLinksById.set(sessionId, row);
+      }
+    }
 
-    const sessions = sessionLinks.map((row) => ({
+    const sessions = Array.from(sessionLinksById.values()).map((row) => ({
       session_id: String(row.session_id ?? ""),
       status: String(row.status ?? "unknown"),
       created_at: row.created_at ?? null,
@@ -659,8 +721,8 @@ export function registerIssueRoutes(
       }
     }
 
-    // 4. Auth requests linked to this issue
-    // Auth requests store issue_ids as JSON array in the DB
+    // 4. Auth requests linked to this issue, preferring canonical ledger links
+    // and keeping legacy JSON issue_ids matching for pre-ledger rows.
     const authRows = db
       .prepare(
         `SELECT id, title, status, head_branch, issue_ids, created_at
@@ -671,7 +733,7 @@ export function registerIssueRoutes(
 
     // Bug: f3dbb3e — bidirectional prefix matching for issue IDs (same fix
     // as auth-queue.ts resolveWorkUnitsOnMerge)
-    const authRequests = authRows
+    const legacyAuthRequests = authRows
       .filter((row) => {
         const ids = row.issue_ids;
         if (!ids) return false;
@@ -695,6 +757,30 @@ export function registerIssueRoutes(
         head_branch: row.head_branch ?? null,
         created_at: row.created_at ?? null,
       }));
+    const authRequestsById = new Map(legacyAuthRequests.map((row) => [row.id, row]));
+    if (ledgerIssueId && tableExists(db, "ledger_auth_issue_links")) {
+      const canonicalAuthRows = db
+        .prepare(
+          `SELECT ar.id, ar.title, ar.status, ar.head_branch, ar.created_at
+           FROM ledger_auth_issue_links l
+           JOIN auth_requests ar ON ar.id = l.auth_request_id
+           WHERE l.issue_id = ?
+           ORDER BY ar.created_at DESC`
+        )
+        .all(ledgerIssueId) as Array<Record<string, unknown>>;
+      for (const row of canonicalAuthRows) {
+        const id = String(row.id ?? "");
+        authRequestsById.set(id, {
+          id,
+          title: String(row.title ?? ""),
+          status: String(row.status ?? ""),
+          head_branch: row.head_branch ?? null,
+          created_at: row.created_at ?? null,
+        });
+      }
+    }
+    const authRequests = Array.from(authRequestsById.values())
+      .sort((a, b) => Number(b.created_at ?? 0) - Number(a.created_at ?? 0));
 
     // 5. Branch info from work scanner if available
     let branchInfo: Record<string, unknown> | null = null;
@@ -747,13 +833,38 @@ export function registerIssueRoutes(
       return;
     }
     const { repoId, issue } = resolvedIssue.resolved;
+    const linkMap = new Map<string, Record<string, unknown>>();
     const links = db.prepare(
       `SELECT session_id, issue_id, repo_id, created_at
        FROM session_issues
        WHERE issue_id = ? AND repo_id = ?
        ORDER BY created_at ASC`
-    ).all(issue.id, repoId);
-    sendJson(res, 200, links);
+    ).all(issue.id, repoId) as Array<Record<string, unknown>>;
+    for (const link of links) {
+      linkMap.set(String(link.session_id ?? ""), link);
+    }
+    const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
+    if (ledgerIssueId && tableExists(db, "ledger_session_issue_links")) {
+      const canonicalLinks = db.prepare(
+        `SELECT session_id, created_at, issue_id AS ledger_issue_id
+         FROM ledger_session_issue_links
+         WHERE issue_id = ?
+         ORDER BY created_at ASC`
+      ).all(ledgerIssueId) as Array<Record<string, unknown>>;
+      for (const link of canonicalLinks) {
+        const sessionId = String(link.session_id ?? "");
+        if (!linkMap.has(sessionId)) {
+          linkMap.set(sessionId, {
+            session_id: sessionId,
+            issue_id: issue.id,
+            repo_id: repoId,
+            created_at: link.created_at,
+            ledger_issue_id: link.ledger_issue_id,
+          });
+        }
+      }
+    }
+    sendJson(res, 200, Array.from(linkMap.values()));
   });
 
   // POST /api/issues/:repoId/:issueId/spawn — spawn an SDK console session for this issue

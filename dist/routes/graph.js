@@ -122,6 +122,50 @@ function upsertEdge(edges, edge) {
         return;
     edges.set(edge.id, edge);
 }
+function tableExists(table) {
+    try {
+        const row = getDb()
+            .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+            .get(table);
+        return Boolean(row);
+    }
+    catch {
+        return false;
+    }
+}
+function parseMetadataJson(value) {
+    if (!value)
+        return {};
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed
+            : {};
+    }
+    catch {
+        return {};
+    }
+}
+function issueNodeIdFromOperationalMetadata(issueNodeIds, metadataJson) {
+    const metadata = parseMetadataJson(metadataJson);
+    const repoId = typeof metadata.repo_id === "string" ? metadata.repo_id : "";
+    const issueRef = typeof metadata.legacy_issue_id === "string" ? metadata.legacy_issue_id : "";
+    if (!issueRef)
+        return null;
+    if (repoId) {
+        const exact = `issue:${repoId}:${issueRef}`;
+        if (issueNodeIds.has(exact))
+            return exact;
+    }
+    for (const issueNodeId of issueNodeIds) {
+        const parts = issueNodeId.split(":");
+        const issueHumanId = parts[2];
+        if (issueHumanId && (issueHumanId === issueRef || issueHumanId.startsWith(issueRef))) {
+            return issueNodeId;
+        }
+    }
+    return null;
+}
 function nodeCreatedMs(node) {
     return node.created_at ? new Date(node.created_at).getTime() : 0;
 }
@@ -380,6 +424,29 @@ function addAuthNodesAndEdges(authRows, issueNodeIds, nodes, edges) {
             }
         }
     }
+    if (tableExists("ledger_auth_issue_links")) {
+        const authIds = Array.from(authNodeIds);
+        if (authIds.length > 0) {
+            const placeholders = authIds.map((_, index) => `:auth${index}`);
+            const bindings = Object.fromEntries(authIds.map((id, index) => [`auth${index}`, id]));
+            const rows = getDb().prepare(`SELECT auth_request_id, issue_id AS ledger_issue_id, metadata_json
+         FROM ledger_auth_issue_links
+         WHERE auth_request_id IN (${placeholders.join(", ")})`).all(bindings);
+            for (const row of rows) {
+                const issueNodeId = issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+                if (!issueNodeId)
+                    continue;
+                upsertEdge(edges, {
+                    id: `ledger_auth_issue:${row.auth_request_id}:${row.ledger_issue_id}`,
+                    source: `auth_request:${row.auth_request_id}`,
+                    target: issueNodeId,
+                    type: "auth_issue",
+                    edge_class: "lifecycle",
+                    provenance: "ledger_auth_issue_links",
+                });
+            }
+        }
+    }
     return authNodeIds;
 }
 function addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges) {
@@ -402,6 +469,24 @@ function addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges) {
                 edge_class: "lifecycle",
                 provenance: "session_issues",
             });
+        }
+    }
+    if (tableExists("ledger_session_issue_links")) {
+        const ledgerRows = getDb().prepare(`SELECT session_id, issue_id AS ledger_issue_id, metadata_json
+       FROM ledger_session_issue_links`).all();
+        for (const row of ledgerRows) {
+            const sessionNodeId = `session:${row.session_id}`;
+            const issueNodeId = issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+            if (issueNodeId && sessionNodeIds.has(sessionNodeId) && issueNodeIds.has(issueNodeId)) {
+                upsertEdge(edges, {
+                    id: `ledger_session_issue:${row.session_id}:${row.ledger_issue_id}`,
+                    source: sessionNodeId,
+                    target: issueNodeId,
+                    type: "session_issue",
+                    edge_class: "lifecycle",
+                    provenance: "ledger_session_issue_links",
+                });
+            }
         }
     }
 }

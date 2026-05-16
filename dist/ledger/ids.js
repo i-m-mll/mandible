@@ -12,6 +12,8 @@ export const LEDGER_ID_PREFIXES = [
     "job",
     "rec",
     "mis",
+    "opb",
+    "opm",
 ];
 const TIME_WIDTH = 10;
 const RANDOM_BYTES = 10;
