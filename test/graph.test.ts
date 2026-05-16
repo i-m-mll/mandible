@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { capGraphNodesForDisplay } from "../src/routes/graph.js";
+import {
+  capGraphNodesForDisplay,
+  parseQueryParams,
+  repoCandidatesFromCwd,
+} from "../src/routes/graph.js";
 import type { GraphEdge, GraphNode } from "../src/types.js";
 
 function node(id: string, createdAt: string): GraphNode {
@@ -54,5 +58,26 @@ describe("graph node capping", () => {
     const capped = capGraphNodesForDisplay(nodes, [], 1);
 
     expect(capped.nodes.map((item) => item.id)).toEqual(["newer"]);
+  });
+});
+
+describe("graph filters", () => {
+  it("parses comma-separated and repeated multi-select filters", () => {
+    const params = parseQueryParams({
+      repo: ["HumbleB,mandible", "feedbax"],
+      branch: "main,develop",
+    });
+
+    expect(params.repos).toEqual(["HumbleB", "mandible", "feedbax"]);
+    expect(params.repo).toBe("HumbleB");
+    expect(params.branches).toEqual(["main", "develop"]);
+    expect(params.branch).toBe("main");
+  });
+
+  it("recovers the root repo from worktree session cwd values", () => {
+    const candidates = repoCandidatesFromCwd("/tmp/HumbleB/worktrees/feature__graph");
+
+    expect(candidates).toContain("HumbleB");
+    expect(candidates).toContain("feature__graph");
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   Background,
   Controls,
@@ -7,6 +7,16 @@ import {
   Position,
   ReactFlow,
 } from '@xyflow/react';
+import {
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  forceX,
+  forceY,
+  type SimulationLinkDatum,
+  type SimulationNodeDatum,
+} from 'd3-force';
 import '@xyflow/react/dist/style.css';
 import type {
   GraphEdge,
@@ -20,8 +30,8 @@ import type {
 
 type GraphFetchParams = {
   mode: GraphMode
-  repo?: string
-  branch?: string
+  repos?: string[]
+  branches?: string[]
   since?: string
   status?: string
 }
@@ -56,12 +66,22 @@ type ReactFlowEdge = {
   labelBgStyle?: Record<string, string | number>
 }
 
+type ForceLayoutNode = SimulationNodeDatum & {
+  id: string
+  node: GraphNode
+  rank: number
+  anchorX: number
+  anchorY: number
+}
+
+type ForceLayoutLink = SimulationLinkDatum<ForceLayoutNode>
+
 async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
   const q = new URLSearchParams();
   q.set('mode', params.mode);
   if (params.since) q.set('since', params.since);
-  if (params.repo) q.set('repo', params.repo);
-  if (params.branch) q.set('branch', params.branch);
+  if (params.repos && params.repos.length > 0) q.set('repo', params.repos.join(','));
+  if (params.branches && params.branches.length > 0) q.set('branch', params.branches.join(','));
   if (params.status) q.set('status', params.status);
   const r = await fetch(`/api/graph?${q.toString()}`);
   if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
@@ -94,14 +114,16 @@ const NODE_COLUMNS: Record<string, number> = {
   commit: 5,
 };
 
-const FLOW_LANES = 2;
 const FLOW_NODE_WIDTH = 190;
 const FLOW_NODE_HEIGHT = 118;
 const FLOW_X_START = 24;
 const FLOW_Y_START = 32;
-const FLOW_COLUMN_GAP = 210;
+const FLOW_COLUMN_GAP = 258;
 const FLOW_ROW_GAP = 142;
-const FLOW_GROUP_GAP = 48;
+const FLOW_GROUP_GAP = 86;
+const FLOW_SINGLETON_GRID_COLUMNS = 4;
+const FLOW_MAX_RANK = 7;
+const FLOW_FORCE_TICKS = 180;
 
 const MODE_LABELS: Record<GraphMode, string> = {
   activity: 'Activity',
@@ -167,60 +189,219 @@ function firstEntries(value: Record<string, unknown> | undefined, limit = 4): Ar
     .slice(0, limit);
 }
 
-function layoutNodes(nodes: GraphNode[], mode: GraphMode): ReactFlowNode[] {
-  const grouped = new Map<number, GraphNode[]>();
-  for (const node of nodes) {
-    const column = NODE_COLUMNS[node.type] ?? (mode === 'issue' ? 1 : 2);
-    const current = grouped.get(column) ?? [];
-    current.push(node);
-    grouped.set(column, current);
+function nodeTime(node: GraphNode): number {
+  return node.created_at ? new Date(node.created_at).getTime() || 0 : 0;
+}
+
+function sortGraphNodes(a: GraphNode, b: GraphNode): number {
+  return nodeTime(b) - nodeTime(a) || a.type.localeCompare(b.type) || a.label.localeCompare(b.label);
+}
+
+function baseRank(node: GraphNode, mode: GraphMode): number {
+  if (mode === 'issue' && node.type === 'issue') return 0;
+  return Math.min(FLOW_MAX_RANK, NODE_COLUMNS[node.type] ?? (mode === 'issue' ? 0 : 2));
+}
+
+function edgeLayoutDirection(edge: GraphEdge, nodeById: Map<string, GraphNode>): { source: string; target: string } {
+  const source = nodeById.get(edge.source);
+  const target = nodeById.get(edge.target);
+  if (!source || !target) return { source: edge.source, target: edge.target };
+
+  if (edge.type === 'auth_issue' || edge.type === 'auth_request_references_issue') {
+    return { source: edge.target, target: edge.source };
+  }
+  if (edge.type === 'session_parent') {
+    return { source: edge.target, target: edge.source };
+  }
+  if (edge.type === 'session_issue') {
+    if (source.type === 'session' && (target.type === 'issue' || target.type === 'work_unit')) {
+      return { source: edge.target, target: edge.source };
+    }
+  }
+  return { source: edge.source, target: edge.target };
+}
+
+function graphComponents(nodes: GraphNode[], edges: GraphEdge[]): string[][] {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const adjacency = new Map<string, Set<string>>();
+  for (const node of nodes) adjacency.set(node.id, new Set());
+  for (const edge of edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue;
+    adjacency.get(edge.source)?.add(edge.target);
+    adjacency.get(edge.target)?.add(edge.source);
   }
 
-  const sortedColumns = Array.from(grouped.keys()).sort((a, b) => a - b);
-  const output: ReactFlowNode[] = [];
-  const laneCount = Math.max(1, Math.min(FLOW_LANES, sortedColumns.length));
-  const laneOffsets = Array.from({ length: laneCount }, () => FLOW_Y_START);
-  for (const [columnIndex, column] of sortedColumns.entries()) {
-    const lane = columnIndex % laneCount;
-    const baseY = laneOffsets[lane] ?? FLOW_Y_START;
-    const group = [...(grouped.get(column) ?? [])].sort((a, b) => {
-      const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
-      const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
-      return tb - ta || a.label.localeCompare(b.label);
-    });
-    group.forEach((node, row) => {
-      output.push({
-        id: node.id,
-        type: 'mandible',
-        position: {
-          x: FLOW_X_START + lane * FLOW_COLUMN_GAP,
-          y: baseY + row * FLOW_ROW_GAP,
-        },
-        initialWidth: FLOW_NODE_WIDTH,
-        initialHeight: FLOW_NODE_HEIGHT,
-        handles: [
-          {
-            type: 'target',
-            position: Position.Left,
-            x: 0,
-            y: FLOW_NODE_HEIGHT / 2,
-            width: 1,
-            height: 1,
-          },
-          {
-            type: 'source',
-            position: Position.Right,
-            x: FLOW_NODE_WIDTH - 1,
-            y: FLOW_NODE_HEIGHT / 2,
-            width: 1,
-            height: 1,
-          },
-        ],
-        data: { node },
-      });
-    });
-    laneOffsets[lane] = baseY + Math.max(1, group.length) * FLOW_ROW_GAP + FLOW_GROUP_GAP;
+  const visited = new Set<string>();
+  const components: string[][] = [];
+  for (const node of [...nodes].sort(sortGraphNodes)) {
+    if (visited.has(node.id)) continue;
+    const stack = [node.id];
+    const component: string[] = [];
+    visited.add(node.id);
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current) continue;
+      component.push(current);
+      for (const next of adjacency.get(current) ?? []) {
+        if (visited.has(next)) continue;
+        visited.add(next);
+        stack.push(next);
+      }
+    }
+    components.push(component);
   }
+  return components;
+}
+
+function makeFlowNode(node: GraphNode, x: number, y: number): ReactFlowNode {
+  return {
+    id: node.id,
+    type: 'mandible',
+    position: { x, y },
+    initialWidth: FLOW_NODE_WIDTH,
+    initialHeight: FLOW_NODE_HEIGHT,
+    handles: [
+      {
+        type: 'target',
+        position: Position.Left,
+        x: 0,
+        y: FLOW_NODE_HEIGHT / 2,
+        width: 1,
+        height: 1,
+      },
+      {
+        type: 'source',
+        position: Position.Right,
+        x: FLOW_NODE_WIDTH - 1,
+        y: FLOW_NODE_HEIGHT / 2,
+        width: 1,
+        height: 1,
+      },
+    ],
+    data: { node },
+  };
+}
+
+function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): ReactFlowNode[] {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const ranks = new Map(nodes.map((node) => [node.id, baseRank(node, mode)]));
+  const directedEdges = edges
+    .filter((edge) => nodeById.has(edge.source) && nodeById.has(edge.target))
+    .map((edge) => edgeLayoutDirection(edge, nodeById));
+
+  for (let pass = 0; pass < Math.min(nodes.length, FLOW_MAX_RANK * 3); pass += 1) {
+    let changed = false;
+    for (const edge of directedEdges) {
+      const sourceRank = ranks.get(edge.source) ?? 0;
+      const targetRank = ranks.get(edge.target) ?? 0;
+      const nextRank = Math.min(FLOW_MAX_RANK, Math.max(targetRank, sourceRank + 1));
+      if (nextRank > targetRank) {
+        ranks.set(edge.target, nextRank);
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+
+  const incidentCounts = new Map<string, number>();
+  for (const edge of edges) {
+    incidentCounts.set(edge.source, (incidentCounts.get(edge.source) ?? 0) + 1);
+    incidentCounts.set(edge.target, (incidentCounts.get(edge.target) ?? 0) + 1);
+  }
+
+  const components = graphComponents(nodes, edges);
+  const relationshipComponents = components
+    .filter((component) => component.some((id) => (incidentCounts.get(id) ?? 0) > 0))
+    .sort((a, b) => {
+      const aMaxDegree = Math.max(...a.map((id) => incidentCounts.get(id) ?? 0));
+      const bMaxDegree = Math.max(...b.map((id) => incidentCounts.get(id) ?? 0));
+      const newestA = Math.max(...a.map((id) => nodeTime(nodeById.get(id)!)));
+      const newestB = Math.max(...b.map((id) => nodeTime(nodeById.get(id)!)));
+      return b.length - a.length || bMaxDegree - aMaxDegree || newestB - newestA;
+    });
+  const singletons = components
+    .filter((component) => component.every((id) => (incidentCounts.get(id) ?? 0) === 0))
+    .flat()
+    .map((id) => nodeById.get(id)!)
+    .sort(sortGraphNodes);
+
+  const output: ReactFlowNode[] = [];
+  let yCursor = FLOW_Y_START;
+
+  for (const component of relationshipComponents) {
+    const byRank = new Map<number, GraphNode[]>();
+    for (const id of component) {
+      const node = nodeById.get(id);
+      if (!node) continue;
+      const rank = ranks.get(id) ?? baseRank(node, mode);
+      const group = byRank.get(rank) ?? [];
+      group.push(node);
+      byRank.set(rank, group);
+    }
+
+    const forceNodes: ForceLayoutNode[] = [];
+    for (const [rank, rankNodes] of byRank.entries()) {
+      const sorted = [...rankNodes].sort(sortGraphNodes);
+      sorted.forEach((node, row) => {
+        const anchorX = FLOW_X_START + rank * FLOW_COLUMN_GAP;
+        const anchorY = yCursor + row * FLOW_ROW_GAP;
+        forceNodes.push({
+          id: node.id,
+          node,
+          rank,
+          anchorX,
+          anchorY,
+          x: anchorX,
+          y: anchorY,
+        });
+      });
+    }
+
+    const componentIds = new Set(component);
+    const forceLinks: ForceLayoutLink[] = directedEdges
+      .filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target))
+      .map((edge) => ({ source: edge.source, target: edge.target }));
+
+    if (forceNodes.length > 1) {
+      const simulation = forceSimulation<ForceLayoutNode>(forceNodes)
+        .force('link', forceLink<ForceLayoutNode, ForceLayoutLink>(forceLinks)
+          .id((node) => node.id)
+          .distance(FLOW_COLUMN_GAP * 0.92)
+          .strength(0.28))
+        .force('charge', forceManyBody<ForceLayoutNode>().strength(-520))
+        .force('collide', forceCollide<ForceLayoutNode>(FLOW_NODE_WIDTH * 0.68).strength(0.98))
+        .force('x', forceX<ForceLayoutNode>((node) => node.anchorX).strength(0.62))
+        .force('y', forceY<ForceLayoutNode>((node) => node.anchorY).strength(0.08))
+        .stop();
+      for (let tick = 0; tick < FLOW_FORCE_TICKS; tick += 1) simulation.tick();
+    }
+
+    const minY = Math.min(...forceNodes.map((node) => node.y ?? node.anchorY));
+    const maxY = Math.max(...forceNodes.map((node) => node.y ?? node.anchorY));
+    const yOffset = yCursor - minY;
+    for (const item of forceNodes) {
+      output.push(makeFlowNode(
+        item.node,
+        Math.max(FLOW_X_START, item.x ?? item.anchorX),
+        (item.y ?? item.anchorY) + yOffset,
+      ));
+    }
+    yCursor += Math.max(FLOW_ROW_GAP, maxY - minY + FLOW_NODE_HEIGHT) + FLOW_GROUP_GAP;
+  }
+
+  if (singletons.length > 0) {
+    const columns = Math.min(FLOW_SINGLETON_GRID_COLUMNS, Math.max(1, Math.ceil(Math.sqrt(singletons.length))));
+    singletons.forEach((node, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      output.push(makeFlowNode(
+        node,
+        FLOW_X_START + column * FLOW_COLUMN_GAP,
+        yCursor + row * FLOW_ROW_GAP,
+      ));
+    });
+  }
+
   return output;
 }
 
@@ -268,6 +449,150 @@ function MandibleFlowNode({ data, selected }: { data: { node: GraphNode }; selec
 }
 
 const NODE_TYPES = { mandible: MandibleFlowNode };
+
+function TokenMultiSelect({
+  placeholder,
+  options,
+  selected,
+  onChange,
+  disabled = false,
+}: {
+  placeholder: string
+  options: string[]
+  selected: string[]
+  onChange: (values: string[]) => void
+  disabled?: boolean
+}): JSX.Element {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [input, setInput] = useState('');
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const filteredOptions = useMemo(() => {
+    const normalized = input.trim().toLowerCase();
+    return options
+      .filter((option) => !selectedSet.has(option))
+      .filter((option) => normalized.length === 0 || option.toLowerCase().includes(normalized))
+      .slice(0, 40);
+  }, [input, options, selectedSet]);
+  const activeOption = filteredOptions[Math.min(activeIndex, Math.max(0, filteredOptions.length - 1))];
+
+  const addValue = (value: string) => {
+    if (!value || selectedSet.has(value)) return;
+    onChange([...selected, value]);
+    setInput('');
+    setActiveIndex(0);
+    setOpen(true);
+    inputRef.current?.focus();
+  };
+
+  const removeValue = (value: string) => {
+    onChange(selected.filter((item) => item !== value));
+    inputRef.current?.focus();
+  };
+
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setOpen(true);
+      setActiveIndex((index) => Math.min(index + 1, Math.max(0, filteredOptions.length - 1)));
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveIndex((index) => Math.max(0, index - 1));
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const exact = filteredOptions.find((option) => option.toLowerCase() === input.trim().toLowerCase());
+      if (exact || activeOption) addValue(exact ?? activeOption);
+      return;
+    }
+    if (event.key === 'Backspace' && input.length === 0 && selected.length > 0) {
+      event.preventDefault();
+      onChange(selected.slice(0, -1));
+      return;
+    }
+    if (event.key === 'Escape') {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className={`graph-token-select${open ? ' graph-token-select--open' : ''}${disabled ? ' graph-token-select--disabled' : ''}`}>
+      <div
+        className="graph-token-select__control"
+        onClick={() => {
+          if (disabled) return;
+          inputRef.current?.focus();
+          setOpen(true);
+        }}
+      >
+        {selected.map((value) => (
+          <span key={value} className="graph-token-select__pill">
+            <span>{value}</span>
+            <button
+              type="button"
+              aria-label={`Remove ${value}`}
+              className="graph-token-select__remove"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => removeValue(value)}
+            />
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          type="text"
+          className="graph-token-select__input"
+          disabled={disabled}
+          placeholder={selected.length === 0 ? placeholder : ''}
+          value={input}
+          onFocus={() => setOpen(true)}
+          onBlur={() => {
+            setTimeout(() => setOpen(false), 110);
+          }}
+          onInput={(event) => {
+            setInput((event.target as HTMLInputElement).value);
+            setOpen(true);
+            setActiveIndex(0);
+          }}
+          onKeyDown={handleKeyDown}
+        />
+        {selected.length > 0 && (
+          <button
+            type="button"
+            className="graph-token-select__clear"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              onChange([]);
+              inputRef.current?.focus();
+            }}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      {open && !disabled && filteredOptions.length > 0 && (
+        <div className="graph-token-select__menu">
+          {filteredOptions.map((option, index) => (
+            <button
+              key={option}
+              type="button"
+              className={`graph-token-select__option${index === activeIndex ? ' graph-token-select__option--active' : ''}`}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                addValue(option);
+              }}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ModeButton({
   mode,
@@ -395,10 +720,8 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
   const [mode, setMode] = useState<GraphMode>(routeMode);
   const [sinceFilter, setSinceFilter] = useState<'1d' | '3d' | '7d' | 'all'>('all');
   const [statusFilter, setStatusFilter] = useState<'open' | 'all'>('all');
-  const [repoInput, setRepoInput] = useState('');
-  const [repoFilter, setRepoFilter] = useState<string | null>(null);
-  const [branchInput, setBranchInput] = useState('');
-  const [branchFilter, setBranchFilter] = useState<string | null>(null);
+  const [repoFilters, setRepoFilters] = useState<string[]>([]);
+  const [branchFilters, setBranchFilters] = useState<string[]>([]);
   const [enabledLayers, setEnabledLayers] = useState<Set<string>>(new Set());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
@@ -414,13 +737,13 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
       mode,
       since: sinceFilter === 'all' ? undefined : sinceFilter,
       status: statusFilter === 'all' ? 'all' : undefined,
-      repo: repoFilter ?? undefined,
-      branch: branchFilter ?? undefined,
+      repos: repoFilters,
+      branches: branchFilters,
     })
       .then((data) => {
         if (!active) return;
         setPayload(data);
-        setEnabledLayers(new Set((data.layers ?? []).map((layer) => layer.id)));
+        setEnabledLayers(new Set((data.layers ?? []).filter((layer) => layer.enabled).map((layer) => layer.id)));
         if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
           setSelectedNodeId(data.nodes[0].id);
         }
@@ -435,42 +758,50 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
     return () => {
       active = false;
     };
-  }, [mode, sinceFilter, statusFilter, repoFilter, branchFilter, refreshToken]);
+  }, [mode, sinceFilter, statusFilter, repoFilters, branchFilters, refreshToken]);
 
-  const modes = payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
+  const rawModes = payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
     id: id as GraphMode,
     label,
     description: label,
     count: id === mode ? payload.nodes.length : 0,
     available: id === mode,
   }));
+  const modes = rawModes.map((item) => (
+    item.id === mode ? { ...item, count: payload.nodes.length } : item
+  ));
 
   const layers = payload.layers ?? [];
   const repos = useMemo(() => {
-    const seen = new Set<string>();
-    payload.nodes.forEach((node) => (node.repo || node.repo_id) && seen.add(node.repo || node.repo_id || ''));
+    const seen = new Set<string>(payload.filters?.repos ?? []);
+    repoFilters.forEach((repo) => seen.add(repo));
+    if (seen.size === 0) {
+      payload.nodes.forEach((node) => (node.repo || node.repo_id) && seen.add(node.repo || node.repo_id || ''));
+    }
     return Array.from(seen).filter(Boolean).sort();
-  }, [payload.nodes]);
+  }, [payload.filters?.repos, payload.nodes, repoFilters]);
 
-  const branchesForRepo = useMemo(() => {
-    if (!repoFilter) return [];
-    const seen = new Set<string>();
-    payload.nodes.forEach((node) => {
-      if ((node.repo === repoFilter || node.repo_id === repoFilter) && node.branch) seen.add(node.branch);
-    });
+  const branches = useMemo(() => {
+    const seen = new Set<string>(payload.filters?.branches ?? []);
+    branchFilters.forEach((branch) => seen.add(branch));
+    if (seen.size === 0) {
+      payload.nodes.forEach((node) => {
+        if (node.branch) seen.add(node.branch);
+      });
+    }
     return Array.from(seen).sort();
-  }, [payload.nodes, repoFilter]);
+  }, [payload.filters?.branches, payload.nodes, branchFilters]);
 
   const visibleNodes = useMemo(() => {
-    if (enabledLayers.size === 0) return payload.nodes;
+    if (layers.length === 0) return payload.nodes;
     return payload.nodes.filter((node) => enabledLayers.has(node.type));
-  }, [payload.nodes, enabledLayers]);
+  }, [payload.nodes, enabledLayers, layers.length]);
   const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
   const visibleEdges = useMemo(
     () => payload.edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)),
     [payload.edges, visibleNodeIds],
   );
-  const flowNodes = useMemo(() => layoutNodes(visibleNodes, mode), [visibleNodes, mode]);
+  const flowNodes = useMemo(() => layoutNodes(visibleNodes, visibleEdges, mode), [visibleNodes, visibleEdges, mode]);
   const flowEdgeList = useMemo(() => flowEdges(visibleEdges), [visibleEdges]);
   const selectedNode = useMemo(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
@@ -478,6 +809,7 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
   );
 
   const toggleLayer = (layer: GraphLayerDescriptor) => {
+    if (!layer.enabled) return;
     setEnabledLayers((prev) => {
       const next = new Set(prev);
       if (next.has(layer.id)) next.delete(layer.id);
@@ -496,58 +828,19 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
         </div>
         <div className="graph-toolbar">
           <div className="graph-toolbar__combobox-group">
-            <div className="graph-toolbar__combobox">
-              <input
-                type="text"
-                className="graph-toolbar__combobox-input"
-                placeholder="All repos"
-                value={repoInput}
-                list="graph-repo-list"
-                onInput={(e) => {
-                  const val = (e.target as HTMLInputElement).value;
-                  setRepoInput(val);
-                  if (repos.includes(val)) {
-                    setRepoFilter(val);
-                    setBranchInput('');
-                    setBranchFilter(null);
-                  } else if (val === '') {
-                    setRepoFilter(null);
-                    setBranchInput('');
-                    setBranchFilter(null);
-                  }
-                }}
-              />
-              {repoInput && (
-                <button type="button" className="graph-toolbar__combobox-clear" onClick={() => {
-                  setRepoInput('');
-                  setRepoFilter(null);
-                  setBranchInput('');
-                  setBranchFilter(null);
-                }}>x</button>
-              )}
-              <datalist id="graph-repo-list">
-                {repos.map((repo) => <option key={repo} value={repo} />)}
-              </datalist>
-            </div>
-            <div className={`graph-toolbar__combobox${!repoFilter ? ' graph-toolbar__combobox--disabled' : ''}`}>
-              <input
-                type="text"
-                className="graph-toolbar__combobox-input"
-                placeholder="All branches"
-                value={branchInput}
-                disabled={!repoFilter}
-                list="graph-branch-list"
-                onInput={(e) => {
-                  const val = (e.target as HTMLInputElement).value;
-                  setBranchInput(val);
-                  if (branchesForRepo.includes(val)) setBranchFilter(val);
-                  else if (val === '') setBranchFilter(null);
-                }}
-              />
-              <datalist id="graph-branch-list">
-                {branchesForRepo.map((branch) => <option key={branch} value={branch} />)}
-              </datalist>
-            </div>
+            <TokenMultiSelect
+              placeholder="All repos"
+              options={repos}
+              selected={repoFilters}
+              onChange={setRepoFilters}
+            />
+            <TokenMultiSelect
+              placeholder="All branches"
+              options={branches}
+              selected={branchFilters}
+              onChange={setBranchFilters}
+              disabled={branches.length === 0}
+            />
           </div>
           <div className="graph-toolbar__toggle-group">
             {(['1d', '3d', '7d', 'all'] as const).map((value) => (
@@ -581,10 +874,11 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
           <div className="graph-layer-rail__title">Layers</div>
           {layers.length === 0 && <div className="graph-layer-rail__empty">No layers</div>}
           {layers.map((layer) => (
-            <label key={layer.id} className="graph-layer-chip">
+            <label key={layer.id} className={`graph-layer-chip${!layer.enabled ? ' graph-layer-chip--disabled' : ''}`}>
               <input
                 type="checkbox"
-                checked={enabledLayers.has(layer.id)}
+                checked={layer.enabled && enabledLayers.has(layer.id)}
+                disabled={!layer.enabled}
                 onChange={() => toggleLayer(layer)}
               />
               <span>{typeLabel(layer.id)}</span>

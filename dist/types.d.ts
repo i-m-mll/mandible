@@ -333,12 +333,18 @@ export interface GraphPayload {
     edges: GraphEdge[];
     modes?: GraphModeDescriptor[];
     layers?: GraphLayerDescriptor[];
+    filters?: {
+        repos: string[];
+        branches: string[];
+    };
     truncated?: boolean;
 }
 export interface GraphQueryParams {
     mode?: GraphMode;
     repo?: string;
+    repos?: string[];
     branch?: string;
+    branches?: string[];
     since?: string;
     limit?: number;
     status?: "open" | "all";
