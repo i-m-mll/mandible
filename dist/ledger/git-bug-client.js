@@ -35,6 +35,14 @@ export class SubprocessGitBugClient {
         }
         return { ...result, value: { id } };
     }
+    async editTitle(repoRoot, ref, title) {
+        const result = await this.runGitBug(["bug", "title", "edit", ref, "-t", title, "--non-interactive"], repoRoot);
+        return mapVoid(result);
+    }
+    async editComment(repoRoot, commentId, body) {
+        const result = await this.runGitBug(["bug", "comment", "edit", commentId, "-m", body, "--non-interactive"], repoRoot);
+        return mapVoid(result);
+    }
     async setStatus(repoRoot, ref, status) {
         const verb = status === "closed" ? "close" : "open";
         const result = await this.runGitBug(["bug", "status", verb, ref], repoRoot);
@@ -150,9 +158,11 @@ function asIssueDetail(value) {
     const record = asRecord(value);
     const comments = Array.isArray(record.comments) ? record.comments : [];
     const [descriptionComment, ...rest] = comments;
+    const description = asRecord(descriptionComment);
     return {
         ...summary,
-        description: asRecord(descriptionComment).message ?? "",
+        description: description.message ?? "",
+        description_comment_id: String(description.human_id ?? description.id ?? ""),
         comments: rest.map((comment) => {
             const item = asRecord(comment);
             return {

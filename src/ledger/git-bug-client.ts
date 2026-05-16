@@ -33,6 +33,7 @@ export interface GitBugCommentDetail {
 
 export interface GitBugIssueDetail extends GitBugIssueSummary {
   description: string;
+  description_comment_id: string;
   comments: GitBugCommentDetail[];
   raw: unknown;
 }
@@ -48,6 +49,8 @@ export interface GitBugClient {
   listIssues(repoRoot: string): Promise<GitBugResult<GitBugIssueSummary[]>>;
   getIssue(repoRoot: string, ref: string): Promise<GitBugResult<GitBugIssueDetail>>;
   createIssue(repoRoot: string, input: GitBugCreateIssueInput): Promise<GitBugResult<{ id: string }>>;
+  editTitle(repoRoot: string, ref: string, title: string): Promise<GitBugResult<void>>;
+  editComment(repoRoot: string, commentId: string, body: string): Promise<GitBugResult<void>>;
   setStatus(repoRoot: string, ref: string, status: "open" | "closed"): Promise<GitBugResult<void>>;
   addComment(repoRoot: string, ref: string, body: string): Promise<GitBugResult<{ id?: string }>>;
   addLabel(repoRoot: string, ref: string, label: string): Promise<GitBugResult<void>>;
@@ -97,6 +100,16 @@ export class SubprocessGitBugClient implements GitBugClient {
       }
     }
     return { ...result, value: { id } };
+  }
+
+  async editTitle(repoRoot: string, ref: string, title: string): Promise<GitBugResult<void>> {
+    const result = await this.runGitBug(["bug", "title", "edit", ref, "-t", title, "--non-interactive"], repoRoot);
+    return mapVoid(result);
+  }
+
+  async editComment(repoRoot: string, commentId: string, body: string): Promise<GitBugResult<void>> {
+    const result = await this.runGitBug(["bug", "comment", "edit", commentId, "-m", body, "--non-interactive"], repoRoot);
+    return mapVoid(result);
   }
 
   async setStatus(
@@ -236,9 +249,11 @@ function asIssueDetail(value: unknown): GitBugIssueDetail {
   const record = asRecord(value);
   const comments = Array.isArray(record.comments) ? record.comments : [];
   const [descriptionComment, ...rest] = comments;
+  const description = asRecord(descriptionComment);
   return {
     ...summary,
-    description: asRecord(descriptionComment).message ?? "",
+    description: description.message ?? "",
+    description_comment_id: String(description.human_id ?? description.id ?? ""),
     comments: rest.map((comment) => {
       const item = asRecord(comment);
       return {

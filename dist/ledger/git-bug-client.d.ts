@@ -31,6 +31,7 @@ export interface GitBugCommentDetail {
 }
 export interface GitBugIssueDetail extends GitBugIssueSummary {
     description: string;
+    description_comment_id: string;
     comments: GitBugCommentDetail[];
     raw: unknown;
 }
@@ -46,6 +47,8 @@ export interface GitBugClient {
     createIssue(repoRoot: string, input: GitBugCreateIssueInput): Promise<GitBugResult<{
         id: string;
     }>>;
+    editTitle(repoRoot: string, ref: string, title: string): Promise<GitBugResult<void>>;
+    editComment(repoRoot: string, commentId: string, body: string): Promise<GitBugResult<void>>;
     setStatus(repoRoot: string, ref: string, status: "open" | "closed"): Promise<GitBugResult<void>>;
     addComment(repoRoot: string, ref: string, body: string): Promise<GitBugResult<{
         id?: string;
@@ -65,6 +68,8 @@ export declare class SubprocessGitBugClient implements GitBugClient {
     createIssue(repoRoot: string, input: GitBugCreateIssueInput): Promise<GitBugResult<{
         id: string;
     }>>;
+    editTitle(repoRoot: string, ref: string, title: string): Promise<GitBugResult<void>>;
+    editComment(repoRoot: string, commentId: string, body: string): Promise<GitBugResult<void>>;
     setStatus(repoRoot: string, ref: string, status: "open" | "closed"): Promise<GitBugResult<void>>;
     addComment(repoRoot: string, ref: string, body: string): Promise<GitBugResult<{
         id?: string;

@@ -198,13 +198,30 @@ async function applyEvent(
 
   if (event.event_type === "issue.updated") {
     const issueRef = requireGitBugIssueRef(store, event.entity_id);
+    const issue = store.getIssue(event.entity_id);
+    const patch = getPatchPayload(payload);
+    if ("title" in patch) {
+      const updated = await client.editTitle(repoRoot, issueRef.external_id, issue.title);
+      if (!updated.ok) throw new Error(updated.error);
+    }
+    if ("body" in patch) {
+      const remote = await client.getIssue(repoRoot, issueRef.external_id);
+      if (!remote.ok) throw new Error(remote.error);
+      if (!remote.value.description_comment_id) {
+        throw new Error(`Issue ${event.entity_id} has no editable git-bug description comment`);
+      }
+      const updated = await client.editComment(repoRoot, remote.value.description_comment_id, issue.body);
+      if (!updated.ok) throw new Error(updated.error);
+    }
     if (payload.status === "open" || payload.status === "closed") {
       const updated = await client.setStatus(repoRoot, issueRef.external_id, payload.status);
       if (!updated.ok) throw new Error(updated.error);
+    }
+    if ("title" in patch || "body" in patch || payload.status === "open" || payload.status === "closed") {
       await refreshIssueRemoteRef(store, client, repoRoot, outbox.project_id, event.entity_id);
       return "applied";
     }
-    return "git-bug exporter cannot mutate title/body without a supported edit operation";
+    return "git-bug exporter has no git-bug operation for this issue update";
   }
 
   return `unsupported event type: ${event.event_type}`;
@@ -319,6 +336,13 @@ function parsePayload(event: LedgerEvent): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function getPatchPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const patch = payload.patch;
+  return patch && typeof patch === "object" && !Array.isArray(patch)
+    ? patch as Record<string, unknown>
+    : {};
 }
 
 function parseMetadata(value: string): Record<string, unknown> {

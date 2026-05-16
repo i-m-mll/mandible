@@ -203,6 +203,30 @@ describe("git-bug ledger export", () => {
     expect(second).toMatchObject({ applied: 1, conflicted: 0 });
     expect(store.listConflicts({ status: "open" })).toHaveLength(0);
   });
+
+  it("exports local title and body updates to git-bug", async () => {
+    const checkout = createCheckout();
+    const client = new FakeGitBugClient([
+      makeDetail({ id: "git-1", human_id: "abc123", title: "Remote", body: "Old body" }),
+    ]);
+    await importGitBugCheckout({ db, client, checkout });
+    const store = new LedgerStore(db);
+    const issue = store.listIssues({ project_id: checkout.project_id })[0];
+
+    store.updateIssue(issue.id, { title: "Updated title", body: "Updated body" });
+    const result = await exportGitBugOutbox({
+      db,
+      client,
+      project_id: checkout.project_id,
+      repoRoot: checkout.root,
+    });
+    const remote = await client.getIssue(checkout.root, "abc123");
+
+    expect(result).toMatchObject({ applied: 1, conflicted: 0, failed: 0 });
+    expect(remote.ok && remote.value.title).toBe("Updated title");
+    expect(remote.ok && remote.value.description).toBe("Updated body");
+    expect(store.listConflicts({ status: "open" })).toHaveLength(0);
+  });
 });
 
 describe("git-bug sync jobs", () => {
@@ -295,6 +319,31 @@ class FakeGitBugClient implements GitBugClient {
     return ok({ id });
   }
 
+  async editTitle(_repoRoot: string, ref: string, title: string): Promise<GitBugResult<void>> {
+    const detail = this.details.get(ref);
+    if (!detail) return fail("not found");
+    this.replaceDetail(ref, { ...detail, title, raw: { ...(detail.raw as object), title } });
+    return ok(undefined);
+  }
+
+  async editComment(_repoRoot: string, commentId: string, body: string): Promise<GitBugResult<void>> {
+    for (const detail of new Set(this.details.values())) {
+      if (detail.description_comment_id === commentId) {
+        const raw = detail.raw as { comments?: Array<Record<string, unknown>> };
+        const comments = (raw.comments ?? []).map((comment, index) => (
+          index === 0 ? { ...comment, message: body } : comment
+        ));
+        this.replaceDetail(detail.human_id || detail.id, {
+          ...detail,
+          description: body,
+          raw: { ...raw, comments },
+        });
+        return ok(undefined);
+      }
+    }
+    return fail("not found");
+  }
+
   async setStatus(_repoRoot: string, ref: string, status: "open" | "closed"): Promise<GitBugResult<void>> {
     const detail = this.details.get(ref);
     if (!detail) return fail("not found");
@@ -380,6 +429,7 @@ function makeDetail(input: {
     author_name: "Agent",
     created_at: "2026-05-16T12:00:00Z",
     description: input.body ?? "",
+    description_comment_id: "description",
     comments: (input.comments ?? []).map((comment) => ({
       id: comment.id,
       human_id: comment.id,
