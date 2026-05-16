@@ -36774,10 +36774,12 @@ var NODE_COLUMNS = {
   commit: 5
 };
 var FLOW_LANES = 2;
+var FLOW_NODE_WIDTH = 190;
+var FLOW_NODE_HEIGHT = 118;
 var FLOW_X_START = 24;
 var FLOW_Y_START = 32;
 var FLOW_COLUMN_GAP = 210;
-var FLOW_ROW_GAP = 112;
+var FLOW_ROW_GAP = 142;
 var FLOW_GROUP_GAP = 48;
 var MODE_LABELS = {
   activity: "Activity",
@@ -36878,6 +36880,26 @@ function layoutNodes(nodes, mode) {
           x: FLOW_X_START + lane * FLOW_COLUMN_GAP,
           y: baseY + row * FLOW_ROW_GAP
         },
+        initialWidth: FLOW_NODE_WIDTH,
+        initialHeight: FLOW_NODE_HEIGHT,
+        handles: [
+          {
+            type: "target",
+            position: Position.Left,
+            x: 0,
+            y: FLOW_NODE_HEIGHT / 2,
+            width: 1,
+            height: 1
+          },
+          {
+            type: "source",
+            position: Position.Right,
+            x: FLOW_NODE_WIDTH - 1,
+            y: FLOW_NODE_HEIGHT / 2,
+            width: 1,
+            height: 1
+          }
+        ],
         data: { node }
       });
     });
@@ -37039,8 +37061,8 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
   const [loading, setLoading] = d2(true);
   const [error, setError] = d2(null);
   const [mode, setMode] = d2(routeMode);
-  const [sinceFilter, setSinceFilter] = d2("3d");
-  const [statusFilter, setStatusFilter] = d2("open");
+  const [sinceFilter, setSinceFilter] = d2("all");
+  const [statusFilter, setStatusFilter] = d2("all");
   const [repoInput, setRepoInput] = d2("");
   const [repoFilter, setRepoFilter] = d2(null);
   const [branchInput, setBranchInput] = d2("");
