@@ -189,11 +189,14 @@ describe.sequential("mandible daemon", () => {
     expect(names).toContain("sessions");
     expect(names).toContain("auth_requests");
     expect(names).toContain("branches");
+    expect(names).toContain("ledger_issues");
+    expect(names).toContain("ledger_events");
+    expect(names).toContain("ledger_outbox");
 
     const versionRow = db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe("54");
+    expect(versionRow?.value).toBe("55");
 
     db.close();
   });
@@ -205,7 +208,7 @@ describe.sequential("mandible daemon", () => {
     const versionRow = db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe("54");
+    expect(versionRow?.value).toBe("55");
     db.close();
   });
 

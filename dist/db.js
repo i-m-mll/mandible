@@ -982,6 +982,205 @@ const MIGRATIONS = [
        WHERE id = 'builtin-mandible-rebuild'
          AND command = 'npm install && npm run build'`
         ]
+    },
+    {
+        version: 55,
+        name: "ledger_core",
+        // Bug: ff6a2bc — canonical Mandible work ledger substrate. This migration
+        // is intentionally shadow-only; existing issue routes continue to use the
+        // git-bug scanner until later gated cutover work.
+        statements: [
+            `CREATE TABLE IF NOT EXISTS ledger_projects (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        remote_identity TEXT NOT NULL DEFAULT '',
+        upstream_identity TEXT NOT NULL DEFAULT '',
+        namespace_policy TEXT NOT NULL DEFAULT 'remote'
+          CHECK(namespace_policy IN ('remote','upstream','local')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_projects_remote_identity
+        ON ledger_projects(remote_identity)
+        WHERE remote_identity != ''`,
+            `CREATE TABLE IF NOT EXISTS ledger_project_checkouts (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        work_repo_id TEXT,
+        root TEXT NOT NULL,
+        name TEXT NOT NULL,
+        default_branch TEXT NOT NULL DEFAULT '',
+        remote_url TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(root)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_project_checkouts_project
+        ON ledger_project_checkouts(project_id)`,
+            `CREATE TABLE IF NOT EXISTS ledger_issues (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK(status IN ('open','closed')),
+        resolution TEXT CHECK(resolution IN ('fixed','merged','duplicate','wontfix','invalid','obsolete','unknown') OR resolution IS NULL),
+        kind TEXT NOT NULL DEFAULT 'unknown'
+          CHECK(kind IN ('bug','feature','umbrella','task','question','maintenance','deferred','unknown')),
+        priority TEXT NOT NULL DEFAULT 'unknown'
+          CHECK(priority IN ('low','normal','high','urgent','unknown')),
+        author_actor_id TEXT,
+        author_actor_type TEXT NOT NULL DEFAULT 'external_adapter'
+          CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),
+        author_display TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'mandible'
+          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        closed_at INTEGER,
+        deleted_at INTEGER
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_issues_project_status_updated
+        ON ledger_issues(project_id, status, updated_at DESC)`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_issues_kind
+        ON ledger_issues(kind)`,
+            `CREATE TABLE IF NOT EXISTS ledger_issue_aliases (
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        alias_kind TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE CASCADE,
+        alias TEXT NOT NULL,
+        external_id TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL,
+        is_primary INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (alias_kind, project_id, alias)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_issue_aliases_issue
+        ON ledger_issue_aliases(issue_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_issue_aliases_alias
+        ON ledger_issue_aliases(alias)`,
+            `CREATE TABLE IF NOT EXISTS ledger_comments (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        body TEXT NOT NULL,
+        author_actor_id TEXT,
+        author_actor_type TEXT NOT NULL
+          CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),
+        author_display TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL
+          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER,
+        deleted_at INTEGER
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_comments_issue_created
+        ON ledger_comments(issue_id, created_at)`,
+            `CREATE TABLE IF NOT EXISTS ledger_labels (
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        label TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'mandible',
+        created_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        PRIMARY KEY (issue_id, label)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_labels_label
+        ON ledger_labels(label)`,
+            `CREATE TABLE IF NOT EXISTS ledger_issue_relationships (
+        id TEXT PRIMARY KEY,
+        source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        relationship_type TEXT NOT NULL
+          CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),
+        provenance TEXT NOT NULL DEFAULT 'manual'
+          CHECK(provenance IN ('manual','imported','derived','system')),
+        confidence TEXT NOT NULL DEFAULT 'observed',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        UNIQUE(source_issue_id, target_issue_id, relationship_type)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_relationships_source
+        ON ledger_issue_relationships(source_issue_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_relationships_target
+        ON ledger_issue_relationships(target_issue_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_relationships_type
+        ON ledger_issue_relationships(relationship_type)`,
+            `CREATE TABLE IF NOT EXISTS ledger_events (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        actor_id TEXT,
+        actor_type TEXT NOT NULL
+          CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),
+        source TEXT NOT NULL
+          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        occurred_at INTEGER NOT NULL,
+        observed_at INTEGER NOT NULL
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_events_entity
+        ON ledger_events(entity_type, entity_id, occurred_at)`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_events_occurred
+        ON ledger_events(occurred_at DESC)`,
+            `CREATE TABLE IF NOT EXISTS ledger_outbox (
+        id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL REFERENCES ledger_events(id) ON DELETE CASCADE,
+        adapter TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL
+          CHECK(status IN ('pending','processing','applied','failed','conflicted','skipped')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        available_at INTEGER NOT NULL,
+        last_attempt_at INTEGER,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(event_id, adapter)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_outbox_adapter_status
+        ON ledger_outbox(adapter, status, available_at)`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_outbox_project
+        ON ledger_outbox(project_id)`,
+            `CREATE TABLE IF NOT EXISTS ledger_external_refs (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        adapter TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        external_id TEXT NOT NULL,
+        external_kind TEXT NOT NULL,
+        remote_version TEXT NOT NULL DEFAULT '',
+        remote_hash TEXT NOT NULL DEFAULT '',
+        last_imported_at INTEGER,
+        last_exported_at INTEGER,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(adapter, project_id, external_kind, external_id)
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_external_refs_entity
+        ON ledger_external_refs(entity_type, entity_id)`,
+            `CREATE TABLE IF NOT EXISTS ledger_conflicts (
+        id TEXT PRIMARY KEY,
+        adapter TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        field TEXT NOT NULL,
+        local_value_json TEXT NOT NULL,
+        remote_value_json TEXT NOT NULL,
+        base_value_json TEXT NOT NULL DEFAULT 'null',
+        status TEXT NOT NULL CHECK(status IN ('open','resolved','dismissed')),
+        resolution TEXT,
+        created_at INTEGER NOT NULL,
+        resolved_at INTEGER
+      )`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_conflicts_status
+        ON ledger_conflicts(status, adapter, project_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_ledger_conflicts_entity
+        ON ledger_conflicts(entity_type, entity_id)`
+        ]
     }
 ];
 export function getDbPath() {
@@ -1012,6 +1211,7 @@ export function openDb(dbPath = getDbPath()) {
     ensureDir(path.dirname(dbPath));
     const db = new Database(dbPath);
     db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
     migrate(db);
     return db;
 }
