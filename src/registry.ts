@@ -13,6 +13,9 @@ const PINNED_PANES_TSV = path.join(os.homedir(), ".cache", "claude-reaper", "pin
 type SqliteDatabase = ReturnType<typeof Database>;
 
 let psSupported: boolean | null = null;
+const CURRENT_PROCESS_PID_START = normalizePidStart(
+  new Date(Date.now() - process.uptime() * 1000).toISOString(),
+);
 
 export interface SessionInput {
   id: string;
@@ -230,8 +233,7 @@ export function normalizePidStart(value: string | null | undefined): string | nu
 
 export function readPidStartTime(pid: number): string | null {
   if (pid === process.pid) {
-    const startTime = new Date(Date.now() - process.uptime() * 1000).toISOString();
-    return normalizePidStart(startTime);
+    return CURRENT_PROCESS_PID_START;
   }
   if (!canUsePs()) {
     return null;
