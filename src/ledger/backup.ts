@@ -10,6 +10,7 @@ export const LEDGER_BACKUP_TABLES = [
   "ledger_outbox",
   "ledger_external_refs",
   "ledger_conflicts",
+  "ledger_sync_jobs",
 ] as const;
 
 export type LedgerBackupTable = (typeof LEDGER_BACKUP_TABLES)[number];

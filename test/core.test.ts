@@ -196,7 +196,7 @@ describe.sequential("mandible daemon", () => {
     const versionRow = db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe("55");
+    expect(versionRow?.value).toBe("56");
 
     db.close();
   });
@@ -208,7 +208,7 @@ describe.sequential("mandible daemon", () => {
     const versionRow = db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe("55");
+    expect(versionRow?.value).toBe("56");
     db.close();
   });
 

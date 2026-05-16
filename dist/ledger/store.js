@@ -103,6 +103,55 @@ export class LedgerStore {
         emitLedgerEvents(emitted, this.broadcaster);
         return issue;
     }
+    applyImportedIssuePatch(id, patch, source = "git_bug", actor = { actor_type: "external_adapter" }) {
+        const existing = this.requireIssue(id);
+        const now = Date.now();
+        const normalizedActor = normalizeActor(actor);
+        const next = {
+            title: patch.title ?? existing.title,
+            body: patch.body ?? existing.body,
+            kind: patch.kind ?? existing.kind,
+            priority: patch.priority ?? existing.priority,
+            author_display: patch.author_display ?? existing.author_display,
+            status: patch.status ?? existing.status,
+            resolution: patch.resolution === undefined ? existing.resolution : patch.resolution,
+            closed_at: patch.closed_at === undefined ? existing.closed_at : patch.closed_at,
+        };
+        const changed = next.title !== existing.title ||
+            next.body !== existing.body ||
+            next.kind !== existing.kind ||
+            next.priority !== existing.priority ||
+            next.author_display !== existing.author_display ||
+            next.status !== existing.status ||
+            next.resolution !== existing.resolution ||
+            next.closed_at !== existing.closed_at;
+        if (!changed) {
+            return { changed: false, issue: existing };
+        }
+        const emitted = [];
+        const run = this.db.transaction(() => {
+            this.db.prepare(`UPDATE ledger_issues
+         SET title = ?, body = ?, kind = ?, priority = ?, author_display = ?,
+             status = ?, resolution = ?, closed_at = ?, updated_at = ?
+         WHERE id = ?`).run(next.title, next.body, next.kind, next.priority, next.author_display, next.status, next.resolution, next.closed_at, now, id);
+            const event = this.insertEvent({
+                entity_type: "issue",
+                entity_id: id,
+                event_type: "issue.updated",
+                actor_id: normalizedActor.actor_id,
+                actor_type: normalizedActor.actor_type,
+                source,
+                payload: { issue_id: id, patch },
+                project_id: existing.project_id,
+                occurred_at: now,
+            });
+            emitted.push({ event, payload: { issue_id: id, patch } });
+            return this.getIssue(id);
+        });
+        const issue = run();
+        emitLedgerEvents(emitted, this.broadcaster);
+        return { changed: true, issue };
+    }
     setIssueStatus(id, status, resolution = null, actor = {}) {
         const existing = this.requireIssue(id);
         const emitted = [];
@@ -311,12 +360,24 @@ export class LedgerStore {
         const source = input.source ?? "import";
         const id = input.id ?? createLedgerId("cnf", { now });
         const projectId = input.project_id ?? "";
+        const localValueJson = jsonStringify(input.local_value);
+        const remoteValueJson = jsonStringify(input.remote_value);
+        const baseValueJson = jsonStringify(input.base_value ?? null);
+        const status = input.status ?? "open";
         const run = this.db.transaction(() => {
+            const existing = this.db.prepare(`SELECT * FROM ledger_conflicts
+         WHERE adapter = ? AND project_id = ? AND entity_type = ? AND entity_id = ?
+           AND field = ? AND status = ? AND local_value_json = ?
+           AND remote_value_json = ? AND base_value_json = ?
+         LIMIT 1`).get(input.adapter, projectId, input.entity_type, input.entity_id, input.field, status, localValueJson, remoteValueJson, baseValueJson);
+            if (existing) {
+                return existing;
+            }
             this.db.prepare(`INSERT INTO ledger_conflicts (
           id, adapter, project_id, entity_type, entity_id, field,
           local_value_json, remote_value_json, base_value_json, status,
           resolution, created_at, resolved_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(id, input.adapter, projectId, input.entity_type, input.entity_id, input.field, jsonStringify(input.local_value), jsonStringify(input.remote_value), jsonStringify(input.base_value ?? null), input.status ?? "open", input.resolution ?? null, now);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(id, input.adapter, projectId, input.entity_type, input.entity_id, input.field, localValueJson, remoteValueJson, baseValueJson, status, input.resolution ?? null, now);
             const event = this.insertEvent({
                 entity_type: "conflict",
                 entity_id: id,
@@ -456,6 +517,20 @@ export class LedgerStore {
        WHERE entity_type = ? AND entity_id = ?
        ORDER BY occurred_at, observed_at`).all(entity.entity_type, entity.entity_id);
     }
+    getEvent(id) {
+        const row = this.db.prepare("SELECT * FROM ledger_events WHERE id = ?").get(id);
+        if (!row) {
+            throw new Error(`Ledger event not found: ${id}`);
+        }
+        return row;
+    }
+    getComment(id) {
+        const row = this.db.prepare("SELECT * FROM ledger_comments WHERE id = ?").get(id);
+        if (!row) {
+            throw new Error(`Ledger comment not found: ${id}`);
+        }
+        return row;
+    }
     listOutbox(filters = {}) {
         if (filters.adapter && filters.status) {
             return this.db.prepare(`SELECT * FROM ledger_outbox
@@ -478,15 +553,24 @@ export class LedgerStore {
         }
         return this.db.prepare("SELECT * FROM ledger_conflicts ORDER BY created_at DESC").all();
     }
+    findExternalRef(input) {
+        return this.db.prepare(`SELECT * FROM ledger_external_refs
+       WHERE adapter = ? AND project_id = ? AND external_kind = ? AND external_id = ?`).get(input.adapter, input.project_id ?? "", input.external_kind, input.external_id) ?? null;
+    }
+    findExternalRefForEntity(input) {
+        if (input.external_kind) {
+            return this.db.prepare(`SELECT * FROM ledger_external_refs
+         WHERE adapter = ? AND entity_type = ? AND entity_id = ? AND external_kind = ?
+         ORDER BY updated_at DESC
+         LIMIT 1`).get(input.adapter, input.entity_type, input.entity_id, input.external_kind) ?? null;
+        }
+        return this.db.prepare(`SELECT * FROM ledger_external_refs
+       WHERE adapter = ? AND entity_type = ? AND entity_id = ?
+       ORDER BY updated_at DESC
+       LIMIT 1`).get(input.adapter, input.entity_type, input.entity_id) ?? null;
+    }
     requireIssue(id) {
         return this.getIssue(id);
-    }
-    getComment(id) {
-        const row = this.db.prepare("SELECT * FROM ledger_comments WHERE id = ?").get(id);
-        if (!row) {
-            throw new Error(`Ledger comment not found: ${id}`);
-        }
-        return row;
     }
     getLabel(issueId, label) {
         return this.db.prepare("SELECT * FROM ledger_labels WHERE issue_id = ? AND label = ?").get(issueId, label) ?? null;

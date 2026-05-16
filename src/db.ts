@@ -1191,6 +1191,35 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_ledger_conflicts_entity
         ON ledger_conflicts(entity_type, entity_id)`
     ]
+  },
+  {
+    version: 56,
+    name: "ledger_sync_jobs",
+    // Bug: aac782a — adapter sync status/retry records. Normal ledger reads
+    // and writes must not depend on git-bug lock availability.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS ledger_sync_jobs (
+        id TEXT PRIMARY KEY,
+        adapter TEXT NOT NULL,
+        project_id TEXT NOT NULL DEFAULT '',
+        checkout_id TEXT,
+        root TEXT NOT NULL DEFAULT '',
+        direction TEXT NOT NULL CHECK(direction IN ('import','export','full')),
+        status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','retryable','conflicted')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        next_retry_at INTEGER,
+        started_at INTEGER,
+        finished_at INTEGER,
+        last_error TEXT,
+        stats_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_sync_jobs_adapter_status
+        ON ledger_sync_jobs(adapter, status, next_retry_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_sync_jobs_project
+        ON ledger_sync_jobs(project_id, checkout_id, updated_at DESC)`
+    ]
   }
 ];
 

@@ -44,6 +44,9 @@ export interface UpdateLedgerIssuePatch {
     kind?: LedgerIssueKind;
     priority?: LedgerPriority;
     author_display?: string;
+    status?: LedgerIssueStatus;
+    resolution?: LedgerIssueResolution | null;
+    closed_at?: number | null;
 }
 export interface AddLedgerCommentInput extends LedgerActorInput {
     id?: string;
@@ -104,6 +107,10 @@ export declare class LedgerStore {
     constructor(db: Db, options?: LedgerStoreOptions);
     createIssue(input: CreateLedgerIssueInput): LedgerIssue;
     updateIssue(id: string, patch: UpdateLedgerIssuePatch, actor?: LedgerActorInput): LedgerIssue;
+    applyImportedIssuePatch(id: string, patch: UpdateLedgerIssuePatch, source?: LedgerEventSource, actor?: LedgerActorInput): {
+        changed: boolean;
+        issue: LedgerIssue;
+    };
     setIssueStatus(id: string, status: LedgerIssueStatus, resolution?: LedgerIssueResolution | null, actor?: LedgerActorInput): LedgerIssue;
     addComment(issueId: string, input: AddLedgerCommentInput): LedgerComment;
     setLabel(issueId: string, label: string, present: boolean, source?: LedgerEventSource, actor?: LedgerActorInput): {
@@ -128,6 +135,8 @@ export declare class LedgerStore {
         entity_type: string;
         entity_id: string;
     }): LedgerEvent[];
+    getEvent(id: string): LedgerEvent;
+    getComment(id: string): LedgerComment;
     listOutbox(filters?: {
         adapter?: string;
         status?: LedgerOutboxStatus;
@@ -136,8 +145,19 @@ export declare class LedgerStore {
         status?: LedgerConflictStatus;
         adapter?: string;
     }): LedgerConflict[];
+    findExternalRef(input: {
+        adapter: string;
+        project_id?: string;
+        external_kind: string;
+        external_id: string;
+    }): LedgerExternalRef | null;
+    findExternalRefForEntity(input: {
+        adapter: string;
+        entity_type: string;
+        entity_id: string;
+        external_kind?: string;
+    }): LedgerExternalRef | null;
     private requireIssue;
-    private getComment;
     private getLabel;
     private getConflict;
     private requireOutbox;

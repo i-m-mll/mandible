@@ -10,6 +10,7 @@ export const LEDGER_ID_PREFIXES = [
   "rel",
   "cnf",
   "xref",
+  "job",
 ] as const;
 
 export type LedgerIdPrefix = (typeof LEDGER_ID_PREFIXES)[number];
