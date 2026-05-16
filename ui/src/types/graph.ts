@@ -127,6 +127,10 @@ export interface GraphPayload {
   edges: GraphEdge[]
   modes?: GraphModeDescriptor[]
   layers?: GraphLayerDescriptor[]
+  filters?: {
+    repos: string[]
+    branches: string[]
+  }
   truncated?: boolean
 }
 

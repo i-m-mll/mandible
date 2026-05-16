@@ -36,6 +36,14 @@ const GRAPH_MODES = [
         description: "Observed provenance edges across provider and artifact records.",
     },
 ];
+const MODE_LAYER_ORDER = {
+    activity: ["auth_request", "issue", "session"],
+    issue: ["issue"],
+    work: ["repo", "issue", "work_unit", "branch", "session", "auth_request"],
+    "provider-lineage": ["provider", "provider_spec", "provider_manifest", "run", "analysis", "artifact"],
+    "artifact-lineage": ["artifact", "dataset", "model", "report"],
+    provenance: ["provider", "provider_manifest", "artifact", "analysis", "report"],
+};
 function parseSince(since) {
     if (/^\d{4}-/.test(since)) {
         const ms = new Date(since).getTime();
@@ -65,17 +73,40 @@ function parseSince(since) {
     }
     return null;
 }
+function firstQueryValue(query, key) {
+    const value = query[key];
+    if (Array.isArray(value))
+        return value.find((item) => item.trim() !== "");
+    return value && value.trim() !== "" ? value : undefined;
+}
+function queryValues(query, key) {
+    const value = query[key];
+    const raw = Array.isArray(value) ? value : value ? [value] : [];
+    const seen = new Set();
+    for (const item of raw) {
+        for (const part of item.split(",")) {
+            const trimmed = part.trim();
+            if (trimmed)
+                seen.add(trimmed);
+        }
+    }
+    return Array.from(seen);
+}
 function parseGraphMode(value) {
     return GRAPH_MODES.some((mode) => mode.id === value) ? value : "activity";
 }
-function parseQueryParams(query) {
-    const limit = Math.min(Math.max(Number(query.limit) || 120, 1), 1000);
-    const status = query.status === "all" ? "all" : "open";
+export function parseQueryParams(query) {
+    const limit = Math.min(Math.max(Number(firstQueryValue(query, "limit")) || 120, 1), 1000);
+    const status = firstQueryValue(query, "status") === "all" ? "all" : "open";
+    const repos = queryValues(query, "repo");
+    const branches = queryValues(query, "branch");
     return {
-        mode: parseGraphMode(query.mode),
-        repo: query.repo || undefined,
-        branch: query.branch || undefined,
-        since: query.since || undefined,
+        mode: parseGraphMode(firstQueryValue(query, "mode")),
+        repo: repos[0],
+        repos,
+        branch: branches[0],
+        branches,
+        since: firstQueryValue(query, "since"),
         limit,
         status,
     };
@@ -123,15 +154,55 @@ export function capGraphNodesForDisplay(nodes, edges, limit) {
     });
     return { nodes: ranked.slice(0, limit), truncated: true };
 }
-function repoFromCwd(cwd) {
-    return cwd ? path.basename(cwd) : undefined;
+function uniqueStrings(values) {
+    return Array.from(new Set(values.filter((value) => Boolean(value))));
+}
+function activeRepoFilters(params) {
+    return params.repos && params.repos.length > 0 ? params.repos : params.repo ? [params.repo] : [];
+}
+function activeBranchFilters(params) {
+    return params.branches && params.branches.length > 0
+        ? params.branches
+        : params.branch ? [params.branch] : [];
+}
+function candidateMatchesFilter(candidate, filter) {
+    if (!candidate)
+        return false;
+    return candidate === filter || path.basename(filter) === candidate || filter.endsWith(`/${candidate}`);
+}
+function matchesRepoFilter(candidates, params) {
+    const filters = activeRepoFilters(params);
+    if (filters.length === 0)
+        return true;
+    return filters.some((filter) => candidates.some((candidate) => candidateMatchesFilter(candidate, filter)));
+}
+function addInClause(query, column, key, values, bindings) {
+    if (values.length === 0)
+        return query;
+    const placeholders = values.map((value, index) => {
+        const bindingKey = `${key}${index}`;
+        bindings[bindingKey] = value;
+        return `:${bindingKey}`;
+    });
+    return `${query} AND ${column} IN (${placeholders.join(", ")})`;
+}
+export function repoCandidatesFromCwd(cwd) {
+    if (!cwd)
+        return [];
+    const parts = cwd.split(/[\\/]+/).filter(Boolean);
+    const worktreesIndex = parts.lastIndexOf("worktrees");
+    const candidates = [path.basename(cwd)];
+    if (worktreesIndex > 0) {
+        candidates.push(parts[worktreesIndex - 1]);
+    }
+    return uniqueStrings(candidates);
 }
 function getIssueNodes(issueScanner, params) {
     const nodes = new Map();
     const issueNodeIds = new Set();
     const summaries = issueScanner.getRepoSummaries();
     for (const summary of summaries) {
-        if (params.repo && summary.repo_name !== params.repo && summary.repo_id !== params.repo) {
+        if (!matchesRepoFilter([summary.repo_name, summary.repo_id], params)) {
             continue;
         }
         for (const issue of summary.issues) {
@@ -188,10 +259,7 @@ function getSessionRows(params, sinceIso, limit) {
         query += ` AND created_at >= :sinceIso`;
         bindings.sinceIso = sinceIso;
     }
-    if (params.branch) {
-        query += ` AND branch = :branch`;
-        bindings.branch = params.branch;
-    }
+    query = addInClause(query, "branch", "branch", activeBranchFilters(params), bindings);
     query += ` ORDER BY created_at DESC LIMIT :limit`;
     bindings.limit = limit;
     try {
@@ -204,8 +272,9 @@ function getSessionRows(params, sinceIso, limit) {
 function addSessionNodesAndEdges(sessionRows, params, nodes, edges) {
     const sessionNodeIds = new Set();
     for (const session of sessionRows) {
-        const repo = repoFromCwd(session.cwd);
-        if (params.repo && repo !== params.repo)
+        const repoCandidates = repoCandidatesFromCwd(session.cwd);
+        const repo = repoCandidates[0];
+        if (!matchesRepoFilter(repoCandidates, params))
             continue;
         const nodeId = `session:${session.id}`;
         sessionNodeIds.add(nodeId);
@@ -251,14 +320,8 @@ function getAuthRows(params, sinceMs, limit) {
         query += ` AND created_at >= :sinceMs`;
         bindings.sinceMs = sinceMs;
     }
-    if (params.repo) {
-        query += ` AND repo = :repo`;
-        bindings.repo = params.repo;
-    }
-    if (params.branch) {
-        query += ` AND head_branch = :branch`;
-        bindings.branch = params.branch;
-    }
+    query = addInClause(query, "repo", "repo", activeRepoFilters(params), bindings);
+    query = addInClause(query, "head_branch", "branch", activeBranchFilters(params), bindings);
     query += ` ORDER BY created_at DESC LIMIT :limit`;
     bindings.limit = limit;
     try {
@@ -349,14 +412,8 @@ function addWorkUnits(params, nodes, edges, limit) {
       FROM work_units
      WHERE 1=1
   `;
-    if (params.repo) {
-        query += ` AND repo_id = :repo`;
-        bindings.repo = params.repo;
-    }
-    if (params.branch) {
-        query += ` AND branch = :branch`;
-        bindings.branch = params.branch;
-    }
+    query = addInClause(query, "repo_id", "repo", activeRepoFilters(params), bindings);
+    query = addInClause(query, "branch", "branch", activeBranchFilters(params), bindings);
     query += ` ORDER BY created_at DESC LIMIT :limit`;
     let rows;
     try {
@@ -439,16 +496,104 @@ function buildOperationalGraph(issueScanner, params) {
     const cappedEdges = allEdges.filter((edge) => cappedNodeIds.has(edge.source) && cappedNodeIds.has(edge.target));
     return { nodes: cappedNodes, edges: cappedEdges, truncated };
 }
-function graphLayers(nodes) {
+function graphLayers(nodes, mode) {
     const counts = new Map();
     for (const node of nodes) {
         counts.set(node.type, (counts.get(node.type) ?? 0) + 1);
     }
-    return Array.from(counts.entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([id, count]) => ({ id, label: id.replace(/_/g, " "), count, enabled: true }));
+    const orderedIds = MODE_LAYER_ORDER[mode] ?? [];
+    const ids = new Set([...orderedIds, ...counts.keys()]);
+    return Array.from(ids)
+        .sort((a, b) => {
+        const rankA = orderedIds.indexOf(a);
+        const rankB = orderedIds.indexOf(b);
+        if (rankA !== -1 || rankB !== -1) {
+            return (rankA === -1 ? Number.MAX_SAFE_INTEGER : rankA)
+                - (rankB === -1 ? Number.MAX_SAFE_INTEGER : rankB);
+        }
+        return a.localeCompare(b);
+    })
+        .map((id) => {
+        const count = counts.get(id) ?? 0;
+        return { id, label: id.replace(/_/g, " "), count, enabled: count > 0 };
+    });
 }
-function modeDescriptors(issueScanner, activityCount) {
+function normalizeRepoOption(value) {
+    const trimmed = value?.trim();
+    if (!trimmed)
+        return undefined;
+    const basename = trimmed.includes("/") ? path.basename(trimmed) : trimmed;
+    if (/^(feature|codex|bugfix|fix|chore|topic)(\/|__)/.test(basename))
+        return undefined;
+    if (["develop", "dev", "main", "master", "test", "worktrees"].includes(basename.toLowerCase())) {
+        return undefined;
+    }
+    return basename;
+}
+function graphFilterOptions(issueScanner) {
+    const repos = new Set();
+    const branches = new Set();
+    const db = getDb();
+    const addRepo = (value) => {
+        const normalized = normalizeRepoOption(value);
+        if (normalized)
+            repos.add(normalized);
+    };
+    for (const summary of issueScanner.getRepoSummaries()) {
+        if (summary.repo_name)
+            addRepo(summary.repo_name);
+        else
+            addRepo(summary.repo_id);
+    }
+    try {
+        const rows = db.prepare("SELECT repo, head_branch FROM auth_requests").all();
+        for (const row of rows) {
+            addRepo(row.repo);
+            if (row.head_branch)
+                branches.add(row.head_branch);
+        }
+    }
+    catch {
+        // auth_requests can be absent in older local databases.
+    }
+    try {
+        const rows = db.prepare("SELECT repo_id, branch FROM work_units").all();
+        for (const row of rows) {
+            addRepo(row.repo_id);
+            if (row.branch)
+                branches.add(row.branch);
+        }
+    }
+    catch {
+        // work_units can be absent before the work queue schema is initialized.
+    }
+    try {
+        const knownRepoValues = Array.from(repos);
+        const rows = db.prepare("SELECT cwd, branch FROM sessions").all();
+        for (const row of rows) {
+            for (const candidate of repoCandidatesFromCwd(row.cwd)) {
+                const normalized = normalizeRepoOption(candidate);
+                if (!normalized)
+                    continue;
+                const knownRepo = knownRepoValues.some((repo) => {
+                    return candidateMatchesFilter(normalized, repo) || candidateMatchesFilter(repo, normalized);
+                });
+                if (knownRepo)
+                    repos.add(normalized);
+            }
+            if (row.branch)
+                branches.add(row.branch);
+        }
+    }
+    catch {
+        // sessions can be absent in older local databases.
+    }
+    return {
+        repos: Array.from(repos).sort((a, b) => a.localeCompare(b)),
+        branches: Array.from(branches).sort((a, b) => a.localeCompare(b)),
+    };
+}
+function modeDescriptors(issueScanner, activeMode, activeCount) {
     const db = getDb();
     const issueCount = issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
     let workCount = 0;
@@ -459,13 +604,14 @@ function modeDescriptors(issueScanner, activityCount) {
         workCount = 0;
     }
     const counts = {
-        activity: activityCount,
+        activity: activeCount,
         issue: issueCount,
         work: workCount,
         provenance: getIndexedGraphCount(db, "provenance"),
         "provider-lineage": getIndexedGraphCount(db, "provider-lineage"),
         "artifact-lineage": getIndexedGraphCount(db, "artifact-lineage"),
     };
+    counts[activeMode] = activeCount;
     return GRAPH_MODES.map((mode) => ({
         ...mode,
         count: counts[mode.id],
@@ -474,10 +620,11 @@ function modeDescriptors(issueScanner, activityCount) {
 }
 export function registerGraphRoutes(app, issueScanner) {
     app.get("/api/graph", (req, res) => {
-        const params = parseQueryParams(req.query);
+        const query = req.query;
+        const params = parseQueryParams(query);
         const mode = params.mode ?? "activity";
-        const providerId = req.query.provider || undefined;
-        const root = req.query.root || undefined;
+        const providerId = firstQueryValue(query, "provider");
+        const root = firstQueryValue(query, "root");
         let nodes;
         let edges;
         let truncated = false;
@@ -502,8 +649,9 @@ export function registerGraphRoutes(app, issueScanner) {
             mode,
             nodes,
             edges,
-            modes: modeDescriptors(issueScanner, nodes.length),
-            layers: graphLayers(nodes),
+            modes: modeDescriptors(issueScanner, mode, nodes.length),
+            layers: graphLayers(nodes, mode),
+            filters: graphFilterOptions(issueScanner),
             truncated,
         };
         res.json(payload);

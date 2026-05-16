@@ -462,13 +462,19 @@ export interface GraphPayload {
   edges: GraphEdge[];
   modes?: GraphModeDescriptor[];
   layers?: GraphLayerDescriptor[];
+  filters?: {
+    repos: string[];
+    branches: string[];
+  };
   truncated?: boolean;
 }
 
 export interface GraphQueryParams {
   mode?: GraphMode;
   repo?: string;       // filter by repo name/id
+  repos?: string[];    // multi-select repo filter values
   branch?: string;     // filter by branch name (sessions and auth_requests)
+  branches?: string[]; // multi-select branch filter values
   since?: string;      // ISO timestamp or relative like "3d", "1w", "2h"
   limit?: number;      // max nodes to return (default 50)
   status?: "open" | "all"; // issue filter only (default 'open')
