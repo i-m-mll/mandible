@@ -2,19 +2,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { marked } from 'marked';
 import {
   findIssue,
+  getLedgerIssueDetailByRef,
   getIssueContext,
   getIssueDetail,
   getIssueSessions,
   issueAction,
+  resolveLedgerConflict,
   scanIssueRepo,
   spawnIssueAgent,
+  type LedgerIssueDetailProjection,
   type IssueContext,
   type IssueContextAuthRequest,
   type IssueContextSession,
   type IssueContextWorkUnit,
 } from '../api';
+import { sanitizeHtml, sanitizeMarkdown } from '../sanitize';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill, EntityPillList } from '../components/shared/EntityPill';
+import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 
 // --- Types ---
 
@@ -73,23 +78,15 @@ function getVisualState(issue: { status: string; labels: string[] }): VisualStat
 function renderMarkdown(src: string): string {
   if (!src) return '';
   const result = marked.parse(src, { async: false });
-  return typeof result === 'string' ? result : '';
+  return sanitizeMarkdown(typeof result === 'string' ? result : '');
 }
 
 /**
- * Strip dangerous tags and attributes from HTML produced by marked.
- * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
- * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
+ * Sanitize inline markdown HTML produced by marked before inserting it into the
+ * local issue UI. Bug: 387ae46.
  */
 function sanitizeInlineHtml(html: string): string {
-  let out = html.replace(
-    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
-    '',
-  );
-  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
-  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
-  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
-  return out;
+  return sanitizeHtml(html);
 }
 
 /**
@@ -177,6 +174,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   type SortField = 'created_at';
   const [sortField] = useState<SortField>('created_at');
   const [issueDetail, setIssueDetail] = useState<GitBugIssueDetail | null>(null);
+  const [ledgerIssueDetail, setLedgerIssueDetail] = useState<LedgerIssueDetailProjection | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [commentText, setCommentText] = useState('');
   const [showCommentBox, setShowCommentBox] = useState(false);
@@ -319,6 +317,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) {
       setIssueDetail(null);
+      setLedgerIssueDetail(null);
       setLinkedSessions([]);
       setIssueContext(null);
       return;
@@ -330,6 +329,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     if (!issueDetail) {
       setDetailLoading(true);
     }
+    setLedgerIssueDetail(null);
     const fetchDetail = (rId: string, iId: string) =>
       getIssueDetail(rId, iId).then((data) => {
         if (!cancelled) {
@@ -382,6 +382,13 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
       .catch(() => {
         if (!cancelled) setIssueContext(null);
       });
+    getLedgerIssueDetailByRef(repoId, issueId)
+      .then((detail) => {
+        if (!cancelled) setLedgerIssueDetail(detail);
+      })
+      .catch(() => {
+        if (!cancelled) setLedgerIssueDetail(null);
+      });
     return () => {
       cancelled = true;
     };
@@ -394,6 +401,16 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
     setCommentText('');
   }, []);
 
+  const refreshLedgerIssueDetail = useCallback(async () => {
+    if (!selectedRepoId || !selectedIssueId) return;
+    try {
+      const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
+      setLedgerIssueDetail(detail);
+    } catch {
+      setLedgerIssueDetail(null);
+    }
+  }, [selectedRepoId, selectedIssueId]);
+
   // Close issue (manual close — no "merged" label)
   const handleCloseIssue = useCallback(async () => {
     if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
@@ -404,13 +421,14 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
       });
       const data = await getIssueDetail(selectedRepoId, selectedIssueId);
       setIssueDetail(data as GitBugIssueDetail);
+      await refreshLedgerIssueDetail();
       onRescan();
     } catch {
       // silently fail
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan]);
+  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, refreshLedgerIssueDetail]);
 
   // Reopen issue (works for both closed and merged)
   const handleReopenIssue = useCallback(async () => {
@@ -429,32 +447,69 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
       });
       const data = await getIssueDetail(selectedRepoId, selectedIssueId);
       setIssueDetail(data as GitBugIssueDetail);
+      await refreshLedgerIssueDetail();
       onRescan();
     } catch {
       // silently fail
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, issueDetail]);
+  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, issueDetail, refreshLedgerIssueDetail]);
 
-  const handleAddComment = useCallback(async () => {
-    if (!selectedRepoId || !selectedIssueId || !commentText.trim() || actionInFlight) return;
+  const handleAddCommentBody = useCallback(async (message: string) => {
+    if (!selectedRepoId || !selectedIssueId || !message.trim() || actionInFlight) return;
     setActionInFlight(true);
     try {
       await issueAction(selectedRepoId, selectedIssueId, 'comment', {
-        message: commentText.trim(),
+        message: message.trim(),
       });
       setCommentText('');
       setShowCommentBox(false);
       // Refresh detail
       const data = await getIssueDetail(selectedRepoId, selectedIssueId);
       setIssueDetail(data as GitBugIssueDetail);
+      await refreshLedgerIssueDetail();
     } catch {
       // silently fail
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, commentText, actionInFlight]);
+  }, [selectedRepoId, selectedIssueId, actionInFlight, refreshLedgerIssueDetail]);
+
+  const handleAddComment = useCallback(async () => {
+    await handleAddCommentBody(commentText);
+  }, [handleAddCommentBody, commentText]);
+
+  const handleStartAgent = useCallback(async () => {
+    if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
+    setActionInFlight(true);
+    try {
+      const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
+      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+    } catch {
+      // silently fail
+    } finally {
+      setActionInFlight(false);
+    }
+  }, [selectedRepoId, selectedIssueId, actionInFlight]);
+
+  const handleOpenLedgerEntity = useCallback((type: 'issue' | 'session' | 'auth_request' | 'conversation', id: string) => {
+    if (type === 'issue') {
+      if (selectedRepoId) selectIssue(selectedRepoId, id);
+      return;
+    }
+    if (type === 'session') {
+      window.location.hash = `#/sessions?session=${encodeURIComponent(id.replace(/^session:/, ''))}`;
+      return;
+    }
+    if (type === 'conversation') {
+      window.location.hash = `#/history?session=${encodeURIComponent(id.replace(/^session:/, ''))}`;
+      return;
+    }
+    if (type === 'auth_request') {
+      window.location.hash = `#/auth?request=${encodeURIComponent(id.replace(/^auth_request:/, ''))}`;
+    }
+  }, [selectedRepoId, selectIssue]);
 
   // Description and comments as HTML
   const descriptionHtml = useMemo(
@@ -654,6 +709,25 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
         ) : !issueDetail ? (
           <div className="issues-detail__empty">
             <p className="text-muted">Failed to load issue detail.</p>
+          </div>
+        ) : ledgerIssueDetail ? (
+          <div className="issues-detail__content">
+            <LedgerIssueDetail
+              detail={ledgerIssueDetail}
+              actionInFlight={actionInFlight}
+              onAddComment={handleAddCommentBody}
+              onSetStatus={(status) => status === 'open' ? handleReopenIssue() : handleCloseIssue()}
+              onStartAgent={handleStartAgent}
+              onOpenEntity={handleOpenLedgerEntity}
+              onShowChildren={(detail) => {
+                if (detail.project.repo_id) setRepoFilter(detail.project.repo_id);
+                setParentFilter(detail.display_id);
+              }}
+              onResolveConflict={async (conflictId, resolution, status) => {
+                await resolveLedgerConflict(conflictId, resolution, status);
+                await refreshLedgerIssueDetail();
+              }}
+            />
           </div>
         ) : (
           <div className="issues-detail__content">

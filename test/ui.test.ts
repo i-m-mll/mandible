@@ -7,6 +7,7 @@ import { AuthQueueView } from '../ui/src/views/auth';
 import { ReviewView } from '../ui/src/views/review';
 import { SessionsView } from '../ui/src/views/sessions';
 import { WorkOverviewView } from '../ui/src/views/work';
+import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -114,6 +115,81 @@ describe('ReviewView', () => {
 
     await waitFor(() => expect(screen.getByText('spec text')).toBeTruthy());
     expect(screen.getByText('c1')).toBeTruthy();
+  });
+});
+
+describe('LedgerIssueDetail', () => {
+  it('renders ledger issue evidence and sanitizes Markdown HTML', () => {
+    const detail = {
+      id: 'iss_1',
+      display_id: 'abc123',
+      project: {
+        id: 'proj_1',
+        display_name: 'Mandible',
+        remote_identity: '',
+        upstream_identity: '',
+        repo_id: 'mandible',
+        repo_name: 'mandible',
+        repo_root: '/repo',
+        default_branch: 'main',
+      },
+      title: 'Ledger **issue**',
+      body: 'Body <img src=x onerror="alert(1)">',
+      status: 'closed',
+      resolution: 'merged',
+      kind: 'feature',
+      priority: 'normal',
+      source: 'git_bug',
+      author: { id: null, type: 'agent', display: 'Codex' },
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      closed_at: Date.now(),
+      aliases: [],
+      labels: ['feature'],
+      comments: [
+        {
+          id: 'com_1',
+          body: '<script>alert(1)</script>Comment',
+          author: { id: null, type: 'agent', display: 'Codex' },
+          source: 'session',
+          created_at: Date.now(),
+          updated_at: null,
+        },
+      ],
+      relationships: [],
+      work_units: [],
+      sessions: [],
+      auth_requests: [
+        {
+          id: 'auth_1',
+          type: 'merge',
+          title: 'Merge feature/x',
+          status: 'completed',
+          repo: 'mandible',
+          base_branch: 'main',
+          head_branch: 'feature/x',
+          created_at: Date.now(),
+          approved_at: null,
+          resolved_at: Date.now(),
+          skipped_at: null,
+          exit_code: 0,
+          error: null,
+          link_type: 'resolves',
+          link_source: 'auth_queue',
+          link_created_at: Date.now(),
+          metadata: {},
+        },
+      ],
+      conflicts: [],
+      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
+    } as const;
+
+    render(h(LedgerIssueDetail, { detail }));
+
+    expect(screen.getByText('Auth Evidence')).toBeTruthy();
+    expect(screen.getByText('Merge feature/x')).toBeTruthy();
+    expect(document.body.innerHTML).not.toContain('onerror');
+    expect(document.body.innerHTML).not.toContain('<script');
   });
 });
 

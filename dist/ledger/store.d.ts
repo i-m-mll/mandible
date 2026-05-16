@@ -95,6 +95,11 @@ export interface RecordConflictInput {
     resolution?: string | null;
     source?: LedgerEventSource;
 }
+export interface ResolveConflictInput extends LedgerActorInput {
+    resolution: string;
+    status?: "resolved" | "dismissed";
+    source?: LedgerEventSource;
+}
 export interface MarkOutboxPatch {
     attempt_count?: number;
     last_attempt_at?: number | null;
@@ -131,6 +136,7 @@ export declare class LedgerStore {
     upsertIssueRelationship(input: UpsertRelationshipInput): LedgerIssueRelationship;
     recordExternalRef(input: RecordExternalRefInput): LedgerExternalRef;
     recordConflict(input: RecordConflictInput): LedgerConflict;
+    resolveConflict(id: string, input: ResolveConflictInput): LedgerConflict;
     markOutbox(id: string, status: LedgerOutboxStatus, patch?: MarkOutboxPatch): LedgerOutbox;
     resolveIssueRef(ref: string, options?: {
         project_id?: string;
