@@ -102,6 +102,45 @@ function upsertEdge(edges: Map<string, GraphEdge>, edge: GraphEdge): void {
   edges.set(edge.id, edge);
 }
 
+function nodeCreatedMs(node: GraphNode): number {
+  return node.created_at ? new Date(node.created_at).getTime() : 0;
+}
+
+export function capGraphNodesForDisplay(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  limit: number,
+): { nodes: GraphNode[]; truncated: boolean } {
+  const sortedByRecency = [...nodes].sort((a, b) => {
+    return nodeCreatedMs(b) - nodeCreatedMs(a) || a.label.localeCompare(b.label);
+  });
+  if (sortedByRecency.length <= limit) {
+    return { nodes: sortedByRecency, truncated: false };
+  }
+
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const incidentCounts = new Map<string, number>();
+  for (const edge of edges) {
+    if (nodeIds.has(edge.source)) {
+      incidentCounts.set(edge.source, (incidentCounts.get(edge.source) ?? 0) + 1);
+    }
+    if (nodeIds.has(edge.target)) {
+      incidentCounts.set(edge.target, (incidentCounts.get(edge.target) ?? 0) + 1);
+    }
+  }
+
+  const ranked = [...nodes].sort((a, b) => {
+    const aEdges = incidentCounts.get(a.id) ?? 0;
+    const bEdges = incidentCounts.get(b.id) ?? 0;
+    const connectedDelta = Number(bEdges > 0) - Number(aEdges > 0);
+    if (connectedDelta !== 0) return connectedDelta;
+    if (bEdges !== aEdges) return bEdges - aEdges;
+    return nodeCreatedMs(b) - nodeCreatedMs(a) || a.label.localeCompare(b.label);
+  });
+
+  return { nodes: ranked.slice(0, limit), truncated: true };
+}
+
 function repoFromCwd(cwd: string | null): string | undefined {
   return cwd ? path.basename(cwd) : undefined;
 }
@@ -494,15 +533,14 @@ function buildOperationalGraph(
     addWorkUnits(params, nodes, edges, limit);
   }
 
-  const sortedNodes = Array.from(nodes.values()).sort((a, b) => {
-    const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
-    const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
-    return tb - ta;
-  });
-  const truncated = sortedNodes.length > limit;
-  const cappedNodes = sortedNodes.slice(0, limit);
+  const allEdges = Array.from(edges.values());
+  const { nodes: cappedNodes, truncated } = capGraphNodesForDisplay(
+    Array.from(nodes.values()),
+    allEdges,
+    limit,
+  );
   const cappedNodeIds = new Set(cappedNodes.map((node) => node.id));
-  const cappedEdges = Array.from(edges.values()).filter(
+  const cappedEdges = allEdges.filter(
     (edge) => cappedNodeIds.has(edge.source) && cappedNodeIds.has(edge.target),
   );
 

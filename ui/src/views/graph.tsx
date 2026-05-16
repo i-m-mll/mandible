@@ -4,6 +4,7 @@ import {
   Controls,
   MarkerType,
   MiniMap,
+  Position,
   ReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -29,6 +30,16 @@ type ReactFlowNode = {
   id: string
   type: string
   position: { x: number; y: number }
+  initialWidth?: number
+  initialHeight?: number
+  handles?: Array<{
+    type: 'source' | 'target'
+    position: Position
+    x: number
+    y: number
+    width: number
+    height: number
+  }>
   data: { node: GraphNode }
 }
 
@@ -84,10 +95,12 @@ const NODE_COLUMNS: Record<string, number> = {
 };
 
 const FLOW_LANES = 2;
+const FLOW_NODE_WIDTH = 190;
+const FLOW_NODE_HEIGHT = 118;
 const FLOW_X_START = 24;
 const FLOW_Y_START = 32;
 const FLOW_COLUMN_GAP = 210;
-const FLOW_ROW_GAP = 112;
+const FLOW_ROW_GAP = 142;
 const FLOW_GROUP_GAP = 48;
 
 const MODE_LABELS: Record<GraphMode, string> = {
@@ -183,6 +196,26 @@ function layoutNodes(nodes: GraphNode[], mode: GraphMode): ReactFlowNode[] {
           x: FLOW_X_START + lane * FLOW_COLUMN_GAP,
           y: baseY + row * FLOW_ROW_GAP,
         },
+        initialWidth: FLOW_NODE_WIDTH,
+        initialHeight: FLOW_NODE_HEIGHT,
+        handles: [
+          {
+            type: 'target',
+            position: Position.Left,
+            x: 0,
+            y: FLOW_NODE_HEIGHT / 2,
+            width: 1,
+            height: 1,
+          },
+          {
+            type: 'source',
+            position: Position.Right,
+            x: FLOW_NODE_WIDTH - 1,
+            y: FLOW_NODE_HEIGHT / 2,
+            width: 1,
+            height: 1,
+          },
+        ],
         data: { node },
       });
     });
@@ -360,8 +393,8 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<GraphMode>(routeMode);
-  const [sinceFilter, setSinceFilter] = useState<'1d' | '3d' | '7d' | 'all'>('3d');
-  const [statusFilter, setStatusFilter] = useState<'open' | 'all'>('open');
+  const [sinceFilter, setSinceFilter] = useState<'1d' | '3d' | '7d' | 'all'>('all');
+  const [statusFilter, setStatusFilter] = useState<'open' | 'all'>('all');
   const [repoInput, setRepoInput] = useState('');
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [branchInput, setBranchInput] = useState('');

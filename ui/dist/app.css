@@ -7976,7 +7976,9 @@ tr:hover .work-actions__trigger {
 }
 .graph-flow-node {
   width: 190px;
-  min-height: 84px;
+  height: 118px;
+  box-sizing: border-box;
+  overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-left-width: 4px;
   border-radius: 8px;
