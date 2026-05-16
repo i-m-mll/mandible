@@ -152,6 +152,76 @@ describe("auth queue", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("auto-approves new requests while a lease is active and passes scoped env", async () => {
+    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+    const queue = createQueue({
+      autoApprover: {
+        getActiveApprovalContext: () => ({
+          source: "auto_lease",
+          leaseId: "lease-1",
+          env: {
+            SSH_AUTH_SOCK: "/tmp/mandible-agent.sock",
+            GIT_CONFIG_COUNT: "1",
+            GIT_CONFIG_KEY_0: "user.signingkey",
+            GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
+          },
+        }),
+      },
+      executor: async (options) => {
+        calls.push(options.env);
+        return {
+          exit_code: 0,
+          signal: null,
+          stdout: "ok\n",
+          stderr: "",
+          output: "ok\n",
+          started_at: Date.now(),
+          finished_at: Date.now(),
+        };
+      },
+    });
+
+    const request = queue.submit({
+      command: "echo daemon",
+      title: "Daemon",
+      execution_mode: "daemon",
+    });
+
+    expect(request.status).toBe("executing");
+    expect(request.approval_source).toBe("auto_lease");
+    expect(request.approval_lease_id).toBe("lease-1");
+    await waitForStatus(queue, request.id, "completed");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.SSH_AUTH_SOCK).toBe("/tmp/mandible-agent.sock");
+    expect(calls[0]?.GIT_CONFIG_VALUE_0).toBe("/tmp/delegated.pub");
+  });
+
+  it("auto-approves pending requests when a lease is enabled", () => {
+    const queue = createQueue({
+      executor: async () => ({
+        exit_code: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
+        output: "",
+        started_at: Date.now(),
+        finished_at: Date.now(),
+      }),
+    });
+    const first = queue.submit({ command: "echo one", title: "One" });
+    const second = queue.submit({ command: "echo two", title: "Two" });
+
+    const approved = queue.autoApprovePending({
+      source: "auto_lease",
+      leaseId: "lease-2",
+      env: { SSH_AUTH_SOCK: "/tmp/agent.sock" },
+    });
+
+    expect(approved.map((r) => r.id)).toEqual([first.id, second.id]);
+    expect(queue.getRequest(first.id)?.approval_source).toBe("auto_lease");
+    expect(queue.getRequest(second.id)?.approval_lease_id).toBe("lease-2");
+  });
+
   it("rejects request", () => {
     const queue = createQueue();
 

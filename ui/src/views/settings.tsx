@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import {
   bootstrapRuntime,
   getBackupStatus,
+  getAuthAutoApproveStatus,
   getDesktopDaemonStatus,
   getRuntimeStatus,
   isDesktopShell,
@@ -11,11 +12,13 @@ import {
   rollbackRuntime,
   runBackupNow,
   setDesktopDaemonLaunchMode,
+  setupDelegatedSigning,
   startDesktopDaemon,
   stopDesktopDaemon,
   updateBackupSettings,
   updateRuntime,
   type BackupStatus,
+  type AuthAutoApproveStatus,
   type DesktopDaemonLaunchMode,
   type DesktopDaemonStatus,
   type RuntimeStatus,
@@ -262,6 +265,86 @@ function formatBytes(bytes: number): string {
   if (kb < 1024) return `${kb.toFixed(1)} KB`;
   const mb = kb / 1024;
   return `${mb.toFixed(1)} MB`;
+}
+
+function DelegatedSigningSection(): JSX.Element {
+  const [status, setStatus] = useState<AuthAutoApproveStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<FeedbackState>(null);
+
+  const load = useCallback(() => {
+    getAuthAutoApproveStatus()
+      .then(setStatus)
+      .catch((err) => setFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to load auth status',
+      }));
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleSetup = useCallback(async () => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      await setupDelegatedSigning({});
+      load();
+      setFeedback({ type: 'success', message: 'Delegated signing key created' });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Setup failed' });
+    } finally {
+      setBusy(false);
+    }
+  }, [load]);
+
+  const signing = status?.signing;
+
+  return (
+    <div className="settings-view__delegated-signing">
+      <div className="settings-view__number-row">
+        <div className="settings-view__number-info">
+          <span className="settings-view__number-label">Delegated signing key</span>
+          <span className="settings-view__number-desc">
+            {signing?.configured
+              ? 'Ready for temporary auto-approve leases.'
+              : 'Create a local signing key wrapped by a YubiKey age identity.'}
+          </span>
+        </div>
+        <div className="settings-view__number-controls">
+          <button
+            type="button"
+            className="btn btn--active btn--sm"
+            onClick={handleSetup}
+            disabled={busy || signing?.configured === true}
+          >
+            {busy ? 'Setting up...' : signing?.configured ? 'Configured' : 'Set up'}
+          </button>
+          {signing && signing.missing_tools.length > 0 && (
+            <span className="settings-view__feedback settings-view__feedback--error">
+              Missing {signing.missing_tools.join(', ')}
+            </span>
+          )}
+        </div>
+      </div>
+      {signing?.public_key && (
+        <div className="settings-view__field">
+          <textarea
+            className="settings-view__input settings-view__input--mono"
+            value={signing.public_key}
+            readOnly
+            rows={3}
+          />
+        </div>
+      )}
+      {feedback && (
+        <div className={feedback.type === 'success' ? 'settings-view__feedback settings-view__feedback--success' : 'settings-view__feedback settings-view__feedback--error'}>
+          {feedback.message}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function formatDaemonState(state: DesktopDaemonStatus['state']): string {
@@ -1219,6 +1302,28 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             options={MULTIPLEXERS}
             requiresRestart
           />
+        </div>
+      </div>
+
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Auth</h3>
+          <p className="settings-view__section-desc">
+            Temporary approval windows for protected operations.
+          </p>
+        </div>
+        <div className="settings-view__section-body">
+          <NumberInput
+            label="Auto-approve lease"
+            desc="How long the Auth tab switch stays active after YubiKey unlock."
+            settingKey="auth_auto_approve_duration_minutes"
+            settings={settings}
+            onSave={onSave}
+            min={1}
+            max={480}
+            suffix="min"
+          />
+          <DelegatedSigningSection />
         </div>
       </div>
 

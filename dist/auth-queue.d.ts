@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { executeAuthCommand } from "./auth-executor.js";
+import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import { AuthHookManager } from "./auth-hooks.js";
 import type { AuthRequest, AuthRequestInput, AuthRequestStatus, SseEvent } from "./types.js";
 export declare class AuthQueueError extends Error {
@@ -14,6 +15,7 @@ export interface AuthQueueOptions {
     broadcast?: (event: SseEvent) => void;
     executor?: typeof executeAuthCommand;
     hookManager?: AuthHookManager;
+    autoApprover?: AuthAutoApprover;
 }
 export declare class AuthQueue {
     private readonly db;
@@ -22,7 +24,9 @@ export declare class AuthQueue {
     private readonly broadcast;
     private readonly executor;
     private readonly hookManager;
+    private readonly autoApprover?;
     private readonly inFlight;
+    private readonly executionEnvs;
     private executionChain;
     private expiryTimer;
     private _rebuilding;
@@ -73,7 +77,8 @@ export declare class AuthQueue {
      */
     markDelivered(id: string): boolean;
     delete(id: string, reason: string): void;
-    approve(id: string): AuthRequest;
+    approve(id: string, approval?: AuthApprovalContext): AuthRequest;
+    autoApprovePending(approval: AuthApprovalContext): AuthRequest[];
     reject(id: string, reason?: string): AuthRequest;
     skip(id: string): AuthRequest;
     appendOutput(id: string, chunk: string): AuthRequest;

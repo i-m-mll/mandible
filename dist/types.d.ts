@@ -105,6 +105,8 @@ export interface AuthRequest {
     target_repo_root: string | null;
     delivered_at: number | null;
     conversation_id: string | null;
+    approval_source: "manual" | "auto_lease" | string;
+    approval_lease_id: string | null;
 }
 export interface AuthRequestInput {
     session_id?: string | null;

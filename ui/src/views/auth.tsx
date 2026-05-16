@@ -3,10 +3,14 @@ import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
 import {
+  disableAuthAutoApprove,
+  enableAuthAutoApprove,
   fetchAuthHooks,
+  getAuthAutoApproveStatus,
   createAuthHook,
   updateAuthHook,
   deleteAuthHook,
+  type AuthAutoApproveStatus,
   type AuthHook,
 } from '../api';
 
@@ -54,6 +58,8 @@ export type AuthRequest = {
   resolved_at?: number | string | null;
   depends_on_id?: string | null;
   depends_on_status?: string | null;
+  approval_source?: string;
+  approval_lease_id?: string | null;
   [key: string]: unknown;
 };
 
@@ -166,6 +172,19 @@ function formatRelativeTime(timestampMs: number): string {
   }
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+function formatRemaining(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const remMinutes = minutes % 60;
+    return `${hours}h ${remMinutes}m`;
+  }
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 function getTimestampMs(value?: string | number | null): number | null {
@@ -1485,6 +1504,8 @@ export function AuthQueueView({
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [autoApproveStatus, setAutoApproveStatus] = useState<AuthAutoApproveStatus | null>(null);
+  const [autoApproveBusy, setAutoApproveBusy] = useState(false);
 
   const showToast = useCallback((message: string) => {
     setToastMessage(message);
@@ -1504,6 +1525,37 @@ export function AuthQueueView({
       }
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const load = () => {
+      getAuthAutoApproveStatus()
+        .then((status) => {
+          if (active) setAutoApproveStatus(status);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const interval = setInterval(load, 10_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const handleAutoApproveToggle = useCallback(async () => {
+    setAutoApproveBusy(true);
+    try {
+      const next = autoApproveStatus?.enabled
+        ? await disableAuthAutoApprove()
+        : await enableAuthAutoApprove();
+      setAutoApproveStatus(next);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Auto-approve toggle failed');
+    } finally {
+      setAutoApproveBusy(false);
+    }
+  }, [autoApproveStatus?.enabled, showToast]);
 
   const runAction = useCallback(
     (id: string, action: (requestId: string) => void | Promise<void>, onError?: (err: unknown) => void) => {
@@ -1958,6 +2010,29 @@ export function AuthQueueView({
 
       {/* LEFT sidebar */}
       <div className="auth-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
+        <div className="auth-auto-approve">
+          <div className="auth-auto-approve__text">
+            <span className="auth-auto-approve__label">Auto-approve</span>
+            <span className="auth-auto-approve__status">
+              {autoApproveStatus?.enabled
+                ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}`
+                : autoApproveStatus?.signing.configured
+                  ? 'Off'
+                  : 'Setup required'}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
+            role="switch"
+            aria-checked={Boolean(autoApproveStatus?.enabled)}
+            aria-label="Toggle auth auto-approve"
+            disabled={autoApproveBusy || !autoApproveStatus || (!autoApproveStatus.enabled && !autoApproveStatus.signing.configured)}
+            onClick={() => void handleAutoApproveToggle()}
+          >
+            <span className="auth-auto-approve__knob" />
+          </button>
+        </div>
         <div className="auth-sidebar__header">
           <div className="auth-sidebar__filters">
             <button

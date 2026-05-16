@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
+import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
 import { getDb, resolvePrefix } from "./db.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
@@ -45,6 +46,7 @@ export interface AuthQueueOptions {
   broadcast?: (event: SseEvent) => void;
   executor?: typeof executeAuthCommand;
   hookManager?: AuthHookManager;
+  autoApprover?: AuthAutoApprover;
 }
 
 export class AuthQueue {
@@ -54,7 +56,9 @@ export class AuthQueue {
   private readonly broadcast: (event: SseEvent) => void;
   private readonly executor: typeof executeAuthCommand;
   private readonly hookManager: AuthHookManager;
+  private readonly autoApprover?: AuthAutoApprover;
   private readonly inFlight = new Map<string, Promise<void>>();
+  private readonly executionEnvs = new Map<string, NodeJS.ProcessEnv>();
   private executionChain: Promise<void> = Promise.resolve();
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
   // Bug: 4db692a — tracks whether the daemon is about to restart after a
@@ -69,6 +73,7 @@ export class AuthQueue {
     this.broadcast = options.broadcast ?? defaultBroadcast;
     this.executor = options.executor ?? executeAuthCommand;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
+    this.autoApprover = options.autoApprover;
     this.ensureSchema();
     this.recoverStuckRequests();
     this.startExpiryTimer();
@@ -237,7 +242,9 @@ export class AuthQueue {
       target_repo_root: payload.target_repo_root ?? null,
       delivered_at: null,
       // Bug: 6d7411b — conversation_id persists across Claude Code resumes
-      conversation_id: payload.conversation_id ?? null
+      conversation_id: payload.conversation_id ?? null,
+      approval_source: "manual",
+      approval_lease_id: null
     };
 
     const stmt = this.db.prepare(
@@ -277,7 +284,9 @@ export class AuthQueue {
         target_session_id,
         target_repo_root,
         delivered_at,
-        conversation_id
+        conversation_id,
+        approval_source,
+        approval_lease_id
       ) VALUES (
         @id,
         @session_id,
@@ -314,7 +323,9 @@ export class AuthQueue {
         @target_session_id,
         @target_repo_root,
         @delivered_at,
-        @conversation_id
+        @conversation_id,
+        @approval_source,
+        @approval_lease_id
       )`
     );
 
@@ -332,6 +343,17 @@ export class AuthQueue {
       event: "auth:new",
       data: { request }
     });
+
+    const approval = this.autoApprover?.getActiveApprovalContext() ?? null;
+    if (approval) {
+      try {
+        return this.approve(request.id, approval);
+      } catch (error) {
+        console.warn(
+          `[auth-queue] auto-approval failed for ${request.id}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
 
     return request;
   }
@@ -620,7 +642,7 @@ export class AuthQueue {
     });
   }
 
-  approve(id: string): AuthRequest {
+  approve(id: string, approval?: AuthApprovalContext): AuthRequest {
     this.expireStale();
     const request = this.requireRequest(id);
     if (request.status !== "pending") {
@@ -642,13 +664,30 @@ export class AuthQueue {
     const now = this.now();
     this.db
       .prepare(
-        "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ? WHERE id = ?"
+        "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ? WHERE id = ?"
       )
-      .run(now, now, id);
+      .run(now, now, approval?.source ?? "manual", approval?.leaseId ?? null, id);
 
     const executing = this.requireRequest(id);
+    if (approval?.env) {
+      this.executionEnvs.set(executing.id, approval.env);
+    }
     this.executeInBackground(executing);
     return executing;
+  }
+
+  autoApprovePending(approval: AuthApprovalContext): AuthRequest[] {
+    const approved: AuthRequest[] = [];
+    for (const request of this.listPending()) {
+      try {
+        approved.push(this.approve(request.id, approval));
+      } catch (error) {
+        console.warn(
+          `[auth-queue] auto-approval failed for pending request ${request.id}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    return approved;
   }
 
   reject(id: string, reason = "Rejected by user."): AuthRequest {
@@ -848,7 +887,8 @@ export class AuthQueue {
             request_id: request.id,
             command: request.command,
             cwd: request.cwd,
-            onOutput: (chunk) => this.handleOutput(chunk)
+            onOutput: (chunk) => this.handleOutput(chunk),
+            env: this.executionEnvs.get(request.id),
           });
 
           // Bug: 4afab83 — run post-auth hooks after successful execution,
@@ -918,6 +958,7 @@ export class AuthQueue {
           this.storeExecutionResult(request.id, null, message);
         } finally {
           this.inFlight.delete(request.id);
+          this.executionEnvs.delete(request.id);
         }
       });
 
@@ -1231,7 +1272,9 @@ export class AuthQueue {
         target_session_id TEXT,
         target_repo_root TEXT,
         delivered_at INTEGER,
-        conversation_id TEXT
+        conversation_id TEXT,
+        approval_source TEXT NOT NULL DEFAULT 'manual',
+        approval_lease_id TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_auth_requests_status_created
@@ -1330,6 +1373,8 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     target_repo_root: row.target_repo_root == null ? null : String(row.target_repo_root),
     delivered_at: row.delivered_at == null ? null : Number(row.delivered_at),
     // Bug: 6d7411b — conversation_id for cross-resume matching
-    conversation_id: row.conversation_id == null ? null : String(row.conversation_id)
+    conversation_id: row.conversation_id == null ? null : String(row.conversation_id),
+    approval_source: row.approval_source == null ? "manual" : String(row.approval_source),
+    approval_lease_id: row.approval_lease_id == null ? null : String(row.approval_lease_id)
   };
 }

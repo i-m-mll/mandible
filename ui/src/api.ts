@@ -27,7 +27,15 @@ async function apiPost(path: string, body?: unknown): Promise<Response> {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
-    throw new Error(`POST ${path} failed: ${response.status}`);
+    let message = `POST ${path} failed: ${response.status}`;
+    try {
+      const body = await response.json() as { error?: string; message?: string };
+      if (body.error) message = body.error;
+      else if (body.message) message = body.message;
+    } catch {
+      // keep the generic message when the server did not return JSON
+    }
+    throw new Error(message);
   }
   return response;
 }
@@ -207,6 +215,48 @@ export async function retryAuthRequest(requestId: string): Promise<void> {
 
 export async function dismissAuthRequest(requestId: string): Promise<void> {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/dismiss`);
+}
+
+export type AuthAutoApproveStatus = {
+  enabled: boolean;
+  lease_id: string | null;
+  enabled_until: number | null;
+  remaining_ms: number;
+  duration_minutes: number;
+  signing: {
+    provider: string;
+    configured: boolean;
+    public_key: string | null;
+    public_key_path: string;
+    encrypted_passphrase_path: string;
+    recipient_path: string;
+    missing_tools: string[];
+  };
+};
+
+export async function getAuthAutoApproveStatus(): Promise<AuthAutoApproveStatus> {
+  const response = await apiGet('/api/auth/auto-approve');
+  return (await parseMaybeJson(response)) as AuthAutoApproveStatus;
+}
+
+export async function enableAuthAutoApprove(): Promise<AuthAutoApproveStatus> {
+  const response = await apiPost('/api/auth/auto-approve/enable');
+  return (await parseMaybeJson(response)) as AuthAutoApproveStatus;
+}
+
+export async function disableAuthAutoApprove(): Promise<AuthAutoApproveStatus> {
+  const response = await apiPost('/api/auth/auto-approve/disable');
+  return (await parseMaybeJson(response)) as AuthAutoApproveStatus;
+}
+
+export async function setupDelegatedSigning(input: {
+  name?: string;
+  email?: string;
+  age_recipient?: string;
+  overwrite?: boolean;
+}): Promise<AuthAutoApproveStatus['signing']> {
+  const response = await apiPost('/api/auth/auto-approve/setup', input);
+  return (await parseMaybeJson(response)) as AuthAutoApproveStatus['signing'];
 }
 
 // Bug: 2c826ca — allow editing auth request fields (commit_message, title, etc.)
