@@ -121,6 +121,12 @@ export interface RecordConflictInput {
   source?: LedgerEventSource;
 }
 
+export interface ResolveConflictInput extends LedgerActorInput {
+  resolution: string;
+  status?: "resolved" | "dismissed";
+  source?: LedgerEventSource;
+}
+
 export interface MarkOutboxPatch {
   attempt_count?: number;
   last_attempt_at?: number | null;
@@ -768,6 +774,41 @@ export class LedgerStore {
         enqueueOutbox: false,
       });
       emitted.push({ event, payload: { conflict_id: id } });
+      return this.getConflict(id);
+    });
+
+    const conflict = run();
+    emitLedgerEvents(emitted, this.broadcaster);
+    return conflict;
+  }
+
+  resolveConflict(id: string, input: ResolveConflictInput): LedgerConflict {
+    const existing = this.getConflict(id);
+    const emitted: LedgerSsePayload[] = [];
+    const now = Date.now();
+    const status = input.status ?? "resolved";
+    const source = input.source ?? "mandible";
+    const actor = normalizeActor(input);
+
+    const run = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE ledger_conflicts
+         SET status = ?, resolution = ?, resolved_at = ?
+         WHERE id = ?`,
+      ).run(status, input.resolution, now, id);
+      const event = this.insertEvent({
+        entity_type: "conflict",
+        entity_id: id,
+        event_type: "conflict.resolved",
+        actor_id: actor.actor_id,
+        actor_type: actor.actor_type,
+        source,
+        payload: { conflict_id: id, status, resolution: input.resolution },
+        project_id: existing.project_id,
+        occurred_at: now,
+        enqueueOutbox: false,
+      });
+      emitted.push({ event, payload: { conflict_id: id, status, resolution: input.resolution } });
       return this.getConflict(id);
     });
 

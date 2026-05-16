@@ -4,6 +4,19 @@ import { getDb, type Db } from "../db.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
+  LEDGER_ISSUE_KINDS,
+  LEDGER_ISSUE_RESOLUTIONS,
+  LEDGER_ISSUE_STATUSES,
+  LEDGER_PRIORITIES,
+  type LedgerIssueKind,
+  type LedgerIssueResolution,
+  type LedgerIssueStatus,
+  type LedgerPriority,
+} from "../ledger/types.js";
+import {
+  buildLedgerIssueDetailProjection,
+} from "../ledger/issue-detail.js";
+import {
   findLedgerIssueAcrossRepos,
   getLedgerIssueDetailForRoute,
   getLedgerIssueMigrationConfig,
@@ -31,6 +44,7 @@ export interface IssueServer {
   get(path: string, handler: RouteHandler): void;
   post(path: string, handler: RouteHandler): void;
   put?(path: string, handler: RouteHandler): void;
+  patch?(path: string, handler: RouteHandler): void;
 }
 
 // Bug: cbbb3d9 — spawn-from-issue deps type
@@ -154,6 +168,25 @@ function ledgerWriteUnavailable(res: unknown, mode: string): boolean {
     return true;
   }
   return false;
+}
+
+function resolveLedgerIssueId(db: Db, issueRef: string): { ok: true; issue_id: string } | { ok: false; status: 404 | 409; error: string } {
+  const resolved = new LedgerStore(db).resolveIssueRef(issueRef);
+  if (resolved.ok) return { ok: true, issue_id: resolved.id };
+  if (resolved.error === "ambiguous") return { ok: false, status: 409, error: "ambiguous issue reference" };
+  return { ok: false, status: 404, error: "ledger issue not found" };
+}
+
+function sendLedgerIssueProjection(res: unknown, db: Db, issueId: string): void {
+  try {
+    sendJson(res, 200, buildLedgerIssueDetailProjection(db, issueId));
+  } catch (error) {
+    sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
+  }
+}
+
+function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[number] | null {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value) ? value as T[number] : null;
 }
 
 function tableExists(db: Db, table: string): boolean {
@@ -314,6 +347,195 @@ export function registerIssueRoutes(
       return;
     }
     sendJson(res, 200, report);
+  });
+
+  // GET /api/ledger/issues/:issueId — canonical ledger issue detail projection
+  server.get("/api/ledger/issues/:issueId", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  // GET /api/issues/:repoId/:issueId/ledger-detail — resolve a route issue ref
+  // into the canonical projection used by graph and issue detail panes.
+  server.get("/api/issues/:repoId/:issueId/ledger-detail", (req, res) => {
+    const repoId = getParam(req, "repoId");
+    const issueId = getParam(req, "issueId");
+    if (!repoId || !issueId) {
+      sendJson(res, 400, { error: "missing repoId or issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueIdForRoute(db, workScanner, repoId, issueId);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.post("/api/ledger/issues/:issueId/comments", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    const body = getBody(req);
+    const message = typeof body?.body === "string"
+      ? body.body
+      : typeof body?.message === "string"
+        ? body.message
+        : "";
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    if (!message.trim()) {
+      sendJson(res, 400, { error: "message is required" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    new LedgerStore(db).addComment(resolved.issue_id, {
+      body: message.trim(),
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+      source: "mandible",
+    });
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.patch?.("/api/ledger/issues/:issueId", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const body = getBody(req) ?? {};
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+
+    const patch: {
+      title?: string;
+      body?: string;
+      kind?: LedgerIssueKind;
+      priority?: LedgerPriority;
+    } = {};
+    if (typeof body.title === "string") patch.title = body.title;
+    if (typeof body.body === "string") patch.body = body.body;
+    const kind = enumValue(body.kind, LEDGER_ISSUE_KINDS);
+    const priority = enumValue(body.priority, LEDGER_PRIORITIES);
+    if (body.kind !== undefined && !kind) {
+      sendJson(res, 400, { error: "invalid kind" });
+      return;
+    }
+    if (body.priority !== undefined && !priority) {
+      sendJson(res, 400, { error: "invalid priority" });
+      return;
+    }
+    if (kind) patch.kind = kind;
+    if (priority) patch.priority = priority;
+
+    const store = new LedgerStore(db);
+    if (Object.keys(patch).length > 0) {
+      store.updateIssue(resolved.issue_id, patch, { actor_type: "mandible_user", author_display: "Mandible" });
+    }
+    if (body.status !== undefined || body.resolution !== undefined) {
+      const status = enumValue(body.status, LEDGER_ISSUE_STATUSES);
+      const resolution = body.resolution === null
+        ? null
+        : enumValue(body.resolution, LEDGER_ISSUE_RESOLUTIONS);
+      if (body.status !== undefined && !status) {
+        sendJson(res, 400, { error: "invalid status" });
+        return;
+      }
+      if (body.resolution !== undefined && body.resolution !== null && !resolution) {
+        sendJson(res, 400, { error: "invalid resolution" });
+        return;
+      }
+      const current = store.getIssue(resolved.issue_id);
+      store.setIssueStatus(
+        resolved.issue_id,
+        (status ?? current.status) as LedgerIssueStatus,
+        resolution as LedgerIssueResolution | null,
+        { actor_type: "mandible_user", author_display: "Mandible" },
+        "mandible",
+      );
+    }
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.post("/api/ledger/issues/:issueId/labels", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    const body = getBody(req);
+    const label = typeof body?.label === "string" ? body.label.trim() : "";
+    const present = typeof body?.present === "boolean"
+      ? body.present
+      : body?.action === "add"
+        ? true
+        : body?.action === "remove"
+          ? false
+          : null;
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    if (present === null) {
+      sendJson(res, 400, { error: "present boolean or add/remove action is required" });
+      return;
+    }
+    if (!label) {
+      sendJson(res, 400, { error: "label is required" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    new LedgerStore(db).setLabel(resolved.issue_id, label, present, "mandible", {
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+    });
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.post("/api/ledger/conflicts/:conflictId/resolve", (req, res) => {
+    const conflictId = getParam(req, "conflictId");
+    if (!conflictId) {
+      sendJson(res, 400, { error: "missing conflictId" });
+      return;
+    }
+    const body = getBody(req) ?? {};
+    const resolution = typeof body.resolution === "string" && body.resolution.trim()
+      ? body.resolution.trim()
+      : "keep_mandible";
+    const status = body.status === "dismissed" ? "dismissed" : "resolved";
+    try {
+      const conflict = new LedgerStore(getDb()).resolveConflict(conflictId, {
+        resolution,
+        status,
+        actor_type: "mandible_user",
+        author_display: "Mandible",
+      });
+      sendJson(res, 200, { ok: true, conflict });
+    } catch (error) {
+      sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   // GET /api/issues/find/:issueId — search all scanned repos for an issue by ID prefix.
