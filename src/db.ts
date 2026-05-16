@@ -762,7 +762,7 @@ const MIGRATIONS: Migration[] = [
          'builtin-mandible-rebuild',
          'mandible',
          'merge',
-         'npm install && npm run build',
+         'npm install --legacy-peer-deps --no-audit --no-fund && npm run build',
          'Rebuild Mandible after merge',
          1,
          1,
@@ -978,6 +978,19 @@ const MIGRATIONS: Migration[] = [
         ON graph_edges(edge_type)`,
       `CREATE INDEX IF NOT EXISTS idx_graph_edges_class
         ON graph_edges(edge_class)`
+    ]
+  },
+  {
+    version: 54,
+    name: "auth_hook_rebuild_legacy_peer_deps",
+    // Bug: 849d318 — plain npm install materializes React peer deps in
+    // package-lock.json, leaving the protected checkout dirty after self-merge.
+    statements: [
+      `UPDATE auth_hooks
+       SET command = 'npm install --legacy-peer-deps --no-audit --no-fund && npm run build',
+           updated_at = CAST(strftime('%s','now') * 1000 AS INTEGER)
+       WHERE id = 'builtin-mandible-rebuild'
+         AND command = 'npm install && npm run build'`
     ]
   }
 ];
