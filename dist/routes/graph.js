@@ -1,5 +1,6 @@
 import path from "node:path";
 import { getDb } from "../db.js";
+import { buildLedgerIssueProjection, countLedgerGraphIssues, getLedgerGraphFilterOptions, ledgerGraphHasIssues, } from "../ledger/graph-adapter.js";
 import { getIndexedGraph, getIndexedGraphCount } from "../provider-artifacts.js";
 import { extractBugRefs } from "../utils/bug-refs.js";
 // Bug: 7a141c3 — graph API implementation
@@ -269,7 +270,18 @@ function getIssueNodes(issueScanner, params) {
             });
         }
     }
-    return { nodes, issueNodeIds };
+    return { nodes, issueNodeIds, issueNodeIdByLedgerId: new Map() };
+}
+function getLedgerIssueNodes(params) {
+    const projection = buildLedgerIssueProjection(getDb(), params);
+    if (!projection)
+        return null;
+    return {
+        nodes: new Map(projection.nodes.map((node) => [node.id, node])),
+        issueNodeIds: projection.issueNodeIds,
+        issueNodeIdByLedgerId: projection.issueNodeIdByLedgerId,
+        edges: projection.edges,
+    };
 }
 function addIssueEdges(issueScanner, nodes, edges) {
     for (const summary of issueScanner.getRepoSummaries()) {
@@ -375,7 +387,7 @@ function getAuthRows(params, sinceMs, limit) {
         return [];
     }
 }
-function addAuthNodesAndEdges(authRows, issueNodeIds, nodes, edges) {
+function addAuthNodesAndEdges(authRows, issueNodeIds, issueNodeIdByLedgerId, nodes, edges) {
     const authNodeIds = new Set();
     for (const auth of authRows) {
         const nodeId = `auth_request:${auth.id}`;
@@ -433,7 +445,8 @@ function addAuthNodesAndEdges(authRows, issueNodeIds, nodes, edges) {
          FROM ledger_auth_issue_links
          WHERE auth_request_id IN (${placeholders.join(", ")})`).all(bindings);
             for (const row of rows) {
-                const issueNodeId = issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+                const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
+                    ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
                 if (!issueNodeId)
                     continue;
                 upsertEdge(edges, {
@@ -449,7 +462,7 @@ function addAuthNodesAndEdges(authRows, issueNodeIds, nodes, edges) {
     }
     return authNodeIds;
 }
-function addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges) {
+function addSessionIssueEdges(issueNodeIds, issueNodeIdByLedgerId, sessionNodeIds, edges) {
     let rows;
     try {
         rows = getDb().prepare(`SELECT session_id, issue_id, repo_id FROM session_issues`).all();
@@ -476,7 +489,8 @@ function addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges) {
        FROM ledger_session_issue_links`).all();
         for (const row of ledgerRows) {
             const sessionNodeId = `session:${row.session_id}`;
-            const issueNodeId = issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+            const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
+                ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
             if (issueNodeId && sessionNodeIds.has(sessionNodeId) && issueNodeIds.has(issueNodeId)) {
                 upsertEdge(edges, {
                     id: `ledger_session_issue:${row.session_id}:${row.ledger_issue_id}`,
@@ -490,10 +504,11 @@ function addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges) {
         }
     }
 }
-function addWorkUnits(params, nodes, edges, limit) {
+function addWorkUnits(params, nodes, edges, issueNodeIdByLedgerId, limit) {
     const bindings = { limit };
     let query = `
-    SELECT id, issue_id, repo_id, branch, kind, state, assigned_session_id, auth_request_id, created_at
+    SELECT id, issue_id, repo_id, branch, kind, state, assigned_session_id,
+           auth_request_id, ledger_issue_id, created_at
       FROM work_units
      WHERE 1=1
   `;
@@ -521,7 +536,9 @@ function addWorkUnits(params, nodes, edges, limit) {
             summary: { kind: work.kind, issue_id: work.issue_id },
             detail: { ...work },
         });
-        const issueId = `issue:${work.repo_id}:${work.issue_id}`;
+        const issueId = work.ledger_issue_id
+            ? issueNodeIdByLedgerId.get(work.ledger_issue_id) ?? `issue:${work.repo_id}:${work.issue_id}`
+            : `issue:${work.repo_id}:${work.issue_id}`;
         if (nodes.has(issueId)) {
             upsertEdge(edges, {
                 id: `issue_has_work_unit:${issueId}:${nodeId}`,
@@ -564,16 +581,22 @@ function buildOperationalGraph(issueScanner, params) {
     const sinceMs = params.since ? parseSince(params.since) : null;
     const sinceIso = sinceMs !== null ? msToIso(sinceMs) : null;
     const limit = params.limit ?? 120;
-    const { nodes, issueNodeIds } = getIssueNodes(issueScanner, params);
     const edges = new Map();
+    const ledgerProjection = ledgerGraphHasIssues(getDb()) ? getLedgerIssueNodes(params) : null;
+    const { nodes, issueNodeIds, issueNodeIdByLedgerId, edges: ledgerEdges, } = ledgerProjection ?? { ...getIssueNodes(issueScanner, params), edges: [] };
+    for (const edge of ledgerEdges) {
+        upsertEdge(edges, edge);
+    }
     const sessionRows = params.mode === "issue" ? [] : getSessionRows(params, sinceIso, limit);
     const authRows = params.mode === "issue" ? [] : getAuthRows(params, sinceMs, limit);
     const sessionNodeIds = addSessionNodesAndEdges(sessionRows, params, nodes, edges);
-    addAuthNodesAndEdges(authRows, issueNodeIds, nodes, edges);
-    addIssueEdges(issueScanner, nodes, edges);
-    addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges);
+    addAuthNodesAndEdges(authRows, issueNodeIds, issueNodeIdByLedgerId, nodes, edges);
+    if (!ledgerProjection) {
+        addIssueEdges(issueScanner, nodes, edges);
+    }
+    addSessionIssueEdges(issueNodeIds, issueNodeIdByLedgerId, sessionNodeIds, edges);
     if (params.mode === "work") {
-        addWorkUnits(params, nodes, edges, limit);
+        addWorkUnits(params, nodes, edges, issueNodeIdByLedgerId, limit);
     }
     const allEdges = Array.from(edges.values());
     const { nodes: cappedNodes, truncated } = capGraphNodesForDisplay(Array.from(nodes.values()), allEdges, limit);
@@ -630,6 +653,11 @@ function graphFilterOptions(issueScanner) {
         else
             addRepo(summary.repo_id);
     }
+    const ledgerFilters = getLedgerGraphFilterOptions(db);
+    for (const repo of ledgerFilters.repos)
+        addRepo(repo);
+    for (const branch of ledgerFilters.branches)
+        branches.add(branch);
     try {
         const rows = db.prepare("SELECT repo, head_branch FROM auth_requests").all();
         for (const row of rows) {
@@ -680,7 +708,8 @@ function graphFilterOptions(issueScanner) {
 }
 function modeDescriptors(issueScanner, activeMode, activeCount) {
     const db = getDb();
-    const issueCount = issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
+    const issueCount = countLedgerGraphIssues(db, "all")
+        ?? issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
     let workCount = 0;
     try {
         workCount = db.prepare("SELECT COUNT(*) AS count FROM work_units").get().count;

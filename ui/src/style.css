@@ -7985,6 +7985,24 @@ tr:hover .work-actions__trigger {
   font-size: 11px;
 }
 
+button.graph-detail-pane__edge {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.graph-detail-pane__edge:disabled {
+  cursor: default;
+}
+
+button.graph-detail-pane__edge:not(:disabled):hover code {
+  color: var(--accent-blue);
+}
+
 .graph-detail-pane__edge span {
   color: var(--text-muted);
 }

@@ -76,6 +76,15 @@ type ForceLayoutNode = SimulationNodeDatum & {
 
 type ForceLayoutLink = SimulationLinkDatum<ForceLayoutNode>
 
+type GraphAnnotation = {
+  id: string
+  type: string
+  label: string
+  status?: string
+  target?: string
+  link_type?: string
+}
+
 async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
   const q = new URLSearchParams();
   q.set('mode', params.mode);
@@ -193,11 +202,43 @@ function nodeTime(node: GraphNode): number {
   return node.created_at ? new Date(node.created_at).getTime() || 0 : 0;
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function layoutHint(node: GraphNode): Record<string, unknown> {
+  return recordValue(node.detail?.layout) ?? {};
+}
+
+function layoutNumber(node: GraphNode, key: string): number | undefined {
+  const value = layoutHint(node)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function layoutString(node: GraphNode, key: string): string | undefined {
+  const value = layoutHint(node)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function sortRankNodes(a: GraphNode, b: GraphNode): number {
+  const aGroup = layoutString(a, 'group_id') ?? '';
+  const bGroup = layoutString(b, 'group_id') ?? '';
+  if (aGroup !== bGroup) return aGroup.localeCompare(bGroup);
+  const aOrder = layoutNumber(a, 'order');
+  const bOrder = layoutNumber(b, 'order');
+  if (aOrder !== undefined || bOrder !== undefined) return (aOrder ?? 0) - (bOrder ?? 0);
+  return sortGraphNodes(a, b);
+}
+
 function sortGraphNodes(a: GraphNode, b: GraphNode): number {
   return nodeTime(b) - nodeTime(a) || a.type.localeCompare(b.type) || a.label.localeCompare(b.label);
 }
 
 function baseRank(node: GraphNode, mode: GraphMode): number {
+  const rank = layoutNumber(node, 'rank');
+  if (rank !== undefined) return Math.max(0, Math.min(FLOW_MAX_RANK, rank));
   if (mode === 'issue' && node.type === 'issue') return 0;
   return Math.min(FLOW_MAX_RANK, NODE_COLUMNS[node.type] ?? (mode === 'issue' ? 0 : 2));
 }
@@ -329,6 +370,11 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
   let yCursor = FLOW_Y_START;
 
   for (const component of relationshipComponents) {
+    const componentIds = new Set(component);
+    const componentEdges = edges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target));
+    const deterministicLayout = mode === 'issue' && componentEdges.some((edge) => (
+      edge.type === 'umbrella_child' || edge.metadata?.layout === 'hierarchical'
+    ));
     const byRank = new Map<number, GraphNode[]>();
     for (const id of component) {
       const node = nodeById.get(id);
@@ -341,7 +387,7 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
 
     const forceNodes: ForceLayoutNode[] = [];
     for (const [rank, rankNodes] of byRank.entries()) {
-      const sorted = [...rankNodes].sort(sortGraphNodes);
+      const sorted = [...rankNodes].sort(sortRankNodes);
       sorted.forEach((node, row) => {
         const anchorX = FLOW_X_START + rank * FLOW_COLUMN_GAP;
         const anchorY = yCursor + row * FLOW_ROW_GAP;
@@ -357,12 +403,11 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
       });
     }
 
-    const componentIds = new Set(component);
     const forceLinks: ForceLayoutLink[] = directedEdges
       .filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target))
       .map((edge) => ({ source: edge.source, target: edge.target }));
 
-    if (forceNodes.length > 1) {
+    if (forceNodes.length > 1 && !deterministicLayout) {
       const simulation = forceSimulation<ForceLayoutNode>(forceNodes)
         .force('link', forceLink<ForceLayoutNode, ForceLayoutLink>(forceLinks)
           .id((node) => node.id)
@@ -405,19 +450,44 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
   return output;
 }
 
+function edgeLabel(edge: GraphEdge): string | undefined {
+  if (edge.metadata?.label_default_visible !== true) return undefined;
+  const label = edge.metadata.relationship_label;
+  return typeof label === 'string' ? label : edge.type.replace(/_/g, ' ');
+}
+
 function flowEdges(edges: GraphEdge[]): ReactFlowEdge[] {
   return edges.map((edge) => ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
     type: 'smoothstep',
-    label: edge.type.replace(/_/g, ' '),
+    label: edgeLabel(edge),
     animated: edge.edge_class === 'provenance' && edge.provenance === 'provider_manifest',
     markerEnd: { type: MarkerType.ArrowClosed },
     style: { stroke: edgeColor(edge), strokeWidth: edge.edge_class === 'semantic' ? 1.4 : 1.8 },
     labelStyle: { fill: 'rgba(230,237,243,0.66)', fontSize: 10 },
     labelBgStyle: { fill: 'rgba(11,15,20,0.86)' },
   }));
+}
+
+function nodeAnnotations(node: GraphNode): GraphAnnotation[] {
+  const annotations = node.detail?.annotations;
+  if (!Array.isArray(annotations)) return [];
+  return annotations.flatMap((item): GraphAnnotation[] => {
+    const record = recordValue(item);
+    if (!record || typeof record.id !== 'string' || typeof record.type !== 'string' || typeof record.label !== 'string') {
+      return [];
+    }
+    return [{
+      id: record.id,
+      type: record.type,
+      label: record.label,
+      status: typeof record.status === 'string' ? record.status : undefined,
+      target: typeof record.target === 'string' ? record.target : undefined,
+      link_type: typeof record.link_type === 'string' ? record.link_type : undefined,
+    }];
+  });
 }
 
 function MandibleFlowNode({ data, selected }: { data: { node: GraphNode }; selected?: boolean }): JSX.Element {
@@ -637,7 +707,13 @@ function DetailPane({
   const connected = edges.filter((edge) => edge.source === node.id || edge.target === node.id).slice(0, 8);
   const detailEntries = firstEntries(node.detail, 8);
   const summaryEntries = firstEntries(node.summary, 8);
+  const annotations = nodeAnnotations(node).slice(0, 12);
   const canNavigate = node.type === 'issue' || node.type === 'session' || node.type === 'auth_request';
+  const navigateAnnotation = (annotation: GraphAnnotation) => {
+    if (!annotation.target) return;
+    if (annotation.target.startsWith('auth_request:')) onNavigate('auth_request', annotation.target);
+    if (annotation.target.startsWith('session:')) onNavigate('session', annotation.target);
+  };
   return (
     <aside className="graph-detail-pane">
       <div className="graph-detail-pane__header">
@@ -668,6 +744,26 @@ function DetailPane({
             ))}
             {detailEntries.map(([key, value]) => (
               <><span key={`${key}-k`}>{key}</span><code key={`${key}-v`}>{String(value)}</code></>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {annotations.length > 0 && (
+        <div className="graph-detail-pane__section">
+          <div className="graph-detail-pane__section-title">Evidence</div>
+          <div className="graph-detail-pane__edges">
+            {annotations.map((annotation) => (
+              <button
+                key={annotation.id}
+                type="button"
+                className="graph-detail-pane__edge"
+                disabled={!annotation.target}
+                onClick={() => navigateAnnotation(annotation)}
+              >
+                <span>{annotation.link_type ?? typeLabel(annotation.type)}</span>
+                <code>{annotation.status ? `${annotation.label} (${annotation.status})` : annotation.label}</code>
+              </button>
             ))}
           </div>
         </div>

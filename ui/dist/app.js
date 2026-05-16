@@ -37676,10 +37676,38 @@ function firstEntries(value, limit = 4) {
 function nodeTime(node) {
   return node.created_at ? new Date(node.created_at).getTime() || 0 : 0;
 }
+function recordValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function layoutHint(node) {
+  return recordValue(node.detail?.layout) ?? {};
+}
+function layoutNumber(node, key2) {
+  const value = layoutHint(node)[key2];
+  return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+}
+function layoutString(node, key2) {
+  const value = layoutHint(node)[key2];
+  return typeof value === "string" ? value : void 0;
+}
+function sortRankNodes(a4, b3) {
+  const aGroup = layoutString(a4, "group_id") ?? "";
+  const bGroup = layoutString(b3, "group_id") ?? "";
+  if (aGroup !== bGroup)
+    return aGroup.localeCompare(bGroup);
+  const aOrder = layoutNumber(a4, "order");
+  const bOrder = layoutNumber(b3, "order");
+  if (aOrder !== void 0 || bOrder !== void 0)
+    return (aOrder ?? 0) - (bOrder ?? 0);
+  return sortGraphNodes(a4, b3);
+}
 function sortGraphNodes(a4, b3) {
   return nodeTime(b3) - nodeTime(a4) || a4.type.localeCompare(b3.type) || a4.label.localeCompare(b3.label);
 }
 function baseRank(node, mode) {
+  const rank = layoutNumber(node, "rank");
+  if (rank !== void 0)
+    return Math.max(0, Math.min(FLOW_MAX_RANK, rank));
   if (mode === "issue" && node.type === "issue")
     return 0;
   return Math.min(FLOW_MAX_RANK, NODE_COLUMNS[node.type] ?? (mode === "issue" ? 0 : 2));
@@ -37800,6 +37828,9 @@ function layoutNodes(nodes, edges, mode) {
   const output = [];
   let yCursor = FLOW_Y_START;
   for (const component of relationshipComponents) {
+    const componentIds = new Set(component);
+    const componentEdges = edges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target));
+    const deterministicLayout = mode === "issue" && componentEdges.some((edge) => edge.type === "umbrella_child" || edge.metadata?.layout === "hierarchical");
     const byRank = /* @__PURE__ */ new Map();
     for (const id2 of component) {
       const node = nodeById.get(id2);
@@ -37812,7 +37843,7 @@ function layoutNodes(nodes, edges, mode) {
     }
     const forceNodes = [];
     for (const [rank, rankNodes] of byRank.entries()) {
-      const sorted = [...rankNodes].sort(sortGraphNodes);
+      const sorted = [...rankNodes].sort(sortRankNodes);
       sorted.forEach((node, row) => {
         const anchorX = FLOW_X_START + rank * FLOW_COLUMN_GAP;
         const anchorY = yCursor + row * FLOW_ROW_GAP;
@@ -37827,9 +37858,8 @@ function layoutNodes(nodes, edges, mode) {
         });
       });
     }
-    const componentIds = new Set(component);
     const forceLinks = directedEdges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target)).map((edge) => ({ source: edge.source, target: edge.target }));
-    if (forceNodes.length > 1) {
+    if (forceNodes.length > 1 && !deterministicLayout) {
       const simulation = simulation_default(forceNodes).force("link", link_default(forceLinks).id((node) => node.id).distance(FLOW_COLUMN_GAP * 0.92).strength(0.28)).force("charge", manyBody_default().strength(-520)).force("collide", collide_default(FLOW_NODE_WIDTH * 0.68).strength(0.98)).force("x", x_default2((node) => node.anchorX).strength(0.62)).force("y", y_default2((node) => node.anchorY).strength(0.08)).stop();
       for (let tick = 0; tick < FLOW_FORCE_TICKS; tick += 1)
         simulation.tick();
@@ -37860,19 +37890,44 @@ function layoutNodes(nodes, edges, mode) {
   }
   return output;
 }
+function edgeLabel(edge) {
+  if (edge.metadata?.label_default_visible !== true)
+    return void 0;
+  const label = edge.metadata.relationship_label;
+  return typeof label === "string" ? label : edge.type.replace(/_/g, " ");
+}
 function flowEdges(edges) {
   return edges.map((edge) => ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
     type: "smoothstep",
-    label: edge.type.replace(/_/g, " "),
+    label: edgeLabel(edge),
     animated: edge.edge_class === "provenance" && edge.provenance === "provider_manifest",
     markerEnd: { type: MarkerType.ArrowClosed },
     style: { stroke: edgeColor(edge), strokeWidth: edge.edge_class === "semantic" ? 1.4 : 1.8 },
     labelStyle: { fill: "rgba(230,237,243,0.66)", fontSize: 10 },
     labelBgStyle: { fill: "rgba(11,15,20,0.86)" }
   }));
+}
+function nodeAnnotations(node) {
+  const annotations = node.detail?.annotations;
+  if (!Array.isArray(annotations))
+    return [];
+  return annotations.flatMap((item) => {
+    const record = recordValue(item);
+    if (!record || typeof record.id !== "string" || typeof record.type !== "string" || typeof record.label !== "string") {
+      return [];
+    }
+    return [{
+      id: record.id,
+      type: record.type,
+      label: record.label,
+      status: typeof record.status === "string" ? record.status : void 0,
+      target: typeof record.target === "string" ? record.target : void 0,
+      link_type: typeof record.link_type === "string" ? record.link_type : void 0
+    }];
+  });
 }
 function MandibleFlowNode({ data, selected: selected2 }) {
   const node = data.node;
@@ -38065,7 +38120,16 @@ function DetailPane({
   const connected = edges.filter((edge) => edge.source === node.id || edge.target === node.id).slice(0, 8);
   const detailEntries = firstEntries(node.detail, 8);
   const summaryEntries = firstEntries(node.summary, 8);
+  const annotations = nodeAnnotations(node).slice(0, 12);
   const canNavigate = node.type === "issue" || node.type === "session" || node.type === "auth_request";
+  const navigateAnnotation = (annotation) => {
+    if (!annotation.target)
+      return;
+    if (annotation.target.startsWith("auth_request:"))
+      onNavigate("auth_request", annotation.target);
+    if (annotation.target.startsWith("session:"))
+      onNavigate("session", annotation.target);
+  };
   return /* @__PURE__ */ u3("aside", { className: "graph-detail-pane", children: [
     /* @__PURE__ */ u3("div", { className: "graph-detail-pane__header", children: [
       /* @__PURE__ */ u3("div", { children: [
@@ -38109,6 +38173,23 @@ function DetailPane({
           /* @__PURE__ */ u3("code", { children: String(value) }, `${key2}-v`)
         ] }))
       ] })
+    ] }),
+    annotations.length > 0 && /* @__PURE__ */ u3("div", { className: "graph-detail-pane__section", children: [
+      /* @__PURE__ */ u3("div", { className: "graph-detail-pane__section-title", children: "Evidence" }),
+      /* @__PURE__ */ u3("div", { className: "graph-detail-pane__edges", children: annotations.map((annotation) => /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "graph-detail-pane__edge",
+          disabled: !annotation.target,
+          onClick: () => navigateAnnotation(annotation),
+          children: [
+            /* @__PURE__ */ u3("span", { children: annotation.link_type ?? typeLabel(annotation.type) }),
+            /* @__PURE__ */ u3("code", { children: annotation.status ? `${annotation.label} (${annotation.status})` : annotation.label })
+          ]
+        },
+        annotation.id
+      )) })
     ] }),
     /* @__PURE__ */ u3("div", { className: "graph-detail-pane__section", children: [
       /* @__PURE__ */ u3("div", { className: "graph-detail-pane__section-title", children: "Actions" }),

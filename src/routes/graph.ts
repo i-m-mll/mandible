@@ -1,5 +1,11 @@
 import path from "node:path";
 import { getDb } from "../db.js";
+import {
+  buildLedgerIssueProjection,
+  countLedgerGraphIssues,
+  getLedgerGraphFilterOptions,
+  ledgerGraphHasIssues,
+} from "../ledger/graph-adapter.js";
 import { getIndexedGraph, getIndexedGraphCount } from "../provider-artifacts.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { RouteRegistrar } from "../server.js";
@@ -281,7 +287,7 @@ export function repoCandidatesFromCwd(cwd: string | null): string[] {
 function getIssueNodes(
   issueScanner: IssueScanner,
   params: GraphQueryParams,
-): { nodes: Map<string, GraphNode>; issueNodeIds: Set<string> } {
+): { nodes: Map<string, GraphNode>; issueNodeIds: Set<string>; issueNodeIdByLedgerId: Map<string, string> } {
   const nodes = new Map<string, GraphNode>();
   const issueNodeIds = new Set<string>();
   const summaries = issueScanner.getRepoSummaries();
@@ -310,7 +316,25 @@ function getIssueNodes(
     }
   }
 
-  return { nodes, issueNodeIds };
+  return { nodes, issueNodeIds, issueNodeIdByLedgerId: new Map() };
+}
+
+function getLedgerIssueNodes(
+  params: GraphQueryParams,
+): {
+  nodes: Map<string, GraphNode>;
+  issueNodeIds: Set<string>;
+  issueNodeIdByLedgerId: Map<string, string>;
+  edges: GraphEdge[];
+} | null {
+  const projection = buildLedgerIssueProjection(getDb(), params);
+  if (!projection) return null;
+  return {
+    nodes: new Map(projection.nodes.map((node) => [node.id, node])),
+    issueNodeIds: projection.issueNodeIds,
+    issueNodeIdByLedgerId: projection.issueNodeIdByLedgerId,
+    edges: projection.edges,
+  };
 }
 
 function addIssueEdges(
@@ -454,6 +478,7 @@ function getAuthRows(params: GraphQueryParams, sinceMs: number | null, limit: nu
 function addAuthNodesAndEdges(
   authRows: AuthRow[],
   issueNodeIds: Set<string>,
+  issueNodeIdByLedgerId: Map<string, string>,
   nodes: Map<string, GraphNode>,
   edges: Map<string, GraphEdge>,
 ): Set<string> {
@@ -521,7 +546,8 @@ function addAuthNodesAndEdges(
         metadata_json: string;
       }>;
       for (const row of rows) {
-        const issueNodeId = issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+        const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
+          ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
         if (!issueNodeId) continue;
         upsertEdge(edges, {
           id: `ledger_auth_issue:${row.auth_request_id}:${row.ledger_issue_id}`,
@@ -540,6 +566,7 @@ function addAuthNodesAndEdges(
 
 function addSessionIssueEdges(
   issueNodeIds: Set<string>,
+  issueNodeIdByLedgerId: Map<string, string>,
   sessionNodeIds: Set<string>,
   edges: Map<string, GraphEdge>,
 ): void {
@@ -580,7 +607,8 @@ function addSessionIssueEdges(
     ).all() as Array<{ session_id: string; ledger_issue_id: string; metadata_json: string }>;
     for (const row of ledgerRows) {
       const sessionNodeId = `session:${row.session_id}`;
-      const issueNodeId = issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+      const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
+        ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
       if (issueNodeId && sessionNodeIds.has(sessionNodeId) && issueNodeIds.has(issueNodeId)) {
         upsertEdge(edges, {
           id: `ledger_session_issue:${row.session_id}:${row.ledger_issue_id}`,
@@ -599,6 +627,7 @@ function addWorkUnits(
   params: GraphQueryParams,
   nodes: Map<string, GraphNode>,
   edges: Map<string, GraphEdge>,
+  issueNodeIdByLedgerId: Map<string, string>,
   limit: number,
 ): void {
   interface WorkUnitRow {
@@ -610,11 +639,13 @@ function addWorkUnits(
     state: string;
     assigned_session_id: string | null;
     auth_request_id: string | null;
+    ledger_issue_id: string | null;
     created_at: number;
   }
   const bindings: Record<string, unknown> = { limit };
   let query = `
-    SELECT id, issue_id, repo_id, branch, kind, state, assigned_session_id, auth_request_id, created_at
+    SELECT id, issue_id, repo_id, branch, kind, state, assigned_session_id,
+           auth_request_id, ledger_issue_id, created_at
       FROM work_units
      WHERE 1=1
   `;
@@ -643,7 +674,9 @@ function addWorkUnits(
       summary: { kind: work.kind, issue_id: work.issue_id },
       detail: { ...work },
     });
-    const issueId = `issue:${work.repo_id}:${work.issue_id}`;
+    const issueId = work.ledger_issue_id
+      ? issueNodeIdByLedgerId.get(work.ledger_issue_id) ?? `issue:${work.repo_id}:${work.issue_id}`
+      : `issue:${work.repo_id}:${work.issue_id}`;
     if (nodes.has(issueId)) {
       upsertEdge(edges, {
         id: `issue_has_work_unit:${issueId}:${nodeId}`,
@@ -690,16 +723,27 @@ function buildOperationalGraph(
   const sinceMs = params.since ? parseSince(params.since) : null;
   const sinceIso = sinceMs !== null ? msToIso(sinceMs) : null;
   const limit = params.limit ?? 120;
-  const { nodes, issueNodeIds } = getIssueNodes(issueScanner, params);
   const edges = new Map<string, GraphEdge>();
+  const ledgerProjection = ledgerGraphHasIssues(getDb()) ? getLedgerIssueNodes(params) : null;
+  const {
+    nodes,
+    issueNodeIds,
+    issueNodeIdByLedgerId,
+    edges: ledgerEdges,
+  } = ledgerProjection ?? { ...getIssueNodes(issueScanner, params), edges: [] as GraphEdge[] };
+  for (const edge of ledgerEdges) {
+    upsertEdge(edges, edge);
+  }
   const sessionRows = params.mode === "issue" ? [] : getSessionRows(params, sinceIso, limit);
   const authRows = params.mode === "issue" ? [] : getAuthRows(params, sinceMs, limit);
   const sessionNodeIds = addSessionNodesAndEdges(sessionRows, params, nodes, edges);
-  addAuthNodesAndEdges(authRows, issueNodeIds, nodes, edges);
-  addIssueEdges(issueScanner, nodes, edges);
-  addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges);
+  addAuthNodesAndEdges(authRows, issueNodeIds, issueNodeIdByLedgerId, nodes, edges);
+  if (!ledgerProjection) {
+    addIssueEdges(issueScanner, nodes, edges);
+  }
+  addSessionIssueEdges(issueNodeIds, issueNodeIdByLedgerId, sessionNodeIds, edges);
   if (params.mode === "work") {
-    addWorkUnits(params, nodes, edges, limit);
+    addWorkUnits(params, nodes, edges, issueNodeIdByLedgerId, limit);
   }
 
   const allEdges = Array.from(edges.values());
@@ -764,6 +808,10 @@ function graphFilterOptions(issueScanner: IssueScanner): GraphPayload["filters"]
     else addRepo(summary.repo_id);
   }
 
+  const ledgerFilters = getLedgerGraphFilterOptions(db);
+  for (const repo of ledgerFilters.repos) addRepo(repo);
+  for (const branch of ledgerFilters.branches) branches.add(branch);
+
   try {
     const rows = db.prepare("SELECT repo, head_branch FROM auth_requests").all() as Array<{
       repo: string | null;
@@ -823,7 +871,8 @@ function modeDescriptors(
   activeCount: number,
 ): GraphModeDescriptor[] {
   const db = getDb();
-  const issueCount = issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
+  const issueCount = countLedgerGraphIssues(db, "all")
+    ?? issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
   let workCount = 0;
   try {
     workCount = (db.prepare("SELECT COUNT(*) AS count FROM work_units").get() as { count: number }).count;
