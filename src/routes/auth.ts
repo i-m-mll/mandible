@@ -1,4 +1,5 @@
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
+import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
@@ -9,7 +10,13 @@ function readBody<T>(req: RequestLike): T {
   return (req.body ?? {}) as T;
 }
 
-export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue()): AuthQueue {
+export function registerAuthRoutes(
+  app: RouteRegistrar,
+  queue?: AuthQueue,
+  autoApprove?: AuthAutoApproveManager,
+): AuthQueue {
+  const autoApproveManager = autoApprove ?? new AuthAutoApproveManager();
+  const authQueue = queue ?? new AuthQueue({ autoApprover: autoApproveManager });
   app.post("/api/auth/request", (req, res) => {
     const payload = parseAuthRequestPayload(readBody<Record<string, unknown>>(req));
     if (!payload) {
@@ -38,7 +45,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
 
     // Bug: 16985e8 — detect duplicate submissions. Return 409 with the existing
     // request_id so the agent can PUT to update it rather than creating a new one.
-    const duplicate = queue.findDuplicate(payload);
+    const duplicate = authQueue.findDuplicate(payload);
     if (duplicate) {
       res.status(409).json({
         error: "Duplicate auth request — a pending or approved request for this branch already exists.",
@@ -48,12 +55,12 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       return;
     }
 
-    const request = queue.submit(payload);
+    const request = authQueue.submit(payload);
     res.status(201).json({ request_id: request.id });
   });
 
   app.get("/api/auth/request/:id", (req, res) => {
-    const request = queue.getRequest(req.params.id);
+    const request = authQueue.getRequest(req.params.id);
     if (!request) {
       // Bug: caa157e — distinguish ambiguous prefix from not-found
       const resolved = resolvePrefix(getDb(), "auth_requests", "id", req.params.id);
@@ -70,7 +77,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
     // Bug: 0b83252 — resolve dependency status to avoid a second round-trip from the UI
     let dependsOnStatus: string | null = null;
     if (request.depends_on_id) {
-      const dep = queue.getRequest(request.depends_on_id);
+      const dep = authQueue.getRequest(request.depends_on_id);
       dependsOnStatus = dep ? dep.status : null;
     }
 
@@ -102,6 +109,8 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       depends_on_id: request.depends_on_id ?? null,
       depends_on_status: dependsOnStatus,
       execution_mode: request.execution_mode,
+      approval_source: request.approval_source,
+      approval_lease_id: request.approval_lease_id,
       // Bug: 4e32923 — include scoping fields omitted from the original response literal
       target_session_id: request.target_session_id ?? null,
       delivered_at: request.delivered_at ?? null
@@ -116,7 +125,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
     }
 
     try {
-      const updated = queue.update(req.params.id, result.payload);
+      const updated = authQueue.update(req.params.id, result.payload);
       res.status(200).json({ request_id: updated.id, ...updated });
     } catch (error) {
       if (isHttpError(error)) {
@@ -134,7 +143,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       return;
     }
     try {
-      queue.delete(req.params.id, body.reason);
+      authQueue.delete(req.params.id, body.reason);
       res.status(200).json({ request_id: req.params.id, deleted: true });
     } catch (error) {
       handleQueueError(error, res);
@@ -147,14 +156,14 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
     const typeFilter = typeof query.type === "string" && VALID_AUTH_REQUEST_TYPES.includes(query.type as AuthRequestType)
       ? (query.type as AuthRequestType)
       : undefined;
-    let requests = queue.listActive();
+    let requests = authQueue.listActive();
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
     // Bug: 0b83252 — resolve depends_on_status for each request with a dependency
     const enriched = requests.map((r) => {
       if (!r.depends_on_id) return { ...r, depends_on_status: null };
-      const dep = queue.getRequest(r.depends_on_id);
+      const dep = authQueue.getRequest(r.depends_on_id);
       return { ...r, depends_on_status: dep ? dep.status : null };
     });
     res.json({ requests: enriched });
@@ -171,7 +180,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       limitRaw != null && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(limitRaw, 200)
         : 50;
-    let requests = queue.listHistory(limit);
+    let requests = authQueue.listHistory(limit);
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
@@ -180,7 +189,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
 
   app.post("/api/auth/request/:id/approve", (req, res) => {
     try {
-      const request = queue.approve(req.params.id);
+      const request = authQueue.approve(req.params.id);
       res.status(202).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
@@ -194,7 +203,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
         typeof body.reason === "string" && body.reason.trim().length > 0
           ? body.reason
           : undefined;
-      const request = queue.reject(req.params.id, reason);
+      const request = authQueue.reject(req.params.id, reason);
       res.json({ request_id: request.id, status: request.status, error: request.error });
     } catch (error) {
       handleQueueError(error, res);
@@ -203,7 +212,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
 
   app.post("/api/auth/request/:id/skip", (req, res) => {
     try {
-      const request = queue.skip(req.params.id);
+      const request = authQueue.skip(req.params.id);
       res.json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
@@ -212,7 +221,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
 
   app.post("/api/auth/request/:id/retry", (req, res) => {
     try {
-      const request = queue.retry(req.params.id);
+      const request = authQueue.retry(req.params.id);
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
@@ -221,7 +230,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
 
   app.post("/api/auth/request/:id/requeue", (req, res) => {
     try {
-      const request = queue.requeue(req.params.id);
+      const request = authQueue.requeue(req.params.id);
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
@@ -230,7 +239,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
 
   app.post("/api/auth/request/:id/dismiss", (req, res) => {
     try {
-      const request = queue.dismiss(req.params.id);
+      const request = authQueue.dismiss(req.params.id);
       res.status(200).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
@@ -244,7 +253,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
       return;
     }
     try {
-      queue.appendOutput(req.params.id, body.chunk);
+      authQueue.appendOutput(req.params.id, body.chunk);
       res.status(202).json({ request_id: req.params.id, ok: true });
     } catch (error) {
       handleQueueError(error, res);
@@ -259,7 +268,7 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
     }
     const errorText = typeof body.error === "string" ? body.error : undefined;
     try {
-      const request = queue.setResult(
+      const request = authQueue.setResult(
         req.params.id,
         body.exit_code,
         body.output,
@@ -271,7 +280,44 @@ export function registerAuthRoutes(app: RouteRegistrar, queue = new AuthQueue())
     }
   });
 
-  return queue;
+  app.get("/api/auth/auto-approve", (_req, res) => {
+    res.json(autoApproveManager.getStatus());
+  });
+
+  app.post("/api/auth/auto-approve/setup", async (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
+    try {
+      const status = await autoApproveManager.setupDelegatedSigning({
+        name: typeof body.name === "string" ? body.name : undefined,
+        email: typeof body.email === "string" ? body.email : undefined,
+        ageRecipient: typeof body.age_recipient === "string" ? body.age_recipient : undefined,
+        overwrite: body.overwrite === true,
+      });
+      res.status(201).json(status);
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/auth/auto-approve/enable", async (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
+    const duration =
+      typeof body.duration_minutes === "number" ? body.duration_minutes : undefined;
+    try {
+      const status = await autoApproveManager.enable(duration);
+      const approval = autoApproveManager.getActiveApprovalContext();
+      const approved = approval ? authQueue.autoApprovePending(approval) : [];
+      res.status(202).json({ ...status, approved_request_ids: approved.map((r) => r.id) });
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post("/api/auth/auto-approve/disable", (_req, res) => {
+    res.json(autoApproveManager.disable());
+  });
+
+  return authQueue;
 }
 
 // Bug: dd21c1e — valid auth request types for input validation

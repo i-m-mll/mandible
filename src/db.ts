@@ -869,6 +869,17 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_sessions_conversation_id
         ON sessions(conversation_id) WHERE conversation_id IS NOT NULL`
     ]
+  },
+  {
+    version: 52,
+    name: "auth_auto_approve_lease",
+    statements: [
+      `ALTER TABLE auth_requests ADD COLUMN approval_source TEXT NOT NULL DEFAULT 'manual'`,
+      `ALTER TABLE auth_requests ADD COLUMN approval_lease_id TEXT`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('auth_auto_approve_duration_minutes', '60',
+               CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+    ]
   }
 ];
 

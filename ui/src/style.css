@@ -645,6 +645,70 @@ tr:last-child td {
   letter-spacing: normal;
 }
 
+.auth-auto-approve {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.auth-auto-approve__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.auth-auto-approve__label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.auth-auto-approve__status {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.auth-auto-approve__switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 0;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.auth-auto-approve__switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.auth-auto-approve__switch--on {
+  background: rgba(50, 210, 150, 0.35);
+}
+
+.auth-auto-approve__knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transition: transform 0.2s ease;
+}
+
+.auth-auto-approve__switch--on .auth-auto-approve__knob {
+  transform: translateX(20px);
+}
+
 .auth-list {
   display: flex;
   flex-direction: column;
@@ -3431,6 +3495,12 @@ tr:hover .work-actions__trigger {
 
 .settings-view__section-body .settings-view__section-desc {
   font-size: 12px;
+}
+
+.settings-view__delegated-signing {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .settings-view__warning {

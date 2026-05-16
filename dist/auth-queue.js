@@ -25,7 +25,9 @@ export class AuthQueue {
     broadcast;
     executor;
     hookManager;
+    autoApprover;
     inFlight = new Map();
+    executionEnvs = new Map();
     executionChain = Promise.resolve();
     expiryTimer = null;
     // Bug: 4db692a — tracks whether the daemon is about to restart after a
@@ -39,6 +41,7 @@ export class AuthQueue {
         this.broadcast = options.broadcast ?? defaultBroadcast;
         this.executor = options.executor ?? executeAuthCommand;
         this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
+        this.autoApprover = options.autoApprover;
         this.ensureSchema();
         this.recoverStuckRequests();
         this.startExpiryTimer();
@@ -177,7 +180,9 @@ export class AuthQueue {
             target_repo_root: payload.target_repo_root ?? null,
             delivered_at: null,
             // Bug: 6d7411b — conversation_id persists across Claude Code resumes
-            conversation_id: payload.conversation_id ?? null
+            conversation_id: payload.conversation_id ?? null,
+            approval_source: "manual",
+            approval_lease_id: null
         };
         const stmt = this.db.prepare(`INSERT INTO auth_requests (
         id,
@@ -215,7 +220,9 @@ export class AuthQueue {
         target_session_id,
         target_repo_root,
         delivered_at,
-        conversation_id
+        conversation_id,
+        approval_source,
+        approval_lease_id
       ) VALUES (
         @id,
         @session_id,
@@ -252,7 +259,9 @@ export class AuthQueue {
         @target_session_id,
         @target_repo_root,
         @delivered_at,
-        @conversation_id
+        @conversation_id,
+        @approval_source,
+        @approval_lease_id
       )`);
         stmt.run({
             ...request,
@@ -267,6 +276,15 @@ export class AuthQueue {
             event: "auth:new",
             data: { request }
         });
+        const approval = this.autoApprover?.getActiveApprovalContext() ?? null;
+        if (approval) {
+            try {
+                return this.approve(request.id, approval);
+            }
+            catch (error) {
+                console.warn(`[auth-queue] auto-approval failed for ${request.id}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
         return request;
     }
     getRequest(id) {
@@ -494,7 +512,7 @@ export class AuthQueue {
             data: { request_id: id }
         });
     }
-    approve(id) {
+    approve(id, approval) {
         this.expireStale();
         const request = this.requireRequest(id);
         if (request.status !== "pending") {
@@ -506,11 +524,26 @@ export class AuthQueue {
         }
         const now = this.now();
         this.db
-            .prepare("UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ? WHERE id = ?")
-            .run(now, now, id);
+            .prepare("UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ? WHERE id = ?")
+            .run(now, now, approval?.source ?? "manual", approval?.leaseId ?? null, id);
         const executing = this.requireRequest(id);
+        if (approval?.env) {
+            this.executionEnvs.set(executing.id, approval.env);
+        }
         this.executeInBackground(executing);
         return executing;
+    }
+    autoApprovePending(approval) {
+        const approved = [];
+        for (const request of this.listPending()) {
+            try {
+                approved.push(this.approve(request.id, approval));
+            }
+            catch (error) {
+                console.warn(`[auth-queue] auto-approval failed for pending request ${request.id}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
+        return approved;
     }
     reject(id, reason = "Rejected by user.") {
         this.expireStale();
@@ -655,7 +688,8 @@ export class AuthQueue {
                     request_id: request.id,
                     command: request.command,
                     cwd: request.cwd,
-                    onOutput: (chunk) => this.handleOutput(chunk)
+                    onOutput: (chunk) => this.handleOutput(chunk),
+                    env: this.executionEnvs.get(request.id),
                 });
                 // Bug: 4afab83 — run post-auth hooks after successful execution,
                 // BEFORE reporting completion. Hook failures don't change the
@@ -717,6 +751,7 @@ export class AuthQueue {
             }
             finally {
                 this.inFlight.delete(request.id);
+                this.executionEnvs.delete(request.id);
             }
         });
         this.executionChain = runPromise.catch(() => undefined);
@@ -969,7 +1004,9 @@ export class AuthQueue {
         target_session_id TEXT,
         target_repo_root TEXT,
         delivered_at INTEGER,
-        conversation_id TEXT
+        conversation_id TEXT,
+        approval_source TEXT NOT NULL DEFAULT 'manual',
+        approval_lease_id TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_auth_requests_status_created
@@ -1066,6 +1103,8 @@ function mapRow(row) {
         target_repo_root: row.target_repo_root == null ? null : String(row.target_repo_root),
         delivered_at: row.delivered_at == null ? null : Number(row.delivered_at),
         // Bug: 6d7411b — conversation_id for cross-resume matching
-        conversation_id: row.conversation_id == null ? null : String(row.conversation_id)
+        conversation_id: row.conversation_id == null ? null : String(row.conversation_id),
+        approval_source: row.approval_source == null ? "manual" : String(row.approval_source),
+        approval_lease_id: row.approval_lease_id == null ? null : String(row.approval_lease_id)
     };
 }

@@ -148,6 +148,8 @@ export interface AuthRequest {
   delivered_at: number | null;
   // Bug: 6d7411b — conversation_id persists across Claude Code resumes
   conversation_id: string | null;
+  approval_source: "manual" | "auto_lease" | string;
+  approval_lease_id: string | null;
 }
 
 export interface AuthRequestInput {

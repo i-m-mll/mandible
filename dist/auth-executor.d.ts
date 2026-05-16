@@ -15,5 +15,6 @@ export interface ExecuteAuthCommandOptions {
     onOutput?: (chunk: AuthOutputChunk) => void;
     now?: () => number;
     timeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
 }
 export declare function executeAuthCommand(options: ExecuteAuthCommandOptions): Promise<AuthExecutionResult>;

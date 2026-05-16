@@ -24,6 +24,7 @@ export interface ExecuteAuthCommandOptions {
   onOutput?: (chunk: AuthOutputChunk) => void;
   now?: () => number;
   timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -66,7 +67,7 @@ export async function executeAuthCommand(
 
     // Bug: 297677f — expose the auth request ID so the merge script can query
     // the API for issues and other request-specific metadata.
-    const childEnv = cleanEnvForAuth(process.env);
+    const childEnv = { ...cleanEnvForAuth(process.env), ...(options.env ?? {}) };
     childEnv.MANDIBLE_AUTH_REQUEST_ID = options.request_id;
 
     const child = spawn("bash", ["-c", options.command], {
