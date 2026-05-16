@@ -29,11 +29,15 @@ export declare class AuthQueue {
     private readonly executionEnvs;
     private executionChain;
     private expiryTimer;
+    private disposed;
     private _rebuilding;
     constructor(options?: AuthQueueOptions);
     /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */
     get isRebuilding(): boolean;
     private startExpiryTimer;
+    dispose(): void;
+    private stopExpiryTimer;
+    private isDbOpen;
     /**
      * Recover auth requests that got stuck in 'approved' status because the
      * daemon was killed (e.g. by the post-merge hook) before the executor could

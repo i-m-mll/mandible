@@ -560,11 +560,9 @@ const MIGRATIONS: Migration[] = [
     version: 36,
     name: "conversation_blocks_dag_uuid",
     // Bug: 72751b7 — DAG branching: track JSONL uuid/parentUuid on conversation blocks
-    statements: [
-      `ALTER TABLE conversation_blocks ADD COLUMN dag_uuid TEXT`,
-      `ALTER TABLE conversation_blocks ADD COLUMN dag_parent_uuid TEXT`,
-      `CREATE INDEX idx_blocks_dag_parent ON conversation_blocks(conversation_id, dag_parent_uuid) WHERE dag_parent_uuid IS NOT NULL`,
-    ]
+    // Bug: 2411ee3 — migration 16 already creates these columns on fresh DBs.
+    // Existing DBs still need the columns, so Node-side guarded DDL runs below.
+    statements: []
   },
   {
     version: 37,
@@ -880,6 +878,107 @@ const MIGRATIONS: Migration[] = [
        VALUES ('auth_auto_approve_duration_minutes', '60',
                CAST(strftime('%s','now') * 1000 AS INTEGER))`,
     ]
+  },
+  {
+    version: 53,
+    name: "graph_provider_artifacts",
+    // Bug: 50c4afb — provider registry, artifact records, manifest ingest,
+    // and a durable graph entity/edge index for provider/provenance nodes.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS providers (
+        id                TEXT PRIMARY KEY,
+        display_name      TEXT NOT NULL,
+        version           TEXT,
+        status            TEXT NOT NULL DEFAULT 'active',
+        transport         TEXT NOT NULL DEFAULT 'manifest',
+        endpoint          TEXT,
+        capabilities_json TEXT NOT NULL DEFAULT '{}',
+        actions_json      TEXT NOT NULL DEFAULT '[]',
+        source            TEXT NOT NULL DEFAULT 'local',
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        last_seen_at      INTEGER
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_providers_status
+        ON providers(status)`,
+      `CREATE TABLE IF NOT EXISTS artifacts (
+        id            TEXT PRIMARY KEY,
+        algorithm     TEXT NOT NULL DEFAULT 'sha256',
+        content_hash  TEXT NOT NULL,
+        uri           TEXT NOT NULL,
+        media_type    TEXT,
+        role          TEXT,
+        size_bytes    INTEGER NOT NULL DEFAULT 0,
+        provider_id   TEXT,
+        manifest_id   TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        pinned        INTEGER NOT NULL DEFAULT 1,
+        created_at    INTEGER NOT NULL,
+        UNIQUE(algorithm, content_hash)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_artifacts_provider
+        ON artifacts(provider_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifacts_role
+        ON artifacts(role)`,
+      `CREATE TABLE IF NOT EXISTS provider_manifests (
+        id            TEXT PRIMARY KEY,
+        provider_id   TEXT NOT NULL,
+        manifest_type TEXT NOT NULL DEFAULT 'provider_manifest',
+        version       TEXT,
+        content_hash  TEXT NOT NULL,
+        artifact_id   TEXT,
+        source        TEXT NOT NULL DEFAULT 'ingest',
+        content_json  TEXT NOT NULL,
+        created_at    INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_provider_manifests_provider
+        ON provider_manifests(provider_id, created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS graph_entities (
+        id                  TEXT PRIMARY KEY,
+        entity_type         TEXT NOT NULL,
+        repo_id             TEXT,
+        provider_id         TEXT,
+        external_id         TEXT,
+        title               TEXT NOT NULL,
+        status              TEXT,
+        labels_json         TEXT NOT NULL DEFAULT '[]',
+        summary_json        TEXT NOT NULL DEFAULT '{}',
+        detail_ref_json     TEXT NOT NULL DEFAULT '{}',
+        action_context_json TEXT NOT NULL DEFAULT '{}',
+        visual_json         TEXT NOT NULL DEFAULT '{}',
+        created_at          INTEGER,
+        updated_at          INTEGER,
+        observed_at         INTEGER NOT NULL,
+        source              TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_graph_entities_type
+        ON graph_entities(entity_type)`,
+      `CREATE INDEX IF NOT EXISTS idx_graph_entities_provider
+        ON graph_entities(provider_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_graph_entities_repo
+        ON graph_entities(repo_id)`,
+      `CREATE TABLE IF NOT EXISTS graph_edges (
+        id            TEXT PRIMARY KEY,
+        source_id     TEXT NOT NULL,
+        target_id     TEXT NOT NULL,
+        edge_type     TEXT NOT NULL,
+        edge_class    TEXT NOT NULL DEFAULT 'provenance',
+        provenance    TEXT NOT NULL DEFAULT 'system',
+        confidence    TEXT NOT NULL DEFAULT 'observed',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at    INTEGER,
+        observed_at   INTEGER NOT NULL,
+        source        TEXT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_graph_edges_source
+        ON graph_edges(source_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_graph_edges_target
+        ON graph_edges(target_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_graph_edges_type
+        ON graph_edges(edge_type)`,
+      `CREATE INDEX IF NOT EXISTS idx_graph_edges_class
+        ON graph_edges(edge_class)`
+    ]
   }
 ];
 
@@ -959,6 +1058,10 @@ export function migrate(db: Db): void {
   if (pending.some((m) => m.version === 29)) {
     backfillIssueIds(db);
   }
+  // Bug: 2411ee3 — make migration 36 safe for both fresh DBs and existing DBs.
+  if (pending.some((m) => m.version === 36)) {
+    ensureConversationBlockDagColumns(db);
+  }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
   if (pending.some((m) => m.version === 26)) {
     const rows = db.prepare(
@@ -1030,6 +1133,25 @@ function compressExistingBlocks(db: Db): void {
     // Log to stderr so daemon startup shows the migration result
     console.error(`[db] Compressed ${totalCompressed} conversation blocks`);
   }
+}
+
+function ensureConversationBlockDagColumns(db: Db): void {
+  const columns = db
+    .prepare("PRAGMA table_info(conversation_blocks)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+
+  if (!names.has("dag_uuid")) {
+    db.exec("ALTER TABLE conversation_blocks ADD COLUMN dag_uuid TEXT");
+  }
+  if (!names.has("dag_parent_uuid")) {
+    db.exec("ALTER TABLE conversation_blocks ADD COLUMN dag_parent_uuid TEXT");
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_blocks_dag_parent
+      ON conversation_blocks(conversation_id, dag_parent_uuid)
+      WHERE dag_parent_uuid IS NOT NULL`
+  );
 }
 
 /**

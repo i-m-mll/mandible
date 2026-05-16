@@ -1506,6 +1506,7 @@ export function AuthQueueView({
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [autoApproveStatus, setAutoApproveStatus] = useState<AuthAutoApproveStatus | null>(null);
   const [autoApproveBusy, setAutoApproveBusy] = useState(false);
+  const autoApproveSigningConfigured = Boolean(autoApproveStatus?.signing?.configured);
 
   const showToast = useCallback((message: string) => {
     setToastMessage(message);
@@ -2016,7 +2017,7 @@ export function AuthQueueView({
             <span className="auth-auto-approve__status">
               {autoApproveStatus?.enabled
                 ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}`
-                : autoApproveStatus?.signing.configured
+                : autoApproveSigningConfigured
                   ? 'Off'
                   : 'Setup required'}
             </span>
@@ -2027,7 +2028,7 @@ export function AuthQueueView({
             role="switch"
             aria-checked={Boolean(autoApproveStatus?.enabled)}
             aria-label="Toggle auth auto-approve"
-            disabled={autoApproveBusy || !autoApproveStatus || (!autoApproveStatus.enabled && !autoApproveStatus.signing.configured)}
+            disabled={autoApproveBusy || !autoApproveStatus || (!autoApproveStatus.enabled && !autoApproveSigningConfigured)}
             onClick={() => void handleAutoApproveToggle()}
           >
             <span className="auth-auto-approve__knob" />

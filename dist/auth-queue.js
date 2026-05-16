@@ -30,6 +30,7 @@ export class AuthQueue {
     executionEnvs = new Map();
     executionChain = Promise.resolve();
     expiryTimer = null;
+    disposed = false;
     // Bug: 4db692a — tracks whether the daemon is about to restart after a
     // self-merge. Exposed via isRebuilding so the health endpoint can include
     // it in the response, preventing the UI from reloading prematurely.
@@ -51,8 +52,37 @@ export class AuthQueue {
         return this._rebuilding;
     }
     startExpiryTimer() {
-        this.expiryTimer = setInterval(() => this.expireStale(), 30_000);
+        this.expiryTimer = setInterval(() => {
+            if (this.disposed || !this.isDbOpen()) {
+                this.stopExpiryTimer();
+                return;
+            }
+            try {
+                this.expireStale();
+            }
+            catch (error) {
+                if (this.disposed || !this.isDbOpen()) {
+                    this.stopExpiryTimer();
+                    return;
+                }
+                throw error;
+            }
+        }, 30_000);
         this.expiryTimer.unref();
+    }
+    dispose() {
+        this.disposed = true;
+        this.stopExpiryTimer();
+    }
+    stopExpiryTimer() {
+        if (!this.expiryTimer) {
+            return;
+        }
+        clearInterval(this.expiryTimer);
+        this.expiryTimer = null;
+    }
+    isDbOpen() {
+        return this.db.open !== false;
     }
     /**
      * Recover auth requests that got stuck in 'approved' status because the

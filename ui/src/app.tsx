@@ -114,11 +114,11 @@ type Route = {
 
 function parseHashRoute(): Route {
   if (typeof window === 'undefined') {
-    return { tab: 'sessions', params: {} };
+    return { tab: 'graph', params: {} };
   }
-  const hash = window.location.hash || '#/sessions';
+  const hash = window.location.hash || '#/graph';
   const [pathPart, queryPart] = hash.replace('#', '').split('?');
-  const path = pathPart.replace(/^\//, '') || 'sessions';
+  const path = pathPart.replace(/^\//, '') || 'graph';
   const params: Record<string, string> = {};
   if (queryPart) {
     const search = new URLSearchParams(queryPart);
@@ -130,7 +130,7 @@ function parseHashRoute(): Route {
   const normalizedPath = (path === 'conversations' || path === 'chats') ? 'chat-history' : path;
   const tab = ['sessions', 'auth', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph', 'presets'].includes(normalizedPath)
     ? (normalizedPath as Route['tab'])
-    : 'sessions';
+    : 'graph';
   return { tab, params };
 }
 
@@ -905,10 +905,10 @@ function App(): JSX.Element {
         break;
       }
       case 'session':
-        window.location.hash = `#/sessions?session=${encodeURIComponent(id)}`;
+        window.location.hash = `#/sessions?session=${encodeURIComponent(id.replace(/^session:/, ''))}`;
         break;
       case 'auth_request':
-        window.location.hash = `#/auth?request=${encodeURIComponent(id)}`;
+        window.location.hash = `#/auth?request=${encodeURIComponent(id.replace(/^auth_request:/, ''))}`;
         break;
       default:
         break;
@@ -969,6 +969,10 @@ function App(): JSX.Element {
       <header className="app-header" data-tauri-drag-region>
         <div className="brand">Mandible</div>
         <nav className={`tabs${headerDisplayMode === 'icons' ? ' tabs--icons' : headerDisplayMode === 'both' ? ' tabs--both' : ''}`}>
+          <a href="#/graph" className={route.tab === 'graph' ? 'active' : ''} title="Graph">
+            {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <GraphIcon size={16} />}
+            {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Graph</span>}
+          </a>
           <div className="tab-twin">
             <a
               href="#/console"
@@ -1040,7 +1044,7 @@ function App(): JSX.Element {
           <div className="tab-overflow" ref={overflowRef}>
             <button
               type="button"
-              className={`tab-overflow__btn${['work', 'review', 'logs', 'switchboard', 'graph', 'presets'].includes(route.tab) ? ' tab-overflow__btn--active' : ''}`}
+              className={`tab-overflow__btn${['work', 'review', 'logs', 'switchboard', 'presets'].includes(route.tab) ? ' tab-overflow__btn--active' : ''}`}
               onClick={() => setShowOverflow((v) => !v)}
               aria-label="More tabs"
             >
@@ -1048,14 +1052,6 @@ function App(): JSX.Element {
             </button>
             {showOverflow && (
               <div className="tab-overflow__menu">
-                <a
-                  href="#/graph"
-                  className={route.tab === 'graph' ? 'active' : ''}
-                  onClick={() => setShowOverflow(false)}
-                >
-                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <GraphIcon size={14} />}
-                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Graph</span>}
-                </a>
                 <a
                   href="#/work"
                   className={route.tab === 'work' ? 'active' : ''}
@@ -1214,7 +1210,11 @@ function App(): JSX.Element {
           <LogsView />
         )}
         {route.tab === 'graph' && (
-          <GraphView onNavigate={handleGraphNavigate} refreshToken={graphRefreshToken} />
+          <GraphView
+            onNavigate={handleGraphNavigate}
+            refreshToken={graphRefreshToken}
+            initialMode={route.params.mode}
+          />
         )}
         {route.tab === 'presets' && (
           <PresetsView
