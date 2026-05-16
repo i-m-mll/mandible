@@ -7,6 +7,7 @@ import { broadcast } from "./sse.js";
 // Bug: 568eca7 — pinned-panes.tsv location for reaper backward compat
 const PINNED_PANES_TSV = path.join(os.homedir(), ".cache", "claude-reaper", "pinned-panes.tsv");
 let psSupported = null;
+const CURRENT_PROCESS_PID_START = normalizePidStart(new Date(Date.now() - process.uptime() * 1000).toISOString());
 const SESSION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -127,8 +128,7 @@ export function normalizePidStart(value) {
 }
 export function readPidStartTime(pid) {
     if (pid === process.pid) {
-        const startTime = new Date(Date.now() - process.uptime() * 1000).toISOString();
-        return normalizePidStart(startTime);
+        return CURRENT_PROCESS_PID_START;
     }
     if (!canUsePs()) {
         return null;
