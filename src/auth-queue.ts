@@ -61,6 +61,7 @@ export class AuthQueue {
   private readonly executionEnvs = new Map<string, NodeJS.ProcessEnv>();
   private executionChain: Promise<void> = Promise.resolve();
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
+  private disposed = false;
   // Bug: 4db692a — tracks whether the daemon is about to restart after a
   // self-merge. Exposed via isRebuilding so the health endpoint can include
   // it in the response, preventing the UI from reloading prematurely.
@@ -85,8 +86,39 @@ export class AuthQueue {
   }
 
   private startExpiryTimer(): void {
-    this.expiryTimer = setInterval(() => this.expireStale(), 30_000);
+    this.expiryTimer = setInterval(() => {
+      if (this.disposed || !this.isDbOpen()) {
+        this.stopExpiryTimer();
+        return;
+      }
+      try {
+        this.expireStale();
+      } catch (error) {
+        if (this.disposed || !this.isDbOpen()) {
+          this.stopExpiryTimer();
+          return;
+        }
+        throw error;
+      }
+    }, 30_000);
     this.expiryTimer.unref();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.stopExpiryTimer();
+  }
+
+  private stopExpiryTimer(): void {
+    if (!this.expiryTimer) {
+      return;
+    }
+    clearInterval(this.expiryTimer);
+    this.expiryTimer = null;
+  }
+
+  private isDbOpen(): boolean {
+    return (this.db as { open?: boolean }).open !== false;
   }
 
   /**

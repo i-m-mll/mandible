@@ -29,6 +29,7 @@
     "@types/d3": "^7.4.3",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "@xyflow/react": "^12.10.2",
     "better-sqlite3": "^11.10.0",
     "chokidar": "^4.0.3",
     "d3": "^7.9.0",

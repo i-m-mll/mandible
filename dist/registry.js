@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   parent_id TEXT,
   agent_type TEXT,
   description TEXT,
+  conversation_id TEXT,
   pinned INTEGER DEFAULT 0,
   continuation TEXT,
   continuation_acked_by TEXT,
@@ -94,6 +95,9 @@ function ensureSessionColumns(db) {
     }
     if (!names.has("channel_last_tool_call")) {
         db.exec("ALTER TABLE sessions ADD COLUMN channel_last_tool_call INTEGER");
+    }
+    if (!names.has("conversation_id")) {
+        db.exec("ALTER TABLE sessions ADD COLUMN conversation_id TEXT");
     }
 }
 function safeJsonParse(value) {
@@ -298,6 +302,7 @@ function toSession(row) {
         continuation: row.continuation ?? null,
         continuation_acked_by: row.continuation_acked_by ?? null,
         description: row.description ?? null,
+        conversation_id: row.conversation_id ?? null,
         created_at: row.created_at,
         updated_at: row.updated_at,
         ended_at: row.ended_at ?? null,

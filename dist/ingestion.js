@@ -21,6 +21,8 @@ const RECONCILE_INTERVAL_MS = 60_000;
 let watchers = [];
 let reconcileTimer = null;
 let logger = () => { };
+let ingestionActive = false;
+let ingestionRunToken = 0;
 const debounceTimers = new Map();
 const ingestQueue = [];
 const queuedIngestPaths = new Set();
@@ -28,6 +30,8 @@ let ingestDrainRunning = false;
 // --- Public API ---
 export function startIngestion(log) {
     logger = log;
+    ingestionActive = true;
+    ingestionRunToken++;
     logger("info", "ingestion_starting", {
         watch_paths: WATCH_CONFIGS.map((c) => c.base),
     });
@@ -65,6 +69,8 @@ export function startIngestion(log) {
 }
 export function stopIngestion() {
     logger("info", "ingestion_stopping");
+    ingestionActive = false;
+    ingestionRunToken++;
     for (const watcher of watchers) {
         void watcher.close();
     }
@@ -80,6 +86,7 @@ export function stopIngestion() {
     ingestQueue.length = 0;
     queuedIngestPaths.clear();
     ingestDrainRunning = false;
+    reconciling = false;
 }
 /** Manually trigger re-ingestion of all known sources. */
 export async function triggerFullIngest() {
@@ -106,46 +113,75 @@ export async function triggerFullIngest() {
 }
 // --- Internal ---
 function debouncedIngest(filePath) {
+    const runToken = ingestionRunToken;
+    if (!isCurrentIngestionRun(runToken)) {
+        return;
+    }
     const existing = debounceTimers.get(filePath);
     if (existing)
         clearTimeout(existing);
     const timer = setTimeout(() => {
+        if (!isCurrentIngestionRun(runToken)) {
+            debounceTimers.delete(filePath);
+            return;
+        }
         debounceTimers.delete(filePath);
-        enqueueIngest(filePath);
+        enqueueIngest(filePath, runToken);
     }, DEBOUNCE_MS);
     debounceTimers.set(filePath, timer);
 }
-function enqueueIngest(filePath) {
+function enqueueIngest(filePath, runToken = ingestionRunToken) {
+    if (!isCurrentIngestionRun(runToken)) {
+        return;
+    }
     if (queuedIngestPaths.has(filePath)) {
         return;
     }
     queuedIngestPaths.add(filePath);
     ingestQueue.push(filePath);
     if (!ingestDrainRunning) {
-        void drainIngestQueue();
+        void drainIngestQueue(runToken);
     }
 }
-async function drainIngestQueue() {
-    ingestDrainRunning = true;
-    while (ingestQueue.length > 0) {
-        const filePath = ingestQueue.shift();
-        if (!filePath) {
-            continue;
-        }
-        queuedIngestPaths.delete(filePath);
-        try {
-            await ingestFile(filePath);
-        }
-        catch (error) {
-            logger("warn", "ingestion_debounced_error", {
-                file: filePath,
-                error: String(error),
-            });
-        }
-        // Yield between files so burst ingestion doesn't monopolize the event loop.
-        await new Promise((resolve) => setImmediate(resolve));
+async function drainIngestQueue(runToken) {
+    if (!isCurrentIngestionRun(runToken)) {
+        return;
     }
-    ingestDrainRunning = false;
+    ingestDrainRunning = true;
+    try {
+        while (isCurrentIngestionRun(runToken) && ingestQueue.length > 0) {
+            const filePath = ingestQueue.shift();
+            if (!filePath) {
+                continue;
+            }
+            queuedIngestPaths.delete(filePath);
+            try {
+                await ingestFile(filePath);
+            }
+            catch (error) {
+                if (!isCurrentIngestionRun(runToken)) {
+                    break;
+                }
+                logger("warn", "ingestion_debounced_error", {
+                    file: filePath,
+                    error: String(error),
+                });
+            }
+            if (!isCurrentIngestionRun(runToken)) {
+                break;
+            }
+            // Yield between files so burst ingestion doesn't monopolize the event loop.
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+    }
+    finally {
+        if (runToken === ingestionRunToken) {
+            ingestDrainRunning = false;
+        }
+    }
+}
+function isCurrentIngestionRun(runToken) {
+    return ingestionActive && runToken === ingestionRunToken;
 }
 async function ingestFile(filePath) {
     const parser = getParserForFile(filePath);
@@ -469,14 +505,29 @@ async function ingestFile(filePath) {
 }
 let reconciling = false;
 function scheduleReconcile() {
+    const runToken = ingestionRunToken;
+    if (!isCurrentIngestionRun(runToken)) {
+        return;
+    }
     if (reconciling)
         return;
     reconciling = true;
-    void reconcile().finally(() => {
-        reconciling = false;
+    void reconcile(runToken)
+        .catch((error) => {
+        if (isCurrentIngestionRun(runToken)) {
+            logger("warn", "ingestion_reconcile_error", { error: String(error) });
+        }
+    })
+        .finally(() => {
+        if (runToken === ingestionRunToken) {
+            reconciling = false;
+        }
     });
 }
-async function reconcile() {
+async function reconcile(runToken) {
+    if (!isCurrentIngestionRun(runToken)) {
+        return;
+    }
     const db = getDb();
     // Clean up existing 0-block conversations (except starred ones).
     // Bug: d51fbc8 — empty sessions should not pollute the list
@@ -502,9 +553,15 @@ async function reconcile() {
     // Bug: 737df04 — findFiles() used readdirSync recursively, blocking the event
     // loop for the entire scan before any yielding could occur.
     for (const config of WATCH_CONFIGS) {
+        if (!isCurrentIngestionRun(runToken)) {
+            return;
+        }
         if (!fs.existsSync(config.base))
             continue;
         for await (const filePath of walkFiles(config.base, config.glob)) {
+            if (!isCurrentIngestionRun(runToken)) {
+                return;
+            }
             knownPaths.add(filePath);
             // Check if file needs ingestion
             try {

@@ -25,6 +25,7 @@ import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerSwitchboardRoutes } from "./routes/switchboard.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerGraphRoutes } from "./routes/graph.js";
+import { registerProviderRoutes } from "./routes/providers.js";
 import { registerWorkUnitRoutes } from "./routes/work-units.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 import { SessionManager } from "./session-manager.js";
@@ -98,6 +99,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner);
 
   registerGraphRoutes(router, issueScanner);
+  registerProviderRoutes(router);
   // Bug: 8a281b3 — work-unit routes need sessionRegistry + sessionManager for liveness overlay
   // sessionManager is declared below; registerWorkUnitRoutes is called after it's created.
 
@@ -329,6 +331,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     reaperTimer.stop();
     workUnitReconciler.stop();
     navEnricher.stop();
+    authQueue.dispose();
     clearTimeout(issueStartupTimer);
     clearInterval(issueRescanTimer);
     clearInterval(channelPruneTimer);

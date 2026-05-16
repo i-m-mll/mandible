@@ -13,6 +13,11 @@ const buildOptions = {
   target: 'es2020',
   jsx: 'automatic',
   jsxImportSource: 'preact',
+  alias: {
+    react: 'preact/compat',
+    'react-dom': 'preact/compat',
+    'react/jsx-runtime': 'preact/jsx-runtime',
+  },
   external: ['@tauri-apps/api/core', '@tauri-apps/api/webview'],
   loader: {
     '.css': 'css',
