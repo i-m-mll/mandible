@@ -1,5 +1,5 @@
 import { render } from 'preact';
-import { useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 
 import {
   acknowledgeInboxItem,
@@ -112,11 +112,18 @@ type Route = {
   params: Record<string, string>;
 };
 
-function parseHashRoute(): Route {
-  if (typeof window === 'undefined') {
-    return { tab: 'graph', params: {} };
-  }
-  const hash = window.location.hash || '#/graph';
+type NavItem = {
+  tab: Route['tab'];
+  href: string;
+  label: string;
+  title: string;
+  badge?: number;
+  badgeClass?: string;
+  icon: (props: { size?: number }) => JSX.Element;
+};
+
+function parseRouteFromHash(hashValue: string): Route {
+  const hash = hashValue || '#/graph';
   const [pathPart, queryPart] = hash.replace('#', '').split('?');
   const path = pathPart.replace(/^\//, '') || 'graph';
   const params: Record<string, string> = {};
@@ -132,6 +139,13 @@ function parseHashRoute(): Route {
     ? (normalizedPath as Route['tab'])
     : 'graph';
   return { tab, params };
+}
+
+function parseHashRoute(): Route {
+  if (typeof window === 'undefined') {
+    return { tab: 'graph', params: {} };
+  }
+  return parseRouteFromHash(window.location.hash || '#/graph');
 }
 
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
@@ -153,18 +167,30 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
-  const [showOverflow, setShowOverflow] = useState(false);
-  const overflowRef = useRef<HTMLDivElement>(null);
   const [errorToast, setErrorToast] = useState<string | null>(null);
   const errorToastTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
   const [rebuilding, setRebuilding] = useState(false);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
 
+  const navigateToHash = useCallback((hash: string) => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    if (window.location.hash !== hash) {
+      window.history.pushState(null, '', hash);
+    }
+    setRoute(parseRouteFromHash(hash));
+  }, []);
+
   useEffect(() => {
     const handleChange = () => setRoute(parseHashRoute());
     window.addEventListener('hashchange', handleChange);
-    return () => window.removeEventListener('hashchange', handleChange);
+    window.addEventListener('popstate', handleChange);
+    return () => {
+      window.removeEventListener('hashchange', handleChange);
+      window.removeEventListener('popstate', handleChange);
+    };
   }, []);
 
   // Add tauri-window class to body when running inside Tauri so CSS can
@@ -175,44 +201,32 @@ function App(): JSX.Element {
     }
   }, []);
 
-  // Close overflow menu on click-outside
-  useEffect(() => {
-    if (!showOverflow) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (overflowRef.current && !overflowRef.current.contains(e.target as Node)) {
-        setShowOverflow(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showOverflow]);
-
   // Keyboard shortcuts for top-level tabs (Ctrl+1–9).
-  // Order matches visual tab order: twin(1=chat,2=history), inbox(3), issues(4),
-  // sessions(5), auth(6), settings(7), overflow: work(8), review(9), logs(0).
+  // Order matches the left app rail: chat(1), graph(2), auth(3), issues(4),
+  // inbox(5), monitor(6), projects(7), review(8), settings(9), logs(0).
   // Settings UI for key bindings is deferred — Bug: 9082b2c
   useEffect(() => {
     const tabRoutes: Record<string, string> = {
       '1': 'console',
-      '2': 'chat-history',
-      '3': 'inbox',
+      '2': 'graph',
+      '3': 'auth',
       '4': 'issues',
-      '5': 'sessions',
-      '6': 'auth',
-      '7': 'settings',
-      '8': 'work',
-      '9': 'review',
+      '5': 'inbox',
+      '6': 'sessions',
+      '7': 'work',
+      '8': 'review',
+      '9': 'settings',
       '0': 'logs',
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.metaKey && !e.altKey && tabRoutes[e.key]) {
         e.preventDefault();
-        window.location.hash = `#/${tabRoutes[e.key]}`;
+        navigateToHash(`#/${tabRoutes[e.key]}`);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [navigateToHash]);
 
   useEffect(() => {
     let active = true;
@@ -546,6 +560,7 @@ function App(): JSX.Element {
 
   const badges = useMemo(() => selectBadgeCounts(state), [state]);
   const headerDisplayMode = (state.settings.header_display_mode ?? 'text') as 'text' | 'icons' | 'both';
+  const railDisplayMode = headerDisplayMode === 'icons' ? 'icons' : 'both';
 
   // Bug: 72384c5 — flatten work branches into name lists for stale-entry detection in auth view
   const authBranchesByRepo = useMemo(() => {
@@ -901,18 +916,145 @@ function App(): JSX.Element {
         const resolvedRepoId = repoId ?? parts[1];
         const params = new URLSearchParams({ issue: humanId });
         if (resolvedRepoId) params.set('repo', resolvedRepoId);
-        window.location.hash = `#/issues?${params.toString()}`;
+        navigateToHash(`#/issues?${params.toString()}`);
         break;
       }
       case 'session':
-        window.location.hash = `#/sessions?session=${encodeURIComponent(id.replace(/^session:/, ''))}`;
+        navigateToHash(`#/sessions?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
         break;
       case 'auth_request':
-        window.location.hash = `#/auth?request=${encodeURIComponent(id.replace(/^auth_request:/, ''))}`;
+        navigateToHash(`#/auth?request=${encodeURIComponent(id.replace(/^auth_request:/, ''))}`);
         break;
       default:
         break;
     }
+  };
+
+  const primaryNavItems: NavItem[] = [
+    {
+      tab: 'console',
+      href: '#/console',
+      label: 'Chat',
+      title: 'Chat',
+      badge: badges.console,
+      icon: ChatIcon,
+    },
+    {
+      tab: 'graph',
+      href: '#/graph',
+      label: 'Graph',
+      title: 'Graph',
+      icon: GraphIcon,
+    },
+    {
+      tab: 'auth',
+      href: '#/auth',
+      label: 'Auth',
+      title: 'Auth',
+      badge: badges.auth,
+      badgeClass: 'tab-badge--auth',
+      icon: AuthIcon,
+    },
+    {
+      tab: 'issues',
+      href: '#/issues',
+      label: 'Issues',
+      title: 'Issues',
+      icon: IssuesIcon,
+    },
+    {
+      tab: 'inbox',
+      href: '#/inbox',
+      label: 'Inbox',
+      title: 'Inbox',
+      badge: badges.inbox,
+      icon: InboxIcon,
+    },
+    {
+      tab: 'sessions',
+      href: '#/sessions',
+      label: 'Monitor',
+      title: 'Monitor',
+      badge: badges.sessions,
+      icon: MonitorIcon,
+    },
+  ];
+
+  const secondaryNavItems: NavItem[] = [
+    {
+      tab: 'chat-history',
+      href: '#/chat-history',
+      label: 'History',
+      title: 'History',
+      icon: HistoryIcon,
+    },
+    {
+      tab: 'work',
+      href: '#/work',
+      label: 'Projects',
+      title: 'Projects',
+      badge: badges.work,
+      icon: ProjectsIcon,
+    },
+    {
+      tab: 'review',
+      href: '#/review',
+      label: 'Review',
+      title: 'Review',
+      icon: DiffIcon,
+    },
+    {
+      tab: 'presets',
+      href: '#/presets',
+      label: 'Presets',
+      title: 'Presets',
+      icon: PresetsIcon,
+    },
+    {
+      tab: 'switchboard',
+      href: '#/switchboard',
+      label: 'Switchboard',
+      title: 'Switchboard',
+      icon: SwitchboardIcon,
+    },
+    {
+      tab: 'logs',
+      href: '#/logs',
+      label: 'Logs',
+      title: 'Logs',
+      icon: LogsIcon,
+    },
+  ];
+
+  const renderRailItem = (item: NavItem): JSX.Element => {
+    const Icon = item.icon;
+    const active = route.tab === item.tab;
+    return (
+      <a
+        key={item.tab}
+        href={item.href}
+        className={`app-rail__item${active ? ' app-rail__item--active' : ''}`}
+        aria-current={active ? 'page' : undefined}
+        title={item.title}
+        onClick={(event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+            return;
+          }
+          event.preventDefault();
+          navigateToHash(item.href);
+        }}
+      >
+        <span className="app-rail__icon">
+          <Icon size={18} />
+        </span>
+        {railDisplayMode === 'both' && <span className="app-rail__label">{item.label}</span>}
+        {item.badge ? (
+          <span className={`tab-badge app-rail__badge${item.badgeClass ? ` ${item.badgeClass}` : ''}`}>
+            {item.badge}
+          </span>
+        ) : null}
+      </a>
+    );
   };
 
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
@@ -966,141 +1108,31 @@ function App(): JSX.Element {
           </button>
         </div>
       )}
-      <header className="app-header" data-tauri-drag-region>
-        <div className="brand">Mandible</div>
-        <nav className={`tabs${headerDisplayMode === 'icons' ? ' tabs--icons' : headerDisplayMode === 'both' ? ' tabs--both' : ''}`}>
-          <a href="#/graph" className={route.tab === 'graph' ? 'active' : ''} title="Graph">
-            {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <GraphIcon size={16} />}
-            {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Graph</span>}
-          </a>
-          <div className="tab-twin">
-            <a
-              href="#/console"
-              className={`tab-twin__btn${route.tab === 'console' ? ' tab-twin__btn--active' : ''}`}
-              title="Chat"
-            >
-              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <ChatIcon size={16} />}
-              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Chat</span>}
-              {badges.console > 0 && (
-                <span className="tab-badge">{badges.console}</span>
-              )}
-            </a>
-            <a
-              href="#/chat-history"
-              className={`tab-twin__btn${route.tab === 'chat-history' ? ' tab-twin__btn--active' : ''}`}
-              title="History"
-            >
-              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <HistoryIcon size={16} />}
-              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>History</span>}
-            </a>
-            <a
-              href="#/sessions"
-              className={`tab-twin__btn${route.tab === 'sessions' ? ' tab-twin__btn--active' : ''}`}
-              title="Monitor"
-            >
-              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <MonitorIcon size={16} />}
-              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Monitor</span>}
-              {badges.sessions > 0 && (
-                <span className="tab-badge">{badges.sessions}</span>
-              )}
-            </a>
+      <div className={`app-layout app-layout--rail-${railDisplayMode}`}>
+        <aside className="app-rail" data-tauri-drag-region>
+          <div className="app-rail__brand" title="Mandible">
+            <span className="app-rail__mark" aria-hidden="true">M</span>
+            {railDisplayMode === 'both' && <span className="app-rail__brand-text">Mandible</span>}
           </div>
-          <div className="tab-twin">
-            <a
-              href="#/issues"
-              className={`tab-twin__btn${route.tab === 'issues' ? ' tab-twin__btn--active' : ''}`}
-              title="Issues"
-            >
-              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <IssuesIcon size={16} />}
-              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Issues</span>}
-            </a>
-            <a
-              href="#/inbox"
-              className={`tab-twin__btn${route.tab === 'inbox' ? ' tab-twin__btn--active' : ''}`}
-              title="Inbox"
-            >
-              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <InboxIcon size={16} />}
-              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Inbox</span>}
-              {badges.inbox > 0 && (
-                <span className="tab-badge">{badges.inbox}</span>
-              )}
-            </a>
-            <a
-              href="#/auth"
-              className={`tab-twin__btn${route.tab === 'auth' ? ' tab-twin__btn--active' : ''}`}
-              title="Auth"
-            >
-              {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <AuthIcon size={16} />}
-              {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Auth</span>}
-              {badges.auth > 0 && (
-                <span className="tab-badge tab-badge--auth">{badges.auth}</span>
-              )}
-            </a>
-          </div>
-          <a href="#/settings" className={route.tab === 'settings' ? 'active' : ''} aria-label="Settings" title="Settings">
-            {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <SettingsIcon size={16} />}
-            {headerDisplayMode === 'text' && <span>Settings</span>}
-          </a>
-          <div className="tab-overflow" ref={overflowRef}>
-            <button
-              type="button"
-              className={`tab-overflow__btn${['work', 'review', 'logs', 'switchboard', 'presets'].includes(route.tab) ? ' tab-overflow__btn--active' : ''}`}
-              onClick={() => setShowOverflow((v) => !v)}
-              aria-label="More tabs"
-            >
-              ···
-            </button>
-            {showOverflow && (
-              <div className="tab-overflow__menu">
-                <a
-                  href="#/work"
-                  className={route.tab === 'work' ? 'active' : ''}
-                  onClick={() => setShowOverflow(false)}
-                >
-                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <ProjectsIcon size={14} />}
-                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Projects</span>}
-                  {badges.work > 0 && (
-                    <span className="tab-badge">{badges.work}</span>
-                  )}
-                </a>
-                <a
-                  href="#/review"
-                  className={route.tab === 'review' ? 'active' : ''}
-                  onClick={() => setShowOverflow(false)}
-                >
-                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <DiffIcon size={14} />}
-                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Diff</span>}
-                </a>
-                <a
-                  href="#/logs"
-                  className={route.tab === 'logs' ? 'active' : ''}
-                  onClick={() => setShowOverflow(false)}
-                >
-                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <LogsIcon size={14} />}
-                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Logs</span>}
-                </a>
-                <a
-                  href="#/presets"
-                  className={route.tab === 'presets' ? 'active' : ''}
-                  onClick={() => setShowOverflow(false)}
-                >
-                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <PresetsIcon size={14} />}
-                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Presets</span>}
-                </a>
-                <a
-                  href="#/switchboard"
-                  className={route.tab === 'switchboard' ? 'active' : ''}
-                  onClick={() => setShowOverflow(false)}
-                >
-                  {(headerDisplayMode === 'icons' || headerDisplayMode === 'both') && <SwitchboardIcon size={14} />}
-                  {(headerDisplayMode === 'text' || headerDisplayMode === 'both') && <span>Switchboard</span>}
-                </a>
-              </div>
-            )}
-          </div>
-        </nav>
-      </header>
-      <main className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}`}>
+          <nav className="app-rail__nav" aria-label="Main navigation">
+            <div className="app-rail__group">
+              {primaryNavItems.map(renderRailItem)}
+            </div>
+            <div className="app-rail__group app-rail__group--secondary">
+              {secondaryNavItems.map(renderRailItem)}
+            </div>
+          </nav>
+          <nav className="app-rail__footer" aria-label="Settings">
+            {renderRailItem({
+              tab: 'settings',
+              href: '#/settings',
+              label: 'Settings',
+              title: 'Settings',
+              icon: SettingsIcon,
+            })}
+          </nav>
+        </aside>
+        <main className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}`}>
         {route.tab === 'sessions' && (
           <SessionsView
             sessions={state.sessions}
@@ -1222,7 +1254,8 @@ function App(): JSX.Element {
             dispatch={dispatch}
           />
         )}
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

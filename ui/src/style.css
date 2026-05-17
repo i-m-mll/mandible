@@ -48,6 +48,180 @@ a {
   flex-direction: column;
 }
 
+.app-layout {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.app-layout--rail-icons {
+  grid-template-columns: 68px minmax(0, 1fr);
+}
+
+.app-rail {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 12px;
+  background: rgba(8, 12, 17, 0.94);
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: 10px 0 30px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.tauri-window .app-rail {
+  padding-top: max(18px, env(titlebar-area-height, 28px));
+}
+
+.app-rail__brand {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 8px;
+}
+
+.app-rail__mark {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(77, 163, 255, 0.28), rgba(50, 210, 150, 0.2));
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: var(--text-primary);
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.app-rail__brand-text {
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.app-rail__nav {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden auto;
+  padding-right: 2px;
+}
+
+.app-rail__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.app-rail__group--secondary {
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.app-rail__footer {
+  flex: 0 0 auto;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.app-rail__item {
+  position: relative;
+  min-width: 0;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.2;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+  border: 1px solid transparent;
+}
+
+.app-rail__item:hover:not(.app-rail__item--active) {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.app-rail__item--active {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.app-rail__item--active::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--accent-blue);
+}
+
+.app-rail__icon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-rail__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-rail__badge {
+  margin-left: auto;
+  min-width: 20px;
+  text-align: center;
+  padding-inline: 6px;
+}
+
+.app-layout--rail-icons .app-rail {
+  align-items: center;
+  padding-inline: 8px;
+}
+
+.app-layout--rail-icons .app-rail__brand {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.app-layout--rail-icons .app-rail__item {
+  width: 44px;
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.app-layout--rail-icons .app-rail__badge {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  min-width: 16px;
+  padding: 1px 4px;
+  font-size: 10px;
+}
+
 .daemon-toast {
   position: fixed;
   top: 16px;
