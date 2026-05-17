@@ -557,8 +557,8 @@ function App(): JSX.Element {
   ]);
 
   const badges = useMemo(() => selectBadgeCounts(state), [state]);
-  const headerDisplayMode = (state.settings.header_display_mode ?? 'text') as 'text' | 'icons' | 'both';
-  const railDisplayMode = headerDisplayMode === 'icons' ? 'icons' : 'both';
+  const headerDisplayMode = (state.settings.header_display_mode ?? 'icons') as 'text' | 'icons' | 'both';
+  const railDisplayMode = headerDisplayMode === 'both' ? 'both' : 'icons';
 
   // Bug: 72384c5 — flatten work branches into name lists for stale-entry detection in auth view
   const authBranchesByRepo = useMemo(() => {
@@ -1103,7 +1103,6 @@ function App(): JSX.Element {
         <aside className="app-rail" data-tauri-drag-region>
           <div className="app-rail__brand" title="Mandible">
             <span className="app-rail__mark" aria-hidden="true">M</span>
-            {railDisplayMode === 'both' && <span className="app-rail__brand-text">Mandible</span>}
           </div>
           <nav className="app-rail__nav" aria-label="Main navigation">
             <div className="app-rail__group">
@@ -1207,6 +1206,7 @@ function App(): JSX.Element {
           <ConversationsView
             conversations={state.conversations}
             consoleSessions={state.consoleSessions}
+            workRepos={state.workRepos}
             initialConversationId={route.params.conversation ?? null}
             initialSessionId={route.params.session ?? null}
             initialPresetId={route.params.preset ?? null}

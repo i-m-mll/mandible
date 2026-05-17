@@ -1309,10 +1309,12 @@ export async function resumeConversation(
   conversationId: string,
   messageDagUuid: string,
   label?: string,
+  model?: string,
 ): Promise<{ console_session_id: string }> {
   const resp = await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/resume`, {
     message_dag_uuid: messageDagUuid,
     label,
+    ...(model ? { model } : {}),
   });
   return (await parseMaybeJson(resp)) as { console_session_id: string };
 }
