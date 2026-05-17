@@ -216,6 +216,16 @@ describe('SSE handling', () => {
     expect(badges.work).toBe(1);
   });
 
+  it('keeps badge counts stable when cached inbox data is partial', () => {
+    const state = {
+      ...initialState,
+      inboxData: {},
+    };
+
+    const badges = selectBadgeCounts(state as typeof initialState);
+    expect(badges.inbox).toBe(0);
+  });
+
   it('appends streaming output', () => {
     let state = appReducer(initialState, {
       type: 'authOutput',
