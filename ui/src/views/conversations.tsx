@@ -19,6 +19,7 @@ import {
   getSessionPresets,
   getSettings,
   resumeConversation,
+  sendConsolePrompt,
   triggerIngestion,
   updateConversation,
   type ForkData,
@@ -27,6 +28,8 @@ import {
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
 import { BranchSelector, type BranchInfo } from '../components/console/BranchSelector';
+import { TerminalPane } from '../components/console/TerminalPane';
+import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { EntityPill } from '../components/shared/EntityPill';
 // Bug: bce7370 — Shared message-block components
 import {
@@ -139,6 +142,14 @@ const SOURCE_CLASSES: Record<ConversationSource, string> = {
   gemini: 'source-badge--gemini',
 };
 
+const AGENT_LABELS: Record<string, string> = {
+  operator: 'Operator',
+  claude: 'Claude',
+  codex: 'Codex',
+  gemini: 'Gemini',
+  shell: 'Shell',
+};
+
 const PAGE_SIZE = 50;
 const VIRTUAL_BUFFER = 10;
 const ESTIMATED_BLOCK_HEIGHT = 120;
@@ -169,9 +180,23 @@ function formatAbsoluteTime(dateStr: string | null): string {
   return new Date(ts).toLocaleString();
 }
 
+function formatEpochRelativeTime(value: number | null | undefined): string {
+  if (!value) return '\u2014';
+  const ms = value < 1_000_000_000_000 ? value * 1000 : value;
+  return formatRelativeTime(new Date(ms).toISOString());
+}
+
 function truncate(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return text.slice(0, maxLen) + '\u2026';
+}
+
+function isLiveConsoleSession(session: ConsoleSession): boolean {
+  return session.status !== 'stopped' && session.status !== 'crashed';
+}
+
+function getAgentLabel(agentType: string): string {
+  return AGENT_LABELS[agentType] ?? agentType;
 }
 
 function parseMetadata(json: string): Record<string, unknown> {
@@ -227,6 +252,11 @@ function getBlockHeaderLabel(
 }
 
 type TranscriptSpeaker = 'user' | 'assistant' | 'system';
+type ViewMode = 'terminal' | 'rich' | 'events';
+type ChatSelection =
+  | { type: 'conversation'; id: string }
+  | { type: 'session'; id: string }
+  | null;
 type TranscriptTurn = {
   id: string;
   speaker: TranscriptSpeaker;
@@ -275,8 +305,20 @@ function buildTranscriptTurns(blocks: ConversationBlock[]): TranscriptTurn[] {
 export type ConversationsViewProps = {
   conversations: Conversation[];
   consoleSessions: ConsoleSession[];
+  activeSessionId: string | null;
   initialConversationId: string | null;
   initialSessionId: string | null;
+  initialPresetId?: string | null;
+  onSelectSession: (sessionId: string) => void;
+  onCloseSession: (sessionId: string) => void;
+  onNewSession: (input: {
+    label: string;
+    backend: string;
+    kind: string;
+    backend_type: 'pty' | 'sdk' | 'spawn';
+    channel_enabled?: boolean;
+    presetIds?: string[];
+  }) => void;
 };
 
 // ── Markdown renderer ──
@@ -998,6 +1040,9 @@ function ConversationDetail({
 
   // Fork/resume state
   const [toast, setToast] = useState<ToastState>(null);
+  const [continueDraft, setContinueDraft] = useState('');
+  const [continueBusy, setContinueBusy] = useState(false);
+  const [continueError, setContinueError] = useState<string | null>(null);
   const [conflictDialog, setConflictDialog] = useState<{ dagUuid: string } | null>(null);
   const [forkData, setForkData] = useState<ForkData | null>(null);
   const [branchSelections, setBranchSelections] = useState<Record<string, number>>({});
@@ -1377,6 +1422,57 @@ function ConversationDetail({
     return consoleSessions.find((session) => session.provider_session_id === conversation.session_id) ?? null;
   }, [consoleSessions, conversation?.session_id]);
 
+  const latestDagUuid = useMemo(() => {
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+      const dagUuid = blocks[index].dag_uuid;
+      if (dagUuid) {
+        return dagUuid;
+      }
+    }
+    return null;
+  }, [blocks]);
+
+  const continueDisabledReason = useMemo(() => {
+    if (linkedConsoleSession?.interaction_mode === 'inbox_only') {
+      return 'Direct input is disabled for this session.';
+    }
+    if (linkedConsoleSession && !isLiveConsoleSession(linkedConsoleSession)) {
+      return 'The linked session is not running.';
+    }
+    if (!linkedConsoleSession && !latestDagUuid) {
+      return 'No resumable message is available.';
+    }
+    return null;
+  }, [latestDagUuid, linkedConsoleSession]);
+
+  const handleContinueSubmit = useCallback(async (event: JSX.TargetedEvent<HTMLFormElement, Event>) => {
+    event.preventDefault();
+    const prompt = continueDraft.trim();
+    if (!prompt || continueDisabledReason) {
+      return;
+    }
+    setContinueBusy(true);
+    setContinueError(null);
+    try {
+      let targetSessionId = linkedConsoleSession?.id ?? null;
+      if (!targetSessionId) {
+        if (!latestDagUuid) {
+          throw new Error('No resumable message is available.');
+        }
+        const result = await resumeConversation(conversationId, latestDagUuid);
+        targetSessionId = result.console_session_id;
+      }
+      await sendConsolePrompt(targetSessionId, prompt);
+      setContinueDraft('');
+      setToast({ message: 'Message sent.', type: 'info' });
+      window.location.hash = `#/console?session=${encodeURIComponent(targetSessionId)}`;
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setContinueBusy(false);
+    }
+  }, [continueDisabledReason, continueDraft, conversationId, latestDagUuid, linkedConsoleSession]);
+
   if (loading) {
     return (
       <div className="conv-detail">
@@ -1688,6 +1784,31 @@ function ConversationDetail({
         </div>
       )}
 
+      <div className="conv-compose">
+        <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
+          <input
+            type="text"
+            className="conv-compose__input"
+            value={continueDraft}
+            onInput={(event) => setContinueDraft(event.currentTarget.value)}
+            placeholder="Message..."
+            disabled={continueBusy || !!continueDisabledReason}
+          />
+          <button
+            type="submit"
+            className="btn btn--success btn--sm"
+            disabled={continueBusy || !!continueDisabledReason || !continueDraft.trim()}
+          >
+            {continueBusy ? 'Sending...' : 'Send'}
+          </button>
+        </form>
+        {(continueError || continueDisabledReason) && (
+          <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
+            {continueError ?? continueDisabledReason}
+          </div>
+        )}
+      </div>
+
       {/* Toast notification */}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
 
@@ -1752,13 +1873,137 @@ function ChatHistoryItem({
   );
 }
 
+function ChatLiveSessionItem({
+  session,
+  isSelected,
+  onClick,
+  onClose,
+}: {
+  session: ConsoleSession;
+  isSelected: boolean;
+  onClick: () => void;
+  onClose: () => void;
+}): JSX.Element {
+  return (
+    <div
+      className={`chat-live-session${isSelected ? ' chat-live-session--selected' : ''}`}
+      onClick={onClick}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
+    >
+      <div className="chat-live-session__body">
+        <div className="chat-live-session__header">
+          <span className={`chat-live-session__status chat-live-session__status--${session.status}`} />
+          <span className="chat-live-session__agent">{getAgentLabel(session.agent_type)}</span>
+          <span className="chat-live-session__date">
+            {formatEpochRelativeTime(session.started_at ?? session.created_at)}
+          </span>
+        </div>
+        <div className="chat-live-session__title">{session.label || 'Untitled session'}</div>
+        <div className="chat-live-session__meta">
+          <span>{session.backend_type}</span>
+          {session.provider_session_id && <span>history linked</span>}
+          {session.unread_count > 0 && <span>{session.unread_count} unread</span>}
+        </div>
+      </div>
+      {!session.pinned && (
+        <button
+          type="button"
+          className="chat-live-session__close"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          title="Close session"
+        >
+          &times;
+        </button>
+      )}
+    </div>
+  );
+}
+
+function LiveSessionDetail({
+  session,
+  onClose,
+}: {
+  session: ConsoleSession;
+  onClose: (sessionId: string) => void;
+}): JSX.Element {
+  const [viewMode, setViewMode] = useState<ViewMode>('rich');
+  const canClose = !session.pinned;
+
+  return (
+    <div className="chat-live-detail">
+      <div className="chat-live-detail__header">
+        <div className="chat-live-detail__title-group">
+          <h2 className="chat-live-detail__title">{session.label || 'Untitled session'}</h2>
+          <div className="chat-live-detail__meta">
+            <span className={`chat-live-session__status chat-live-session__status--${session.status}`} />
+            <span>{getAgentLabel(session.agent_type)}</span>
+            <span>{session.status}</span>
+            <span>{session.backend_type}</span>
+          </div>
+        </div>
+        <div className="chat-live-detail__actions">
+          {session.provider_session_id && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => {
+                window.location.hash = `#/console?session=${encodeURIComponent(session.provider_session_id!)}`;
+              }}
+            >
+              View history
+            </button>
+          )}
+          {canClose && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => onClose(session.id)}
+            >
+              Close
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="chat-live-detail__pane">
+        <TerminalPane
+          sessionId={session.id}
+          agentType={session.agent_type}
+          backendType={session.backend_type}
+          allowedTools={session.allowed_tools}
+          command={session.command ?? session.agent_type}
+          sessionArgs={session.args ?? []}
+          isOperator={session.is_operator}
+          interactionMode={session.interaction_mode}
+          sessionStatus={session.status}
+          providerSessionId={session.provider_session_id}
+          isVisible
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          resumeAtMessage={session.resume_at_message}
+          channelEnabled={!!session.channel_enabled}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ── Main View ──
 
 export function ConversationsView({
   conversations: initialConversations,
   consoleSessions,
+  activeSessionId,
   initialConversationId,
   initialSessionId,
+  initialPresetId,
+  onSelectSession,
+  onCloseSession,
+  onNewSession,
 }: ConversationsViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 320,
@@ -1766,7 +2011,8 @@ export function ConversationsView({
     storageKey: 'sidebar-width:conversations',
   });
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<ChatSelection>(null);
+  const [dialogOpen, setDialogOpen] = useState(Boolean(initialPresetId));
   const [search, setSearch] = useState('');
   const [searchMode, setSearchMode] = useState<'title' | 'full'>('title');
   const [sourceFilter, setSourceFilter] = useState<ConversationSource | 'all'>('all');
@@ -1782,9 +2028,28 @@ export function ConversationsView({
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
 
+  const selectedConversationId = selection?.type === 'conversation' ? selection.id : null;
+  const selectedSessionId = selection?.type === 'session' ? selection.id : null;
+
+  const liveSessions = useMemo(() => {
+    return consoleSessions
+      .filter(isLiveConsoleSession)
+      .sort((a, b) => {
+        if (a.pinned && !b.pinned) return -1;
+        if (!a.pinned && b.pinned) return 1;
+        return (b.started_at ?? b.created_at) - (a.started_at ?? a.created_at);
+      });
+  }, [consoleSessions]);
+
+  useEffect(() => {
+    if (initialPresetId) {
+      setDialogOpen(true);
+    }
+  }, [initialPresetId]);
+
   useEffect(() => {
     if (!initialConversationId) return;
-    setSelectedId(initialConversationId);
+    setSelection({ type: 'conversation', id: initialConversationId });
   }, [initialConversationId]);
 
   useEffect(() => {
@@ -1797,13 +2062,30 @@ export function ConversationsView({
       };
     }
 
+    const liveById = consoleSessions.find((session) => session.id === initialSessionId);
+    if (liveById) {
+      setSelection({ type: 'session', id: liveById.id });
+      onSelectSession(liveById.id);
+      return () => {
+        active = false;
+      };
+    }
+
     const resolveConversation = (attemptsRemaining: number) => {
       void getConversations({ session_id: initialSessionId, limit: 1 })
         .then((result) => {
           if (!active) return;
           const resolvedId = result.conversations[0]?.id ?? null;
           if (resolvedId) {
-            setSelectedId(resolvedId);
+            setSelection({ type: 'conversation', id: resolvedId });
+            return;
+          }
+          const liveByProvider = consoleSessions.find(
+            (session) => session.provider_session_id === initialSessionId && isLiveConsoleSession(session),
+          );
+          if (liveByProvider && attemptsRemaining <= 0) {
+            setSelection({ type: 'session', id: liveByProvider.id });
+            onSelectSession(liveByProvider.id);
             return;
           }
           if (attemptsRemaining > 0) {
@@ -1826,7 +2108,7 @@ export function ConversationsView({
         window.clearTimeout(retryTimer);
       }
     };
-  }, [initialConversationId, initialSessionId]);
+  }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
 
   // Fetch conversations. Uses ref for offset to avoid stale closure.
   const fetchConversations = useCallback(async (reset = true) => {
@@ -1916,6 +2198,51 @@ export function ConversationsView({
     );
   }, [conversations, hideEmpty, search, searchMode]);
 
+  const selectedLiveSession = useMemo(() => {
+    if (!selectedSessionId) return null;
+    return consoleSessions.find((session) => session.id === selectedSessionId) ?? null;
+  }, [consoleSessions, selectedSessionId]);
+
+  useEffect(() => {
+    if (!selection) return;
+    if (selection.type !== 'session') return;
+    if (consoleSessions.some((session) => session.id === selection.id)) return;
+    setSelection(null);
+  }, [consoleSessions, selection]);
+
+  useEffect(() => {
+    if (selection) return;
+    const activeLiveSession = activeSessionId
+      ? (liveSessions.find((session) => session.id === activeSessionId) ?? liveSessions[0] ?? null)
+      : (liveSessions[0] ?? null);
+    if (activeLiveSession) {
+      setSelection({ type: 'session', id: activeLiveSession.id });
+      onSelectSession(activeLiveSession.id);
+      return;
+    }
+    const firstConversation = displayedConversations[0];
+    if (firstConversation) {
+      setSelection({ type: 'conversation', id: firstConversation.id });
+    }
+  }, [activeSessionId, displayedConversations, liveSessions, onSelectSession, selection]);
+
+  const handleSelectSession = (sessionId: string) => {
+    setSelection({ type: 'session', id: sessionId });
+    onSelectSession(sessionId);
+  };
+
+  const handleNewSession = (input: {
+    label: string;
+    backend: string;
+    kind: string;
+    backend_type: 'pty' | 'sdk' | 'spawn';
+    channel_enabled?: boolean;
+    presetIds?: string[];
+  }) => {
+    onNewSession(input);
+    setDialogOpen(false);
+  };
+
   return (
     <div className="chat-history-view">
       {/* Sidebar */}
@@ -1998,12 +2325,41 @@ export function ConversationsView({
 
         {/* List */}
         <div className="chat-history-list">
+          <div className="chat-history-section">
+            <div className="chat-history-section__header">
+              <span>Live</span>
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={() => setDialogOpen(true)}
+              >
+                New
+              </button>
+            </div>
+            {liveSessions.map((session) => (
+              <ChatLiveSessionItem
+                key={session.id}
+                session={session}
+                isSelected={selectedSessionId === session.id}
+                onClick={() => handleSelectSession(session.id)}
+                onClose={() => onCloseSession(session.id)}
+              />
+            ))}
+            {liveSessions.length === 0 && (
+              <div className="chat-history-empty chat-history-empty--compact">
+                No live sessions.
+              </div>
+            )}
+          </div>
+          <div className="chat-history-section__header chat-history-section__header--history">
+            <span>History</span>
+          </div>
           {displayedConversations.map((conv) => (
             <ChatHistoryItem
               key={conv.id}
               conversation={conv}
-              isSelected={selectedId === conv.id}
-              onClick={() => setSelectedId(conv.id)}
+              isSelected={selectedConversationId === conv.id}
+              onClick={() => setSelection({ type: 'conversation', id: conv.id })}
             />
           ))}
           {displayedConversations.length === 0 && !loading && (
@@ -2027,11 +2383,17 @@ export function ConversationsView({
 
       {/* Detail pane */}
       <div className="chat-history-detail">
-        {selectedId ? (
+        {selection?.type === 'conversation' ? (
           <ConversationDetail
-            conversationId={selectedId}
-            onNavigate={(id) => setSelectedId(id)}
+            conversationId={selection.id}
+            onNavigate={(id) => setSelection({ type: 'conversation', id })}
             consoleSessions={consoleSessions}
+          />
+        ) : selection?.type === 'session' && selectedLiveSession ? (
+          <LiveSessionDetail
+            key={selectedLiveSession.id}
+            session={selectedLiveSession}
+            onClose={onCloseSession}
           />
         ) : (
           <div className="chat-history-detail__empty">
@@ -2039,6 +2401,12 @@ export function ConversationsView({
           </div>
         )}
       </div>
+      <NewSessionDialog
+        open={dialogOpen}
+        onClose={() => setDialogOpen(false)}
+        onSubmit={handleNewSession}
+        initialPresetId={initialPresetId}
+      />
     </div>
   );
 }
