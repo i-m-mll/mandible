@@ -680,6 +680,7 @@ async function reconcile(runToken: number): Promise<void> {
   }
 
   const knownPaths = new Set<string>();
+  const scannedBases: string[] = [];
 
   // Get all known source_paths from DB
   const rows = db
@@ -699,6 +700,7 @@ async function reconcile(runToken: number): Promise<void> {
       return;
     }
     if (!fs.existsSync(config.base)) continue;
+    scannedBases.push(config.base);
     for await (const filePath of walkFiles(config.base, config.glob)) {
       if (!isCurrentIngestionRun(runToken)) {
         return;
@@ -717,6 +719,32 @@ async function reconcile(runToken: number): Promise<void> {
       } catch {
         // File inaccessible — skip
       }
+    }
+  }
+
+  const missingPaths = Array.from(dbPaths.keys()).filter((sourcePath) =>
+    scannedBases.some((base) => sourcePath === base || sourcePath.startsWith(`${base}${path.sep}`)) &&
+    !knownPaths.has(sourcePath)
+  );
+  if (missingPaths.length > 0) {
+    const deleteBlocks = db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?");
+    const deleteConversation = db.prepare("DELETE FROM conversations WHERE id = ?");
+    const findConversation = db.prepare(
+      "SELECT id, starred FROM conversations WHERE source_path = ?"
+    );
+    let removed = 0;
+    const cleanupMissing = db.transaction(() => {
+      for (const sourcePath of missingPaths) {
+        const row = findConversation.get(sourcePath) as { id: string; starred: number } | undefined;
+        if (!row || row.starred) continue;
+        deleteBlocks.run(row.id);
+        deleteConversation.run(row.id);
+        removed += 1;
+      }
+    });
+    cleanupMissing();
+    if (removed > 0) {
+      logger("info", "ingestion_cleanup_missing_sources", { removed });
     }
   }
 }

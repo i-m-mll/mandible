@@ -616,15 +616,21 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       return;
     }
 
-    const body = readBody<{ message_dag_uuid: string; label?: string }>(req);
+    const body = readBody<{ message_dag_uuid: string; label?: string; model?: string }>(req);
     if (!body.message_dag_uuid) {
       sendJson(res, 400, { error: "Missing message_dag_uuid" });
       return;
     }
 
     const conv = db
-      .prepare("SELECT session_id, title FROM conversations WHERE id = ?")
-      .get(id) as { session_id: string; title: string } | undefined;
+      .prepare("SELECT session_id, title, source, cwd, model FROM conversations WHERE id = ?")
+      .get(id) as {
+        session_id: string;
+        title: string;
+        source: string;
+        cwd: string | null;
+        model: string | null;
+      } | undefined;
     if (!conv) {
       sendJson(res, 404, { error: "Conversation not found" });
       return;
@@ -636,12 +642,29 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         return;
       }
 
+      const args: string[] = [];
+      const model = typeof body.model === "string" && body.model.trim()
+        ? body.model.trim()
+        : conv.model;
+      if (model) {
+        args.push("--model", model);
+      }
+
+      const command = conv.source === "codex"
+        ? "codex"
+        : conv.source === "gemini"
+          ? "gemini"
+          : "claude";
+      const backendType = command === "claude" ? "sdk" : "spawn";
+
       const newSession = sessionManager.create({
         label: body.label || conv.title || "Resumed conversation",
-        command: "claude",
-        backend_type: "sdk",
+        command,
+        args,
+        backend_type: backendType,
         provider_session_id: conv.session_id,
-        resume_at_message: body.message_dag_uuid,
+        resume_at_message: command === "claude" ? body.message_dag_uuid : null,
+        cwd: conv.cwd ?? undefined,
       });
 
       sendJson(res, 200, { console_session_id: newSession.id });
