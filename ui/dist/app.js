@@ -600,6 +600,7 @@ var api_exports = {};
 __export(api_exports, {
   ackAllInbox: () => ackAllInbox,
   acknowledgeInboxItem: () => acknowledgeInboxItem,
+  addLedgerIssueComment: () => addLedgerIssueComment,
   addPresetNode: () => addPresetNode,
   addSessionPreset: () => addSessionPreset,
   addSwitchboardPairing: () => addSwitchboardPairing,
@@ -652,6 +653,8 @@ __export(api_exports, {
   getIssueDetail: () => getIssueDetail,
   getIssueRepos: () => getIssueRepos,
   getIssueSessions: () => getIssueSessions,
+  getLedgerIssueDetail: () => getLedgerIssueDetail,
+  getLedgerIssueDetailByRef: () => getLedgerIssueDetailByRef,
   getLogs: () => getLogs,
   getMessageParams: () => getMessageParams,
   getNodeLinks: () => getNodeLinks,
@@ -683,6 +686,7 @@ __export(api_exports, {
   navigateSession: () => navigateSession,
   navigateToDesktopBootstrap: () => navigateToDesktopBootstrap,
   openPath: () => openPath,
+  patchLedgerIssue: () => patchLedgerIssue,
   patchSession: () => patchSession,
   pushRepo: () => pushRepo,
   pushRepos: () => pushRepos,
@@ -690,6 +694,7 @@ __export(api_exports, {
   removeSessionPreset: () => removeSessionPreset,
   reorderPresetNode: () => reorderPresetNode,
   resetRuntime: () => resetRuntime,
+  resolveLedgerConflict: () => resolveLedgerConflict,
   respondToConsolePermission: () => respondToConsolePermission,
   restartConsoleSession: () => restartConsoleSession,
   restartDesktopDaemon: () => restartDesktopDaemon,
@@ -701,6 +706,7 @@ __export(api_exports, {
   scanIssues: () => scanIssues,
   sendConsolePrompt: () => sendConsolePrompt,
   setDesktopDaemonLaunchMode: () => setDesktopDaemonLaunchMode,
+  setLedgerIssueLabel: () => setLedgerIssueLabel,
   setupDelegatedSigning: () => setupDelegatedSigning,
   spawnIssueAgent: () => spawnIssueAgent,
   starChat: () => starChat,
@@ -1108,6 +1114,35 @@ async function getIssueContext(repoId, issueId) {
     `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/context`
   );
   return await parseMaybeJson(response);
+}
+async function getLedgerIssueDetail(issueId) {
+  const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}`);
+  return await parseMaybeJson(response);
+}
+async function getLedgerIssueDetailByRef(repoId, issueId) {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail`
+  );
+  return await parseMaybeJson(response);
+}
+async function addLedgerIssueComment(issueId, body) {
+  const response = await apiPost(`/api/ledger/issues/${encodeURIComponent(issueId)}/comments`, { body });
+  return await parseMaybeJson(response);
+}
+async function patchLedgerIssue(issueId, body) {
+  const response = await apiPatch(`/api/ledger/issues/${encodeURIComponent(issueId)}`, body);
+  return await parseMaybeJson(response);
+}
+async function setLedgerIssueLabel(issueId, label, present) {
+  const response = await apiPost(`/api/ledger/issues/${encodeURIComponent(issueId)}/labels`, { label, present });
+  return await parseMaybeJson(response);
+}
+async function resolveLedgerConflict(conflictId, resolution, status = "resolved") {
+  const response = await apiPost(
+    `/api/ledger/conflicts/${encodeURIComponent(conflictId)}/resolve`,
+    { resolution, status }
+  );
+  return parseMaybeJson(response);
 }
 async function getIssueSessions(repoId, issueId) {
   const response = await apiGet(
@@ -12070,7 +12105,7 @@ var TYPE_HREF_MAP = {
 };
 function EntityPill({ type, id: id2, label, href, repoId }) {
   const resolvedHref = href ?? TYPE_HREF_MAP[type](id2, repoId);
-  const displayLabel = label ?? id2.slice(0, 8);
+  const displayLabel2 = label ?? id2.slice(0, 8);
   return /* @__PURE__ */ u3(
     "a",
     {
@@ -12078,7 +12113,7 @@ function EntityPill({ type, id: id2, label, href, repoId }) {
       href: resolvedHref,
       onClick: (e3) => e3.stopPropagation(),
       title: `${type}: ${id2}`,
-      children: displayLabel
+      children: displayLabel2
     }
   );
 }
@@ -14551,6 +14586,1403 @@ function InboxView({
 // ui/src/views/issues.tsx
 init_hooks_module();
 init_api();
+
+// ../../node_modules/dompurify/dist/purify.es.mjs
+var {
+  entries,
+  setPrototypeOf,
+  isFrozen,
+  getPrototypeOf,
+  getOwnPropertyDescriptor
+} = Object;
+var {
+  freeze,
+  seal,
+  create
+} = Object;
+var {
+  apply,
+  construct
+} = typeof Reflect !== "undefined" && Reflect;
+if (!freeze) {
+  freeze = function freeze2(x6) {
+    return x6;
+  };
+}
+if (!seal) {
+  seal = function seal2(x6) {
+    return x6;
+  };
+}
+if (!apply) {
+  apply = function apply2(func, thisArg) {
+    for (var _len = arguments.length, args = new Array(_len > 2 ? _len - 2 : 0), _key = 2; _key < _len; _key++) {
+      args[_key - 2] = arguments[_key];
+    }
+    return func.apply(thisArg, args);
+  };
+}
+if (!construct) {
+  construct = function construct2(Func) {
+    for (var _len2 = arguments.length, args = new Array(_len2 > 1 ? _len2 - 1 : 0), _key2 = 1; _key2 < _len2; _key2++) {
+      args[_key2 - 1] = arguments[_key2];
+    }
+    return new Func(...args);
+  };
+}
+var arrayForEach = unapply(Array.prototype.forEach);
+var arrayLastIndexOf = unapply(Array.prototype.lastIndexOf);
+var arrayPop = unapply(Array.prototype.pop);
+var arrayPush = unapply(Array.prototype.push);
+var arraySplice = unapply(Array.prototype.splice);
+var stringToLowerCase = unapply(String.prototype.toLowerCase);
+var stringToString = unapply(String.prototype.toString);
+var stringMatch = unapply(String.prototype.match);
+var stringReplace = unapply(String.prototype.replace);
+var stringIndexOf = unapply(String.prototype.indexOf);
+var stringTrim = unapply(String.prototype.trim);
+var objectHasOwnProperty = unapply(Object.prototype.hasOwnProperty);
+var regExpTest = unapply(RegExp.prototype.test);
+var typeErrorCreate = unconstruct(TypeError);
+function unapply(func) {
+  return function(thisArg) {
+    if (thisArg instanceof RegExp) {
+      thisArg.lastIndex = 0;
+    }
+    for (var _len3 = arguments.length, args = new Array(_len3 > 1 ? _len3 - 1 : 0), _key3 = 1; _key3 < _len3; _key3++) {
+      args[_key3 - 1] = arguments[_key3];
+    }
+    return apply(func, thisArg, args);
+  };
+}
+function unconstruct(Func) {
+  return function() {
+    for (var _len4 = arguments.length, args = new Array(_len4), _key4 = 0; _key4 < _len4; _key4++) {
+      args[_key4] = arguments[_key4];
+    }
+    return construct(Func, args);
+  };
+}
+function addToSet(set3, array2) {
+  let transformCaseFunc = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : stringToLowerCase;
+  if (setPrototypeOf) {
+    setPrototypeOf(set3, null);
+  }
+  let l3 = array2.length;
+  while (l3--) {
+    let element = array2[l3];
+    if (typeof element === "string") {
+      const lcElement = transformCaseFunc(element);
+      if (lcElement !== element) {
+        if (!isFrozen(array2)) {
+          array2[l3] = lcElement;
+        }
+        element = lcElement;
+      }
+    }
+    set3[element] = true;
+  }
+  return set3;
+}
+function cleanArray(array2) {
+  for (let index3 = 0; index3 < array2.length; index3++) {
+    const isPropertyExist = objectHasOwnProperty(array2, index3);
+    if (!isPropertyExist) {
+      array2[index3] = null;
+    }
+  }
+  return array2;
+}
+function clone(object) {
+  const newObject = create(null);
+  for (const [property, value] of entries(object)) {
+    const isPropertyExist = objectHasOwnProperty(object, property);
+    if (isPropertyExist) {
+      if (Array.isArray(value)) {
+        newObject[property] = cleanArray(value);
+      } else if (value && typeof value === "object" && value.constructor === Object) {
+        newObject[property] = clone(value);
+      } else {
+        newObject[property] = value;
+      }
+    }
+  }
+  return newObject;
+}
+function lookupGetter(object, prop) {
+  while (object !== null) {
+    const desc = getOwnPropertyDescriptor(object, prop);
+    if (desc) {
+      if (desc.get) {
+        return unapply(desc.get);
+      }
+      if (typeof desc.value === "function") {
+        return unapply(desc.value);
+      }
+    }
+    object = getPrototypeOf(object);
+  }
+  function fallbackValue() {
+    return null;
+  }
+  return fallbackValue;
+}
+var html$1 = freeze(["a", "abbr", "acronym", "address", "area", "article", "aside", "audio", "b", "bdi", "bdo", "big", "blink", "blockquote", "body", "br", "button", "canvas", "caption", "center", "cite", "code", "col", "colgroup", "content", "data", "datalist", "dd", "decorator", "del", "details", "dfn", "dialog", "dir", "div", "dl", "dt", "element", "em", "fieldset", "figcaption", "figure", "font", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hgroup", "hr", "html", "i", "img", "input", "ins", "kbd", "label", "legend", "li", "main", "map", "mark", "marquee", "menu", "menuitem", "meter", "nav", "nobr", "ol", "optgroup", "option", "output", "p", "picture", "pre", "progress", "q", "rp", "rt", "ruby", "s", "samp", "search", "section", "select", "shadow", "slot", "small", "source", "spacer", "span", "strike", "strong", "style", "sub", "summary", "sup", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "time", "tr", "track", "tt", "u", "ul", "var", "video", "wbr"]);
+var svg$1 = freeze(["svg", "a", "altglyph", "altglyphdef", "altglyphitem", "animatecolor", "animatemotion", "animatetransform", "circle", "clippath", "defs", "desc", "ellipse", "enterkeyhint", "exportparts", "filter", "font", "g", "glyph", "glyphref", "hkern", "image", "inputmode", "line", "lineargradient", "marker", "mask", "metadata", "mpath", "part", "path", "pattern", "polygon", "polyline", "radialgradient", "rect", "stop", "style", "switch", "symbol", "text", "textpath", "title", "tref", "tspan", "view", "vkern"]);
+var svgFilters = freeze(["feBlend", "feColorMatrix", "feComponentTransfer", "feComposite", "feConvolveMatrix", "feDiffuseLighting", "feDisplacementMap", "feDistantLight", "feDropShadow", "feFlood", "feFuncA", "feFuncB", "feFuncG", "feFuncR", "feGaussianBlur", "feImage", "feMerge", "feMergeNode", "feMorphology", "feOffset", "fePointLight", "feSpecularLighting", "feSpotLight", "feTile", "feTurbulence"]);
+var svgDisallowed = freeze(["animate", "color-profile", "cursor", "discard", "font-face", "font-face-format", "font-face-name", "font-face-src", "font-face-uri", "foreignobject", "hatch", "hatchpath", "mesh", "meshgradient", "meshpatch", "meshrow", "missing-glyph", "script", "set", "solidcolor", "unknown", "use"]);
+var mathMl$1 = freeze(["math", "menclose", "merror", "mfenced", "mfrac", "mglyph", "mi", "mlabeledtr", "mmultiscripts", "mn", "mo", "mover", "mpadded", "mphantom", "mroot", "mrow", "ms", "mspace", "msqrt", "mstyle", "msub", "msup", "msubsup", "mtable", "mtd", "mtext", "mtr", "munder", "munderover", "mprescripts"]);
+var mathMlDisallowed = freeze(["maction", "maligngroup", "malignmark", "mlongdiv", "mscarries", "mscarry", "msgroup", "mstack", "msline", "msrow", "semantics", "annotation", "annotation-xml", "mprescripts", "none"]);
+var text = freeze(["#text"]);
+var html2 = freeze(["accept", "action", "align", "alt", "autocapitalize", "autocomplete", "autopictureinpicture", "autoplay", "background", "bgcolor", "border", "capture", "cellpadding", "cellspacing", "checked", "cite", "class", "clear", "color", "cols", "colspan", "controls", "controlslist", "coords", "crossorigin", "datetime", "decoding", "default", "dir", "disabled", "disablepictureinpicture", "disableremoteplayback", "download", "draggable", "enctype", "enterkeyhint", "exportparts", "face", "for", "headers", "height", "hidden", "high", "href", "hreflang", "id", "inert", "inputmode", "integrity", "ismap", "kind", "label", "lang", "list", "loading", "loop", "low", "max", "maxlength", "media", "method", "min", "minlength", "multiple", "muted", "name", "nonce", "noshade", "novalidate", "nowrap", "open", "optimum", "part", "pattern", "placeholder", "playsinline", "popover", "popovertarget", "popovertargetaction", "poster", "preload", "pubdate", "radiogroup", "readonly", "rel", "required", "rev", "reversed", "role", "rows", "rowspan", "spellcheck", "scope", "selected", "shape", "size", "sizes", "slot", "span", "srclang", "start", "src", "srcset", "step", "style", "summary", "tabindex", "title", "translate", "type", "usemap", "valign", "value", "width", "wrap", "xmlns", "slot"]);
+var svg = freeze(["accent-height", "accumulate", "additive", "alignment-baseline", "amplitude", "ascent", "attributename", "attributetype", "azimuth", "basefrequency", "baseline-shift", "begin", "bias", "by", "class", "clip", "clippathunits", "clip-path", "clip-rule", "color", "color-interpolation", "color-interpolation-filters", "color-profile", "color-rendering", "cx", "cy", "d", "dx", "dy", "diffuseconstant", "direction", "display", "divisor", "dur", "edgemode", "elevation", "end", "exponent", "fill", "fill-opacity", "fill-rule", "filter", "filterunits", "flood-color", "flood-opacity", "font-family", "font-size", "font-size-adjust", "font-stretch", "font-style", "font-variant", "font-weight", "fx", "fy", "g1", "g2", "glyph-name", "glyphref", "gradientunits", "gradienttransform", "height", "href", "id", "image-rendering", "in", "in2", "intercept", "k", "k1", "k2", "k3", "k4", "kerning", "keypoints", "keysplines", "keytimes", "lang", "lengthadjust", "letter-spacing", "kernelmatrix", "kernelunitlength", "lighting-color", "local", "marker-end", "marker-mid", "marker-start", "markerheight", "markerunits", "markerwidth", "maskcontentunits", "maskunits", "max", "mask", "mask-type", "media", "method", "mode", "min", "name", "numoctaves", "offset", "operator", "opacity", "order", "orient", "orientation", "origin", "overflow", "paint-order", "path", "pathlength", "patterncontentunits", "patterntransform", "patternunits", "points", "preservealpha", "preserveaspectratio", "primitiveunits", "r", "rx", "ry", "radius", "refx", "refy", "repeatcount", "repeatdur", "restart", "result", "rotate", "scale", "seed", "shape-rendering", "slope", "specularconstant", "specularexponent", "spreadmethod", "startoffset", "stddeviation", "stitchtiles", "stop-color", "stop-opacity", "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-opacity", "stroke", "stroke-width", "style", "surfacescale", "systemlanguage", "tabindex", "tablevalues", "targetx", "targety", "transform", "transform-origin", "text-anchor", "text-decoration", "text-rendering", "textlength", "type", "u1", "u2", "unicode", "values", "viewbox", "visibility", "version", "vert-adv-y", "vert-origin-x", "vert-origin-y", "width", "word-spacing", "wrap", "writing-mode", "xchannelselector", "ychannelselector", "x", "x1", "x2", "xmlns", "y", "y1", "y2", "z", "zoomandpan"]);
+var mathMl = freeze(["accent", "accentunder", "align", "bevelled", "close", "columnsalign", "columnlines", "columnspan", "denomalign", "depth", "dir", "display", "displaystyle", "encoding", "fence", "frame", "height", "href", "id", "largeop", "length", "linethickness", "lspace", "lquote", "mathbackground", "mathcolor", "mathsize", "mathvariant", "maxsize", "minsize", "movablelimits", "notation", "numalign", "open", "rowalign", "rowlines", "rowspacing", "rowspan", "rspace", "rquote", "scriptlevel", "scriptminsize", "scriptsizemultiplier", "selection", "separator", "separators", "stretchy", "subscriptshift", "supscriptshift", "symmetric", "voffset", "width", "xmlns"]);
+var xml = freeze(["xlink:href", "xml:id", "xlink:title", "xml:space", "xmlns:xlink"]);
+var MUSTACHE_EXPR = seal(/\{\{[\w\W]*|[\w\W]*\}\}/gm);
+var ERB_EXPR = seal(/<%[\w\W]*|[\w\W]*%>/gm);
+var TMPLIT_EXPR = seal(/\$\{[\w\W]*/gm);
+var DATA_ATTR = seal(/^data-[\-\w.\u00B7-\uFFFF]+$/);
+var ARIA_ATTR = seal(/^aria-[\-\w]+$/);
+var IS_ALLOWED_URI = seal(
+  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+  // eslint-disable-line no-useless-escape
+);
+var IS_SCRIPT_OR_DATA = seal(/^(?:\w+script|data):/i);
+var ATTR_WHITESPACE = seal(
+  /[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g
+  // eslint-disable-line no-control-regex
+);
+var DOCTYPE_NAME = seal(/^html$/i);
+var CUSTOM_ELEMENT = seal(/^[a-z][.\w]*(-[.\w]+)+$/i);
+var EXPRESSIONS = /* @__PURE__ */ Object.freeze({
+  __proto__: null,
+  ARIA_ATTR,
+  ATTR_WHITESPACE,
+  CUSTOM_ELEMENT,
+  DATA_ATTR,
+  DOCTYPE_NAME,
+  ERB_EXPR,
+  IS_ALLOWED_URI,
+  IS_SCRIPT_OR_DATA,
+  MUSTACHE_EXPR,
+  TMPLIT_EXPR
+});
+var NODE_TYPE = {
+  element: 1,
+  attribute: 2,
+  text: 3,
+  cdataSection: 4,
+  entityReference: 5,
+  // Deprecated
+  entityNode: 6,
+  // Deprecated
+  progressingInstruction: 7,
+  comment: 8,
+  document: 9,
+  documentType: 10,
+  documentFragment: 11,
+  notation: 12
+  // Deprecated
+};
+var getGlobal = function getGlobal2() {
+  return typeof window === "undefined" ? null : window;
+};
+var _createTrustedTypesPolicy = function _createTrustedTypesPolicy2(trustedTypes, purifyHostElement) {
+  if (typeof trustedTypes !== "object" || typeof trustedTypes.createPolicy !== "function") {
+    return null;
+  }
+  let suffix = null;
+  const ATTR_NAME = "data-tt-policy-suffix";
+  if (purifyHostElement && purifyHostElement.hasAttribute(ATTR_NAME)) {
+    suffix = purifyHostElement.getAttribute(ATTR_NAME);
+  }
+  const policyName = "dompurify" + (suffix ? "#" + suffix : "");
+  try {
+    return trustedTypes.createPolicy(policyName, {
+      createHTML(html4) {
+        return html4;
+      },
+      createScriptURL(scriptUrl) {
+        return scriptUrl;
+      }
+    });
+  } catch (_3) {
+    console.warn("TrustedTypes policy " + policyName + " could not be created.");
+    return null;
+  }
+};
+var _createHooksMap = function _createHooksMap2() {
+  return {
+    afterSanitizeAttributes: [],
+    afterSanitizeElements: [],
+    afterSanitizeShadowDOM: [],
+    beforeSanitizeAttributes: [],
+    beforeSanitizeElements: [],
+    beforeSanitizeShadowDOM: [],
+    uponSanitizeAttribute: [],
+    uponSanitizeElement: [],
+    uponSanitizeShadowNode: []
+  };
+};
+function createDOMPurify() {
+  let window2 = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : getGlobal();
+  const DOMPurify = (root2) => createDOMPurify(root2);
+  DOMPurify.version = "3.3.3";
+  DOMPurify.removed = [];
+  if (!window2 || !window2.document || window2.document.nodeType !== NODE_TYPE.document || !window2.Element) {
+    DOMPurify.isSupported = false;
+    return DOMPurify;
+  }
+  let {
+    document: document2
+  } = window2;
+  const originalDocument = document2;
+  const currentScript = originalDocument.currentScript;
+  const {
+    DocumentFragment,
+    HTMLTemplateElement,
+    Node: Node2,
+    Element: Element2,
+    NodeFilter,
+    NamedNodeMap = window2.NamedNodeMap || window2.MozNamedAttrMap,
+    HTMLFormElement,
+    DOMParser,
+    trustedTypes
+  } = window2;
+  const ElementPrototype = Element2.prototype;
+  const cloneNode = lookupGetter(ElementPrototype, "cloneNode");
+  const remove2 = lookupGetter(ElementPrototype, "remove");
+  const getNextSibling = lookupGetter(ElementPrototype, "nextSibling");
+  const getChildNodes = lookupGetter(ElementPrototype, "childNodes");
+  const getParentNode = lookupGetter(ElementPrototype, "parentNode");
+  if (typeof HTMLTemplateElement === "function") {
+    const template = document2.createElement("template");
+    if (template.content && template.content.ownerDocument) {
+      document2 = template.content.ownerDocument;
+    }
+  }
+  let trustedTypesPolicy;
+  let emptyHTML = "";
+  const {
+    implementation,
+    createNodeIterator,
+    createDocumentFragment,
+    getElementsByTagName
+  } = document2;
+  const {
+    importNode
+  } = originalDocument;
+  let hooks = _createHooksMap();
+  DOMPurify.isSupported = typeof entries === "function" && typeof getParentNode === "function" && implementation && implementation.createHTMLDocument !== void 0;
+  const {
+    MUSTACHE_EXPR: MUSTACHE_EXPR2,
+    ERB_EXPR: ERB_EXPR2,
+    TMPLIT_EXPR: TMPLIT_EXPR2,
+    DATA_ATTR: DATA_ATTR2,
+    ARIA_ATTR: ARIA_ATTR2,
+    IS_SCRIPT_OR_DATA: IS_SCRIPT_OR_DATA2,
+    ATTR_WHITESPACE: ATTR_WHITESPACE2,
+    CUSTOM_ELEMENT: CUSTOM_ELEMENT2
+  } = EXPRESSIONS;
+  let {
+    IS_ALLOWED_URI: IS_ALLOWED_URI$1
+  } = EXPRESSIONS;
+  let ALLOWED_TAGS = null;
+  const DEFAULT_ALLOWED_TAGS = addToSet({}, [...html$1, ...svg$1, ...svgFilters, ...mathMl$1, ...text]);
+  let ALLOWED_ATTR = null;
+  const DEFAULT_ALLOWED_ATTR = addToSet({}, [...html2, ...svg, ...mathMl, ...xml]);
+  let CUSTOM_ELEMENT_HANDLING = Object.seal(create(null, {
+    tagNameCheck: {
+      writable: true,
+      configurable: false,
+      enumerable: true,
+      value: null
+    },
+    attributeNameCheck: {
+      writable: true,
+      configurable: false,
+      enumerable: true,
+      value: null
+    },
+    allowCustomizedBuiltInElements: {
+      writable: true,
+      configurable: false,
+      enumerable: true,
+      value: false
+    }
+  }));
+  let FORBID_TAGS = null;
+  let FORBID_ATTR = null;
+  const EXTRA_ELEMENT_HANDLING = Object.seal(create(null, {
+    tagCheck: {
+      writable: true,
+      configurable: false,
+      enumerable: true,
+      value: null
+    },
+    attributeCheck: {
+      writable: true,
+      configurable: false,
+      enumerable: true,
+      value: null
+    }
+  }));
+  let ALLOW_ARIA_ATTR = true;
+  let ALLOW_DATA_ATTR = true;
+  let ALLOW_UNKNOWN_PROTOCOLS = false;
+  let ALLOW_SELF_CLOSE_IN_ATTR = true;
+  let SAFE_FOR_TEMPLATES = false;
+  let SAFE_FOR_XML = true;
+  let WHOLE_DOCUMENT = false;
+  let SET_CONFIG = false;
+  let FORCE_BODY = false;
+  let RETURN_DOM = false;
+  let RETURN_DOM_FRAGMENT = false;
+  let RETURN_TRUSTED_TYPE = false;
+  let SANITIZE_DOM = true;
+  let SANITIZE_NAMED_PROPS = false;
+  const SANITIZE_NAMED_PROPS_PREFIX = "user-content-";
+  let KEEP_CONTENT = true;
+  let IN_PLACE = false;
+  let USE_PROFILES = {};
+  let FORBID_CONTENTS = null;
+  const DEFAULT_FORBID_CONTENTS = addToSet({}, ["annotation-xml", "audio", "colgroup", "desc", "foreignobject", "head", "iframe", "math", "mi", "mn", "mo", "ms", "mtext", "noembed", "noframes", "noscript", "plaintext", "script", "style", "svg", "template", "thead", "title", "video", "xmp"]);
+  let DATA_URI_TAGS = null;
+  const DEFAULT_DATA_URI_TAGS = addToSet({}, ["audio", "video", "img", "source", "image", "track"]);
+  let URI_SAFE_ATTRIBUTES = null;
+  const DEFAULT_URI_SAFE_ATTRIBUTES = addToSet({}, ["alt", "class", "for", "id", "label", "name", "pattern", "placeholder", "role", "summary", "title", "value", "style", "xmlns"]);
+  const MATHML_NAMESPACE = "http://www.w3.org/1998/Math/MathML";
+  const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+  const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+  let NAMESPACE = HTML_NAMESPACE;
+  let IS_EMPTY_INPUT = false;
+  let ALLOWED_NAMESPACES = null;
+  const DEFAULT_ALLOWED_NAMESPACES = addToSet({}, [MATHML_NAMESPACE, SVG_NAMESPACE, HTML_NAMESPACE], stringToString);
+  let MATHML_TEXT_INTEGRATION_POINTS = addToSet({}, ["mi", "mo", "mn", "ms", "mtext"]);
+  let HTML_INTEGRATION_POINTS = addToSet({}, ["annotation-xml"]);
+  const COMMON_SVG_AND_HTML_ELEMENTS = addToSet({}, ["title", "style", "font", "a", "script"]);
+  let PARSER_MEDIA_TYPE = null;
+  const SUPPORTED_PARSER_MEDIA_TYPES = ["application/xhtml+xml", "text/html"];
+  const DEFAULT_PARSER_MEDIA_TYPE = "text/html";
+  let transformCaseFunc = null;
+  let CONFIG = null;
+  const formElement = document2.createElement("form");
+  const isRegexOrFunction = function isRegexOrFunction2(testValue) {
+    return testValue instanceof RegExp || testValue instanceof Function;
+  };
+  const _parseConfig = function _parseConfig2() {
+    let cfg = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : {};
+    if (CONFIG && CONFIG === cfg) {
+      return;
+    }
+    if (!cfg || typeof cfg !== "object") {
+      cfg = {};
+    }
+    cfg = clone(cfg);
+    PARSER_MEDIA_TYPE = // eslint-disable-next-line unicorn/prefer-includes
+    SUPPORTED_PARSER_MEDIA_TYPES.indexOf(cfg.PARSER_MEDIA_TYPE) === -1 ? DEFAULT_PARSER_MEDIA_TYPE : cfg.PARSER_MEDIA_TYPE;
+    transformCaseFunc = PARSER_MEDIA_TYPE === "application/xhtml+xml" ? stringToString : stringToLowerCase;
+    ALLOWED_TAGS = objectHasOwnProperty(cfg, "ALLOWED_TAGS") ? addToSet({}, cfg.ALLOWED_TAGS, transformCaseFunc) : DEFAULT_ALLOWED_TAGS;
+    ALLOWED_ATTR = objectHasOwnProperty(cfg, "ALLOWED_ATTR") ? addToSet({}, cfg.ALLOWED_ATTR, transformCaseFunc) : DEFAULT_ALLOWED_ATTR;
+    ALLOWED_NAMESPACES = objectHasOwnProperty(cfg, "ALLOWED_NAMESPACES") ? addToSet({}, cfg.ALLOWED_NAMESPACES, stringToString) : DEFAULT_ALLOWED_NAMESPACES;
+    URI_SAFE_ATTRIBUTES = objectHasOwnProperty(cfg, "ADD_URI_SAFE_ATTR") ? addToSet(clone(DEFAULT_URI_SAFE_ATTRIBUTES), cfg.ADD_URI_SAFE_ATTR, transformCaseFunc) : DEFAULT_URI_SAFE_ATTRIBUTES;
+    DATA_URI_TAGS = objectHasOwnProperty(cfg, "ADD_DATA_URI_TAGS") ? addToSet(clone(DEFAULT_DATA_URI_TAGS), cfg.ADD_DATA_URI_TAGS, transformCaseFunc) : DEFAULT_DATA_URI_TAGS;
+    FORBID_CONTENTS = objectHasOwnProperty(cfg, "FORBID_CONTENTS") ? addToSet({}, cfg.FORBID_CONTENTS, transformCaseFunc) : DEFAULT_FORBID_CONTENTS;
+    FORBID_TAGS = objectHasOwnProperty(cfg, "FORBID_TAGS") ? addToSet({}, cfg.FORBID_TAGS, transformCaseFunc) : clone({});
+    FORBID_ATTR = objectHasOwnProperty(cfg, "FORBID_ATTR") ? addToSet({}, cfg.FORBID_ATTR, transformCaseFunc) : clone({});
+    USE_PROFILES = objectHasOwnProperty(cfg, "USE_PROFILES") ? cfg.USE_PROFILES : false;
+    ALLOW_ARIA_ATTR = cfg.ALLOW_ARIA_ATTR !== false;
+    ALLOW_DATA_ATTR = cfg.ALLOW_DATA_ATTR !== false;
+    ALLOW_UNKNOWN_PROTOCOLS = cfg.ALLOW_UNKNOWN_PROTOCOLS || false;
+    ALLOW_SELF_CLOSE_IN_ATTR = cfg.ALLOW_SELF_CLOSE_IN_ATTR !== false;
+    SAFE_FOR_TEMPLATES = cfg.SAFE_FOR_TEMPLATES || false;
+    SAFE_FOR_XML = cfg.SAFE_FOR_XML !== false;
+    WHOLE_DOCUMENT = cfg.WHOLE_DOCUMENT || false;
+    RETURN_DOM = cfg.RETURN_DOM || false;
+    RETURN_DOM_FRAGMENT = cfg.RETURN_DOM_FRAGMENT || false;
+    RETURN_TRUSTED_TYPE = cfg.RETURN_TRUSTED_TYPE || false;
+    FORCE_BODY = cfg.FORCE_BODY || false;
+    SANITIZE_DOM = cfg.SANITIZE_DOM !== false;
+    SANITIZE_NAMED_PROPS = cfg.SANITIZE_NAMED_PROPS || false;
+    KEEP_CONTENT = cfg.KEEP_CONTENT !== false;
+    IN_PLACE = cfg.IN_PLACE || false;
+    IS_ALLOWED_URI$1 = cfg.ALLOWED_URI_REGEXP || IS_ALLOWED_URI;
+    NAMESPACE = cfg.NAMESPACE || HTML_NAMESPACE;
+    MATHML_TEXT_INTEGRATION_POINTS = cfg.MATHML_TEXT_INTEGRATION_POINTS || MATHML_TEXT_INTEGRATION_POINTS;
+    HTML_INTEGRATION_POINTS = cfg.HTML_INTEGRATION_POINTS || HTML_INTEGRATION_POINTS;
+    CUSTOM_ELEMENT_HANDLING = cfg.CUSTOM_ELEMENT_HANDLING || {};
+    if (cfg.CUSTOM_ELEMENT_HANDLING && isRegexOrFunction(cfg.CUSTOM_ELEMENT_HANDLING.tagNameCheck)) {
+      CUSTOM_ELEMENT_HANDLING.tagNameCheck = cfg.CUSTOM_ELEMENT_HANDLING.tagNameCheck;
+    }
+    if (cfg.CUSTOM_ELEMENT_HANDLING && isRegexOrFunction(cfg.CUSTOM_ELEMENT_HANDLING.attributeNameCheck)) {
+      CUSTOM_ELEMENT_HANDLING.attributeNameCheck = cfg.CUSTOM_ELEMENT_HANDLING.attributeNameCheck;
+    }
+    if (cfg.CUSTOM_ELEMENT_HANDLING && typeof cfg.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements === "boolean") {
+      CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements = cfg.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements;
+    }
+    if (SAFE_FOR_TEMPLATES) {
+      ALLOW_DATA_ATTR = false;
+    }
+    if (RETURN_DOM_FRAGMENT) {
+      RETURN_DOM = true;
+    }
+    if (USE_PROFILES) {
+      ALLOWED_TAGS = addToSet({}, text);
+      ALLOWED_ATTR = create(null);
+      if (USE_PROFILES.html === true) {
+        addToSet(ALLOWED_TAGS, html$1);
+        addToSet(ALLOWED_ATTR, html2);
+      }
+      if (USE_PROFILES.svg === true) {
+        addToSet(ALLOWED_TAGS, svg$1);
+        addToSet(ALLOWED_ATTR, svg);
+        addToSet(ALLOWED_ATTR, xml);
+      }
+      if (USE_PROFILES.svgFilters === true) {
+        addToSet(ALLOWED_TAGS, svgFilters);
+        addToSet(ALLOWED_ATTR, svg);
+        addToSet(ALLOWED_ATTR, xml);
+      }
+      if (USE_PROFILES.mathMl === true) {
+        addToSet(ALLOWED_TAGS, mathMl$1);
+        addToSet(ALLOWED_ATTR, mathMl);
+        addToSet(ALLOWED_ATTR, xml);
+      }
+    }
+    if (!objectHasOwnProperty(cfg, "ADD_TAGS")) {
+      EXTRA_ELEMENT_HANDLING.tagCheck = null;
+    }
+    if (!objectHasOwnProperty(cfg, "ADD_ATTR")) {
+      EXTRA_ELEMENT_HANDLING.attributeCheck = null;
+    }
+    if (cfg.ADD_TAGS) {
+      if (typeof cfg.ADD_TAGS === "function") {
+        EXTRA_ELEMENT_HANDLING.tagCheck = cfg.ADD_TAGS;
+      } else {
+        if (ALLOWED_TAGS === DEFAULT_ALLOWED_TAGS) {
+          ALLOWED_TAGS = clone(ALLOWED_TAGS);
+        }
+        addToSet(ALLOWED_TAGS, cfg.ADD_TAGS, transformCaseFunc);
+      }
+    }
+    if (cfg.ADD_ATTR) {
+      if (typeof cfg.ADD_ATTR === "function") {
+        EXTRA_ELEMENT_HANDLING.attributeCheck = cfg.ADD_ATTR;
+      } else {
+        if (ALLOWED_ATTR === DEFAULT_ALLOWED_ATTR) {
+          ALLOWED_ATTR = clone(ALLOWED_ATTR);
+        }
+        addToSet(ALLOWED_ATTR, cfg.ADD_ATTR, transformCaseFunc);
+      }
+    }
+    if (cfg.ADD_URI_SAFE_ATTR) {
+      addToSet(URI_SAFE_ATTRIBUTES, cfg.ADD_URI_SAFE_ATTR, transformCaseFunc);
+    }
+    if (cfg.FORBID_CONTENTS) {
+      if (FORBID_CONTENTS === DEFAULT_FORBID_CONTENTS) {
+        FORBID_CONTENTS = clone(FORBID_CONTENTS);
+      }
+      addToSet(FORBID_CONTENTS, cfg.FORBID_CONTENTS, transformCaseFunc);
+    }
+    if (cfg.ADD_FORBID_CONTENTS) {
+      if (FORBID_CONTENTS === DEFAULT_FORBID_CONTENTS) {
+        FORBID_CONTENTS = clone(FORBID_CONTENTS);
+      }
+      addToSet(FORBID_CONTENTS, cfg.ADD_FORBID_CONTENTS, transformCaseFunc);
+    }
+    if (KEEP_CONTENT) {
+      ALLOWED_TAGS["#text"] = true;
+    }
+    if (WHOLE_DOCUMENT) {
+      addToSet(ALLOWED_TAGS, ["html", "head", "body"]);
+    }
+    if (ALLOWED_TAGS.table) {
+      addToSet(ALLOWED_TAGS, ["tbody"]);
+      delete FORBID_TAGS.tbody;
+    }
+    if (cfg.TRUSTED_TYPES_POLICY) {
+      if (typeof cfg.TRUSTED_TYPES_POLICY.createHTML !== "function") {
+        throw typeErrorCreate('TRUSTED_TYPES_POLICY configuration option must provide a "createHTML" hook.');
+      }
+      if (typeof cfg.TRUSTED_TYPES_POLICY.createScriptURL !== "function") {
+        throw typeErrorCreate('TRUSTED_TYPES_POLICY configuration option must provide a "createScriptURL" hook.');
+      }
+      trustedTypesPolicy = cfg.TRUSTED_TYPES_POLICY;
+      emptyHTML = trustedTypesPolicy.createHTML("");
+    } else {
+      if (trustedTypesPolicy === void 0) {
+        trustedTypesPolicy = _createTrustedTypesPolicy(trustedTypes, currentScript);
+      }
+      if (trustedTypesPolicy !== null && typeof emptyHTML === "string") {
+        emptyHTML = trustedTypesPolicy.createHTML("");
+      }
+    }
+    if (freeze) {
+      freeze(cfg);
+    }
+    CONFIG = cfg;
+  };
+  const ALL_SVG_TAGS = addToSet({}, [...svg$1, ...svgFilters, ...svgDisallowed]);
+  const ALL_MATHML_TAGS = addToSet({}, [...mathMl$1, ...mathMlDisallowed]);
+  const _checkValidNamespace = function _checkValidNamespace2(element) {
+    let parent = getParentNode(element);
+    if (!parent || !parent.tagName) {
+      parent = {
+        namespaceURI: NAMESPACE,
+        tagName: "template"
+      };
+    }
+    const tagName = stringToLowerCase(element.tagName);
+    const parentTagName = stringToLowerCase(parent.tagName);
+    if (!ALLOWED_NAMESPACES[element.namespaceURI]) {
+      return false;
+    }
+    if (element.namespaceURI === SVG_NAMESPACE) {
+      if (parent.namespaceURI === HTML_NAMESPACE) {
+        return tagName === "svg";
+      }
+      if (parent.namespaceURI === MATHML_NAMESPACE) {
+        return tagName === "svg" && (parentTagName === "annotation-xml" || MATHML_TEXT_INTEGRATION_POINTS[parentTagName]);
+      }
+      return Boolean(ALL_SVG_TAGS[tagName]);
+    }
+    if (element.namespaceURI === MATHML_NAMESPACE) {
+      if (parent.namespaceURI === HTML_NAMESPACE) {
+        return tagName === "math";
+      }
+      if (parent.namespaceURI === SVG_NAMESPACE) {
+        return tagName === "math" && HTML_INTEGRATION_POINTS[parentTagName];
+      }
+      return Boolean(ALL_MATHML_TAGS[tagName]);
+    }
+    if (element.namespaceURI === HTML_NAMESPACE) {
+      if (parent.namespaceURI === SVG_NAMESPACE && !HTML_INTEGRATION_POINTS[parentTagName]) {
+        return false;
+      }
+      if (parent.namespaceURI === MATHML_NAMESPACE && !MATHML_TEXT_INTEGRATION_POINTS[parentTagName]) {
+        return false;
+      }
+      return !ALL_MATHML_TAGS[tagName] && (COMMON_SVG_AND_HTML_ELEMENTS[tagName] || !ALL_SVG_TAGS[tagName]);
+    }
+    if (PARSER_MEDIA_TYPE === "application/xhtml+xml" && ALLOWED_NAMESPACES[element.namespaceURI]) {
+      return true;
+    }
+    return false;
+  };
+  const _forceRemove = function _forceRemove2(node) {
+    arrayPush(DOMPurify.removed, {
+      element: node
+    });
+    try {
+      getParentNode(node).removeChild(node);
+    } catch (_3) {
+      remove2(node);
+    }
+  };
+  const _removeAttribute = function _removeAttribute2(name, element) {
+    try {
+      arrayPush(DOMPurify.removed, {
+        attribute: element.getAttributeNode(name),
+        from: element
+      });
+    } catch (_3) {
+      arrayPush(DOMPurify.removed, {
+        attribute: null,
+        from: element
+      });
+    }
+    element.removeAttribute(name);
+    if (name === "is") {
+      if (RETURN_DOM || RETURN_DOM_FRAGMENT) {
+        try {
+          _forceRemove(element);
+        } catch (_3) {
+        }
+      } else {
+        try {
+          element.setAttribute(name, "");
+        } catch (_3) {
+        }
+      }
+    }
+  };
+  const _initDocument = function _initDocument2(dirty) {
+    let doc = null;
+    let leadingWhitespace = null;
+    if (FORCE_BODY) {
+      dirty = "<remove></remove>" + dirty;
+    } else {
+      const matches = stringMatch(dirty, /^[\r\n\t ]+/);
+      leadingWhitespace = matches && matches[0];
+    }
+    if (PARSER_MEDIA_TYPE === "application/xhtml+xml" && NAMESPACE === HTML_NAMESPACE) {
+      dirty = '<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>' + dirty + "</body></html>";
+    }
+    const dirtyPayload = trustedTypesPolicy ? trustedTypesPolicy.createHTML(dirty) : dirty;
+    if (NAMESPACE === HTML_NAMESPACE) {
+      try {
+        doc = new DOMParser().parseFromString(dirtyPayload, PARSER_MEDIA_TYPE);
+      } catch (_3) {
+      }
+    }
+    if (!doc || !doc.documentElement) {
+      doc = implementation.createDocument(NAMESPACE, "template", null);
+      try {
+        doc.documentElement.innerHTML = IS_EMPTY_INPUT ? emptyHTML : dirtyPayload;
+      } catch (_3) {
+      }
+    }
+    const body = doc.body || doc.documentElement;
+    if (dirty && leadingWhitespace) {
+      body.insertBefore(document2.createTextNode(leadingWhitespace), body.childNodes[0] || null);
+    }
+    if (NAMESPACE === HTML_NAMESPACE) {
+      return getElementsByTagName.call(doc, WHOLE_DOCUMENT ? "html" : "body")[0];
+    }
+    return WHOLE_DOCUMENT ? doc.documentElement : body;
+  };
+  const _createNodeIterator = function _createNodeIterator2(root2) {
+    return createNodeIterator.call(
+      root2.ownerDocument || root2,
+      root2,
+      // eslint-disable-next-line no-bitwise
+      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_TEXT | NodeFilter.SHOW_PROCESSING_INSTRUCTION | NodeFilter.SHOW_CDATA_SECTION,
+      null
+    );
+  };
+  const _isClobbered = function _isClobbered2(element) {
+    return element instanceof HTMLFormElement && (typeof element.nodeName !== "string" || typeof element.textContent !== "string" || typeof element.removeChild !== "function" || !(element.attributes instanceof NamedNodeMap) || typeof element.removeAttribute !== "function" || typeof element.setAttribute !== "function" || typeof element.namespaceURI !== "string" || typeof element.insertBefore !== "function" || typeof element.hasChildNodes !== "function");
+  };
+  const _isNode = function _isNode2(value) {
+    return typeof Node2 === "function" && value instanceof Node2;
+  };
+  function _executeHooks(hooks2, currentNode, data) {
+    arrayForEach(hooks2, (hook) => {
+      hook.call(DOMPurify, currentNode, data, CONFIG);
+    });
+  }
+  const _sanitizeElements = function _sanitizeElements2(currentNode) {
+    let content = null;
+    _executeHooks(hooks.beforeSanitizeElements, currentNode, null);
+    if (_isClobbered(currentNode)) {
+      _forceRemove(currentNode);
+      return true;
+    }
+    const tagName = transformCaseFunc(currentNode.nodeName);
+    _executeHooks(hooks.uponSanitizeElement, currentNode, {
+      tagName,
+      allowedTags: ALLOWED_TAGS
+    });
+    if (SAFE_FOR_XML && currentNode.hasChildNodes() && !_isNode(currentNode.firstElementChild) && regExpTest(/<[/\w!]/g, currentNode.innerHTML) && regExpTest(/<[/\w!]/g, currentNode.textContent)) {
+      _forceRemove(currentNode);
+      return true;
+    }
+    if (currentNode.nodeType === NODE_TYPE.progressingInstruction) {
+      _forceRemove(currentNode);
+      return true;
+    }
+    if (SAFE_FOR_XML && currentNode.nodeType === NODE_TYPE.comment && regExpTest(/<[/\w]/g, currentNode.data)) {
+      _forceRemove(currentNode);
+      return true;
+    }
+    if (!(EXTRA_ELEMENT_HANDLING.tagCheck instanceof Function && EXTRA_ELEMENT_HANDLING.tagCheck(tagName)) && (!ALLOWED_TAGS[tagName] || FORBID_TAGS[tagName])) {
+      if (!FORBID_TAGS[tagName] && _isBasicCustomElement(tagName)) {
+        if (CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof RegExp && regExpTest(CUSTOM_ELEMENT_HANDLING.tagNameCheck, tagName)) {
+          return false;
+        }
+        if (CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof Function && CUSTOM_ELEMENT_HANDLING.tagNameCheck(tagName)) {
+          return false;
+        }
+      }
+      if (KEEP_CONTENT && !FORBID_CONTENTS[tagName]) {
+        const parentNode = getParentNode(currentNode) || currentNode.parentNode;
+        const childNodes = getChildNodes(currentNode) || currentNode.childNodes;
+        if (childNodes && parentNode) {
+          const childCount = childNodes.length;
+          for (let i4 = childCount - 1; i4 >= 0; --i4) {
+            const childClone = cloneNode(childNodes[i4], true);
+            childClone.__removalCount = (currentNode.__removalCount || 0) + 1;
+            parentNode.insertBefore(childClone, getNextSibling(currentNode));
+          }
+        }
+      }
+      _forceRemove(currentNode);
+      return true;
+    }
+    if (currentNode instanceof Element2 && !_checkValidNamespace(currentNode)) {
+      _forceRemove(currentNode);
+      return true;
+    }
+    if ((tagName === "noscript" || tagName === "noembed" || tagName === "noframes") && regExpTest(/<\/no(script|embed|frames)/i, currentNode.innerHTML)) {
+      _forceRemove(currentNode);
+      return true;
+    }
+    if (SAFE_FOR_TEMPLATES && currentNode.nodeType === NODE_TYPE.text) {
+      content = currentNode.textContent;
+      arrayForEach([MUSTACHE_EXPR2, ERB_EXPR2, TMPLIT_EXPR2], (expr) => {
+        content = stringReplace(content, expr, " ");
+      });
+      if (currentNode.textContent !== content) {
+        arrayPush(DOMPurify.removed, {
+          element: currentNode.cloneNode()
+        });
+        currentNode.textContent = content;
+      }
+    }
+    _executeHooks(hooks.afterSanitizeElements, currentNode, null);
+    return false;
+  };
+  const _isValidAttribute = function _isValidAttribute2(lcTag, lcName, value) {
+    if (FORBID_ATTR[lcName]) {
+      return false;
+    }
+    if (SANITIZE_DOM && (lcName === "id" || lcName === "name") && (value in document2 || value in formElement)) {
+      return false;
+    }
+    if (ALLOW_DATA_ATTR && !FORBID_ATTR[lcName] && regExpTest(DATA_ATTR2, lcName))
+      ;
+    else if (ALLOW_ARIA_ATTR && regExpTest(ARIA_ATTR2, lcName))
+      ;
+    else if (EXTRA_ELEMENT_HANDLING.attributeCheck instanceof Function && EXTRA_ELEMENT_HANDLING.attributeCheck(lcName, lcTag))
+      ;
+    else if (!ALLOWED_ATTR[lcName] || FORBID_ATTR[lcName]) {
+      if (
+        // First condition does a very basic check if a) it's basically a valid custom element tagname AND
+        // b) if the tagName passes whatever the user has configured for CUSTOM_ELEMENT_HANDLING.tagNameCheck
+        // and c) if the attribute name passes whatever the user has configured for CUSTOM_ELEMENT_HANDLING.attributeNameCheck
+        _isBasicCustomElement(lcTag) && (CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof RegExp && regExpTest(CUSTOM_ELEMENT_HANDLING.tagNameCheck, lcTag) || CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof Function && CUSTOM_ELEMENT_HANDLING.tagNameCheck(lcTag)) && (CUSTOM_ELEMENT_HANDLING.attributeNameCheck instanceof RegExp && regExpTest(CUSTOM_ELEMENT_HANDLING.attributeNameCheck, lcName) || CUSTOM_ELEMENT_HANDLING.attributeNameCheck instanceof Function && CUSTOM_ELEMENT_HANDLING.attributeNameCheck(lcName, lcTag)) || // Alternative, second condition checks if it's an `is`-attribute, AND
+        // the value passes whatever the user has configured for CUSTOM_ELEMENT_HANDLING.tagNameCheck
+        lcName === "is" && CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements && (CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof RegExp && regExpTest(CUSTOM_ELEMENT_HANDLING.tagNameCheck, value) || CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof Function && CUSTOM_ELEMENT_HANDLING.tagNameCheck(value))
+      )
+        ;
+      else {
+        return false;
+      }
+    } else if (URI_SAFE_ATTRIBUTES[lcName])
+      ;
+    else if (regExpTest(IS_ALLOWED_URI$1, stringReplace(value, ATTR_WHITESPACE2, "")))
+      ;
+    else if ((lcName === "src" || lcName === "xlink:href" || lcName === "href") && lcTag !== "script" && stringIndexOf(value, "data:") === 0 && DATA_URI_TAGS[lcTag])
+      ;
+    else if (ALLOW_UNKNOWN_PROTOCOLS && !regExpTest(IS_SCRIPT_OR_DATA2, stringReplace(value, ATTR_WHITESPACE2, "")))
+      ;
+    else if (value) {
+      return false;
+    } else
+      ;
+    return true;
+  };
+  const _isBasicCustomElement = function _isBasicCustomElement2(tagName) {
+    return tagName !== "annotation-xml" && stringMatch(tagName, CUSTOM_ELEMENT2);
+  };
+  const _sanitizeAttributes = function _sanitizeAttributes2(currentNode) {
+    _executeHooks(hooks.beforeSanitizeAttributes, currentNode, null);
+    const {
+      attributes
+    } = currentNode;
+    if (!attributes || _isClobbered(currentNode)) {
+      return;
+    }
+    const hookEvent = {
+      attrName: "",
+      attrValue: "",
+      keepAttr: true,
+      allowedAttributes: ALLOWED_ATTR,
+      forceKeepAttr: void 0
+    };
+    let l3 = attributes.length;
+    while (l3--) {
+      const attr = attributes[l3];
+      const {
+        name,
+        namespaceURI,
+        value: attrValue
+      } = attr;
+      const lcName = transformCaseFunc(name);
+      const initValue = attrValue;
+      let value = name === "value" ? initValue : stringTrim(initValue);
+      hookEvent.attrName = lcName;
+      hookEvent.attrValue = value;
+      hookEvent.keepAttr = true;
+      hookEvent.forceKeepAttr = void 0;
+      _executeHooks(hooks.uponSanitizeAttribute, currentNode, hookEvent);
+      value = hookEvent.attrValue;
+      if (SANITIZE_NAMED_PROPS && (lcName === "id" || lcName === "name")) {
+        _removeAttribute(name, currentNode);
+        value = SANITIZE_NAMED_PROPS_PREFIX + value;
+      }
+      if (SAFE_FOR_XML && regExpTest(/((--!?|])>)|<\/(style|script|title|xmp|textarea|noscript|iframe|noembed|noframes)/i, value)) {
+        _removeAttribute(name, currentNode);
+        continue;
+      }
+      if (lcName === "attributename" && stringMatch(value, "href")) {
+        _removeAttribute(name, currentNode);
+        continue;
+      }
+      if (hookEvent.forceKeepAttr) {
+        continue;
+      }
+      if (!hookEvent.keepAttr) {
+        _removeAttribute(name, currentNode);
+        continue;
+      }
+      if (!ALLOW_SELF_CLOSE_IN_ATTR && regExpTest(/\/>/i, value)) {
+        _removeAttribute(name, currentNode);
+        continue;
+      }
+      if (SAFE_FOR_TEMPLATES) {
+        arrayForEach([MUSTACHE_EXPR2, ERB_EXPR2, TMPLIT_EXPR2], (expr) => {
+          value = stringReplace(value, expr, " ");
+        });
+      }
+      const lcTag = transformCaseFunc(currentNode.nodeName);
+      if (!_isValidAttribute(lcTag, lcName, value)) {
+        _removeAttribute(name, currentNode);
+        continue;
+      }
+      if (trustedTypesPolicy && typeof trustedTypes === "object" && typeof trustedTypes.getAttributeType === "function") {
+        if (namespaceURI)
+          ;
+        else {
+          switch (trustedTypes.getAttributeType(lcTag, lcName)) {
+            case "TrustedHTML": {
+              value = trustedTypesPolicy.createHTML(value);
+              break;
+            }
+            case "TrustedScriptURL": {
+              value = trustedTypesPolicy.createScriptURL(value);
+              break;
+            }
+          }
+        }
+      }
+      if (value !== initValue) {
+        try {
+          if (namespaceURI) {
+            currentNode.setAttributeNS(namespaceURI, name, value);
+          } else {
+            currentNode.setAttribute(name, value);
+          }
+          if (_isClobbered(currentNode)) {
+            _forceRemove(currentNode);
+          } else {
+            arrayPop(DOMPurify.removed);
+          }
+        } catch (_3) {
+          _removeAttribute(name, currentNode);
+        }
+      }
+    }
+    _executeHooks(hooks.afterSanitizeAttributes, currentNode, null);
+  };
+  const _sanitizeShadowDOM = function _sanitizeShadowDOM2(fragment) {
+    let shadowNode = null;
+    const shadowIterator = _createNodeIterator(fragment);
+    _executeHooks(hooks.beforeSanitizeShadowDOM, fragment, null);
+    while (shadowNode = shadowIterator.nextNode()) {
+      _executeHooks(hooks.uponSanitizeShadowNode, shadowNode, null);
+      _sanitizeElements(shadowNode);
+      _sanitizeAttributes(shadowNode);
+      if (shadowNode.content instanceof DocumentFragment) {
+        _sanitizeShadowDOM2(shadowNode.content);
+      }
+    }
+    _executeHooks(hooks.afterSanitizeShadowDOM, fragment, null);
+  };
+  DOMPurify.sanitize = function(dirty) {
+    let cfg = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : {};
+    let body = null;
+    let importedNode = null;
+    let currentNode = null;
+    let returnNode = null;
+    IS_EMPTY_INPUT = !dirty;
+    if (IS_EMPTY_INPUT) {
+      dirty = "<!-->";
+    }
+    if (typeof dirty !== "string" && !_isNode(dirty)) {
+      if (typeof dirty.toString === "function") {
+        dirty = dirty.toString();
+        if (typeof dirty !== "string") {
+          throw typeErrorCreate("dirty is not a string, aborting");
+        }
+      } else {
+        throw typeErrorCreate("toString is not a function");
+      }
+    }
+    if (!DOMPurify.isSupported) {
+      return dirty;
+    }
+    if (!SET_CONFIG) {
+      _parseConfig(cfg);
+    }
+    DOMPurify.removed = [];
+    if (typeof dirty === "string") {
+      IN_PLACE = false;
+    }
+    if (IN_PLACE) {
+      if (dirty.nodeName) {
+        const tagName = transformCaseFunc(dirty.nodeName);
+        if (!ALLOWED_TAGS[tagName] || FORBID_TAGS[tagName]) {
+          throw typeErrorCreate("root node is forbidden and cannot be sanitized in-place");
+        }
+      }
+    } else if (dirty instanceof Node2) {
+      body = _initDocument("<!---->");
+      importedNode = body.ownerDocument.importNode(dirty, true);
+      if (importedNode.nodeType === NODE_TYPE.element && importedNode.nodeName === "BODY") {
+        body = importedNode;
+      } else if (importedNode.nodeName === "HTML") {
+        body = importedNode;
+      } else {
+        body.appendChild(importedNode);
+      }
+    } else {
+      if (!RETURN_DOM && !SAFE_FOR_TEMPLATES && !WHOLE_DOCUMENT && // eslint-disable-next-line unicorn/prefer-includes
+      dirty.indexOf("<") === -1) {
+        return trustedTypesPolicy && RETURN_TRUSTED_TYPE ? trustedTypesPolicy.createHTML(dirty) : dirty;
+      }
+      body = _initDocument(dirty);
+      if (!body) {
+        return RETURN_DOM ? null : RETURN_TRUSTED_TYPE ? emptyHTML : "";
+      }
+    }
+    if (body && FORCE_BODY) {
+      _forceRemove(body.firstChild);
+    }
+    const nodeIterator = _createNodeIterator(IN_PLACE ? dirty : body);
+    while (currentNode = nodeIterator.nextNode()) {
+      _sanitizeElements(currentNode);
+      _sanitizeAttributes(currentNode);
+      if (currentNode.content instanceof DocumentFragment) {
+        _sanitizeShadowDOM(currentNode.content);
+      }
+    }
+    if (IN_PLACE) {
+      return dirty;
+    }
+    if (RETURN_DOM) {
+      if (RETURN_DOM_FRAGMENT) {
+        returnNode = createDocumentFragment.call(body.ownerDocument);
+        while (body.firstChild) {
+          returnNode.appendChild(body.firstChild);
+        }
+      } else {
+        returnNode = body;
+      }
+      if (ALLOWED_ATTR.shadowroot || ALLOWED_ATTR.shadowrootmode) {
+        returnNode = importNode.call(originalDocument, returnNode, true);
+      }
+      return returnNode;
+    }
+    let serializedHTML = WHOLE_DOCUMENT ? body.outerHTML : body.innerHTML;
+    if (WHOLE_DOCUMENT && ALLOWED_TAGS["!doctype"] && body.ownerDocument && body.ownerDocument.doctype && body.ownerDocument.doctype.name && regExpTest(DOCTYPE_NAME, body.ownerDocument.doctype.name)) {
+      serializedHTML = "<!DOCTYPE " + body.ownerDocument.doctype.name + ">\n" + serializedHTML;
+    }
+    if (SAFE_FOR_TEMPLATES) {
+      arrayForEach([MUSTACHE_EXPR2, ERB_EXPR2, TMPLIT_EXPR2], (expr) => {
+        serializedHTML = stringReplace(serializedHTML, expr, " ");
+      });
+    }
+    return trustedTypesPolicy && RETURN_TRUSTED_TYPE ? trustedTypesPolicy.createHTML(serializedHTML) : serializedHTML;
+  };
+  DOMPurify.setConfig = function() {
+    let cfg = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : {};
+    _parseConfig(cfg);
+    SET_CONFIG = true;
+  };
+  DOMPurify.clearConfig = function() {
+    CONFIG = null;
+    SET_CONFIG = false;
+  };
+  DOMPurify.isValidAttribute = function(tag2, attr, value) {
+    if (!CONFIG) {
+      _parseConfig({});
+    }
+    const lcTag = transformCaseFunc(tag2);
+    const lcName = transformCaseFunc(attr);
+    return _isValidAttribute(lcTag, lcName, value);
+  };
+  DOMPurify.addHook = function(entryPoint, hookFunction) {
+    if (typeof hookFunction !== "function") {
+      return;
+    }
+    arrayPush(hooks[entryPoint], hookFunction);
+  };
+  DOMPurify.removeHook = function(entryPoint, hookFunction) {
+    if (hookFunction !== void 0) {
+      const index3 = arrayLastIndexOf(hooks[entryPoint], hookFunction);
+      return index3 === -1 ? void 0 : arraySplice(hooks[entryPoint], index3, 1)[0];
+    }
+    return arrayPop(hooks[entryPoint]);
+  };
+  DOMPurify.removeHooks = function(entryPoint) {
+    hooks[entryPoint] = [];
+  };
+  DOMPurify.removeAllHooks = function() {
+    hooks = _createHooksMap();
+  };
+  return DOMPurify;
+}
+var purify = createDOMPurify();
+
+// ui/src/sanitize.ts
+function sanitizeHtml(html4) {
+  return purify.sanitize(html4);
+}
+function sanitizeMarkdown(rawHtml) {
+  return purify.sanitize(rawHtml);
+}
+
+// ui/src/components/ledger/IssueDetail.tsx
+init_hooks_module();
+function LedgerIssueDetail({
+  detail,
+  compact = false,
+  actionInFlight = false,
+  onAddComment,
+  onSetStatus,
+  onStartAgent,
+  onOpenEntity,
+  onShowChildren,
+  onResolveConflict
+}) {
+  const [commentText, setCommentText] = d2("");
+  const [showComposer, setShowComposer] = d2(false);
+  const [localBusy, setLocalBusy] = d2(false);
+  const busy = actionInFlight || localBusy;
+  const resolvingAuth = detail.auth_requests.find(
+    (auth) => (auth.link_type === "resolves" || auth.link_type === "fixed_by") && (auth.status === "completed" || auth.status === "approved" || auth.status === "executing")
+  );
+  const liveSession = detail.sessions.find((session) => session.status === "active" || session.status === "idle") ?? null;
+  const activeSessions = detail.sessions.filter((session) => session.status === "active" || session.status === "idle");
+  const historicalSessions = detail.sessions.filter((session) => session.status !== "active" && session.status !== "idle");
+  const primaryWorkUnit = detail.work_units[0] ?? null;
+  const syncTone = detail.sync.state === "clean" ? "clean" : detail.sync.state === "pending" ? "pending" : detail.sync.state === "conflicted" ? "conflicted" : "failed";
+  const submitComment = async () => {
+    if (!onAddComment || !commentText.trim() || busy)
+      return;
+    setLocalBusy(true);
+    try {
+      await onAddComment(commentText.trim());
+      setCommentText("");
+      setShowComposer(false);
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+  return /* @__PURE__ */ u3("article", { className: `ledger-issue-detail${compact ? " ledger-issue-detail--compact" : ""}`, children: [
+    /* @__PURE__ */ u3("header", { className: "ledger-issue-detail__header", children: [
+      /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__heading", children: [
+        /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__eyebrow", children: [
+          /* @__PURE__ */ u3("span", { children: detail.project.repo_name ?? detail.project.display_name }),
+          /* @__PURE__ */ u3("code", { children: detail.display_id })
+        ] }),
+        /* @__PURE__ */ u3("h2", { dangerouslySetInnerHTML: { __html: inlineMarkdown(detail.title) } })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__header-actions", children: [
+        /* @__PURE__ */ u3(
+          StatusPill,
+          {
+            status: detail.status,
+            resolution: detail.resolution,
+            linkedAuth: resolvingAuth,
+            onOpenAuth: onOpenEntity ? (auth) => onOpenEntity("auth_request", auth.id) : void 0
+          }
+        ),
+        /* @__PURE__ */ u3("span", { className: `ledger-sync-pill ledger-sync-pill--${syncTone}`, children: syncLabel(detail.sync.state) })
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__meta", children: [
+      /* @__PURE__ */ u3("span", { children: detail.kind }),
+      /* @__PURE__ */ u3("span", { children: detail.priority }),
+      /* @__PURE__ */ u3("span", { children: detail.author.display }),
+      /* @__PURE__ */ u3("span", { children: formatRelativeTime3(detail.created_at) }),
+      detail.source && /* @__PURE__ */ u3("span", { children: detail.source })
+    ] }),
+    detail.labels.length > 0 && /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__labels", children: [
+      detail.labels.map((label) => /* @__PURE__ */ u3("span", { className: "ledger-label", children: displayLabel(label) }, label)),
+      detail.labels.includes("umbrella") && onShowChildren && /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", onClick: () => onShowChildren(detail), children: "Show children" })
+    ] }),
+    (liveSession || primaryWorkUnit || onStartAgent || onSetStatus) && /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__actions", children: [
+      liveSession && /* @__PURE__ */ u3("a", { className: "issue-hub__action-btn issue-hub__action-btn--primary", href: `#/console?session=${encodeURIComponent(liveSession.id)}`, children: "Open Console" }),
+      !liveSession && onStartAgent && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "issue-hub__action-btn issue-hub__action-btn--secondary",
+          disabled: busy,
+          onClick: () => void onStartAgent(),
+          children: primaryWorkUnit?.continuation ? "Resume Work" : "Start Agent"
+        }
+      ),
+      onSetStatus && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `btn ${detail.status === "open" ? "btn--danger" : "btn--success"}`,
+          disabled: busy,
+          onClick: () => void onSetStatus(detail.status === "open" ? "closed" : "open"),
+          children: detail.status === "open" ? "Close Issue" : "Reopen Issue"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-issue-detail__body spec-panel", empty: "No description.", source: detail.body }) }),
+    /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
+      /* @__PURE__ */ u3(SectionTitle, { title: "Comments", count: detail.comments.length }),
+      detail.comments.length === 0 ? /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__empty", children: "No comments yet." }) : /* @__PURE__ */ u3("div", { className: "ledger-comment-list", children: detail.comments.map((comment) => /* @__PURE__ */ u3(CommentCard, { comment }, comment.id)) }),
+      onAddComment && /* @__PURE__ */ u3("div", { className: "ledger-comment-composer", children: !showComposer ? /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost", onClick: () => setShowComposer(true), children: "Add Comment" }) : /* @__PURE__ */ u3(k, { children: [
+        /* @__PURE__ */ u3(
+          "textarea",
+          {
+            className: "issue-comment-form__input",
+            placeholder: "Write a comment...",
+            rows: compact ? 3 : 4,
+            value: commentText,
+            onInput: (event) => setCommentText(event.currentTarget.value)
+          }
+        ),
+        /* @__PURE__ */ u3("div", { className: "ledger-comment-composer__actions", children: [
+          /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--active", disabled: busy || !commentText.trim(), onClick: submitComment, children: "Submit Comment" }),
+          /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost", disabled: busy, onClick: () => setShowComposer(false), children: "Cancel" })
+        ] })
+      ] }) })
+    ] }),
+    detail.relationships.length > 0 && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
+      /* @__PURE__ */ u3(SectionTitle, { title: "Relationships", count: detail.relationships.length }),
+      /* @__PURE__ */ u3(RelationshipList, { relationships: detail.relationships, onOpenEntity })
+    ] }),
+    detail.auth_requests.length > 0 && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
+      /* @__PURE__ */ u3(SectionTitle, { title: "Auth Evidence", count: detail.auth_requests.length }),
+      /* @__PURE__ */ u3(AuthEvidenceShelf, { authRequests: detail.auth_requests, onOpenEntity })
+    ] }),
+    (activeSessions.length > 0 || historicalSessions.length > 0) && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
+      /* @__PURE__ */ u3(SectionTitle, { title: "Sessions", count: detail.sessions.length }),
+      /* @__PURE__ */ u3(SessionHistory, { active: activeSessions, historical: historicalSessions, onOpenEntity })
+    ] }),
+    detail.work_units.length > 0 && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
+      /* @__PURE__ */ u3(SectionTitle, { title: "Work Units", count: detail.work_units.length }),
+      /* @__PURE__ */ u3("div", { className: "ledger-kv-list", children: detail.work_units.map((work) => /* @__PURE__ */ u3("div", { className: "ledger-kv-card", children: [
+        /* @__PURE__ */ u3("span", { children: work.state }),
+        /* @__PURE__ */ u3("code", { children: work.branch ?? work.id }),
+        work.assigned_session_id && /* @__PURE__ */ u3("small", { children: [
+          "assigned ",
+          work.assigned_session_id.slice(0, 10)
+        ] })
+      ] }, work.id)) })
+    ] }),
+    (detail.sync.state !== "clean" || detail.conflicts.length > 0) && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
+      /* @__PURE__ */ u3(SectionTitle, { title: "Sync", count: detail.conflicts.length || void 0 }),
+      /* @__PURE__ */ u3(SyncStatus, { detail, onResolveConflict, busy })
+    ] })
+  ] });
+}
+function StatusPill({
+  status,
+  resolution,
+  linkedAuth,
+  onOpenAuth
+}) {
+  const label = status === "closed" && resolution ? `${status}: ${resolution}` : status;
+  const cls = status === "open" ? "status-pill--success" : resolution === "merged" ? "status-pill--merged" : "status-pill--dismissed";
+  if (linkedAuth && onOpenAuth) {
+    return /* @__PURE__ */ u3("button", { type: "button", className: `status-pill status-pill--lg ledger-status-button ${cls}`, onClick: () => onOpenAuth(linkedAuth), children: label });
+  }
+  return /* @__PURE__ */ u3("span", { className: `status-pill status-pill--lg ${cls}`, children: label });
+}
+function CommentCard({ comment }) {
+  return /* @__PURE__ */ u3("div", { className: "ledger-comment-card", children: [
+    /* @__PURE__ */ u3("div", { className: "ledger-comment-card__header", children: [
+      /* @__PURE__ */ u3("span", { children: comment.author.display }),
+      /* @__PURE__ */ u3("em", { children: comment.author.type.replace(/_/g, " ") }),
+      /* @__PURE__ */ u3("small", { children: comment.source }),
+      /* @__PURE__ */ u3("time", { children: formatRelativeTime3(comment.created_at) })
+    ] }),
+    /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-comment-card__body spec-panel", source: comment.body, empty: "" })
+  ] });
+}
+function RelationshipList({
+  relationships,
+  onOpenEntity
+}) {
+  return /* @__PURE__ */ u3("div", { className: "ledger-relationship-list", children: relationships.map((relationship) => {
+    const related = relationship.related_issue;
+    return /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "ledger-relationship-row",
+        disabled: !related || !onOpenEntity,
+        onClick: () => related && onOpenEntity?.("issue", related.display_id),
+        children: [
+          /* @__PURE__ */ u3("span", { children: relationship.direction === "incoming" ? "from" : "to" }),
+          /* @__PURE__ */ u3("strong", { children: relationship.relationship_type.replace(/_/g, " ") }),
+          /* @__PURE__ */ u3("code", { children: related ? `${related.display_id} ${related.title}` : "missing issue" })
+        ]
+      },
+      relationship.id
+    );
+  }) });
+}
+function AuthEvidenceShelf({
+  authRequests,
+  onOpenEntity
+}) {
+  return /* @__PURE__ */ u3("div", { className: "ledger-evidence-list", children: authRequests.map((auth) => /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: "ledger-evidence-row",
+      disabled: !onOpenEntity,
+      onClick: () => onOpenEntity?.("auth_request", auth.id),
+      children: [
+        /* @__PURE__ */ u3("span", { children: auth.link_type.replace(/_/g, " ") }),
+        /* @__PURE__ */ u3("strong", { children: auth.title || auth.id }),
+        /* @__PURE__ */ u3("code", { children: [
+          auth.status,
+          auth.head_branch ? ` \xB7 ${auth.head_branch}` : ""
+        ] })
+      ]
+    },
+    `${auth.id}:${auth.link_type}`
+  )) });
+}
+function SessionHistory({
+  active,
+  historical,
+  onOpenEntity
+}) {
+  return /* @__PURE__ */ u3("div", { className: "ledger-session-history", children: [
+    active.map((session) => /* @__PURE__ */ u3(SessionRow, { session, onOpenEntity }, session.id)),
+    historical.length > 0 && /* @__PURE__ */ u3("details", { className: "ledger-session-history__historical", children: [
+      /* @__PURE__ */ u3("summary", { children: [
+        historical.length,
+        " historical"
+      ] }),
+      historical.map((session) => /* @__PURE__ */ u3(SessionRow, { session, onOpenEntity }, session.id))
+    ] })
+  ] });
+}
+function SessionRow({
+  session,
+  onOpenEntity
+}) {
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: "ledger-session-row",
+      disabled: !onOpenEntity,
+      onClick: () => onOpenEntity?.(session.has_conversation ? "conversation" : "session", session.id),
+      children: [
+        /* @__PURE__ */ u3("span", { className: `ledger-session-row__dot ledger-session-row__dot--${session.status}` }),
+        /* @__PURE__ */ u3("strong", { children: session.app || session.agent_type || "session" }),
+        /* @__PURE__ */ u3("code", { children: session.branch ?? session.id }),
+        /* @__PURE__ */ u3("em", { children: session.status })
+      ]
+    }
+  );
+}
+function SyncStatus({
+  detail,
+  onResolveConflict,
+  busy
+}) {
+  const outboxEntries = Object.entries(detail.sync.outbox).filter(([, count]) => count > 0);
+  return /* @__PURE__ */ u3("div", { className: "ledger-sync-panel", children: [
+    /* @__PURE__ */ u3("div", { className: `ledger-sync-panel__summary ledger-sync-panel__summary--${detail.sync.state}`, children: [
+      /* @__PURE__ */ u3("span", { children: syncLabel(detail.sync.state) }),
+      outboxEntries.length > 0 && /* @__PURE__ */ u3("code", { children: outboxEntries.map(([status, count]) => `${status} ${count}`).join(" \xB7 ") })
+    ] }),
+    detail.conflicts.map((conflict) => /* @__PURE__ */ u3("div", { className: "ledger-conflict-card", children: [
+      /* @__PURE__ */ u3("div", { className: "ledger-conflict-card__header", children: [
+        /* @__PURE__ */ u3("strong", { children: conflict.field }),
+        /* @__PURE__ */ u3("span", { children: conflict.adapter })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "ledger-conflict-card__values", children: [
+        /* @__PURE__ */ u3("code", { children: safeJson(conflict.local_value) }),
+        /* @__PURE__ */ u3("code", { children: safeJson(conflict.remote_value) })
+      ] }),
+      onResolveConflict && /* @__PURE__ */ u3("div", { className: "ledger-conflict-card__actions", children: [
+        /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", disabled: busy, onClick: () => void onResolveConflict(conflict.id, "keep_mandible", "resolved"), children: "Keep Mandible" }),
+        /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", disabled: busy, onClick: () => void onResolveConflict(conflict.id, "dismissed", "dismissed"), children: "Dismiss" }),
+        /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", disabled: true, title: "Manual merge is not wired yet", children: "Manual Merge" })
+      ] })
+    ] }, conflict.id))
+  ] });
+}
+function SectionTitle({ title, count }) {
+  return /* @__PURE__ */ u3("h3", { className: "ledger-section-title", children: [
+    /* @__PURE__ */ u3("span", { children: title }),
+    count !== void 0 && /* @__PURE__ */ u3("em", { children: count })
+  ] });
+}
+function MarkdownBlock({ source, className, empty: empty2 }) {
+  const html4 = T2(() => {
+    if (!source)
+      return "";
+    const parsed = marked.parse(source, { async: false });
+    return sanitizeMarkdown(typeof parsed === "string" ? parsed : "");
+  }, [source]);
+  if (!html4) {
+    return /* @__PURE__ */ u3("div", { className: `${className} spec-panel--empty`, children: empty2 });
+  }
+  return /* @__PURE__ */ u3("div", { className, dangerouslySetInnerHTML: { __html: html4 } });
+}
+function inlineMarkdown(source) {
+  const parsed = marked.parse(source || "", { async: false });
+  const html4 = typeof parsed === "string" ? parsed : "";
+  return sanitizeHtml(html4.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim());
+}
+function formatRelativeTime3(value) {
+  if (!value)
+    return "";
+  const parsed = typeof value === "number" ? value : Date.parse(value);
+  if (Number.isNaN(parsed))
+    return String(value);
+  const delta = Date.now() - parsed;
+  if (delta < 0)
+    return "just now";
+  const seconds = Math.floor(delta / 1e3);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 1)
+    return `${days}d ago`;
+  if (days === 1)
+    return "yesterday";
+  if (hours > 0)
+    return `${hours}h ago`;
+  if (minutes > 0)
+    return `${minutes}m ago`;
+  return `${seconds}s ago`;
+}
+function displayLabel(label) {
+  if (label === "error")
+    return "bug";
+  return label;
+}
+function syncLabel(state) {
+  if (state === "clean")
+    return "synced";
+  if (state === "pending")
+    return "pending sync";
+  if (state === "conflicted")
+    return "conflict";
+  return "sync failed";
+}
+function safeJson(value) {
+  if (value === null || value === void 0)
+    return "null";
+  if (typeof value === "string")
+    return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+// ui/src/views/issues.tsx
 function getVisualState(issue) {
   if (issue.status === "open")
     return "open";
@@ -14562,17 +15994,10 @@ function renderMarkdown2(src) {
   if (!src)
     return "";
   const result = marked.parse(src, { async: false });
-  return typeof result === "string" ? result : "";
+  return sanitizeMarkdown(typeof result === "string" ? result : "");
 }
 function sanitizeInlineHtml3(html4) {
-  let out = html4.replace(
-    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
-    ""
-  );
-  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
-  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
-  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
-  return out;
+  return sanitizeHtml(html4);
 }
 function renderInlineMarkdown3(src) {
   if (!src)
@@ -14582,7 +16007,7 @@ function renderInlineMarkdown3(src) {
   const stripped = html4.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
   return sanitizeInlineHtml3(stripped);
 }
-function formatRelativeTime3(value) {
+function formatRelativeTime4(value) {
   if (!value)
     return "";
   const parsed = Date.parse(value);
@@ -14641,6 +16066,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [parentFilter, setParentFilter] = d2(null);
   const [sortField] = d2("created_at");
   const [issueDetail, setIssueDetail] = d2(null);
+  const [ledgerIssueDetail, setLedgerIssueDetail] = d2(null);
   const [detailLoading, setDetailLoading] = d2(false);
   const [commentText, setCommentText] = d2("");
   const [showCommentBox, setShowCommentBox] = d2(false);
@@ -14763,6 +16189,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   y2(() => {
     if (!selectedRepoId || !selectedIssueId) {
       setIssueDetail(null);
+      setLedgerIssueDetail(null);
       setLinkedSessions([]);
       setIssueContext(null);
       return;
@@ -14773,6 +16200,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     if (!issueDetail) {
       setDetailLoading(true);
     }
+    setLedgerIssueDetail(null);
     const fetchDetail = (rId, iId) => getIssueDetail(rId, iId).then((data) => {
       if (!cancelled) {
         if (rId !== selectedRepoId)
@@ -14820,6 +16248,13 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       if (!cancelled)
         setIssueContext(null);
     });
+    getLedgerIssueDetailByRef(repoId, issueId).then((detail) => {
+      if (!cancelled)
+        setLedgerIssueDetail(detail);
+    }).catch(() => {
+      if (!cancelled)
+        setLedgerIssueDetail(null);
+    });
     return () => {
       cancelled = true;
     };
@@ -14830,6 +16265,16 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     setShowCommentBox(false);
     setCommentText("");
   }, []);
+  const refreshLedgerIssueDetail = q2(async () => {
+    if (!selectedRepoId || !selectedIssueId)
+      return;
+    try {
+      const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
+      setLedgerIssueDetail(detail);
+    } catch {
+      setLedgerIssueDetail(null);
+    }
+  }, [selectedRepoId, selectedIssueId]);
   const handleCloseIssue = q2(async () => {
     if (!selectedRepoId || !selectedIssueId || actionInFlight)
       return;
@@ -14840,12 +16285,13 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       });
       const data = await getIssueDetail(selectedRepoId, selectedIssueId);
       setIssueDetail(data);
+      await refreshLedgerIssueDetail();
       onRescan();
     } catch {
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan]);
+  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, refreshLedgerIssueDetail]);
   const handleReopenIssue = q2(async () => {
     if (!selectedRepoId || !selectedIssueId || actionInFlight)
       return;
@@ -14862,29 +16308,64 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       });
       const data = await getIssueDetail(selectedRepoId, selectedIssueId);
       setIssueDetail(data);
+      await refreshLedgerIssueDetail();
       onRescan();
     } catch {
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, issueDetail]);
-  const handleAddComment = q2(async () => {
-    if (!selectedRepoId || !selectedIssueId || !commentText.trim() || actionInFlight)
+  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, issueDetail, refreshLedgerIssueDetail]);
+  const handleAddCommentBody = q2(async (message) => {
+    if (!selectedRepoId || !selectedIssueId || !message.trim() || actionInFlight)
       return;
     setActionInFlight(true);
     try {
       await issueAction(selectedRepoId, selectedIssueId, "comment", {
-        message: commentText.trim()
+        message: message.trim()
       });
       setCommentText("");
       setShowCommentBox(false);
       const data = await getIssueDetail(selectedRepoId, selectedIssueId);
       setIssueDetail(data);
+      await refreshLedgerIssueDetail();
     } catch {
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, commentText, actionInFlight]);
+  }, [selectedRepoId, selectedIssueId, actionInFlight, refreshLedgerIssueDetail]);
+  const handleAddComment = q2(async () => {
+    await handleAddCommentBody(commentText);
+  }, [handleAddCommentBody, commentText]);
+  const handleStartAgent = q2(async () => {
+    if (!selectedRepoId || !selectedIssueId || actionInFlight)
+      return;
+    setActionInFlight(true);
+    try {
+      const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
+      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
+    } catch {
+    } finally {
+      setActionInFlight(false);
+    }
+  }, [selectedRepoId, selectedIssueId, actionInFlight]);
+  const handleOpenLedgerEntity = q2((type, id2) => {
+    if (type === "issue") {
+      if (selectedRepoId)
+        selectIssue(selectedRepoId, id2);
+      return;
+    }
+    if (type === "session") {
+      window.location.hash = `#/sessions?session=${encodeURIComponent(id2.replace(/^session:/, ""))}`;
+      return;
+    }
+    if (type === "conversation") {
+      window.location.hash = `#/history?session=${encodeURIComponent(id2.replace(/^session:/, ""))}`;
+      return;
+    }
+    if (type === "auth_request") {
+      window.location.hash = `#/auth?request=${encodeURIComponent(id2.replace(/^auth_request:/, ""))}`;
+    }
+  }, [selectedRepoId, selectIssue]);
   const descriptionHtml = T2(
     () => issueDetail?.description ? renderMarkdown2(issueDetail.description) : "",
     [issueDetail?.description]
@@ -15047,7 +16528,26 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       )) })
     ] }),
     /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
-    /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : !issueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: [
+    /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : !issueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) : ledgerIssueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: /* @__PURE__ */ u3(
+      LedgerIssueDetail,
+      {
+        detail: ledgerIssueDetail,
+        actionInFlight,
+        onAddComment: handleAddCommentBody,
+        onSetStatus: (status) => status === "open" ? handleReopenIssue() : handleCloseIssue(),
+        onStartAgent: handleStartAgent,
+        onOpenEntity: handleOpenLedgerEntity,
+        onShowChildren: (detail) => {
+          if (detail.project.repo_id)
+            setRepoFilter(detail.project.repo_id);
+          setParentFilter(detail.display_id);
+        },
+        onResolveConflict: async (conflictId, resolution, status) => {
+          await resolveLedgerConflict(conflictId, resolution, status);
+          await refreshLedgerIssueDetail();
+        }
+      }
+    ) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: [
       /* @__PURE__ */ u3("div", { className: "issue-hub__banner", children: [
         /* @__PURE__ */ u3("div", { className: "issue-hub__banner-top", children: /* @__PURE__ */ u3(
           "h2",
@@ -15166,7 +16666,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
         /* @__PURE__ */ u3("span", { children: issueDetail.author }),
         issueDetail.created_at && /* @__PURE__ */ u3("span", { children: [
           " \xB7 ",
-          formatRelativeTime3(issueDetail.created_at)
+          formatRelativeTime4(issueDetail.created_at)
         ] }),
         /* @__PURE__ */ u3("span", { className: "issues-detail__id", children: [
           " \xB7 ",
@@ -15218,7 +16718,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
                 " \u2014 ",
                 /* @__PURE__ */ u3(EntityPill, { type: "session", id: sess.session_id })
               ] }),
-              sess.created_at && /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-time text-muted", children: formatRelativeTime3(typeof sess.created_at === "string" ? sess.created_at : new Date(sess.created_at).toISOString()) })
+              sess.created_at && /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-time text-muted", children: formatRelativeTime4(typeof sess.created_at === "string" ? sess.created_at : new Date(sess.created_at).toISOString()) })
             ] }, `sess-${sess.session_id}`);
           }
           if (item.kind === "auth") {
@@ -15231,7 +16731,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
                 " \u2014 ",
                 /* @__PURE__ */ u3(EntityPill, { type: "auth", id: auth.id, label: auth.title?.slice(0, 30) || auth.id.slice(0, 8) })
               ] }),
-              item.ts > 0 && /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-time text-muted", children: formatRelativeTime3(new Date(item.ts).toISOString()) })
+              item.ts > 0 && /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-time text-muted", children: formatRelativeTime4(new Date(item.ts).toISOString()) })
             ] }, `auth-${auth.id}`);
           }
           if (item.kind === "comment") {
@@ -15241,7 +16741,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
               /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-comment", children: [
                 /* @__PURE__ */ u3("div", { className: "issue-comment__header", children: [
                   /* @__PURE__ */ u3("span", { className: "issue-comment__author", children: comment.author }),
-                  comment.date && /* @__PURE__ */ u3("span", { className: "issue-comment__date text-muted", children: formatRelativeTime3(comment.date) })
+                  comment.date && /* @__PURE__ */ u3("span", { className: "issue-comment__date text-muted", children: formatRelativeTime4(comment.date) })
                 ] }),
                 /* @__PURE__ */ u3(
                   "div",
@@ -16400,1051 +17900,6 @@ function BranchSelector({
 
 // ui/src/components/message-blocks/TextBlock.tsx
 init_hooks_module();
-
-// ../../node_modules/dompurify/dist/purify.es.mjs
-var {
-  entries,
-  setPrototypeOf,
-  isFrozen,
-  getPrototypeOf,
-  getOwnPropertyDescriptor
-} = Object;
-var {
-  freeze,
-  seal,
-  create
-} = Object;
-var {
-  apply,
-  construct
-} = typeof Reflect !== "undefined" && Reflect;
-if (!freeze) {
-  freeze = function freeze2(x6) {
-    return x6;
-  };
-}
-if (!seal) {
-  seal = function seal2(x6) {
-    return x6;
-  };
-}
-if (!apply) {
-  apply = function apply2(func, thisArg) {
-    for (var _len = arguments.length, args = new Array(_len > 2 ? _len - 2 : 0), _key = 2; _key < _len; _key++) {
-      args[_key - 2] = arguments[_key];
-    }
-    return func.apply(thisArg, args);
-  };
-}
-if (!construct) {
-  construct = function construct2(Func) {
-    for (var _len2 = arguments.length, args = new Array(_len2 > 1 ? _len2 - 1 : 0), _key2 = 1; _key2 < _len2; _key2++) {
-      args[_key2 - 1] = arguments[_key2];
-    }
-    return new Func(...args);
-  };
-}
-var arrayForEach = unapply(Array.prototype.forEach);
-var arrayLastIndexOf = unapply(Array.prototype.lastIndexOf);
-var arrayPop = unapply(Array.prototype.pop);
-var arrayPush = unapply(Array.prototype.push);
-var arraySplice = unapply(Array.prototype.splice);
-var stringToLowerCase = unapply(String.prototype.toLowerCase);
-var stringToString = unapply(String.prototype.toString);
-var stringMatch = unapply(String.prototype.match);
-var stringReplace = unapply(String.prototype.replace);
-var stringIndexOf = unapply(String.prototype.indexOf);
-var stringTrim = unapply(String.prototype.trim);
-var objectHasOwnProperty = unapply(Object.prototype.hasOwnProperty);
-var regExpTest = unapply(RegExp.prototype.test);
-var typeErrorCreate = unconstruct(TypeError);
-function unapply(func) {
-  return function(thisArg) {
-    if (thisArg instanceof RegExp) {
-      thisArg.lastIndex = 0;
-    }
-    for (var _len3 = arguments.length, args = new Array(_len3 > 1 ? _len3 - 1 : 0), _key3 = 1; _key3 < _len3; _key3++) {
-      args[_key3 - 1] = arguments[_key3];
-    }
-    return apply(func, thisArg, args);
-  };
-}
-function unconstruct(Func) {
-  return function() {
-    for (var _len4 = arguments.length, args = new Array(_len4), _key4 = 0; _key4 < _len4; _key4++) {
-      args[_key4] = arguments[_key4];
-    }
-    return construct(Func, args);
-  };
-}
-function addToSet(set3, array2) {
-  let transformCaseFunc = arguments.length > 2 && arguments[2] !== void 0 ? arguments[2] : stringToLowerCase;
-  if (setPrototypeOf) {
-    setPrototypeOf(set3, null);
-  }
-  let l3 = array2.length;
-  while (l3--) {
-    let element = array2[l3];
-    if (typeof element === "string") {
-      const lcElement = transformCaseFunc(element);
-      if (lcElement !== element) {
-        if (!isFrozen(array2)) {
-          array2[l3] = lcElement;
-        }
-        element = lcElement;
-      }
-    }
-    set3[element] = true;
-  }
-  return set3;
-}
-function cleanArray(array2) {
-  for (let index3 = 0; index3 < array2.length; index3++) {
-    const isPropertyExist = objectHasOwnProperty(array2, index3);
-    if (!isPropertyExist) {
-      array2[index3] = null;
-    }
-  }
-  return array2;
-}
-function clone(object) {
-  const newObject = create(null);
-  for (const [property, value] of entries(object)) {
-    const isPropertyExist = objectHasOwnProperty(object, property);
-    if (isPropertyExist) {
-      if (Array.isArray(value)) {
-        newObject[property] = cleanArray(value);
-      } else if (value && typeof value === "object" && value.constructor === Object) {
-        newObject[property] = clone(value);
-      } else {
-        newObject[property] = value;
-      }
-    }
-  }
-  return newObject;
-}
-function lookupGetter(object, prop) {
-  while (object !== null) {
-    const desc = getOwnPropertyDescriptor(object, prop);
-    if (desc) {
-      if (desc.get) {
-        return unapply(desc.get);
-      }
-      if (typeof desc.value === "function") {
-        return unapply(desc.value);
-      }
-    }
-    object = getPrototypeOf(object);
-  }
-  function fallbackValue() {
-    return null;
-  }
-  return fallbackValue;
-}
-var html$1 = freeze(["a", "abbr", "acronym", "address", "area", "article", "aside", "audio", "b", "bdi", "bdo", "big", "blink", "blockquote", "body", "br", "button", "canvas", "caption", "center", "cite", "code", "col", "colgroup", "content", "data", "datalist", "dd", "decorator", "del", "details", "dfn", "dialog", "dir", "div", "dl", "dt", "element", "em", "fieldset", "figcaption", "figure", "font", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hgroup", "hr", "html", "i", "img", "input", "ins", "kbd", "label", "legend", "li", "main", "map", "mark", "marquee", "menu", "menuitem", "meter", "nav", "nobr", "ol", "optgroup", "option", "output", "p", "picture", "pre", "progress", "q", "rp", "rt", "ruby", "s", "samp", "search", "section", "select", "shadow", "slot", "small", "source", "spacer", "span", "strike", "strong", "style", "sub", "summary", "sup", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "time", "tr", "track", "tt", "u", "ul", "var", "video", "wbr"]);
-var svg$1 = freeze(["svg", "a", "altglyph", "altglyphdef", "altglyphitem", "animatecolor", "animatemotion", "animatetransform", "circle", "clippath", "defs", "desc", "ellipse", "enterkeyhint", "exportparts", "filter", "font", "g", "glyph", "glyphref", "hkern", "image", "inputmode", "line", "lineargradient", "marker", "mask", "metadata", "mpath", "part", "path", "pattern", "polygon", "polyline", "radialgradient", "rect", "stop", "style", "switch", "symbol", "text", "textpath", "title", "tref", "tspan", "view", "vkern"]);
-var svgFilters = freeze(["feBlend", "feColorMatrix", "feComponentTransfer", "feComposite", "feConvolveMatrix", "feDiffuseLighting", "feDisplacementMap", "feDistantLight", "feDropShadow", "feFlood", "feFuncA", "feFuncB", "feFuncG", "feFuncR", "feGaussianBlur", "feImage", "feMerge", "feMergeNode", "feMorphology", "feOffset", "fePointLight", "feSpecularLighting", "feSpotLight", "feTile", "feTurbulence"]);
-var svgDisallowed = freeze(["animate", "color-profile", "cursor", "discard", "font-face", "font-face-format", "font-face-name", "font-face-src", "font-face-uri", "foreignobject", "hatch", "hatchpath", "mesh", "meshgradient", "meshpatch", "meshrow", "missing-glyph", "script", "set", "solidcolor", "unknown", "use"]);
-var mathMl$1 = freeze(["math", "menclose", "merror", "mfenced", "mfrac", "mglyph", "mi", "mlabeledtr", "mmultiscripts", "mn", "mo", "mover", "mpadded", "mphantom", "mroot", "mrow", "ms", "mspace", "msqrt", "mstyle", "msub", "msup", "msubsup", "mtable", "mtd", "mtext", "mtr", "munder", "munderover", "mprescripts"]);
-var mathMlDisallowed = freeze(["maction", "maligngroup", "malignmark", "mlongdiv", "mscarries", "mscarry", "msgroup", "mstack", "msline", "msrow", "semantics", "annotation", "annotation-xml", "mprescripts", "none"]);
-var text = freeze(["#text"]);
-var html2 = freeze(["accept", "action", "align", "alt", "autocapitalize", "autocomplete", "autopictureinpicture", "autoplay", "background", "bgcolor", "border", "capture", "cellpadding", "cellspacing", "checked", "cite", "class", "clear", "color", "cols", "colspan", "controls", "controlslist", "coords", "crossorigin", "datetime", "decoding", "default", "dir", "disabled", "disablepictureinpicture", "disableremoteplayback", "download", "draggable", "enctype", "enterkeyhint", "exportparts", "face", "for", "headers", "height", "hidden", "high", "href", "hreflang", "id", "inert", "inputmode", "integrity", "ismap", "kind", "label", "lang", "list", "loading", "loop", "low", "max", "maxlength", "media", "method", "min", "minlength", "multiple", "muted", "name", "nonce", "noshade", "novalidate", "nowrap", "open", "optimum", "part", "pattern", "placeholder", "playsinline", "popover", "popovertarget", "popovertargetaction", "poster", "preload", "pubdate", "radiogroup", "readonly", "rel", "required", "rev", "reversed", "role", "rows", "rowspan", "spellcheck", "scope", "selected", "shape", "size", "sizes", "slot", "span", "srclang", "start", "src", "srcset", "step", "style", "summary", "tabindex", "title", "translate", "type", "usemap", "valign", "value", "width", "wrap", "xmlns", "slot"]);
-var svg = freeze(["accent-height", "accumulate", "additive", "alignment-baseline", "amplitude", "ascent", "attributename", "attributetype", "azimuth", "basefrequency", "baseline-shift", "begin", "bias", "by", "class", "clip", "clippathunits", "clip-path", "clip-rule", "color", "color-interpolation", "color-interpolation-filters", "color-profile", "color-rendering", "cx", "cy", "d", "dx", "dy", "diffuseconstant", "direction", "display", "divisor", "dur", "edgemode", "elevation", "end", "exponent", "fill", "fill-opacity", "fill-rule", "filter", "filterunits", "flood-color", "flood-opacity", "font-family", "font-size", "font-size-adjust", "font-stretch", "font-style", "font-variant", "font-weight", "fx", "fy", "g1", "g2", "glyph-name", "glyphref", "gradientunits", "gradienttransform", "height", "href", "id", "image-rendering", "in", "in2", "intercept", "k", "k1", "k2", "k3", "k4", "kerning", "keypoints", "keysplines", "keytimes", "lang", "lengthadjust", "letter-spacing", "kernelmatrix", "kernelunitlength", "lighting-color", "local", "marker-end", "marker-mid", "marker-start", "markerheight", "markerunits", "markerwidth", "maskcontentunits", "maskunits", "max", "mask", "mask-type", "media", "method", "mode", "min", "name", "numoctaves", "offset", "operator", "opacity", "order", "orient", "orientation", "origin", "overflow", "paint-order", "path", "pathlength", "patterncontentunits", "patterntransform", "patternunits", "points", "preservealpha", "preserveaspectratio", "primitiveunits", "r", "rx", "ry", "radius", "refx", "refy", "repeatcount", "repeatdur", "restart", "result", "rotate", "scale", "seed", "shape-rendering", "slope", "specularconstant", "specularexponent", "spreadmethod", "startoffset", "stddeviation", "stitchtiles", "stop-color", "stop-opacity", "stroke-dasharray", "stroke-dashoffset", "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-opacity", "stroke", "stroke-width", "style", "surfacescale", "systemlanguage", "tabindex", "tablevalues", "targetx", "targety", "transform", "transform-origin", "text-anchor", "text-decoration", "text-rendering", "textlength", "type", "u1", "u2", "unicode", "values", "viewbox", "visibility", "version", "vert-adv-y", "vert-origin-x", "vert-origin-y", "width", "word-spacing", "wrap", "writing-mode", "xchannelselector", "ychannelselector", "x", "x1", "x2", "xmlns", "y", "y1", "y2", "z", "zoomandpan"]);
-var mathMl = freeze(["accent", "accentunder", "align", "bevelled", "close", "columnsalign", "columnlines", "columnspan", "denomalign", "depth", "dir", "display", "displaystyle", "encoding", "fence", "frame", "height", "href", "id", "largeop", "length", "linethickness", "lspace", "lquote", "mathbackground", "mathcolor", "mathsize", "mathvariant", "maxsize", "minsize", "movablelimits", "notation", "numalign", "open", "rowalign", "rowlines", "rowspacing", "rowspan", "rspace", "rquote", "scriptlevel", "scriptminsize", "scriptsizemultiplier", "selection", "separator", "separators", "stretchy", "subscriptshift", "supscriptshift", "symmetric", "voffset", "width", "xmlns"]);
-var xml = freeze(["xlink:href", "xml:id", "xlink:title", "xml:space", "xmlns:xlink"]);
-var MUSTACHE_EXPR = seal(/\{\{[\w\W]*|[\w\W]*\}\}/gm);
-var ERB_EXPR = seal(/<%[\w\W]*|[\w\W]*%>/gm);
-var TMPLIT_EXPR = seal(/\$\{[\w\W]*/gm);
-var DATA_ATTR = seal(/^data-[\-\w.\u00B7-\uFFFF]+$/);
-var ARIA_ATTR = seal(/^aria-[\-\w]+$/);
-var IS_ALLOWED_URI = seal(
-  /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
-  // eslint-disable-line no-useless-escape
-);
-var IS_SCRIPT_OR_DATA = seal(/^(?:\w+script|data):/i);
-var ATTR_WHITESPACE = seal(
-  /[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g
-  // eslint-disable-line no-control-regex
-);
-var DOCTYPE_NAME = seal(/^html$/i);
-var CUSTOM_ELEMENT = seal(/^[a-z][.\w]*(-[.\w]+)+$/i);
-var EXPRESSIONS = /* @__PURE__ */ Object.freeze({
-  __proto__: null,
-  ARIA_ATTR,
-  ATTR_WHITESPACE,
-  CUSTOM_ELEMENT,
-  DATA_ATTR,
-  DOCTYPE_NAME,
-  ERB_EXPR,
-  IS_ALLOWED_URI,
-  IS_SCRIPT_OR_DATA,
-  MUSTACHE_EXPR,
-  TMPLIT_EXPR
-});
-var NODE_TYPE = {
-  element: 1,
-  attribute: 2,
-  text: 3,
-  cdataSection: 4,
-  entityReference: 5,
-  // Deprecated
-  entityNode: 6,
-  // Deprecated
-  progressingInstruction: 7,
-  comment: 8,
-  document: 9,
-  documentType: 10,
-  documentFragment: 11,
-  notation: 12
-  // Deprecated
-};
-var getGlobal = function getGlobal2() {
-  return typeof window === "undefined" ? null : window;
-};
-var _createTrustedTypesPolicy = function _createTrustedTypesPolicy2(trustedTypes, purifyHostElement) {
-  if (typeof trustedTypes !== "object" || typeof trustedTypes.createPolicy !== "function") {
-    return null;
-  }
-  let suffix = null;
-  const ATTR_NAME = "data-tt-policy-suffix";
-  if (purifyHostElement && purifyHostElement.hasAttribute(ATTR_NAME)) {
-    suffix = purifyHostElement.getAttribute(ATTR_NAME);
-  }
-  const policyName = "dompurify" + (suffix ? "#" + suffix : "");
-  try {
-    return trustedTypes.createPolicy(policyName, {
-      createHTML(html4) {
-        return html4;
-      },
-      createScriptURL(scriptUrl) {
-        return scriptUrl;
-      }
-    });
-  } catch (_3) {
-    console.warn("TrustedTypes policy " + policyName + " could not be created.");
-    return null;
-  }
-};
-var _createHooksMap = function _createHooksMap2() {
-  return {
-    afterSanitizeAttributes: [],
-    afterSanitizeElements: [],
-    afterSanitizeShadowDOM: [],
-    beforeSanitizeAttributes: [],
-    beforeSanitizeElements: [],
-    beforeSanitizeShadowDOM: [],
-    uponSanitizeAttribute: [],
-    uponSanitizeElement: [],
-    uponSanitizeShadowNode: []
-  };
-};
-function createDOMPurify() {
-  let window2 = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : getGlobal();
-  const DOMPurify = (root2) => createDOMPurify(root2);
-  DOMPurify.version = "3.3.3";
-  DOMPurify.removed = [];
-  if (!window2 || !window2.document || window2.document.nodeType !== NODE_TYPE.document || !window2.Element) {
-    DOMPurify.isSupported = false;
-    return DOMPurify;
-  }
-  let {
-    document: document2
-  } = window2;
-  const originalDocument = document2;
-  const currentScript = originalDocument.currentScript;
-  const {
-    DocumentFragment,
-    HTMLTemplateElement,
-    Node: Node2,
-    Element: Element2,
-    NodeFilter,
-    NamedNodeMap = window2.NamedNodeMap || window2.MozNamedAttrMap,
-    HTMLFormElement,
-    DOMParser,
-    trustedTypes
-  } = window2;
-  const ElementPrototype = Element2.prototype;
-  const cloneNode = lookupGetter(ElementPrototype, "cloneNode");
-  const remove2 = lookupGetter(ElementPrototype, "remove");
-  const getNextSibling = lookupGetter(ElementPrototype, "nextSibling");
-  const getChildNodes = lookupGetter(ElementPrototype, "childNodes");
-  const getParentNode = lookupGetter(ElementPrototype, "parentNode");
-  if (typeof HTMLTemplateElement === "function") {
-    const template = document2.createElement("template");
-    if (template.content && template.content.ownerDocument) {
-      document2 = template.content.ownerDocument;
-    }
-  }
-  let trustedTypesPolicy;
-  let emptyHTML = "";
-  const {
-    implementation,
-    createNodeIterator,
-    createDocumentFragment,
-    getElementsByTagName
-  } = document2;
-  const {
-    importNode
-  } = originalDocument;
-  let hooks = _createHooksMap();
-  DOMPurify.isSupported = typeof entries === "function" && typeof getParentNode === "function" && implementation && implementation.createHTMLDocument !== void 0;
-  const {
-    MUSTACHE_EXPR: MUSTACHE_EXPR2,
-    ERB_EXPR: ERB_EXPR2,
-    TMPLIT_EXPR: TMPLIT_EXPR2,
-    DATA_ATTR: DATA_ATTR2,
-    ARIA_ATTR: ARIA_ATTR2,
-    IS_SCRIPT_OR_DATA: IS_SCRIPT_OR_DATA2,
-    ATTR_WHITESPACE: ATTR_WHITESPACE2,
-    CUSTOM_ELEMENT: CUSTOM_ELEMENT2
-  } = EXPRESSIONS;
-  let {
-    IS_ALLOWED_URI: IS_ALLOWED_URI$1
-  } = EXPRESSIONS;
-  let ALLOWED_TAGS = null;
-  const DEFAULT_ALLOWED_TAGS = addToSet({}, [...html$1, ...svg$1, ...svgFilters, ...mathMl$1, ...text]);
-  let ALLOWED_ATTR = null;
-  const DEFAULT_ALLOWED_ATTR = addToSet({}, [...html2, ...svg, ...mathMl, ...xml]);
-  let CUSTOM_ELEMENT_HANDLING = Object.seal(create(null, {
-    tagNameCheck: {
-      writable: true,
-      configurable: false,
-      enumerable: true,
-      value: null
-    },
-    attributeNameCheck: {
-      writable: true,
-      configurable: false,
-      enumerable: true,
-      value: null
-    },
-    allowCustomizedBuiltInElements: {
-      writable: true,
-      configurable: false,
-      enumerable: true,
-      value: false
-    }
-  }));
-  let FORBID_TAGS = null;
-  let FORBID_ATTR = null;
-  const EXTRA_ELEMENT_HANDLING = Object.seal(create(null, {
-    tagCheck: {
-      writable: true,
-      configurable: false,
-      enumerable: true,
-      value: null
-    },
-    attributeCheck: {
-      writable: true,
-      configurable: false,
-      enumerable: true,
-      value: null
-    }
-  }));
-  let ALLOW_ARIA_ATTR = true;
-  let ALLOW_DATA_ATTR = true;
-  let ALLOW_UNKNOWN_PROTOCOLS = false;
-  let ALLOW_SELF_CLOSE_IN_ATTR = true;
-  let SAFE_FOR_TEMPLATES = false;
-  let SAFE_FOR_XML = true;
-  let WHOLE_DOCUMENT = false;
-  let SET_CONFIG = false;
-  let FORCE_BODY = false;
-  let RETURN_DOM = false;
-  let RETURN_DOM_FRAGMENT = false;
-  let RETURN_TRUSTED_TYPE = false;
-  let SANITIZE_DOM = true;
-  let SANITIZE_NAMED_PROPS = false;
-  const SANITIZE_NAMED_PROPS_PREFIX = "user-content-";
-  let KEEP_CONTENT = true;
-  let IN_PLACE = false;
-  let USE_PROFILES = {};
-  let FORBID_CONTENTS = null;
-  const DEFAULT_FORBID_CONTENTS = addToSet({}, ["annotation-xml", "audio", "colgroup", "desc", "foreignobject", "head", "iframe", "math", "mi", "mn", "mo", "ms", "mtext", "noembed", "noframes", "noscript", "plaintext", "script", "style", "svg", "template", "thead", "title", "video", "xmp"]);
-  let DATA_URI_TAGS = null;
-  const DEFAULT_DATA_URI_TAGS = addToSet({}, ["audio", "video", "img", "source", "image", "track"]);
-  let URI_SAFE_ATTRIBUTES = null;
-  const DEFAULT_URI_SAFE_ATTRIBUTES = addToSet({}, ["alt", "class", "for", "id", "label", "name", "pattern", "placeholder", "role", "summary", "title", "value", "style", "xmlns"]);
-  const MATHML_NAMESPACE = "http://www.w3.org/1998/Math/MathML";
-  const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-  const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
-  let NAMESPACE = HTML_NAMESPACE;
-  let IS_EMPTY_INPUT = false;
-  let ALLOWED_NAMESPACES = null;
-  const DEFAULT_ALLOWED_NAMESPACES = addToSet({}, [MATHML_NAMESPACE, SVG_NAMESPACE, HTML_NAMESPACE], stringToString);
-  let MATHML_TEXT_INTEGRATION_POINTS = addToSet({}, ["mi", "mo", "mn", "ms", "mtext"]);
-  let HTML_INTEGRATION_POINTS = addToSet({}, ["annotation-xml"]);
-  const COMMON_SVG_AND_HTML_ELEMENTS = addToSet({}, ["title", "style", "font", "a", "script"]);
-  let PARSER_MEDIA_TYPE = null;
-  const SUPPORTED_PARSER_MEDIA_TYPES = ["application/xhtml+xml", "text/html"];
-  const DEFAULT_PARSER_MEDIA_TYPE = "text/html";
-  let transformCaseFunc = null;
-  let CONFIG = null;
-  const formElement = document2.createElement("form");
-  const isRegexOrFunction = function isRegexOrFunction2(testValue) {
-    return testValue instanceof RegExp || testValue instanceof Function;
-  };
-  const _parseConfig = function _parseConfig2() {
-    let cfg = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : {};
-    if (CONFIG && CONFIG === cfg) {
-      return;
-    }
-    if (!cfg || typeof cfg !== "object") {
-      cfg = {};
-    }
-    cfg = clone(cfg);
-    PARSER_MEDIA_TYPE = // eslint-disable-next-line unicorn/prefer-includes
-    SUPPORTED_PARSER_MEDIA_TYPES.indexOf(cfg.PARSER_MEDIA_TYPE) === -1 ? DEFAULT_PARSER_MEDIA_TYPE : cfg.PARSER_MEDIA_TYPE;
-    transformCaseFunc = PARSER_MEDIA_TYPE === "application/xhtml+xml" ? stringToString : stringToLowerCase;
-    ALLOWED_TAGS = objectHasOwnProperty(cfg, "ALLOWED_TAGS") ? addToSet({}, cfg.ALLOWED_TAGS, transformCaseFunc) : DEFAULT_ALLOWED_TAGS;
-    ALLOWED_ATTR = objectHasOwnProperty(cfg, "ALLOWED_ATTR") ? addToSet({}, cfg.ALLOWED_ATTR, transformCaseFunc) : DEFAULT_ALLOWED_ATTR;
-    ALLOWED_NAMESPACES = objectHasOwnProperty(cfg, "ALLOWED_NAMESPACES") ? addToSet({}, cfg.ALLOWED_NAMESPACES, stringToString) : DEFAULT_ALLOWED_NAMESPACES;
-    URI_SAFE_ATTRIBUTES = objectHasOwnProperty(cfg, "ADD_URI_SAFE_ATTR") ? addToSet(clone(DEFAULT_URI_SAFE_ATTRIBUTES), cfg.ADD_URI_SAFE_ATTR, transformCaseFunc) : DEFAULT_URI_SAFE_ATTRIBUTES;
-    DATA_URI_TAGS = objectHasOwnProperty(cfg, "ADD_DATA_URI_TAGS") ? addToSet(clone(DEFAULT_DATA_URI_TAGS), cfg.ADD_DATA_URI_TAGS, transformCaseFunc) : DEFAULT_DATA_URI_TAGS;
-    FORBID_CONTENTS = objectHasOwnProperty(cfg, "FORBID_CONTENTS") ? addToSet({}, cfg.FORBID_CONTENTS, transformCaseFunc) : DEFAULT_FORBID_CONTENTS;
-    FORBID_TAGS = objectHasOwnProperty(cfg, "FORBID_TAGS") ? addToSet({}, cfg.FORBID_TAGS, transformCaseFunc) : clone({});
-    FORBID_ATTR = objectHasOwnProperty(cfg, "FORBID_ATTR") ? addToSet({}, cfg.FORBID_ATTR, transformCaseFunc) : clone({});
-    USE_PROFILES = objectHasOwnProperty(cfg, "USE_PROFILES") ? cfg.USE_PROFILES : false;
-    ALLOW_ARIA_ATTR = cfg.ALLOW_ARIA_ATTR !== false;
-    ALLOW_DATA_ATTR = cfg.ALLOW_DATA_ATTR !== false;
-    ALLOW_UNKNOWN_PROTOCOLS = cfg.ALLOW_UNKNOWN_PROTOCOLS || false;
-    ALLOW_SELF_CLOSE_IN_ATTR = cfg.ALLOW_SELF_CLOSE_IN_ATTR !== false;
-    SAFE_FOR_TEMPLATES = cfg.SAFE_FOR_TEMPLATES || false;
-    SAFE_FOR_XML = cfg.SAFE_FOR_XML !== false;
-    WHOLE_DOCUMENT = cfg.WHOLE_DOCUMENT || false;
-    RETURN_DOM = cfg.RETURN_DOM || false;
-    RETURN_DOM_FRAGMENT = cfg.RETURN_DOM_FRAGMENT || false;
-    RETURN_TRUSTED_TYPE = cfg.RETURN_TRUSTED_TYPE || false;
-    FORCE_BODY = cfg.FORCE_BODY || false;
-    SANITIZE_DOM = cfg.SANITIZE_DOM !== false;
-    SANITIZE_NAMED_PROPS = cfg.SANITIZE_NAMED_PROPS || false;
-    KEEP_CONTENT = cfg.KEEP_CONTENT !== false;
-    IN_PLACE = cfg.IN_PLACE || false;
-    IS_ALLOWED_URI$1 = cfg.ALLOWED_URI_REGEXP || IS_ALLOWED_URI;
-    NAMESPACE = cfg.NAMESPACE || HTML_NAMESPACE;
-    MATHML_TEXT_INTEGRATION_POINTS = cfg.MATHML_TEXT_INTEGRATION_POINTS || MATHML_TEXT_INTEGRATION_POINTS;
-    HTML_INTEGRATION_POINTS = cfg.HTML_INTEGRATION_POINTS || HTML_INTEGRATION_POINTS;
-    CUSTOM_ELEMENT_HANDLING = cfg.CUSTOM_ELEMENT_HANDLING || {};
-    if (cfg.CUSTOM_ELEMENT_HANDLING && isRegexOrFunction(cfg.CUSTOM_ELEMENT_HANDLING.tagNameCheck)) {
-      CUSTOM_ELEMENT_HANDLING.tagNameCheck = cfg.CUSTOM_ELEMENT_HANDLING.tagNameCheck;
-    }
-    if (cfg.CUSTOM_ELEMENT_HANDLING && isRegexOrFunction(cfg.CUSTOM_ELEMENT_HANDLING.attributeNameCheck)) {
-      CUSTOM_ELEMENT_HANDLING.attributeNameCheck = cfg.CUSTOM_ELEMENT_HANDLING.attributeNameCheck;
-    }
-    if (cfg.CUSTOM_ELEMENT_HANDLING && typeof cfg.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements === "boolean") {
-      CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements = cfg.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements;
-    }
-    if (SAFE_FOR_TEMPLATES) {
-      ALLOW_DATA_ATTR = false;
-    }
-    if (RETURN_DOM_FRAGMENT) {
-      RETURN_DOM = true;
-    }
-    if (USE_PROFILES) {
-      ALLOWED_TAGS = addToSet({}, text);
-      ALLOWED_ATTR = create(null);
-      if (USE_PROFILES.html === true) {
-        addToSet(ALLOWED_TAGS, html$1);
-        addToSet(ALLOWED_ATTR, html2);
-      }
-      if (USE_PROFILES.svg === true) {
-        addToSet(ALLOWED_TAGS, svg$1);
-        addToSet(ALLOWED_ATTR, svg);
-        addToSet(ALLOWED_ATTR, xml);
-      }
-      if (USE_PROFILES.svgFilters === true) {
-        addToSet(ALLOWED_TAGS, svgFilters);
-        addToSet(ALLOWED_ATTR, svg);
-        addToSet(ALLOWED_ATTR, xml);
-      }
-      if (USE_PROFILES.mathMl === true) {
-        addToSet(ALLOWED_TAGS, mathMl$1);
-        addToSet(ALLOWED_ATTR, mathMl);
-        addToSet(ALLOWED_ATTR, xml);
-      }
-    }
-    if (!objectHasOwnProperty(cfg, "ADD_TAGS")) {
-      EXTRA_ELEMENT_HANDLING.tagCheck = null;
-    }
-    if (!objectHasOwnProperty(cfg, "ADD_ATTR")) {
-      EXTRA_ELEMENT_HANDLING.attributeCheck = null;
-    }
-    if (cfg.ADD_TAGS) {
-      if (typeof cfg.ADD_TAGS === "function") {
-        EXTRA_ELEMENT_HANDLING.tagCheck = cfg.ADD_TAGS;
-      } else {
-        if (ALLOWED_TAGS === DEFAULT_ALLOWED_TAGS) {
-          ALLOWED_TAGS = clone(ALLOWED_TAGS);
-        }
-        addToSet(ALLOWED_TAGS, cfg.ADD_TAGS, transformCaseFunc);
-      }
-    }
-    if (cfg.ADD_ATTR) {
-      if (typeof cfg.ADD_ATTR === "function") {
-        EXTRA_ELEMENT_HANDLING.attributeCheck = cfg.ADD_ATTR;
-      } else {
-        if (ALLOWED_ATTR === DEFAULT_ALLOWED_ATTR) {
-          ALLOWED_ATTR = clone(ALLOWED_ATTR);
-        }
-        addToSet(ALLOWED_ATTR, cfg.ADD_ATTR, transformCaseFunc);
-      }
-    }
-    if (cfg.ADD_URI_SAFE_ATTR) {
-      addToSet(URI_SAFE_ATTRIBUTES, cfg.ADD_URI_SAFE_ATTR, transformCaseFunc);
-    }
-    if (cfg.FORBID_CONTENTS) {
-      if (FORBID_CONTENTS === DEFAULT_FORBID_CONTENTS) {
-        FORBID_CONTENTS = clone(FORBID_CONTENTS);
-      }
-      addToSet(FORBID_CONTENTS, cfg.FORBID_CONTENTS, transformCaseFunc);
-    }
-    if (cfg.ADD_FORBID_CONTENTS) {
-      if (FORBID_CONTENTS === DEFAULT_FORBID_CONTENTS) {
-        FORBID_CONTENTS = clone(FORBID_CONTENTS);
-      }
-      addToSet(FORBID_CONTENTS, cfg.ADD_FORBID_CONTENTS, transformCaseFunc);
-    }
-    if (KEEP_CONTENT) {
-      ALLOWED_TAGS["#text"] = true;
-    }
-    if (WHOLE_DOCUMENT) {
-      addToSet(ALLOWED_TAGS, ["html", "head", "body"]);
-    }
-    if (ALLOWED_TAGS.table) {
-      addToSet(ALLOWED_TAGS, ["tbody"]);
-      delete FORBID_TAGS.tbody;
-    }
-    if (cfg.TRUSTED_TYPES_POLICY) {
-      if (typeof cfg.TRUSTED_TYPES_POLICY.createHTML !== "function") {
-        throw typeErrorCreate('TRUSTED_TYPES_POLICY configuration option must provide a "createHTML" hook.');
-      }
-      if (typeof cfg.TRUSTED_TYPES_POLICY.createScriptURL !== "function") {
-        throw typeErrorCreate('TRUSTED_TYPES_POLICY configuration option must provide a "createScriptURL" hook.');
-      }
-      trustedTypesPolicy = cfg.TRUSTED_TYPES_POLICY;
-      emptyHTML = trustedTypesPolicy.createHTML("");
-    } else {
-      if (trustedTypesPolicy === void 0) {
-        trustedTypesPolicy = _createTrustedTypesPolicy(trustedTypes, currentScript);
-      }
-      if (trustedTypesPolicy !== null && typeof emptyHTML === "string") {
-        emptyHTML = trustedTypesPolicy.createHTML("");
-      }
-    }
-    if (freeze) {
-      freeze(cfg);
-    }
-    CONFIG = cfg;
-  };
-  const ALL_SVG_TAGS = addToSet({}, [...svg$1, ...svgFilters, ...svgDisallowed]);
-  const ALL_MATHML_TAGS = addToSet({}, [...mathMl$1, ...mathMlDisallowed]);
-  const _checkValidNamespace = function _checkValidNamespace2(element) {
-    let parent = getParentNode(element);
-    if (!parent || !parent.tagName) {
-      parent = {
-        namespaceURI: NAMESPACE,
-        tagName: "template"
-      };
-    }
-    const tagName = stringToLowerCase(element.tagName);
-    const parentTagName = stringToLowerCase(parent.tagName);
-    if (!ALLOWED_NAMESPACES[element.namespaceURI]) {
-      return false;
-    }
-    if (element.namespaceURI === SVG_NAMESPACE) {
-      if (parent.namespaceURI === HTML_NAMESPACE) {
-        return tagName === "svg";
-      }
-      if (parent.namespaceURI === MATHML_NAMESPACE) {
-        return tagName === "svg" && (parentTagName === "annotation-xml" || MATHML_TEXT_INTEGRATION_POINTS[parentTagName]);
-      }
-      return Boolean(ALL_SVG_TAGS[tagName]);
-    }
-    if (element.namespaceURI === MATHML_NAMESPACE) {
-      if (parent.namespaceURI === HTML_NAMESPACE) {
-        return tagName === "math";
-      }
-      if (parent.namespaceURI === SVG_NAMESPACE) {
-        return tagName === "math" && HTML_INTEGRATION_POINTS[parentTagName];
-      }
-      return Boolean(ALL_MATHML_TAGS[tagName]);
-    }
-    if (element.namespaceURI === HTML_NAMESPACE) {
-      if (parent.namespaceURI === SVG_NAMESPACE && !HTML_INTEGRATION_POINTS[parentTagName]) {
-        return false;
-      }
-      if (parent.namespaceURI === MATHML_NAMESPACE && !MATHML_TEXT_INTEGRATION_POINTS[parentTagName]) {
-        return false;
-      }
-      return !ALL_MATHML_TAGS[tagName] && (COMMON_SVG_AND_HTML_ELEMENTS[tagName] || !ALL_SVG_TAGS[tagName]);
-    }
-    if (PARSER_MEDIA_TYPE === "application/xhtml+xml" && ALLOWED_NAMESPACES[element.namespaceURI]) {
-      return true;
-    }
-    return false;
-  };
-  const _forceRemove = function _forceRemove2(node) {
-    arrayPush(DOMPurify.removed, {
-      element: node
-    });
-    try {
-      getParentNode(node).removeChild(node);
-    } catch (_3) {
-      remove2(node);
-    }
-  };
-  const _removeAttribute = function _removeAttribute2(name, element) {
-    try {
-      arrayPush(DOMPurify.removed, {
-        attribute: element.getAttributeNode(name),
-        from: element
-      });
-    } catch (_3) {
-      arrayPush(DOMPurify.removed, {
-        attribute: null,
-        from: element
-      });
-    }
-    element.removeAttribute(name);
-    if (name === "is") {
-      if (RETURN_DOM || RETURN_DOM_FRAGMENT) {
-        try {
-          _forceRemove(element);
-        } catch (_3) {
-        }
-      } else {
-        try {
-          element.setAttribute(name, "");
-        } catch (_3) {
-        }
-      }
-    }
-  };
-  const _initDocument = function _initDocument2(dirty) {
-    let doc = null;
-    let leadingWhitespace = null;
-    if (FORCE_BODY) {
-      dirty = "<remove></remove>" + dirty;
-    } else {
-      const matches = stringMatch(dirty, /^[\r\n\t ]+/);
-      leadingWhitespace = matches && matches[0];
-    }
-    if (PARSER_MEDIA_TYPE === "application/xhtml+xml" && NAMESPACE === HTML_NAMESPACE) {
-      dirty = '<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>' + dirty + "</body></html>";
-    }
-    const dirtyPayload = trustedTypesPolicy ? trustedTypesPolicy.createHTML(dirty) : dirty;
-    if (NAMESPACE === HTML_NAMESPACE) {
-      try {
-        doc = new DOMParser().parseFromString(dirtyPayload, PARSER_MEDIA_TYPE);
-      } catch (_3) {
-      }
-    }
-    if (!doc || !doc.documentElement) {
-      doc = implementation.createDocument(NAMESPACE, "template", null);
-      try {
-        doc.documentElement.innerHTML = IS_EMPTY_INPUT ? emptyHTML : dirtyPayload;
-      } catch (_3) {
-      }
-    }
-    const body = doc.body || doc.documentElement;
-    if (dirty && leadingWhitespace) {
-      body.insertBefore(document2.createTextNode(leadingWhitespace), body.childNodes[0] || null);
-    }
-    if (NAMESPACE === HTML_NAMESPACE) {
-      return getElementsByTagName.call(doc, WHOLE_DOCUMENT ? "html" : "body")[0];
-    }
-    return WHOLE_DOCUMENT ? doc.documentElement : body;
-  };
-  const _createNodeIterator = function _createNodeIterator2(root2) {
-    return createNodeIterator.call(
-      root2.ownerDocument || root2,
-      root2,
-      // eslint-disable-next-line no-bitwise
-      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_TEXT | NodeFilter.SHOW_PROCESSING_INSTRUCTION | NodeFilter.SHOW_CDATA_SECTION,
-      null
-    );
-  };
-  const _isClobbered = function _isClobbered2(element) {
-    return element instanceof HTMLFormElement && (typeof element.nodeName !== "string" || typeof element.textContent !== "string" || typeof element.removeChild !== "function" || !(element.attributes instanceof NamedNodeMap) || typeof element.removeAttribute !== "function" || typeof element.setAttribute !== "function" || typeof element.namespaceURI !== "string" || typeof element.insertBefore !== "function" || typeof element.hasChildNodes !== "function");
-  };
-  const _isNode = function _isNode2(value) {
-    return typeof Node2 === "function" && value instanceof Node2;
-  };
-  function _executeHooks(hooks2, currentNode, data) {
-    arrayForEach(hooks2, (hook) => {
-      hook.call(DOMPurify, currentNode, data, CONFIG);
-    });
-  }
-  const _sanitizeElements = function _sanitizeElements2(currentNode) {
-    let content = null;
-    _executeHooks(hooks.beforeSanitizeElements, currentNode, null);
-    if (_isClobbered(currentNode)) {
-      _forceRemove(currentNode);
-      return true;
-    }
-    const tagName = transformCaseFunc(currentNode.nodeName);
-    _executeHooks(hooks.uponSanitizeElement, currentNode, {
-      tagName,
-      allowedTags: ALLOWED_TAGS
-    });
-    if (SAFE_FOR_XML && currentNode.hasChildNodes() && !_isNode(currentNode.firstElementChild) && regExpTest(/<[/\w!]/g, currentNode.innerHTML) && regExpTest(/<[/\w!]/g, currentNode.textContent)) {
-      _forceRemove(currentNode);
-      return true;
-    }
-    if (currentNode.nodeType === NODE_TYPE.progressingInstruction) {
-      _forceRemove(currentNode);
-      return true;
-    }
-    if (SAFE_FOR_XML && currentNode.nodeType === NODE_TYPE.comment && regExpTest(/<[/\w]/g, currentNode.data)) {
-      _forceRemove(currentNode);
-      return true;
-    }
-    if (!(EXTRA_ELEMENT_HANDLING.tagCheck instanceof Function && EXTRA_ELEMENT_HANDLING.tagCheck(tagName)) && (!ALLOWED_TAGS[tagName] || FORBID_TAGS[tagName])) {
-      if (!FORBID_TAGS[tagName] && _isBasicCustomElement(tagName)) {
-        if (CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof RegExp && regExpTest(CUSTOM_ELEMENT_HANDLING.tagNameCheck, tagName)) {
-          return false;
-        }
-        if (CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof Function && CUSTOM_ELEMENT_HANDLING.tagNameCheck(tagName)) {
-          return false;
-        }
-      }
-      if (KEEP_CONTENT && !FORBID_CONTENTS[tagName]) {
-        const parentNode = getParentNode(currentNode) || currentNode.parentNode;
-        const childNodes = getChildNodes(currentNode) || currentNode.childNodes;
-        if (childNodes && parentNode) {
-          const childCount = childNodes.length;
-          for (let i4 = childCount - 1; i4 >= 0; --i4) {
-            const childClone = cloneNode(childNodes[i4], true);
-            childClone.__removalCount = (currentNode.__removalCount || 0) + 1;
-            parentNode.insertBefore(childClone, getNextSibling(currentNode));
-          }
-        }
-      }
-      _forceRemove(currentNode);
-      return true;
-    }
-    if (currentNode instanceof Element2 && !_checkValidNamespace(currentNode)) {
-      _forceRemove(currentNode);
-      return true;
-    }
-    if ((tagName === "noscript" || tagName === "noembed" || tagName === "noframes") && regExpTest(/<\/no(script|embed|frames)/i, currentNode.innerHTML)) {
-      _forceRemove(currentNode);
-      return true;
-    }
-    if (SAFE_FOR_TEMPLATES && currentNode.nodeType === NODE_TYPE.text) {
-      content = currentNode.textContent;
-      arrayForEach([MUSTACHE_EXPR2, ERB_EXPR2, TMPLIT_EXPR2], (expr) => {
-        content = stringReplace(content, expr, " ");
-      });
-      if (currentNode.textContent !== content) {
-        arrayPush(DOMPurify.removed, {
-          element: currentNode.cloneNode()
-        });
-        currentNode.textContent = content;
-      }
-    }
-    _executeHooks(hooks.afterSanitizeElements, currentNode, null);
-    return false;
-  };
-  const _isValidAttribute = function _isValidAttribute2(lcTag, lcName, value) {
-    if (FORBID_ATTR[lcName]) {
-      return false;
-    }
-    if (SANITIZE_DOM && (lcName === "id" || lcName === "name") && (value in document2 || value in formElement)) {
-      return false;
-    }
-    if (ALLOW_DATA_ATTR && !FORBID_ATTR[lcName] && regExpTest(DATA_ATTR2, lcName))
-      ;
-    else if (ALLOW_ARIA_ATTR && regExpTest(ARIA_ATTR2, lcName))
-      ;
-    else if (EXTRA_ELEMENT_HANDLING.attributeCheck instanceof Function && EXTRA_ELEMENT_HANDLING.attributeCheck(lcName, lcTag))
-      ;
-    else if (!ALLOWED_ATTR[lcName] || FORBID_ATTR[lcName]) {
-      if (
-        // First condition does a very basic check if a) it's basically a valid custom element tagname AND
-        // b) if the tagName passes whatever the user has configured for CUSTOM_ELEMENT_HANDLING.tagNameCheck
-        // and c) if the attribute name passes whatever the user has configured for CUSTOM_ELEMENT_HANDLING.attributeNameCheck
-        _isBasicCustomElement(lcTag) && (CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof RegExp && regExpTest(CUSTOM_ELEMENT_HANDLING.tagNameCheck, lcTag) || CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof Function && CUSTOM_ELEMENT_HANDLING.tagNameCheck(lcTag)) && (CUSTOM_ELEMENT_HANDLING.attributeNameCheck instanceof RegExp && regExpTest(CUSTOM_ELEMENT_HANDLING.attributeNameCheck, lcName) || CUSTOM_ELEMENT_HANDLING.attributeNameCheck instanceof Function && CUSTOM_ELEMENT_HANDLING.attributeNameCheck(lcName, lcTag)) || // Alternative, second condition checks if it's an `is`-attribute, AND
-        // the value passes whatever the user has configured for CUSTOM_ELEMENT_HANDLING.tagNameCheck
-        lcName === "is" && CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements && (CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof RegExp && regExpTest(CUSTOM_ELEMENT_HANDLING.tagNameCheck, value) || CUSTOM_ELEMENT_HANDLING.tagNameCheck instanceof Function && CUSTOM_ELEMENT_HANDLING.tagNameCheck(value))
-      )
-        ;
-      else {
-        return false;
-      }
-    } else if (URI_SAFE_ATTRIBUTES[lcName])
-      ;
-    else if (regExpTest(IS_ALLOWED_URI$1, stringReplace(value, ATTR_WHITESPACE2, "")))
-      ;
-    else if ((lcName === "src" || lcName === "xlink:href" || lcName === "href") && lcTag !== "script" && stringIndexOf(value, "data:") === 0 && DATA_URI_TAGS[lcTag])
-      ;
-    else if (ALLOW_UNKNOWN_PROTOCOLS && !regExpTest(IS_SCRIPT_OR_DATA2, stringReplace(value, ATTR_WHITESPACE2, "")))
-      ;
-    else if (value) {
-      return false;
-    } else
-      ;
-    return true;
-  };
-  const _isBasicCustomElement = function _isBasicCustomElement2(tagName) {
-    return tagName !== "annotation-xml" && stringMatch(tagName, CUSTOM_ELEMENT2);
-  };
-  const _sanitizeAttributes = function _sanitizeAttributes2(currentNode) {
-    _executeHooks(hooks.beforeSanitizeAttributes, currentNode, null);
-    const {
-      attributes
-    } = currentNode;
-    if (!attributes || _isClobbered(currentNode)) {
-      return;
-    }
-    const hookEvent = {
-      attrName: "",
-      attrValue: "",
-      keepAttr: true,
-      allowedAttributes: ALLOWED_ATTR,
-      forceKeepAttr: void 0
-    };
-    let l3 = attributes.length;
-    while (l3--) {
-      const attr = attributes[l3];
-      const {
-        name,
-        namespaceURI,
-        value: attrValue
-      } = attr;
-      const lcName = transformCaseFunc(name);
-      const initValue = attrValue;
-      let value = name === "value" ? initValue : stringTrim(initValue);
-      hookEvent.attrName = lcName;
-      hookEvent.attrValue = value;
-      hookEvent.keepAttr = true;
-      hookEvent.forceKeepAttr = void 0;
-      _executeHooks(hooks.uponSanitizeAttribute, currentNode, hookEvent);
-      value = hookEvent.attrValue;
-      if (SANITIZE_NAMED_PROPS && (lcName === "id" || lcName === "name")) {
-        _removeAttribute(name, currentNode);
-        value = SANITIZE_NAMED_PROPS_PREFIX + value;
-      }
-      if (SAFE_FOR_XML && regExpTest(/((--!?|])>)|<\/(style|script|title|xmp|textarea|noscript|iframe|noembed|noframes)/i, value)) {
-        _removeAttribute(name, currentNode);
-        continue;
-      }
-      if (lcName === "attributename" && stringMatch(value, "href")) {
-        _removeAttribute(name, currentNode);
-        continue;
-      }
-      if (hookEvent.forceKeepAttr) {
-        continue;
-      }
-      if (!hookEvent.keepAttr) {
-        _removeAttribute(name, currentNode);
-        continue;
-      }
-      if (!ALLOW_SELF_CLOSE_IN_ATTR && regExpTest(/\/>/i, value)) {
-        _removeAttribute(name, currentNode);
-        continue;
-      }
-      if (SAFE_FOR_TEMPLATES) {
-        arrayForEach([MUSTACHE_EXPR2, ERB_EXPR2, TMPLIT_EXPR2], (expr) => {
-          value = stringReplace(value, expr, " ");
-        });
-      }
-      const lcTag = transformCaseFunc(currentNode.nodeName);
-      if (!_isValidAttribute(lcTag, lcName, value)) {
-        _removeAttribute(name, currentNode);
-        continue;
-      }
-      if (trustedTypesPolicy && typeof trustedTypes === "object" && typeof trustedTypes.getAttributeType === "function") {
-        if (namespaceURI)
-          ;
-        else {
-          switch (trustedTypes.getAttributeType(lcTag, lcName)) {
-            case "TrustedHTML": {
-              value = trustedTypesPolicy.createHTML(value);
-              break;
-            }
-            case "TrustedScriptURL": {
-              value = trustedTypesPolicy.createScriptURL(value);
-              break;
-            }
-          }
-        }
-      }
-      if (value !== initValue) {
-        try {
-          if (namespaceURI) {
-            currentNode.setAttributeNS(namespaceURI, name, value);
-          } else {
-            currentNode.setAttribute(name, value);
-          }
-          if (_isClobbered(currentNode)) {
-            _forceRemove(currentNode);
-          } else {
-            arrayPop(DOMPurify.removed);
-          }
-        } catch (_3) {
-          _removeAttribute(name, currentNode);
-        }
-      }
-    }
-    _executeHooks(hooks.afterSanitizeAttributes, currentNode, null);
-  };
-  const _sanitizeShadowDOM = function _sanitizeShadowDOM2(fragment) {
-    let shadowNode = null;
-    const shadowIterator = _createNodeIterator(fragment);
-    _executeHooks(hooks.beforeSanitizeShadowDOM, fragment, null);
-    while (shadowNode = shadowIterator.nextNode()) {
-      _executeHooks(hooks.uponSanitizeShadowNode, shadowNode, null);
-      _sanitizeElements(shadowNode);
-      _sanitizeAttributes(shadowNode);
-      if (shadowNode.content instanceof DocumentFragment) {
-        _sanitizeShadowDOM2(shadowNode.content);
-      }
-    }
-    _executeHooks(hooks.afterSanitizeShadowDOM, fragment, null);
-  };
-  DOMPurify.sanitize = function(dirty) {
-    let cfg = arguments.length > 1 && arguments[1] !== void 0 ? arguments[1] : {};
-    let body = null;
-    let importedNode = null;
-    let currentNode = null;
-    let returnNode = null;
-    IS_EMPTY_INPUT = !dirty;
-    if (IS_EMPTY_INPUT) {
-      dirty = "<!-->";
-    }
-    if (typeof dirty !== "string" && !_isNode(dirty)) {
-      if (typeof dirty.toString === "function") {
-        dirty = dirty.toString();
-        if (typeof dirty !== "string") {
-          throw typeErrorCreate("dirty is not a string, aborting");
-        }
-      } else {
-        throw typeErrorCreate("toString is not a function");
-      }
-    }
-    if (!DOMPurify.isSupported) {
-      return dirty;
-    }
-    if (!SET_CONFIG) {
-      _parseConfig(cfg);
-    }
-    DOMPurify.removed = [];
-    if (typeof dirty === "string") {
-      IN_PLACE = false;
-    }
-    if (IN_PLACE) {
-      if (dirty.nodeName) {
-        const tagName = transformCaseFunc(dirty.nodeName);
-        if (!ALLOWED_TAGS[tagName] || FORBID_TAGS[tagName]) {
-          throw typeErrorCreate("root node is forbidden and cannot be sanitized in-place");
-        }
-      }
-    } else if (dirty instanceof Node2) {
-      body = _initDocument("<!---->");
-      importedNode = body.ownerDocument.importNode(dirty, true);
-      if (importedNode.nodeType === NODE_TYPE.element && importedNode.nodeName === "BODY") {
-        body = importedNode;
-      } else if (importedNode.nodeName === "HTML") {
-        body = importedNode;
-      } else {
-        body.appendChild(importedNode);
-      }
-    } else {
-      if (!RETURN_DOM && !SAFE_FOR_TEMPLATES && !WHOLE_DOCUMENT && // eslint-disable-next-line unicorn/prefer-includes
-      dirty.indexOf("<") === -1) {
-        return trustedTypesPolicy && RETURN_TRUSTED_TYPE ? trustedTypesPolicy.createHTML(dirty) : dirty;
-      }
-      body = _initDocument(dirty);
-      if (!body) {
-        return RETURN_DOM ? null : RETURN_TRUSTED_TYPE ? emptyHTML : "";
-      }
-    }
-    if (body && FORCE_BODY) {
-      _forceRemove(body.firstChild);
-    }
-    const nodeIterator = _createNodeIterator(IN_PLACE ? dirty : body);
-    while (currentNode = nodeIterator.nextNode()) {
-      _sanitizeElements(currentNode);
-      _sanitizeAttributes(currentNode);
-      if (currentNode.content instanceof DocumentFragment) {
-        _sanitizeShadowDOM(currentNode.content);
-      }
-    }
-    if (IN_PLACE) {
-      return dirty;
-    }
-    if (RETURN_DOM) {
-      if (RETURN_DOM_FRAGMENT) {
-        returnNode = createDocumentFragment.call(body.ownerDocument);
-        while (body.firstChild) {
-          returnNode.appendChild(body.firstChild);
-        }
-      } else {
-        returnNode = body;
-      }
-      if (ALLOWED_ATTR.shadowroot || ALLOWED_ATTR.shadowrootmode) {
-        returnNode = importNode.call(originalDocument, returnNode, true);
-      }
-      return returnNode;
-    }
-    let serializedHTML = WHOLE_DOCUMENT ? body.outerHTML : body.innerHTML;
-    if (WHOLE_DOCUMENT && ALLOWED_TAGS["!doctype"] && body.ownerDocument && body.ownerDocument.doctype && body.ownerDocument.doctype.name && regExpTest(DOCTYPE_NAME, body.ownerDocument.doctype.name)) {
-      serializedHTML = "<!DOCTYPE " + body.ownerDocument.doctype.name + ">\n" + serializedHTML;
-    }
-    if (SAFE_FOR_TEMPLATES) {
-      arrayForEach([MUSTACHE_EXPR2, ERB_EXPR2, TMPLIT_EXPR2], (expr) => {
-        serializedHTML = stringReplace(serializedHTML, expr, " ");
-      });
-    }
-    return trustedTypesPolicy && RETURN_TRUSTED_TYPE ? trustedTypesPolicy.createHTML(serializedHTML) : serializedHTML;
-  };
-  DOMPurify.setConfig = function() {
-    let cfg = arguments.length > 0 && arguments[0] !== void 0 ? arguments[0] : {};
-    _parseConfig(cfg);
-    SET_CONFIG = true;
-  };
-  DOMPurify.clearConfig = function() {
-    CONFIG = null;
-    SET_CONFIG = false;
-  };
-  DOMPurify.isValidAttribute = function(tag2, attr, value) {
-    if (!CONFIG) {
-      _parseConfig({});
-    }
-    const lcTag = transformCaseFunc(tag2);
-    const lcName = transformCaseFunc(attr);
-    return _isValidAttribute(lcTag, lcName, value);
-  };
-  DOMPurify.addHook = function(entryPoint, hookFunction) {
-    if (typeof hookFunction !== "function") {
-      return;
-    }
-    arrayPush(hooks[entryPoint], hookFunction);
-  };
-  DOMPurify.removeHook = function(entryPoint, hookFunction) {
-    if (hookFunction !== void 0) {
-      const index3 = arrayLastIndexOf(hooks[entryPoint], hookFunction);
-      return index3 === -1 ? void 0 : arraySplice(hooks[entryPoint], index3, 1)[0];
-    }
-    return arrayPop(hooks[entryPoint]);
-  };
-  DOMPurify.removeHooks = function(entryPoint) {
-    hooks[entryPoint] = [];
-  };
-  DOMPurify.removeAllHooks = function() {
-    hooks = _createHooksMap();
-  };
-  return DOMPurify;
-}
-var purify = createDOMPurify();
-
-// ui/src/sanitize.ts
-function sanitizeHtml(html4) {
-  return purify.sanitize(html4);
-}
-
-// ui/src/components/message-blocks/TextBlock.tsx
 marked.setOptions({ async: false });
 function TextBlock({ content }) {
   const html4 = T2(() => {
@@ -20041,7 +20496,7 @@ var SOURCE_CLASSES = {
 var PAGE_SIZE = 50;
 var VIRTUAL_BUFFER = 10;
 var ESTIMATED_BLOCK_HEIGHT = 120;
-function formatRelativeTime4(dateStr) {
+function formatRelativeTime5(dateStr) {
   if (!dateStr)
     return "\u2014";
   const ts = Date.parse(dateStr);
@@ -20305,7 +20760,7 @@ function BlockRenderer({
       ] }),
       /* @__PURE__ */ u3("div", { className: "block-header__right", children: [
         /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
-        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
+        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime5(block2.timestamp) })
       ] })
     ] }),
     !showHeader && /* @__PURE__ */ u3("div", { className: "block-header block-header--user", children: [
@@ -20321,7 +20776,7 @@ function BlockRenderer({
       ) }),
       /* @__PURE__ */ u3("div", { className: "block-header__right", children: [
         /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
-        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
+        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime5(block2.timestamp) })
       ] })
     ] }),
     renderConversationBlockBody(block2, collapsed),
@@ -21070,7 +21525,7 @@ function ConversationDetail({
         ] }),
         /* @__PURE__ */ u3("div", { className: "conv-detail__meta", children: [
           /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
-          /* @__PURE__ */ u3("span", { className: "text-muted", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime4(conversation.started_at) }),
+          /* @__PURE__ */ u3("span", { className: "text-muted", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime5(conversation.started_at) }),
           conversation.branch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: conversation.branch }),
           conversation.model && /* @__PURE__ */ u3("span", { className: "text-muted", children: conversation.model }),
           sessionIssueLinks.length > 0 && sessionIssueLinks.map((link2) => /* @__PURE__ */ u3(
@@ -21340,7 +21795,7 @@ function ChatHistoryItem({
       children: [
         /* @__PURE__ */ u3("div", { className: "chat-history-item__header", children: [
           /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
-          /* @__PURE__ */ u3("span", { className: "chat-history-item__date", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime4(conversation.started_at) })
+          /* @__PURE__ */ u3("span", { className: "chat-history-item__date", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime5(conversation.started_at) })
         ] }),
         /* @__PURE__ */ u3("div", { className: "chat-history-item__title", children: [
           conversation.starred ? "\u2605 " : "",
@@ -21778,7 +22233,7 @@ function SelectInput(props) {
     )
   ] });
 }
-function formatRelativeTime5(ts) {
+function formatRelativeTime6(ts) {
   const diffMs = Date.now() - ts;
   const diffSec = Math.floor(diffMs / 1e3);
   if (diffSec < 60)
@@ -22153,7 +22608,7 @@ function BackupSection() {
         /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: "Last backup" }) }),
         /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: [
           status === null ? /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading..." }) : status.last_run_at ? /* @__PURE__ */ u3("span", { children: [
-            formatRelativeTime5(status.last_run_at),
+            formatRelativeTime6(status.last_run_at),
             status.last_size_bytes != null && /* @__PURE__ */ u3("span", { className: "text-muted", children: [
               " \u2014 ",
               formatBytes(status.last_size_bytes)
@@ -23521,7 +23976,7 @@ function getBranchTimestamp(branch) {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
-function formatRelativeTime6(value) {
+function formatRelativeTime7(value) {
   if (!value) {
     return "\u2014";
   }
@@ -23730,7 +24185,7 @@ function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, on
       ] }) : /* @__PURE__ */ u3("span", { className: "no-upstream", children: "no upstream" }) }),
       /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-stack", children: [
         /* @__PURE__ */ u3("span", { children: lastMessage }),
-        /* @__PURE__ */ u3("span", { className: "branch-timestamp", children: formatRelativeTime6(lastTime) })
+        /* @__PURE__ */ u3("span", { className: "branch-timestamp", children: formatRelativeTime7(lastTime) })
       ] }) }),
       /* @__PURE__ */ u3("td", { className: "work-col-actions", children: /* @__PURE__ */ u3(BranchContextMenu, { branch, anchorRef }) })
     ] }, expandKey),
@@ -36305,6 +36760,14 @@ function ReactFlow({ nodes, edges, defaultNodes, defaultEdges, className, nodeTy
   return u3("div", { "data-testid": "rf__wrapper", ...rest, onScroll: wrapperOnScroll, style: { ...style2, ...wrapperStyle }, ref, className: cc(["react-flow", className, colorModeClassName]), id: id2, role: "application", children: u3(Wrapper, { nodes, edges, width, height, fitView, fitViewOptions, minZoom, maxZoom, nodeOrigin, nodeExtent, zIndexMode, children: [u3(StoreUpdater, { nodes, edges, defaultNodes, defaultEdges, onConnect, onConnectStart, onConnectEnd, onClickConnectStart, onClickConnectEnd, nodesDraggable, autoPanOnNodeFocus, nodesConnectable, nodesFocusable, edgesFocusable, edgesReconnectable, elementsSelectable, elevateNodesOnSelect, elevateEdgesOnSelect, minZoom, maxZoom, nodeExtent, onNodesChange, onEdgesChange, snapToGrid, snapGrid, connectionMode, translateExtent, connectOnClick, defaultEdgeOptions, fitView, fitViewOptions, onNodesDelete, onEdgesDelete, onDelete, onNodeDragStart, onNodeDrag, onNodeDragStop, onSelectionDrag, onSelectionDragStart, onSelectionDragStop, onMove, onMoveStart, onMoveEnd, noPanClassName, nodeOrigin, rfId, autoPanOnConnect, autoPanOnNodeDrag, autoPanSpeed, onError, connectionRadius, isValidConnection, selectNodesOnDrag, nodeDragThreshold, connectionDragThreshold, onBeforeDelete, debug, ariaLabelConfig, zIndexMode }), u3(GraphView, { onInit, onNodeClick, onEdgeClick, onNodeMouseEnter, onNodeMouseMove, onNodeMouseLeave, onNodeContextMenu, onNodeDoubleClick, nodeTypes, edgeTypes, connectionLineType, connectionLineStyle, connectionLineComponent, connectionLineContainerStyle, selectionKeyCode, selectionOnDrag, selectionMode, deleteKeyCode, multiSelectionKeyCode, panActivationKeyCode, zoomActivationKeyCode, onlyRenderVisibleElements, defaultViewport: defaultViewport$1, translateExtent, minZoom, maxZoom, preventScrolling, zoomOnScroll, zoomOnPinch, zoomOnDoubleClick, panOnScroll, panOnScrollSpeed, panOnScrollMode, panOnDrag, onPaneClick, onPaneMouseEnter, onPaneMouseMove, onPaneMouseLeave, onPaneScroll, onPaneContextMenu, paneClickDistance, nodeClickDistance, onSelectionContextMenu, onSelectionStart, onSelectionEnd, onReconnect, onReconnectStart, onReconnectEnd, onEdgeContextMenu, onEdgeDoubleClick, onEdgeMouseEnter, onEdgeMouseMove, onEdgeMouseLeave, reconnectRadius, defaultMarkerColor, noDragClassName, noWheelClassName, noPanClassName, rfId, disableKeyboardA11y, nodeExtent, viewport, onViewportChange }), u3(SelectionListener, { onSelectionChange }), children2, u3(Attribution, { proOptions, position: attributionPosition }), u3(A11yDescriptions, { rfId, disableKeyboardA11y })] }) });
 }
 var index = fixedForwardRef(ReactFlow);
+var selector$5 = (s3) => s3.domNode?.querySelector(".react-flow__viewport-portal");
+function ViewportPortal({ children: children2 }) {
+  const viewPortalDiv = useStore(selector$5);
+  if (!viewPortalDiv) {
+    return null;
+  }
+  return $2(children2, viewPortalDiv);
+}
 var error014 = errorMessages["error014"]();
 function LinePattern({ dimensions, lineWidth, variant, className }) {
   return u3("path", { strokeWidth: lineWidth, d: `M${dimensions[0] / 2} 0 V${dimensions[1]} M0 ${dimensions[1] / 2} H${dimensions[0]}`, className: cc(["react-flow__background-pattern", variant, className]) });
@@ -37559,6 +38022,7 @@ function y_default2(y5) {
 }
 
 // ui/src/views/graph.tsx
+init_api();
 async function getGraph2(params) {
   const q4 = new URLSearchParams();
   q4.set("mode", params.mode);
@@ -37621,6 +38085,9 @@ function compactId(id2) {
   const parts = id2.split(":");
   return parts[parts.length - 1]?.slice(0, 12) || id2.slice(0, 12);
 }
+function reactFlowId(id2) {
+  return `rf_${Array.from(id2).map((char) => /[A-Za-z0-9-]/.test(char) ? char : `_${char.charCodeAt(0).toString(16)}_`).join("")}`;
+}
 function nodeColor(node) {
   if (node.visual?.color)
     return node.visual.color;
@@ -37676,10 +38143,38 @@ function firstEntries(value, limit = 4) {
 function nodeTime(node) {
   return node.created_at ? new Date(node.created_at).getTime() || 0 : 0;
 }
+function recordValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function layoutHint(node) {
+  return recordValue(node.detail?.layout) ?? {};
+}
+function layoutNumber(node, key2) {
+  const value = layoutHint(node)[key2];
+  return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+}
+function layoutString(node, key2) {
+  const value = layoutHint(node)[key2];
+  return typeof value === "string" ? value : void 0;
+}
+function sortRankNodes(a4, b3) {
+  const aGroup = layoutString(a4, "group_id") ?? "";
+  const bGroup = layoutString(b3, "group_id") ?? "";
+  if (aGroup !== bGroup)
+    return aGroup.localeCompare(bGroup);
+  const aOrder = layoutNumber(a4, "order");
+  const bOrder = layoutNumber(b3, "order");
+  if (aOrder !== void 0 || bOrder !== void 0)
+    return (aOrder ?? 0) - (bOrder ?? 0);
+  return sortGraphNodes(a4, b3);
+}
 function sortGraphNodes(a4, b3) {
   return nodeTime(b3) - nodeTime(a4) || a4.type.localeCompare(b3.type) || a4.label.localeCompare(b3.label);
 }
 function baseRank(node, mode) {
+  const rank = layoutNumber(node, "rank");
+  if (rank !== void 0)
+    return Math.max(0, Math.min(FLOW_MAX_RANK, rank));
   if (mode === "issue" && node.type === "issue")
     return 0;
   return Math.min(FLOW_MAX_RANK, NODE_COLUMNS[node.type] ?? (mode === "issue" ? 0 : 2));
@@ -37739,30 +38234,14 @@ function graphComponents(nodes, edges) {
 }
 function makeFlowNode(node, x6, y5) {
   return {
-    id: node.id,
-    type: "mandible",
+    id: reactFlowId(node.id),
+    type: "default",
     position: { x: x6, y: y5 },
     initialWidth: FLOW_NODE_WIDTH,
     initialHeight: FLOW_NODE_HEIGHT,
-    handles: [
-      {
-        type: "target",
-        position: Position.Left,
-        x: 0,
-        y: FLOW_NODE_HEIGHT / 2,
-        width: 1,
-        height: 1
-      },
-      {
-        type: "source",
-        position: Position.Right,
-        x: FLOW_NODE_WIDTH - 1,
-        y: FLOW_NODE_HEIGHT / 2,
-        width: 1,
-        height: 1
-      }
-    ],
-    data: { node }
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    data: { node, label: /* @__PURE__ */ u3(MandibleFlowNodeLabel, { node }) }
   };
 }
 function layoutNodes(nodes, edges, mode) {
@@ -37800,6 +38279,9 @@ function layoutNodes(nodes, edges, mode) {
   const output = [];
   let yCursor = FLOW_Y_START;
   for (const component of relationshipComponents) {
+    const componentIds = new Set(component);
+    const componentEdges = edges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target));
+    const deterministicLayout = mode === "issue" && componentEdges.some((edge) => edge.type === "umbrella_child" || edge.metadata?.layout === "hierarchical");
     const byRank = /* @__PURE__ */ new Map();
     for (const id2 of component) {
       const node = nodeById.get(id2);
@@ -37812,7 +38294,7 @@ function layoutNodes(nodes, edges, mode) {
     }
     const forceNodes = [];
     for (const [rank, rankNodes] of byRank.entries()) {
-      const sorted = [...rankNodes].sort(sortGraphNodes);
+      const sorted = [...rankNodes].sort(sortRankNodes);
       sorted.forEach((node, row) => {
         const anchorX = FLOW_X_START + rank * FLOW_COLUMN_GAP;
         const anchorY = yCursor + row * FLOW_ROW_GAP;
@@ -37827,9 +38309,8 @@ function layoutNodes(nodes, edges, mode) {
         });
       });
     }
-    const componentIds = new Set(component);
     const forceLinks = directedEdges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target)).map((edge) => ({ source: edge.source, target: edge.target }));
-    if (forceNodes.length > 1) {
+    if (forceNodes.length > 1 && !deterministicLayout) {
       const simulation = simulation_default(forceNodes).force("link", link_default(forceLinks).id((node) => node.id).distance(FLOW_COLUMN_GAP * 0.92).strength(0.28)).force("charge", manyBody_default().strength(-520)).force("collide", collide_default(FLOW_NODE_WIDTH * 0.68).strength(0.98)).force("x", x_default2((node) => node.anchorX).strength(0.62)).force("y", y_default2((node) => node.anchorY).strength(0.08)).stop();
       for (let tick = 0; tick < FLOW_FORCE_TICKS; tick += 1)
         simulation.tick();
@@ -37860,24 +38341,80 @@ function layoutNodes(nodes, edges, mode) {
   }
   return output;
 }
+function edgeLabel(edge) {
+  if (edge.metadata?.label_default_visible !== true)
+    return void 0;
+  const label = edge.metadata.relationship_label;
+  return typeof label === "string" ? label : edge.type.replace(/_/g, " ");
+}
 function flowEdges(edges) {
   return edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    type: "smoothstep",
-    label: edge.type.replace(/_/g, " "),
-    animated: edge.edge_class === "provenance" && edge.provenance === "provider_manifest",
-    markerEnd: { type: MarkerType.ArrowClosed },
-    style: { stroke: edgeColor(edge), strokeWidth: edge.edge_class === "semantic" ? 1.4 : 1.8 },
-    labelStyle: { fill: "rgba(230,237,243,0.66)", fontSize: 10 },
-    labelBgStyle: { fill: "rgba(11,15,20,0.86)" }
+    id: reactFlowId(edge.id),
+    source: reactFlowId(edge.source),
+    target: reactFlowId(edge.target),
+    label: edgeLabel(edge),
+    style: { stroke: edgeColor(edge), strokeWidth: edge.edge_class === "semantic" ? 1.4 : 1.8 }
   }));
 }
-function MandibleFlowNode({ data, selected: selected2 }) {
-  const node = data.node;
+function ManualGraphEdges({ nodes, edges }) {
+  const nodeByOriginalId = new Map(nodes.map((node) => [node.data.node.id, node]));
+  const visibleEdges = edges.map((edge) => {
+    const source = nodeByOriginalId.get(edge.source);
+    const target = nodeByOriginalId.get(edge.target);
+    if (!source || !target)
+      return null;
+    const sourceX = source.position.x + FLOW_NODE_WIDTH;
+    const sourceY = source.position.y + FLOW_NODE_HEIGHT / 2;
+    const targetX = target.position.x;
+    const targetY = target.position.y + FLOW_NODE_HEIGHT / 2;
+    const horizontalGap = Math.abs(targetX - sourceX);
+    const direction = targetX >= sourceX ? 1 : -1;
+    const spread = Math.max(24, horizontalGap * 0.42);
+    const sourceControlX = sourceX + direction * spread;
+    const targetControlX = targetX - direction * spread;
+    return {
+      edge,
+      d: `M ${sourceX} ${sourceY} C ${sourceControlX} ${sourceY}, ${targetControlX} ${targetY}, ${targetX} ${targetY}`
+    };
+  }).filter((item) => item !== null);
+  if (visibleEdges.length === 0)
+    return null;
+  return /* @__PURE__ */ u3("svg", { className: "graph-manual-edges", "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("defs", { children: /* @__PURE__ */ u3("marker", { id: "graph-manual-arrow", markerWidth: "10", markerHeight: "10", viewBox: "-10 -10 20 20", orient: "auto", refX: "-2", refY: "0", children: /* @__PURE__ */ u3("path", { d: "M -6 -4 L 0 0 L -6 4" }) }) }),
+    visibleEdges.map(({ edge, d: d3 }) => /* @__PURE__ */ u3(
+      "path",
+      {
+        className: "graph-manual-edge",
+        d: d3,
+        markerEnd: "url(#graph-manual-arrow)",
+        style: { stroke: edgeColor(edge), strokeWidth: edge.edge_class === "semantic" ? 1.5 : 1.8 }
+      },
+      edge.id
+    ))
+  ] });
+}
+function nodeAnnotations(node) {
+  const annotations = node.detail?.annotations;
+  if (!Array.isArray(annotations))
+    return [];
+  return annotations.flatMap((item) => {
+    const record = recordValue(item);
+    if (!record || typeof record.id !== "string" || typeof record.type !== "string" || typeof record.label !== "string") {
+      return [];
+    }
+    return [{
+      id: record.id,
+      type: record.type,
+      label: record.label,
+      status: typeof record.status === "string" ? record.status : void 0,
+      target: typeof record.target === "string" ? record.target : void 0,
+      link_type: typeof record.link_type === "string" ? record.link_type : void 0
+    }];
+  });
+}
+function MandibleFlowNodeLabel({ node }) {
   const entries2 = firstEntries(node.metrics && Object.keys(node.metrics).length > 0 ? node.metrics : node.summary, 3);
-  return /* @__PURE__ */ u3("div", { className: `graph-flow-node${selected2 ? " graph-flow-node--selected" : ""}`, style: { borderColor: nodeColor(node) }, children: [
+  return /* @__PURE__ */ u3("div", { className: "graph-flow-node", style: { borderColor: nodeColor(node) }, children: [
     /* @__PURE__ */ u3("div", { className: "graph-flow-node__top", children: [
       /* @__PURE__ */ u3("span", { className: "graph-flow-node__dot", style: { background: nodeColor(node) } }),
       /* @__PURE__ */ u3("span", { className: "graph-flow-node__type", children: typeLabel(node.type) }),
@@ -37897,7 +38434,6 @@ function MandibleFlowNode({ data, selected: selected2 }) {
     ] }, key2)) })
   ] });
 }
-var NODE_TYPES = { mandible: MandibleFlowNode };
 function TokenMultiSelect({
   placeholder,
   options: options2,
@@ -38059,13 +38595,84 @@ function DetailPane({
   edges,
   onNavigate
 }) {
+  const ledgerIssueId = node?.type === "issue" && typeof node.detail?.ledger_issue_id === "string" ? node.detail.ledger_issue_id : null;
+  const [ledgerDetail, setLedgerDetail] = d2(null);
+  const [ledgerLoading, setLedgerLoading] = d2(false);
+  const [ledgerError, setLedgerError] = d2(null);
+  y2(() => {
+    let active = true;
+    if (!ledgerIssueId) {
+      setLedgerDetail(null);
+      setLedgerError(null);
+      setLedgerLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+    setLedgerLoading(true);
+    setLedgerError(null);
+    getLedgerIssueDetail(ledgerIssueId).then((detail) => {
+      if (active)
+        setLedgerDetail(detail);
+    }).catch((error) => {
+      if (active)
+        setLedgerError(error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      if (active)
+        setLedgerLoading(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [ledgerIssueId]);
   if (!node) {
     return /* @__PURE__ */ u3("aside", { className: "graph-detail-pane", children: /* @__PURE__ */ u3("div", { className: "graph-detail-pane__empty", children: "Select a node" }) });
+  }
+  if (ledgerIssueId) {
+    const openLedgerEntity = (type, id2, repoId) => {
+      if (type === "issue") {
+        const repo = repoId ?? ledgerDetail?.project.repo_id ?? node.repo_id ?? node.repo;
+        onNavigate("issue", `issue:${repo ?? ""}:${id2}`, repo ?? void 0);
+        return;
+      }
+      if (type === "auth_request") {
+        onNavigate("auth_request", id2);
+        return;
+      }
+      if (type === "session" || type === "conversation") {
+        onNavigate("session", id2);
+      }
+    };
+    return /* @__PURE__ */ u3("aside", { className: "graph-detail-pane graph-detail-pane--ledger", children: ledgerLoading && !ledgerDetail ? /* @__PURE__ */ u3("div", { className: "graph-detail-pane__empty", children: "Loading issue..." }) : ledgerError && !ledgerDetail ? /* @__PURE__ */ u3("div", { className: "graph-detail-pane__empty", children: ledgerError }) : ledgerDetail ? /* @__PURE__ */ u3(
+      LedgerIssueDetail,
+      {
+        compact: true,
+        detail: ledgerDetail,
+        onOpenEntity: openLedgerEntity,
+        onAddComment: async (body) => {
+          const next = await addLedgerIssueComment(ledgerIssueId, body);
+          setLedgerDetail(next);
+        },
+        onResolveConflict: async (conflictId, resolution, status) => {
+          await resolveLedgerConflict(conflictId, resolution, status);
+          setLedgerDetail(await getLedgerIssueDetail(ledgerIssueId));
+        }
+      }
+    ) : /* @__PURE__ */ u3("div", { className: "graph-detail-pane__empty", children: "No ledger detail" }) });
   }
   const connected = edges.filter((edge) => edge.source === node.id || edge.target === node.id).slice(0, 8);
   const detailEntries = firstEntries(node.detail, 8);
   const summaryEntries = firstEntries(node.summary, 8);
+  const annotations = nodeAnnotations(node).slice(0, 12);
   const canNavigate = node.type === "issue" || node.type === "session" || node.type === "auth_request";
+  const navigateAnnotation = (annotation) => {
+    if (!annotation.target)
+      return;
+    if (annotation.target.startsWith("auth_request:"))
+      onNavigate("auth_request", annotation.target);
+    if (annotation.target.startsWith("session:"))
+      onNavigate("session", annotation.target);
+  };
   return /* @__PURE__ */ u3("aside", { className: "graph-detail-pane", children: [
     /* @__PURE__ */ u3("div", { className: "graph-detail-pane__header", children: [
       /* @__PURE__ */ u3("div", { children: [
@@ -38109,6 +38716,23 @@ function DetailPane({
           /* @__PURE__ */ u3("code", { children: String(value) }, `${key2}-v`)
         ] }))
       ] })
+    ] }),
+    annotations.length > 0 && /* @__PURE__ */ u3("div", { className: "graph-detail-pane__section", children: [
+      /* @__PURE__ */ u3("div", { className: "graph-detail-pane__section-title", children: "Evidence" }),
+      /* @__PURE__ */ u3("div", { className: "graph-detail-pane__edges", children: annotations.map((annotation) => /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "graph-detail-pane__edge",
+          disabled: !annotation.target,
+          onClick: () => navigateAnnotation(annotation),
+          children: [
+            /* @__PURE__ */ u3("span", { children: annotation.link_type ?? typeLabel(annotation.type) }),
+            /* @__PURE__ */ u3("code", { children: annotation.status ? `${annotation.label} (${annotation.status})` : annotation.label })
+          ]
+        },
+        annotation.id
+      )) })
     ] }),
     /* @__PURE__ */ u3("div", { className: "graph-detail-pane__section", children: [
       /* @__PURE__ */ u3("div", { className: "graph-detail-pane__section-title", children: "Actions" }),
@@ -38228,6 +38852,14 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
   );
   const flowNodes = T2(() => layoutNodes(visibleNodes, visibleEdges, mode), [visibleNodes, visibleEdges, mode]);
   const flowEdgeList = T2(() => flowEdges(visibleEdges), [visibleEdges]);
+  const flowSignature = T2(
+    () => [
+      mode,
+      flowNodes.map((node) => node.id).join(","),
+      flowEdgeList.map((edge) => edge.id).join(",")
+    ].join(":"),
+    [flowEdgeList, flowNodes, mode]
+  );
   const selectedNode = T2(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
     [visibleNodes, selectedNodeId]
@@ -38322,24 +38954,24 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
         !loading && !error && flowNodes.length > 0 && /* @__PURE__ */ u3(
           index,
           {
-            nodes: flowNodes,
-            edges: flowEdgeList,
-            nodeTypes: NODE_TYPES,
+            defaultNodes: flowNodes,
+            defaultEdges: [],
             fitView: true,
             fitViewOptions: { padding: 0.16 },
             minZoom: 0.2,
             maxZoom: 1.8,
-            nodesDraggable: true,
+            nodesDraggable: false,
             nodesConnectable: false,
             elementsSelectable: true,
-            onNodeClick: (_event, node) => setSelectedNodeId(node.id),
+            onNodeClick: (_event, node) => setSelectedNodeId(node.data.node.id),
             onNodeDoubleClick: (_event, node) => {
-              const graphNode = visibleNodes.find((item) => item.id === node.id);
+              const graphNode = node.data.node;
               if (graphNode && (graphNode.type === "issue" || graphNode.type === "session" || graphNode.type === "auth_request")) {
                 onNavigate(graphNode.type, graphNode.id, graphNode.repo_id ?? graphNode.repo);
               }
             },
             children: [
+              /* @__PURE__ */ u3(ViewportPortal, { children: /* @__PURE__ */ u3(ManualGraphEdges, { nodes: flowNodes, edges: visibleEdges }) }),
               /* @__PURE__ */ u3(Background, { color: "rgba(154,164,178,0.12)", gap: 18 }),
               /* @__PURE__ */ u3(
                 MiniMap,
@@ -38353,7 +38985,7 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
               /* @__PURE__ */ u3(Controls, { showInteractive: false })
             ]
           },
-          `${mode}:${flowNodes.length}:${flowEdgeList.length}`
+          flowSignature
         )
       ] }),
       /* @__PURE__ */ u3(DetailPane, { node: selectedNode, edges: visibleEdges, onNavigate })

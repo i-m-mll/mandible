@@ -583,6 +583,240 @@ export async function getIssueContext(repoId: string, issueId: string): Promise<
   return (await parseMaybeJson(response)) as IssueContext;
 }
 
+export type LedgerActorType = 'mandible_user' | 'agent' | 'system' | 'external_adapter';
+
+export type LedgerIssueDetailActor = {
+  id: string | null;
+  type: LedgerActorType;
+  display: string;
+};
+
+export type LedgerIssueDetailComment = {
+  id: string;
+  body: string;
+  author: LedgerIssueDetailActor;
+  source: string;
+  created_at: number;
+  updated_at: number | null;
+};
+
+export type LedgerIssueSummaryRef = {
+  id: string;
+  display_id: string;
+  project_id: string;
+  title: string;
+  status: string;
+  resolution: string | null;
+  kind: string;
+  priority: string;
+  labels: string[];
+};
+
+export type LedgerIssueDetailRelationship = {
+  id: string;
+  direction: 'incoming' | 'outgoing';
+  relationship_type: string;
+  provenance: string;
+  confidence: string;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+  related_issue: LedgerIssueSummaryRef | null;
+};
+
+export type LedgerIssueDetailLiveness = {
+  has_live_agent: boolean;
+  agent_session_id: string | null;
+  agent_status: string | null;
+  is_processing: boolean;
+  last_activity: number | null;
+};
+
+export type LedgerIssueDetailWorkUnit = {
+  id: string;
+  issue_id: string;
+  ledger_issue_id: string | null;
+  repo_id: string;
+  branch: string | null;
+  parent_branch: string | null;
+  kind: string;
+  state: string;
+  assigned_session_id: string | null;
+  continuation: string | null;
+  continuation_by: string | null;
+  continuation_at: number | null;
+  created_at: number;
+  activated_at: number | null;
+  last_commit_at: number | null;
+  resolved_at: number | null;
+  auth_request_id: string | null;
+  link_type: string;
+  link_source: string;
+  link_created_at: number | null;
+  last_seen_at: number | null;
+  metadata: Record<string, unknown>;
+  liveness: LedgerIssueDetailLiveness;
+};
+
+export type LedgerIssueDetailSession = {
+  id: string;
+  app: string;
+  parent_id: string | null;
+  status: string;
+  branch: string | null;
+  worktree: string | null;
+  task: string | null;
+  description: string | null;
+  agent_type: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  ended_at: string | null;
+  last_active: string | null;
+  has_conversation: boolean;
+  link_type: string;
+  link_source: string;
+  link_created_at: number | null;
+  last_seen_at: number | null;
+  metadata: Record<string, unknown>;
+};
+
+export type LedgerIssueDetailAuthRequest = {
+  id: string;
+  type: string;
+  title: string;
+  status: string;
+  repo: string | null;
+  base_branch: string | null;
+  head_branch: string | null;
+  created_at: number | null;
+  approved_at: number | null;
+  resolved_at: number | null;
+  skipped_at: number | null;
+  exit_code: number | null;
+  error: string | null;
+  link_type: string;
+  link_source: string;
+  link_created_at: number | null;
+  metadata: Record<string, unknown>;
+};
+
+export type LedgerIssueDetailConflict = {
+  id: string;
+  adapter: string;
+  entity_type: string;
+  entity_id: string;
+  field: string;
+  local_value: unknown;
+  remote_value: unknown;
+  base_value: unknown;
+  status: string;
+  resolution: string | null;
+  created_at: number;
+  resolved_at: number | null;
+};
+
+export type LedgerIssueDetailProjection = {
+  id: string;
+  display_id: string;
+  project: {
+    id: string;
+    display_name: string;
+    remote_identity: string;
+    upstream_identity: string;
+    repo_id: string | null;
+    repo_name: string | null;
+    repo_root: string | null;
+    default_branch: string | null;
+  };
+  title: string;
+  body: string;
+  status: 'open' | 'closed';
+  resolution: string | null;
+  kind: string;
+  priority: string;
+  source: string;
+  author: LedgerIssueDetailActor;
+  created_at: number;
+  updated_at: number;
+  closed_at: number | null;
+  aliases: Array<{ kind: string; alias: string; external_id: string; source: string; primary: boolean }>;
+  labels: string[];
+  comments: LedgerIssueDetailComment[];
+  relationships: LedgerIssueDetailRelationship[];
+  work_units: LedgerIssueDetailWorkUnit[];
+  sessions: LedgerIssueDetailSession[];
+  auth_requests: LedgerIssueDetailAuthRequest[];
+  conflicts: LedgerIssueDetailConflict[];
+  sync: {
+    state: 'clean' | 'pending' | 'failed' | 'conflicted';
+    outbox: Record<string, number>;
+    open_conflicts: number;
+    latest_jobs: Array<{
+      id: string;
+      adapter: string;
+      direction: string;
+      status: string;
+      attempt_count: number;
+      started_at: number | null;
+      finished_at: number | null;
+      last_error: string | null;
+      updated_at: number;
+    }>;
+  };
+};
+
+export async function getLedgerIssueDetail(issueId: string): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}`);
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function getLedgerIssueDetailByRef(
+  repoId: string,
+  issueId: string,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail`
+  );
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function addLedgerIssueComment(
+  issueId: string,
+  body: string,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiPost(`/api/ledger/issues/${encodeURIComponent(issueId)}/comments`, { body });
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function patchLedgerIssue(
+  issueId: string,
+  body: Record<string, unknown>,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiPatch(`/api/ledger/issues/${encodeURIComponent(issueId)}`, body);
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function setLedgerIssueLabel(
+  issueId: string,
+  label: string,
+  present: boolean,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiPost(`/api/ledger/issues/${encodeURIComponent(issueId)}/labels`, { label, present });
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function resolveLedgerConflict(
+  conflictId: string,
+  resolution: string,
+  status: 'resolved' | 'dismissed' = 'resolved',
+): Promise<unknown> {
+  const response = await apiPost(
+    `/api/ledger/conflicts/${encodeURIComponent(conflictId)}/resolve`,
+    { resolution, status },
+  );
+  return parseMaybeJson(response);
+}
+
 export async function getIssueSessions(repoId: string, issueId: string): Promise<unknown[]> {
   const response = await apiGet(
     `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/sessions`

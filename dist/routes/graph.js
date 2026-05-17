@@ -1,5 +1,6 @@
 import path from "node:path";
 import { getDb } from "../db.js";
+import { buildLedgerIssueProjection, countLedgerGraphIssues, getLedgerGraphFilterOptions, ledgerGraphHasIssues, } from "../ledger/graph-adapter.js";
 import { getIndexedGraph, getIndexedGraphCount } from "../provider-artifacts.js";
 import { extractBugRefs } from "../utils/bug-refs.js";
 // Bug: 7a141c3 — graph API implementation
@@ -122,6 +123,50 @@ function upsertEdge(edges, edge) {
         return;
     edges.set(edge.id, edge);
 }
+function tableExists(table) {
+    try {
+        const row = getDb()
+            .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+            .get(table);
+        return Boolean(row);
+    }
+    catch {
+        return false;
+    }
+}
+function parseMetadataJson(value) {
+    if (!value)
+        return {};
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed
+            : {};
+    }
+    catch {
+        return {};
+    }
+}
+function issueNodeIdFromOperationalMetadata(issueNodeIds, metadataJson) {
+    const metadata = parseMetadataJson(metadataJson);
+    const repoId = typeof metadata.repo_id === "string" ? metadata.repo_id : "";
+    const issueRef = typeof metadata.legacy_issue_id === "string" ? metadata.legacy_issue_id : "";
+    if (!issueRef)
+        return null;
+    if (repoId) {
+        const exact = `issue:${repoId}:${issueRef}`;
+        if (issueNodeIds.has(exact))
+            return exact;
+    }
+    for (const issueNodeId of issueNodeIds) {
+        const parts = issueNodeId.split(":");
+        const issueHumanId = parts[2];
+        if (issueHumanId && (issueHumanId === issueRef || issueHumanId.startsWith(issueRef))) {
+            return issueNodeId;
+        }
+    }
+    return null;
+}
 function nodeCreatedMs(node) {
     return node.created_at ? new Date(node.created_at).getTime() : 0;
 }
@@ -225,7 +270,18 @@ function getIssueNodes(issueScanner, params) {
             });
         }
     }
-    return { nodes, issueNodeIds };
+    return { nodes, issueNodeIds, issueNodeIdByLedgerId: new Map() };
+}
+function getLedgerIssueNodes(params) {
+    const projection = buildLedgerIssueProjection(getDb(), params);
+    if (!projection)
+        return null;
+    return {
+        nodes: new Map(projection.nodes.map((node) => [node.id, node])),
+        issueNodeIds: projection.issueNodeIds,
+        issueNodeIdByLedgerId: projection.issueNodeIdByLedgerId,
+        edges: projection.edges,
+    };
 }
 function addIssueEdges(issueScanner, nodes, edges) {
     for (const summary of issueScanner.getRepoSummaries()) {
@@ -331,7 +387,7 @@ function getAuthRows(params, sinceMs, limit) {
         return [];
     }
 }
-function addAuthNodesAndEdges(authRows, issueNodeIds, nodes, edges) {
+function addAuthNodesAndEdges(authRows, issueNodeIds, issueNodeIdByLedgerId, nodes, edges) {
     const authNodeIds = new Set();
     for (const auth of authRows) {
         const nodeId = `auth_request:${auth.id}`;
@@ -380,9 +436,33 @@ function addAuthNodesAndEdges(authRows, issueNodeIds, nodes, edges) {
             }
         }
     }
+    if (tableExists("ledger_auth_issue_links")) {
+        const authIds = Array.from(authNodeIds);
+        if (authIds.length > 0) {
+            const placeholders = authIds.map((_, index) => `:auth${index}`);
+            const bindings = Object.fromEntries(authIds.map((id, index) => [`auth${index}`, id]));
+            const rows = getDb().prepare(`SELECT auth_request_id, issue_id AS ledger_issue_id, metadata_json
+         FROM ledger_auth_issue_links
+         WHERE auth_request_id IN (${placeholders.join(", ")})`).all(bindings);
+            for (const row of rows) {
+                const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
+                    ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+                if (!issueNodeId)
+                    continue;
+                upsertEdge(edges, {
+                    id: `ledger_auth_issue:${row.auth_request_id}:${row.ledger_issue_id}`,
+                    source: `auth_request:${row.auth_request_id}`,
+                    target: issueNodeId,
+                    type: "auth_issue",
+                    edge_class: "lifecycle",
+                    provenance: "ledger_auth_issue_links",
+                });
+            }
+        }
+    }
     return authNodeIds;
 }
-function addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges) {
+function addSessionIssueEdges(issueNodeIds, issueNodeIdByLedgerId, sessionNodeIds, edges) {
     let rows;
     try {
         rows = getDb().prepare(`SELECT session_id, issue_id, repo_id FROM session_issues`).all();
@@ -404,11 +484,31 @@ function addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges) {
             });
         }
     }
+    if (tableExists("ledger_session_issue_links")) {
+        const ledgerRows = getDb().prepare(`SELECT session_id, issue_id AS ledger_issue_id, metadata_json
+       FROM ledger_session_issue_links`).all();
+        for (const row of ledgerRows) {
+            const sessionNodeId = `session:${row.session_id}`;
+            const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
+                ?? issueNodeIdFromOperationalMetadata(issueNodeIds, row.metadata_json);
+            if (issueNodeId && sessionNodeIds.has(sessionNodeId) && issueNodeIds.has(issueNodeId)) {
+                upsertEdge(edges, {
+                    id: `ledger_session_issue:${row.session_id}:${row.ledger_issue_id}`,
+                    source: sessionNodeId,
+                    target: issueNodeId,
+                    type: "session_issue",
+                    edge_class: "lifecycle",
+                    provenance: "ledger_session_issue_links",
+                });
+            }
+        }
+    }
 }
-function addWorkUnits(params, nodes, edges, limit) {
+function addWorkUnits(params, nodes, edges, issueNodeIdByLedgerId, limit) {
     const bindings = { limit };
     let query = `
-    SELECT id, issue_id, repo_id, branch, kind, state, assigned_session_id, auth_request_id, created_at
+    SELECT id, issue_id, repo_id, branch, kind, state, assigned_session_id,
+           auth_request_id, ledger_issue_id, created_at
       FROM work_units
      WHERE 1=1
   `;
@@ -436,7 +536,9 @@ function addWorkUnits(params, nodes, edges, limit) {
             summary: { kind: work.kind, issue_id: work.issue_id },
             detail: { ...work },
         });
-        const issueId = `issue:${work.repo_id}:${work.issue_id}`;
+        const issueId = work.ledger_issue_id
+            ? issueNodeIdByLedgerId.get(work.ledger_issue_id) ?? `issue:${work.repo_id}:${work.issue_id}`
+            : `issue:${work.repo_id}:${work.issue_id}`;
         if (nodes.has(issueId)) {
             upsertEdge(edges, {
                 id: `issue_has_work_unit:${issueId}:${nodeId}`,
@@ -479,16 +581,22 @@ function buildOperationalGraph(issueScanner, params) {
     const sinceMs = params.since ? parseSince(params.since) : null;
     const sinceIso = sinceMs !== null ? msToIso(sinceMs) : null;
     const limit = params.limit ?? 120;
-    const { nodes, issueNodeIds } = getIssueNodes(issueScanner, params);
     const edges = new Map();
+    const ledgerProjection = ledgerGraphHasIssues(getDb()) ? getLedgerIssueNodes(params) : null;
+    const { nodes, issueNodeIds, issueNodeIdByLedgerId, edges: ledgerEdges, } = ledgerProjection ?? { ...getIssueNodes(issueScanner, params), edges: [] };
+    for (const edge of ledgerEdges) {
+        upsertEdge(edges, edge);
+    }
     const sessionRows = params.mode === "issue" ? [] : getSessionRows(params, sinceIso, limit);
     const authRows = params.mode === "issue" ? [] : getAuthRows(params, sinceMs, limit);
     const sessionNodeIds = addSessionNodesAndEdges(sessionRows, params, nodes, edges);
-    addAuthNodesAndEdges(authRows, issueNodeIds, nodes, edges);
-    addIssueEdges(issueScanner, nodes, edges);
-    addSessionIssueEdges(issueNodeIds, sessionNodeIds, edges);
+    addAuthNodesAndEdges(authRows, issueNodeIds, issueNodeIdByLedgerId, nodes, edges);
+    if (!ledgerProjection) {
+        addIssueEdges(issueScanner, nodes, edges);
+    }
+    addSessionIssueEdges(issueNodeIds, issueNodeIdByLedgerId, sessionNodeIds, edges);
     if (params.mode === "work") {
-        addWorkUnits(params, nodes, edges, limit);
+        addWorkUnits(params, nodes, edges, issueNodeIdByLedgerId, limit);
     }
     const allEdges = Array.from(edges.values());
     const { nodes: cappedNodes, truncated } = capGraphNodesForDisplay(Array.from(nodes.values()), allEdges, limit);
@@ -545,6 +653,11 @@ function graphFilterOptions(issueScanner) {
         else
             addRepo(summary.repo_id);
     }
+    const ledgerFilters = getLedgerGraphFilterOptions(db);
+    for (const repo of ledgerFilters.repos)
+        addRepo(repo);
+    for (const branch of ledgerFilters.branches)
+        branches.add(branch);
     try {
         const rows = db.prepare("SELECT repo, head_branch FROM auth_requests").all();
         for (const row of rows) {
@@ -595,7 +708,8 @@ function graphFilterOptions(issueScanner) {
 }
 function modeDescriptors(issueScanner, activeMode, activeCount) {
     const db = getDb();
-    const issueCount = issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
+    const issueCount = countLedgerGraphIssues(db, "all")
+        ?? issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
     let workCount = 0;
     try {
         workCount = db.prepare("SELECT COUNT(*) AS count FROM work_units").get().count;

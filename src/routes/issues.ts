@@ -1,7 +1,40 @@
 import { IssueScanner } from "../issue-scanner.js";
 import { WorkScanner } from "../work-scanner.js";
-import { getDb } from "../db.js";
+import { getDb, type Db } from "../db.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
+import { LedgerStore } from "../ledger/store.js";
+import {
+  LEDGER_ISSUE_KINDS,
+  LEDGER_ISSUE_RESOLUTIONS,
+  LEDGER_ISSUE_STATUSES,
+  LEDGER_PRIORITIES,
+  type LedgerIssueKind,
+  type LedgerIssueResolution,
+  type LedgerIssueStatus,
+  type LedgerPriority,
+} from "../ledger/types.js";
+import {
+  buildLedgerIssueDetailProjection,
+} from "../ledger/issue-detail.js";
+import {
+  findLedgerIssueAcrossRepos,
+  getLedgerIssueDetailForRoute,
+  getLedgerIssueMigrationConfig,
+  getReconciliationReport,
+  isLedgerWriteModeEnabled,
+  listLedgerIssueSummaries,
+  listReconciliationReports,
+  parseMigrationConfigPatch,
+  resolveLedgerIssueIdForRoute,
+  runIssueReconciliation,
+  updateLedgerIssueMigrationConfig,
+  type LedgerIssueMigrationConfig,
+} from "../ledger/issue-migration.js";
+import {
+  linkCommitToLedgerIssue,
+  resolveOperationalIssueRef,
+} from "../ledger/operational-links.js";
+import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
 
 export interface RouteHandler<Request = unknown, Response = unknown> {
   (req: Request, res: Response): void | Promise<void>;
@@ -11,6 +44,7 @@ export interface IssueServer {
   get(path: string, handler: RouteHandler): void;
   post(path: string, handler: RouteHandler): void;
   put?(path: string, handler: RouteHandler): void;
+  patch?(path: string, handler: RouteHandler): void;
 }
 
 // Bug: cbbb3d9 — spawn-from-issue deps type
@@ -88,6 +122,149 @@ function sendJson(res: unknown, status: number, payload: unknown): void {
   }
 }
 
+function filterIssueSummaries(
+  summaries: IssueRepoSummary[],
+  filters: { repo?: string; status?: string; label?: string },
+): IssueRepoSummary[] {
+  let filtered = summaries;
+
+  if (filters.repo) {
+    filtered = filtered.filter(
+      (s) => s.repo_id === filters.repo || s.repo_name === filters.repo,
+    );
+  }
+
+  // Bug: e32ee8b — three-state filter: "merged" = closed + has "merged" label
+  if (filters.status === "open" || filters.status === "closed" || filters.status === "merged") {
+    filtered = filtered.map((s) => ({
+      ...s,
+      issues: s.issues.filter((issue) => {
+        if (filters.status === "merged") {
+          return issue.status === "closed" && issue.labels.includes("merged");
+        }
+        if (filters.status === "closed") {
+          return issue.status === "closed" && !issue.labels.includes("merged");
+        }
+        return issue.status === filters.status;
+      }),
+    }));
+  }
+
+  if (filters.label) {
+    filtered = filtered.map((s) => ({
+      ...s,
+      issues: s.issues.filter((issue) =>
+        issue.labels.some((label) => label.toLowerCase() === filters.label!.toLowerCase()),
+      ),
+    }));
+  }
+
+  return filtered.filter((s) => s.issues.length > 0 || (!filters.status && !filters.label));
+}
+
+function ledgerWriteUnavailable(res: unknown, mode: string): boolean {
+  if (mode === "dual") {
+    sendJson(res, 409, { error: "dual issue writes are not armed; use git_bug or ledger mode" });
+    return true;
+  }
+  return false;
+}
+
+function resolveLedgerIssueId(db: Db, issueRef: string): { ok: true; issue_id: string } | { ok: false; status: 404 | 409; error: string } {
+  const resolved = new LedgerStore(db).resolveIssueRef(issueRef);
+  if (resolved.ok) return { ok: true, issue_id: resolved.id };
+  if (resolved.error === "ambiguous") return { ok: false, status: 409, error: "ambiguous issue reference" };
+  return { ok: false, status: 404, error: "ledger issue not found" };
+}
+
+function sendLedgerIssueProjection(res: unknown, db: Db, issueId: string): void {
+  try {
+    sendJson(res, 200, buildLedgerIssueDetailProjection(db, issueId));
+  } catch (error) {
+    sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
+  }
+}
+
+function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[number] | null {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value) ? value as T[number] : null;
+}
+
+function tableExists(db: Db, table: string): boolean {
+  const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+  return Boolean(row);
+}
+
+function resolveContextLedgerIssueId(db: Db, issueId: string, repoId: string): string | null {
+  try {
+    const resolved = resolveOperationalIssueRef(db, issueId, repoId);
+    return resolved.ok ? resolved.issue_id : null;
+  } catch {
+    return null;
+  }
+}
+
+interface ResolvedRouteIssue {
+  repoId: string;
+  issue: GitBugIssueDetail;
+  source: "scanner" | "ledger";
+}
+
+function resolveScannerIssueDetail(
+  issueScanner: IssueScanner,
+  repoIdParam: string,
+  issueId: string,
+): ResolvedRouteIssue | null {
+  let repoId = repoIdParam;
+  let detail = issueScanner.getIssueDetail(repoId, issueId);
+  if (!detail) {
+    const byName = issueScanner
+      .getRepoSummaries()
+      .find((summary) => summary.repo_name === repoIdParam || summary.repo_root === repoIdParam);
+    if (byName) {
+      repoId = byName.repo_id;
+      detail = issueScanner.getIssueDetail(repoId, issueId);
+    }
+  }
+  return detail ? { repoId, issue: detail, source: "scanner" } : null;
+}
+
+function resolveIssueDetailForRoute(
+  db: Db,
+  config: LedgerIssueMigrationConfig,
+  workScanner: WorkScanner,
+  issueScanner: IssueScanner,
+  repoIdParam: string,
+  issueId: string,
+): { ok: true; resolved: ResolvedRouteIssue } | { ok: false; status: 404 | 409 | 500; error: string } {
+  if (config.read_mode === "ledger") {
+    try {
+      const result = getLedgerIssueDetailForRoute(db, workScanner, repoIdParam, issueId);
+      if (result.ok) {
+        return {
+          ok: true,
+          resolved: { repoId: result.detail.repo_id, issue: result.detail, source: "ledger" },
+        };
+      }
+      if (!config.fallback_on_ledger_error || result.status === 409) {
+        return { ok: false, status: result.status, error: result.error };
+      }
+    } catch (error) {
+      if (!config.fallback_on_ledger_error) {
+        return {
+          ok: false,
+          status: 500,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+  }
+
+  const scannerResult = resolveScannerIssueDetail(issueScanner, repoIdParam, issueId);
+  return scannerResult
+    ? { ok: true, resolved: scannerResult }
+    : { ok: false, status: 404, error: "issue not found" };
+}
+
 // Bug: f3dbb3e — accept optional sessionRegistry + sessionManager for canonical
 // liveness computation on work units in the context endpoint.
 // Bug: cbbb3d9 — deps extended with sessionManager for spawn-from-issue endpoint.
@@ -103,47 +280,262 @@ export function registerIssueRoutes(
     const repoFilter = getQueryParam(req, "repo");
     const statusFilter = getQueryParam(req, "status");
     const labelFilter = getQueryParam(req, "label");
+    const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
 
-    let summaries = issueScanner.getRepoSummaries();
-
-    if (repoFilter) {
-      summaries = summaries.filter(
-        (s) => s.repo_id === repoFilter || s.repo_name === repoFilter,
-      );
+    let summaries: IssueRepoSummary[];
+    if (config.read_mode === "ledger") {
+      try {
+        summaries = listLedgerIssueSummaries(db, workScanner);
+      } catch (error) {
+        if (!config.fallback_on_ledger_error) {
+          sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+          return;
+        }
+        summaries = issueScanner.getRepoSummaries();
+      }
+    } else {
+      summaries = issueScanner.getRepoSummaries();
+      if (config.read_mode === "shadow" && config.shadow_report_enabled) {
+        runIssueReconciliation(db, issueScanner, workScanner, "shadow");
+      }
     }
 
-    // Bug: e32ee8b — three-state filter: "merged" = closed + has "merged" label
-    if (statusFilter === "open" || statusFilter === "closed" || statusFilter === "merged") {
-      summaries = summaries.map((s) => ({
-        ...s,
-        issues: s.issues.filter((issue) => {
-          if (statusFilter === "merged") {
-            return issue.status === "closed" && issue.labels.includes("merged");
-          }
-          if (statusFilter === "closed") {
-            // "closed" filter excludes merged issues (they have their own state)
-            return issue.status === "closed" && !issue.labels.includes("merged");
-          }
-          return issue.status === statusFilter;
-        }),
-      }));
-    }
-
-    if (labelFilter) {
-      summaries = summaries.map((s) => ({
-        ...s,
-        issues: s.issues.filter((issue) =>
-          issue.labels.some(
-            (label) => label.toLowerCase() === labelFilter.toLowerCase(),
-          ),
-        ),
-      }));
-    }
-
-    // Filter out repos with no matching issues after filters
-    summaries = summaries.filter((s) => s.issues.length > 0 || (!statusFilter && !labelFilter));
+    summaries = filterIssueSummaries(summaries, {
+      repo: repoFilter,
+      status: statusFilter,
+      label: labelFilter,
+    });
 
     sendJson(res, 200, summaries);
+  });
+
+  server.get("/api/issues/migration", (_req, res) => {
+    const db = getDb();
+    sendJson(res, 200, {
+      config: getLedgerIssueMigrationConfig(db),
+      reports: listReconciliationReports(db, 10),
+    });
+  });
+
+  server.put?.("/api/issues/migration", (req, res) => {
+    const db = getDb();
+    const config = updateLedgerIssueMigrationConfig(db, parseMigrationConfigPatch(getBody(req)));
+    sendJson(res, 200, { config });
+  });
+
+  server.post("/api/issues/reconcile", (_req, res) => {
+    const db = getDb();
+    const report = runIssueReconciliation(
+      db,
+      issueScanner,
+      workScanner,
+      getLedgerIssueMigrationConfig(db).read_mode,
+    );
+    sendJson(res, 200, report);
+  });
+
+  server.get("/api/issues/reconcile/:reportId", (req, res) => {
+    const reportId = getParam(req, "reportId");
+    if (!reportId) {
+      sendJson(res, 400, { error: "missing reportId" });
+      return;
+    }
+    const report = getReconciliationReport(getDb(), reportId);
+    if (!report) {
+      sendJson(res, 404, { error: "reconciliation report not found" });
+      return;
+    }
+    sendJson(res, 200, report);
+  });
+
+  // GET /api/ledger/issues/:issueId — canonical ledger issue detail projection
+  server.get("/api/ledger/issues/:issueId", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  // GET /api/issues/:repoId/:issueId/ledger-detail — resolve a route issue ref
+  // into the canonical projection used by graph and issue detail panes.
+  server.get("/api/issues/:repoId/:issueId/ledger-detail", (req, res) => {
+    const repoId = getParam(req, "repoId");
+    const issueId = getParam(req, "issueId");
+    if (!repoId || !issueId) {
+      sendJson(res, 400, { error: "missing repoId or issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueIdForRoute(db, workScanner, repoId, issueId);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.post("/api/ledger/issues/:issueId/comments", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    const body = getBody(req);
+    const message = typeof body?.body === "string"
+      ? body.body
+      : typeof body?.message === "string"
+        ? body.message
+        : "";
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    if (!message.trim()) {
+      sendJson(res, 400, { error: "message is required" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    new LedgerStore(db).addComment(resolved.issue_id, {
+      body: message.trim(),
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+      source: "mandible",
+    });
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.patch?.("/api/ledger/issues/:issueId", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const body = getBody(req) ?? {};
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+
+    const patch: {
+      title?: string;
+      body?: string;
+      kind?: LedgerIssueKind;
+      priority?: LedgerPriority;
+    } = {};
+    if (typeof body.title === "string") patch.title = body.title;
+    if (typeof body.body === "string") patch.body = body.body;
+    const kind = enumValue(body.kind, LEDGER_ISSUE_KINDS);
+    const priority = enumValue(body.priority, LEDGER_PRIORITIES);
+    if (body.kind !== undefined && !kind) {
+      sendJson(res, 400, { error: "invalid kind" });
+      return;
+    }
+    if (body.priority !== undefined && !priority) {
+      sendJson(res, 400, { error: "invalid priority" });
+      return;
+    }
+    if (kind) patch.kind = kind;
+    if (priority) patch.priority = priority;
+
+    const store = new LedgerStore(db);
+    if (Object.keys(patch).length > 0) {
+      store.updateIssue(resolved.issue_id, patch, { actor_type: "mandible_user", author_display: "Mandible" });
+    }
+    if (body.status !== undefined || body.resolution !== undefined) {
+      const status = enumValue(body.status, LEDGER_ISSUE_STATUSES);
+      const resolution = body.resolution === null
+        ? null
+        : enumValue(body.resolution, LEDGER_ISSUE_RESOLUTIONS);
+      if (body.status !== undefined && !status) {
+        sendJson(res, 400, { error: "invalid status" });
+        return;
+      }
+      if (body.resolution !== undefined && body.resolution !== null && !resolution) {
+        sendJson(res, 400, { error: "invalid resolution" });
+        return;
+      }
+      const current = store.getIssue(resolved.issue_id);
+      store.setIssueStatus(
+        resolved.issue_id,
+        (status ?? current.status) as LedgerIssueStatus,
+        resolution as LedgerIssueResolution | null,
+        { actor_type: "mandible_user", author_display: "Mandible" },
+        "mandible",
+      );
+    }
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.post("/api/ledger/issues/:issueId/labels", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    const body = getBody(req);
+    const label = typeof body?.label === "string" ? body.label.trim() : "";
+    const present = typeof body?.present === "boolean"
+      ? body.present
+      : body?.action === "add"
+        ? true
+        : body?.action === "remove"
+          ? false
+          : null;
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    if (present === null) {
+      sendJson(res, 400, { error: "present boolean or add/remove action is required" });
+      return;
+    }
+    if (!label) {
+      sendJson(res, 400, { error: "label is required" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    new LedgerStore(db).setLabel(resolved.issue_id, label, present, "mandible", {
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+    });
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.post("/api/ledger/conflicts/:conflictId/resolve", (req, res) => {
+    const conflictId = getParam(req, "conflictId");
+    if (!conflictId) {
+      sendJson(res, 400, { error: "missing conflictId" });
+      return;
+    }
+    const body = getBody(req) ?? {};
+    const resolution = typeof body.resolution === "string" && body.resolution.trim()
+      ? body.resolution.trim()
+      : "keep_mandible";
+    const status = body.status === "dismissed" ? "dismissed" : "resolved";
+    try {
+      const conflict = new LedgerStore(getDb()).resolveConflict(conflictId, {
+        resolution,
+        status,
+        actor_type: "mandible_user",
+        author_display: "Mandible",
+      });
+      sendJson(res, 200, { ok: true, conflict });
+    } catch (error) {
+      sendJson(res, 404, { error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   // GET /api/issues/find/:issueId — search all scanned repos for an issue by ID prefix.
@@ -153,6 +545,26 @@ export function registerIssueRoutes(
     if (!issueId) {
       sendJson(res, 400, { error: "missing issueId" });
       return;
+    }
+    const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
+    if (config.read_mode === "ledger") {
+      try {
+        const result = findLedgerIssueAcrossRepos(db, workScanner, issueId);
+        if (result.ok) {
+          sendJson(res, 200, result.detail);
+          return;
+        }
+        if (!config.fallback_on_ledger_error || result.status === 409) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+      } catch (error) {
+        if (!config.fallback_on_ledger_error) {
+          sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+          return;
+        }
+      }
     }
     const detail = issueScanner.findIssueAcrossRepos(issueId);
     if (!detail) {
@@ -177,12 +589,26 @@ export function registerIssueRoutes(
     }
 
     const db = getDb();
+    const resolvedAt = Date.now();
     db.prepare(
       `INSERT OR IGNORE INTO issue_resolutions (issue_id, commit_sha, repo_id, resolved_at)
        VALUES (?, ?, ?, ?)`
-    ).run(issue_id, commit_sha, repo_id, Date.now());
+    ).run(issue_id, commit_sha, repo_id, resolvedAt);
 
-    sendJson(res, 200, { ok: true });
+    let ledgerIssueId: string | null = null;
+    try {
+      const result = linkCommitToLedgerIssue(db, {
+        commit_sha,
+        issue_ref: issue_id,
+        repo_ref: repo_id,
+        now: resolvedAt,
+      });
+      ledgerIssueId = result.ok ? result.issue_id : null;
+    } catch {
+      ledgerIssueId = null;
+    }
+
+    sendJson(res, 200, { ok: true, ledger_issue_id: ledgerIssueId });
   });
 
   // GET /api/issues/resolutions/:issueId — get resolutions for an issue
@@ -213,22 +639,21 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "missing repoId or issueId" });
       return;
     }
-    let repoId = repoIdParam;
-    let detail = issueScanner.getIssueDetail(repoId, issueId);
-    if (!detail) {
-      const byName = issueScanner
-        .getRepoSummaries()
-        .find((summary) => summary.repo_name === repoIdParam || summary.repo_root === repoIdParam);
-      if (byName) {
-        repoId = byName.repo_id;
-        detail = issueScanner.getIssueDetail(repoId, issueId);
-      }
-    }
-    if (!detail) {
-      sendJson(res, 404, { error: "issue not found" });
+    const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
+    const result = resolveIssueDetailForRoute(
+      db,
+      config,
+      workScanner,
+      issueScanner,
+      repoIdParam,
+      issueId,
+    );
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
       return;
     }
-    sendJson(res, 200, detail);
+    sendJson(res, 200, result.resolved.issue);
   });
 
   // POST /api/issues/:repoId/:issueId/status — close or reopen
@@ -243,6 +668,19 @@ export function registerIssueRoutes(
     const newStatus = body?.status;
     if (newStatus !== "open" && newStatus !== "closed") {
       sendJson(res, 400, { error: "status must be 'open' or 'closed'" });
+      return;
+    }
+    const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
+    if (isLedgerWriteModeEnabled(config)) {
+      if (ledgerWriteUnavailable(res, config.write_mode)) return;
+      const resolved = resolveLedgerIssueIdForRoute(db, workScanner, repoId, issueId);
+      if (!resolved.ok) {
+        sendJson(res, resolved.status, { error: resolved.error });
+        return;
+      }
+      new LedgerStore(db).setIssueStatus(resolved.issue_id, newStatus);
+      sendJson(res, 200, { ok: true, source: "ledger" });
       return;
     }
     const ok = newStatus === "closed"
@@ -267,6 +705,23 @@ export function registerIssueRoutes(
     const message = typeof body?.message === "string" ? body.message : "";
     if (!message.trim()) {
       sendJson(res, 400, { error: "message is required" });
+      return;
+    }
+    const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
+    if (isLedgerWriteModeEnabled(config)) {
+      if (ledgerWriteUnavailable(res, config.write_mode)) return;
+      const resolved = resolveLedgerIssueIdForRoute(db, workScanner, repoId, issueId);
+      if (!resolved.ok) {
+        sendJson(res, resolved.status, { error: resolved.error });
+        return;
+      }
+      new LedgerStore(db).addComment(resolved.issue_id, {
+        body: message,
+        actor_type: "mandible_user",
+        author_display: "Mandible",
+      });
+      sendJson(res, 200, { ok: true, source: "ledger" });
       return;
     }
     const ok = issueScanner.addComment(repoId, issueId, message);
@@ -294,6 +749,22 @@ export function registerIssueRoutes(
     }
     if (!label.trim()) {
       sendJson(res, 400, { error: "label is required" });
+      return;
+    }
+    const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
+    if (isLedgerWriteModeEnabled(config)) {
+      if (ledgerWriteUnavailable(res, config.write_mode)) return;
+      const resolved = resolveLedgerIssueIdForRoute(db, workScanner, repoId, issueId);
+      if (!resolved.ok) {
+        sendJson(res, resolved.status, { error: resolved.error });
+        return;
+      }
+      new LedgerStore(db).setLabel(resolved.issue_id, label, action === "add", "mandible", {
+        actor_type: "mandible_user",
+        author_display: "Mandible",
+      });
+      sendJson(res, 200, { ok: true, source: "ledger" });
       return;
     }
     const ok = action === "add"
@@ -341,32 +812,40 @@ export function registerIssueRoutes(
       return;
     }
 
-    // Resolve repo ID (may be a name)
-    let repoId = repoIdParam;
-    const byName = issueScanner
-      .getRepoSummaries()
-      .find((s) => s.repo_name === repoIdParam || s.repo_root === repoIdParam);
-    if (byName) {
-      repoId = byName.repo_id;
-    }
-
-    // 1. Issue detail from git-bug
-    const issue = issueScanner.getIssueDetail(repoId, issueIdParam);
-    if (!issue) {
-      sendJson(res, 404, { error: "issue not found" });
+    const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
+    const resolvedIssue = resolveIssueDetailForRoute(
+      db,
+      config,
+      workScanner,
+      issueScanner,
+      repoIdParam,
+      issueIdParam,
+    );
+    if (!resolvedIssue.ok) {
+      sendJson(res, resolvedIssue.status, { error: resolvedIssue.error });
       return;
     }
-
-    const db = getDb();
+    const { repoId, issue } = resolvedIssue.resolved;
+    const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
 
     // 2. Work unit for this issue+repo
-    const workUnitRow = db
-      .prepare(
-        `SELECT * FROM work_units
-         WHERE issue_id = ? AND repo_id = ?
-         ORDER BY created_at DESC LIMIT 1`
-      )
-      .get(issue.id, repoId) as Record<string, unknown> | undefined;
+    const workUnitRow = ledgerIssueId
+      ? db
+          .prepare(
+            `SELECT * FROM work_units
+             WHERE ledger_issue_id = ? OR (issue_id = ? AND repo_id = ?)
+             ORDER BY CASE WHEN ledger_issue_id = ? THEN 0 ELSE 1 END, created_at DESC
+             LIMIT 1`
+          )
+          .get(ledgerIssueId, issue.id, repoId, ledgerIssueId) as Record<string, unknown> | undefined
+      : db
+          .prepare(
+            `SELECT * FROM work_units
+             WHERE issue_id = ? AND repo_id = ?
+             ORDER BY created_at DESC LIMIT 1`
+          )
+          .get(issue.id, repoId) as Record<string, unknown> | undefined;
 
     // Bug: f3dbb3e — use canonical liveness computation from work-unit-utils
     let workUnit: Record<string, unknown> | null = null;
@@ -401,22 +880,42 @@ export function registerIssueRoutes(
         state: wu.state,
         continuation: wu.continuation,
         assigned_session_id: wu.assigned_session_id,
+        ledger_issue_id: wu.ledger_issue_id,
         liveness,
       };
     }
 
-    // 3. Linked sessions via session_issues
-    const sessionLinks = db
+    // 3. Linked sessions via canonical ledger links plus legacy session_issues.
+    const sessionLinksById = new Map<string, Record<string, unknown>>();
+    const legacySessionLinks = db
       .prepare(
-        `SELECT si.session_id, s.status, s.created_at, s.app
+        `SELECT si.session_id, s.status, s.created_at, s.app, si.created_at AS link_created_at
          FROM session_issues si
          LEFT JOIN sessions s ON s.id = si.session_id
          WHERE si.issue_id = ? AND si.repo_id = ?
          ORDER BY si.created_at ASC`
       )
       .all(issue.id, repoId) as Array<Record<string, unknown>>;
+    for (const row of legacySessionLinks) {
+      sessionLinksById.set(String(row.session_id ?? ""), row);
+    }
+    if (ledgerIssueId && tableExists(db, "ledger_session_issue_links")) {
+      const ledgerSessionLinks = db
+        .prepare(
+          `SELECT l.session_id, s.status, s.created_at, s.app, l.created_at AS link_created_at
+           FROM ledger_session_issue_links l
+           LEFT JOIN sessions s ON s.id = l.session_id
+           WHERE l.issue_id = ?
+           ORDER BY l.created_at ASC`
+        )
+        .all(ledgerIssueId) as Array<Record<string, unknown>>;
+      for (const row of ledgerSessionLinks) {
+        const sessionId = String(row.session_id ?? "");
+        if (!sessionLinksById.has(sessionId)) sessionLinksById.set(sessionId, row);
+      }
+    }
 
-    const sessions = sessionLinks.map((row) => ({
+    const sessions = Array.from(sessionLinksById.values()).map((row) => ({
       session_id: String(row.session_id ?? ""),
       status: String(row.status ?? "unknown"),
       created_at: row.created_at ?? null,
@@ -444,8 +943,8 @@ export function registerIssueRoutes(
       }
     }
 
-    // 4. Auth requests linked to this issue
-    // Auth requests store issue_ids as JSON array in the DB
+    // 4. Auth requests linked to this issue, preferring canonical ledger links
+    // and keeping legacy JSON issue_ids matching for pre-ledger rows.
     const authRows = db
       .prepare(
         `SELECT id, title, status, head_branch, issue_ids, created_at
@@ -456,7 +955,7 @@ export function registerIssueRoutes(
 
     // Bug: f3dbb3e — bidirectional prefix matching for issue IDs (same fix
     // as auth-queue.ts resolveWorkUnitsOnMerge)
-    const authRequests = authRows
+    const legacyAuthRequests = authRows
       .filter((row) => {
         const ids = row.issue_ids;
         if (!ids) return false;
@@ -480,6 +979,30 @@ export function registerIssueRoutes(
         head_branch: row.head_branch ?? null,
         created_at: row.created_at ?? null,
       }));
+    const authRequestsById = new Map(legacyAuthRequests.map((row) => [row.id, row]));
+    if (ledgerIssueId && tableExists(db, "ledger_auth_issue_links")) {
+      const canonicalAuthRows = db
+        .prepare(
+          `SELECT ar.id, ar.title, ar.status, ar.head_branch, ar.created_at
+           FROM ledger_auth_issue_links l
+           JOIN auth_requests ar ON ar.id = l.auth_request_id
+           WHERE l.issue_id = ?
+           ORDER BY ar.created_at DESC`
+        )
+        .all(ledgerIssueId) as Array<Record<string, unknown>>;
+      for (const row of canonicalAuthRows) {
+        const id = String(row.id ?? "");
+        authRequestsById.set(id, {
+          id,
+          title: String(row.title ?? ""),
+          status: String(row.status ?? ""),
+          head_branch: row.head_branch ?? null,
+          created_at: row.created_at ?? null,
+        });
+      }
+    }
+    const authRequests = Array.from(authRequestsById.values())
+      .sort((a, b) => Number(b.created_at ?? 0) - Number(a.created_at ?? 0));
 
     // 5. Branch info from work scanner if available
     let branchInfo: Record<string, unknown> | null = null;
@@ -517,21 +1040,53 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "missing repoId or issueId" });
       return;
     }
-    let repoId = repoIdParam;
-    const byName = issueScanner
-      .getRepoSummaries()
-      .find((summary) => summary.repo_name === repoIdParam || summary.repo_root === repoIdParam);
-    if (byName) {
-      repoId = byName.repo_id;
-    }
     const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
+    const resolvedIssue = resolveIssueDetailForRoute(
+      db,
+      config,
+      workScanner,
+      issueScanner,
+      repoIdParam,
+      issueId,
+    );
+    if (!resolvedIssue.ok) {
+      sendJson(res, resolvedIssue.status, { error: resolvedIssue.error });
+      return;
+    }
+    const { repoId, issue } = resolvedIssue.resolved;
+    const linkMap = new Map<string, Record<string, unknown>>();
     const links = db.prepare(
       `SELECT session_id, issue_id, repo_id, created_at
        FROM session_issues
        WHERE issue_id = ? AND repo_id = ?
        ORDER BY created_at ASC`
-    ).all(issueId, repoId);
-    sendJson(res, 200, links);
+    ).all(issue.id, repoId) as Array<Record<string, unknown>>;
+    for (const link of links) {
+      linkMap.set(String(link.session_id ?? ""), link);
+    }
+    const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
+    if (ledgerIssueId && tableExists(db, "ledger_session_issue_links")) {
+      const canonicalLinks = db.prepare(
+        `SELECT session_id, created_at, issue_id AS ledger_issue_id
+         FROM ledger_session_issue_links
+         WHERE issue_id = ?
+         ORDER BY created_at ASC`
+      ).all(ledgerIssueId) as Array<Record<string, unknown>>;
+      for (const link of canonicalLinks) {
+        const sessionId = String(link.session_id ?? "");
+        if (!linkMap.has(sessionId)) {
+          linkMap.set(sessionId, {
+            session_id: sessionId,
+            issue_id: issue.id,
+            repo_id: repoId,
+            created_at: link.created_at,
+            ledger_issue_id: link.ledger_issue_id,
+          });
+        }
+      }
+    }
+    sendJson(res, 200, Array.from(linkMap.values()));
   });
 
   // POST /api/issues/:repoId/:issueId/spawn — spawn an SDK console session for this issue
@@ -550,23 +1105,21 @@ export function registerIssueRoutes(
       return;
     }
 
-    // Resolve repo ID
-    let repoId = repoIdParam;
-    const byName = issueScanner
-      .getRepoSummaries()
-      .find((s) => s.repo_name === repoIdParam || s.repo_root === repoIdParam);
-    if (byName) {
-      repoId = byName.repo_id;
-    }
-
-    // 1. Look up the issue for title
-    const issue = issueScanner.getIssueDetail(repoId, issueIdParam);
-    if (!issue) {
-      sendJson(res, 404, { error: "issue not found" });
+    const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
+    const resolvedIssue = resolveIssueDetailForRoute(
+      db,
+      config,
+      workScanner,
+      issueScanner,
+      repoIdParam,
+      issueIdParam,
+    );
+    if (!resolvedIssue.ok) {
+      sendJson(res, resolvedIssue.status, { error: resolvedIssue.error });
       return;
     }
-
-    const db = getDb();
+    const { repoId, issue } = resolvedIssue.resolved;
     const body = getBody(req);
     const label = typeof body?.label === "string" && body.label.trim()
       ? body.label.trim()

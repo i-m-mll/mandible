@@ -25,6 +25,7 @@ export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
   return {
     id: String(row.id ?? ""),
     issue_id: String(row.issue_id ?? ""),
+    ledger_issue_id: typeof row.ledger_issue_id === "string" ? row.ledger_issue_id : null,
     repo_id: String(row.repo_id ?? ""),
     branch: typeof row.branch === "string" ? row.branch : null,
     parent_branch: typeof row.parent_branch === "string" ? row.parent_branch : null,

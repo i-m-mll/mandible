@@ -2,10 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   Background,
   Controls,
-  MarkerType,
   MiniMap,
   Position,
   ReactFlow,
+  ViewportPortal,
 } from '@xyflow/react';
 import {
   forceCollide,
@@ -27,6 +27,13 @@ import type {
   GraphNodeType,
   GraphPayload,
 } from '../types/graph';
+import {
+  addLedgerIssueComment,
+  getLedgerIssueDetail,
+  resolveLedgerConflict,
+  type LedgerIssueDetailProjection,
+} from '../api';
+import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 
 type GraphFetchParams = {
   mode: GraphMode
@@ -42,25 +49,17 @@ type ReactFlowNode = {
   position: { x: number; y: number }
   initialWidth?: number
   initialHeight?: number
-  handles?: Array<{
-    type: 'source' | 'target'
-    position: Position
-    x: number
-    y: number
-    width: number
-    height: number
-  }>
-  data: { node: GraphNode }
+  sourcePosition?: Position
+  targetPosition?: Position
+  data: { node: GraphNode; label: JSX.Element }
 }
 
 type ReactFlowEdge = {
   id: string
   source: string
   target: string
-  type?: string
   label?: string
   animated?: boolean
-  markerEnd?: { type: typeof MarkerType.ArrowClosed }
   style?: Record<string, string | number>
   labelStyle?: Record<string, string | number>
   labelBgStyle?: Record<string, string | number>
@@ -75,6 +74,15 @@ type ForceLayoutNode = SimulationNodeDatum & {
 }
 
 type ForceLayoutLink = SimulationLinkDatum<ForceLayoutNode>
+
+type GraphAnnotation = {
+  id: string
+  type: string
+  label: string
+  status?: string
+  target?: string
+  link_type?: string
+}
 
 async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
   const q = new URLSearchParams();
@@ -149,6 +157,12 @@ function compactId(id: string): string {
   return parts[parts.length - 1]?.slice(0, 12) || id.slice(0, 12);
 }
 
+function reactFlowId(id: string): string {
+  return `rf_${Array.from(id).map((char) => (
+    /[A-Za-z0-9-]/.test(char) ? char : `_${char.charCodeAt(0).toString(16)}_`
+  )).join('')}`;
+}
+
 function nodeColor(node: GraphNode): string {
   if (node.visual?.color) return node.visual.color;
   if (node.type === 'issue') {
@@ -193,11 +207,43 @@ function nodeTime(node: GraphNode): number {
   return node.created_at ? new Date(node.created_at).getTime() || 0 : 0;
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function layoutHint(node: GraphNode): Record<string, unknown> {
+  return recordValue(node.detail?.layout) ?? {};
+}
+
+function layoutNumber(node: GraphNode, key: string): number | undefined {
+  const value = layoutHint(node)[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function layoutString(node: GraphNode, key: string): string | undefined {
+  const value = layoutHint(node)[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function sortRankNodes(a: GraphNode, b: GraphNode): number {
+  const aGroup = layoutString(a, 'group_id') ?? '';
+  const bGroup = layoutString(b, 'group_id') ?? '';
+  if (aGroup !== bGroup) return aGroup.localeCompare(bGroup);
+  const aOrder = layoutNumber(a, 'order');
+  const bOrder = layoutNumber(b, 'order');
+  if (aOrder !== undefined || bOrder !== undefined) return (aOrder ?? 0) - (bOrder ?? 0);
+  return sortGraphNodes(a, b);
+}
+
 function sortGraphNodes(a: GraphNode, b: GraphNode): number {
   return nodeTime(b) - nodeTime(a) || a.type.localeCompare(b.type) || a.label.localeCompare(b.label);
 }
 
 function baseRank(node: GraphNode, mode: GraphMode): number {
+  const rank = layoutNumber(node, 'rank');
+  if (rank !== undefined) return Math.max(0, Math.min(FLOW_MAX_RANK, rank));
   if (mode === 'issue' && node.type === 'issue') return 0;
   return Math.min(FLOW_MAX_RANK, NODE_COLUMNS[node.type] ?? (mode === 'issue' ? 0 : 2));
 }
@@ -255,30 +301,14 @@ function graphComponents(nodes: GraphNode[], edges: GraphEdge[]): string[][] {
 
 function makeFlowNode(node: GraphNode, x: number, y: number): ReactFlowNode {
   return {
-    id: node.id,
-    type: 'mandible',
+    id: reactFlowId(node.id),
+    type: 'default',
     position: { x, y },
     initialWidth: FLOW_NODE_WIDTH,
     initialHeight: FLOW_NODE_HEIGHT,
-    handles: [
-      {
-        type: 'target',
-        position: Position.Left,
-        x: 0,
-        y: FLOW_NODE_HEIGHT / 2,
-        width: 1,
-        height: 1,
-      },
-      {
-        type: 'source',
-        position: Position.Right,
-        x: FLOW_NODE_WIDTH - 1,
-        y: FLOW_NODE_HEIGHT / 2,
-        width: 1,
-        height: 1,
-      },
-    ],
-    data: { node },
+    sourcePosition: Position.Right,
+    targetPosition: Position.Left,
+    data: { node, label: <MandibleFlowNodeLabel node={node} /> },
   };
 }
 
@@ -329,6 +359,11 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
   let yCursor = FLOW_Y_START;
 
   for (const component of relationshipComponents) {
+    const componentIds = new Set(component);
+    const componentEdges = edges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target));
+    const deterministicLayout = mode === 'issue' && componentEdges.some((edge) => (
+      edge.type === 'umbrella_child' || edge.metadata?.layout === 'hierarchical'
+    ));
     const byRank = new Map<number, GraphNode[]>();
     for (const id of component) {
       const node = nodeById.get(id);
@@ -341,7 +376,7 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
 
     const forceNodes: ForceLayoutNode[] = [];
     for (const [rank, rankNodes] of byRank.entries()) {
-      const sorted = [...rankNodes].sort(sortGraphNodes);
+      const sorted = [...rankNodes].sort(sortRankNodes);
       sorted.forEach((node, row) => {
         const anchorX = FLOW_X_START + rank * FLOW_COLUMN_GAP;
         const anchorY = yCursor + row * FLOW_ROW_GAP;
@@ -357,12 +392,11 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
       });
     }
 
-    const componentIds = new Set(component);
     const forceLinks: ForceLayoutLink[] = directedEdges
       .filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target))
       .map((edge) => ({ source: edge.source, target: edge.target }));
 
-    if (forceNodes.length > 1) {
+    if (forceNodes.length > 1 && !deterministicLayout) {
       const simulation = forceSimulation<ForceLayoutNode>(forceNodes)
         .force('link', forceLink<ForceLayoutNode, ForceLayoutLink>(forceLinks)
           .id((node) => node.id)
@@ -405,26 +439,89 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
   return output;
 }
 
+function edgeLabel(edge: GraphEdge): string | undefined {
+  if (edge.metadata?.label_default_visible !== true) return undefined;
+  const label = edge.metadata.relationship_label;
+  return typeof label === 'string' ? label : edge.type.replace(/_/g, ' ');
+}
+
 function flowEdges(edges: GraphEdge[]): ReactFlowEdge[] {
   return edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    type: 'smoothstep',
-    label: edge.type.replace(/_/g, ' '),
-    animated: edge.edge_class === 'provenance' && edge.provenance === 'provider_manifest',
-    markerEnd: { type: MarkerType.ArrowClosed },
+    id: reactFlowId(edge.id),
+    source: reactFlowId(edge.source),
+    target: reactFlowId(edge.target),
+    label: edgeLabel(edge),
     style: { stroke: edgeColor(edge), strokeWidth: edge.edge_class === 'semantic' ? 1.4 : 1.8 },
-    labelStyle: { fill: 'rgba(230,237,243,0.66)', fontSize: 10 },
-    labelBgStyle: { fill: 'rgba(11,15,20,0.86)' },
   }));
 }
 
-function MandibleFlowNode({ data, selected }: { data: { node: GraphNode }; selected?: boolean }): JSX.Element {
-  const node = data.node;
+function ManualGraphEdges({ nodes, edges }: { nodes: ReactFlowNode[]; edges: GraphEdge[] }): JSX.Element | null {
+  const nodeByOriginalId = new Map(nodes.map((node) => [node.data.node.id, node]));
+  const visibleEdges = edges
+    .map((edge) => {
+      const source = nodeByOriginalId.get(edge.source);
+      const target = nodeByOriginalId.get(edge.target);
+      if (!source || !target) return null;
+      const sourceX = source.position.x + FLOW_NODE_WIDTH;
+      const sourceY = source.position.y + FLOW_NODE_HEIGHT / 2;
+      const targetX = target.position.x;
+      const targetY = target.position.y + FLOW_NODE_HEIGHT / 2;
+      const horizontalGap = Math.abs(targetX - sourceX);
+      const direction = targetX >= sourceX ? 1 : -1;
+      const spread = Math.max(24, horizontalGap * 0.42);
+      const sourceControlX = sourceX + direction * spread;
+      const targetControlX = targetX - direction * spread;
+      return {
+        edge,
+        d: `M ${sourceX} ${sourceY} C ${sourceControlX} ${sourceY}, ${targetControlX} ${targetY}, ${targetX} ${targetY}`,
+      };
+    })
+    .filter((item): item is { edge: GraphEdge; d: string } => item !== null);
+
+  if (visibleEdges.length === 0) return null;
+  return (
+    <svg className="graph-manual-edges" aria-hidden="true">
+      <defs>
+        <marker id="graph-manual-arrow" markerWidth="10" markerHeight="10" viewBox="-10 -10 20 20" orient="auto" refX="-2" refY="0">
+          <path d="M -6 -4 L 0 0 L -6 4" />
+        </marker>
+      </defs>
+      {visibleEdges.map(({ edge, d }) => (
+        <path
+          key={edge.id}
+          className="graph-manual-edge"
+          d={d}
+          markerEnd="url(#graph-manual-arrow)"
+          style={{ stroke: edgeColor(edge), strokeWidth: edge.edge_class === 'semantic' ? 1.5 : 1.8 }}
+        />
+      ))}
+    </svg>
+  );
+}
+
+function nodeAnnotations(node: GraphNode): GraphAnnotation[] {
+  const annotations = node.detail?.annotations;
+  if (!Array.isArray(annotations)) return [];
+  return annotations.flatMap((item): GraphAnnotation[] => {
+    const record = recordValue(item);
+    if (!record || typeof record.id !== 'string' || typeof record.type !== 'string' || typeof record.label !== 'string') {
+      return [];
+    }
+    return [{
+      id: record.id,
+      type: record.type,
+      label: record.label,
+      status: typeof record.status === 'string' ? record.status : undefined,
+      target: typeof record.target === 'string' ? record.target : undefined,
+      link_type: typeof record.link_type === 'string' ? record.link_type : undefined,
+    }];
+  });
+}
+
+function MandibleFlowNodeLabel({ node }: { node: GraphNode }): JSX.Element {
   const entries = firstEntries(node.metrics && Object.keys(node.metrics).length > 0 ? node.metrics : node.summary, 3);
   return (
-    <div className={`graph-flow-node${selected ? ' graph-flow-node--selected' : ''}`} style={{ borderColor: nodeColor(node) }}>
+    <div className="graph-flow-node" style={{ borderColor: nodeColor(node) }}>
       <div className="graph-flow-node__top">
         <span className="graph-flow-node__dot" style={{ background: nodeColor(node) }} />
         <span className="graph-flow-node__type">{typeLabel(node.type)}</span>
@@ -447,8 +544,6 @@ function MandibleFlowNode({ data, selected }: { data: { node: GraphNode }; selec
     </div>
   );
 }
-
-const NODE_TYPES = { mandible: MandibleFlowNode };
 
 function TokenMultiSelect({
   placeholder,
@@ -627,6 +722,40 @@ function DetailPane({
   edges: GraphEdge[]
   onNavigate: (type: GraphNodeType, id: string, repoId?: string) => void
 }): JSX.Element {
+  const ledgerIssueId = node?.type === 'issue' && typeof node.detail?.ledger_issue_id === 'string'
+    ? node.detail.ledger_issue_id
+    : null;
+  const [ledgerDetail, setLedgerDetail] = useState<LedgerIssueDetailProjection | null>(null);
+  const [ledgerLoading, setLedgerLoading] = useState(false);
+  const [ledgerError, setLedgerError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    if (!ledgerIssueId) {
+      setLedgerDetail(null);
+      setLedgerError(null);
+      setLedgerLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+    setLedgerLoading(true);
+    setLedgerError(null);
+    getLedgerIssueDetail(ledgerIssueId)
+      .then((detail) => {
+        if (active) setLedgerDetail(detail);
+      })
+      .catch((error: unknown) => {
+        if (active) setLedgerError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (active) setLedgerLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [ledgerIssueId]);
+
   if (!node) {
     return (
       <aside className="graph-detail-pane">
@@ -634,10 +763,57 @@ function DetailPane({
       </aside>
     );
   }
+  if (ledgerIssueId) {
+    const openLedgerEntity = (type: 'issue' | 'session' | 'auth_request' | 'conversation', id: string, repoId?: string) => {
+      if (type === 'issue') {
+        const repo = repoId ?? ledgerDetail?.project.repo_id ?? node.repo_id ?? node.repo;
+        onNavigate('issue', `issue:${repo ?? ''}:${id}`, repo ?? undefined);
+        return;
+      }
+      if (type === 'auth_request') {
+        onNavigate('auth_request', id);
+        return;
+      }
+      if (type === 'session' || type === 'conversation') {
+        onNavigate('session', id);
+      }
+    };
+    return (
+      <aside className="graph-detail-pane graph-detail-pane--ledger">
+        {ledgerLoading && !ledgerDetail ? (
+          <div className="graph-detail-pane__empty">Loading issue...</div>
+        ) : ledgerError && !ledgerDetail ? (
+          <div className="graph-detail-pane__empty">{ledgerError}</div>
+        ) : ledgerDetail ? (
+          <LedgerIssueDetail
+            compact
+            detail={ledgerDetail}
+            onOpenEntity={openLedgerEntity}
+            onAddComment={async (body) => {
+              const next = await addLedgerIssueComment(ledgerIssueId, body);
+              setLedgerDetail(next);
+            }}
+            onResolveConflict={async (conflictId, resolution, status) => {
+              await resolveLedgerConflict(conflictId, resolution, status);
+              setLedgerDetail(await getLedgerIssueDetail(ledgerIssueId));
+            }}
+          />
+        ) : (
+          <div className="graph-detail-pane__empty">No ledger detail</div>
+        )}
+      </aside>
+    );
+  }
   const connected = edges.filter((edge) => edge.source === node.id || edge.target === node.id).slice(0, 8);
   const detailEntries = firstEntries(node.detail, 8);
   const summaryEntries = firstEntries(node.summary, 8);
+  const annotations = nodeAnnotations(node).slice(0, 12);
   const canNavigate = node.type === 'issue' || node.type === 'session' || node.type === 'auth_request';
+  const navigateAnnotation = (annotation: GraphAnnotation) => {
+    if (!annotation.target) return;
+    if (annotation.target.startsWith('auth_request:')) onNavigate('auth_request', annotation.target);
+    if (annotation.target.startsWith('session:')) onNavigate('session', annotation.target);
+  };
   return (
     <aside className="graph-detail-pane">
       <div className="graph-detail-pane__header">
@@ -668,6 +844,26 @@ function DetailPane({
             ))}
             {detailEntries.map(([key, value]) => (
               <><span key={`${key}-k`}>{key}</span><code key={`${key}-v`}>{String(value)}</code></>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {annotations.length > 0 && (
+        <div className="graph-detail-pane__section">
+          <div className="graph-detail-pane__section-title">Evidence</div>
+          <div className="graph-detail-pane__edges">
+            {annotations.map((annotation) => (
+              <button
+                key={annotation.id}
+                type="button"
+                className="graph-detail-pane__edge"
+                disabled={!annotation.target}
+                onClick={() => navigateAnnotation(annotation)}
+              >
+                <span>{annotation.link_type ?? typeLabel(annotation.type)}</span>
+                <code>{annotation.status ? `${annotation.label} (${annotation.status})` : annotation.label}</code>
+              </button>
             ))}
           </div>
         </div>
@@ -803,6 +999,14 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
   );
   const flowNodes = useMemo(() => layoutNodes(visibleNodes, visibleEdges, mode), [visibleNodes, visibleEdges, mode]);
   const flowEdgeList = useMemo(() => flowEdges(visibleEdges), [visibleEdges]);
+  const flowSignature = useMemo(
+    () => [
+      mode,
+      flowNodes.map((node) => node.id).join(','),
+      flowEdgeList.map((edge) => edge.id).join(','),
+    ].join(':'),
+    [flowEdgeList, flowNodes, mode],
+  );
   const selectedNode = useMemo(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
     [visibleNodes, selectedNodeId],
@@ -898,25 +1102,27 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
           )}
           {!loading && !error && flowNodes.length > 0 && (
             <ReactFlow
-              key={`${mode}:${flowNodes.length}:${flowEdgeList.length}`}
-              nodes={flowNodes}
-              edges={flowEdgeList}
-              nodeTypes={NODE_TYPES}
+              key={flowSignature}
+              defaultNodes={flowNodes}
+              defaultEdges={[]}
               fitView
               fitViewOptions={{ padding: 0.16 }}
               minZoom={0.2}
               maxZoom={1.8}
-              nodesDraggable
+              nodesDraggable={false}
               nodesConnectable={false}
               elementsSelectable
-              onNodeClick={(_event, node) => setSelectedNodeId(node.id)}
+              onNodeClick={(_event, node) => setSelectedNodeId((node.data as { node: GraphNode }).node.id)}
               onNodeDoubleClick={(_event, node) => {
-                const graphNode = visibleNodes.find((item) => item.id === node.id);
+                const graphNode = (node.data as { node: GraphNode }).node;
                 if (graphNode && (graphNode.type === 'issue' || graphNode.type === 'session' || graphNode.type === 'auth_request')) {
                   onNavigate(graphNode.type, graphNode.id, graphNode.repo_id ?? graphNode.repo);
                 }
               }}
             >
+              <ViewportPortal>
+                <ManualGraphEdges nodes={flowNodes} edges={visibleEdges} />
+              </ViewportPortal>
               <Background color="rgba(154,164,178,0.12)" gap={18} />
               <MiniMap
                 pannable

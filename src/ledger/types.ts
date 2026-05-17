@@ -1,0 +1,243 @@
+export const LEDGER_ISSUE_STATUSES = ["open", "closed"] as const;
+export type LedgerIssueStatus = (typeof LEDGER_ISSUE_STATUSES)[number];
+
+export const LEDGER_ISSUE_RESOLUTIONS = [
+  "fixed",
+  "merged",
+  "duplicate",
+  "wontfix",
+  "invalid",
+  "obsolete",
+  "unknown",
+] as const;
+export type LedgerIssueResolution = (typeof LEDGER_ISSUE_RESOLUTIONS)[number];
+
+export const LEDGER_ISSUE_KINDS = [
+  "bug",
+  "feature",
+  "umbrella",
+  "task",
+  "question",
+  "maintenance",
+  "deferred",
+  "unknown",
+] as const;
+export type LedgerIssueKind = (typeof LEDGER_ISSUE_KINDS)[number];
+
+export const LEDGER_PRIORITIES = ["low", "normal", "high", "urgent", "unknown"] as const;
+export type LedgerPriority = (typeof LEDGER_PRIORITIES)[number];
+
+export const LEDGER_ACTOR_TYPES = [
+  "mandible_user",
+  "agent",
+  "system",
+  "external_adapter",
+] as const;
+export type LedgerActorType = (typeof LEDGER_ACTOR_TYPES)[number];
+
+export const LEDGER_EVENT_SOURCES = [
+  "mandible",
+  "git_bug",
+  "auth_queue",
+  "session",
+  "work_unit",
+  "import",
+  "system",
+] as const;
+export type LedgerEventSource = (typeof LEDGER_EVENT_SOURCES)[number];
+
+export const LEDGER_OUTBOX_STATUSES = [
+  "pending",
+  "processing",
+  "applied",
+  "failed",
+  "conflicted",
+  "skipped",
+] as const;
+export type LedgerOutboxStatus = (typeof LEDGER_OUTBOX_STATUSES)[number];
+
+export const LEDGER_CONFLICT_STATUSES = ["open", "resolved", "dismissed"] as const;
+export type LedgerConflictStatus = (typeof LEDGER_CONFLICT_STATUSES)[number];
+
+export const LEDGER_RELATIONSHIP_TYPES = [
+  "parent_child",
+  "blocks",
+  "duplicate_of",
+  "related",
+  "references",
+  "fixed_by",
+  "caused_by",
+  "implements",
+  "tests",
+] as const;
+export type LedgerRelationshipType = (typeof LEDGER_RELATIONSHIP_TYPES)[number];
+
+export const LEDGER_RELATIONSHIP_PROVENANCES = [
+  "manual",
+  "imported",
+  "derived",
+  "system",
+] as const;
+export type LedgerRelationshipProvenance = (typeof LEDGER_RELATIONSHIP_PROVENANCES)[number];
+
+export type LedgerNamespacePolicy = "remote" | "upstream" | "local";
+
+export interface LedgerActorInput {
+  actor_id?: string | null;
+  actor_type?: LedgerActorType;
+  author_display?: string;
+}
+
+export interface LedgerProject {
+  id: string;
+  display_name: string;
+  remote_identity: string;
+  upstream_identity: string;
+  namespace_policy: LedgerNamespacePolicy;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface LedgerProjectCheckout {
+  id: string;
+  project_id: string;
+  work_repo_id: string | null;
+  root: string;
+  name: string;
+  default_branch: string;
+  remote_url: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface LedgerIssue {
+  id: string;
+  project_id: string;
+  title: string;
+  body: string;
+  status: LedgerIssueStatus;
+  resolution: LedgerIssueResolution | null;
+  kind: LedgerIssueKind;
+  priority: LedgerPriority;
+  author_actor_id: string | null;
+  author_actor_type: LedgerActorType;
+  author_display: string;
+  source: LedgerEventSource;
+  created_at: number;
+  updated_at: number;
+  closed_at: number | null;
+  deleted_at: number | null;
+}
+
+export interface LedgerIssueAlias {
+  issue_id: string;
+  alias_kind: string;
+  project_id: string;
+  alias: string;
+  external_id: string;
+  source: string;
+  is_primary: number;
+  created_at: number;
+}
+
+export interface LedgerComment {
+  id: string;
+  issue_id: string;
+  body: string;
+  author_actor_id: string | null;
+  author_actor_type: LedgerActorType;
+  author_display: string;
+  source: LedgerEventSource;
+  created_at: number;
+  updated_at: number | null;
+  deleted_at: number | null;
+}
+
+export interface LedgerLabel {
+  issue_id: string;
+  label: string;
+  source: string;
+  created_at: number;
+  deleted_at: number | null;
+}
+
+export interface LedgerIssueRelationship {
+  id: string;
+  source_issue_id: string;
+  target_issue_id: string;
+  relationship_type: LedgerRelationshipType;
+  provenance: LedgerRelationshipProvenance;
+  confidence: string;
+  metadata_json: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+}
+
+export interface LedgerEvent {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  event_type: string;
+  actor_id: string | null;
+  actor_type: LedgerActorType;
+  source: LedgerEventSource;
+  payload_json: string;
+  occurred_at: number;
+  observed_at: number;
+}
+
+export interface LedgerOutbox {
+  id: string;
+  event_id: string;
+  adapter: string;
+  project_id: string;
+  status: LedgerOutboxStatus;
+  attempt_count: number;
+  available_at: number;
+  last_attempt_at: number | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface LedgerExternalRef {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  adapter: string;
+  project_id: string;
+  external_id: string;
+  external_kind: string;
+  remote_version: string;
+  remote_hash: string;
+  last_imported_at: number | null;
+  last_exported_at: number | null;
+  metadata_json: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface LedgerConflict {
+  id: string;
+  adapter: string;
+  project_id: string;
+  entity_type: string;
+  entity_id: string;
+  field: string;
+  local_value_json: string;
+  remote_value_json: string;
+  base_value_json: string;
+  status: LedgerConflictStatus;
+  resolution: string | null;
+  created_at: number;
+  resolved_at: number | null;
+}
+
+export interface LedgerIssueDetail extends LedgerIssue {
+  aliases: LedgerIssueAlias[];
+  comments: LedgerComment[];
+  labels: LedgerLabel[];
+  outgoing_relationships: LedgerIssueRelationship[];
+  incoming_relationships: LedgerIssueRelationship[];
+}

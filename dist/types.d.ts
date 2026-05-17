@@ -406,6 +406,7 @@ export type WorkUnitState = "open" | "committed" | "resolved" | "abandoned";
 export interface WorkUnit {
     id: string;
     issue_id: string;
+    ledger_issue_id: string | null;
     repo_id: string;
     branch: string | null;
     parent_branch: string | null;

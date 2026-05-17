@@ -12,6 +12,7 @@ import {
   getChannelRegistry,
   getChannelConnectedSessionsFromDb,
 } from "../channel-registry.js";
+import { linkSessionToLedgerIssue } from "../ledger/operational-links.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionDiscovery } from "../session-discovery.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
@@ -23,6 +24,23 @@ function readBody<T>(req: RequestLike): T {
 
 function sendJson(res: ResponseLike, code: number, payload: unknown): void {
   res.status(code).json(payload);
+}
+
+function linkSessionLedgerIssue(
+  sessionId: string,
+  issueId: string,
+  repoId: string,
+): string | null {
+  try {
+    const result = linkSessionToLedgerIssue(getDb(), {
+      session_id: sessionId,
+      issue_ref: issueId,
+      repo_ref: repoId,
+    });
+    return result.ok ? result.issue_id : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseStatus(value: string | undefined): SessionStatus | undefined {
@@ -500,11 +518,14 @@ export function registerSessionRoutes(
        ON CONFLICT DO NOTHING`
     ).run(sessionId, canonicalRepoId, repoName, now);
 
+    const ledgerIssueId = linkSessionLedgerIssue(sessionId, body.issue_id, canonicalRepoId);
+
     sendJson(res, 200, {
       session_id: sessionId,
       issue_id: body.issue_id,
       repo_id: canonicalRepoId,
       created_at: now,
+      ledger_issue_id: ledgerIssueId,
     });
   });
 
