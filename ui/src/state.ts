@@ -597,18 +597,37 @@ function selectBadgeCounts(state: AppState): {
   inbox: number;
   console: number;
 } {
-  const sessions = state.sessions.filter((session) => {
+  const sessionRecords = Array.isArray(state.sessions) ? state.sessions : [];
+  const authQueue = Array.isArray(state.authQueue) ? state.authQueue : [];
+  const workBranches =
+    state.workBranches && typeof state.workBranches === 'object'
+      ? Object.values(state.workBranches)
+      : [];
+  const inboxData = state.inboxData as Partial<InboxData> | null;
+  const inboxContinuations = Array.isArray(inboxData?.continuations)
+    ? inboxData.continuations.length
+    : 0;
+  const inboxAuthResults = Array.isArray(inboxData?.auth_results)
+    ? inboxData.auth_results.length
+    : 0;
+  const consoleUnreadBadge =
+    typeof state.consoleUnreadBadge === 'number' ? state.consoleUnreadBadge : 0;
+
+  const sessions = sessionRecords.filter((session) => {
     const status = (session.status || session.state || '').toLowerCase();
     if (!status || status === 'ended' || status === 'dead' || status === 'closed' || status === 'reaped') {
       return false;
     }
     return !(session as Record<string, unknown>).ended_at;
   }).length;
-  const auth = state.authQueue.filter((request) => {
+  const auth = authQueue.filter((request) => {
     const status = (request.status || request.state || '').toLowerCase();
     return !status || status === 'pending';
   }).length;
-  const work = Object.values(state.workBranches).reduce((total, branches) => {
+  const work = workBranches.reduce((total, branches) => {
+    if (!Array.isArray(branches)) {
+      return total;
+    }
     const dirtyBranches = branches.filter((branch) => {
       if (typeof branch.dirty === 'boolean') {
         return branch.dirty;
@@ -617,10 +636,8 @@ function selectBadgeCounts(state: AppState): {
     });
     return total + dirtyBranches.length;
   }, 0);
-  const inbox =
-    (state.inboxData?.continuations.length ?? 0) +
-    (state.inboxData?.auth_results.length ?? 0);
-  const console = state.consoleUnreadBadge;
+  const inbox = inboxContinuations + inboxAuthResults;
+  const console = consoleUnreadBadge;
   return { sessions, auth, work, inbox, console };
 }
 

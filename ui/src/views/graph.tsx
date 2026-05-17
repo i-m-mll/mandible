@@ -102,6 +102,7 @@ interface GraphViewProps {
   onNavigate: (type: GraphNodeType, id: string, repoId?: string) => void
   refreshToken?: number
   initialMode?: string
+  initialFocus?: string
 }
 
 const NODE_COLUMNS: Record<string, number> = {
@@ -908,7 +909,7 @@ function DetailPane({
   );
 }
 
-export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewProps): JSX.Element {
+export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus }: GraphViewProps): JSX.Element {
   const routeMode = coerceGraphMode(initialMode);
   const [payload, setPayload] = useState<GraphPayload>({ nodes: [], edges: [], mode: 'activity' });
   const [loading, setLoading] = useState(true);
@@ -940,7 +941,9 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
         if (!active) return;
         setPayload(data);
         setEnabledLayers(new Set((data.layers ?? []).filter((layer) => layer.enabled).map((layer) => layer.id)));
-        if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
+        if (initialFocus && data.nodes.some((node) => node.id === initialFocus)) {
+          setSelectedNodeId(initialFocus);
+        } else if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
           setSelectedNodeId(data.nodes[0].id);
         }
       })
@@ -954,7 +957,7 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
     return () => {
       active = false;
     };
-  }, [mode, sinceFilter, statusFilter, repoFilters, branchFilters, refreshToken]);
+  }, [mode, sinceFilter, statusFilter, repoFilters, branchFilters, refreshToken, initialFocus]);
 
   const rawModes = payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
     id: id as GraphMode,
@@ -997,15 +1000,22 @@ export function GraphView({ onNavigate, refreshToken, initialMode }: GraphViewPr
     () => payload.edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)),
     [payload.edges, visibleNodeIds],
   );
-  const flowNodes = useMemo(() => layoutNodes(visibleNodes, visibleEdges, mode), [visibleNodes, visibleEdges, mode]);
+  const flowNodes = useMemo(
+    () => layoutNodes(visibleNodes, visibleEdges, mode).map((node) => ({
+      ...node,
+      selected: (node.data as { node: GraphNode }).node.id === selectedNodeId,
+    })),
+    [visibleNodes, visibleEdges, mode, selectedNodeId],
+  );
   const flowEdgeList = useMemo(() => flowEdges(visibleEdges), [visibleEdges]);
   const flowSignature = useMemo(
     () => [
       mode,
+      selectedNodeId ?? '',
       flowNodes.map((node) => node.id).join(','),
       flowEdgeList.map((edge) => edge.id).join(','),
     ].join(':'),
-    [flowEdgeList, flowNodes, mode],
+    [flowEdgeList, flowNodes, mode, selectedNodeId],
   );
   const selectedNode = useMemo(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,

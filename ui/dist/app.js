@@ -1736,609 +1736,6 @@ var init_api = __esm({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/compiler.js
-var require_compiler = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
-    (function(Hogan4) {
-      var rIsWhitespace = /\S/, rQuot = /\"/g, rNewline = /\n/g, rCr = /\r/g, rSlash = /\\/g, rLineSep = /\u2028/, rParagraphSep = /\u2029/;
-      Hogan4.tags = {
-        "#": 1,
-        "^": 2,
-        "<": 3,
-        "$": 4,
-        "/": 5,
-        "!": 6,
-        ">": 7,
-        "=": 8,
-        "_v": 9,
-        "{": 10,
-        "&": 11,
-        "_t": 12
-      };
-      Hogan4.scan = function scan(text2, delimiters) {
-        var len = text2.length, IN_TEXT = 0, IN_TAG_TYPE = 1, IN_TAG = 2, state = IN_TEXT, tagType = null, tag2 = null, buf = "", tokens = [], seenTag = false, i4 = 0, lineStart = 0, otag = "{{", ctag = "}}";
-        function addBuf() {
-          if (buf.length > 0) {
-            tokens.push({ tag: "_t", text: new String(buf) });
-            buf = "";
-          }
-        }
-        function lineIsWhitespace() {
-          var isAllWhitespace = true;
-          for (var j4 = lineStart; j4 < tokens.length; j4++) {
-            isAllWhitespace = Hogan4.tags[tokens[j4].tag] < Hogan4.tags["_v"] || tokens[j4].tag == "_t" && tokens[j4].text.match(rIsWhitespace) === null;
-            if (!isAllWhitespace) {
-              return false;
-            }
-          }
-          return isAllWhitespace;
-        }
-        function filterLine(haveSeenTag, noNewLine) {
-          addBuf();
-          if (haveSeenTag && lineIsWhitespace()) {
-            for (var j4 = lineStart, next; j4 < tokens.length; j4++) {
-              if (tokens[j4].text) {
-                if ((next = tokens[j4 + 1]) && next.tag == ">") {
-                  next.indent = tokens[j4].text.toString();
-                }
-                tokens.splice(j4, 1);
-              }
-            }
-          } else if (!noNewLine) {
-            tokens.push({ tag: "\n" });
-          }
-          seenTag = false;
-          lineStart = tokens.length;
-        }
-        function changeDelimiters(text3, index3) {
-          var close = "=" + ctag, closeIndex = text3.indexOf(close, index3), delimiters2 = trim(
-            text3.substring(text3.indexOf("=", index3) + 1, closeIndex)
-          ).split(" ");
-          otag = delimiters2[0];
-          ctag = delimiters2[delimiters2.length - 1];
-          return closeIndex + close.length - 1;
-        }
-        if (delimiters) {
-          delimiters = delimiters.split(" ");
-          otag = delimiters[0];
-          ctag = delimiters[1];
-        }
-        for (i4 = 0; i4 < len; i4++) {
-          if (state == IN_TEXT) {
-            if (tagChange(otag, text2, i4)) {
-              --i4;
-              addBuf();
-              state = IN_TAG_TYPE;
-            } else {
-              if (text2.charAt(i4) == "\n") {
-                filterLine(seenTag);
-              } else {
-                buf += text2.charAt(i4);
-              }
-            }
-          } else if (state == IN_TAG_TYPE) {
-            i4 += otag.length - 1;
-            tag2 = Hogan4.tags[text2.charAt(i4 + 1)];
-            tagType = tag2 ? text2.charAt(i4 + 1) : "_v";
-            if (tagType == "=") {
-              i4 = changeDelimiters(text2, i4);
-              state = IN_TEXT;
-            } else {
-              if (tag2) {
-                i4++;
-              }
-              state = IN_TAG;
-            }
-            seenTag = i4;
-          } else {
-            if (tagChange(ctag, text2, i4)) {
-              tokens.push({
-                tag: tagType,
-                n: trim(buf),
-                otag,
-                ctag,
-                i: tagType == "/" ? seenTag - otag.length : i4 + ctag.length
-              });
-              buf = "";
-              i4 += ctag.length - 1;
-              state = IN_TEXT;
-              if (tagType == "{") {
-                if (ctag == "}}") {
-                  i4++;
-                } else {
-                  cleanTripleStache(tokens[tokens.length - 1]);
-                }
-              }
-            } else {
-              buf += text2.charAt(i4);
-            }
-          }
-        }
-        filterLine(seenTag, true);
-        return tokens;
-      };
-      function cleanTripleStache(token) {
-        if (token.n.substr(token.n.length - 1) === "}") {
-          token.n = token.n.substring(0, token.n.length - 1);
-        }
-      }
-      function trim(s3) {
-        if (s3.trim) {
-          return s3.trim();
-        }
-        return s3.replace(/^\s*|\s*$/g, "");
-      }
-      function tagChange(tag2, text2, index3) {
-        if (text2.charAt(index3) != tag2.charAt(0)) {
-          return false;
-        }
-        for (var i4 = 1, l3 = tag2.length; i4 < l3; i4++) {
-          if (text2.charAt(index3 + i4) != tag2.charAt(i4)) {
-            return false;
-          }
-        }
-        return true;
-      }
-      var allowedInSuper = { "_t": true, "\n": true, "$": true, "/": true };
-      function buildTree3(tokens, kind, stack, customTags) {
-        var instructions = [], opener = null, tail = null, token = null;
-        tail = stack[stack.length - 1];
-        while (tokens.length > 0) {
-          token = tokens.shift();
-          if (tail && tail.tag == "<" && !(token.tag in allowedInSuper)) {
-            throw new Error("Illegal content in < super tag.");
-          }
-          if (Hogan4.tags[token.tag] <= Hogan4.tags["$"] || isOpener(token, customTags)) {
-            stack.push(token);
-            token.nodes = buildTree3(tokens, token.tag, stack, customTags);
-          } else if (token.tag == "/") {
-            if (stack.length === 0) {
-              throw new Error("Closing tag without opener: /" + token.n);
-            }
-            opener = stack.pop();
-            if (token.n != opener.n && !isCloser(token.n, opener.n, customTags)) {
-              throw new Error("Nesting error: " + opener.n + " vs. " + token.n);
-            }
-            opener.end = token.i;
-            return instructions;
-          } else if (token.tag == "\n") {
-            token.last = tokens.length == 0 || tokens[0].tag == "\n";
-          }
-          instructions.push(token);
-        }
-        if (stack.length > 0) {
-          throw new Error("missing closing tag: " + stack.pop().n);
-        }
-        return instructions;
-      }
-      function isOpener(token, tags) {
-        for (var i4 = 0, l3 = tags.length; i4 < l3; i4++) {
-          if (tags[i4].o == token.n) {
-            token.tag = "#";
-            return true;
-          }
-        }
-      }
-      function isCloser(close, open, tags) {
-        for (var i4 = 0, l3 = tags.length; i4 < l3; i4++) {
-          if (tags[i4].c == close && tags[i4].o == open) {
-            return true;
-          }
-        }
-      }
-      function stringifySubstitutions(obj) {
-        var items = [];
-        for (var key2 in obj) {
-          items.push('"' + esc(key2) + '": function(c,p,t,i) {' + obj[key2] + "}");
-        }
-        return "{ " + items.join(",") + " }";
-      }
-      function stringifyPartials(codeObj) {
-        var partials = [];
-        for (var key2 in codeObj.partials) {
-          partials.push('"' + esc(key2) + '":{name:"' + esc(codeObj.partials[key2].name) + '", ' + stringifyPartials(codeObj.partials[key2]) + "}");
-        }
-        return "partials: {" + partials.join(",") + "}, subs: " + stringifySubstitutions(codeObj.subs);
-      }
-      Hogan4.stringify = function(codeObj, text2, options2) {
-        return "{code: function (c,p,i) { " + Hogan4.wrapMain(codeObj.code) + " }," + stringifyPartials(codeObj) + "}";
-      };
-      var serialNo = 0;
-      Hogan4.generate = function(tree, text2, options2) {
-        serialNo = 0;
-        var context = { code: "", subs: {}, partials: {} };
-        Hogan4.walk(tree, context);
-        if (options2.asString) {
-          return this.stringify(context, text2, options2);
-        }
-        return this.makeTemplate(context, text2, options2);
-      };
-      Hogan4.wrapMain = function(code) {
-        return 'var t=this;t.b(i=i||"");' + code + "return t.fl();";
-      };
-      Hogan4.template = Hogan4.Template;
-      Hogan4.makeTemplate = function(codeObj, text2, options2) {
-        var template = this.makePartials(codeObj);
-        template.code = new Function("c", "p", "i", this.wrapMain(codeObj.code));
-        return new this.template(template, text2, this, options2);
-      };
-      Hogan4.makePartials = function(codeObj) {
-        var key2, template = { subs: {}, partials: codeObj.partials, name: codeObj.name };
-        for (key2 in template.partials) {
-          template.partials[key2] = this.makePartials(template.partials[key2]);
-        }
-        for (key2 in codeObj.subs) {
-          template.subs[key2] = new Function("c", "p", "t", "i", codeObj.subs[key2]);
-        }
-        return template;
-      };
-      function esc(s3) {
-        return s3.replace(rSlash, "\\\\").replace(rQuot, '\\"').replace(rNewline, "\\n").replace(rCr, "\\r").replace(rLineSep, "\\u2028").replace(rParagraphSep, "\\u2029");
-      }
-      function chooseMethod(s3) {
-        return ~s3.indexOf(".") ? "d" : "f";
-      }
-      function createPartial(node, context) {
-        var prefix = "<" + (context.prefix || "");
-        var sym = prefix + node.n + serialNo++;
-        context.partials[sym] = { name: node.n, partials: {} };
-        context.code += 't.b(t.rp("' + esc(sym) + '",c,p,"' + (node.indent || "") + '"));';
-        return sym;
-      }
-      Hogan4.codegen = {
-        "#": function(node, context) {
-          context.code += "if(t.s(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,1),c,p,0,' + node.i + "," + node.end + ',"' + node.otag + " " + node.ctag + '")){t.rs(c,p,function(c,p,t){';
-          Hogan4.walk(node.nodes, context);
-          context.code += "});c.pop();}";
-        },
-        "^": function(node, context) {
-          context.code += "if(!t.s(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,1),c,p,1,0,0,"")){';
-          Hogan4.walk(node.nodes, context);
-          context.code += "};";
-        },
-        ">": createPartial,
-        "<": function(node, context) {
-          var ctx = { partials: {}, code: "", subs: {}, inPartial: true };
-          Hogan4.walk(node.nodes, ctx);
-          var template = context.partials[createPartial(node, context)];
-          template.subs = ctx.subs;
-          template.partials = ctx.partials;
-        },
-        "$": function(node, context) {
-          var ctx = { subs: {}, code: "", partials: context.partials, prefix: node.n };
-          Hogan4.walk(node.nodes, ctx);
-          context.subs[node.n] = ctx.code;
-          if (!context.inPartial) {
-            context.code += 't.sub("' + esc(node.n) + '",c,p,i);';
-          }
-        },
-        "\n": function(node, context) {
-          context.code += write('"\\n"' + (node.last ? "" : " + i"));
-        },
-        "_v": function(node, context) {
-          context.code += "t.b(t.v(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,0)));';
-        },
-        "_t": function(node, context) {
-          context.code += write('"' + esc(node.text) + '"');
-        },
-        "{": tripleStache,
-        "&": tripleStache
-      };
-      function tripleStache(node, context) {
-        context.code += "t.b(t.t(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,0)));';
-      }
-      function write(s3) {
-        return "t.b(" + s3 + ");";
-      }
-      Hogan4.walk = function(nodelist, context) {
-        var func;
-        for (var i4 = 0, l3 = nodelist.length; i4 < l3; i4++) {
-          func = Hogan4.codegen[nodelist[i4].tag];
-          func && func(nodelist[i4], context);
-        }
-        return context;
-      };
-      Hogan4.parse = function(tokens, text2, options2) {
-        options2 = options2 || {};
-        return buildTree3(tokens, "", [], options2.sectionTags || []);
-      };
-      Hogan4.cache = {};
-      Hogan4.cacheKey = function(text2, options2) {
-        return [text2, !!options2.asString, !!options2.disableLambda, options2.delimiters, !!options2.modelGet].join("||");
-      };
-      Hogan4.compile = function(text2, options2) {
-        options2 = options2 || {};
-        var key2 = Hogan4.cacheKey(text2, options2);
-        var template = this.cache[key2];
-        if (template) {
-          var partials = template.partials;
-          for (var name in partials) {
-            delete partials[name].instance;
-          }
-          return template;
-        }
-        template = this.generate(this.parse(this.scan(text2, options2.delimiters), text2, options2), text2, options2);
-        return this.cache[key2] = template;
-      };
-    })(typeof exports !== "undefined" ? exports : Hogan);
-  }
-});
-
-// ../../node_modules/@profoundlogic/hogan/lib/template.js
-var require_template = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
-    var Hogan4 = {};
-    (function(Hogan5) {
-      Hogan5.Template = function(codeObj, text2, compiler, options2) {
-        codeObj = codeObj || {};
-        this.r = codeObj.code || this.r;
-        this.c = compiler;
-        this.options = options2 || {};
-        this.text = text2 || "";
-        this.partials = codeObj.partials || {};
-        this.subs = codeObj.subs || {};
-        this.buf = "";
-      };
-      Hogan5.Template.prototype = {
-        // render: replaced by generated code.
-        r: function(context, partials, indent) {
-          return "";
-        },
-        // variable escaping
-        v: hoganEscape,
-        // triple stache
-        t: coerceToString,
-        render: function render(context, partials, indent) {
-          return this.ri([context], partials || {}, indent);
-        },
-        // render internal -- a hook for overrides that catches partials too
-        ri: function(context, partials, indent) {
-          return this.r(context, partials, indent);
-        },
-        // ensurePartial
-        ep: function(symbol, partials) {
-          var partial = this.partials[symbol];
-          var template = partials[partial.name];
-          if (partial.instance && partial.base == template) {
-            return partial.instance;
-          }
-          if (typeof template == "string") {
-            if (!this.c) {
-              throw new Error("No compiler available.");
-            }
-            template = this.c.compile(template, this.options);
-          }
-          if (!template) {
-            return null;
-          }
-          this.partials[symbol].base = template;
-          if (partial.subs) {
-            if (!partials.stackText)
-              partials.stackText = {};
-            for (key in partial.subs) {
-              if (!partials.stackText[key]) {
-                partials.stackText[key] = this.activeSub !== void 0 && partials.stackText[this.activeSub] ? partials.stackText[this.activeSub] : this.text;
-              }
-            }
-            template = createSpecializedPartial(
-              template,
-              partial.subs,
-              partial.partials,
-              this.stackSubs,
-              this.stackPartials,
-              partials.stackText
-            );
-          }
-          this.partials[symbol].instance = template;
-          return template;
-        },
-        // tries to find a partial in the current scope and render it
-        rp: function(symbol, context, partials, indent) {
-          var partial = this.ep(symbol, partials);
-          if (!partial) {
-            return "";
-          }
-          return partial.ri(context, partials, indent);
-        },
-        // render a section
-        rs: function(context, partials, section) {
-          var tail = context[context.length - 1];
-          if (!isArray(tail)) {
-            section(context, partials, this);
-            return;
-          }
-          for (var i4 = 0; i4 < tail.length; i4++) {
-            context.push(tail[i4]);
-            section(context, partials, this);
-            context.pop();
-          }
-        },
-        // maybe start a section
-        s: function(val, ctx, partials, inverted, start3, end, tags) {
-          var pass;
-          if (isArray(val) && val.length === 0) {
-            return false;
-          }
-          if (typeof val == "function") {
-            val = this.ms(val, ctx, partials, inverted, start3, end, tags);
-          }
-          pass = !!val;
-          if (!inverted && pass && ctx) {
-            ctx.push(typeof val == "object" ? val : ctx[ctx.length - 1]);
-          }
-          return pass;
-        },
-        // find values with dotted names
-        d: function(key2, ctx, partials, returnFound) {
-          var found, names = key2.split("."), val = this.f(names[0], ctx, partials, returnFound), doModelGet = this.options.modelGet, cx = null;
-          if (key2 === "." && isArray(ctx[ctx.length - 2])) {
-            val = ctx[ctx.length - 1];
-          } else {
-            for (var i4 = 1; i4 < names.length; i4++) {
-              found = findInScope(names[i4], val, doModelGet);
-              if (found !== void 0) {
-                cx = val;
-                val = found;
-              } else {
-                val = "";
-              }
-            }
-          }
-          if (returnFound && !val) {
-            return false;
-          }
-          if (!returnFound && typeof val == "function") {
-            ctx.push(cx);
-            val = this.mv(val, ctx, partials);
-            ctx.pop();
-          }
-          return val;
-        },
-        // find values with normal names
-        f: function(key2, ctx, partials, returnFound) {
-          var val = false, v3 = null, found = false, doModelGet = this.options.modelGet;
-          for (var i4 = ctx.length - 1; i4 >= 0; i4--) {
-            v3 = ctx[i4];
-            val = findInScope(key2, v3, doModelGet);
-            if (val !== void 0) {
-              found = true;
-              break;
-            }
-          }
-          if (!found) {
-            return returnFound ? false : "";
-          }
-          if (!returnFound && typeof val == "function") {
-            val = this.mv(val, ctx, partials);
-          }
-          return val;
-        },
-        // higher order templates
-        ls: function(func, cx, ctx, partials, text2, tags) {
-          var oldTags = this.options.delimiters;
-          this.options.delimiters = tags;
-          this.b(this.ct(coerceToString(func.call(cx, text2, ctx)), cx, partials));
-          this.options.delimiters = oldTags;
-          return false;
-        },
-        // compile text
-        ct: function(text2, cx, partials) {
-          if (this.options.disableLambda) {
-            throw new Error("Lambda features disabled.");
-          }
-          return this.c.compile(text2, this.options).render(cx, partials);
-        },
-        // template result buffering
-        b: function(s3) {
-          this.buf += s3;
-        },
-        fl: function() {
-          var r3 = this.buf;
-          this.buf = "";
-          return r3;
-        },
-        // method replace section
-        ms: function(func, ctx, partials, inverted, start3, end, tags) {
-          var textSource, cx = ctx[ctx.length - 1], result = func.call(cx);
-          if (typeof result == "function") {
-            if (inverted) {
-              return true;
-            } else {
-              textSource = this.activeSub && this.subsText && this.subsText[this.activeSub] ? this.subsText[this.activeSub] : this.text;
-              return this.ls(result, cx, ctx, partials, textSource.substring(start3, end), tags);
-            }
-          }
-          return result;
-        },
-        // method replace variable
-        mv: function(func, ctx, partials) {
-          var cx = ctx[ctx.length - 1];
-          var result = func.call(cx);
-          if (typeof result == "function") {
-            return this.ct(coerceToString(result.call(cx)), cx, partials);
-          }
-          return result;
-        },
-        sub: function(name, context, partials, indent) {
-          var f4 = this.subs[name];
-          if (f4) {
-            this.activeSub = name;
-            f4(context, partials, this, indent);
-            this.activeSub = false;
-          }
-        }
-      };
-      function findInScope(key2, scope, doModelGet) {
-        var val;
-        if (scope && typeof scope == "object") {
-          if (scope[key2] !== void 0) {
-            val = scope[key2];
-          } else if (doModelGet && scope.get && typeof scope.get == "function") {
-            val = scope.get(key2);
-          }
-        }
-        return val;
-      }
-      function createSpecializedPartial(instance, subs, partials, stackSubs, stackPartials, stackText) {
-        function PartialTemplate() {
-        }
-        ;
-        PartialTemplate.prototype = instance;
-        function Substitutions() {
-        }
-        ;
-        Substitutions.prototype = instance.subs;
-        var key2;
-        var partial = new PartialTemplate();
-        partial.subs = new Substitutions();
-        partial.subsText = {};
-        partial.buf = "";
-        stackSubs = stackSubs || {};
-        partial.stackSubs = stackSubs;
-        partial.subsText = stackText;
-        for (key2 in subs) {
-          if (!stackSubs[key2])
-            stackSubs[key2] = subs[key2];
-        }
-        for (key2 in stackSubs) {
-          partial.subs[key2] = stackSubs[key2];
-        }
-        stackPartials = stackPartials || {};
-        partial.stackPartials = stackPartials;
-        for (key2 in partials) {
-          if (!stackPartials[key2])
-            stackPartials[key2] = partials[key2];
-        }
-        for (key2 in stackPartials) {
-          partial.partials[key2] = stackPartials[key2];
-        }
-        return partial;
-      }
-      var rAmp = /&/g, rLt = /</g, rGt = />/g, rApos = /\'/g, rQuot = /\"/g, hChars = /[&<>\"\']/;
-      function coerceToString(val) {
-        return String(val === null || val === void 0 ? "" : val);
-      }
-      function hoganEscape(str) {
-        str = coerceToString(str);
-        return hChars.test(str) ? str.replace(rAmp, "&amp;").replace(rLt, "&lt;").replace(rGt, "&gt;").replace(rApos, "&#39;").replace(rQuot, "&quot;") : str;
-      }
-      var isArray = Array.isArray || function(a4) {
-        return Object.prototype.toString.call(a4) === "[object Array]";
-      };
-    })(typeof exports !== "undefined" ? exports : Hogan4);
-  }
-});
-
-// ../../node_modules/@profoundlogic/hogan/lib/hogan.js
-var require_hogan = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
-    var Hogan4 = require_compiler();
-    Hogan4.Template = require_template().Template;
-    Hogan4.template = Hogan4.Template;
-    module.exports = Hogan4;
-  }
-});
-
 // ../../node_modules/@xterm/xterm/lib/xterm.js
 var require_xterm = __commonJS({
   "../../node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
@@ -8998,6 +8395,609 @@ var require_addon_fit = __commonJS({
         };
       })(), e3;
     })());
+  }
+});
+
+// ../../node_modules/@profoundlogic/hogan/lib/compiler.js
+var require_compiler = __commonJS({
+  "../../node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
+    (function(Hogan4) {
+      var rIsWhitespace = /\S/, rQuot = /\"/g, rNewline = /\n/g, rCr = /\r/g, rSlash = /\\/g, rLineSep = /\u2028/, rParagraphSep = /\u2029/;
+      Hogan4.tags = {
+        "#": 1,
+        "^": 2,
+        "<": 3,
+        "$": 4,
+        "/": 5,
+        "!": 6,
+        ">": 7,
+        "=": 8,
+        "_v": 9,
+        "{": 10,
+        "&": 11,
+        "_t": 12
+      };
+      Hogan4.scan = function scan(text2, delimiters) {
+        var len = text2.length, IN_TEXT = 0, IN_TAG_TYPE = 1, IN_TAG = 2, state = IN_TEXT, tagType = null, tag2 = null, buf = "", tokens = [], seenTag = false, i4 = 0, lineStart = 0, otag = "{{", ctag = "}}";
+        function addBuf() {
+          if (buf.length > 0) {
+            tokens.push({ tag: "_t", text: new String(buf) });
+            buf = "";
+          }
+        }
+        function lineIsWhitespace() {
+          var isAllWhitespace = true;
+          for (var j4 = lineStart; j4 < tokens.length; j4++) {
+            isAllWhitespace = Hogan4.tags[tokens[j4].tag] < Hogan4.tags["_v"] || tokens[j4].tag == "_t" && tokens[j4].text.match(rIsWhitespace) === null;
+            if (!isAllWhitespace) {
+              return false;
+            }
+          }
+          return isAllWhitespace;
+        }
+        function filterLine(haveSeenTag, noNewLine) {
+          addBuf();
+          if (haveSeenTag && lineIsWhitespace()) {
+            for (var j4 = lineStart, next; j4 < tokens.length; j4++) {
+              if (tokens[j4].text) {
+                if ((next = tokens[j4 + 1]) && next.tag == ">") {
+                  next.indent = tokens[j4].text.toString();
+                }
+                tokens.splice(j4, 1);
+              }
+            }
+          } else if (!noNewLine) {
+            tokens.push({ tag: "\n" });
+          }
+          seenTag = false;
+          lineStart = tokens.length;
+        }
+        function changeDelimiters(text3, index3) {
+          var close = "=" + ctag, closeIndex = text3.indexOf(close, index3), delimiters2 = trim(
+            text3.substring(text3.indexOf("=", index3) + 1, closeIndex)
+          ).split(" ");
+          otag = delimiters2[0];
+          ctag = delimiters2[delimiters2.length - 1];
+          return closeIndex + close.length - 1;
+        }
+        if (delimiters) {
+          delimiters = delimiters.split(" ");
+          otag = delimiters[0];
+          ctag = delimiters[1];
+        }
+        for (i4 = 0; i4 < len; i4++) {
+          if (state == IN_TEXT) {
+            if (tagChange(otag, text2, i4)) {
+              --i4;
+              addBuf();
+              state = IN_TAG_TYPE;
+            } else {
+              if (text2.charAt(i4) == "\n") {
+                filterLine(seenTag);
+              } else {
+                buf += text2.charAt(i4);
+              }
+            }
+          } else if (state == IN_TAG_TYPE) {
+            i4 += otag.length - 1;
+            tag2 = Hogan4.tags[text2.charAt(i4 + 1)];
+            tagType = tag2 ? text2.charAt(i4 + 1) : "_v";
+            if (tagType == "=") {
+              i4 = changeDelimiters(text2, i4);
+              state = IN_TEXT;
+            } else {
+              if (tag2) {
+                i4++;
+              }
+              state = IN_TAG;
+            }
+            seenTag = i4;
+          } else {
+            if (tagChange(ctag, text2, i4)) {
+              tokens.push({
+                tag: tagType,
+                n: trim(buf),
+                otag,
+                ctag,
+                i: tagType == "/" ? seenTag - otag.length : i4 + ctag.length
+              });
+              buf = "";
+              i4 += ctag.length - 1;
+              state = IN_TEXT;
+              if (tagType == "{") {
+                if (ctag == "}}") {
+                  i4++;
+                } else {
+                  cleanTripleStache(tokens[tokens.length - 1]);
+                }
+              }
+            } else {
+              buf += text2.charAt(i4);
+            }
+          }
+        }
+        filterLine(seenTag, true);
+        return tokens;
+      };
+      function cleanTripleStache(token) {
+        if (token.n.substr(token.n.length - 1) === "}") {
+          token.n = token.n.substring(0, token.n.length - 1);
+        }
+      }
+      function trim(s3) {
+        if (s3.trim) {
+          return s3.trim();
+        }
+        return s3.replace(/^\s*|\s*$/g, "");
+      }
+      function tagChange(tag2, text2, index3) {
+        if (text2.charAt(index3) != tag2.charAt(0)) {
+          return false;
+        }
+        for (var i4 = 1, l3 = tag2.length; i4 < l3; i4++) {
+          if (text2.charAt(index3 + i4) != tag2.charAt(i4)) {
+            return false;
+          }
+        }
+        return true;
+      }
+      var allowedInSuper = { "_t": true, "\n": true, "$": true, "/": true };
+      function buildTree3(tokens, kind, stack, customTags) {
+        var instructions = [], opener = null, tail = null, token = null;
+        tail = stack[stack.length - 1];
+        while (tokens.length > 0) {
+          token = tokens.shift();
+          if (tail && tail.tag == "<" && !(token.tag in allowedInSuper)) {
+            throw new Error("Illegal content in < super tag.");
+          }
+          if (Hogan4.tags[token.tag] <= Hogan4.tags["$"] || isOpener(token, customTags)) {
+            stack.push(token);
+            token.nodes = buildTree3(tokens, token.tag, stack, customTags);
+          } else if (token.tag == "/") {
+            if (stack.length === 0) {
+              throw new Error("Closing tag without opener: /" + token.n);
+            }
+            opener = stack.pop();
+            if (token.n != opener.n && !isCloser(token.n, opener.n, customTags)) {
+              throw new Error("Nesting error: " + opener.n + " vs. " + token.n);
+            }
+            opener.end = token.i;
+            return instructions;
+          } else if (token.tag == "\n") {
+            token.last = tokens.length == 0 || tokens[0].tag == "\n";
+          }
+          instructions.push(token);
+        }
+        if (stack.length > 0) {
+          throw new Error("missing closing tag: " + stack.pop().n);
+        }
+        return instructions;
+      }
+      function isOpener(token, tags) {
+        for (var i4 = 0, l3 = tags.length; i4 < l3; i4++) {
+          if (tags[i4].o == token.n) {
+            token.tag = "#";
+            return true;
+          }
+        }
+      }
+      function isCloser(close, open, tags) {
+        for (var i4 = 0, l3 = tags.length; i4 < l3; i4++) {
+          if (tags[i4].c == close && tags[i4].o == open) {
+            return true;
+          }
+        }
+      }
+      function stringifySubstitutions(obj) {
+        var items = [];
+        for (var key2 in obj) {
+          items.push('"' + esc(key2) + '": function(c,p,t,i) {' + obj[key2] + "}");
+        }
+        return "{ " + items.join(",") + " }";
+      }
+      function stringifyPartials(codeObj) {
+        var partials = [];
+        for (var key2 in codeObj.partials) {
+          partials.push('"' + esc(key2) + '":{name:"' + esc(codeObj.partials[key2].name) + '", ' + stringifyPartials(codeObj.partials[key2]) + "}");
+        }
+        return "partials: {" + partials.join(",") + "}, subs: " + stringifySubstitutions(codeObj.subs);
+      }
+      Hogan4.stringify = function(codeObj, text2, options2) {
+        return "{code: function (c,p,i) { " + Hogan4.wrapMain(codeObj.code) + " }," + stringifyPartials(codeObj) + "}";
+      };
+      var serialNo = 0;
+      Hogan4.generate = function(tree, text2, options2) {
+        serialNo = 0;
+        var context = { code: "", subs: {}, partials: {} };
+        Hogan4.walk(tree, context);
+        if (options2.asString) {
+          return this.stringify(context, text2, options2);
+        }
+        return this.makeTemplate(context, text2, options2);
+      };
+      Hogan4.wrapMain = function(code) {
+        return 'var t=this;t.b(i=i||"");' + code + "return t.fl();";
+      };
+      Hogan4.template = Hogan4.Template;
+      Hogan4.makeTemplate = function(codeObj, text2, options2) {
+        var template = this.makePartials(codeObj);
+        template.code = new Function("c", "p", "i", this.wrapMain(codeObj.code));
+        return new this.template(template, text2, this, options2);
+      };
+      Hogan4.makePartials = function(codeObj) {
+        var key2, template = { subs: {}, partials: codeObj.partials, name: codeObj.name };
+        for (key2 in template.partials) {
+          template.partials[key2] = this.makePartials(template.partials[key2]);
+        }
+        for (key2 in codeObj.subs) {
+          template.subs[key2] = new Function("c", "p", "t", "i", codeObj.subs[key2]);
+        }
+        return template;
+      };
+      function esc(s3) {
+        return s3.replace(rSlash, "\\\\").replace(rQuot, '\\"').replace(rNewline, "\\n").replace(rCr, "\\r").replace(rLineSep, "\\u2028").replace(rParagraphSep, "\\u2029");
+      }
+      function chooseMethod(s3) {
+        return ~s3.indexOf(".") ? "d" : "f";
+      }
+      function createPartial(node, context) {
+        var prefix = "<" + (context.prefix || "");
+        var sym = prefix + node.n + serialNo++;
+        context.partials[sym] = { name: node.n, partials: {} };
+        context.code += 't.b(t.rp("' + esc(sym) + '",c,p,"' + (node.indent || "") + '"));';
+        return sym;
+      }
+      Hogan4.codegen = {
+        "#": function(node, context) {
+          context.code += "if(t.s(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,1),c,p,0,' + node.i + "," + node.end + ',"' + node.otag + " " + node.ctag + '")){t.rs(c,p,function(c,p,t){';
+          Hogan4.walk(node.nodes, context);
+          context.code += "});c.pop();}";
+        },
+        "^": function(node, context) {
+          context.code += "if(!t.s(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,1),c,p,1,0,0,"")){';
+          Hogan4.walk(node.nodes, context);
+          context.code += "};";
+        },
+        ">": createPartial,
+        "<": function(node, context) {
+          var ctx = { partials: {}, code: "", subs: {}, inPartial: true };
+          Hogan4.walk(node.nodes, ctx);
+          var template = context.partials[createPartial(node, context)];
+          template.subs = ctx.subs;
+          template.partials = ctx.partials;
+        },
+        "$": function(node, context) {
+          var ctx = { subs: {}, code: "", partials: context.partials, prefix: node.n };
+          Hogan4.walk(node.nodes, ctx);
+          context.subs[node.n] = ctx.code;
+          if (!context.inPartial) {
+            context.code += 't.sub("' + esc(node.n) + '",c,p,i);';
+          }
+        },
+        "\n": function(node, context) {
+          context.code += write('"\\n"' + (node.last ? "" : " + i"));
+        },
+        "_v": function(node, context) {
+          context.code += "t.b(t.v(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,0)));';
+        },
+        "_t": function(node, context) {
+          context.code += write('"' + esc(node.text) + '"');
+        },
+        "{": tripleStache,
+        "&": tripleStache
+      };
+      function tripleStache(node, context) {
+        context.code += "t.b(t.t(t." + chooseMethod(node.n) + '("' + esc(node.n) + '",c,p,0)));';
+      }
+      function write(s3) {
+        return "t.b(" + s3 + ");";
+      }
+      Hogan4.walk = function(nodelist, context) {
+        var func;
+        for (var i4 = 0, l3 = nodelist.length; i4 < l3; i4++) {
+          func = Hogan4.codegen[nodelist[i4].tag];
+          func && func(nodelist[i4], context);
+        }
+        return context;
+      };
+      Hogan4.parse = function(tokens, text2, options2) {
+        options2 = options2 || {};
+        return buildTree3(tokens, "", [], options2.sectionTags || []);
+      };
+      Hogan4.cache = {};
+      Hogan4.cacheKey = function(text2, options2) {
+        return [text2, !!options2.asString, !!options2.disableLambda, options2.delimiters, !!options2.modelGet].join("||");
+      };
+      Hogan4.compile = function(text2, options2) {
+        options2 = options2 || {};
+        var key2 = Hogan4.cacheKey(text2, options2);
+        var template = this.cache[key2];
+        if (template) {
+          var partials = template.partials;
+          for (var name in partials) {
+            delete partials[name].instance;
+          }
+          return template;
+        }
+        template = this.generate(this.parse(this.scan(text2, options2.delimiters), text2, options2), text2, options2);
+        return this.cache[key2] = template;
+      };
+    })(typeof exports !== "undefined" ? exports : Hogan);
+  }
+});
+
+// ../../node_modules/@profoundlogic/hogan/lib/template.js
+var require_template = __commonJS({
+  "../../node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
+    var Hogan4 = {};
+    (function(Hogan5) {
+      Hogan5.Template = function(codeObj, text2, compiler, options2) {
+        codeObj = codeObj || {};
+        this.r = codeObj.code || this.r;
+        this.c = compiler;
+        this.options = options2 || {};
+        this.text = text2 || "";
+        this.partials = codeObj.partials || {};
+        this.subs = codeObj.subs || {};
+        this.buf = "";
+      };
+      Hogan5.Template.prototype = {
+        // render: replaced by generated code.
+        r: function(context, partials, indent) {
+          return "";
+        },
+        // variable escaping
+        v: hoganEscape,
+        // triple stache
+        t: coerceToString,
+        render: function render(context, partials, indent) {
+          return this.ri([context], partials || {}, indent);
+        },
+        // render internal -- a hook for overrides that catches partials too
+        ri: function(context, partials, indent) {
+          return this.r(context, partials, indent);
+        },
+        // ensurePartial
+        ep: function(symbol, partials) {
+          var partial = this.partials[symbol];
+          var template = partials[partial.name];
+          if (partial.instance && partial.base == template) {
+            return partial.instance;
+          }
+          if (typeof template == "string") {
+            if (!this.c) {
+              throw new Error("No compiler available.");
+            }
+            template = this.c.compile(template, this.options);
+          }
+          if (!template) {
+            return null;
+          }
+          this.partials[symbol].base = template;
+          if (partial.subs) {
+            if (!partials.stackText)
+              partials.stackText = {};
+            for (key in partial.subs) {
+              if (!partials.stackText[key]) {
+                partials.stackText[key] = this.activeSub !== void 0 && partials.stackText[this.activeSub] ? partials.stackText[this.activeSub] : this.text;
+              }
+            }
+            template = createSpecializedPartial(
+              template,
+              partial.subs,
+              partial.partials,
+              this.stackSubs,
+              this.stackPartials,
+              partials.stackText
+            );
+          }
+          this.partials[symbol].instance = template;
+          return template;
+        },
+        // tries to find a partial in the current scope and render it
+        rp: function(symbol, context, partials, indent) {
+          var partial = this.ep(symbol, partials);
+          if (!partial) {
+            return "";
+          }
+          return partial.ri(context, partials, indent);
+        },
+        // render a section
+        rs: function(context, partials, section) {
+          var tail = context[context.length - 1];
+          if (!isArray(tail)) {
+            section(context, partials, this);
+            return;
+          }
+          for (var i4 = 0; i4 < tail.length; i4++) {
+            context.push(tail[i4]);
+            section(context, partials, this);
+            context.pop();
+          }
+        },
+        // maybe start a section
+        s: function(val, ctx, partials, inverted, start3, end, tags) {
+          var pass;
+          if (isArray(val) && val.length === 0) {
+            return false;
+          }
+          if (typeof val == "function") {
+            val = this.ms(val, ctx, partials, inverted, start3, end, tags);
+          }
+          pass = !!val;
+          if (!inverted && pass && ctx) {
+            ctx.push(typeof val == "object" ? val : ctx[ctx.length - 1]);
+          }
+          return pass;
+        },
+        // find values with dotted names
+        d: function(key2, ctx, partials, returnFound) {
+          var found, names = key2.split("."), val = this.f(names[0], ctx, partials, returnFound), doModelGet = this.options.modelGet, cx = null;
+          if (key2 === "." && isArray(ctx[ctx.length - 2])) {
+            val = ctx[ctx.length - 1];
+          } else {
+            for (var i4 = 1; i4 < names.length; i4++) {
+              found = findInScope(names[i4], val, doModelGet);
+              if (found !== void 0) {
+                cx = val;
+                val = found;
+              } else {
+                val = "";
+              }
+            }
+          }
+          if (returnFound && !val) {
+            return false;
+          }
+          if (!returnFound && typeof val == "function") {
+            ctx.push(cx);
+            val = this.mv(val, ctx, partials);
+            ctx.pop();
+          }
+          return val;
+        },
+        // find values with normal names
+        f: function(key2, ctx, partials, returnFound) {
+          var val = false, v3 = null, found = false, doModelGet = this.options.modelGet;
+          for (var i4 = ctx.length - 1; i4 >= 0; i4--) {
+            v3 = ctx[i4];
+            val = findInScope(key2, v3, doModelGet);
+            if (val !== void 0) {
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            return returnFound ? false : "";
+          }
+          if (!returnFound && typeof val == "function") {
+            val = this.mv(val, ctx, partials);
+          }
+          return val;
+        },
+        // higher order templates
+        ls: function(func, cx, ctx, partials, text2, tags) {
+          var oldTags = this.options.delimiters;
+          this.options.delimiters = tags;
+          this.b(this.ct(coerceToString(func.call(cx, text2, ctx)), cx, partials));
+          this.options.delimiters = oldTags;
+          return false;
+        },
+        // compile text
+        ct: function(text2, cx, partials) {
+          if (this.options.disableLambda) {
+            throw new Error("Lambda features disabled.");
+          }
+          return this.c.compile(text2, this.options).render(cx, partials);
+        },
+        // template result buffering
+        b: function(s3) {
+          this.buf += s3;
+        },
+        fl: function() {
+          var r3 = this.buf;
+          this.buf = "";
+          return r3;
+        },
+        // method replace section
+        ms: function(func, ctx, partials, inverted, start3, end, tags) {
+          var textSource, cx = ctx[ctx.length - 1], result = func.call(cx);
+          if (typeof result == "function") {
+            if (inverted) {
+              return true;
+            } else {
+              textSource = this.activeSub && this.subsText && this.subsText[this.activeSub] ? this.subsText[this.activeSub] : this.text;
+              return this.ls(result, cx, ctx, partials, textSource.substring(start3, end), tags);
+            }
+          }
+          return result;
+        },
+        // method replace variable
+        mv: function(func, ctx, partials) {
+          var cx = ctx[ctx.length - 1];
+          var result = func.call(cx);
+          if (typeof result == "function") {
+            return this.ct(coerceToString(result.call(cx)), cx, partials);
+          }
+          return result;
+        },
+        sub: function(name, context, partials, indent) {
+          var f4 = this.subs[name];
+          if (f4) {
+            this.activeSub = name;
+            f4(context, partials, this, indent);
+            this.activeSub = false;
+          }
+        }
+      };
+      function findInScope(key2, scope, doModelGet) {
+        var val;
+        if (scope && typeof scope == "object") {
+          if (scope[key2] !== void 0) {
+            val = scope[key2];
+          } else if (doModelGet && scope.get && typeof scope.get == "function") {
+            val = scope.get(key2);
+          }
+        }
+        return val;
+      }
+      function createSpecializedPartial(instance, subs, partials, stackSubs, stackPartials, stackText) {
+        function PartialTemplate() {
+        }
+        ;
+        PartialTemplate.prototype = instance;
+        function Substitutions() {
+        }
+        ;
+        Substitutions.prototype = instance.subs;
+        var key2;
+        var partial = new PartialTemplate();
+        partial.subs = new Substitutions();
+        partial.subsText = {};
+        partial.buf = "";
+        stackSubs = stackSubs || {};
+        partial.stackSubs = stackSubs;
+        partial.subsText = stackText;
+        for (key2 in subs) {
+          if (!stackSubs[key2])
+            stackSubs[key2] = subs[key2];
+        }
+        for (key2 in stackSubs) {
+          partial.subs[key2] = stackSubs[key2];
+        }
+        stackPartials = stackPartials || {};
+        partial.stackPartials = stackPartials;
+        for (key2 in partials) {
+          if (!stackPartials[key2])
+            stackPartials[key2] = partials[key2];
+        }
+        for (key2 in stackPartials) {
+          partial.partials[key2] = stackPartials[key2];
+        }
+        return partial;
+      }
+      var rAmp = /&/g, rLt = /</g, rGt = />/g, rApos = /\'/g, rQuot = /\"/g, hChars = /[&<>\"\']/;
+      function coerceToString(val) {
+        return String(val === null || val === void 0 ? "" : val);
+      }
+      function hoganEscape(str) {
+        str = coerceToString(str);
+        return hChars.test(str) ? str.replace(rAmp, "&amp;").replace(rLt, "&lt;").replace(rGt, "&gt;").replace(rApos, "&#39;").replace(rQuot, "&quot;") : str;
+      }
+      var isArray = Array.isArray || function(a4) {
+        return Object.prototype.toString.call(a4) === "[object Array]";
+      };
+    })(typeof exports !== "undefined" ? exports : Hogan4);
+  }
+});
+
+// ../../node_modules/@profoundlogic/hogan/lib/hogan.js
+var require_hogan = __commonJS({
+  "../../node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
+    var Hogan4 = require_compiler();
+    Hogan4.Template = require_template().Template;
+    Hogan4.template = Hogan4.Template;
+    module.exports = Hogan4;
   }
 });
 
@@ -17898,6 +17898,17 @@ function BranchSelector({
   ] });
 }
 
+// ui/src/components/console/TerminalPane.tsx
+init_hooks_module();
+var import_xterm = __toESM(require_xterm(), 1);
+var import_addon_fit = __toESM(require_addon_fit(), 1);
+
+// ui/src/components/stream-renderer/StreamRenderer.tsx
+init_hooks_module();
+
+// ui/src/components/stream-renderer/MessageGroup.tsx
+init_hooks_module();
+
 // ui/src/components/message-blocks/TextBlock.tsx
 init_hooks_module();
 marked.setOptions({ async: false });
@@ -20271,17 +20282,151 @@ function ToolUseBlock({
   );
 }
 
+// ui/src/components/stream-renderer/MessageGroup.tsx
+function blockCopyText(block2) {
+  switch (block2.type) {
+    case "text":
+      return block2.text ?? "";
+    case "thinking":
+      return block2.thinking ?? "";
+    case "tool_use":
+      return JSON.stringify(block2.input, null, 2);
+    default:
+      return "";
+  }
+}
+function MessageGroup({ turn, isStreaming, isThinking }) {
+  const { assistantEvent, toolResults } = turn;
+  const blocks = assistantEvent.message.content;
+  const turnMeta = T2(() => {
+    const msg = assistantEvent.message;
+    const usage = msg.usage;
+    const model = msg.model;
+    if (!usage && !model)
+      return void 0;
+    const tokenCount = usage ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : void 0;
+    return { tokenCount, model };
+  }, [assistantEvent]);
+  function renderBlock(block2, index3) {
+    let inner = null;
+    switch (block2.type) {
+      case "text":
+        inner = block2.text.trim() ? /* @__PURE__ */ u3(TextBlock, { content: block2.text }, `text-${index3}`) : null;
+        break;
+      case "thinking":
+        inner = /* @__PURE__ */ u3(
+          ThinkingBlock,
+          {
+            content: block2.thinking,
+            defaultCollapsed: !(isStreaming && isThinking)
+          },
+          `thinking-${index3}`
+        );
+        break;
+      case "tool_use": {
+        const result = toolResults.get(block2.id) ?? null;
+        const isPendingStreaming = isStreaming && result === null;
+        inner = /* @__PURE__ */ u3(
+          ToolUseBlock,
+          {
+            toolName: block2.name,
+            toolUseId: block2.id,
+            input: block2.input,
+            result,
+            defaultExpanded: isPendingStreaming || result === null
+          },
+          `tool-${block2.id}`
+        );
+        break;
+      }
+      default:
+        return null;
+    }
+    if (!inner)
+      return null;
+    const text2 = blockCopyText(block2);
+    return /* @__PURE__ */ u3("div", { className: "message-block-wrapper", style: { position: "relative" }, children: [
+      inner,
+      /* @__PURE__ */ u3(
+        MessageActions,
+        {
+          onCopy: text2 ? () => {
+            navigator.clipboard.writeText(text2).catch(() => {
+            });
+          } : void 0,
+          metadata: turnMeta
+        }
+      )
+    ] }, `block-wrap-${index3}`);
+  }
+  return /* @__PURE__ */ u3("div", { className: "message-group", children: /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) }) });
+}
+
+// ui/src/components/shared/groupByEntity.ts
+function groupByEntity(items, getEntity, getId) {
+  const groups = [];
+  for (const item of items) {
+    const entity = getEntity(item);
+    const last = groups[groups.length - 1];
+    if (last && last.entity === entity) {
+      last.nodes.push(item);
+    } else {
+      groups.push({
+        id: `group-${getId(item)}`,
+        entity,
+        nodes: [item]
+      });
+    }
+  }
+  return groups;
+}
+
+// ui/src/components/stream-renderer/PresetViolationBlock.tsx
+function PresetViolationBlock({
+  analyzing,
+  presetId,
+  subagentSessionId
+}) {
+  const handleClick = () => {
+    if (analyzing && subagentSessionId) {
+      window.location.hash = `#/console?session=${encodeURIComponent(subagentSessionId)}`;
+    } else if (presetId) {
+      window.location.hash = `#/presets?id=${encodeURIComponent(presetId)}&view=diff`;
+    }
+  };
+  const isClickable = Boolean(
+    analyzing && subagentSessionId || !analyzing && presetId
+  );
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: `preset-violation-block${isClickable ? " preset-violation-block--clickable" : ""}`,
+      onClick: isClickable ? handleClick : void 0,
+      role: isClickable ? "button" : void 0,
+      tabIndex: isClickable ? 0 : void 0,
+      children: analyzing ? /* @__PURE__ */ u3("span", { className: "preset-violation-block__text", children: "Workflow issue detected \u2014 analyzing..." }) : /* @__PURE__ */ u3("span", { className: "preset-violation-block__text", children: "Workflow issue \u2014 view proposed fix" })
+    }
+  );
+}
+
 // ui/src/components/message-blocks/TurnGroup.tsx
 var BADGE_LABELS = {
   user: "You",
   assistant: "Assistant",
   system: "System"
 };
-function TurnGroup({ speaker, children: children2, footer, isShort }) {
+function TurnGroup({
+  speaker,
+  children: children2,
+  footer,
+  isShort,
+  showSpeakerBadge = true
+}) {
   const entityClass = `turn-group--${speaker}`;
   const shortClass = isShort ? " turn-group--short" : "";
-  return /* @__PURE__ */ u3("div", { className: `turn-group ${entityClass}${shortClass}`, style: { position: "relative" }, children: [
-    /* @__PURE__ */ u3("div", { className: "turn-group__speaker", children: /* @__PURE__ */ u3("span", { className: "turn-group__badge", children: BADGE_LABELS[speaker] ?? speaker }) }),
+  const speakerClass = showSpeakerBadge ? "" : " turn-group--no-speaker";
+  return /* @__PURE__ */ u3("div", { className: `turn-group ${entityClass}${shortClass}${speakerClass}`, style: { position: "relative" }, children: [
+    showSpeakerBadge && /* @__PURE__ */ u3("div", { className: "turn-group__speaker", children: /* @__PURE__ */ u3("span", { className: "turn-group__badge", children: BADGE_LABELS[speaker] ?? speaker }) }),
     /* @__PURE__ */ u3("div", { className: "turn-group__body", children: [
       children2,
       footer
@@ -20358,6 +20503,2789 @@ function UserBubble({ text: text2 }) {
       dangerouslySetInnerHTML: { __html: html4 }
     }
   ) });
+}
+
+// ui/src/components/stream-renderer/StreamRenderer.tsx
+var turnIndexCounter = 0;
+function buildTurn(assistant, results) {
+  return {
+    id: assistant.uuid ?? assistant.message?.id ?? `turn-idx-${turnIndexCounter++}`,
+    assistantEvent: assistant,
+    toolResults: new Map(results),
+    receivedAt: Date.now()
+  };
+}
+function extractTurns(nodes) {
+  return nodes.filter((n2) => n2.kind === "assistant_turn").map((n2) => n2.turn);
+}
+function useStreamState(events) {
+  return T2(() => {
+    turnIndexCounter = 0;
+    const nodes = [];
+    let initEvent = null;
+    let resultEvent = null;
+    let pendingAssistant = null;
+    const pendingResults = /* @__PURE__ */ new Map();
+    let userMsgIdx = 0;
+    function flushPendingTurn() {
+      if (pendingAssistant) {
+        const turn = buildTurn(pendingAssistant, pendingResults);
+        nodes.push({
+          kind: "assistant_turn",
+          key: turn.id,
+          entity: "assistant",
+          turn
+        });
+        pendingAssistant = null;
+        pendingResults.clear();
+      }
+    }
+    for (const event of events) {
+      if (event.type === "system" && event.subtype === "init") {
+        initEvent = event;
+      } else if (event.type === "preset:violation") {
+        const violationEvent = event;
+        flushPendingTurn();
+        nodes.push({
+          kind: "violation",
+          key: violationEvent.localId ?? `violation-${nodes.length}`,
+          entity: "system",
+          event: violationEvent
+        });
+      } else if (event.type === "assistant") {
+        const ae = event;
+        const newId2 = ae.message?.id;
+        const pendingId = pendingAssistant?.message?.id;
+        if (pendingAssistant && newId2 && pendingId === newId2) {
+          pendingAssistant = ae;
+        } else {
+          flushPendingTurn();
+          pendingAssistant = ae;
+        }
+      } else if (event.type === "user") {
+        const userEvent = event;
+        let hasText = false;
+        const textParts = [];
+        for (const block2 of userEvent.message.content) {
+          if (block2.type === "tool_result") {
+            pendingResults.set(block2.tool_use_id, block2);
+          } else if (block2.type === "text" && block2.text) {
+            textParts.push(block2.text);
+            hasText = true;
+          }
+        }
+        if (hasText) {
+          const joinedText = textParts.join("\n");
+          const existingSyntheticIdx = nodes.findIndex(
+            (n2) => n2.kind === "user_message" && n2.source === "synthetic" && n2.text === joinedText
+          );
+          if (existingSyntheticIdx >= 0) {
+            nodes[existingSyntheticIdx] = {
+              kind: "user_message",
+              key: userEvent.uuid ?? nodes[existingSyntheticIdx].key,
+              entity: "user",
+              text: joinedText,
+              source: "stream"
+            };
+          } else {
+            flushPendingTurn();
+            nodes.push({
+              kind: "user_message",
+              key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
+              entity: "user",
+              text: joinedText,
+              source: "stream"
+            });
+          }
+        }
+      } else if (event.type === "result") {
+        resultEvent = event;
+      } else if (event.type === "synthetic_prompt") {
+        const sp = event;
+        flushPendingTurn();
+        nodes.push({
+          kind: "user_message",
+          key: `sp-${sp.localId}`,
+          entity: "user",
+          text: sp.text,
+          source: "synthetic"
+        });
+      }
+    }
+    flushPendingTurn();
+    return { nodes, initEvent, resultEvent };
+  }, [events]);
+}
+function deriveLiveLabel(turns, streaming) {
+  if (!streaming) {
+    return void 0;
+  }
+  const lastTurn = turns[turns.length - 1];
+  if (!lastTurn) {
+    return "Waiting for reply";
+  }
+  const blocks = lastTurn.assistantEvent.message.content;
+  if (blocks.some((block2) => block2.type === "thinking" && block2.thinking.trim())) {
+    return "Thinking";
+  }
+  if (blocks.some((block2) => block2.type === "tool_use")) {
+    return "Using tools";
+  }
+  if (blocks.some((block2) => block2.type === "text" && block2.text.trim())) {
+    return "Responding";
+  }
+  return "Working";
+}
+function computeTotalTokens(usage) {
+  if (!usage)
+    return void 0;
+  return (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+}
+function deriveTokenCount(turns) {
+  for (let i4 = turns.length - 1; i4 >= 0; i4--) {
+    const usage = turns[i4].assistantEvent.message.usage;
+    const total = computeTotalTokens(usage);
+    if (total !== void 0)
+      return total;
+  }
+  return void 0;
+}
+function formatElapsed(seconds) {
+  if (seconds < 60)
+    return `${seconds}s`;
+  const m4 = Math.floor(seconds / 60);
+  const s3 = seconds % 60;
+  return `${m4}m ${s3}s`;
+}
+function StreamRenderer({
+  events,
+  streaming,
+  elapsedSeconds,
+  emptyLabel,
+  sessionInfo,
+  onSelectMessageInfo,
+  selectedMessageId
+}) {
+  const { nodes } = useStreamState(events);
+  const scrollRef = A2(null);
+  const [userScrolled, setUserScrolled] = d2(false);
+  y2(() => {
+    if (!streaming || userScrolled) {
+      return;
+    }
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [events.length, streaming, userScrolled]);
+  function handleScroll() {
+    const el = scrollRef.current;
+    if (!el) {
+      return;
+    }
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
+    setUserScrolled(!atBottom);
+  }
+  function handleJumpToBottom() {
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+    setUserScrolled(false);
+  }
+  const turns = extractTurns(nodes);
+  const liveLabel = deriveLiveLabel(turns, streaming);
+  const tokenCount = deriveTokenCount(turns);
+  const hasContent = nodes.length > 0;
+  if (!hasContent) {
+    return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: emptyLabel ?? (streaming ? "Starting\u2026" : "No events") }) });
+  }
+  const groups = groupByEntity(nodes, (n2) => n2.entity, (n2) => n2.key);
+  let lastAssistantKey = null;
+  for (let i4 = nodes.length - 1; i4 >= 0; i4--) {
+    if (nodes[i4].kind === "assistant_turn") {
+      lastAssistantKey = nodes[i4].key;
+      break;
+    }
+  }
+  function renderNodeBody(node) {
+    switch (node.kind) {
+      case "user_message":
+        return /* @__PURE__ */ u3(UserBubble, { text: node.text }, node.key);
+      case "violation":
+        return /* @__PURE__ */ u3(
+          PresetViolationBlock,
+          {
+            analyzing: node.event.analyzing,
+            presetId: node.event.preset_id,
+            subagentSessionId: node.event.subagent_session_id
+          },
+          node.key
+        );
+      case "assistant_turn": {
+        const { turn } = node;
+        const isLastStreamingTurn = streaming && node.key === lastAssistantKey;
+        const isThinking = isLastStreamingTurn && turn.assistantEvent.message.content.some((b3) => b3.type === "thinking");
+        const isSelected = selectedMessageId === turn.id;
+        return /* @__PURE__ */ u3(
+          "div",
+          {
+            className: isSelected ? "stream-turn-node stream-turn--selected" : "stream-turn-node",
+            style: { position: "relative" },
+            children: /* @__PURE__ */ u3(
+              MessageGroup,
+              {
+                turn,
+                isStreaming: isLastStreamingTurn,
+                isThinking
+              }
+            )
+          },
+          node.key
+        );
+      }
+      default:
+        return null;
+    }
+  }
+  function collectGroupText(group) {
+    const parts = [];
+    for (const node of group.nodes) {
+      if (node.kind === "user_message") {
+        parts.push(node.text);
+      } else if (node.kind === "assistant_turn") {
+        for (const block2 of node.turn.assistantEvent.message.content) {
+          if (block2.type === "text" && block2.text)
+            parts.push(block2.text);
+        }
+      }
+    }
+    return parts.join("\n\n");
+  }
+  const rendered = groups.map((group) => {
+    const isShort = group.nodes.length <= 2;
+    let aggregateTokens;
+    if (group.entity === "assistant" && group.nodes.length > 1) {
+      let sum = 0;
+      let found = false;
+      for (const node of group.nodes) {
+        if (node.kind === "assistant_turn") {
+          const total = computeTotalTokens(node.turn.assistantEvent.message.usage);
+          if (total !== void 0) {
+            sum += total;
+            found = true;
+          }
+        }
+      }
+      if (found)
+        aggregateTokens = sum;
+    }
+    const footer = group.entity === "assistant" && group.nodes.length > 1 ? /* @__PURE__ */ u3(
+      GroupFooter,
+      {
+        totalTokens: aggregateTokens,
+        onCopyAll: () => {
+          navigator.clipboard.writeText(collectGroupText(group)).catch(() => {
+          });
+        }
+      }
+    ) : void 0;
+    return /* @__PURE__ */ u3(
+      TurnGroup,
+      {
+        speaker: group.entity,
+        isShort,
+        footer,
+        children: group.nodes.map(renderNodeBody)
+      },
+      group.id
+    );
+  });
+  return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
+    /* @__PURE__ */ u3(
+      "div",
+      {
+        ref: scrollRef,
+        className: "stream-renderer__scroll",
+        onScroll: handleScroll,
+        children: [
+          rendered,
+          streaming && /* @__PURE__ */ u3("div", { className: "stream-live-indicator", children: [
+            /* @__PURE__ */ u3("span", { className: "stream-live-indicator__dot" }),
+            /* @__PURE__ */ u3("span", { className: "stream-live-indicator__label", children: liveLabel ?? "Working" }),
+            tokenCount !== void 0 && /* @__PURE__ */ u3("span", { className: "stream-live-indicator__tokens", children: [
+              tokenCount.toLocaleString(),
+              " tokens"
+            ] }),
+            elapsedSeconds !== void 0 && /* @__PURE__ */ u3("span", { className: "stream-live-indicator__timer", children: formatElapsed(elapsedSeconds) })
+          ] })
+        ]
+      }
+    ),
+    userScrolled && streaming && /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "stream-renderer__scroll-btn",
+        onClick: handleJumpToBottom,
+        children: "Jump to bottom \u2193"
+      }
+    )
+  ] });
+}
+
+// ui/src/components/console/ViewToggle.tsx
+function ViewToggle({
+  current,
+  onChange,
+  showTerminal = true,
+  channelEnabled = false,
+  unseenEventCount = 0
+}) {
+  if (channelEnabled && showTerminal) {
+    return /* @__PURE__ */ u3("div", { className: "view-toggle", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `view-toggle__btn${current === "terminal" ? " view-toggle__btn--active" : ""}`,
+          onClick: () => onChange("terminal"),
+          children: "Terminal"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `view-toggle__btn view-toggle__btn--events${current === "events" ? " view-toggle__btn--active" : ""}`,
+          onClick: () => onChange("events"),
+          children: [
+            "Events",
+            unseenEventCount > 0 && /* @__PURE__ */ u3("span", { className: "view-toggle__badge" })
+          ]
+        }
+      )
+    ] });
+  }
+  if (!showTerminal) {
+    return null;
+  }
+  return /* @__PURE__ */ u3("div", { className: "view-toggle", children: [
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: `view-toggle__btn${current === "rich" ? " view-toggle__btn--active" : ""}`,
+        onClick: () => onChange("rich"),
+        children: "Chat"
+      }
+    ),
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: `view-toggle__btn${current === "terminal" ? " view-toggle__btn--active" : ""}`,
+        onClick: () => onChange("terminal"),
+        children: "Debug Terminal"
+      }
+    )
+  ] });
+}
+
+// ui/src/components/console/ChannelEventsPane.tsx
+init_hooks_module();
+function extractChannelEvents(events) {
+  const result = [];
+  for (let i4 = 0; i4 < events.length; i4++) {
+    const event = events[i4];
+    if (event.type !== "system" || event.subtype !== "channel_event")
+      continue;
+    const channelData = event.channel_event ?? event;
+    const eventType = String(event.event_type ?? channelData.event_type ?? "unknown");
+    let label = eventType;
+    if (eventType === "tool_call") {
+      label = String(channelData.tool_name ?? event.tool_name ?? "tool_call");
+    } else if (eventType === "notification") {
+      label = String(channelData.notification_type ?? event.notification_type ?? "notification");
+    } else if (eventType === "connect") {
+      label = "Channel connected";
+    } else if (eventType === "disconnect") {
+      label = "Channel disconnected";
+    }
+    result.push({
+      key: `ch-${i4}`,
+      eventType,
+      label,
+      timestamp: String(event.timestamp ?? channelData.timestamp ?? (/* @__PURE__ */ new Date()).toISOString()),
+      payload: channelData
+    });
+  }
+  return result;
+}
+function formatTimestamp(iso) {
+  try {
+    const d3 = new Date(iso);
+    return d3.toLocaleTimeString(void 0, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return iso;
+  }
+}
+function EventIcon({ eventType }) {
+  if (eventType === "tool_call") {
+    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M14.3 2.3a1 1 0 0 0-1.4 0L10 5.2 8.8 4l2.9-2.9a1 1 0 0 0-1.1-1.6A5 5 0 0 0 4.5 6L1.3 9.2a2.5 2.5 0 0 0 3.5 3.5L8 9.5a5 5 0 0 0 6.5-6.1 1 1 0 0 0-.2-1.1z",
+        fill: "currentColor",
+        opacity: "0.7"
+      }
+    ) });
+  }
+  if (eventType === "notification") {
+    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M8 1a1 1 0 0 1 1 1v.3A4.5 4.5 0 0 1 12.5 7v2.5l1.3 1.3a.5.5 0 0 1-.4.9H2.6a.5.5 0 0 1-.4-.9L3.5 9.5V7A4.5 4.5 0 0 1 7 2.3V2a1 1 0 0 1 1-1zm-1.5 12a1.5 1.5 0 0 0 3 0h-3z",
+        fill: "currentColor",
+        opacity: "0.7"
+      }
+    ) });
+  }
+  if (eventType === "connect") {
+    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M6.4 9.6a3 3 0 0 0 4.2 0l2-2a3 3 0 1 0-4.2-4.2l-1 1M9.6 6.4a3 3 0 0 0-4.2 0l-2 2a3 3 0 1 0 4.2 4.2l1-1",
+        stroke: "currentColor",
+        "stroke-width": "1.5",
+        "stroke-linecap": "round",
+        opacity: "0.7"
+      }
+    ) });
+  }
+  if (eventType === "disconnect") {
+    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
+      "path",
+      {
+        d: "M6.4 9.6a3 3 0 0 0 4.2 0l2-2a3 3 0 1 0-4.2-4.2M9.6 6.4a3 3 0 0 0-4.2 0l-2 2a3 3 0 1 0 4.2 4.2M2 2l12 12",
+        stroke: "currentColor",
+        "stroke-width": "1.5",
+        "stroke-linecap": "round",
+        opacity: "0.7"
+      }
+    ) });
+  }
+  return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: [
+    /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "6", stroke: "currentColor", "stroke-width": "1.5", opacity: "0.5" }),
+    /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "2", fill: "currentColor", opacity: "0.5" })
+  ] });
+}
+function ChannelEventsPane({ streamEvents, onEventCountChange }) {
+  const [expandedKeys, setExpandedKeys] = d2(/* @__PURE__ */ new Set());
+  const scrollRef = A2(null);
+  const wasAtBottomRef = A2(true);
+  const channelEvents = extractChannelEvents(streamEvents);
+  y2(() => {
+    onEventCountChange?.(channelEvents.length);
+  }, [channelEvents.length, onEventCountChange]);
+  y2(() => {
+    const el = scrollRef.current;
+    if (!el)
+      return;
+    if (wasAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [channelEvents.length]);
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el)
+      return;
+    const threshold = 40;
+    wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  };
+  const toggleExpand = (key2) => {
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key2)) {
+        next.delete(key2);
+      } else {
+        next.add(key2);
+      }
+      return next;
+    });
+  };
+  if (channelEvents.length === 0) {
+    return /* @__PURE__ */ u3("div", { className: "channel-events-pane channel-events-pane--empty", children: /* @__PURE__ */ u3("div", { className: "channel-events-pane__empty-message", children: "No channel events yet. Events will appear here when the channel connection is active." }) });
+  }
+  return /* @__PURE__ */ u3("div", { className: "channel-events-pane", ref: scrollRef, onScroll: handleScroll, children: channelEvents.map((event) => {
+    const isExpanded = expandedKeys.has(event.key);
+    return /* @__PURE__ */ u3(
+      "div",
+      {
+        className: `channel-events-pane__card${isExpanded ? " channel-events-pane__card--expanded" : ""}`,
+        children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "channel-events-pane__card-header",
+              onClick: () => toggleExpand(event.key),
+              children: [
+                /* @__PURE__ */ u3(EventIcon, { eventType: event.eventType }),
+                /* @__PURE__ */ u3("span", { className: "channel-events-pane__card-label", children: event.label }),
+                /* @__PURE__ */ u3("span", { className: "channel-events-pane__card-time", children: formatTimestamp(event.timestamp) }),
+                /* @__PURE__ */ u3("span", { className: `channel-events-pane__card-chevron${isExpanded ? " channel-events-pane__card-chevron--open" : ""}`, children: /* @__PURE__ */ u3("svg", { width: "10", height: "10", viewBox: "0 0 10 10", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M3 4l2 2 2-2", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round" }) }) })
+              ]
+            }
+          ),
+          isExpanded && /* @__PURE__ */ u3("div", { className: "channel-events-pane__card-body", children: /* @__PURE__ */ u3("pre", { className: "channel-events-pane__card-json", children: JSON.stringify(event.payload, null, 2) }) })
+        ]
+      },
+      event.key
+    );
+  }) });
+}
+
+// ui/src/components/console/PermissionDialog.tsx
+init_hooks_module();
+function formatToolInput(input) {
+  if (typeof input === "string") {
+    return input;
+  }
+  try {
+    return JSON.stringify(input, null, 2);
+  } catch {
+    return String(input ?? "");
+  }
+}
+function PermissionDialog({
+  request,
+  onRespond
+}) {
+  const [expanded, setExpanded] = d2(false);
+  const [now2, setNow] = d2(() => Date.now());
+  y2(() => {
+    setExpanded(false);
+  }, [request?.id]);
+  y2(() => {
+    if (!request) {
+      return void 0;
+    }
+    const interval2 = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1e3);
+    return () => window.clearInterval(interval2);
+  }, [request]);
+  y2(() => {
+    if (!request) {
+      return void 0;
+    }
+    const onKeyDown = (event) => {
+      if (event.shiftKey && event.key === "A") {
+        event.preventDefault();
+        onRespond(request.id, "allow_always");
+        return;
+      }
+      if (event.key === "Enter" || event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        onRespond(request.id, "allow");
+        return;
+      }
+      if (event.key === "Escape" || event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        onRespond(request.id, "deny");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onRespond, request]);
+  const formattedInput = T2(() => {
+    if (!request) {
+      return "";
+    }
+    return formatToolInput(request.tool_input);
+  }, [request]);
+  if (!request) {
+    return null;
+  }
+  const remainingSeconds = Math.max(
+    0,
+    Math.ceil((request.expires_at - now2) / 1e3)
+  );
+  const preview = formattedInput.length > 500 ? `${formattedInput.slice(0, 500)}\u2026` : formattedInput;
+  const toolName = request.display_name || request.tool_name;
+  return /* @__PURE__ */ u3("div", { className: "permission-dialog-overlay", children: /* @__PURE__ */ u3("div", { className: "permission-dialog", role: "dialog", "aria-modal": "true", "aria-labelledby": "permission-dialog-title", children: [
+    /* @__PURE__ */ u3("div", { className: "permission-dialog__header", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("div", { className: "permission-dialog__eyebrow", children: "Permission required" }),
+        /* @__PURE__ */ u3("h3", { id: "permission-dialog-title", children: request.title || toolName })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "permission-dialog__countdown", children: [
+        remainingSeconds,
+        "s"
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "permission-dialog__meta", children: [
+      /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: toolName }),
+      request.agent_id && /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: [
+        "Agent ",
+        request.agent_id
+      ] }),
+      request.blocked_path && /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: request.blocked_path })
+    ] }),
+    request.description && /* @__PURE__ */ u3("p", { className: "permission-dialog__description", children: request.description }),
+    request.decision_reason && /* @__PURE__ */ u3("p", { className: "permission-dialog__reason", children: request.decision_reason }),
+    /* @__PURE__ */ u3("div", { className: "permission-dialog__section", children: [
+      /* @__PURE__ */ u3("div", { className: "permission-dialog__section-title", children: "Tool input" }),
+      /* @__PURE__ */ u3("pre", { className: "permission-dialog__input", children: expanded ? formattedInput : preview }),
+      formattedInput.length > 500 && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "permission-dialog__toggle",
+          onClick: () => setExpanded((value) => !value),
+          children: expanded ? "Show less" : "Expand"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "permission-dialog__actions", children: [
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "permission-dialog__button permission-dialog__button--deny",
+          onClick: () => onRespond(request.id, "deny"),
+          children: "Deny"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "permission-dialog__button permission-dialog__button--allow",
+          onClick: () => onRespond(request.id, "allow"),
+          children: "Allow"
+        }
+      ),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "permission-dialog__button permission-dialog__button--always",
+          onClick: () => onRespond(request.id, "allow_always"),
+          children: "Always Allow"
+        }
+      )
+    ] })
+  ] }) });
+}
+
+// ui/src/components/console/SessionControls.tsx
+init_hooks_module();
+init_api();
+function SessionControls({
+  sessionId,
+  backendType,
+  model,
+  modelOptions,
+  allowedTools,
+  availableTools = [],
+  onModelSaved
+}) {
+  const [draftModel, setDraftModel] = d2(model ?? "");
+  const [permissionMode, setPermissionMode] = d2("default");
+  const [maxTurns, setMaxTurns] = d2("");
+  const [maxCostUsd, setMaxCostUsd] = d2("");
+  const [draftAllowedTools, setDraftAllowedTools] = d2(allowedTools ?? []);
+  const [saving, setSaving] = d2(false);
+  const [error, setError] = d2(null);
+  y2(() => {
+    setDraftModel(model ?? "");
+  }, [model]);
+  y2(() => {
+    setDraftAllowedTools(allowedTools ?? []);
+  }, [allowedTools]);
+  const handleModelOnlySave = async (nextModel) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await updateConsoleSession(sessionId, { model: nextModel || void 0 });
+      onModelSaved?.(nextModel || void 0);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to save model");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const handleSdkSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await updateConsoleSessionOptions(sessionId, {
+        model: draftModel || void 0,
+        permissionMode,
+        allowedTools: draftAllowedTools,
+        maxTurns: maxTurns.trim() ? Number(maxTurns) : void 0,
+        maxCostUsd: maxCostUsd.trim() ? Number(maxCostUsd) : void 0
+      });
+      onModelSaved?.(draftModel || void 0);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to save session options");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return /* @__PURE__ */ u3("div", { className: "session-controls", children: [
+    /* @__PURE__ */ u3("div", { className: "session-controls__row", children: [
+      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
+        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Model" }),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            className: "session-controls__select",
+            value: draftModel,
+            disabled: saving,
+            onChange: (event) => {
+              const nextModel = event.currentTarget.value;
+              setDraftModel(nextModel);
+              if (backendType === "pty") {
+                void handleModelOnlySave(nextModel);
+              }
+            },
+            children: [
+              /* @__PURE__ */ u3("option", { value: "", children: "default" }),
+              modelOptions.map((option) => /* @__PURE__ */ u3("option", { value: option, children: option }, option))
+            ]
+          }
+        )
+      ] }),
+      backendType === "sdk" && /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
+        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Permissions" }),
+        /* @__PURE__ */ u3(
+          "select",
+          {
+            className: "session-controls__select",
+            value: permissionMode,
+            disabled: saving,
+            onChange: (event) => setPermissionMode(
+              event.currentTarget.value
+            ),
+            children: [
+              /* @__PURE__ */ u3("option", { value: "default", children: "Ask each time" }),
+              /* @__PURE__ */ u3("option", { value: "acceptEdits", children: "Accept edits" }),
+              /* @__PURE__ */ u3("option", { value: "bypassPermissions", children: "Bypass permissions" })
+            ]
+          }
+        )
+      ] })
+    ] }),
+    backendType === "sdk" && /* @__PURE__ */ u3("div", { className: "session-controls__row", children: [
+      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
+        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Max turns" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            className: "session-controls__input",
+            type: "number",
+            min: "1",
+            step: "1",
+            value: maxTurns,
+            disabled: saving,
+            onInput: (event) => setMaxTurns(event.currentTarget.value),
+            placeholder: "Unlimited"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
+        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Max cost (USD)" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            className: "session-controls__input",
+            type: "number",
+            min: "0",
+            step: "0.01",
+            value: maxCostUsd,
+            disabled: saving,
+            onInput: (event) => setMaxCostUsd(event.currentTarget.value),
+            placeholder: "Unlimited"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "session-controls__actions", children: /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "session-controls__button",
+          disabled: saving,
+          onClick: () => {
+            void handleSdkSave();
+          },
+          children: saving ? "Saving\u2026" : "Save"
+        }
+      ) })
+    ] }),
+    backendType === "sdk" && /* @__PURE__ */ u3("div", { className: "session-controls__tools", children: [
+      /* @__PURE__ */ u3("div", { className: "session-controls__label", children: "Allowed tools" }),
+      availableTools.length === 0 ? /* @__PURE__ */ u3("div", { className: "session-controls__placeholder", children: "Waiting for session\u2026" }) : /* @__PURE__ */ u3("div", { className: "session-controls__tool-grid", children: availableTools.map((tool) => {
+        const enabled = draftAllowedTools.includes(tool);
+        return /* @__PURE__ */ u3("label", { className: "session-controls__tool-toggle", children: [
+          /* @__PURE__ */ u3(
+            "input",
+            {
+              type: "checkbox",
+              checked: enabled,
+              onChange: () => {
+                setDraftAllowedTools((current) => current.includes(tool) ? current.filter((entry) => entry !== tool) : [...current, tool].sort());
+              }
+            }
+          ),
+          /* @__PURE__ */ u3("span", { children: tool })
+        ] }, tool);
+      }) })
+    ] }),
+    error && /* @__PURE__ */ u3("div", { className: "session-controls__error", children: error })
+  ] });
+}
+
+// ui/src/components/console/PtyBanner.tsx
+function PtyBanner() {
+  return /* @__PURE__ */ u3("div", { className: "pty-banner", children: "PTY sessions have limited integration with Mandible. For full features (permissions, cost tracking, presets, conversation history), use an SDK agent session instead." });
+}
+
+// ui/src/components/console/LivePresetPills.tsx
+init_hooks_module();
+init_api();
+
+// ui/src/components/presets/PresetPillSelector.tsx
+init_hooks_module();
+function NavIcon({ presetId }) {
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: "preset-pill__nav",
+      title: "View preset",
+      onClick: (e3) => {
+        e3.stopPropagation();
+        window.location.hash = `#/presets?id=${encodeURIComponent(presetId)}`;
+      },
+      children: /* @__PURE__ */ u3("svg", { width: "12", height: "12", viewBox: "0 0 12 12", fill: "none", children: /* @__PURE__ */ u3(
+        "path",
+        {
+          d: "M4.5 2.5L8 6L4.5 9.5",
+          stroke: "currentColor",
+          "stroke-width": "1.5",
+          "stroke-linecap": "round",
+          "stroke-linejoin": "round"
+        }
+      ) })
+    }
+  );
+}
+function PresetPillSelector({
+  selectedPresetIds,
+  onChange,
+  presets,
+  disabled = false
+}) {
+  const [searchText, setSearchText] = d2("");
+  const [dropdownOpen, setDropdownOpen] = d2(false);
+  const [highlightIndex, setHighlightIndex] = d2(0);
+  const inputRef = A2(null);
+  const containerRef = A2(null);
+  const unselected = presets.filter(
+    (p3) => !selectedPresetIds.includes(p3.id)
+  );
+  const filtered = searchText.trim() ? unselected.filter(
+    (p3) => p3.name.toLowerCase().includes(searchText.toLowerCase())
+  ) : unselected;
+  y2(() => {
+    setHighlightIndex(0);
+  }, [searchText]);
+  y2(() => {
+    if (!dropdownOpen)
+      return;
+    const handleClick = (e3) => {
+      if (containerRef.current && !containerRef.current.contains(e3.target)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [dropdownOpen]);
+  const addPreset = (id2) => {
+    if (!selectedPresetIds.includes(id2)) {
+      onChange([...selectedPresetIds, id2]);
+    }
+    setSearchText("");
+    setDropdownOpen(false);
+    inputRef.current?.focus();
+  };
+  const removePreset = (id2) => {
+    onChange(selectedPresetIds.filter((pid) => pid !== id2));
+  };
+  const handleKeyDown = (e3) => {
+    if (e3.key === "Escape") {
+      setDropdownOpen(false);
+      return;
+    }
+    if (e3.key === "ArrowDown") {
+      e3.preventDefault();
+      setDropdownOpen(true);
+      setHighlightIndex((prev) => Math.min(prev + 1, filtered.length - 1));
+      return;
+    }
+    if (e3.key === "ArrowUp") {
+      e3.preventDefault();
+      setHighlightIndex((prev) => Math.max(prev - 1, 0));
+      return;
+    }
+    if (e3.key === "Enter" && dropdownOpen && filtered[highlightIndex]) {
+      e3.preventDefault();
+      addPreset(filtered[highlightIndex].id);
+    }
+  };
+  const selectedPresets = selectedPresetIds.map((id2) => presets.find((p3) => p3.id === id2)).filter((p3) => p3 !== void 0);
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "preset-pill-selector",
+      ref: containerRef,
+      role: "combobox",
+      "aria-haspopup": "listbox",
+      "aria-expanded": dropdownOpen,
+      children: [
+        /* @__PURE__ */ u3("div", { className: "preset-pill-selector__input-row", children: /* @__PURE__ */ u3(
+          "input",
+          {
+            ref: inputRef,
+            type: "text",
+            className: "preset-pill-selector__input",
+            placeholder: selectedPresetIds.length > 0 ? "Add preset..." : "Search presets...",
+            value: searchText,
+            disabled,
+            "aria-controls": "preset-dropdown",
+            "aria-activedescendant": dropdownOpen && filtered[highlightIndex] ? `preset-option-${filtered[highlightIndex].id}` : void 0,
+            onInput: (e3) => {
+              setSearchText(e3.currentTarget.value);
+              setDropdownOpen(true);
+            },
+            onFocus: () => setDropdownOpen(true),
+            onBlur: (e3) => {
+              const related = e3.relatedTarget;
+              if (containerRef.current && related && containerRef.current.contains(related))
+                return;
+              setDropdownOpen(false);
+            },
+            onKeyDown: handleKeyDown
+          }
+        ) }),
+        dropdownOpen && filtered.length > 0 && /* @__PURE__ */ u3("div", { className: "preset-pill-selector__dropdown", id: "preset-dropdown", role: "listbox", children: filtered.map((preset, idx) => /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            id: `preset-option-${preset.id}`,
+            role: "option",
+            "aria-selected": idx === highlightIndex,
+            className: `preset-pill-selector__option${idx === highlightIndex ? " preset-pill-selector__option--highlight" : ""}`,
+            onClick: () => addPreset(preset.id),
+            onMouseEnter: () => setHighlightIndex(idx),
+            children: [
+              /* @__PURE__ */ u3("span", { className: "preset-pill-selector__option-name", children: preset.name }),
+              preset.description && /* @__PURE__ */ u3("span", { className: "preset-pill-selector__option-desc", children: preset.description })
+            ]
+          },
+          preset.id
+        )) }),
+        selectedPresets.length > 0 ? /* @__PURE__ */ u3("div", { className: "preset-pill-selector__pills", children: selectedPresets.map((preset) => /* @__PURE__ */ u3("span", { className: "preset-pill", children: [
+          /* @__PURE__ */ u3("span", { className: "preset-pill__name", children: preset.name }),
+          /* @__PURE__ */ u3(NavIcon, { presetId: preset.id }),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "preset-pill__dismiss",
+              disabled,
+              onClick: () => removePreset(preset.id),
+              title: "Remove preset",
+              children: /* @__PURE__ */ u3("svg", { width: "10", height: "10", viewBox: "0 0 10 10", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M2 2l6 6M8 2l-6 6", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round" }) })
+            }
+          )
+        ] }, preset.id)) }) : /* @__PURE__ */ u3("div", { className: "preset-pill-selector__empty", children: "No presets selected. Import from CLAUDE.md or create a preset." })
+      ]
+    }
+  );
+}
+
+// ui/src/components/console/LivePresetPills.tsx
+function LivePresetPills({
+  sessionId,
+  readOnly = false,
+  onUnionUpdate
+}) {
+  const [allPresets, setAllPresets] = d2([]);
+  const [selectedIds, setSelectedIds] = d2([]);
+  const [loading, setLoading] = d2(true);
+  y2(() => {
+    let cancelled = false;
+    setLoading(true);
+    const load = async () => {
+      try {
+        const [presets, sessionPresets] = await Promise.all([
+          getPresets(),
+          getSessionPresets(sessionId)
+        ]);
+        if (cancelled)
+          return;
+        setAllPresets(presets);
+        const sorted = [...sessionPresets].sort((a4, b3) => a4.position - b3.position);
+        setSelectedIds(sorted.map((sp) => sp.preset_id));
+      } catch {
+        if (!cancelled) {
+          setAllPresets([]);
+          setSelectedIds([]);
+        }
+      } finally {
+        if (!cancelled)
+          setLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+  const handleChange = async (nextIds) => {
+    const prevIds = selectedIds;
+    setSelectedIds(nextIds);
+    try {
+      const removed = prevIds.filter((id2) => !nextIds.includes(id2));
+      const added = nextIds.filter((id2) => !prevIds.includes(id2));
+      for (const id2 of removed) {
+        await removeSessionPreset(sessionId, id2);
+      }
+      for (const id2 of added) {
+        await addSessionPreset(sessionId, id2, nextIds.indexOf(id2));
+      }
+      const union = await getPresetUnion({ session_id: sessionId });
+      await updateConsoleSessionOptions(sessionId, {
+        systemPrompt: union.systemPrompt,
+        presetIds: nextIds
+      });
+      onUnionUpdate?.({ totalTokens: union.totalTokens });
+    } catch {
+      setSelectedIds(prevIds);
+    }
+  };
+  if (loading) {
+    return /* @__PURE__ */ u3("div", { className: "session-controls__field", style: { marginTop: "12px" }, children: [
+      /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Presets" }),
+      /* @__PURE__ */ u3("div", { className: "session-controls__placeholder", children: "Loading presets..." })
+    ] });
+  }
+  return /* @__PURE__ */ u3("div", { className: "session-controls__field", style: { marginTop: "12px" }, children: [
+    /* @__PURE__ */ u3("span", { className: "session-controls__label", children: [
+      "Presets",
+      readOnly && /* @__PURE__ */ u3(
+        "span",
+        {
+          className: "session-controls__lock-icon",
+          title: "Restart session to change presets",
+          children: " \u{1F512}"
+        }
+      )
+    ] }),
+    readOnly ? /* @__PURE__ */ u3("div", { className: "session-controls__preset-readonly", children: selectedIds.length === 0 ? /* @__PURE__ */ u3("span", { className: "session-controls__placeholder", children: "No presets selected" }) : selectedIds.map((id2) => {
+      const preset = allPresets.find((p3) => p3.id === id2);
+      return /* @__PURE__ */ u3("span", { className: "session-controls__preset-pill", children: preset?.name ?? id2.slice(0, 8) }, id2);
+    }) }) : /* @__PURE__ */ u3(
+      PresetPillSelector,
+      {
+        selectedPresetIds: selectedIds,
+        onChange: (ids) => {
+          void handleChange(ids);
+        },
+        presets: allPresets
+      }
+    )
+  ] });
+}
+
+// ui/src/components/console/MessageInfoPanel.tsx
+function findAssistantEvent(events, turnId) {
+  for (const event of events) {
+    if (event.type !== "assistant")
+      continue;
+    const ae = event;
+    const id2 = ae.uuid ?? ae.message?.id;
+    if (id2 === turnId)
+      return ae;
+  }
+  return null;
+}
+function MessageInfoPanel({
+  selectedMessageId,
+  streamEvents
+}) {
+  if (!selectedMessageId) {
+    return /* @__PURE__ */ u3("div", { className: "message-info-panel", children: /* @__PURE__ */ u3("div", { className: "message-info-panel__empty", children: "Select a message to view its metadata." }) });
+  }
+  const assistant = findAssistantEvent(streamEvents, selectedMessageId);
+  if (!assistant) {
+    return /* @__PURE__ */ u3("div", { className: "message-info-panel", children: /* @__PURE__ */ u3("div", { className: "message-info-panel__empty", children: "Message not found in stream events." }) });
+  }
+  const msg = assistant.message;
+  const usage = msg.usage;
+  const blocks = msg.content;
+  const blockCounts = /* @__PURE__ */ new Map();
+  for (const block2 of blocks) {
+    blockCounts.set(block2.type, (blockCounts.get(block2.type) ?? 0) + 1);
+  }
+  const toolNames = [];
+  for (const block2 of blocks) {
+    if (block2.type === "tool_use") {
+      toolNames.push(block2.name);
+    }
+  }
+  return /* @__PURE__ */ u3("div", { className: "message-info-panel", children: [
+    msg.model && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Model" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: msg.model })
+    ] }),
+    msg.stop_reason && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Stop reason" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: msg.stop_reason })
+    ] }),
+    usage && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Tokens" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: [
+        usage.input_tokens.toLocaleString(),
+        " in / ",
+        usage.output_tokens.toLocaleString(),
+        " out",
+        " ",
+        "(",
+        (usage.input_tokens + usage.output_tokens).toLocaleString(),
+        " total)"
+      ] })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Content blocks" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: Array.from(blockCounts.entries()).map(([type, count]) => `${count} ${type}`).join(", ") })
+    ] }),
+    toolNames.length > 0 && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Tools" }),
+      /* @__PURE__ */ u3("div", { className: "message-info-panel__tools", children: toolNames.map((name, i4) => /* @__PURE__ */ u3("span", { className: "message-info-panel__tool-pill", children: name }, `${name}-${i4}`)) })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Message ID" }),
+      /* @__PURE__ */ u3("span", { className: "message-info-panel__value message-info-panel__value--mono", children: selectedMessageId })
+    ] })
+  ] });
+}
+
+// ui/src/components/presets/ContextIndicator.tsx
+var MODEL_CONTEXT_WINDOWS = {
+  opus: 1e6,
+  sonnet: 25e4,
+  haiku: 2e5,
+  "gemini-2.5-pro": 1048576,
+  "gemini-3-flash-preview": 1048576,
+  codex: 2e5
+};
+function lookupContextWindow(modelName) {
+  if (!modelName)
+    return 2e5;
+  const lower2 = modelName.toLowerCase();
+  for (const [key2, value] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
+    if (lower2.includes(key2))
+      return value;
+  }
+  return 2e5;
+}
+function formatTokenCount(count) {
+  if (count >= 1e6)
+    return `${(count / 1e6).toFixed(1)}M`;
+  if (count >= 1e3)
+    return `${(count / 1e3).toFixed(1)}K`;
+  return String(count);
+}
+function severityColor(ratio) {
+  if (ratio > 0.5)
+    return "var(--accent-red)";
+  if (ratio > 0.25)
+    return "var(--accent-yellow)";
+  return "var(--accent-green)";
+}
+function ContextIndicator({
+  tokenCount = 0,
+  modelName,
+  variant
+}) {
+  const safeCount = tokenCount ?? 0;
+  const contextWindow = lookupContextWindow(modelName);
+  const ratio = contextWindow > 0 ? safeCount / contextWindow : 0;
+  const color2 = severityColor(ratio);
+  const pct = (ratio * 100).toFixed(1);
+  if (variant === "compact") {
+    return /* @__PURE__ */ u3(
+      "span",
+      {
+        className: "context-indicator context-indicator--compact",
+        title: `${safeCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`,
+        style: { color: color2 },
+        children: [
+          "~",
+          formatTokenCount(safeCount)
+        ]
+      }
+    );
+  }
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "context-indicator context-indicator--bar",
+      title: `${safeCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`,
+      children: /* @__PURE__ */ u3(
+        "div",
+        {
+          className: "context-indicator__fill",
+          style: {
+            width: `${Math.min(ratio * 100, 100)}%`,
+            background: color2
+          }
+        }
+      )
+    }
+  );
+}
+
+// ui/src/components/console/TerminalPane.tsx
+init_api();
+
+// ui/src/stream-cache.ts
+var DB_NAME = "mandible-stream-cache";
+var DB_VERSION = 1;
+var STORE_NAME = "streams";
+var DEFAULT_MAX_SESSIONS = 20;
+var dbPromise = null;
+var evictTimer = null;
+function debouncedEvict() {
+  if (evictTimer)
+    clearTimeout(evictTimer);
+  evictTimer = setTimeout(() => {
+    void evictLRU().catch(() => {
+    });
+  }, 5e3);
+}
+function getDb() {
+  if (dbPromise)
+    return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: "sessionId" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return dbPromise;
+}
+async function getCachedEvents(sessionId) {
+  const db = await getDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.get(sessionId);
+    request.onsuccess = () => {
+      const record = request.result;
+      resolve(record ? record.events : null);
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+async function setCachedEvents(sessionId, events) {
+  const db = await getDb();
+  const json = JSON.stringify(events);
+  const sizeBytes = new Blob([json]).size;
+  const record = {
+    sessionId,
+    events,
+    updatedAt: Date.now(),
+    sizeBytes
+  };
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.put(record);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => {
+      debouncedEvict();
+    };
+  });
+}
+async function evictLRU(maxSessions, maxSizeBytes) {
+  const limit = maxSessions ?? DEFAULT_MAX_SESSIONS;
+  const db = await getDb();
+  const records = await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  if (records.length <= limit && !maxSizeBytes)
+    return;
+  records.sort((a4, b3) => a4.updatedAt - b3.updatedAt);
+  const toDelete = [];
+  while (records.length - toDelete.length > limit) {
+    const victim = records[toDelete.length];
+    toDelete.push(victim.sessionId);
+  }
+  if (maxSizeBytes) {
+    let totalSize = records.reduce((sum, r3) => sum + r3.sizeBytes, 0);
+    for (const id2 of toDelete) {
+      const r3 = records.find((rec) => rec.sessionId === id2);
+      if (r3)
+        totalSize -= r3.sizeBytes;
+    }
+    let idx = 0;
+    while (totalSize > maxSizeBytes && idx < records.length) {
+      const candidate = records[idx];
+      if (!toDelete.includes(candidate.sessionId)) {
+        toDelete.push(candidate.sessionId);
+        totalSize -= candidate.sizeBytes;
+      }
+      idx++;
+    }
+  }
+  if (toDelete.length === 0)
+    return;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    const store = tx.objectStore(STORE_NAME);
+    for (const id2 of toDelete) {
+      store.delete(id2);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ui/src/components/console/TerminalPane.tsx
+var MODEL_OPTIONS = {
+  claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
+  gemini: [
+    "auto",
+    "pro",
+    "flash",
+    "flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite"
+  ]
+};
+function parseModelFromArgs(args) {
+  for (let i4 = args.length - 2; i4 >= 0; i4 -= 1) {
+    const arg = args[i4];
+    if ((arg === "--model" || arg === "-m") && args[i4 + 1]?.trim()) {
+      return args[i4 + 1].trim();
+    }
+  }
+  return void 0;
+}
+function deriveStreamingState(events, _streamStartAtRef) {
+  const last = events[events.length - 1];
+  if (!last)
+    return false;
+  if (last.type === "result")
+    return false;
+  if (last.type === "assistant") {
+    const assistantEvent = last;
+    if (assistantEvent.message.stop_reason)
+      return false;
+  }
+  return true;
+}
+function flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming, streamStartAtRef) {
+  const pending = pendingSSERef.current;
+  pendingSSERef.current = [];
+  if (pending.length === 0)
+    return;
+  setStreamEvents((prev) => {
+    const newEvents = pending.filter((pe) => {
+      const peJson = JSON.stringify(pe);
+      return !prev.some((existing) => JSON.stringify(existing) === peJson);
+    });
+    const merged = newEvents.length > 0 ? [...prev, ...newEvents] : prev;
+    const isStreaming = deriveStreamingState(merged, streamStartAtRef);
+    setStreaming(isStreaming);
+    return merged;
+  });
+}
+function computeLiveTail(historyEvents, memEvents) {
+  const historyAssistantCount = historyEvents.filter((e3) => e3.type === "assistant").length;
+  if (historyAssistantCount === 0) {
+    return memEvents;
+  }
+  let assistantsSeen = 0;
+  let tailStart = memEvents.length;
+  for (let i4 = 0; i4 < memEvents.length; i4++) {
+    if (memEvents[i4].type === "assistant") {
+      assistantsSeen++;
+    }
+    if (assistantsSeen === historyAssistantCount) {
+      tailStart = i4 + 1;
+      while (tailStart < memEvents.length) {
+        const next = memEvents[tailStart];
+        if (next.type === "user" && "message" in next) {
+          const content = next.message.content;
+          if (Array.isArray(content) && content.every((b3) => b3.type === "tool_result")) {
+            tailStart++;
+            continue;
+          }
+        }
+        break;
+      }
+      break;
+    }
+  }
+  return memEvents.slice(tailStart);
+}
+function collectAvailableTools(events) {
+  for (let index3 = events.length - 1; index3 >= 0; index3 -= 1) {
+    const event = events[index3];
+    if (event.type === "system" && event.subtype === "init" && Array.isArray(event.tools)) {
+      return event.tools.filter((tool) => typeof tool === "string");
+    }
+  }
+  return [];
+}
+function readParentAgentId(event) {
+  if (!event) {
+    return null;
+  }
+  const candidates = [
+    event.parent_agent_id,
+    event.parentAgentId,
+    event.parentAgentID
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate;
+    }
+  }
+  return null;
+}
+function buildActiveSubagents(events) {
+  const active = /* @__PURE__ */ new Map();
+  for (const rawEvent of events) {
+    const event = rawEvent;
+    if (event.type !== "system") {
+      continue;
+    }
+    if (event.subtype === "subagent_start" && typeof event.agent_id === "string") {
+      active.set(event.agent_id, {
+        agent_id: event.agent_id,
+        agent_type: typeof event.agent_type === "string" ? event.agent_type : "subagent",
+        parent_agent_id: readParentAgentId(event.event),
+        started_at: active.get(event.agent_id)?.started_at ?? Date.now()
+      });
+      continue;
+    }
+    if (event.subtype === "subagent_stop" && typeof event.agent_id === "string") {
+      active.delete(event.agent_id);
+    }
+  }
+  const depthFor = (agentId, seen = /* @__PURE__ */ new Set()) => {
+    const entry = active.get(agentId);
+    if (!entry?.parent_agent_id || !active.has(entry.parent_agent_id) || seen.has(agentId)) {
+      return 0;
+    }
+    seen.add(agentId);
+    return depthFor(entry.parent_agent_id, seen) + 1;
+  };
+  return Array.from(active.values()).sort((left2, right2) => left2.started_at - right2.started_at).map((entry) => ({
+    agent_id: entry.agent_id,
+    agent_type: entry.agent_type,
+    parent_agent_id: entry.parent_agent_id,
+    depth: depthFor(entry.agent_id)
+  }));
+}
+function conversationBlocksToStreamEvents(providerSessionId, blocks) {
+  const events = [];
+  let assistantBlocks = [];
+  const flushAssistant = () => {
+    if (assistantBlocks.length === 0)
+      return;
+    events.push({
+      type: "assistant",
+      session_id: providerSessionId,
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: assistantBlocks
+      }
+    });
+    assistantBlocks = [];
+  };
+  for (const block2 of blocks) {
+    const metadata = (() => {
+      try {
+        return JSON.parse(block2.metadata_json || "{}");
+      } catch {
+        return {};
+      }
+    })();
+    if (block2.type === "user_message") {
+      flushAssistant();
+      events.push({
+        type: "user",
+        session_id: providerSessionId,
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [{ type: "text", text: block2.content }]
+        }
+      });
+      continue;
+    }
+    if (block2.type === "assistant_message") {
+      assistantBlocks.push({ type: "text", text: block2.content });
+      continue;
+    }
+    if (block2.type === "thinking") {
+      assistantBlocks.push({ type: "thinking", thinking: block2.content });
+      continue;
+    }
+    if (block2.type === "tool_use") {
+      assistantBlocks.push({
+        type: "tool_use",
+        id: String(metadata.tool_id ?? `tool-${events.length}`),
+        name: String(metadata.tool_name ?? "tool"),
+        input: metadata.tool_input ?? {}
+      });
+      continue;
+    }
+    if (block2.type === "tool_result") {
+      const toolResult = {
+        type: "tool_result",
+        tool_use_id: String(metadata.tool_id ?? ""),
+        content: block2.content
+      };
+      events.push({
+        type: "user",
+        session_id: providerSessionId,
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [toolResult]
+        }
+      });
+      continue;
+    }
+  }
+  flushAssistant();
+  if (events.length > 0) {
+    events.push({
+      type: "result",
+      session_id: providerSessionId,
+      subtype: "success",
+      duration_ms: 0,
+      duration_api_ms: 0,
+      is_error: false,
+      num_turns: 0,
+      result: "",
+      cost_usd: 0,
+      total_cost_usd: 0,
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 }
+    });
+  }
+  return events;
+}
+function TerminalPane({
+  sessionId,
+  agentType,
+  backendType,
+  allowedTools,
+  command,
+  sessionArgs,
+  isOperator,
+  interactionMode,
+  sessionStatus,
+  providerSessionId,
+  isVisible,
+  viewMode,
+  onViewModeChange,
+  resumeAtMessage,
+  channelEnabled = false,
+  workspaceMode = false
+}) {
+  const containerRef = A2(null);
+  const termRef = A2(null);
+  const fitAddonRef = A2(null);
+  const wsRef = A2(null);
+  const resizeObserverRef = A2(null);
+  const pendingWritesRef = A2([]);
+  const isVisibleRef = A2(isVisible);
+  const viewModeRef = A2(viewMode);
+  const hydratingRef = A2(false);
+  const pendingSSERef = A2([]);
+  const [wsStatus, setWsStatus] = d2("connecting");
+  const [reconnectNonce, setReconnectNonce] = d2(0);
+  const [streamEvents, setStreamEvents] = d2([]);
+  const [streaming, setStreaming] = d2(false);
+  const [hydratingHistory, setHydratingHistory] = d2(false);
+  const [elapsedSeconds, setElapsedSeconds] = d2(void 0);
+  const streamStartAtRef = A2(null);
+  const [model, setModel] = d2(() => parseModelFromArgs(sessionArgs));
+  const [permissionQueue, setPermissionQueue] = d2([]);
+  const [permissionBusy, setPermissionBusy] = d2(false);
+  const [activeSubagents, setActiveSubagents] = d2([]);
+  const [sidebarOpen, setSidebarOpen] = d2(false);
+  const [sidebarTab, setSidebarTab] = d2("settings");
+  const [selectedMessageId, setSelectedMessageId] = d2(null);
+  const [presetTokenCount, setPresetTokenCount] = d2(0);
+  const [channelEventCount, setChannelEventCount] = d2(0);
+  const [unseenEventCount, setUnseenEventCount] = d2(0);
+  const lastSeenEventCountRef = A2(0);
+  y2(() => {
+    if (viewMode === "events") {
+      setUnseenEventCount(0);
+      lastSeenEventCountRef.current = channelEventCount;
+    }
+  }, [viewMode, channelEventCount]);
+  const showDebugTerminal = backendType === "pty";
+  const providerFamily = isOperator ? "claude" : command;
+  const availableTools = collectAvailableTools(streamEvents);
+  y2(() => {
+    isVisibleRef.current = isVisible;
+  }, [isVisible]);
+  y2(() => {
+    viewModeRef.current = viewMode;
+  }, [viewMode]);
+  y2(() => {
+    setModel(parseModelFromArgs(sessionArgs));
+  }, [sessionArgs]);
+  y2(() => {
+    if (!showDebugTerminal)
+      return;
+    if (!containerRef.current)
+      return;
+    const term = new import_xterm.Terminal({
+      fontFamily: "var(--font-mono)",
+      fontSize: 13,
+      lineHeight: 1.2,
+      theme: {
+        background: "#0b0f14",
+        foreground: "#e6edf3",
+        cursor: "#4da3ff"
+      },
+      cursorBlink: true,
+      scrollback: 5e3,
+      allowProposedApi: false
+    });
+    const fitAddon = new import_addon_fit.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(containerRef.current);
+    fitAddon.fit();
+    termRef.current = term;
+    fitAddonRef.current = fitAddon;
+    const observer = new ResizeObserver(() => {
+      if (!isVisibleRef.current || viewModeRef.current !== "terminal")
+        return;
+      try {
+        fitAddon.fit();
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+      } catch {
+      }
+    });
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+    resizeObserverRef.current = observer;
+    return () => {
+      observer.disconnect();
+      term.dispose();
+      termRef.current = null;
+      fitAddonRef.current = null;
+    };
+  }, [sessionId, showDebugTerminal]);
+  y2(() => {
+    if (!showDebugTerminal) {
+      setWsStatus("closed");
+      return;
+    }
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${protocol}//${window.location.host}/terminal/${encodeURIComponent(sessionId)}`;
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
+    wsRef.current = ws;
+    setWsStatus("connecting");
+    ws.onopen = () => {
+      setWsStatus("open");
+      const fitAddon = fitAddonRef.current;
+      const term = termRef.current;
+      const container = containerRef.current;
+      if (fitAddon && term && container && container.offsetWidth > 0) {
+        try {
+          fitAddon.fit();
+        } catch {
+        }
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        if (pendingWritesRef.current.length > 0) {
+          for (const bytes of pendingWritesRef.current) {
+            term.write(bytes);
+          }
+          pendingWritesRef.current = [];
+        }
+      }
+    };
+    ws.onmessage = (event) => {
+      const term = termRef.current;
+      if (!term)
+        return;
+      if (event.data instanceof ArrayBuffer) {
+        const bytes = new Uint8Array(event.data);
+        if (term.cols > 0) {
+          term.write(bytes);
+        } else {
+          pendingWritesRef.current.push(bytes);
+        }
+      } else if (typeof event.data === "string") {
+        try {
+          JSON.parse(event.data);
+        } catch {
+          term.write(event.data);
+        }
+      }
+    };
+    ws.onclose = () => {
+      setWsStatus("closed");
+      termRef.current?.blur();
+    };
+    ws.onerror = () => {
+      setWsStatus("error");
+    };
+    return () => {
+      ws.close();
+    };
+  }, [sessionId, reconnectNonce, showDebugTerminal]);
+  y2(() => {
+    if (!showDebugTerminal)
+      return;
+    const term = termRef.current;
+    if (!term)
+      return;
+    const disposable = term.onData((data) => {
+      if (interactionMode === "inbox_only")
+        return;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode(data));
+      }
+    });
+    return () => {
+      disposable.dispose();
+    };
+  }, [sessionId, interactionMode, showDebugTerminal]);
+  y2(() => {
+    if (!showDebugTerminal)
+      return;
+    if (isVisible && viewMode === "terminal") {
+      const rafId = requestAnimationFrame(() => {
+        const fitAddon = fitAddonRef.current;
+        const term = termRef.current;
+        if (fitAddon && term) {
+          try {
+            fitAddon.fit();
+            term.focus();
+            const ws = wsRef.current;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+            }
+          } catch {
+          }
+          if (pendingWritesRef.current.length > 0) {
+            for (const bytes of pendingWritesRef.current) {
+              term.write(bytes);
+            }
+            pendingWritesRef.current = [];
+          } else {
+            const sessionId_ = sessionId;
+            fetch(`/api/console/sessions/${sessionId_}/buffer`).then((r3) => r3.ok ? r3.json() : null).then((resp) => {
+              if (resp?.data && termRef.current) {
+                const bytes = Uint8Array.from(atob(resp.data), (c4) => c4.charCodeAt(0));
+                termRef.current.write(bytes);
+              }
+            }).catch(() => {
+            });
+          }
+        }
+      });
+      return () => cancelAnimationFrame(rafId);
+    }
+  }, [isVisible, viewMode, sessionId, showDebugTerminal]);
+  y2(() => {
+    let cancelled = false;
+    hydratingRef.current = true;
+    pendingSSERef.current = [];
+    void getCachedEvents(sessionId).then((cached) => {
+      if (cancelled || !cached || cached.length === 0)
+        return;
+      setStreamEvents(cached);
+      setStreaming(deriveStreamingState(cached, streamStartAtRef));
+    }).catch(() => {
+    });
+    if (!providerSessionId) {
+      getConsoleStreamEvents(sessionId, 500).then((events) => {
+        if (cancelled)
+          return;
+        setStreamEvents(events);
+        setStreaming(deriveStreamingState(events, streamStartAtRef));
+      }).catch(() => {
+        if (cancelled)
+          return;
+        setStreamEvents([]);
+        setStreaming(false);
+      }).finally(() => {
+        if (!cancelled) {
+          hydratingRef.current = false;
+          flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming, streamStartAtRef);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    setHydratingHistory(true);
+    const historyPromise = getConversations({ session_id: providerSessionId, limit: 1 }).then(async ({ conversations }) => {
+      const conversation = conversations[0];
+      if (!conversation)
+        return null;
+      const detail = await getConversation(conversation.id, resumeAtMessage || void 0);
+      return conversationBlocksToStreamEvents(providerSessionId, detail.blocks);
+    }).catch(() => null);
+    const memPromise = getConsoleStreamEvents(sessionId, 500).catch(() => []);
+    Promise.all([historyPromise, memPromise]).then(([historyEvents, memEvents]) => {
+      if (cancelled)
+        return;
+      if (historyEvents && historyEvents.length > 0) {
+        const liveTail = computeLiveTail(historyEvents, memEvents);
+        const tailStartIndex = memEvents.length - liveTail.length;
+        const systemEvents = memEvents.slice(0, tailStartIndex).filter((e3) => e3.type === "system");
+        const allEvents = [...systemEvents, ...historyEvents, ...liveTail];
+        setStreamEvents(allEvents);
+        setStreaming(deriveStreamingState(allEvents, streamStartAtRef));
+      } else {
+        setStreamEvents(memEvents);
+        setStreaming(deriveStreamingState(memEvents, streamStartAtRef));
+      }
+    }).catch(() => {
+      if (cancelled)
+        return;
+      setStreamEvents([]);
+      setStreaming(false);
+    }).finally(() => {
+      if (!cancelled) {
+        setHydratingHistory(false);
+        hydratingRef.current = false;
+        flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming, streamStartAtRef);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [providerSessionId, sessionId, resumeAtMessage]);
+  y2(() => {
+    if (streaming && (sessionStatus === "stopped" || sessionStatus === "crashed")) {
+      setStreaming(false);
+    }
+  }, [streaming, sessionStatus]);
+  const cacheFlushTimerRef = A2(null);
+  const streamEventsRef = A2(streamEvents);
+  streamEventsRef.current = streamEvents;
+  const sessionIdRef = A2(sessionId);
+  sessionIdRef.current = sessionId;
+  const streamingRef = A2(streaming);
+  streamingRef.current = streaming;
+  y2(() => {
+    if (!streaming)
+      return;
+    const scheduleFlush = () => {
+      cacheFlushTimerRef.current = setTimeout(() => {
+        const events = streamEventsRef.current;
+        if (events.length > 0) {
+          void setCachedEvents(sessionIdRef.current, events).catch(() => {
+          });
+        }
+        if (streamingRef.current)
+          scheduleFlush();
+      }, 2e3);
+    };
+    scheduleFlush();
+    return () => {
+      if (cacheFlushTimerRef.current)
+        clearTimeout(cacheFlushTimerRef.current);
+    };
+  }, [streaming]);
+  y2(() => {
+    const flushToCache = () => {
+      const events = streamEventsRef.current;
+      if (events.length > 0) {
+        void setCachedEvents(sessionIdRef.current, events).catch(() => {
+        });
+      }
+    };
+    window.addEventListener("beforeunload", flushToCache);
+    return () => {
+      window.removeEventListener("beforeunload", flushToCache);
+      flushToCache();
+    };
+  }, [sessionId]);
+  y2(() => {
+    if (!streaming)
+      return;
+    const check = () => {
+      void getConsoleStreamEvents(sessionId, 500).then((events) => {
+        if (events.length > 0) {
+          const last = events[events.length - 1];
+          if (last.type === "result") {
+            setStreamEvents(events);
+            setStreaming(false);
+          }
+        }
+      }).catch(() => {
+      });
+    };
+    const timer2 = setTimeout(check, 5e3);
+    return () => clearTimeout(timer2);
+  }, [streaming, sessionId]);
+  y2(() => {
+    const handleStreamEvent = (e3) => {
+      const detail = e3.detail;
+      if (!detail || detail.console_session_id !== sessionId)
+        return;
+      const streamEvent = detail.event;
+      if (!streamEvent)
+        return;
+      if (hydratingRef.current) {
+        pendingSSERef.current.push(streamEvent);
+        return;
+      }
+      setStreamEvents((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && JSON.stringify(last) === JSON.stringify(streamEvent)) {
+          return prev;
+        }
+        return [...prev, streamEvent];
+      });
+      if (streamEvent.type === "result") {
+        setStreaming(false);
+        streamStartAtRef.current = null;
+      } else {
+        setStreaming(true);
+      }
+    };
+    window.addEventListener("console:stream_event", handleStreamEvent);
+    return () => {
+      window.removeEventListener("console:stream_event", handleStreamEvent);
+      setStreamEvents([]);
+      setStreaming(false);
+    };
+  }, [sessionId]);
+  y2(() => {
+    if (!streaming) {
+      setElapsedSeconds(void 0);
+      return;
+    }
+    if (streamStartAtRef.current === null) {
+      let recovered = false;
+      for (let i4 = streamEvents.length - 1; i4 >= 0; i4--) {
+        const ev = streamEvents[i4];
+        if (ev.type === "synthetic_prompt") {
+          const localId = ev.localId;
+          if (localId) {
+            const match = localId.match(/^sp-(\d+)-/);
+            if (match) {
+              streamStartAtRef.current = Number(match[1]);
+              recovered = true;
+              break;
+            }
+          }
+        }
+        if (ev.type === "result")
+          break;
+      }
+      if (!recovered) {
+        streamStartAtRef.current = Date.now();
+      }
+    }
+    setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1e3));
+    const interval2 = window.setInterval(() => {
+      if (streamStartAtRef.current !== null) {
+        setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1e3));
+      }
+    }, 1e3);
+    return () => window.clearInterval(interval2);
+  }, [streaming, streamEvents]);
+  y2(() => {
+    if (backendType !== "sdk") {
+      setActiveSubagents([]);
+      return;
+    }
+    setActiveSubagents(buildActiveSubagents(streamEvents));
+  }, [backendType, streamEvents]);
+  y2(() => {
+    if (backendType !== "sdk")
+      return;
+    let cancelled = false;
+    getPresetUnion({ session_id: sessionId }).then((union) => {
+      if (!cancelled)
+        setPresetTokenCount(union.totalTokens);
+    }).catch(() => {
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [backendType, sessionId]);
+  const handleSelectMessageInfo = (turnId) => {
+    if (selectedMessageId === turnId && sidebarTab === "info") {
+      setSelectedMessageId(null);
+      return;
+    }
+    setSelectedMessageId(turnId);
+    setSidebarOpen(true);
+    setSidebarTab("info");
+  };
+  const handleReconnect = async () => {
+    setWsStatus("connecting");
+    termRef.current?.reset();
+    pendingWritesRef.current = [];
+    try {
+      await restartConsoleSession(sessionId);
+      setReconnectNonce((n2) => n2 + 1);
+    } catch {
+      setWsStatus("error");
+    }
+  };
+  const [prompt, setPrompt] = d2("");
+  const handlePromptSubmit = (e3) => {
+    e3.preventDefault();
+    if (!prompt.trim())
+      return;
+    if (viewMode === "rich") {
+      const submittedPrompt = prompt.trim();
+      setPrompt("");
+      const localId = `sp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setStreamEvents((prev) => [...prev, {
+        type: "synthetic_prompt",
+        localId,
+        text: submittedPrompt
+      }]);
+      setElapsedSeconds(0);
+      streamStartAtRef.current = Date.now();
+      setStreaming(true);
+      void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
+        setStreaming(false);
+      });
+      return;
+    }
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(new TextEncoder().encode(prompt + "\r"));
+      setPrompt("");
+    }
+  };
+  const showReconnectOverlay = showDebugTerminal && (wsStatus === "closed" || wsStatus === "error");
+  const showDebugStart = showDebugTerminal && viewMode === "terminal" && sessionStatus !== "running";
+  const debugTerminalLabel = providerSessionId ? "Resume debug terminal" : "Start debug terminal";
+  const debugTerminalDescription = providerSessionId ? "Resume this same chat in the provider terminal for raw inspection or recovery." : "Open the provider terminal for this chat. Once a provider session exists, it will resume here.";
+  const handleStartDebugTerminal = async () => {
+    termRef.current?.reset();
+    pendingWritesRef.current = [];
+    try {
+      await startConsoleSession(sessionId);
+      setReconnectNonce((n2) => n2 + 1);
+    } catch {
+      setWsStatus("error");
+    }
+  };
+  y2(() => {
+    if (backendType !== "sdk") {
+      setPermissionQueue([]);
+      return;
+    }
+    let cancelled = false;
+    getConsolePermissions(sessionId).then((requests) => {
+      if (!cancelled) {
+        setPermissionQueue(requests);
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setPermissionQueue([]);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [backendType, sessionId]);
+  y2(() => {
+    if (backendType !== "sdk") {
+      return void 0;
+    }
+    const handlePermissionRequest = (event) => {
+      const detail = event.detail;
+      if (!detail || detail.console_session_id !== sessionId || !detail.request) {
+        return;
+      }
+      setPermissionQueue((prev) => {
+        if (prev.some((request) => request.id === detail.request.id)) {
+          return prev;
+        }
+        return [...prev, detail.request];
+      });
+    };
+    window.addEventListener("console:permission:request", handlePermissionRequest);
+    return () => {
+      window.removeEventListener("console:permission:request", handlePermissionRequest);
+    };
+  }, [backendType, sessionId]);
+  const handlePermissionResponse = async (requestId, decision) => {
+    setPermissionBusy(true);
+    try {
+      await respondToConsolePermission(sessionId, requestId, decision);
+      setPermissionQueue((prev) => prev.filter((request) => request.id !== requestId));
+    } finally {
+      setPermissionBusy(false);
+    }
+  };
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "terminal-pane",
+      style: { display: isVisible ? "flex" : "none" },
+      children: [
+        /* @__PURE__ */ u3("div", { className: "terminal-pane__header", children: [
+          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: /* @__PURE__ */ u3(
+            ViewToggle,
+            {
+              current: viewMode,
+              onChange: onViewModeChange,
+              showTerminal: showDebugTerminal,
+              channelEnabled,
+              unseenEventCount
+            }
+          ) }),
+          !workspaceMode && /* @__PURE__ */ u3("div", { className: "terminal-pane__header-actions", children: [
+            /* @__PURE__ */ u3("button", { type: "button", className: "terminal-pane__link-btn", onClick: () => {
+              window.location.hash = "#/inbox";
+            }, children: "View inbox" }),
+            providerSessionId && /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "terminal-pane__link-btn",
+                onClick: () => {
+                  window.location.hash = `#/console?session=${encodeURIComponent(providerSessionId)}`;
+                },
+                children: "View history"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "terminal-pane__link-btn",
+                onClick: () => setSidebarOpen((prev) => !prev),
+                title: "Session settings",
+                children: "\u22EE"
+              }
+            )
+          ] })
+        ] }),
+        interactionMode === "inbox_only" && /* @__PURE__ */ u3("div", { className: "terminal-pane__inbox-banner", children: "Operator receives inbox items. Direct input is disabled." }),
+        /* @__PURE__ */ u3("div", { className: "terminal-pane__body", children: [
+          showDebugTerminal && /* @__PURE__ */ u3(
+            "div",
+            {
+              className: "terminal-pane__container",
+              ref: containerRef,
+              style: { display: viewMode === "terminal" ? "flex" : "none", flex: 1 }
+            }
+          ),
+          channelEnabled && viewMode === "events" && /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "hidden", display: "flex" }, children: /* @__PURE__ */ u3(
+            ChannelEventsPane,
+            {
+              streamEvents,
+              onEventCountChange: (count) => {
+                setChannelEventCount(count);
+                if (viewMode !== "events") {
+                  const newEvents = count - lastSeenEventCountRef.current;
+                  setUnseenEventCount(Math.max(0, newEvents));
+                }
+              }
+            }
+          ) }),
+          showReconnectOverlay && viewMode === "terminal" && !showDebugStart && /* @__PURE__ */ u3("div", { className: "terminal-pane__reconnect-overlay", children: [
+            /* @__PURE__ */ u3("span", { children: wsStatus === "error" ? "Debug terminal connection error" : "Debug terminal disconnected" }),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                onClick: () => {
+                  void handleReconnect();
+                },
+                style: {
+                  padding: "8px 20px",
+                  borderRadius: "8px",
+                  background: "var(--accent-blue)",
+                  border: "none",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                  fontFamily: "var(--font-sans)"
+                },
+                children: "Reconnect terminal"
+              }
+            )
+          ] }),
+          showDebugStart && /* @__PURE__ */ u3("div", { className: "terminal-pane__reconnect-overlay", children: [
+            /* @__PURE__ */ u3("span", { children: debugTerminalDescription }),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                onClick: () => {
+                  void handleStartDebugTerminal();
+                },
+                style: {
+                  padding: "8px 20px",
+                  borderRadius: "8px",
+                  background: "var(--accent-blue)",
+                  border: "none",
+                  color: "#fff",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                  fontFamily: "var(--font-sans)"
+                },
+                children: debugTerminalLabel
+              }
+            )
+          ] }),
+          viewMode === "rich" && /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-wrapper", children: [
+            /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-main", children: [
+              /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto", minHeight: 0 }, children: [
+                backendType === "pty" && /* @__PURE__ */ u3(PtyBanner, {}),
+                backendType === "sdk" && activeSubagents.length > 0 && /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents", children: [
+                  /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-title", children: "Active subagents" }),
+                  /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-list", children: activeSubagents.map((subagent) => /* @__PURE__ */ u3(
+                    "div",
+                    {
+                      className: "terminal-pane__subagent",
+                      style: { paddingLeft: `${subagent.depth * 18}px` },
+                      children: [
+                        /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-type", children: subagent.agent_type }),
+                        /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-id", children: subagent.agent_id })
+                      ]
+                    },
+                    subagent.agent_id
+                  )) })
+                ] }),
+                /* @__PURE__ */ u3(
+                  StreamRenderer,
+                  {
+                    events: streamEvents,
+                    streaming,
+                    elapsedSeconds,
+                    emptyLabel: hydratingHistory ? "Loading prior messages\u2026" : void 0,
+                    sessionInfo: {
+                      sessionId,
+                      backend: providerFamily,
+                      model
+                    },
+                    onSelectMessageInfo: handleSelectMessageInfo,
+                    selectedMessageId
+                  }
+                )
+              ] }),
+              backendType === "sdk" && /* @__PURE__ */ u3("div", { style: { padding: "0 16px", flexShrink: 0 }, children: /* @__PURE__ */ u3(ContextIndicator, { tokenCount: presetTokenCount, modelName: model, variant: "bar" }) }),
+              /* @__PURE__ */ u3(
+                "form",
+                {
+                  onSubmit: handlePromptSubmit,
+                  style: {
+                    padding: "12px 16px",
+                    borderTop: "1px solid var(--border-subtle)",
+                    background: "var(--bg-inset)",
+                    display: "flex",
+                    gap: "12px",
+                    alignItems: "center",
+                    flexShrink: 0
+                  },
+                  children: [
+                    /* @__PURE__ */ u3(
+                      "input",
+                      {
+                        type: "text",
+                        value: prompt,
+                        onInput: (e3) => setPrompt(e3.currentTarget.value),
+                        placeholder: "Send a message to the agent...",
+                        disabled: interactionMode === "inbox_only",
+                        style: {
+                          flex: 1,
+                          background: "var(--bg-page)",
+                          border: "1px solid var(--border-subtle)",
+                          borderRadius: "8px",
+                          padding: "10px 14px",
+                          color: "var(--fg-default)",
+                          fontSize: "14px",
+                          fontFamily: "var(--font-sans)",
+                          outline: "none"
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ u3(
+                      "button",
+                      {
+                        type: "submit",
+                        disabled: !prompt.trim() || interactionMode === "inbox_only",
+                        style: {
+                          padding: "8px 16px",
+                          borderRadius: "6px",
+                          background: prompt.trim() ? "var(--accent-blue)" : "var(--bg-muted)",
+                          color: "#fff",
+                          border: "none",
+                          cursor: prompt.trim() ? "pointer" : "default",
+                          fontSize: "13px",
+                          fontWeight: 600,
+                          transition: "background 0.2s ease"
+                        },
+                        children: "Send"
+                      }
+                    )
+                  ]
+                }
+              )
+            ] }),
+            sidebarOpen && !workspaceMode && /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar", children: [
+              /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar-header", children: [
+                /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar-tabs", children: [
+                  /* @__PURE__ */ u3(
+                    "button",
+                    {
+                      type: "button",
+                      className: `terminal-pane__sidebar-tab${sidebarTab === "settings" ? " terminal-pane__sidebar-tab--active" : ""}`,
+                      onClick: () => setSidebarTab("settings"),
+                      children: "Settings"
+                    }
+                  ),
+                  /* @__PURE__ */ u3(
+                    "button",
+                    {
+                      type: "button",
+                      className: `terminal-pane__sidebar-tab${sidebarTab === "info" ? " terminal-pane__sidebar-tab--active" : ""}`,
+                      onClick: () => setSidebarTab("info"),
+                      children: "Info"
+                    }
+                  )
+                ] }),
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "terminal-pane__sidebar-close",
+                    onClick: () => setSidebarOpen(false),
+                    title: "Close sidebar",
+                    children: /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 14 14", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M3 3l8 8M11 3l-8 8", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round" }) })
+                  }
+                )
+              ] }),
+              sidebarTab === "settings" && /* @__PURE__ */ u3(k, { children: [
+                /* @__PURE__ */ u3(
+                  SessionControls,
+                  {
+                    sessionId,
+                    backendType,
+                    model,
+                    modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
+                    allowedTools,
+                    availableTools,
+                    onModelSaved: setModel
+                  }
+                ),
+                (backendType === "sdk" || backendType === "pty") && /* @__PURE__ */ u3(
+                  LivePresetPills,
+                  {
+                    sessionId,
+                    readOnly: backendType !== "sdk",
+                    onUnionUpdate: ({ totalTokens }) => setPresetTokenCount(totalTokens)
+                  }
+                )
+              ] }),
+              sidebarTab === "info" && /* @__PURE__ */ u3(
+                MessageInfoPanel,
+                {
+                  selectedMessageId,
+                  streamEvents
+                }
+              )
+            ] })
+          ] })
+        ] }),
+        /* @__PURE__ */ u3(
+          PermissionDialog,
+          {
+            request: backendType === "sdk" && !permissionBusy ? permissionQueue[0] ?? null : null,
+            onRespond: handlePermissionResponse
+          }
+        )
+      ]
+    }
+  );
+}
+
+// ui/src/components/console/NewSessionDialog.tsx
+init_hooks_module();
+init_api();
+var KIND_OPTIONS = [
+  {
+    value: "agent",
+    title: "Chat agent",
+    description: "Normal ongoing chat. Rich chat is the primary interface."
+  },
+  {
+    value: "operator",
+    title: "Operator",
+    description: "Pinned Claude router that auto-starts and stays available across the app."
+  }
+];
+var BACKEND_OPTIONS = [
+  {
+    value: "claude",
+    title: "Claude Code",
+    description: "First-class chat with native Claude history."
+  },
+  {
+    value: "codex",
+    title: "Codex",
+    description: "First-class chat backed by Codex exec JSON events and native Codex history.",
+    note: "Operator mode is not available for Codex yet."
+  },
+  {
+    value: "gemini",
+    title: "Gemini",
+    description: "First-class chat backed by Gemini stream-json and native Gemini history.",
+    note: "Operator mode is not available for Gemini yet."
+  }
+];
+function OptionCard({
+  title,
+  description,
+  selected: selected2,
+  disabled = false,
+  onClick,
+  note
+}) {
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: `new-session-option${selected2 ? " new-session-option--selected" : ""}${disabled ? " new-session-option--disabled" : ""}`,
+      onClick,
+      disabled,
+      children: [
+        /* @__PURE__ */ u3("span", { className: "new-session-option__title", children: title }),
+        /* @__PURE__ */ u3("span", { className: "new-session-option__description", children: description }),
+        note && /* @__PURE__ */ u3("span", { className: "new-session-option__note", children: note })
+      ]
+    }
+  );
+}
+function NewSessionDialog({
+  open,
+  onClose,
+  onSubmit,
+  initialPresetId
+}) {
+  const [label, setLabel] = d2("");
+  const [kind, setKind] = d2("agent");
+  const [backend, setBackend] = d2("claude");
+  const [transport, setTransport] = d2("sdk");
+  const [channelEnabled, setChannelEnabled] = d2(false);
+  const [hasApiKey, setHasApiKey] = d2(null);
+  const [presetIds, setPresetIds] = d2([]);
+  const [allPresets, setAllPresets] = d2([]);
+  const [presetsLoaded, setPresetsLoaded] = d2(false);
+  const [validationWarnings, setValidationWarnings] = d2([]);
+  y2(() => {
+    if (!open)
+      return;
+    let cancelled = false;
+    const loadPresets = async () => {
+      try {
+        const [presets, defaults2] = await Promise.all([
+          getPresets(),
+          getDefaultPresetIds()
+        ]);
+        if (cancelled)
+          return;
+        setAllPresets(presets);
+        if (initialPresetId) {
+          const ids = presets.some((p3) => p3.id === initialPresetId) ? [initialPresetId] : [];
+          const merged = [...ids, ...defaults2.filter((d3) => !ids.includes(d3))];
+          setPresetIds(merged.filter((id2) => presets.some((p3) => p3.id === id2)));
+        } else {
+          setPresetIds(defaults2.filter((id2) => presets.some((p3) => p3.id === id2)));
+        }
+        setPresetsLoaded(true);
+      } catch {
+        if (!cancelled) {
+          setAllPresets([]);
+          setPresetIds([]);
+          setPresetsLoaded(true);
+        }
+      }
+    };
+    void loadPresets();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, initialPresetId]);
+  y2(() => {
+    if (!open)
+      return;
+    let cancelled = false;
+    void getSettings().then((settings) => {
+      if (cancelled)
+        return;
+      const apiKeyConfigured = Boolean(
+        settings.anthropic_api_key || settings.ANTHROPIC_API_KEY
+      );
+      setHasApiKey(apiKeyConfigured);
+      if (!apiKeyConfigured) {
+        setTransport("pty");
+        setChannelEnabled(true);
+      }
+    }).catch(() => {
+      if (!cancelled)
+        setHasApiKey(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+  y2(() => {
+    if (!presetsLoaded || presetIds.length === 0 || backend !== "claude") {
+      setValidationWarnings([]);
+      return;
+    }
+    let cancelled = false;
+    void validatePresetIds(presetIds).then((result) => {
+      if (!cancelled) {
+        setValidationWarnings(result.warnings);
+      }
+    }).catch(() => {
+      if (!cancelled)
+        setValidationWarnings([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [presetIds, presetsLoaded, backend]);
+  y2(() => {
+    if (kind === "operator" && backend !== "claude") {
+      setBackend("claude");
+      setTransport("sdk");
+    }
+  }, [backend, kind]);
+  y2(() => {
+    if (backend !== "claude" && transport !== "spawn") {
+      setTransport("spawn");
+    }
+  }, [backend, transport]);
+  if (!open)
+    return null;
+  const isSDK = transport === "sdk";
+  const supportsPresets = backend === "claude";
+  const handleSubmit = (e3) => {
+    e3.preventDefault();
+    if (!label.trim())
+      return;
+    onSubmit({
+      label: label.trim(),
+      backend,
+      kind,
+      backend_type: transport,
+      channel_enabled: channelEnabled || void 0,
+      presetIds: supportsPresets ? presetIds : void 0
+    });
+    setLabel("");
+    setKind("agent");
+    setBackend("claude");
+    setTransport("sdk");
+    setChannelEnabled(false);
+    setPresetIds([]);
+    setPresetsLoaded(false);
+    setValidationWarnings([]);
+    onClose();
+  };
+  const handleOverlayClick = (e3) => {
+    if (e3.target === e3.currentTarget) {
+      onClose();
+    }
+  };
+  return /* @__PURE__ */ u3("div", { className: "new-session-dialog-overlay", onClick: handleOverlayClick, children: /* @__PURE__ */ u3("div", { className: "new-session-dialog", children: [
+    /* @__PURE__ */ u3("h3", { children: "New Agent Chat" }),
+    /* @__PURE__ */ u3("p", { className: "new-session-dialog__intro", children: "Choose the chat role first, then the backend that will power it." }),
+    /* @__PURE__ */ u3("form", { className: "new-session-dialog__form", onSubmit: handleSubmit, children: [
+      /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+        /* @__PURE__ */ u3("label", { htmlFor: "console-session-label", className: "new-session-dialog__label", children: "Name" }),
+        /* @__PURE__ */ u3(
+          "input",
+          {
+            id: "console-session-label",
+            type: "text",
+            value: label,
+            onInput: (e3) => setLabel(e3.target.value),
+            placeholder: "e.g. Research thread, Operator",
+            required: true,
+            autoFocus: true,
+            className: "new-session-dialog__input"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Kind" }),
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: KIND_OPTIONS.map((option) => /* @__PURE__ */ u3(
+          OptionCard,
+          {
+            title: option.title,
+            description: option.description,
+            selected: kind === option.value,
+            onClick: () => setKind(option.value)
+          },
+          option.value
+        )) })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Backend" }),
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: BACKEND_OPTIONS.map((option) => {
+          const disabled = kind === "operator" && option.value !== "claude";
+          return /* @__PURE__ */ u3(
+            OptionCard,
+            {
+              title: option.title,
+              description: option.description,
+              note: disabled ? option.note : void 0,
+              selected: backend === option.value,
+              disabled,
+              onClick: () => {
+                setBackend(option.value);
+                setTransport(option.value === "claude" ? "sdk" : "spawn");
+              }
+            },
+            option.value
+          );
+        }) })
+      ] }),
+      backend === "claude" && /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Transport" }),
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: [
+          /* @__PURE__ */ u3(
+            OptionCard,
+            {
+              title: "Claude SDK",
+              description: "Structured events, Mandible permissions, and SDK-native session control.",
+              selected: transport === "sdk",
+              onClick: () => {
+                setTransport("sdk");
+                setChannelEnabled(false);
+              }
+            }
+          ),
+          /* @__PURE__ */ u3(
+            OptionCard,
+            {
+              title: "PTY + Channel",
+              description: "Your Claude Code CLI with Mandible channel integration. Uses your OAuth login. Terminal + structured events.",
+              selected: transport === "pty" && channelEnabled,
+              onClick: () => {
+                setTransport("pty");
+                setChannelEnabled(true);
+              }
+            }
+          ),
+          /* @__PURE__ */ u3(
+            OptionCard,
+            {
+              title: "PTY",
+              description: "Classic terminal transport with a raw debug terminal fallback.",
+              selected: transport === "pty" && !channelEnabled,
+              onClick: () => {
+                setTransport("pty");
+                setChannelEnabled(false);
+              }
+            }
+          )
+        ] })
+      ] }),
+      supportsPresets && presetsLoaded && /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
+        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Presets" }),
+        /* @__PURE__ */ u3(
+          PresetPillSelector,
+          {
+            selectedPresetIds: presetIds,
+            onChange: setPresetIds,
+            presets: allPresets
+          }
+        ),
+        !isSDK && /* @__PURE__ */ u3("div", { className: "new-session-dialog__preset-note", children: "Presets will be applied at session start. Restart session to change." }),
+        isSDK && /* @__PURE__ */ u3("div", { className: "new-session-dialog__preset-note new-session-dialog__preset-note--muted", children: "Presets can be changed mid-conversation." }),
+        validationWarnings.length > 0 && /* @__PURE__ */ u3("div", { className: "new-session-dialog__validation-warnings", children: validationWarnings.map((w4, i4) => /* @__PURE__ */ u3("div", { className: "new-session-dialog__validation-warning", children: [
+          /* @__PURE__ */ u3("span", { className: "new-session-dialog__validation-warning-icon", children: "\u26A0" }),
+          /* @__PURE__ */ u3("span", { children: [
+            'Convention "',
+            w4.conventionTitle,
+            '" requires setting "',
+            w4.settingKey,
+            '" to be configured.',
+            " ",
+            /* @__PURE__ */ u3(
+              "a",
+              {
+                href: "#/settings",
+                className: "new-session-dialog__validation-warning-link",
+                onClick: (e3) => {
+                  e3.preventDefault();
+                  window.location.hash = "#/settings";
+                },
+                children: [
+                  "Configure now ",
+                  "\u2192"
+                ]
+              }
+            )
+          ] })
+        ] }, i4)) })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "new-session-dialog__actions", children: [
+        /* @__PURE__ */ u3("button", { type: "button", onClick: onClose, className: "new-session-dialog__button new-session-dialog__button--ghost", children: "Cancel" }),
+        /* @__PURE__ */ u3("button", { type: "submit", className: "new-session-dialog__button new-session-dialog__button--primary", children: "Create chat" })
+      ] })
+    ] })
+  ] }) });
 }
 
 // ui/src/components/message-blocks/BlockTypeIcon.tsx
@@ -20493,6 +23421,33 @@ var SOURCE_CLASSES = {
   codex: "source-badge--codex",
   gemini: "source-badge--gemini"
 };
+var SOURCE_MARKS = {
+  claude_code: "CL",
+  codex: "CX",
+  gemini: "GM"
+};
+var AGENT_LABELS = {
+  operator: "Operator",
+  claude: "Claude",
+  codex: "Codex",
+  gemini: "Gemini",
+  shell: "Shell"
+};
+var MODEL_OPTIONS2 = {
+  claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
+  gemini: [
+    "auto",
+    "pro",
+    "flash",
+    "flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite"
+  ]
+};
 var PAGE_SIZE = 50;
 var VIRTUAL_BUFFER = 10;
 var ESTIMATED_BLOCK_HEIGHT = 120;
@@ -20531,6 +23486,74 @@ function truncate(text2, maxLen) {
   if (text2.length <= maxLen)
     return text2;
   return text2.slice(0, maxLen) + "\u2026";
+}
+function isLiveConsoleSession(session) {
+  return session.status !== "stopped" && session.status !== "crashed";
+}
+function getAgentLabel(agentType) {
+  return AGENT_LABELS[agentType] ?? agentType;
+}
+function getSourceMark(source) {
+  return SOURCE_MARKS[source] ?? source.slice(0, 2).toUpperCase();
+}
+function sourceFromSession(session) {
+  const agent = session.agent_type.toLowerCase();
+  const command = (session.command ?? "").toLowerCase();
+  if (agent.includes("claude") || command.includes("claude"))
+    return "claude_code";
+  if (agent.includes("codex") || command.includes("codex"))
+    return "codex";
+  if (agent.includes("gemini") || command.includes("gemini"))
+    return "gemini";
+  return null;
+}
+function getSessionMark(session) {
+  const source = sourceFromSession(session);
+  if (source)
+    return getSourceMark(source);
+  return getAgentLabel(session.agent_type).slice(0, 2).toUpperCase();
+}
+function getSessionProviderFamily(session) {
+  if (session.is_operator)
+    return "claude";
+  const command = (session.command ?? session.agent_type).toLowerCase();
+  if (command.includes("claude"))
+    return "claude";
+  if (command.includes("gemini"))
+    return "gemini";
+  if (command.includes("codex"))
+    return "codex";
+  return command;
+}
+function parseModelFromArgs2(args) {
+  if (!args)
+    return void 0;
+  for (let i4 = args.length - 2; i4 >= 0; i4 -= 1) {
+    const arg = args[i4];
+    if ((arg === "--model" || arg === "-m") && args[i4 + 1]?.trim()) {
+      return args[i4 + 1].trim();
+    }
+  }
+  return void 0;
+}
+function projectNameFromPath(pathValue) {
+  if (!pathValue)
+    return "No Project";
+  const parts = pathValue.split("/").filter(Boolean);
+  return parts[parts.length - 1] || "No Project";
+}
+function getConversationProject(conversation) {
+  return projectNameFromPath(conversation.project_path ?? conversation.cwd);
+}
+function getConversationTime(conversation) {
+  const ended = conversation.ended_at ? Date.parse(conversation.ended_at) : Number.NaN;
+  if (!Number.isNaN(ended))
+    return ended;
+  const started = Date.parse(conversation.started_at);
+  return Number.isNaN(started) ? 0 : started;
+}
+function getSessionTime(session) {
+  return session.started_at ?? session.created_at ?? 0;
 }
 function parseMetadata(json) {
   try {
@@ -20945,7 +23968,7 @@ function TranscriptTurnRenderer({
       }
     )
   ] });
-  return /* @__PURE__ */ u3(TurnGroup, { speaker: turn.speaker, isShort, footer, children: turn.blocks.map((block2) => /* @__PURE__ */ u3(
+  return /* @__PURE__ */ u3(TurnGroup, { speaker: turn.speaker, isShort, footer, showSpeakerBadge: false, children: turn.blocks.map((block2) => /* @__PURE__ */ u3(
     TranscriptBlockItem,
     {
       block: block2,
@@ -21126,6 +24149,83 @@ function SubAgentsList({
     }) })
   ] });
 }
+function ConversationInfoDialog({
+  conversation,
+  linkedConsoleSession,
+  issueLinks,
+  presets,
+  onClose
+}) {
+  return /* @__PURE__ */ u3("div", { className: "conv-modal-overlay", onClick: onClose, children: /* @__PURE__ */ u3("div", { className: "conv-modal", onClick: (event) => event.stopPropagation(), children: [
+    /* @__PURE__ */ u3("div", { className: "conv-modal__header", children: [
+      /* @__PURE__ */ u3("h3", { className: "conv-modal__title", children: "Conversation Info" }),
+      /* @__PURE__ */ u3("button", { type: "button", className: "icon-btn", onClick: onClose, "aria-label": "Close info", children: "\xD7" })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "conv-info-grid", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Agent" }),
+        /* @__PURE__ */ u3("span", { children: SOURCE_LABELS[conversation.source] ?? conversation.source })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Runtime" }),
+        /* @__PURE__ */ u3("span", { children: linkedConsoleSession ? `${linkedConsoleSession.status} ${linkedConsoleSession.backend_type}` : "not running" })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Project" }),
+        /* @__PURE__ */ u3("span", { children: getConversationProject(conversation) })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Branch" }),
+        /* @__PURE__ */ u3("span", { children: conversation.branch || "unknown" })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Model" }),
+        /* @__PURE__ */ u3("span", { children: conversation.model || parseModelFromArgs2(linkedConsoleSession?.args) || "default" })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Blocks" }),
+        /* @__PURE__ */ u3("span", { children: conversation.block_count })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Started" }),
+        /* @__PURE__ */ u3("span", { children: formatAbsoluteTime(conversation.started_at) || "unknown" })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Session" }),
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__mono", children: conversation.session_id || linkedConsoleSession?.id || "none" })
+      ] })
+    ] }),
+    (issueLinks.length > 0 || presets.length > 0) && /* @__PURE__ */ u3("div", { className: "conv-modal__section", children: [
+      issueLinks.length > 0 && /* @__PURE__ */ u3("div", { className: "conv-modal__chips", children: issueLinks.map((link2) => /* @__PURE__ */ u3(
+        EntityPill,
+        {
+          type: "issue",
+          id: link2.issue_id,
+          repoId: link2.repo_id
+        },
+        `${link2.repo_id}-${link2.issue_id}`
+      )) }),
+      presets.length > 0 && /* @__PURE__ */ u3("div", { className: "conv-modal__chips", children: presets.map((preset) => /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "session-preset-badge",
+          onClick: () => {
+            window.location.hash = `#/presets?id=${encodeURIComponent(preset.preset_id)}`;
+          },
+          children: [
+            preset.preset_name,
+            /* @__PURE__ */ u3("span", { className: "session-preset-badge__version", children: [
+              "v",
+              preset.version
+            ] })
+          ]
+        },
+        preset.preset_id
+      )) })
+    ] })
+  ] }) });
+}
 function ConversationDetail({
   conversationId,
   onNavigate,
@@ -21142,14 +24242,22 @@ function ConversationDetail({
   const [collapsedBlocks, setCollapsedBlocks] = d2(/* @__PURE__ */ new Set());
   const [showExport, setShowExport] = d2(false);
   const [renderMode, setRenderMode] = d2("transcript");
+  const [actionsOpen, setActionsOpen] = d2(false);
+  const [infoOpen, setInfoOpen] = d2(false);
+  const [showMessageFilters, setShowMessageFilters] = d2(false);
+  const [composerControlsOpen, setComposerControlsOpen] = d2(false);
   const [sessionIssueLinks, setSessionIssueLinks] = d2([]);
   const [sessionPresets, setSessionPresets] = d2([]);
   const [toast, setToast] = d2(null);
+  const [continueDraft, setContinueDraft] = d2("");
+  const [continueBusy, setContinueBusy] = d2(false);
+  const [continueError, setContinueError] = d2(null);
   const [conflictDialog, setConflictDialog] = d2(null);
   const [forkData, setForkData] = d2(null);
   const [branchSelections, setBranchSelections] = d2({});
   const [selectedLeaf, setSelectedLeaf] = d2(null);
   const scrollContainerRef = A2(null);
+  const transcriptContainerRef = A2(null);
   const [scrollTop, setScrollTop] = d2(0);
   const [containerHeight, setContainerHeight] = d2(800);
   y2(() => {
@@ -21178,6 +24286,17 @@ function ConversationDetail({
       active = false;
     };
   }, [conversationId, loadNonce]);
+  y2(() => {
+    if (loading || !conversation || renderMode !== "transcript")
+      return;
+    const frame2 = window.requestAnimationFrame(() => {
+      const el = transcriptContainerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame2);
+  }, [conversation?.id, loading, renderMode]);
   y2(() => {
     let active = true;
     getConversationForks(conversationId).then((data) => {
@@ -21483,6 +24602,62 @@ function ConversationDetail({
       return null;
     return consoleSessions.find((session) => session.provider_session_id === conversation.session_id) ?? null;
   }, [consoleSessions, conversation?.session_id]);
+  const latestDagUuid = T2(() => {
+    for (let index3 = blocks.length - 1; index3 >= 0; index3 -= 1) {
+      const dagUuid = blocks[index3].dag_uuid;
+      if (dagUuid) {
+        return dagUuid;
+      }
+    }
+    return null;
+  }, [blocks]);
+  const continueDisabledReason = T2(() => {
+    if (linkedConsoleSession?.interaction_mode === "inbox_only" && isLiveConsoleSession(linkedConsoleSession)) {
+      return "Direct input is disabled for this session.";
+    }
+    if ((!linkedConsoleSession || !isLiveConsoleSession(linkedConsoleSession)) && !latestDagUuid) {
+      return "No resumable message is available.";
+    }
+    return null;
+  }, [latestDagUuid, linkedConsoleSession]);
+  const handleContinueSubmit = q2(async (event) => {
+    event.preventDefault();
+    const prompt = continueDraft.trim();
+    if (!prompt || continueDisabledReason) {
+      return;
+    }
+    setContinueBusy(true);
+    setContinueError(null);
+    try {
+      let targetSessionId = linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession) ? linkedConsoleSession.id : null;
+      if (!targetSessionId) {
+        if (!latestDagUuid) {
+          throw new Error("No resumable message is available.");
+        }
+        const result = await resumeConversation(conversationId, latestDagUuid);
+        targetSessionId = result.console_session_id;
+      }
+      await sendConsolePrompt(targetSessionId, prompt);
+      setContinueDraft("");
+      setToast({ message: "Message sent.", type: "info" });
+      setLoadNonce((prev) => prev + 1);
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setContinueBusy(false);
+    }
+  }, [continueDisabledReason, continueDraft, conversationId, latestDagUuid, linkedConsoleSession]);
+  const providerFamily = linkedConsoleSession ? getSessionProviderFamily(linkedConsoleSession) : conversation?.source === "gemini" ? "gemini" : conversation?.source === "codex" ? "codex" : "claude";
+  const currentModel = conversation?.model || parseModelFromArgs2(linkedConsoleSession?.args) || "default";
+  const canShowSessionControls = linkedConsoleSession && (linkedConsoleSession.backend_type === "sdk" || linkedConsoleSession.backend_type === "pty");
+  const navigateToGraph = q2(() => {
+    const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
+    const focus = sessionId ? `session:${sessionId}` : void 0;
+    const params = new URLSearchParams({ mode: "activity" });
+    if (focus)
+      params.set("focus", focus);
+    window.location.hash = `#/graph?${params.toString()}`;
+  }, [conversation?.session_id, linkedConsoleSession?.id]);
   if (loading) {
     return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: "Loading conversation..." }) });
   }
@@ -21524,76 +24699,74 @@ function ConversationDetail({
           )
         ] }),
         /* @__PURE__ */ u3("div", { className: "conv-detail__meta", children: [
-          /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
-          /* @__PURE__ */ u3("span", { className: "text-muted", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime5(conversation.started_at) }),
-          conversation.branch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: conversation.branch }),
-          conversation.model && /* @__PURE__ */ u3("span", { className: "text-muted", children: conversation.model }),
-          sessionIssueLinks.length > 0 && sessionIssueLinks.map((link2) => /* @__PURE__ */ u3(
-            EntityPill,
-            {
-              type: "issue",
-              id: link2.issue_id,
-              repoId: link2.repo_id
-            },
-            `${link2.repo_id}-${link2.issue_id}`
-          )),
-          sessionPresets.length > 0 && /* @__PURE__ */ u3("div", { className: "session-presets", children: sessionPresets.map((sp) => /* @__PURE__ */ u3(
-            "span",
-            {
-              className: "session-preset-badge",
-              title: `Preset: ${sp.preset_name} (v${sp.version})`,
-              onClick: () => {
-                window.location.hash = `#/presets?id=${encodeURIComponent(sp.preset_id)}`;
-              },
-              style: { cursor: "pointer" },
-              children: [
-                sp.preset_name,
-                /* @__PURE__ */ u3("span", { className: "session-preset-badge__version", children: [
-                  "v",
-                  sp.version
-                ] })
-              ]
-            },
-            sp.preset_id
-          )) })
+          linkedConsoleSession && /* @__PURE__ */ u3("span", { className: `chat-entry__status chat-entry__status--${linkedConsoleSession.status}` }),
+          /* @__PURE__ */ u3("span", { children: SOURCE_LABELS[conversation.source] || conversation.source }),
+          /* @__PURE__ */ u3("span", { children: currentModel }),
+          conversation.branch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: conversation.branch })
         ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "conv-detail__header-right", children: [
-        conversation.session_id && /* @__PURE__ */ u3(
+        /* @__PURE__ */ u3(
           "button",
           {
             type: "button",
-            className: "btn btn--ghost btn--sm",
-            onClick: () => handleResume(conversation.blocks?.[conversation.blocks.length - 1]?.dag_uuid ?? ""),
-            title: "Resume this conversation in Console",
-            children: "Resume"
-          }
-        ),
-        linkedConsoleSession && /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--ghost btn--sm",
-            onClick: () => {
-              window.location.hash = `#/console?session=${encodeURIComponent(linkedConsoleSession.id)}`;
-            },
-            children: "Open live chat"
+            className: "icon-btn",
+            onClick: navigateToGraph,
+            title: "Show in graph",
+            "aria-label": "Show in graph",
+            children: "\u2B21"
           }
         ),
         /* @__PURE__ */ u3(
           "button",
           {
             type: "button",
-            className: `btn btn--ghost btn--sm conv-star-btn${conversation.starred ? " conv-star-btn--active" : ""}`,
-            onClick: handleStarToggle,
-            title: conversation.starred ? "Unstar" : "Star",
-            children: conversation.starred ? "\u2605" : "\u2606"
+            className: "icon-btn",
+            onClick: () => setInfoOpen(true),
+            title: "Conversation info",
+            "aria-label": "Conversation info",
+            children: "i"
           }
-        )
+        ),
+        /* @__PURE__ */ u3("div", { className: "conv-actions", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "icon-btn",
+              onClick: () => setActionsOpen((prev) => !prev),
+              title: "Conversation actions",
+              "aria-label": "Conversation actions",
+              children: "\u22EF"
+            }
+          ),
+          actionsOpen && /* @__PURE__ */ u3("div", { className: "conv-actions__menu", children: [
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              void handleStarToggle();
+              setActionsOpen(false);
+            }, children: conversation.starred ? "Unstar" : "Star" }),
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              navigateToGraph();
+              setActionsOpen(false);
+            }, children: "Show in graph" }),
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              setShowMessageFilters((prev) => !prev);
+              setActionsOpen(false);
+            }, children: showMessageFilters ? "Hide message filters" : "Message filters" }),
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              setRenderMode((prev) => prev === "transcript" ? "raw" : "transcript");
+              setActionsOpen(false);
+            }, children: renderMode === "transcript" ? "Inspect raw blocks" : "Show transcript" }),
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              setSelectMode(true);
+              setActionsOpen(false);
+            }, children: "Select messages" })
+          ] })
+        ] })
       ] })
     ] }),
     conversation.children && conversation.children.length > 0 && /* @__PURE__ */ u3(SubAgentsList, { children: conversation.children, onNavigate }),
-    /* @__PURE__ */ u3("div", { className: "conv-filter-bar", children: [
+    showMessageFilters && /* @__PURE__ */ u3("div", { className: "conv-filter-bar", children: [
       /* @__PURE__ */ u3("div", { className: "conv-filter-bar__types", children: presentTypes.map((type) => /* @__PURE__ */ u3(
         "button",
         {
@@ -21608,26 +24781,6 @@ function ConversationDetail({
         type
       )) }),
       /* @__PURE__ */ u3("div", { className: "conv-filter-bar__actions", children: [
-        /* @__PURE__ */ u3("div", { className: "toggle-group", children: [
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: `btn btn--sm${renderMode === "transcript" ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setRenderMode("transcript"),
-              children: "Transcript"
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: `btn btn--sm${renderMode === "raw" ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setRenderMode("raw"),
-              children: "Inspect raw"
-            }
-          )
-        ] }),
         /* @__PURE__ */ u3(
           "button",
           {
@@ -21684,15 +24837,6 @@ function ConversationDetail({
         }
       )
     ] }),
-    !selectMode && selected2.size === 0 && /* @__PURE__ */ u3("div", { className: "conv-selection-toolbar conv-selection-toolbar--minimal", children: /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: "btn btn--ghost btn--sm",
-        onClick: () => setSelectMode(true),
-        children: "Select mode"
-      }
-    ) }),
     showExport && /* @__PURE__ */ u3(
       ExportPanel,
       {
@@ -21764,6 +24908,57 @@ function ConversationDetail({
         ]
       }
     ),
+    /* @__PURE__ */ u3("div", { className: "conv-compose", children: [
+      /* @__PURE__ */ u3("form", { className: "conv-compose__form", onSubmit: handleContinueSubmit, children: [
+        /* @__PURE__ */ u3(
+          "textarea",
+          {
+            className: "conv-compose__input",
+            value: continueDraft,
+            onInput: (event) => setContinueDraft(event.currentTarget.value),
+            placeholder: "Message...",
+            disabled: continueBusy || !!continueDisabledReason,
+            rows: 3
+          }
+        ),
+        /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "submit",
+            className: "btn btn--success btn--sm",
+            disabled: continueBusy || !!continueDisabledReason || !continueDraft.trim(),
+            children: continueBusy ? "Sending..." : "Send"
+          }
+        )
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "conv-compose__footer", children: [
+        /* @__PURE__ */ u3("div", { className: "conv-compose__runtime", children: [
+          /* @__PURE__ */ u3("span", { className: `agent-mark ${SOURCE_CLASSES[conversation.source] || ""}`, children: getSourceMark(conversation.source) }),
+          /* @__PURE__ */ u3("span", { children: linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession) ? "running" : "history" }),
+          /* @__PURE__ */ u3("span", { children: currentModel })
+        ] }),
+        canShowSessionControls && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--ghost btn--sm",
+            onClick: () => setComposerControlsOpen((prev) => !prev),
+            children: "Controls"
+          }
+        )
+      ] }),
+      canShowSessionControls && composerControlsOpen && linkedConsoleSession && /* @__PURE__ */ u3("div", { className: "conv-compose__controls", children: /* @__PURE__ */ u3(
+        SessionControls,
+        {
+          sessionId: linkedConsoleSession.id,
+          backendType: linkedConsoleSession.backend_type === "sdk" ? "sdk" : "pty",
+          model: parseModelFromArgs2(linkedConsoleSession.args),
+          modelOptions: MODEL_OPTIONS2[providerFamily] ?? [],
+          allowedTools: linkedConsoleSession.allowed_tools
+        }
+      ) }),
+      (continueError || continueDisabledReason) && /* @__PURE__ */ u3("div", { className: `conv-compose__status${continueError ? " conv-compose__status--error" : ""}`, children: continueError ?? continueDisabledReason })
+    ] }),
     /* @__PURE__ */ u3(Toast, { toast, onDismiss: () => setToast(null) }),
     conflictDialog && /* @__PURE__ */ u3(
       ResumeConflictDialog,
@@ -21772,15 +24967,32 @@ function ConversationDetail({
         onFork: handleConflictFork,
         onCancel: () => setConflictDialog(null)
       }
+    ),
+    infoOpen && /* @__PURE__ */ u3(
+      ConversationInfoDialog,
+      {
+        conversation,
+        linkedConsoleSession,
+        issueLinks: sessionIssueLinks,
+        presets: sessionPresets,
+        onClose: () => setInfoOpen(false)
+      }
     )
   ] });
 }
-function ChatHistoryItem({
-  conversation,
+function ChatEntryItem({
+  entry,
   isSelected,
   onClick
 }) {
-  const isSubAgent = !!conversation.parent_conversation_id;
+  const conversation = entry.conversation;
+  const session = entry.session;
+  const liveSession = entry.liveSession ?? (entry.kind === "session" ? session ?? null : null);
+  const isSubAgent = !!conversation?.parent_conversation_id;
+  const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
+  const title = conversation?.title || session?.label || "Untitled";
+  const branch = conversation?.branch;
+  const unread = liveSession?.unread_count ?? 0;
   return /* @__PURE__ */ u3(
     "div",
     {
@@ -21793,45 +25005,94 @@ function ChatHistoryItem({
           onClick();
       },
       children: [
-        /* @__PURE__ */ u3("div", { className: "chat-history-item__header", children: [
-          /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
-          /* @__PURE__ */ u3("span", { className: "chat-history-item__date", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime5(conversation.started_at) })
-        ] }),
-        /* @__PURE__ */ u3("div", { className: "chat-history-item__title", children: [
-          conversation.starred ? "\u2605 " : "",
-          isSubAgent && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent", children: "\u2937 " }),
+        /* @__PURE__ */ u3("div", { className: "chat-history-item__line", children: [
+          /* @__PURE__ */ u3("span", { className: "chat-history-item__title", children: [
+            conversation?.starred ? "\u2605 " : "",
+            isSubAgent && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent", children: "\u2937 " }),
+            /* @__PURE__ */ u3(
+              "span",
+              {
+                dangerouslySetInnerHTML: {
+                  __html: renderInlineMarkdown5(truncate(title, 58))
+                }
+              }
+            )
+          ] }),
           /* @__PURE__ */ u3(
             "span",
             {
-              dangerouslySetInnerHTML: {
-                __html: renderInlineMarkdown5(truncate(conversation.title || "Untitled", 55))
-              }
+              className: `agent-mark ${source ? SOURCE_CLASSES[source] || "" : ""}`,
+              title: source ? SOURCE_LABELS[source] : session ? getAgentLabel(session.agent_type) : void 0,
+              children: source ? getSourceMark(source) : session ? getSessionMark(session) : "??"
             }
           )
         ] }),
         /* @__PURE__ */ u3("div", { className: "chat-history-item__meta", children: [
-          /* @__PURE__ */ u3("span", { className: "chat-history-item__blocks", children: [
-            conversation.block_count,
-            " blocks"
+          liveSession && /* @__PURE__ */ u3("span", { className: `chat-entry__status chat-entry__status--${liveSession.status}` }),
+          branch && /* @__PURE__ */ u3("span", { className: "chat-history-item__branch", children: truncate(branch, 22) }),
+          unread > 0 && /* @__PURE__ */ u3("span", { children: [
+            unread,
+            " unread"
           ] }),
-          conversation.branch && /* @__PURE__ */ u3("span", { className: "chat-history-item__branch", children: truncate(conversation.branch, 20) })
+          entry.kind === "session" && /* @__PURE__ */ u3("span", { children: session?.backend_type ?? "live" })
         ] })
       ]
     }
   );
 }
+function LiveSessionDetail({
+  session
+}) {
+  const [viewMode, setViewMode] = d2("rich");
+  return /* @__PURE__ */ u3("div", { className: "chat-live-detail", children: [
+    /* @__PURE__ */ u3("div", { className: "chat-live-detail__header", children: /* @__PURE__ */ u3("div", { className: "chat-live-detail__title-group", children: [
+      /* @__PURE__ */ u3("h2", { className: "chat-live-detail__title", children: session.label || "Untitled session" }),
+      /* @__PURE__ */ u3("div", { className: "chat-live-detail__meta", children: [
+        /* @__PURE__ */ u3("span", { className: `chat-live-session__status chat-live-session__status--${session.status}` }),
+        /* @__PURE__ */ u3("span", { children: getAgentLabel(session.agent_type) }),
+        /* @__PURE__ */ u3("span", { children: session.status }),
+        /* @__PURE__ */ u3("span", { children: session.backend_type })
+      ] })
+    ] }) }),
+    /* @__PURE__ */ u3("div", { className: "chat-live-detail__pane", children: /* @__PURE__ */ u3(
+      TerminalPane,
+      {
+        sessionId: session.id,
+        agentType: session.agent_type,
+        backendType: session.backend_type,
+        allowedTools: session.allowed_tools,
+        command: session.command ?? session.agent_type,
+        sessionArgs: session.args ?? [],
+        isOperator: session.is_operator,
+        interactionMode: session.interaction_mode,
+        sessionStatus: session.status,
+        providerSessionId: session.provider_session_id,
+        isVisible: true,
+        viewMode,
+        onViewModeChange: setViewMode,
+        resumeAtMessage: session.resume_at_message,
+        channelEnabled: !!session.channel_enabled,
+        workspaceMode: true
+      }
+    ) })
+  ] });
+}
 function ConversationsView({
   conversations: initialConversations,
   consoleSessions,
   initialConversationId,
-  initialSessionId
+  initialSessionId,
+  initialPresetId,
+  onSelectSession,
+  onNewSession
 }) {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 320,
     minWidth: 190,
     storageKey: "sidebar-width:conversations"
   });
-  const [selectedId, setSelectedId] = d2(null);
+  const [selection2, setSelection] = d2(null);
+  const [dialogOpen, setDialogOpen] = d2(Boolean(initialPresetId));
   const [search, setSearch] = d2("");
   const [searchMode, setSearchMode] = d2("title");
   const [sourceFilter, setSourceFilter] = d2("all");
@@ -21839,17 +25100,34 @@ function ConversationsView({
   const [hideEmpty, setHideEmpty] = d2(true);
   const [groupSubAgents, setGroupSubAgents] = d2(true);
   const [sort, setSort] = d2("date");
+  const [filterPanelOpen, setFilterPanelOpen] = d2(false);
+  const [collapsedProjects, setCollapsedProjects] = d2(/* @__PURE__ */ new Set());
   const [conversations, setConversations] = d2(initialConversations);
   const [total, setTotal] = d2(0);
   const [loading, setLoading] = d2(false);
-  const [ingesting, setIngesting] = d2(false);
   const searchTimer = A2(null);
   const conversationsRef = A2(conversations);
   conversationsRef.current = conversations;
+  const selectedConversationId = selection2?.type === "conversation" ? selection2.id : null;
+  const selectedSessionId = selection2?.type === "session" ? selection2.id : null;
+  const liveSessions = T2(() => {
+    return consoleSessions.filter(isLiveConsoleSession).sort((a4, b3) => {
+      if (a4.pinned && !b3.pinned)
+        return -1;
+      if (!a4.pinned && b3.pinned)
+        return 1;
+      return (b3.started_at ?? b3.created_at) - (a4.started_at ?? a4.created_at);
+    });
+  }, [consoleSessions]);
+  y2(() => {
+    if (initialPresetId) {
+      setDialogOpen(true);
+    }
+  }, [initialPresetId]);
   y2(() => {
     if (!initialConversationId)
       return;
-    setSelectedId(initialConversationId);
+    setSelection({ type: "conversation", id: initialConversationId });
   }, [initialConversationId]);
   y2(() => {
     let active = true;
@@ -21859,13 +25137,30 @@ function ConversationsView({
         active = false;
       };
     }
+    const liveById = consoleSessions.find((session) => session.id === initialSessionId);
+    if (liveById && !liveById.provider_session_id) {
+      setSelection({ type: "session", id: liveById.id });
+      onSelectSession(liveById.id);
+      return () => {
+        active = false;
+      };
+    }
+    const sessionLookupId = liveById?.provider_session_id ?? initialSessionId;
     const resolveConversation = (attemptsRemaining) => {
-      void getConversations({ session_id: initialSessionId, limit: 1 }).then((result) => {
+      void getConversations({ session_id: sessionLookupId, limit: 1 }).then((result) => {
         if (!active)
           return;
         const resolvedId = result.conversations[0]?.id ?? null;
         if (resolvedId) {
-          setSelectedId(resolvedId);
+          setSelection({ type: "conversation", id: resolvedId });
+          return;
+        }
+        const liveByProvider = consoleSessions.find(
+          (session) => session.provider_session_id === sessionLookupId && isLiveConsoleSession(session)
+        );
+        if (liveByProvider && attemptsRemaining <= 0) {
+          setSelection({ type: "session", id: liveByProvider.id });
+          onSelectSession(liveByProvider.id);
           return;
         }
         if (attemptsRemaining > 0) {
@@ -21886,7 +25181,7 @@ function ConversationsView({
         window.clearTimeout(retryTimer);
       }
     };
-  }, [initialConversationId, initialSessionId]);
+  }, [consoleSessions, initialConversationId, initialSessionId, onSelectSession]);
   const fetchConversations = q2(async (reset = true) => {
     setLoading(true);
     try {
@@ -21933,16 +25228,6 @@ function ConversationsView({
         clearTimeout(searchTimer.current);
     };
   }, [fetchConversations]);
-  const handleIngest = async () => {
-    setIngesting(true);
-    try {
-      await triggerIngestion();
-      await fetchConversations(true);
-    } catch {
-    } finally {
-      setIngesting(false);
-    }
-  };
   const loadMore = () => {
     fetchConversations(false);
   };
@@ -21956,106 +25241,289 @@ function ConversationsView({
       (conv) => (conv.title || "").toLowerCase().includes(needle)
     );
   }, [conversations, hideEmpty, search, searchMode]);
+  const liveByProviderSession = T2(() => {
+    const map = /* @__PURE__ */ new Map();
+    for (const session of liveSessions) {
+      if (session.provider_session_id) {
+        map.set(session.provider_session_id, session);
+      }
+    }
+    return map;
+  }, [liveSessions]);
+  const chatGroups = T2(() => {
+    const entries2 = displayedConversations.map((conversation) => ({
+      key: `conversation:${conversation.id}`,
+      project: getConversationProject(conversation),
+      time: getConversationTime(conversation),
+      kind: "conversation",
+      conversation,
+      liveSession: liveByProviderSession.get(conversation.session_id) ?? null
+    }));
+    const conversationProviderIds = new Set(displayedConversations.map((conversation) => conversation.session_id));
+    for (const session of liveSessions) {
+      if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
+        continue;
+      }
+      entries2.push({
+        key: `session:${session.id}`,
+        project: "No Project",
+        time: getSessionTime(session),
+        kind: "session",
+        session,
+        liveSession: session
+      });
+    }
+    const groupMap = /* @__PURE__ */ new Map();
+    for (const entry of entries2) {
+      const group = groupMap.get(entry.project) ?? [];
+      group.push(entry);
+      groupMap.set(entry.project, group);
+    }
+    return Array.from(groupMap.entries()).map(([project, groupEntries]) => {
+      const sortedEntries = [...groupEntries].sort((a4, b3) => {
+        if (sort === "blocks") {
+          const aBlocks = a4.conversation?.block_count ?? 0;
+          const bBlocks = b3.conversation?.block_count ?? 0;
+          if (aBlocks !== bBlocks)
+            return bBlocks - aBlocks;
+        }
+        return b3.time - a4.time;
+      });
+      return {
+        project,
+        latestTime: Math.max(...sortedEntries.map((entry) => entry.time)),
+        entries: sortedEntries
+      };
+    }).sort((a4, b3) => b3.latestTime - a4.latestTime || a4.project.localeCompare(b3.project));
+  }, [displayedConversations, liveByProviderSession, liveSessions, sort]);
+  const firstChatEntry = chatGroups[0]?.entries[0] ?? null;
+  const activeFilterCount = [
+    sourceFilter !== "all",
+    starredOnly,
+    !hideEmpty,
+    !groupSubAgents,
+    sort !== "date",
+    searchMode !== "title"
+  ].filter(Boolean).length;
+  const selectedLiveSession = T2(() => {
+    if (!selectedSessionId)
+      return null;
+    return consoleSessions.find((session) => session.id === selectedSessionId) ?? null;
+  }, [consoleSessions, selectedSessionId]);
+  y2(() => {
+    if (!selection2)
+      return;
+    if (selection2.type !== "session")
+      return;
+    if (consoleSessions.some((session) => session.id === selection2.id))
+      return;
+    setSelection(null);
+  }, [consoleSessions, selection2]);
+  y2(() => {
+    if (selection2)
+      return;
+    if (!firstChatEntry)
+      return;
+    if (firstChatEntry.kind === "conversation" && firstChatEntry.conversation) {
+      setSelection({ type: "conversation", id: firstChatEntry.conversation.id });
+      return;
+    }
+    if (firstChatEntry.session) {
+      setSelection({ type: "session", id: firstChatEntry.session.id });
+      onSelectSession(firstChatEntry.session.id);
+    }
+  }, [firstChatEntry, onSelectSession, selection2]);
+  const handleSelectSession = (sessionId) => {
+    setSelection({ type: "session", id: sessionId });
+    onSelectSession(sessionId);
+  };
+  const toggleProject = (project) => {
+    setCollapsedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(project)) {
+        next.delete(project);
+      } else {
+        next.add(project);
+      }
+      return next;
+    });
+  };
+  const handleNewSession = (input) => {
+    onNewSession(input);
+    setDialogOpen(false);
+  };
   return /* @__PURE__ */ u3("div", { className: "chat-history-view", children: [
     /* @__PURE__ */ u3("div", { className: "chat-history-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
-      /* @__PURE__ */ u3("div", { className: "chat-history-search-row", children: [
+      /* @__PURE__ */ u3("div", { className: "chat-sidebar-top", children: [
         /* @__PURE__ */ u3(
-          "input",
+          "button",
           {
-            type: "text",
-            className: "conv-search",
-            placeholder: "Search\u2026",
-            value: search,
-            onInput: (e3) => setSearch(e3.target.value)
+            type: "button",
+            className: "btn btn--ghost btn--sm chat-sidebar-new",
+            onClick: () => setDialogOpen(true),
+            children: "New"
           }
         ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: `btn btn--sm chat-history-search-mode${searchMode === "full" ? " btn--active" : " btn--ghost"}`,
-            title: searchMode === "title" ? "Title-only search (click for full text)" : "Full-text search (click for title only)",
-            onClick: () => setSearchMode((prev) => prev === "title" ? "full" : "title"),
-            children: searchMode === "full" ? "Full" : "Title"
-          }
-        )
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "chat-history-filters", children: [
-        /* @__PURE__ */ u3("div", { className: "conv-filters__sources", children: ["all", "claude_code", "codex", "gemini"].map((src) => /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: `conv-filter-btn${sourceFilter === src ? " conv-filter-btn--active" : ""}`,
-            onClick: () => setSourceFilter(src),
-            children: src === "all" ? "All" : SOURCE_LABELS[src]
-          },
-          src
-        )) }),
-        /* @__PURE__ */ u3("div", { className: "chat-history-filter-controls", children: [
+        /* @__PURE__ */ u3("div", { className: "chat-history-search-row", children: [
           /* @__PURE__ */ u3(
-            "button",
+            "input",
             {
-              type: "button",
-              className: `btn btn--sm${starredOnly ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setStarredOnly((prev) => !prev),
-              children: "Starred"
+              type: "text",
+              className: "conv-search",
+              placeholder: "Search chats",
+              value: search,
+              onInput: (e3) => setSearch(e3.target.value)
             }
           ),
           /* @__PURE__ */ u3(
             "button",
             {
               type: "button",
-              className: `btn btn--sm${groupSubAgents ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setGroupSubAgents((prev) => !prev),
-              title: "When on, sub-agent conversations are hidden from the main list and shown under their parent",
-              children: "Group subs"
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: `btn btn--sm${hideEmpty ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setHideEmpty((prev) => !prev),
-              children: "Hide empty"
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "select",
-            {
-              className: "conv-sort",
-              value: sort,
-              onChange: (e3) => setSort(e3.target.value),
+              className: `icon-btn chat-filter-trigger${activeFilterCount > 0 ? " chat-filter-trigger--active" : ""}`,
+              title: "Search and filter options",
+              "aria-label": "Search and filter options",
+              onClick: () => setFilterPanelOpen((prev) => !prev),
               children: [
-                /* @__PURE__ */ u3("option", { value: "date", children: "Date" }),
-                /* @__PURE__ */ u3("option", { value: "blocks", children: "Blocks" })
+                "\u22EF",
+                activeFilterCount > 0 && /* @__PURE__ */ u3("span", { children: activeFilterCount })
               ]
             }
-          ),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: "btn btn--ghost btn--sm",
-              onClick: handleIngest,
-              disabled: ingesting,
-              title: "Refresh conversation logs",
-              children: ingesting ? "\u2026" : "Refresh"
-            }
           )
+        ] }),
+        activeFilterCount > 0 && /* @__PURE__ */ u3("div", { className: "chat-filter-summary", children: [
+          sourceFilter !== "all" && /* @__PURE__ */ u3("span", { children: SOURCE_LABELS[sourceFilter] }),
+          starredOnly && /* @__PURE__ */ u3("span", { children: "Starred" }),
+          !hideEmpty && /* @__PURE__ */ u3("span", { children: "Empty shown" }),
+          !groupSubAgents && /* @__PURE__ */ u3("span", { children: "Sub-agents ungrouped" }),
+          sort !== "date" && /* @__PURE__ */ u3("span", { children: "By blocks" }),
+          searchMode === "full" && /* @__PURE__ */ u3("span", { children: "Full text" })
+        ] }),
+        filterPanelOpen && /* @__PURE__ */ u3("div", { className: "chat-filter-popover", children: [
+          /* @__PURE__ */ u3("div", { className: "chat-filter-popover__section", children: [
+            /* @__PURE__ */ u3("div", { className: "chat-filter-popover__label", children: "Agent" }),
+            /* @__PURE__ */ u3("div", { className: "chat-filter-popover__row", children: ["all", "claude_code", "codex", "gemini"].map((src) => /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: `conv-filter-btn${sourceFilter === src ? " conv-filter-btn--active" : ""}`,
+                onClick: () => setSourceFilter(src),
+                children: src === "all" ? "All" : SOURCE_LABELS[src]
+              },
+              src
+            )) })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "chat-filter-popover__section", children: [
+            /* @__PURE__ */ u3("label", { className: "chat-filter-popover__toggle", children: [
+              /* @__PURE__ */ u3(
+                "input",
+                {
+                  type: "checkbox",
+                  checked: starredOnly,
+                  onChange: () => setStarredOnly((prev) => !prev)
+                }
+              ),
+              /* @__PURE__ */ u3("span", { children: "Starred only" })
+            ] }),
+            /* @__PURE__ */ u3("label", { className: "chat-filter-popover__toggle", children: [
+              /* @__PURE__ */ u3(
+                "input",
+                {
+                  type: "checkbox",
+                  checked: hideEmpty,
+                  onChange: () => setHideEmpty((prev) => !prev)
+                }
+              ),
+              /* @__PURE__ */ u3("span", { children: "Hide empty chats" })
+            ] }),
+            /* @__PURE__ */ u3("label", { className: "chat-filter-popover__toggle", children: [
+              /* @__PURE__ */ u3(
+                "input",
+                {
+                  type: "checkbox",
+                  checked: groupSubAgents,
+                  onChange: () => setGroupSubAgents((prev) => !prev)
+                }
+              ),
+              /* @__PURE__ */ u3("span", { children: "Group sub-agents" })
+            ] })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "chat-filter-popover__section", children: [
+            /* @__PURE__ */ u3("div", { className: "chat-filter-popover__label", children: "Search" }),
+            /* @__PURE__ */ u3("div", { className: "chat-filter-popover__row", children: [
+              /* @__PURE__ */ u3(
+                "button",
+                {
+                  type: "button",
+                  className: `conv-filter-btn${searchMode === "title" ? " conv-filter-btn--active" : ""}`,
+                  onClick: () => setSearchMode("title"),
+                  children: "Title"
+                }
+              ),
+              /* @__PURE__ */ u3(
+                "button",
+                {
+                  type: "button",
+                  className: `conv-filter-btn${searchMode === "full" ? " conv-filter-btn--active" : ""}`,
+                  onClick: () => setSearchMode("full"),
+                  children: "Full text"
+                }
+              )
+            ] })
+          ] }),
+          /* @__PURE__ */ u3("label", { className: "chat-filter-popover__select", children: [
+            /* @__PURE__ */ u3("span", { children: "Sort" }),
+            /* @__PURE__ */ u3(
+              "select",
+              {
+                className: "conv-sort",
+                value: sort,
+                onChange: (e3) => setSort(e3.target.value),
+                children: [
+                  /* @__PURE__ */ u3("option", { value: "date", children: "Recent activity" }),
+                  /* @__PURE__ */ u3("option", { value: "blocks", children: "Message count" })
+                ]
+              }
+            )
+          ] })
         ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "chat-history-list", children: [
-        displayedConversations.map((conv) => /* @__PURE__ */ u3(
-          ChatHistoryItem,
-          {
-            conversation: conv,
-            isSelected: selectedId === conv.id,
-            onClick: () => setSelectedId(conv.id)
-          },
-          conv.id
-        )),
-        displayedConversations.length === 0 && !loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "No conversations found." }),
+        chatGroups.map((group) => {
+          const collapsed = collapsedProjects.has(group.project);
+          return /* @__PURE__ */ u3("div", { className: "chat-project-group", children: [
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "chat-project-group__header",
+                onClick: () => toggleProject(group.project),
+                children: [
+                  /* @__PURE__ */ u3("span", { children: collapsed ? "\u25B8" : "\u25BE" }),
+                  /* @__PURE__ */ u3("strong", { children: group.project }),
+                  /* @__PURE__ */ u3("em", { children: group.entries.length })
+                ]
+              }
+            ),
+            !collapsed && group.entries.map((entry) => /* @__PURE__ */ u3(
+              ChatEntryItem,
+              {
+                entry,
+                isSelected: entry.kind === "conversation" ? selectedConversationId === entry.conversation?.id : selectedSessionId === entry.session?.id,
+                onClick: () => {
+                  if (entry.kind === "conversation" && entry.conversation) {
+                    setSelection({ type: "conversation", id: entry.conversation.id });
+                    return;
+                  }
+                  if (entry.session) {
+                    handleSelectSession(entry.session.id);
+                  }
+                }
+              },
+              entry.key
+            ))
+          ] }, group.project);
+        }),
+        chatGroups.length === 0 && !loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "No conversations found." }),
         loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "Loading\u2026" }),
         hasMore && !loading && /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost chat-history-load-more", onClick: loadMore, children: [
           "Load more (",
@@ -22065,14 +25533,29 @@ function ConversationsView({
       ] })
     ] }),
     /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
-    /* @__PURE__ */ u3("div", { className: "chat-history-detail", children: selectedId ? /* @__PURE__ */ u3(
+    /* @__PURE__ */ u3("div", { className: "chat-history-detail", children: selection2?.type === "conversation" ? /* @__PURE__ */ u3(
       ConversationDetail,
       {
-        conversationId: selectedId,
-        onNavigate: (id2) => setSelectedId(id2),
+        conversationId: selection2.id,
+        onNavigate: (id2) => setSelection({ type: "conversation", id: id2 }),
         consoleSessions
       }
-    ) : /* @__PURE__ */ u3("div", { className: "chat-history-detail__empty", children: "Select a conversation to view it" }) })
+    ) : selection2?.type === "session" && selectedLiveSession ? /* @__PURE__ */ u3(
+      LiveSessionDetail,
+      {
+        session: selectedLiveSession
+      },
+      selectedLiveSession.id
+    ) : /* @__PURE__ */ u3("div", { className: "chat-history-detail__empty", children: "Select a conversation to view it" }) }),
+    /* @__PURE__ */ u3(
+      NewSessionDialog,
+      {
+        open: dialogOpen,
+        onClose: () => setDialogOpen(false),
+        onSubmit: handleNewSession,
+        initialPresetId
+      }
+    )
   ] });
 }
 
@@ -24783,3223 +28266,6 @@ function WorkOverviewView({
         repoId
       );
     }) })
-  ] });
-}
-
-// ui/src/views/console.tsx
-init_hooks_module();
-
-// ui/src/components/console/ConsoleSubTabBar.tsx
-init_hooks_module();
-var AGENT_ABBREV = {
-  operator: "OP",
-  claude: "CL",
-  codex: "CX",
-  gemini: "GM",
-  shell: "SH"
-};
-var AGENT_COLOR = {
-  operator: "var(--accent-yellow)",
-  claude: "var(--accent-yellow)",
-  codex: "var(--accent-green)",
-  gemini: "var(--accent-blue)",
-  shell: "var(--text-muted)"
-};
-function getAgentAbbrev(agentType) {
-  return AGENT_ABBREV[agentType] ?? agentType.slice(0, 2).toUpperCase();
-}
-function getAgentColor(agentType) {
-  return AGENT_COLOR[agentType] ?? "var(--text-muted)";
-}
-function ConsoleSubTabBar({
-  sessions,
-  activeSessionId,
-  onSelect,
-  onClose,
-  onNewSession,
-  isConsoleActive
-}) {
-  const sortedSessions = T2(() => {
-    return [...sessions].sort((a4, b3) => {
-      if (a4.pinned && !b3.pinned)
-        return -1;
-      if (!a4.pinned && b3.pinned)
-        return 1;
-      return a4.created_at - b3.created_at;
-    });
-  }, [sessions]);
-  y2(() => {
-    if (!isConsoleActive)
-      return;
-    const handleKeyDown = (e3) => {
-      if (!e3.ctrlKey)
-        return;
-      const currentIndex = sortedSessions.findIndex((s3) => s3.id === activeSessionId);
-      if (e3.key === "Tab" && !e3.shiftKey) {
-        e3.preventDefault();
-        if (sortedSessions.length === 0)
-          return;
-        const nextIndex = (currentIndex + 1) % sortedSessions.length;
-        onSelect(sortedSessions[nextIndex].id);
-      } else if (e3.key === "Tab" && e3.shiftKey) {
-        e3.preventDefault();
-        if (sortedSessions.length === 0)
-          return;
-        const prevIndex = (currentIndex - 1 + sortedSessions.length) % sortedSessions.length;
-        onSelect(sortedSessions[prevIndex].id);
-      } else if (e3.key === "w" || e3.key === "W") {
-        e3.preventDefault();
-        const active = sortedSessions.find((s3) => s3.id === activeSessionId);
-        if (active && !active.pinned) {
-          onClose(active.id);
-        }
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isConsoleActive, sortedSessions, activeSessionId, onSelect, onClose]);
-  return /* @__PURE__ */ u3("div", { className: "console-sub-tab-bar", children: [
-    sortedSessions.map((session) => {
-      const isActive = session.id === activeSessionId;
-      let tabClass = "console-tab";
-      if (isActive)
-        tabClass += " console-tab--active";
-      if (session.pinned)
-        tabClass += " console-tab--pinned";
-      return /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: tabClass,
-          onClick: () => onSelect(session.id),
-          title: session.label,
-          children: [
-            /* @__PURE__ */ u3(
-              "span",
-              {
-                style: {
-                  fontSize: "10px",
-                  fontWeight: 600,
-                  color: getAgentColor(session.agent_type),
-                  fontFamily: "var(--font-mono)",
-                  flexShrink: 0
-                },
-                children: getAgentAbbrev(session.agent_type)
-              }
-            ),
-            /* @__PURE__ */ u3("span", { className: "console-tab__name", children: session.label }),
-            (session.status === "crashed" || session.status === "stopped") && /* @__PURE__ */ u3(
-              "span",
-              {
-                style: {
-                  width: "6px",
-                  height: "6px",
-                  borderRadius: "50%",
-                  background: session.status === "crashed" ? "var(--accent-red, #f85149)" : "var(--text-muted)",
-                  flexShrink: 0,
-                  display: "inline-block"
-                },
-                title: `Session ${session.status}`
-              }
-            ),
-            session.unread_count > 0 && /* @__PURE__ */ u3(
-              "span",
-              {
-                style: {
-                  background: "rgba(77,163,255,0.2)",
-                  color: "var(--accent-blue)",
-                  padding: "1px 6px",
-                  borderRadius: "999px",
-                  fontSize: "11px",
-                  fontWeight: 600,
-                  flexShrink: 0
-                },
-                children: session.unread_count
-              }
-            ),
-            session.pinned ? /* @__PURE__ */ u3(
-              "span",
-              {
-                style: {
-                  fontSize: "12px",
-                  flexShrink: 0,
-                  color: "var(--accent-yellow)",
-                  opacity: 0.7
-                },
-                title: "Pinned \u2014 cannot be closed",
-                children: "\u{1F512}"
-              }
-            ) : /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                className: "console-tab__close",
-                onClick: (e3) => {
-                  e3.stopPropagation();
-                  onClose(session.id);
-                },
-                title: "Close session",
-                children: "\xD7"
-              }
-            )
-          ]
-        },
-        session.id
-      );
-    }),
-    /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: "console-tab__new-btn",
-        onClick: onNewSession,
-        title: "New session",
-        children: "+"
-      }
-    )
-  ] });
-}
-
-// ui/src/components/console/TerminalPane.tsx
-init_hooks_module();
-var import_xterm = __toESM(require_xterm(), 1);
-var import_addon_fit = __toESM(require_addon_fit(), 1);
-
-// ui/src/components/stream-renderer/StreamRenderer.tsx
-init_hooks_module();
-
-// ui/src/components/stream-renderer/MessageGroup.tsx
-init_hooks_module();
-function blockCopyText(block2) {
-  switch (block2.type) {
-    case "text":
-      return block2.text ?? "";
-    case "thinking":
-      return block2.thinking ?? "";
-    case "tool_use":
-      return JSON.stringify(block2.input, null, 2);
-    default:
-      return "";
-  }
-}
-function MessageGroup({ turn, isStreaming, isThinking }) {
-  const { assistantEvent, toolResults } = turn;
-  const blocks = assistantEvent.message.content;
-  const turnMeta = T2(() => {
-    const msg = assistantEvent.message;
-    const usage = msg.usage;
-    const model = msg.model;
-    if (!usage && !model)
-      return void 0;
-    const tokenCount = usage ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : void 0;
-    return { tokenCount, model };
-  }, [assistantEvent]);
-  function renderBlock(block2, index3) {
-    let inner = null;
-    switch (block2.type) {
-      case "text":
-        inner = block2.text.trim() ? /* @__PURE__ */ u3(TextBlock, { content: block2.text }, `text-${index3}`) : null;
-        break;
-      case "thinking":
-        inner = /* @__PURE__ */ u3(
-          ThinkingBlock,
-          {
-            content: block2.thinking,
-            defaultCollapsed: !(isStreaming && isThinking)
-          },
-          `thinking-${index3}`
-        );
-        break;
-      case "tool_use": {
-        const result = toolResults.get(block2.id) ?? null;
-        const isPendingStreaming = isStreaming && result === null;
-        inner = /* @__PURE__ */ u3(
-          ToolUseBlock,
-          {
-            toolName: block2.name,
-            toolUseId: block2.id,
-            input: block2.input,
-            result,
-            defaultExpanded: isPendingStreaming || result === null
-          },
-          `tool-${block2.id}`
-        );
-        break;
-      }
-      default:
-        return null;
-    }
-    if (!inner)
-      return null;
-    const text2 = blockCopyText(block2);
-    return /* @__PURE__ */ u3("div", { className: "message-block-wrapper", style: { position: "relative" }, children: [
-      inner,
-      /* @__PURE__ */ u3(
-        MessageActions,
-        {
-          onCopy: text2 ? () => {
-            navigator.clipboard.writeText(text2).catch(() => {
-            });
-          } : void 0,
-          metadata: turnMeta
-        }
-      )
-    ] }, `block-wrap-${index3}`);
-  }
-  return /* @__PURE__ */ u3("div", { className: "message-group", children: /* @__PURE__ */ u3("div", { className: "message-group__content", children: blocks.map((block2, i4) => renderBlock(block2, i4)) }) });
-}
-
-// ui/src/components/shared/groupByEntity.ts
-function groupByEntity(items, getEntity, getId) {
-  const groups = [];
-  for (const item of items) {
-    const entity = getEntity(item);
-    const last = groups[groups.length - 1];
-    if (last && last.entity === entity) {
-      last.nodes.push(item);
-    } else {
-      groups.push({
-        id: `group-${getId(item)}`,
-        entity,
-        nodes: [item]
-      });
-    }
-  }
-  return groups;
-}
-
-// ui/src/components/stream-renderer/PresetViolationBlock.tsx
-function PresetViolationBlock({
-  analyzing,
-  presetId,
-  subagentSessionId
-}) {
-  const handleClick = () => {
-    if (analyzing && subagentSessionId) {
-      window.location.hash = `#/console?session=${encodeURIComponent(subagentSessionId)}`;
-    } else if (presetId) {
-      window.location.hash = `#/presets?id=${encodeURIComponent(presetId)}&view=diff`;
-    }
-  };
-  const isClickable = Boolean(
-    analyzing && subagentSessionId || !analyzing && presetId
-  );
-  return /* @__PURE__ */ u3(
-    "div",
-    {
-      className: `preset-violation-block${isClickable ? " preset-violation-block--clickable" : ""}`,
-      onClick: isClickable ? handleClick : void 0,
-      role: isClickable ? "button" : void 0,
-      tabIndex: isClickable ? 0 : void 0,
-      children: analyzing ? /* @__PURE__ */ u3("span", { className: "preset-violation-block__text", children: "Workflow issue detected \u2014 analyzing..." }) : /* @__PURE__ */ u3("span", { className: "preset-violation-block__text", children: "Workflow issue \u2014 view proposed fix" })
-    }
-  );
-}
-
-// ui/src/components/stream-renderer/StreamRenderer.tsx
-var turnIndexCounter = 0;
-function buildTurn(assistant, results) {
-  return {
-    id: assistant.uuid ?? assistant.message?.id ?? `turn-idx-${turnIndexCounter++}`,
-    assistantEvent: assistant,
-    toolResults: new Map(results),
-    receivedAt: Date.now()
-  };
-}
-function extractTurns(nodes) {
-  return nodes.filter((n2) => n2.kind === "assistant_turn").map((n2) => n2.turn);
-}
-function useStreamState(events) {
-  return T2(() => {
-    turnIndexCounter = 0;
-    const nodes = [];
-    let initEvent = null;
-    let resultEvent = null;
-    let pendingAssistant = null;
-    const pendingResults = /* @__PURE__ */ new Map();
-    let userMsgIdx = 0;
-    function flushPendingTurn() {
-      if (pendingAssistant) {
-        const turn = buildTurn(pendingAssistant, pendingResults);
-        nodes.push({
-          kind: "assistant_turn",
-          key: turn.id,
-          entity: "assistant",
-          turn
-        });
-        pendingAssistant = null;
-        pendingResults.clear();
-      }
-    }
-    for (const event of events) {
-      if (event.type === "system" && event.subtype === "init") {
-        initEvent = event;
-      } else if (event.type === "preset:violation") {
-        const violationEvent = event;
-        flushPendingTurn();
-        nodes.push({
-          kind: "violation",
-          key: violationEvent.localId ?? `violation-${nodes.length}`,
-          entity: "system",
-          event: violationEvent
-        });
-      } else if (event.type === "assistant") {
-        const ae = event;
-        const newId2 = ae.message?.id;
-        const pendingId = pendingAssistant?.message?.id;
-        if (pendingAssistant && newId2 && pendingId === newId2) {
-          pendingAssistant = ae;
-        } else {
-          flushPendingTurn();
-          pendingAssistant = ae;
-        }
-      } else if (event.type === "user") {
-        const userEvent = event;
-        let hasText = false;
-        const textParts = [];
-        for (const block2 of userEvent.message.content) {
-          if (block2.type === "tool_result") {
-            pendingResults.set(block2.tool_use_id, block2);
-          } else if (block2.type === "text" && block2.text) {
-            textParts.push(block2.text);
-            hasText = true;
-          }
-        }
-        if (hasText) {
-          const joinedText = textParts.join("\n");
-          const existingSyntheticIdx = nodes.findIndex(
-            (n2) => n2.kind === "user_message" && n2.source === "synthetic" && n2.text === joinedText
-          );
-          if (existingSyntheticIdx >= 0) {
-            nodes[existingSyntheticIdx] = {
-              kind: "user_message",
-              key: userEvent.uuid ?? nodes[existingSyntheticIdx].key,
-              entity: "user",
-              text: joinedText,
-              source: "stream"
-            };
-          } else {
-            flushPendingTurn();
-            nodes.push({
-              kind: "user_message",
-              key: userEvent.uuid ?? `user-msg-${userMsgIdx++}`,
-              entity: "user",
-              text: joinedText,
-              source: "stream"
-            });
-          }
-        }
-      } else if (event.type === "result") {
-        resultEvent = event;
-      } else if (event.type === "synthetic_prompt") {
-        const sp = event;
-        flushPendingTurn();
-        nodes.push({
-          kind: "user_message",
-          key: `sp-${sp.localId}`,
-          entity: "user",
-          text: sp.text,
-          source: "synthetic"
-        });
-      }
-    }
-    flushPendingTurn();
-    return { nodes, initEvent, resultEvent };
-  }, [events]);
-}
-function deriveLiveLabel(turns, streaming) {
-  if (!streaming) {
-    return void 0;
-  }
-  const lastTurn = turns[turns.length - 1];
-  if (!lastTurn) {
-    return "Waiting for reply";
-  }
-  const blocks = lastTurn.assistantEvent.message.content;
-  if (blocks.some((block2) => block2.type === "thinking" && block2.thinking.trim())) {
-    return "Thinking";
-  }
-  if (blocks.some((block2) => block2.type === "tool_use")) {
-    return "Using tools";
-  }
-  if (blocks.some((block2) => block2.type === "text" && block2.text.trim())) {
-    return "Responding";
-  }
-  return "Working";
-}
-function computeTotalTokens(usage) {
-  if (!usage)
-    return void 0;
-  return (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
-}
-function deriveTokenCount(turns) {
-  for (let i4 = turns.length - 1; i4 >= 0; i4--) {
-    const usage = turns[i4].assistantEvent.message.usage;
-    const total = computeTotalTokens(usage);
-    if (total !== void 0)
-      return total;
-  }
-  return void 0;
-}
-function formatElapsed(seconds) {
-  if (seconds < 60)
-    return `${seconds}s`;
-  const m4 = Math.floor(seconds / 60);
-  const s3 = seconds % 60;
-  return `${m4}m ${s3}s`;
-}
-function StreamRenderer({
-  events,
-  streaming,
-  elapsedSeconds,
-  emptyLabel,
-  sessionInfo,
-  onSelectMessageInfo,
-  selectedMessageId
-}) {
-  const { nodes } = useStreamState(events);
-  const scrollRef = A2(null);
-  const [userScrolled, setUserScrolled] = d2(false);
-  y2(() => {
-    if (!streaming || userScrolled) {
-      return;
-    }
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [events.length, streaming, userScrolled]);
-  function handleScroll() {
-    const el = scrollRef.current;
-    if (!el) {
-      return;
-    }
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
-    setUserScrolled(!atBottom);
-  }
-  function handleJumpToBottom() {
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-    }
-    setUserScrolled(false);
-  }
-  const turns = extractTurns(nodes);
-  const liveLabel = deriveLiveLabel(turns, streaming);
-  const tokenCount = deriveTokenCount(turns);
-  const hasContent = nodes.length > 0;
-  if (!hasContent) {
-    return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: /* @__PURE__ */ u3("div", { className: "stream-renderer__empty", children: emptyLabel ?? (streaming ? "Starting\u2026" : "No events") }) });
-  }
-  const groups = groupByEntity(nodes, (n2) => n2.entity, (n2) => n2.key);
-  let lastAssistantKey = null;
-  for (let i4 = nodes.length - 1; i4 >= 0; i4--) {
-    if (nodes[i4].kind === "assistant_turn") {
-      lastAssistantKey = nodes[i4].key;
-      break;
-    }
-  }
-  function renderNodeBody(node) {
-    switch (node.kind) {
-      case "user_message":
-        return /* @__PURE__ */ u3(UserBubble, { text: node.text }, node.key);
-      case "violation":
-        return /* @__PURE__ */ u3(
-          PresetViolationBlock,
-          {
-            analyzing: node.event.analyzing,
-            presetId: node.event.preset_id,
-            subagentSessionId: node.event.subagent_session_id
-          },
-          node.key
-        );
-      case "assistant_turn": {
-        const { turn } = node;
-        const isLastStreamingTurn = streaming && node.key === lastAssistantKey;
-        const isThinking = isLastStreamingTurn && turn.assistantEvent.message.content.some((b3) => b3.type === "thinking");
-        const isSelected = selectedMessageId === turn.id;
-        return /* @__PURE__ */ u3(
-          "div",
-          {
-            className: isSelected ? "stream-turn-node stream-turn--selected" : "stream-turn-node",
-            style: { position: "relative" },
-            children: /* @__PURE__ */ u3(
-              MessageGroup,
-              {
-                turn,
-                isStreaming: isLastStreamingTurn,
-                isThinking
-              }
-            )
-          },
-          node.key
-        );
-      }
-      default:
-        return null;
-    }
-  }
-  function collectGroupText(group) {
-    const parts = [];
-    for (const node of group.nodes) {
-      if (node.kind === "user_message") {
-        parts.push(node.text);
-      } else if (node.kind === "assistant_turn") {
-        for (const block2 of node.turn.assistantEvent.message.content) {
-          if (block2.type === "text" && block2.text)
-            parts.push(block2.text);
-        }
-      }
-    }
-    return parts.join("\n\n");
-  }
-  const rendered = groups.map((group) => {
-    const isShort = group.nodes.length <= 2;
-    let aggregateTokens;
-    if (group.entity === "assistant" && group.nodes.length > 1) {
-      let sum = 0;
-      let found = false;
-      for (const node of group.nodes) {
-        if (node.kind === "assistant_turn") {
-          const total = computeTotalTokens(node.turn.assistantEvent.message.usage);
-          if (total !== void 0) {
-            sum += total;
-            found = true;
-          }
-        }
-      }
-      if (found)
-        aggregateTokens = sum;
-    }
-    const footer = group.entity === "assistant" && group.nodes.length > 1 ? /* @__PURE__ */ u3(
-      GroupFooter,
-      {
-        totalTokens: aggregateTokens,
-        onCopyAll: () => {
-          navigator.clipboard.writeText(collectGroupText(group)).catch(() => {
-          });
-        }
-      }
-    ) : void 0;
-    return /* @__PURE__ */ u3(
-      TurnGroup,
-      {
-        speaker: group.entity,
-        isShort,
-        footer,
-        children: group.nodes.map(renderNodeBody)
-      },
-      group.id
-    );
-  });
-  return /* @__PURE__ */ u3("div", { className: "stream-renderer", children: [
-    /* @__PURE__ */ u3(
-      "div",
-      {
-        ref: scrollRef,
-        className: "stream-renderer__scroll",
-        onScroll: handleScroll,
-        children: [
-          rendered,
-          streaming && /* @__PURE__ */ u3("div", { className: "stream-live-indicator", children: [
-            /* @__PURE__ */ u3("span", { className: "stream-live-indicator__dot" }),
-            /* @__PURE__ */ u3("span", { className: "stream-live-indicator__label", children: liveLabel ?? "Working" }),
-            tokenCount !== void 0 && /* @__PURE__ */ u3("span", { className: "stream-live-indicator__tokens", children: [
-              tokenCount.toLocaleString(),
-              " tokens"
-            ] }),
-            elapsedSeconds !== void 0 && /* @__PURE__ */ u3("span", { className: "stream-live-indicator__timer", children: formatElapsed(elapsedSeconds) })
-          ] })
-        ]
-      }
-    ),
-    userScrolled && streaming && /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: "stream-renderer__scroll-btn",
-        onClick: handleJumpToBottom,
-        children: "Jump to bottom \u2193"
-      }
-    )
-  ] });
-}
-
-// ui/src/components/console/ViewToggle.tsx
-function ViewToggle({
-  current,
-  onChange,
-  showTerminal = true,
-  channelEnabled = false,
-  unseenEventCount = 0
-}) {
-  if (channelEnabled && showTerminal) {
-    return /* @__PURE__ */ u3("div", { className: "view-toggle", children: [
-      /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: `view-toggle__btn${current === "terminal" ? " view-toggle__btn--active" : ""}`,
-          onClick: () => onChange("terminal"),
-          children: "Terminal"
-        }
-      ),
-      /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: `view-toggle__btn view-toggle__btn--events${current === "events" ? " view-toggle__btn--active" : ""}`,
-          onClick: () => onChange("events"),
-          children: [
-            "Events",
-            unseenEventCount > 0 && /* @__PURE__ */ u3("span", { className: "view-toggle__badge" })
-          ]
-        }
-      )
-    ] });
-  }
-  if (!showTerminal) {
-    return null;
-  }
-  return /* @__PURE__ */ u3("div", { className: "view-toggle", children: [
-    /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: `view-toggle__btn${current === "rich" ? " view-toggle__btn--active" : ""}`,
-        onClick: () => onChange("rich"),
-        children: "Chat"
-      }
-    ),
-    /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: `view-toggle__btn${current === "terminal" ? " view-toggle__btn--active" : ""}`,
-        onClick: () => onChange("terminal"),
-        children: "Debug Terminal"
-      }
-    )
-  ] });
-}
-
-// ui/src/components/console/ChannelEventsPane.tsx
-init_hooks_module();
-function extractChannelEvents(events) {
-  const result = [];
-  for (let i4 = 0; i4 < events.length; i4++) {
-    const event = events[i4];
-    if (event.type !== "system" || event.subtype !== "channel_event")
-      continue;
-    const channelData = event.channel_event ?? event;
-    const eventType = String(event.event_type ?? channelData.event_type ?? "unknown");
-    let label = eventType;
-    if (eventType === "tool_call") {
-      label = String(channelData.tool_name ?? event.tool_name ?? "tool_call");
-    } else if (eventType === "notification") {
-      label = String(channelData.notification_type ?? event.notification_type ?? "notification");
-    } else if (eventType === "connect") {
-      label = "Channel connected";
-    } else if (eventType === "disconnect") {
-      label = "Channel disconnected";
-    }
-    result.push({
-      key: `ch-${i4}`,
-      eventType,
-      label,
-      timestamp: String(event.timestamp ?? channelData.timestamp ?? (/* @__PURE__ */ new Date()).toISOString()),
-      payload: channelData
-    });
-  }
-  return result;
-}
-function formatTimestamp(iso) {
-  try {
-    const d3 = new Date(iso);
-    return d3.toLocaleTimeString(void 0, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  } catch {
-    return iso;
-  }
-}
-function EventIcon({ eventType }) {
-  if (eventType === "tool_call") {
-    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
-      "path",
-      {
-        d: "M14.3 2.3a1 1 0 0 0-1.4 0L10 5.2 8.8 4l2.9-2.9a1 1 0 0 0-1.1-1.6A5 5 0 0 0 4.5 6L1.3 9.2a2.5 2.5 0 0 0 3.5 3.5L8 9.5a5 5 0 0 0 6.5-6.1 1 1 0 0 0-.2-1.1z",
-        fill: "currentColor",
-        opacity: "0.7"
-      }
-    ) });
-  }
-  if (eventType === "notification") {
-    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
-      "path",
-      {
-        d: "M8 1a1 1 0 0 1 1 1v.3A4.5 4.5 0 0 1 12.5 7v2.5l1.3 1.3a.5.5 0 0 1-.4.9H2.6a.5.5 0 0 1-.4-.9L3.5 9.5V7A4.5 4.5 0 0 1 7 2.3V2a1 1 0 0 1 1-1zm-1.5 12a1.5 1.5 0 0 0 3 0h-3z",
-        fill: "currentColor",
-        opacity: "0.7"
-      }
-    ) });
-  }
-  if (eventType === "connect") {
-    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
-      "path",
-      {
-        d: "M6.4 9.6a3 3 0 0 0 4.2 0l2-2a3 3 0 1 0-4.2-4.2l-1 1M9.6 6.4a3 3 0 0 0-4.2 0l-2 2a3 3 0 1 0 4.2 4.2l1-1",
-        stroke: "currentColor",
-        "stroke-width": "1.5",
-        "stroke-linecap": "round",
-        opacity: "0.7"
-      }
-    ) });
-  }
-  if (eventType === "disconnect") {
-    return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: /* @__PURE__ */ u3(
-      "path",
-      {
-        d: "M6.4 9.6a3 3 0 0 0 4.2 0l2-2a3 3 0 1 0-4.2-4.2M9.6 6.4a3 3 0 0 0-4.2 0l-2 2a3 3 0 1 0 4.2 4.2M2 2l12 12",
-        stroke: "currentColor",
-        "stroke-width": "1.5",
-        "stroke-linecap": "round",
-        opacity: "0.7"
-      }
-    ) });
-  }
-  return /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "none", style: { flexShrink: 0 }, children: [
-    /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "6", stroke: "currentColor", "stroke-width": "1.5", opacity: "0.5" }),
-    /* @__PURE__ */ u3("circle", { cx: "8", cy: "8", r: "2", fill: "currentColor", opacity: "0.5" })
-  ] });
-}
-function ChannelEventsPane({ streamEvents, onEventCountChange }) {
-  const [expandedKeys, setExpandedKeys] = d2(/* @__PURE__ */ new Set());
-  const scrollRef = A2(null);
-  const wasAtBottomRef = A2(true);
-  const channelEvents = extractChannelEvents(streamEvents);
-  y2(() => {
-    onEventCountChange?.(channelEvents.length);
-  }, [channelEvents.length, onEventCountChange]);
-  y2(() => {
-    const el = scrollRef.current;
-    if (!el)
-      return;
-    if (wasAtBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [channelEvents.length]);
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el)
-      return;
-    const threshold = 40;
-    wasAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
-  };
-  const toggleExpand = (key2) => {
-    setExpandedKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key2)) {
-        next.delete(key2);
-      } else {
-        next.add(key2);
-      }
-      return next;
-    });
-  };
-  if (channelEvents.length === 0) {
-    return /* @__PURE__ */ u3("div", { className: "channel-events-pane channel-events-pane--empty", children: /* @__PURE__ */ u3("div", { className: "channel-events-pane__empty-message", children: "No channel events yet. Events will appear here when the channel connection is active." }) });
-  }
-  return /* @__PURE__ */ u3("div", { className: "channel-events-pane", ref: scrollRef, onScroll: handleScroll, children: channelEvents.map((event) => {
-    const isExpanded = expandedKeys.has(event.key);
-    return /* @__PURE__ */ u3(
-      "div",
-      {
-        className: `channel-events-pane__card${isExpanded ? " channel-events-pane__card--expanded" : ""}`,
-        children: [
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: "channel-events-pane__card-header",
-              onClick: () => toggleExpand(event.key),
-              children: [
-                /* @__PURE__ */ u3(EventIcon, { eventType: event.eventType }),
-                /* @__PURE__ */ u3("span", { className: "channel-events-pane__card-label", children: event.label }),
-                /* @__PURE__ */ u3("span", { className: "channel-events-pane__card-time", children: formatTimestamp(event.timestamp) }),
-                /* @__PURE__ */ u3("span", { className: `channel-events-pane__card-chevron${isExpanded ? " channel-events-pane__card-chevron--open" : ""}`, children: /* @__PURE__ */ u3("svg", { width: "10", height: "10", viewBox: "0 0 10 10", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M3 4l2 2 2-2", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round" }) }) })
-              ]
-            }
-          ),
-          isExpanded && /* @__PURE__ */ u3("div", { className: "channel-events-pane__card-body", children: /* @__PURE__ */ u3("pre", { className: "channel-events-pane__card-json", children: JSON.stringify(event.payload, null, 2) }) })
-        ]
-      },
-      event.key
-    );
-  }) });
-}
-
-// ui/src/components/console/PermissionDialog.tsx
-init_hooks_module();
-function formatToolInput(input) {
-  if (typeof input === "string") {
-    return input;
-  }
-  try {
-    return JSON.stringify(input, null, 2);
-  } catch {
-    return String(input ?? "");
-  }
-}
-function PermissionDialog({
-  request,
-  onRespond
-}) {
-  const [expanded, setExpanded] = d2(false);
-  const [now2, setNow] = d2(() => Date.now());
-  y2(() => {
-    setExpanded(false);
-  }, [request?.id]);
-  y2(() => {
-    if (!request) {
-      return void 0;
-    }
-    const interval2 = window.setInterval(() => {
-      setNow(Date.now());
-    }, 1e3);
-    return () => window.clearInterval(interval2);
-  }, [request]);
-  y2(() => {
-    if (!request) {
-      return void 0;
-    }
-    const onKeyDown = (event) => {
-      if (event.shiftKey && event.key === "A") {
-        event.preventDefault();
-        onRespond(request.id, "allow_always");
-        return;
-      }
-      if (event.key === "Enter" || event.key.toLowerCase() === "a") {
-        event.preventDefault();
-        onRespond(request.id, "allow");
-        return;
-      }
-      if (event.key === "Escape" || event.key.toLowerCase() === "d") {
-        event.preventDefault();
-        onRespond(request.id, "deny");
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onRespond, request]);
-  const formattedInput = T2(() => {
-    if (!request) {
-      return "";
-    }
-    return formatToolInput(request.tool_input);
-  }, [request]);
-  if (!request) {
-    return null;
-  }
-  const remainingSeconds = Math.max(
-    0,
-    Math.ceil((request.expires_at - now2) / 1e3)
-  );
-  const preview = formattedInput.length > 500 ? `${formattedInput.slice(0, 500)}\u2026` : formattedInput;
-  const toolName = request.display_name || request.tool_name;
-  return /* @__PURE__ */ u3("div", { className: "permission-dialog-overlay", children: /* @__PURE__ */ u3("div", { className: "permission-dialog", role: "dialog", "aria-modal": "true", "aria-labelledby": "permission-dialog-title", children: [
-    /* @__PURE__ */ u3("div", { className: "permission-dialog__header", children: [
-      /* @__PURE__ */ u3("div", { children: [
-        /* @__PURE__ */ u3("div", { className: "permission-dialog__eyebrow", children: "Permission required" }),
-        /* @__PURE__ */ u3("h3", { id: "permission-dialog-title", children: request.title || toolName })
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "permission-dialog__countdown", children: [
-        remainingSeconds,
-        "s"
-      ] })
-    ] }),
-    /* @__PURE__ */ u3("div", { className: "permission-dialog__meta", children: [
-      /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: toolName }),
-      request.agent_id && /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: [
-        "Agent ",
-        request.agent_id
-      ] }),
-      request.blocked_path && /* @__PURE__ */ u3("span", { className: "permission-dialog__chip", children: request.blocked_path })
-    ] }),
-    request.description && /* @__PURE__ */ u3("p", { className: "permission-dialog__description", children: request.description }),
-    request.decision_reason && /* @__PURE__ */ u3("p", { className: "permission-dialog__reason", children: request.decision_reason }),
-    /* @__PURE__ */ u3("div", { className: "permission-dialog__section", children: [
-      /* @__PURE__ */ u3("div", { className: "permission-dialog__section-title", children: "Tool input" }),
-      /* @__PURE__ */ u3("pre", { className: "permission-dialog__input", children: expanded ? formattedInput : preview }),
-      formattedInput.length > 500 && /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "permission-dialog__toggle",
-          onClick: () => setExpanded((value) => !value),
-          children: expanded ? "Show less" : "Expand"
-        }
-      )
-    ] }),
-    /* @__PURE__ */ u3("div", { className: "permission-dialog__actions", children: [
-      /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "permission-dialog__button permission-dialog__button--deny",
-          onClick: () => onRespond(request.id, "deny"),
-          children: "Deny"
-        }
-      ),
-      /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "permission-dialog__button permission-dialog__button--allow",
-          onClick: () => onRespond(request.id, "allow"),
-          children: "Allow"
-        }
-      ),
-      /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "permission-dialog__button permission-dialog__button--always",
-          onClick: () => onRespond(request.id, "allow_always"),
-          children: "Always Allow"
-        }
-      )
-    ] })
-  ] }) });
-}
-
-// ui/src/components/console/SessionControls.tsx
-init_hooks_module();
-init_api();
-function SessionControls({
-  sessionId,
-  backendType,
-  model,
-  modelOptions,
-  allowedTools,
-  availableTools = [],
-  onModelSaved
-}) {
-  const [draftModel, setDraftModel] = d2(model ?? "");
-  const [permissionMode, setPermissionMode] = d2("default");
-  const [maxTurns, setMaxTurns] = d2("");
-  const [maxCostUsd, setMaxCostUsd] = d2("");
-  const [draftAllowedTools, setDraftAllowedTools] = d2(allowedTools ?? []);
-  const [saving, setSaving] = d2(false);
-  const [error, setError] = d2(null);
-  y2(() => {
-    setDraftModel(model ?? "");
-  }, [model]);
-  y2(() => {
-    setDraftAllowedTools(allowedTools ?? []);
-  }, [allowedTools]);
-  const handleModelOnlySave = async (nextModel) => {
-    setSaving(true);
-    setError(null);
-    try {
-      await updateConsoleSession(sessionId, { model: nextModel || void 0 });
-      onModelSaved?.(nextModel || void 0);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to save model");
-    } finally {
-      setSaving(false);
-    }
-  };
-  const handleSdkSave = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      await updateConsoleSessionOptions(sessionId, {
-        model: draftModel || void 0,
-        permissionMode,
-        allowedTools: draftAllowedTools,
-        maxTurns: maxTurns.trim() ? Number(maxTurns) : void 0,
-        maxCostUsd: maxCostUsd.trim() ? Number(maxCostUsd) : void 0
-      });
-      onModelSaved?.(draftModel || void 0);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to save session options");
-    } finally {
-      setSaving(false);
-    }
-  };
-  return /* @__PURE__ */ u3("div", { className: "session-controls", children: [
-    /* @__PURE__ */ u3("div", { className: "session-controls__row", children: [
-      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
-        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Model" }),
-        /* @__PURE__ */ u3(
-          "select",
-          {
-            className: "session-controls__select",
-            value: draftModel,
-            disabled: saving,
-            onChange: (event) => {
-              const nextModel = event.currentTarget.value;
-              setDraftModel(nextModel);
-              if (backendType === "pty") {
-                void handleModelOnlySave(nextModel);
-              }
-            },
-            children: [
-              /* @__PURE__ */ u3("option", { value: "", children: "default" }),
-              modelOptions.map((option) => /* @__PURE__ */ u3("option", { value: option, children: option }, option))
-            ]
-          }
-        )
-      ] }),
-      backendType === "sdk" && /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
-        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Permissions" }),
-        /* @__PURE__ */ u3(
-          "select",
-          {
-            className: "session-controls__select",
-            value: permissionMode,
-            disabled: saving,
-            onChange: (event) => setPermissionMode(
-              event.currentTarget.value
-            ),
-            children: [
-              /* @__PURE__ */ u3("option", { value: "default", children: "Ask each time" }),
-              /* @__PURE__ */ u3("option", { value: "acceptEdits", children: "Accept edits" }),
-              /* @__PURE__ */ u3("option", { value: "bypassPermissions", children: "Bypass permissions" })
-            ]
-          }
-        )
-      ] })
-    ] }),
-    backendType === "sdk" && /* @__PURE__ */ u3("div", { className: "session-controls__row", children: [
-      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
-        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Max turns" }),
-        /* @__PURE__ */ u3(
-          "input",
-          {
-            className: "session-controls__input",
-            type: "number",
-            min: "1",
-            step: "1",
-            value: maxTurns,
-            disabled: saving,
-            onInput: (event) => setMaxTurns(event.currentTarget.value),
-            placeholder: "Unlimited"
-          }
-        )
-      ] }),
-      /* @__PURE__ */ u3("label", { className: "session-controls__field", children: [
-        /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Max cost (USD)" }),
-        /* @__PURE__ */ u3(
-          "input",
-          {
-            className: "session-controls__input",
-            type: "number",
-            min: "0",
-            step: "0.01",
-            value: maxCostUsd,
-            disabled: saving,
-            onInput: (event) => setMaxCostUsd(event.currentTarget.value),
-            placeholder: "Unlimited"
-          }
-        )
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "session-controls__actions", children: /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "session-controls__button",
-          disabled: saving,
-          onClick: () => {
-            void handleSdkSave();
-          },
-          children: saving ? "Saving\u2026" : "Save"
-        }
-      ) })
-    ] }),
-    backendType === "sdk" && /* @__PURE__ */ u3("div", { className: "session-controls__tools", children: [
-      /* @__PURE__ */ u3("div", { className: "session-controls__label", children: "Allowed tools" }),
-      availableTools.length === 0 ? /* @__PURE__ */ u3("div", { className: "session-controls__placeholder", children: "Waiting for session\u2026" }) : /* @__PURE__ */ u3("div", { className: "session-controls__tool-grid", children: availableTools.map((tool) => {
-        const enabled = draftAllowedTools.includes(tool);
-        return /* @__PURE__ */ u3("label", { className: "session-controls__tool-toggle", children: [
-          /* @__PURE__ */ u3(
-            "input",
-            {
-              type: "checkbox",
-              checked: enabled,
-              onChange: () => {
-                setDraftAllowedTools((current) => current.includes(tool) ? current.filter((entry) => entry !== tool) : [...current, tool].sort());
-              }
-            }
-          ),
-          /* @__PURE__ */ u3("span", { children: tool })
-        ] }, tool);
-      }) })
-    ] }),
-    error && /* @__PURE__ */ u3("div", { className: "session-controls__error", children: error })
-  ] });
-}
-
-// ui/src/components/console/PtyBanner.tsx
-function PtyBanner() {
-  return /* @__PURE__ */ u3("div", { className: "pty-banner", children: "PTY sessions have limited integration with Mandible. For full features (permissions, cost tracking, presets, conversation history), use an SDK agent session instead." });
-}
-
-// ui/src/components/console/LivePresetPills.tsx
-init_hooks_module();
-init_api();
-
-// ui/src/components/presets/PresetPillSelector.tsx
-init_hooks_module();
-function NavIcon({ presetId }) {
-  return /* @__PURE__ */ u3(
-    "button",
-    {
-      type: "button",
-      className: "preset-pill__nav",
-      title: "View preset",
-      onClick: (e3) => {
-        e3.stopPropagation();
-        window.location.hash = `#/presets?id=${encodeURIComponent(presetId)}`;
-      },
-      children: /* @__PURE__ */ u3("svg", { width: "12", height: "12", viewBox: "0 0 12 12", fill: "none", children: /* @__PURE__ */ u3(
-        "path",
-        {
-          d: "M4.5 2.5L8 6L4.5 9.5",
-          stroke: "currentColor",
-          "stroke-width": "1.5",
-          "stroke-linecap": "round",
-          "stroke-linejoin": "round"
-        }
-      ) })
-    }
-  );
-}
-function PresetPillSelector({
-  selectedPresetIds,
-  onChange,
-  presets,
-  disabled = false
-}) {
-  const [searchText, setSearchText] = d2("");
-  const [dropdownOpen, setDropdownOpen] = d2(false);
-  const [highlightIndex, setHighlightIndex] = d2(0);
-  const inputRef = A2(null);
-  const containerRef = A2(null);
-  const unselected = presets.filter(
-    (p3) => !selectedPresetIds.includes(p3.id)
-  );
-  const filtered = searchText.trim() ? unselected.filter(
-    (p3) => p3.name.toLowerCase().includes(searchText.toLowerCase())
-  ) : unselected;
-  y2(() => {
-    setHighlightIndex(0);
-  }, [searchText]);
-  y2(() => {
-    if (!dropdownOpen)
-      return;
-    const handleClick = (e3) => {
-      if (containerRef.current && !containerRef.current.contains(e3.target)) {
-        setDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [dropdownOpen]);
-  const addPreset = (id2) => {
-    if (!selectedPresetIds.includes(id2)) {
-      onChange([...selectedPresetIds, id2]);
-    }
-    setSearchText("");
-    setDropdownOpen(false);
-    inputRef.current?.focus();
-  };
-  const removePreset = (id2) => {
-    onChange(selectedPresetIds.filter((pid) => pid !== id2));
-  };
-  const handleKeyDown = (e3) => {
-    if (e3.key === "Escape") {
-      setDropdownOpen(false);
-      return;
-    }
-    if (e3.key === "ArrowDown") {
-      e3.preventDefault();
-      setDropdownOpen(true);
-      setHighlightIndex((prev) => Math.min(prev + 1, filtered.length - 1));
-      return;
-    }
-    if (e3.key === "ArrowUp") {
-      e3.preventDefault();
-      setHighlightIndex((prev) => Math.max(prev - 1, 0));
-      return;
-    }
-    if (e3.key === "Enter" && dropdownOpen && filtered[highlightIndex]) {
-      e3.preventDefault();
-      addPreset(filtered[highlightIndex].id);
-    }
-  };
-  const selectedPresets = selectedPresetIds.map((id2) => presets.find((p3) => p3.id === id2)).filter((p3) => p3 !== void 0);
-  return /* @__PURE__ */ u3(
-    "div",
-    {
-      className: "preset-pill-selector",
-      ref: containerRef,
-      role: "combobox",
-      "aria-haspopup": "listbox",
-      "aria-expanded": dropdownOpen,
-      children: [
-        /* @__PURE__ */ u3("div", { className: "preset-pill-selector__input-row", children: /* @__PURE__ */ u3(
-          "input",
-          {
-            ref: inputRef,
-            type: "text",
-            className: "preset-pill-selector__input",
-            placeholder: selectedPresetIds.length > 0 ? "Add preset..." : "Search presets...",
-            value: searchText,
-            disabled,
-            "aria-controls": "preset-dropdown",
-            "aria-activedescendant": dropdownOpen && filtered[highlightIndex] ? `preset-option-${filtered[highlightIndex].id}` : void 0,
-            onInput: (e3) => {
-              setSearchText(e3.currentTarget.value);
-              setDropdownOpen(true);
-            },
-            onFocus: () => setDropdownOpen(true),
-            onBlur: (e3) => {
-              const related = e3.relatedTarget;
-              if (containerRef.current && related && containerRef.current.contains(related))
-                return;
-              setDropdownOpen(false);
-            },
-            onKeyDown: handleKeyDown
-          }
-        ) }),
-        dropdownOpen && filtered.length > 0 && /* @__PURE__ */ u3("div", { className: "preset-pill-selector__dropdown", id: "preset-dropdown", role: "listbox", children: filtered.map((preset, idx) => /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            id: `preset-option-${preset.id}`,
-            role: "option",
-            "aria-selected": idx === highlightIndex,
-            className: `preset-pill-selector__option${idx === highlightIndex ? " preset-pill-selector__option--highlight" : ""}`,
-            onClick: () => addPreset(preset.id),
-            onMouseEnter: () => setHighlightIndex(idx),
-            children: [
-              /* @__PURE__ */ u3("span", { className: "preset-pill-selector__option-name", children: preset.name }),
-              preset.description && /* @__PURE__ */ u3("span", { className: "preset-pill-selector__option-desc", children: preset.description })
-            ]
-          },
-          preset.id
-        )) }),
-        selectedPresets.length > 0 ? /* @__PURE__ */ u3("div", { className: "preset-pill-selector__pills", children: selectedPresets.map((preset) => /* @__PURE__ */ u3("span", { className: "preset-pill", children: [
-          /* @__PURE__ */ u3("span", { className: "preset-pill__name", children: preset.name }),
-          /* @__PURE__ */ u3(NavIcon, { presetId: preset.id }),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: "preset-pill__dismiss",
-              disabled,
-              onClick: () => removePreset(preset.id),
-              title: "Remove preset",
-              children: /* @__PURE__ */ u3("svg", { width: "10", height: "10", viewBox: "0 0 10 10", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M2 2l6 6M8 2l-6 6", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round" }) })
-            }
-          )
-        ] }, preset.id)) }) : /* @__PURE__ */ u3("div", { className: "preset-pill-selector__empty", children: "No presets selected. Import from CLAUDE.md or create a preset." })
-      ]
-    }
-  );
-}
-
-// ui/src/components/console/LivePresetPills.tsx
-function LivePresetPills({
-  sessionId,
-  readOnly = false,
-  onUnionUpdate
-}) {
-  const [allPresets, setAllPresets] = d2([]);
-  const [selectedIds, setSelectedIds] = d2([]);
-  const [loading, setLoading] = d2(true);
-  y2(() => {
-    let cancelled = false;
-    setLoading(true);
-    const load = async () => {
-      try {
-        const [presets, sessionPresets] = await Promise.all([
-          getPresets(),
-          getSessionPresets(sessionId)
-        ]);
-        if (cancelled)
-          return;
-        setAllPresets(presets);
-        const sorted = [...sessionPresets].sort((a4, b3) => a4.position - b3.position);
-        setSelectedIds(sorted.map((sp) => sp.preset_id));
-      } catch {
-        if (!cancelled) {
-          setAllPresets([]);
-          setSelectedIds([]);
-        }
-      } finally {
-        if (!cancelled)
-          setLoading(false);
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId]);
-  const handleChange = async (nextIds) => {
-    const prevIds = selectedIds;
-    setSelectedIds(nextIds);
-    try {
-      const removed = prevIds.filter((id2) => !nextIds.includes(id2));
-      const added = nextIds.filter((id2) => !prevIds.includes(id2));
-      for (const id2 of removed) {
-        await removeSessionPreset(sessionId, id2);
-      }
-      for (const id2 of added) {
-        await addSessionPreset(sessionId, id2, nextIds.indexOf(id2));
-      }
-      const union = await getPresetUnion({ session_id: sessionId });
-      await updateConsoleSessionOptions(sessionId, {
-        systemPrompt: union.systemPrompt,
-        presetIds: nextIds
-      });
-      onUnionUpdate?.({ totalTokens: union.totalTokens });
-    } catch {
-      setSelectedIds(prevIds);
-    }
-  };
-  if (loading) {
-    return /* @__PURE__ */ u3("div", { className: "session-controls__field", style: { marginTop: "12px" }, children: [
-      /* @__PURE__ */ u3("span", { className: "session-controls__label", children: "Presets" }),
-      /* @__PURE__ */ u3("div", { className: "session-controls__placeholder", children: "Loading presets..." })
-    ] });
-  }
-  return /* @__PURE__ */ u3("div", { className: "session-controls__field", style: { marginTop: "12px" }, children: [
-    /* @__PURE__ */ u3("span", { className: "session-controls__label", children: [
-      "Presets",
-      readOnly && /* @__PURE__ */ u3(
-        "span",
-        {
-          className: "session-controls__lock-icon",
-          title: "Restart session to change presets",
-          children: " \u{1F512}"
-        }
-      )
-    ] }),
-    readOnly ? /* @__PURE__ */ u3("div", { className: "session-controls__preset-readonly", children: selectedIds.length === 0 ? /* @__PURE__ */ u3("span", { className: "session-controls__placeholder", children: "No presets selected" }) : selectedIds.map((id2) => {
-      const preset = allPresets.find((p3) => p3.id === id2);
-      return /* @__PURE__ */ u3("span", { className: "session-controls__preset-pill", children: preset?.name ?? id2.slice(0, 8) }, id2);
-    }) }) : /* @__PURE__ */ u3(
-      PresetPillSelector,
-      {
-        selectedPresetIds: selectedIds,
-        onChange: (ids) => {
-          void handleChange(ids);
-        },
-        presets: allPresets
-      }
-    )
-  ] });
-}
-
-// ui/src/components/console/MessageInfoPanel.tsx
-function findAssistantEvent(events, turnId) {
-  for (const event of events) {
-    if (event.type !== "assistant")
-      continue;
-    const ae = event;
-    const id2 = ae.uuid ?? ae.message?.id;
-    if (id2 === turnId)
-      return ae;
-  }
-  return null;
-}
-function MessageInfoPanel({
-  selectedMessageId,
-  streamEvents
-}) {
-  if (!selectedMessageId) {
-    return /* @__PURE__ */ u3("div", { className: "message-info-panel", children: /* @__PURE__ */ u3("div", { className: "message-info-panel__empty", children: "Select a message to view its metadata." }) });
-  }
-  const assistant = findAssistantEvent(streamEvents, selectedMessageId);
-  if (!assistant) {
-    return /* @__PURE__ */ u3("div", { className: "message-info-panel", children: /* @__PURE__ */ u3("div", { className: "message-info-panel__empty", children: "Message not found in stream events." }) });
-  }
-  const msg = assistant.message;
-  const usage = msg.usage;
-  const blocks = msg.content;
-  const blockCounts = /* @__PURE__ */ new Map();
-  for (const block2 of blocks) {
-    blockCounts.set(block2.type, (blockCounts.get(block2.type) ?? 0) + 1);
-  }
-  const toolNames = [];
-  for (const block2 of blocks) {
-    if (block2.type === "tool_use") {
-      toolNames.push(block2.name);
-    }
-  }
-  return /* @__PURE__ */ u3("div", { className: "message-info-panel", children: [
-    msg.model && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Model" }),
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: msg.model })
-    ] }),
-    msg.stop_reason && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Stop reason" }),
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: msg.stop_reason })
-    ] }),
-    usage && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Tokens" }),
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: [
-        usage.input_tokens.toLocaleString(),
-        " in / ",
-        usage.output_tokens.toLocaleString(),
-        " out",
-        " ",
-        "(",
-        (usage.input_tokens + usage.output_tokens).toLocaleString(),
-        " total)"
-      ] })
-    ] }),
-    /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Content blocks" }),
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__value", children: Array.from(blockCounts.entries()).map(([type, count]) => `${count} ${type}`).join(", ") })
-    ] }),
-    toolNames.length > 0 && /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Tools" }),
-      /* @__PURE__ */ u3("div", { className: "message-info-panel__tools", children: toolNames.map((name, i4) => /* @__PURE__ */ u3("span", { className: "message-info-panel__tool-pill", children: name }, `${name}-${i4}`)) })
-    ] }),
-    /* @__PURE__ */ u3("div", { className: "message-info-panel__section", children: [
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__label", children: "Message ID" }),
-      /* @__PURE__ */ u3("span", { className: "message-info-panel__value message-info-panel__value--mono", children: selectedMessageId })
-    ] })
-  ] });
-}
-
-// ui/src/components/presets/ContextIndicator.tsx
-var MODEL_CONTEXT_WINDOWS = {
-  opus: 1e6,
-  sonnet: 25e4,
-  haiku: 2e5,
-  "gemini-2.5-pro": 1048576,
-  "gemini-3-flash-preview": 1048576,
-  codex: 2e5
-};
-function lookupContextWindow(modelName) {
-  if (!modelName)
-    return 2e5;
-  const lower2 = modelName.toLowerCase();
-  for (const [key2, value] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
-    if (lower2.includes(key2))
-      return value;
-  }
-  return 2e5;
-}
-function formatTokenCount(count) {
-  if (count >= 1e6)
-    return `${(count / 1e6).toFixed(1)}M`;
-  if (count >= 1e3)
-    return `${(count / 1e3).toFixed(1)}K`;
-  return String(count);
-}
-function severityColor(ratio) {
-  if (ratio > 0.5)
-    return "var(--accent-red)";
-  if (ratio > 0.25)
-    return "var(--accent-yellow)";
-  return "var(--accent-green)";
-}
-function ContextIndicator({
-  tokenCount = 0,
-  modelName,
-  variant
-}) {
-  const safeCount = tokenCount ?? 0;
-  const contextWindow = lookupContextWindow(modelName);
-  const ratio = contextWindow > 0 ? safeCount / contextWindow : 0;
-  const color2 = severityColor(ratio);
-  const pct = (ratio * 100).toFixed(1);
-  if (variant === "compact") {
-    return /* @__PURE__ */ u3(
-      "span",
-      {
-        className: "context-indicator context-indicator--compact",
-        title: `${safeCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`,
-        style: { color: color2 },
-        children: [
-          "~",
-          formatTokenCount(safeCount)
-        ]
-      }
-    );
-  }
-  return /* @__PURE__ */ u3(
-    "div",
-    {
-      className: "context-indicator context-indicator--bar",
-      title: `${safeCount.toLocaleString()} / ${contextWindow.toLocaleString()} tokens (~${pct}%)`,
-      children: /* @__PURE__ */ u3(
-        "div",
-        {
-          className: "context-indicator__fill",
-          style: {
-            width: `${Math.min(ratio * 100, 100)}%`,
-            background: color2
-          }
-        }
-      )
-    }
-  );
-}
-
-// ui/src/components/console/TerminalPane.tsx
-init_api();
-
-// ui/src/stream-cache.ts
-var DB_NAME = "mandible-stream-cache";
-var DB_VERSION = 1;
-var STORE_NAME = "streams";
-var DEFAULT_MAX_SESSIONS = 20;
-var dbPromise = null;
-var evictTimer = null;
-function debouncedEvict() {
-  if (evictTimer)
-    clearTimeout(evictTimer);
-  evictTimer = setTimeout(() => {
-    void evictLRU().catch(() => {
-    });
-  }, 5e3);
-}
-function getDb() {
-  if (dbPromise)
-    return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: "sessionId" });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-  return dbPromise;
-}
-async function getCachedEvents(sessionId) {
-  const db = await getDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readonly");
-    const store = tx.objectStore(STORE_NAME);
-    const request = store.get(sessionId);
-    request.onsuccess = () => {
-      const record = request.result;
-      resolve(record ? record.events : null);
-    };
-    request.onerror = () => reject(request.error);
-  });
-}
-async function setCachedEvents(sessionId, events) {
-  const db = await getDb();
-  const json = JSON.stringify(events);
-  const sizeBytes = new Blob([json]).size;
-  const record = {
-    sessionId,
-    events,
-    updatedAt: Date.now(),
-    sizeBytes
-  };
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite");
-    const store = tx.objectStore(STORE_NAME);
-    const request = store.put(record);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-    tx.oncomplete = () => {
-      debouncedEvict();
-    };
-  });
-}
-async function evictLRU(maxSessions, maxSizeBytes) {
-  const limit = maxSessions ?? DEFAULT_MAX_SESSIONS;
-  const db = await getDb();
-  const records = await new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readonly");
-    const store = tx.objectStore(STORE_NAME);
-    const request = store.getAll();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-  if (records.length <= limit && !maxSizeBytes)
-    return;
-  records.sort((a4, b3) => a4.updatedAt - b3.updatedAt);
-  const toDelete = [];
-  while (records.length - toDelete.length > limit) {
-    const victim = records[toDelete.length];
-    toDelete.push(victim.sessionId);
-  }
-  if (maxSizeBytes) {
-    let totalSize = records.reduce((sum, r3) => sum + r3.sizeBytes, 0);
-    for (const id2 of toDelete) {
-      const r3 = records.find((rec) => rec.sessionId === id2);
-      if (r3)
-        totalSize -= r3.sizeBytes;
-    }
-    let idx = 0;
-    while (totalSize > maxSizeBytes && idx < records.length) {
-      const candidate = records[idx];
-      if (!toDelete.includes(candidate.sessionId)) {
-        toDelete.push(candidate.sessionId);
-        totalSize -= candidate.sizeBytes;
-      }
-      idx++;
-    }
-  }
-  if (toDelete.length === 0)
-    return;
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite");
-    const store = tx.objectStore(STORE_NAME);
-    for (const id2 of toDelete) {
-      store.delete(id2);
-    }
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-// ui/src/components/console/TerminalPane.tsx
-var MODEL_OPTIONS = {
-  claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
-  gemini: [
-    "auto",
-    "pro",
-    "flash",
-    "flash-lite",
-    "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview",
-    "gemini-3.1-flash-lite-preview",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite"
-  ]
-};
-function parseModelFromArgs(args) {
-  for (let i4 = args.length - 2; i4 >= 0; i4 -= 1) {
-    const arg = args[i4];
-    if ((arg === "--model" || arg === "-m") && args[i4 + 1]?.trim()) {
-      return args[i4 + 1].trim();
-    }
-  }
-  return void 0;
-}
-function deriveStreamingState(events, _streamStartAtRef) {
-  const last = events[events.length - 1];
-  if (!last)
-    return false;
-  if (last.type === "result")
-    return false;
-  if (last.type === "assistant") {
-    const assistantEvent = last;
-    if (assistantEvent.message.stop_reason)
-      return false;
-  }
-  return true;
-}
-function flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming, streamStartAtRef) {
-  const pending = pendingSSERef.current;
-  pendingSSERef.current = [];
-  if (pending.length === 0)
-    return;
-  setStreamEvents((prev) => {
-    const newEvents = pending.filter((pe) => {
-      const peJson = JSON.stringify(pe);
-      return !prev.some((existing) => JSON.stringify(existing) === peJson);
-    });
-    const merged = newEvents.length > 0 ? [...prev, ...newEvents] : prev;
-    const isStreaming = deriveStreamingState(merged, streamStartAtRef);
-    setStreaming(isStreaming);
-    return merged;
-  });
-}
-function computeLiveTail(historyEvents, memEvents) {
-  const historyAssistantCount = historyEvents.filter((e3) => e3.type === "assistant").length;
-  if (historyAssistantCount === 0) {
-    return memEvents;
-  }
-  let assistantsSeen = 0;
-  let tailStart = memEvents.length;
-  for (let i4 = 0; i4 < memEvents.length; i4++) {
-    if (memEvents[i4].type === "assistant") {
-      assistantsSeen++;
-    }
-    if (assistantsSeen === historyAssistantCount) {
-      tailStart = i4 + 1;
-      while (tailStart < memEvents.length) {
-        const next = memEvents[tailStart];
-        if (next.type === "user" && "message" in next) {
-          const content = next.message.content;
-          if (Array.isArray(content) && content.every((b3) => b3.type === "tool_result")) {
-            tailStart++;
-            continue;
-          }
-        }
-        break;
-      }
-      break;
-    }
-  }
-  return memEvents.slice(tailStart);
-}
-function collectAvailableTools(events) {
-  for (let index3 = events.length - 1; index3 >= 0; index3 -= 1) {
-    const event = events[index3];
-    if (event.type === "system" && event.subtype === "init" && Array.isArray(event.tools)) {
-      return event.tools.filter((tool) => typeof tool === "string");
-    }
-  }
-  return [];
-}
-function readParentAgentId(event) {
-  if (!event) {
-    return null;
-  }
-  const candidates = [
-    event.parent_agent_id,
-    event.parentAgentId,
-    event.parentAgentID
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      return candidate;
-    }
-  }
-  return null;
-}
-function buildActiveSubagents(events) {
-  const active = /* @__PURE__ */ new Map();
-  for (const rawEvent of events) {
-    const event = rawEvent;
-    if (event.type !== "system") {
-      continue;
-    }
-    if (event.subtype === "subagent_start" && typeof event.agent_id === "string") {
-      active.set(event.agent_id, {
-        agent_id: event.agent_id,
-        agent_type: typeof event.agent_type === "string" ? event.agent_type : "subagent",
-        parent_agent_id: readParentAgentId(event.event),
-        started_at: active.get(event.agent_id)?.started_at ?? Date.now()
-      });
-      continue;
-    }
-    if (event.subtype === "subagent_stop" && typeof event.agent_id === "string") {
-      active.delete(event.agent_id);
-    }
-  }
-  const depthFor = (agentId, seen = /* @__PURE__ */ new Set()) => {
-    const entry = active.get(agentId);
-    if (!entry?.parent_agent_id || !active.has(entry.parent_agent_id) || seen.has(agentId)) {
-      return 0;
-    }
-    seen.add(agentId);
-    return depthFor(entry.parent_agent_id, seen) + 1;
-  };
-  return Array.from(active.values()).sort((left2, right2) => left2.started_at - right2.started_at).map((entry) => ({
-    agent_id: entry.agent_id,
-    agent_type: entry.agent_type,
-    parent_agent_id: entry.parent_agent_id,
-    depth: depthFor(entry.agent_id)
-  }));
-}
-function conversationBlocksToStreamEvents(providerSessionId, blocks) {
-  const events = [];
-  let assistantBlocks = [];
-  const flushAssistant = () => {
-    if (assistantBlocks.length === 0)
-      return;
-    events.push({
-      type: "assistant",
-      session_id: providerSessionId,
-      parent_tool_use_id: null,
-      message: {
-        role: "assistant",
-        content: assistantBlocks
-      }
-    });
-    assistantBlocks = [];
-  };
-  for (const block2 of blocks) {
-    const metadata = (() => {
-      try {
-        return JSON.parse(block2.metadata_json || "{}");
-      } catch {
-        return {};
-      }
-    })();
-    if (block2.type === "user_message") {
-      flushAssistant();
-      events.push({
-        type: "user",
-        session_id: providerSessionId,
-        parent_tool_use_id: null,
-        message: {
-          role: "user",
-          content: [{ type: "text", text: block2.content }]
-        }
-      });
-      continue;
-    }
-    if (block2.type === "assistant_message") {
-      assistantBlocks.push({ type: "text", text: block2.content });
-      continue;
-    }
-    if (block2.type === "thinking") {
-      assistantBlocks.push({ type: "thinking", thinking: block2.content });
-      continue;
-    }
-    if (block2.type === "tool_use") {
-      assistantBlocks.push({
-        type: "tool_use",
-        id: String(metadata.tool_id ?? `tool-${events.length}`),
-        name: String(metadata.tool_name ?? "tool"),
-        input: metadata.tool_input ?? {}
-      });
-      continue;
-    }
-    if (block2.type === "tool_result") {
-      const toolResult = {
-        type: "tool_result",
-        tool_use_id: String(metadata.tool_id ?? ""),
-        content: block2.content
-      };
-      events.push({
-        type: "user",
-        session_id: providerSessionId,
-        parent_tool_use_id: null,
-        message: {
-          role: "user",
-          content: [toolResult]
-        }
-      });
-      continue;
-    }
-  }
-  flushAssistant();
-  if (events.length > 0) {
-    events.push({
-      type: "result",
-      session_id: providerSessionId,
-      subtype: "success",
-      duration_ms: 0,
-      duration_api_ms: 0,
-      is_error: false,
-      num_turns: 0,
-      result: "",
-      cost_usd: 0,
-      total_cost_usd: 0,
-      usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 }
-    });
-  }
-  return events;
-}
-function TerminalPane({
-  sessionId,
-  agentType,
-  backendType,
-  allowedTools,
-  command,
-  sessionArgs,
-  isOperator,
-  interactionMode,
-  sessionStatus,
-  providerSessionId,
-  isVisible,
-  viewMode,
-  onViewModeChange,
-  resumeAtMessage,
-  channelEnabled = false
-}) {
-  const containerRef = A2(null);
-  const termRef = A2(null);
-  const fitAddonRef = A2(null);
-  const wsRef = A2(null);
-  const resizeObserverRef = A2(null);
-  const pendingWritesRef = A2([]);
-  const isVisibleRef = A2(isVisible);
-  const viewModeRef = A2(viewMode);
-  const hydratingRef = A2(false);
-  const pendingSSERef = A2([]);
-  const [wsStatus, setWsStatus] = d2("connecting");
-  const [reconnectNonce, setReconnectNonce] = d2(0);
-  const [streamEvents, setStreamEvents] = d2([]);
-  const [streaming, setStreaming] = d2(false);
-  const [hydratingHistory, setHydratingHistory] = d2(false);
-  const [elapsedSeconds, setElapsedSeconds] = d2(void 0);
-  const streamStartAtRef = A2(null);
-  const [model, setModel] = d2(() => parseModelFromArgs(sessionArgs));
-  const [permissionQueue, setPermissionQueue] = d2([]);
-  const [permissionBusy, setPermissionBusy] = d2(false);
-  const [activeSubagents, setActiveSubagents] = d2([]);
-  const [sidebarOpen, setSidebarOpen] = d2(false);
-  const [sidebarTab, setSidebarTab] = d2("settings");
-  const [selectedMessageId, setSelectedMessageId] = d2(null);
-  const [presetTokenCount, setPresetTokenCount] = d2(0);
-  const [channelEventCount, setChannelEventCount] = d2(0);
-  const [unseenEventCount, setUnseenEventCount] = d2(0);
-  const lastSeenEventCountRef = A2(0);
-  y2(() => {
-    if (viewMode === "events") {
-      setUnseenEventCount(0);
-      lastSeenEventCountRef.current = channelEventCount;
-    }
-  }, [viewMode, channelEventCount]);
-  const showDebugTerminal = backendType === "pty";
-  const providerFamily = isOperator ? "claude" : command;
-  const availableTools = collectAvailableTools(streamEvents);
-  y2(() => {
-    isVisibleRef.current = isVisible;
-  }, [isVisible]);
-  y2(() => {
-    viewModeRef.current = viewMode;
-  }, [viewMode]);
-  y2(() => {
-    setModel(parseModelFromArgs(sessionArgs));
-  }, [sessionArgs]);
-  y2(() => {
-    if (!showDebugTerminal)
-      return;
-    if (!containerRef.current)
-      return;
-    const term = new import_xterm.Terminal({
-      fontFamily: "var(--font-mono)",
-      fontSize: 13,
-      lineHeight: 1.2,
-      theme: {
-        background: "#0b0f14",
-        foreground: "#e6edf3",
-        cursor: "#4da3ff"
-      },
-      cursorBlink: true,
-      scrollback: 5e3,
-      allowProposedApi: false
-    });
-    const fitAddon = new import_addon_fit.FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(containerRef.current);
-    fitAddon.fit();
-    termRef.current = term;
-    fitAddonRef.current = fitAddon;
-    const observer = new ResizeObserver(() => {
-      if (!isVisibleRef.current || viewModeRef.current !== "terminal")
-        return;
-      try {
-        fitAddon.fit();
-        const ws = wsRef.current;
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-        }
-      } catch {
-      }
-    });
-    if (containerRef.current) {
-      observer.observe(containerRef.current);
-    }
-    resizeObserverRef.current = observer;
-    return () => {
-      observer.disconnect();
-      term.dispose();
-      termRef.current = null;
-      fitAddonRef.current = null;
-    };
-  }, [sessionId, showDebugTerminal]);
-  y2(() => {
-    if (!showDebugTerminal) {
-      setWsStatus("closed");
-      return;
-    }
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/terminal/${encodeURIComponent(sessionId)}`;
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
-    setWsStatus("connecting");
-    ws.onopen = () => {
-      setWsStatus("open");
-      const fitAddon = fitAddonRef.current;
-      const term = termRef.current;
-      const container = containerRef.current;
-      if (fitAddon && term && container && container.offsetWidth > 0) {
-        try {
-          fitAddon.fit();
-        } catch {
-        }
-        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-        if (pendingWritesRef.current.length > 0) {
-          for (const bytes of pendingWritesRef.current) {
-            term.write(bytes);
-          }
-          pendingWritesRef.current = [];
-        }
-      }
-    };
-    ws.onmessage = (event) => {
-      const term = termRef.current;
-      if (!term)
-        return;
-      if (event.data instanceof ArrayBuffer) {
-        const bytes = new Uint8Array(event.data);
-        if (term.cols > 0) {
-          term.write(bytes);
-        } else {
-          pendingWritesRef.current.push(bytes);
-        }
-      } else if (typeof event.data === "string") {
-        try {
-          JSON.parse(event.data);
-        } catch {
-          term.write(event.data);
-        }
-      }
-    };
-    ws.onclose = () => {
-      setWsStatus("closed");
-      termRef.current?.blur();
-    };
-    ws.onerror = () => {
-      setWsStatus("error");
-    };
-    return () => {
-      ws.close();
-    };
-  }, [sessionId, reconnectNonce, showDebugTerminal]);
-  y2(() => {
-    if (!showDebugTerminal)
-      return;
-    const term = termRef.current;
-    if (!term)
-      return;
-    const disposable = term.onData((data) => {
-      if (interactionMode === "inbox_only")
-        return;
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(new TextEncoder().encode(data));
-      }
-    });
-    return () => {
-      disposable.dispose();
-    };
-  }, [sessionId, interactionMode, showDebugTerminal]);
-  y2(() => {
-    if (!showDebugTerminal)
-      return;
-    if (isVisible && viewMode === "terminal") {
-      const rafId = requestAnimationFrame(() => {
-        const fitAddon = fitAddonRef.current;
-        const term = termRef.current;
-        if (fitAddon && term) {
-          try {
-            fitAddon.fit();
-            term.focus();
-            const ws = wsRef.current;
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-            }
-          } catch {
-          }
-          if (pendingWritesRef.current.length > 0) {
-            for (const bytes of pendingWritesRef.current) {
-              term.write(bytes);
-            }
-            pendingWritesRef.current = [];
-          } else {
-            const sessionId_ = sessionId;
-            fetch(`/api/console/sessions/${sessionId_}/buffer`).then((r3) => r3.ok ? r3.json() : null).then((resp) => {
-              if (resp?.data && termRef.current) {
-                const bytes = Uint8Array.from(atob(resp.data), (c4) => c4.charCodeAt(0));
-                termRef.current.write(bytes);
-              }
-            }).catch(() => {
-            });
-          }
-        }
-      });
-      return () => cancelAnimationFrame(rafId);
-    }
-  }, [isVisible, viewMode, sessionId, showDebugTerminal]);
-  y2(() => {
-    let cancelled = false;
-    hydratingRef.current = true;
-    pendingSSERef.current = [];
-    void getCachedEvents(sessionId).then((cached) => {
-      if (cancelled || !cached || cached.length === 0)
-        return;
-      setStreamEvents(cached);
-      setStreaming(deriveStreamingState(cached, streamStartAtRef));
-    }).catch(() => {
-    });
-    if (!providerSessionId) {
-      getConsoleStreamEvents(sessionId, 500).then((events) => {
-        if (cancelled)
-          return;
-        setStreamEvents(events);
-        setStreaming(deriveStreamingState(events, streamStartAtRef));
-      }).catch(() => {
-        if (cancelled)
-          return;
-        setStreamEvents([]);
-        setStreaming(false);
-      }).finally(() => {
-        if (!cancelled) {
-          hydratingRef.current = false;
-          flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming, streamStartAtRef);
-        }
-      });
-      return () => {
-        cancelled = true;
-      };
-    }
-    setHydratingHistory(true);
-    const historyPromise = getConversations({ session_id: providerSessionId, limit: 1 }).then(async ({ conversations }) => {
-      const conversation = conversations[0];
-      if (!conversation)
-        return null;
-      const detail = await getConversation(conversation.id, resumeAtMessage || void 0);
-      return conversationBlocksToStreamEvents(providerSessionId, detail.blocks);
-    }).catch(() => null);
-    const memPromise = getConsoleStreamEvents(sessionId, 500).catch(() => []);
-    Promise.all([historyPromise, memPromise]).then(([historyEvents, memEvents]) => {
-      if (cancelled)
-        return;
-      if (historyEvents && historyEvents.length > 0) {
-        const liveTail = computeLiveTail(historyEvents, memEvents);
-        const tailStartIndex = memEvents.length - liveTail.length;
-        const systemEvents = memEvents.slice(0, tailStartIndex).filter((e3) => e3.type === "system");
-        const allEvents = [...systemEvents, ...historyEvents, ...liveTail];
-        setStreamEvents(allEvents);
-        setStreaming(deriveStreamingState(allEvents, streamStartAtRef));
-      } else {
-        setStreamEvents(memEvents);
-        setStreaming(deriveStreamingState(memEvents, streamStartAtRef));
-      }
-    }).catch(() => {
-      if (cancelled)
-        return;
-      setStreamEvents([]);
-      setStreaming(false);
-    }).finally(() => {
-      if (!cancelled) {
-        setHydratingHistory(false);
-        hydratingRef.current = false;
-        flushPendingSSE(pendingSSERef, setStreamEvents, setStreaming, streamStartAtRef);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [providerSessionId, sessionId, resumeAtMessage]);
-  y2(() => {
-    if (streaming && (sessionStatus === "stopped" || sessionStatus === "crashed")) {
-      setStreaming(false);
-    }
-  }, [streaming, sessionStatus]);
-  const cacheFlushTimerRef = A2(null);
-  const streamEventsRef = A2(streamEvents);
-  streamEventsRef.current = streamEvents;
-  const sessionIdRef = A2(sessionId);
-  sessionIdRef.current = sessionId;
-  const streamingRef = A2(streaming);
-  streamingRef.current = streaming;
-  y2(() => {
-    if (!streaming)
-      return;
-    const scheduleFlush = () => {
-      cacheFlushTimerRef.current = setTimeout(() => {
-        const events = streamEventsRef.current;
-        if (events.length > 0) {
-          void setCachedEvents(sessionIdRef.current, events).catch(() => {
-          });
-        }
-        if (streamingRef.current)
-          scheduleFlush();
-      }, 2e3);
-    };
-    scheduleFlush();
-    return () => {
-      if (cacheFlushTimerRef.current)
-        clearTimeout(cacheFlushTimerRef.current);
-    };
-  }, [streaming]);
-  y2(() => {
-    const flushToCache = () => {
-      const events = streamEventsRef.current;
-      if (events.length > 0) {
-        void setCachedEvents(sessionIdRef.current, events).catch(() => {
-        });
-      }
-    };
-    window.addEventListener("beforeunload", flushToCache);
-    return () => {
-      window.removeEventListener("beforeunload", flushToCache);
-      flushToCache();
-    };
-  }, [sessionId]);
-  y2(() => {
-    if (!streaming)
-      return;
-    const check = () => {
-      void getConsoleStreamEvents(sessionId, 500).then((events) => {
-        if (events.length > 0) {
-          const last = events[events.length - 1];
-          if (last.type === "result") {
-            setStreamEvents(events);
-            setStreaming(false);
-          }
-        }
-      }).catch(() => {
-      });
-    };
-    const timer2 = setTimeout(check, 5e3);
-    return () => clearTimeout(timer2);
-  }, [streaming, sessionId]);
-  y2(() => {
-    const handleStreamEvent = (e3) => {
-      const detail = e3.detail;
-      if (!detail || detail.console_session_id !== sessionId)
-        return;
-      const streamEvent = detail.event;
-      if (!streamEvent)
-        return;
-      if (hydratingRef.current) {
-        pendingSSERef.current.push(streamEvent);
-        return;
-      }
-      setStreamEvents((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && JSON.stringify(last) === JSON.stringify(streamEvent)) {
-          return prev;
-        }
-        return [...prev, streamEvent];
-      });
-      if (streamEvent.type === "result") {
-        setStreaming(false);
-        streamStartAtRef.current = null;
-      } else {
-        setStreaming(true);
-      }
-    };
-    window.addEventListener("console:stream_event", handleStreamEvent);
-    return () => {
-      window.removeEventListener("console:stream_event", handleStreamEvent);
-      setStreamEvents([]);
-      setStreaming(false);
-    };
-  }, [sessionId]);
-  y2(() => {
-    if (!streaming) {
-      setElapsedSeconds(void 0);
-      return;
-    }
-    if (streamStartAtRef.current === null) {
-      let recovered = false;
-      for (let i4 = streamEvents.length - 1; i4 >= 0; i4--) {
-        const ev = streamEvents[i4];
-        if (ev.type === "synthetic_prompt") {
-          const localId = ev.localId;
-          if (localId) {
-            const match = localId.match(/^sp-(\d+)-/);
-            if (match) {
-              streamStartAtRef.current = Number(match[1]);
-              recovered = true;
-              break;
-            }
-          }
-        }
-        if (ev.type === "result")
-          break;
-      }
-      if (!recovered) {
-        streamStartAtRef.current = Date.now();
-      }
-    }
-    setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1e3));
-    const interval2 = window.setInterval(() => {
-      if (streamStartAtRef.current !== null) {
-        setElapsedSeconds(Math.floor((Date.now() - streamStartAtRef.current) / 1e3));
-      }
-    }, 1e3);
-    return () => window.clearInterval(interval2);
-  }, [streaming, streamEvents]);
-  y2(() => {
-    if (backendType !== "sdk") {
-      setActiveSubagents([]);
-      return;
-    }
-    setActiveSubagents(buildActiveSubagents(streamEvents));
-  }, [backendType, streamEvents]);
-  y2(() => {
-    if (backendType !== "sdk")
-      return;
-    let cancelled = false;
-    getPresetUnion({ session_id: sessionId }).then((union) => {
-      if (!cancelled)
-        setPresetTokenCount(union.totalTokens);
-    }).catch(() => {
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [backendType, sessionId]);
-  const handleSelectMessageInfo = (turnId) => {
-    if (selectedMessageId === turnId && sidebarTab === "info") {
-      setSelectedMessageId(null);
-      return;
-    }
-    setSelectedMessageId(turnId);
-    setSidebarOpen(true);
-    setSidebarTab("info");
-  };
-  const handleReconnect = async () => {
-    setWsStatus("connecting");
-    termRef.current?.reset();
-    pendingWritesRef.current = [];
-    try {
-      await restartConsoleSession(sessionId);
-      setReconnectNonce((n2) => n2 + 1);
-    } catch {
-      setWsStatus("error");
-    }
-  };
-  const [prompt, setPrompt] = d2("");
-  const handlePromptSubmit = (e3) => {
-    e3.preventDefault();
-    if (!prompt.trim())
-      return;
-    if (viewMode === "rich") {
-      const submittedPrompt = prompt.trim();
-      setPrompt("");
-      const localId = `sp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setStreamEvents((prev) => [...prev, {
-        type: "synthetic_prompt",
-        localId,
-        text: submittedPrompt
-      }]);
-      setElapsedSeconds(0);
-      streamStartAtRef.current = Date.now();
-      setStreaming(true);
-      void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
-        setStreaming(false);
-      });
-      return;
-    }
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(new TextEncoder().encode(prompt + "\r"));
-      setPrompt("");
-    }
-  };
-  const showReconnectOverlay = showDebugTerminal && (wsStatus === "closed" || wsStatus === "error");
-  const showDebugStart = showDebugTerminal && viewMode === "terminal" && sessionStatus !== "running";
-  const debugTerminalLabel = providerSessionId ? "Resume debug terminal" : "Start debug terminal";
-  const debugTerminalDescription = providerSessionId ? "Resume this same chat in the provider terminal for raw inspection or recovery." : "Open the provider terminal for this chat. Once a provider session exists, it will resume here.";
-  const handleStartDebugTerminal = async () => {
-    termRef.current?.reset();
-    pendingWritesRef.current = [];
-    try {
-      await startConsoleSession(sessionId);
-      setReconnectNonce((n2) => n2 + 1);
-    } catch {
-      setWsStatus("error");
-    }
-  };
-  y2(() => {
-    if (backendType !== "sdk") {
-      setPermissionQueue([]);
-      return;
-    }
-    let cancelled = false;
-    getConsolePermissions(sessionId).then((requests) => {
-      if (!cancelled) {
-        setPermissionQueue(requests);
-      }
-    }).catch(() => {
-      if (!cancelled) {
-        setPermissionQueue([]);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [backendType, sessionId]);
-  y2(() => {
-    if (backendType !== "sdk") {
-      return void 0;
-    }
-    const handlePermissionRequest = (event) => {
-      const detail = event.detail;
-      if (!detail || detail.console_session_id !== sessionId || !detail.request) {
-        return;
-      }
-      setPermissionQueue((prev) => {
-        if (prev.some((request) => request.id === detail.request.id)) {
-          return prev;
-        }
-        return [...prev, detail.request];
-      });
-    };
-    window.addEventListener("console:permission:request", handlePermissionRequest);
-    return () => {
-      window.removeEventListener("console:permission:request", handlePermissionRequest);
-    };
-  }, [backendType, sessionId]);
-  const handlePermissionResponse = async (requestId, decision) => {
-    setPermissionBusy(true);
-    try {
-      await respondToConsolePermission(sessionId, requestId, decision);
-      setPermissionQueue((prev) => prev.filter((request) => request.id !== requestId));
-    } finally {
-      setPermissionBusy(false);
-    }
-  };
-  return /* @__PURE__ */ u3(
-    "div",
-    {
-      className: "terminal-pane",
-      style: { display: isVisible ? "flex" : "none" },
-      children: [
-        /* @__PURE__ */ u3("div", { className: "terminal-pane__header", children: [
-          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "8px" }, children: /* @__PURE__ */ u3(
-            ViewToggle,
-            {
-              current: viewMode,
-              onChange: onViewModeChange,
-              showTerminal: showDebugTerminal,
-              channelEnabled,
-              unseenEventCount
-            }
-          ) }),
-          /* @__PURE__ */ u3("div", { className: "terminal-pane__header-actions", children: [
-            /* @__PURE__ */ u3("button", { type: "button", className: "terminal-pane__link-btn", onClick: () => {
-              window.location.hash = "#/inbox";
-            }, children: "View inbox" }),
-            providerSessionId && /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                className: "terminal-pane__link-btn",
-                onClick: () => {
-                  window.location.hash = `#/chat-history?session=${encodeURIComponent(providerSessionId)}`;
-                },
-                children: "View history"
-              }
-            ),
-            /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                className: "terminal-pane__link-btn",
-                onClick: () => setSidebarOpen((prev) => !prev),
-                title: "Session settings",
-                children: "\u22EE"
-              }
-            )
-          ] })
-        ] }),
-        interactionMode === "inbox_only" && /* @__PURE__ */ u3("div", { className: "terminal-pane__inbox-banner", children: "Operator receives inbox items. Direct input is disabled." }),
-        /* @__PURE__ */ u3("div", { className: "terminal-pane__body", children: [
-          showDebugTerminal && /* @__PURE__ */ u3(
-            "div",
-            {
-              className: "terminal-pane__container",
-              ref: containerRef,
-              style: { display: viewMode === "terminal" ? "flex" : "none", flex: 1 }
-            }
-          ),
-          channelEnabled && viewMode === "events" && /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "hidden", display: "flex" }, children: /* @__PURE__ */ u3(
-            ChannelEventsPane,
-            {
-              streamEvents,
-              onEventCountChange: (count) => {
-                setChannelEventCount(count);
-                if (viewMode !== "events") {
-                  const newEvents = count - lastSeenEventCountRef.current;
-                  setUnseenEventCount(Math.max(0, newEvents));
-                }
-              }
-            }
-          ) }),
-          showReconnectOverlay && viewMode === "terminal" && !showDebugStart && /* @__PURE__ */ u3("div", { className: "terminal-pane__reconnect-overlay", children: [
-            /* @__PURE__ */ u3("span", { children: wsStatus === "error" ? "Debug terminal connection error" : "Debug terminal disconnected" }),
-            /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                onClick: () => {
-                  void handleReconnect();
-                },
-                style: {
-                  padding: "8px 20px",
-                  borderRadius: "8px",
-                  background: "var(--accent-blue)",
-                  border: "none",
-                  color: "#fff",
-                  cursor: "pointer",
-                  fontSize: "14px",
-                  fontFamily: "var(--font-sans)"
-                },
-                children: "Reconnect terminal"
-              }
-            )
-          ] }),
-          showDebugStart && /* @__PURE__ */ u3("div", { className: "terminal-pane__reconnect-overlay", children: [
-            /* @__PURE__ */ u3("span", { children: debugTerminalDescription }),
-            /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                onClick: () => {
-                  void handleStartDebugTerminal();
-                },
-                style: {
-                  padding: "8px 20px",
-                  borderRadius: "8px",
-                  background: "var(--accent-blue)",
-                  border: "none",
-                  color: "#fff",
-                  cursor: "pointer",
-                  fontSize: "14px",
-                  fontFamily: "var(--font-sans)"
-                },
-                children: debugTerminalLabel
-              }
-            )
-          ] }),
-          viewMode === "rich" && /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-wrapper", children: [
-            /* @__PURE__ */ u3("div", { className: "terminal-pane__rich-main", children: [
-              /* @__PURE__ */ u3("div", { style: { flex: 1, overflow: "auto", minHeight: 0 }, children: [
-                backendType === "pty" && /* @__PURE__ */ u3(PtyBanner, {}),
-                backendType === "sdk" && activeSubagents.length > 0 && /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents", children: [
-                  /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-title", children: "Active subagents" }),
-                  /* @__PURE__ */ u3("div", { className: "terminal-pane__subagents-list", children: activeSubagents.map((subagent) => /* @__PURE__ */ u3(
-                    "div",
-                    {
-                      className: "terminal-pane__subagent",
-                      style: { paddingLeft: `${subagent.depth * 18}px` },
-                      children: [
-                        /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-type", children: subagent.agent_type }),
-                        /* @__PURE__ */ u3("span", { className: "terminal-pane__subagent-id", children: subagent.agent_id })
-                      ]
-                    },
-                    subagent.agent_id
-                  )) })
-                ] }),
-                /* @__PURE__ */ u3(
-                  StreamRenderer,
-                  {
-                    events: streamEvents,
-                    streaming,
-                    elapsedSeconds,
-                    emptyLabel: hydratingHistory ? "Loading prior messages\u2026" : void 0,
-                    sessionInfo: {
-                      sessionId,
-                      backend: providerFamily,
-                      model
-                    },
-                    onSelectMessageInfo: handleSelectMessageInfo,
-                    selectedMessageId
-                  }
-                )
-              ] }),
-              backendType === "sdk" && /* @__PURE__ */ u3("div", { style: { padding: "0 16px", flexShrink: 0 }, children: /* @__PURE__ */ u3(ContextIndicator, { tokenCount: presetTokenCount, modelName: model, variant: "bar" }) }),
-              /* @__PURE__ */ u3(
-                "form",
-                {
-                  onSubmit: handlePromptSubmit,
-                  style: {
-                    padding: "12px 16px",
-                    borderTop: "1px solid var(--border-subtle)",
-                    background: "var(--bg-inset)",
-                    display: "flex",
-                    gap: "12px",
-                    alignItems: "center",
-                    flexShrink: 0
-                  },
-                  children: [
-                    /* @__PURE__ */ u3(
-                      "input",
-                      {
-                        type: "text",
-                        value: prompt,
-                        onInput: (e3) => setPrompt(e3.currentTarget.value),
-                        placeholder: "Send a message to the agent...",
-                        disabled: interactionMode === "inbox_only",
-                        style: {
-                          flex: 1,
-                          background: "var(--bg-page)",
-                          border: "1px solid var(--border-subtle)",
-                          borderRadius: "8px",
-                          padding: "10px 14px",
-                          color: "var(--fg-default)",
-                          fontSize: "14px",
-                          fontFamily: "var(--font-sans)",
-                          outline: "none"
-                        }
-                      }
-                    ),
-                    /* @__PURE__ */ u3(
-                      "button",
-                      {
-                        type: "submit",
-                        disabled: !prompt.trim() || interactionMode === "inbox_only",
-                        style: {
-                          padding: "8px 16px",
-                          borderRadius: "6px",
-                          background: prompt.trim() ? "var(--accent-blue)" : "var(--bg-muted)",
-                          color: "#fff",
-                          border: "none",
-                          cursor: prompt.trim() ? "pointer" : "default",
-                          fontSize: "13px",
-                          fontWeight: 600,
-                          transition: "background 0.2s ease"
-                        },
-                        children: "Send"
-                      }
-                    )
-                  ]
-                }
-              )
-            ] }),
-            sidebarOpen && /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar", children: [
-              /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar-header", children: [
-                /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar-tabs", children: [
-                  /* @__PURE__ */ u3(
-                    "button",
-                    {
-                      type: "button",
-                      className: `terminal-pane__sidebar-tab${sidebarTab === "settings" ? " terminal-pane__sidebar-tab--active" : ""}`,
-                      onClick: () => setSidebarTab("settings"),
-                      children: "Settings"
-                    }
-                  ),
-                  /* @__PURE__ */ u3(
-                    "button",
-                    {
-                      type: "button",
-                      className: `terminal-pane__sidebar-tab${sidebarTab === "info" ? " terminal-pane__sidebar-tab--active" : ""}`,
-                      onClick: () => setSidebarTab("info"),
-                      children: "Info"
-                    }
-                  )
-                ] }),
-                /* @__PURE__ */ u3(
-                  "button",
-                  {
-                    type: "button",
-                    className: "terminal-pane__sidebar-close",
-                    onClick: () => setSidebarOpen(false),
-                    title: "Close sidebar",
-                    children: /* @__PURE__ */ u3("svg", { width: "14", height: "14", viewBox: "0 0 14 14", fill: "none", children: /* @__PURE__ */ u3("path", { d: "M3 3l8 8M11 3l-8 8", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round" }) })
-                  }
-                )
-              ] }),
-              sidebarTab === "settings" && /* @__PURE__ */ u3(k, { children: [
-                /* @__PURE__ */ u3(
-                  SessionControls,
-                  {
-                    sessionId,
-                    backendType,
-                    model,
-                    modelOptions: MODEL_OPTIONS[providerFamily] ?? [],
-                    allowedTools,
-                    availableTools,
-                    onModelSaved: setModel
-                  }
-                ),
-                (backendType === "sdk" || backendType === "pty") && /* @__PURE__ */ u3(
-                  LivePresetPills,
-                  {
-                    sessionId,
-                    readOnly: backendType !== "sdk",
-                    onUnionUpdate: ({ totalTokens }) => setPresetTokenCount(totalTokens)
-                  }
-                )
-              ] }),
-              sidebarTab === "info" && /* @__PURE__ */ u3(
-                MessageInfoPanel,
-                {
-                  selectedMessageId,
-                  streamEvents
-                }
-              )
-            ] })
-          ] })
-        ] }),
-        /* @__PURE__ */ u3(
-          PermissionDialog,
-          {
-            request: backendType === "sdk" && !permissionBusy ? permissionQueue[0] ?? null : null,
-            onRespond: handlePermissionResponse
-          }
-        )
-      ]
-    }
-  );
-}
-
-// ui/src/components/console/NewSessionDialog.tsx
-init_hooks_module();
-init_api();
-var KIND_OPTIONS = [
-  {
-    value: "agent",
-    title: "Chat agent",
-    description: "Normal ongoing chat. Rich chat is the primary interface."
-  },
-  {
-    value: "operator",
-    title: "Operator",
-    description: "Pinned Claude router that auto-starts and stays available across the app."
-  }
-];
-var BACKEND_OPTIONS = [
-  {
-    value: "claude",
-    title: "Claude Code",
-    description: "First-class chat with native Claude history."
-  },
-  {
-    value: "codex",
-    title: "Codex",
-    description: "First-class chat backed by Codex exec JSON events and native Codex history.",
-    note: "Operator mode is not available for Codex yet."
-  },
-  {
-    value: "gemini",
-    title: "Gemini",
-    description: "First-class chat backed by Gemini stream-json and native Gemini history.",
-    note: "Operator mode is not available for Gemini yet."
-  }
-];
-function OptionCard({
-  title,
-  description,
-  selected: selected2,
-  disabled = false,
-  onClick,
-  note
-}) {
-  return /* @__PURE__ */ u3(
-    "button",
-    {
-      type: "button",
-      className: `new-session-option${selected2 ? " new-session-option--selected" : ""}${disabled ? " new-session-option--disabled" : ""}`,
-      onClick,
-      disabled,
-      children: [
-        /* @__PURE__ */ u3("span", { className: "new-session-option__title", children: title }),
-        /* @__PURE__ */ u3("span", { className: "new-session-option__description", children: description }),
-        note && /* @__PURE__ */ u3("span", { className: "new-session-option__note", children: note })
-      ]
-    }
-  );
-}
-function NewSessionDialog({
-  open,
-  onClose,
-  onSubmit,
-  initialPresetId
-}) {
-  const [label, setLabel] = d2("");
-  const [kind, setKind] = d2("agent");
-  const [backend, setBackend] = d2("claude");
-  const [transport, setTransport] = d2("sdk");
-  const [channelEnabled, setChannelEnabled] = d2(false);
-  const [hasApiKey, setHasApiKey] = d2(null);
-  const [presetIds, setPresetIds] = d2([]);
-  const [allPresets, setAllPresets] = d2([]);
-  const [presetsLoaded, setPresetsLoaded] = d2(false);
-  const [validationWarnings, setValidationWarnings] = d2([]);
-  y2(() => {
-    if (!open)
-      return;
-    let cancelled = false;
-    const loadPresets = async () => {
-      try {
-        const [presets, defaults2] = await Promise.all([
-          getPresets(),
-          getDefaultPresetIds()
-        ]);
-        if (cancelled)
-          return;
-        setAllPresets(presets);
-        if (initialPresetId) {
-          const ids = presets.some((p3) => p3.id === initialPresetId) ? [initialPresetId] : [];
-          const merged = [...ids, ...defaults2.filter((d3) => !ids.includes(d3))];
-          setPresetIds(merged.filter((id2) => presets.some((p3) => p3.id === id2)));
-        } else {
-          setPresetIds(defaults2.filter((id2) => presets.some((p3) => p3.id === id2)));
-        }
-        setPresetsLoaded(true);
-      } catch {
-        if (!cancelled) {
-          setAllPresets([]);
-          setPresetIds([]);
-          setPresetsLoaded(true);
-        }
-      }
-    };
-    void loadPresets();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, initialPresetId]);
-  y2(() => {
-    if (!open)
-      return;
-    let cancelled = false;
-    void getSettings().then((settings) => {
-      if (cancelled)
-        return;
-      const apiKeyConfigured = Boolean(
-        settings.anthropic_api_key || settings.ANTHROPIC_API_KEY
-      );
-      setHasApiKey(apiKeyConfigured);
-      if (!apiKeyConfigured) {
-        setTransport("pty");
-        setChannelEnabled(true);
-      }
-    }).catch(() => {
-      if (!cancelled)
-        setHasApiKey(null);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
-  y2(() => {
-    if (!presetsLoaded || presetIds.length === 0 || backend !== "claude") {
-      setValidationWarnings([]);
-      return;
-    }
-    let cancelled = false;
-    void validatePresetIds(presetIds).then((result) => {
-      if (!cancelled) {
-        setValidationWarnings(result.warnings);
-      }
-    }).catch(() => {
-      if (!cancelled)
-        setValidationWarnings([]);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [presetIds, presetsLoaded, backend]);
-  y2(() => {
-    if (kind === "operator" && backend !== "claude") {
-      setBackend("claude");
-      setTransport("sdk");
-    }
-  }, [backend, kind]);
-  y2(() => {
-    if (backend !== "claude" && transport !== "spawn") {
-      setTransport("spawn");
-    }
-  }, [backend, transport]);
-  if (!open)
-    return null;
-  const isSDK = transport === "sdk";
-  const supportsPresets = backend === "claude";
-  const handleSubmit = (e3) => {
-    e3.preventDefault();
-    if (!label.trim())
-      return;
-    onSubmit({
-      label: label.trim(),
-      backend,
-      kind,
-      backend_type: transport,
-      channel_enabled: channelEnabled || void 0,
-      presetIds: supportsPresets ? presetIds : void 0
-    });
-    setLabel("");
-    setKind("agent");
-    setBackend("claude");
-    setTransport("sdk");
-    setChannelEnabled(false);
-    setPresetIds([]);
-    setPresetsLoaded(false);
-    setValidationWarnings([]);
-    onClose();
-  };
-  const handleOverlayClick = (e3) => {
-    if (e3.target === e3.currentTarget) {
-      onClose();
-    }
-  };
-  return /* @__PURE__ */ u3("div", { className: "new-session-dialog-overlay", onClick: handleOverlayClick, children: /* @__PURE__ */ u3("div", { className: "new-session-dialog", children: [
-    /* @__PURE__ */ u3("h3", { children: "New Agent Chat" }),
-    /* @__PURE__ */ u3("p", { className: "new-session-dialog__intro", children: "Choose the chat role first, then the backend that will power it." }),
-    /* @__PURE__ */ u3("form", { className: "new-session-dialog__form", onSubmit: handleSubmit, children: [
-      /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
-        /* @__PURE__ */ u3("label", { htmlFor: "console-session-label", className: "new-session-dialog__label", children: "Name" }),
-        /* @__PURE__ */ u3(
-          "input",
-          {
-            id: "console-session-label",
-            type: "text",
-            value: label,
-            onInput: (e3) => setLabel(e3.target.value),
-            placeholder: "e.g. Research thread, Operator",
-            required: true,
-            autoFocus: true,
-            className: "new-session-dialog__input"
-          }
-        )
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
-        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Kind" }),
-        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: KIND_OPTIONS.map((option) => /* @__PURE__ */ u3(
-          OptionCard,
-          {
-            title: option.title,
-            description: option.description,
-            selected: kind === option.value,
-            onClick: () => setKind(option.value)
-          },
-          option.value
-        )) })
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
-        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Backend" }),
-        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: BACKEND_OPTIONS.map((option) => {
-          const disabled = kind === "operator" && option.value !== "claude";
-          return /* @__PURE__ */ u3(
-            OptionCard,
-            {
-              title: option.title,
-              description: option.description,
-              note: disabled ? option.note : void 0,
-              selected: backend === option.value,
-              disabled,
-              onClick: () => {
-                setBackend(option.value);
-                setTransport(option.value === "claude" ? "sdk" : "spawn");
-              }
-            },
-            option.value
-          );
-        }) })
-      ] }),
-      backend === "claude" && /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
-        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Transport" }),
-        /* @__PURE__ */ u3("div", { className: "new-session-dialog__options", children: [
-          /* @__PURE__ */ u3(
-            OptionCard,
-            {
-              title: "Claude SDK",
-              description: "Structured events, Mandible permissions, and SDK-native session control.",
-              selected: transport === "sdk",
-              onClick: () => {
-                setTransport("sdk");
-                setChannelEnabled(false);
-              }
-            }
-          ),
-          /* @__PURE__ */ u3(
-            OptionCard,
-            {
-              title: "PTY + Channel",
-              description: "Your Claude Code CLI with Mandible channel integration. Uses your OAuth login. Terminal + structured events.",
-              selected: transport === "pty" && channelEnabled,
-              onClick: () => {
-                setTransport("pty");
-                setChannelEnabled(true);
-              }
-            }
-          ),
-          /* @__PURE__ */ u3(
-            OptionCard,
-            {
-              title: "PTY",
-              description: "Classic terminal transport with a raw debug terminal fallback.",
-              selected: transport === "pty" && !channelEnabled,
-              onClick: () => {
-                setTransport("pty");
-                setChannelEnabled(false);
-              }
-            }
-          )
-        ] })
-      ] }),
-      supportsPresets && presetsLoaded && /* @__PURE__ */ u3("div", { className: "new-session-dialog__field", children: [
-        /* @__PURE__ */ u3("div", { className: "new-session-dialog__label", children: "Presets" }),
-        /* @__PURE__ */ u3(
-          PresetPillSelector,
-          {
-            selectedPresetIds: presetIds,
-            onChange: setPresetIds,
-            presets: allPresets
-          }
-        ),
-        !isSDK && /* @__PURE__ */ u3("div", { className: "new-session-dialog__preset-note", children: "Presets will be applied at session start. Restart session to change." }),
-        isSDK && /* @__PURE__ */ u3("div", { className: "new-session-dialog__preset-note new-session-dialog__preset-note--muted", children: "Presets can be changed mid-conversation." }),
-        validationWarnings.length > 0 && /* @__PURE__ */ u3("div", { className: "new-session-dialog__validation-warnings", children: validationWarnings.map((w4, i4) => /* @__PURE__ */ u3("div", { className: "new-session-dialog__validation-warning", children: [
-          /* @__PURE__ */ u3("span", { className: "new-session-dialog__validation-warning-icon", children: "\u26A0" }),
-          /* @__PURE__ */ u3("span", { children: [
-            'Convention "',
-            w4.conventionTitle,
-            '" requires setting "',
-            w4.settingKey,
-            '" to be configured.',
-            " ",
-            /* @__PURE__ */ u3(
-              "a",
-              {
-                href: "#/settings",
-                className: "new-session-dialog__validation-warning-link",
-                onClick: (e3) => {
-                  e3.preventDefault();
-                  window.location.hash = "#/settings";
-                },
-                children: [
-                  "Configure now ",
-                  "\u2192"
-                ]
-              }
-            )
-          ] })
-        ] }, i4)) })
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "new-session-dialog__actions", children: [
-        /* @__PURE__ */ u3("button", { type: "button", onClick: onClose, className: "new-session-dialog__button new-session-dialog__button--ghost", children: "Cancel" }),
-        /* @__PURE__ */ u3("button", { type: "submit", className: "new-session-dialog__button new-session-dialog__button--primary", children: "Create chat" })
-      ] })
-    ] })
-  ] }) });
-}
-
-// ui/src/views/console.tsx
-function ConsoleView({
-  sessions,
-  activeSessionId,
-  onSelectSession,
-  onCloseSession,
-  onNewSession,
-  isActive,
-  initialSessionId,
-  initialPresetId
-}) {
-  const [dialogOpen, setDialogOpen] = d2(Boolean(initialPresetId));
-  const [viewModes, setViewModes] = d2({});
-  y2(() => {
-    if (!initialSessionId)
-      return;
-    if (!sessions.some((session) => session.id === initialSessionId))
-      return;
-    if (activeSessionId === initialSessionId)
-      return;
-    onSelectSession(initialSessionId);
-  }, [activeSessionId, initialSessionId, onSelectSession, sessions]);
-  y2(() => {
-    if (initialSessionId)
-      return;
-    if (activeSessionId === null && sessions.length > 0) {
-      const operatorSession = sessions.find(
-        (s3) => s3.agent_type === "operator" && s3.pinned
-      );
-      const pinnedSession = sessions.find((s3) => s3.pinned);
-      const firstSession = [...sessions].sort((a4, b3) => a4.created_at - b3.created_at)[0];
-      const target = operatorSession ?? pinnedSession ?? firstSession;
-      if (target) {
-        onSelectSession(target.id);
-      }
-    }
-  }, [activeSessionId, sessions, onSelectSession]);
-  const getViewMode = (sessionId) => {
-    if (sessionId in viewModes)
-      return viewModes[sessionId];
-    return "rich";
-  };
-  const handleViewModeChange = (sessionId, mode) => {
-    setViewModes((prev) => ({ ...prev, [sessionId]: mode }));
-  };
-  return /* @__PURE__ */ u3("div", { className: "console-view", children: [
-    /* @__PURE__ */ u3(
-      ConsoleSubTabBar,
-      {
-        sessions,
-        activeSessionId,
-        onSelect: onSelectSession,
-        onClose: onCloseSession,
-        onNewSession: () => setDialogOpen(true),
-        isConsoleActive: isActive
-      }
-    ),
-    /* @__PURE__ */ u3("div", { style: { flex: 1, position: "relative", overflow: "hidden" }, children: sessions.length === 0 ? /* @__PURE__ */ u3(
-      "div",
-      {
-        style: {
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100%",
-          gap: "12px",
-          color: "var(--text-muted)",
-          fontSize: "14px"
-        },
-        children: [
-          /* @__PURE__ */ u3("div", { children: "No console sessions" }),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              onClick: () => setDialogOpen(true),
-              style: {
-                padding: "8px 20px",
-                borderRadius: "8px",
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid rgba(255,255,255,0.1)",
-                color: "var(--text-primary)",
-                cursor: "pointer",
-                fontSize: "14px",
-                fontFamily: "var(--font-sans)"
-              },
-              children: "+ New Session"
-            }
-          )
-        ]
-      }
-    ) : sessions.map((session) => /* @__PURE__ */ u3(
-      TerminalPane,
-      {
-        sessionId: session.id,
-        agentType: session.agent_type,
-        backendType: session.backend_type,
-        allowedTools: session.allowed_tools,
-        command: session.command ?? session.agent_type,
-        sessionArgs: session.args ?? [],
-        isOperator: session.is_operator,
-        interactionMode: session.interaction_mode,
-        sessionStatus: session.status,
-        providerSessionId: session.provider_session_id,
-        isVisible: session.id === activeSessionId,
-        viewMode: getViewMode(session.id),
-        onViewModeChange: (mode) => handleViewModeChange(session.id, mode),
-        resumeAtMessage: session.resume_at_message,
-        channelEnabled: !!session.channel_enabled
-      },
-      session.id
-    )) }),
-    /* @__PURE__ */ u3(
-      NewSessionDialog,
-      {
-        open: dialogOpen,
-        onClose: () => setDialogOpen(false),
-        onSubmit: onNewSession,
-        initialPresetId
-      }
-    )
   ] });
 }
 
@@ -38767,7 +39033,7 @@ function DetailPane({
     ] })
   ] });
 }
-function GraphView2({ onNavigate, refreshToken, initialMode }) {
+function GraphView2({ onNavigate, refreshToken, initialMode, initialFocus }) {
   const routeMode = coerceGraphMode(initialMode);
   const [payload, setPayload] = d2({ nodes: [], edges: [], mode: "activity" });
   const [loading, setLoading] = d2(true);
@@ -38797,7 +39063,9 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
         return;
       setPayload(data);
       setEnabledLayers(new Set((data.layers ?? []).filter((layer) => layer.enabled).map((layer) => layer.id)));
-      if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
+      if (initialFocus && data.nodes.some((node) => node.id === initialFocus)) {
+        setSelectedNodeId(initialFocus);
+      } else if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
         setSelectedNodeId(data.nodes[0].id);
       }
     }).catch((err) => {
@@ -38811,7 +39079,7 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
     return () => {
       active = false;
     };
-  }, [mode, sinceFilter, statusFilter, repoFilters, branchFilters, refreshToken]);
+  }, [mode, sinceFilter, statusFilter, repoFilters, branchFilters, refreshToken, initialFocus]);
   const rawModes = payload.modes ?? Object.entries(MODE_LABELS).map(([id2, label]) => ({
     id: id2,
     label,
@@ -38850,15 +39118,22 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
     () => payload.edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)),
     [payload.edges, visibleNodeIds]
   );
-  const flowNodes = T2(() => layoutNodes(visibleNodes, visibleEdges, mode), [visibleNodes, visibleEdges, mode]);
+  const flowNodes = T2(
+    () => layoutNodes(visibleNodes, visibleEdges, mode).map((node) => ({
+      ...node,
+      selected: node.data.node.id === selectedNodeId
+    })),
+    [visibleNodes, visibleEdges, mode, selectedNodeId]
+  );
   const flowEdgeList = T2(() => flowEdges(visibleEdges), [visibleEdges]);
   const flowSignature = T2(
     () => [
       mode,
+      selectedNodeId ?? "",
       flowNodes.map((node) => node.id).join(","),
       flowEdgeList.map((edge) => edge.id).join(",")
     ].join(":"),
-    [flowEdgeList, flowNodes, mode]
+    [flowEdgeList, flowNodes, mode, selectedNodeId]
   );
   const selectedNode = T2(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
@@ -42914,18 +43189,28 @@ function appReducer(state, action) {
   }
 }
 function selectBadgeCounts(state) {
-  const sessions = state.sessions.filter((session) => {
+  const sessionRecords = Array.isArray(state.sessions) ? state.sessions : [];
+  const authQueue = Array.isArray(state.authQueue) ? state.authQueue : [];
+  const workBranches = state.workBranches && typeof state.workBranches === "object" ? Object.values(state.workBranches) : [];
+  const inboxData = state.inboxData;
+  const inboxContinuations = Array.isArray(inboxData?.continuations) ? inboxData.continuations.length : 0;
+  const inboxAuthResults = Array.isArray(inboxData?.auth_results) ? inboxData.auth_results.length : 0;
+  const consoleUnreadBadge = typeof state.consoleUnreadBadge === "number" ? state.consoleUnreadBadge : 0;
+  const sessions = sessionRecords.filter((session) => {
     const status = (session.status || session.state || "").toLowerCase();
     if (!status || status === "ended" || status === "dead" || status === "closed" || status === "reaped") {
       return false;
     }
     return !session.ended_at;
   }).length;
-  const auth = state.authQueue.filter((request) => {
+  const auth = authQueue.filter((request) => {
     const status = (request.status || request.state || "").toLowerCase();
     return !status || status === "pending";
   }).length;
-  const work = Object.values(state.workBranches).reduce((total, branches) => {
+  const work = workBranches.reduce((total, branches) => {
+    if (!Array.isArray(branches)) {
+      return total;
+    }
     const dirtyBranches = branches.filter((branch) => {
       if (typeof branch.dirty === "boolean") {
         return branch.dirty;
@@ -42934,8 +43219,8 @@ function selectBadgeCounts(state) {
     });
     return total + dirtyBranches.length;
   }, 0);
-  const inbox = (state.inboxData?.continuations.length ?? 0) + (state.inboxData?.auth_results.length ?? 0);
-  const console2 = state.consoleUnreadBadge;
+  const inbox = inboxContinuations + inboxAuthResults;
+  const console2 = consoleUnreadBadge;
   return { sessions, auth, work, inbox, console: console2 };
 }
 function applySSEEvent(state, payload) {
@@ -43216,14 +43501,6 @@ function ChatIcon(props) {
   const { size, className } = { ...defaults, ...props };
   return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: /* @__PURE__ */ u3("path", { d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" }) });
 }
-function HistoryIcon(props) {
-  const { size, className } = { ...defaults, ...props };
-  return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: [
-    /* @__PURE__ */ u3("path", { d: "M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }),
-    /* @__PURE__ */ u3("path", { d: "M3 3v5h5" }),
-    /* @__PURE__ */ u3("path", { d: "M12 7v5l4 2" })
-  ] });
-}
 function MonitorIcon(props) {
   const { size, className } = { ...defaults, ...props };
   return /* @__PURE__ */ u3("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className, "aria-hidden": "true", children: /* @__PURE__ */ u3("polyline", { points: "22 12 18 12 15 21 9 3 6 12 2 12" }) });
@@ -43348,11 +43625,8 @@ function setLastSeenCommit(hash) {
     return;
   }
 }
-function parseHashRoute() {
-  if (typeof window === "undefined") {
-    return { tab: "graph", params: {} };
-  }
-  const hash = window.location.hash || "#/graph";
+function parseRouteFromHash(hashValue) {
+  const hash = hashValue || "#/graph";
   const [pathPart, queryPart] = hash.replace("#", "").split("?");
   const path = pathPart.replace(/^\//, "") || "graph";
   const params = {};
@@ -43362,9 +43636,15 @@ function parseHashRoute() {
       params[key2] = value;
     });
   }
-  const normalizedPath = path === "conversations" || path === "chats" ? "chat-history" : path;
+  const normalizedPath = path === "conversations" || path === "chats" || path === "chat-history" ? "console" : path;
   const tab = ["sessions", "auth", "chat-history", "work", "review", "issues", "settings", "switchboard", "inbox", "console", "logs", "graph", "presets"].includes(normalizedPath) ? normalizedPath : "graph";
   return { tab, params };
+}
+function parseHashRoute() {
+  if (typeof window === "undefined") {
+    return { tab: "graph", params: {} };
+  }
+  return parseRouteFromHash(window.location.hash || "#/graph");
 }
 function RebuildingSplash() {
   return /* @__PURE__ */ u3("div", { className: "rebuilding-splash", children: /* @__PURE__ */ u3("div", { className: "rebuilding-splash__content", children: [
@@ -43379,16 +43659,27 @@ function App() {
     ...loadCachedState()
   }));
   const [route, setRoute] = d2(() => parseHashRoute());
-  const [showOverflow, setShowOverflow] = d2(false);
-  const overflowRef = A2(null);
   const [errorToast, setErrorToast] = d2(null);
   const errorToastTimerRef = A2(null);
   const [rebuilding, setRebuilding] = d2(false);
   const [graphRefreshToken, setGraphRefreshToken] = d2(0);
+  const navigateToHash = q2((hash) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (window.location.hash !== hash) {
+      window.history.pushState(null, "", hash);
+    }
+    setRoute(parseRouteFromHash(hash));
+  }, []);
   y2(() => {
     const handleChange = () => setRoute(parseHashRoute());
     window.addEventListener("hashchange", handleChange);
-    return () => window.removeEventListener("hashchange", handleChange);
+    window.addEventListener("popstate", handleChange);
+    return () => {
+      window.removeEventListener("hashchange", handleChange);
+      window.removeEventListener("popstate", handleChange);
+    };
   }, []);
   y2(() => {
     if (typeof window !== "undefined" && window.__TAURI__) {
@@ -43396,38 +43687,27 @@ function App() {
     }
   }, []);
   y2(() => {
-    if (!showOverflow)
-      return;
-    const handleClickOutside = (e3) => {
-      if (overflowRef.current && !overflowRef.current.contains(e3.target)) {
-        setShowOverflow(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showOverflow]);
-  y2(() => {
     const tabRoutes = {
       "1": "console",
-      "2": "chat-history",
-      "3": "inbox",
+      "2": "graph",
+      "3": "auth",
       "4": "issues",
-      "5": "sessions",
-      "6": "auth",
-      "7": "settings",
-      "8": "work",
-      "9": "review",
+      "5": "inbox",
+      "6": "sessions",
+      "7": "work",
+      "8": "review",
+      "9": "settings",
       "0": "logs"
     };
     const handleKeyDown = (e3) => {
       if (e3.ctrlKey && !e3.metaKey && !e3.altKey && tabRoutes[e3.key]) {
         e3.preventDefault();
-        window.location.hash = `#/${tabRoutes[e3.key]}`;
+        navigateToHash(`#/${tabRoutes[e3.key]}`);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [navigateToHash]);
   y2(() => {
     let active = true;
     getSessions("?include=issues").then((sessions) => {
@@ -43678,6 +43958,7 @@ function App() {
   ]);
   const badges = T2(() => selectBadgeCounts(state), [state]);
   const headerDisplayMode = state.settings.header_display_mode ?? "text";
+  const railDisplayMode = headerDisplayMode === "icons" ? "icons" : "both";
   const authBranchesByRepo = T2(() => {
     const result = {};
     for (const [repoId, branches] of Object.entries(state.workBranches)) {
@@ -43961,18 +44242,131 @@ function App() {
         const params = new URLSearchParams({ issue: humanId });
         if (resolvedRepoId)
           params.set("repo", resolvedRepoId);
-        window.location.hash = `#/issues?${params.toString()}`;
+        navigateToHash(`#/issues?${params.toString()}`);
         break;
       }
       case "session":
-        window.location.hash = `#/sessions?session=${encodeURIComponent(id2.replace(/^session:/, ""))}`;
+        navigateToHash(`#/sessions?session=${encodeURIComponent(id2.replace(/^session:/, ""))}`);
         break;
       case "auth_request":
-        window.location.hash = `#/auth?request=${encodeURIComponent(id2.replace(/^auth_request:/, ""))}`;
+        navigateToHash(`#/auth?request=${encodeURIComponent(id2.replace(/^auth_request:/, ""))}`);
         break;
       default:
         break;
     }
+  };
+  const primaryNavItems = [
+    {
+      tab: "console",
+      href: "#/console",
+      label: "Chat",
+      title: "Chat",
+      badge: badges.console,
+      icon: ChatIcon
+    },
+    {
+      tab: "graph",
+      href: "#/graph",
+      label: "Graph",
+      title: "Graph",
+      icon: GraphIcon
+    },
+    {
+      tab: "auth",
+      href: "#/auth",
+      label: "Auth",
+      title: "Auth",
+      badge: badges.auth,
+      badgeClass: "tab-badge--auth",
+      icon: AuthIcon
+    },
+    {
+      tab: "issues",
+      href: "#/issues",
+      label: "Issues",
+      title: "Issues",
+      icon: IssuesIcon
+    },
+    {
+      tab: "inbox",
+      href: "#/inbox",
+      label: "Inbox",
+      title: "Inbox",
+      badge: badges.inbox,
+      icon: InboxIcon
+    },
+    {
+      tab: "sessions",
+      href: "#/sessions",
+      label: "Monitor",
+      title: "Monitor",
+      badge: badges.sessions,
+      icon: MonitorIcon
+    }
+  ];
+  const secondaryNavItems = [
+    {
+      tab: "work",
+      href: "#/work",
+      label: "Projects",
+      title: "Projects",
+      badge: badges.work,
+      icon: ProjectsIcon
+    },
+    {
+      tab: "review",
+      href: "#/review",
+      label: "Review",
+      title: "Review",
+      icon: DiffIcon
+    },
+    {
+      tab: "presets",
+      href: "#/presets",
+      label: "Presets",
+      title: "Presets",
+      icon: PresetsIcon
+    },
+    {
+      tab: "switchboard",
+      href: "#/switchboard",
+      label: "Switchboard",
+      title: "Switchboard",
+      icon: SwitchboardIcon
+    },
+    {
+      tab: "logs",
+      href: "#/logs",
+      label: "Logs",
+      title: "Logs",
+      icon: LogsIcon
+    }
+  ];
+  const renderRailItem = (item) => {
+    const Icon = item.icon;
+    const active = route.tab === item.tab;
+    return /* @__PURE__ */ u3(
+      "a",
+      {
+        href: item.href,
+        className: `app-rail__item${active ? " app-rail__item--active" : ""}`,
+        "aria-current": active ? "page" : void 0,
+        title: item.title,
+        onClick: (event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+            return;
+          }
+          event.preventDefault();
+          navigateToHash(item.href);
+        },
+        children: [
+          /* @__PURE__ */ u3("span", { className: "app-rail__icon", children: /* @__PURE__ */ u3(Icon, { size: 18 }) }),
+          railDisplayMode === "both" && /* @__PURE__ */ u3("span", { className: "app-rail__label", children: item.label }),
+          item.badge ? /* @__PURE__ */ u3("span", { className: `tab-badge app-rail__badge${item.badgeClass ? ` ${item.badgeClass}` : ""}`, children: item.badge }) : null
+        ]
+      },
+      item.tab
+    );
   };
   if (rebuilding) {
     return /* @__PURE__ */ u3(RebuildingSplash, {});
@@ -44012,306 +44406,148 @@ function App() {
         }
       )
     ] }),
-    /* @__PURE__ */ u3("header", { className: "app-header", "data-tauri-drag-region": true, children: [
-      /* @__PURE__ */ u3("div", { className: "brand", children: "Mandible" }),
-      /* @__PURE__ */ u3("nav", { className: `tabs${headerDisplayMode === "icons" ? " tabs--icons" : headerDisplayMode === "both" ? " tabs--both" : ""}`, children: [
-        /* @__PURE__ */ u3("a", { href: "#/graph", className: route.tab === "graph" ? "active" : "", title: "Graph", children: [
-          (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(GraphIcon, { size: 16 }),
-          (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Graph" })
+    /* @__PURE__ */ u3("div", { className: `app-layout app-layout--rail-${railDisplayMode}`, children: [
+      /* @__PURE__ */ u3("aside", { className: "app-rail", "data-tauri-drag-region": true, children: [
+        /* @__PURE__ */ u3("div", { className: "app-rail__brand", title: "Mandible", children: [
+          /* @__PURE__ */ u3("span", { className: "app-rail__mark", "aria-hidden": "true", children: "M" }),
+          railDisplayMode === "both" && /* @__PURE__ */ u3("span", { className: "app-rail__brand-text", children: "Mandible" })
         ] }),
-        /* @__PURE__ */ u3("div", { className: "tab-twin", children: [
-          /* @__PURE__ */ u3(
-            "a",
-            {
-              href: "#/console",
-              className: `tab-twin__btn${route.tab === "console" ? " tab-twin__btn--active" : ""}`,
-              title: "Chat",
-              children: [
-                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(ChatIcon, { size: 16 }),
-                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Chat" }),
-                badges.console > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.console })
-              ]
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "a",
-            {
-              href: "#/chat-history",
-              className: `tab-twin__btn${route.tab === "chat-history" ? " tab-twin__btn--active" : ""}`,
-              title: "History",
-              children: [
-                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(HistoryIcon, { size: 16 }),
-                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "History" })
-              ]
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "a",
-            {
-              href: "#/sessions",
-              className: `tab-twin__btn${route.tab === "sessions" ? " tab-twin__btn--active" : ""}`,
-              title: "Monitor",
-              children: [
-                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(MonitorIcon, { size: 16 }),
-                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Monitor" }),
-                badges.sessions > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.sessions })
-              ]
-            }
-          )
+        /* @__PURE__ */ u3("nav", { className: "app-rail__nav", "aria-label": "Main navigation", children: [
+          /* @__PURE__ */ u3("div", { className: "app-rail__group", children: primaryNavItems.map(renderRailItem) }),
+          /* @__PURE__ */ u3("div", { className: "app-rail__group app-rail__group--secondary", children: secondaryNavItems.map(renderRailItem) })
         ] }),
-        /* @__PURE__ */ u3("div", { className: "tab-twin", children: [
-          /* @__PURE__ */ u3(
-            "a",
-            {
-              href: "#/issues",
-              className: `tab-twin__btn${route.tab === "issues" ? " tab-twin__btn--active" : ""}`,
-              title: "Issues",
-              children: [
-                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(IssuesIcon, { size: 16 }),
-                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Issues" })
-              ]
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "a",
-            {
-              href: "#/inbox",
-              className: `tab-twin__btn${route.tab === "inbox" ? " tab-twin__btn--active" : ""}`,
-              title: "Inbox",
-              children: [
-                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(InboxIcon, { size: 16 }),
-                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Inbox" }),
-                badges.inbox > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.inbox })
-              ]
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "a",
-            {
-              href: "#/auth",
-              className: `tab-twin__btn${route.tab === "auth" ? " tab-twin__btn--active" : ""}`,
-              title: "Auth",
-              children: [
-                (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(AuthIcon, { size: 16 }),
-                (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Auth" }),
-                badges.auth > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge tab-badge--auth", children: badges.auth })
-              ]
-            }
-          )
-        ] }),
-        /* @__PURE__ */ u3("a", { href: "#/settings", className: route.tab === "settings" ? "active" : "", "aria-label": "Settings", title: "Settings", children: [
-          (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(SettingsIcon, { size: 16 }),
-          headerDisplayMode === "text" && /* @__PURE__ */ u3("span", { children: "Settings" })
-        ] }),
-        /* @__PURE__ */ u3("div", { className: "tab-overflow", ref: overflowRef, children: [
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: `tab-overflow__btn${["work", "review", "logs", "switchboard", "presets"].includes(route.tab) ? " tab-overflow__btn--active" : ""}`,
-              onClick: () => setShowOverflow((v3) => !v3),
-              "aria-label": "More tabs",
-              children: "\xB7\xB7\xB7"
-            }
-          ),
-          showOverflow && /* @__PURE__ */ u3("div", { className: "tab-overflow__menu", children: [
-            /* @__PURE__ */ u3(
-              "a",
-              {
-                href: "#/work",
-                className: route.tab === "work" ? "active" : "",
-                onClick: () => setShowOverflow(false),
-                children: [
-                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(ProjectsIcon, { size: 14 }),
-                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Projects" }),
-                  badges.work > 0 && /* @__PURE__ */ u3("span", { className: "tab-badge", children: badges.work })
-                ]
-              }
-            ),
-            /* @__PURE__ */ u3(
-              "a",
-              {
-                href: "#/review",
-                className: route.tab === "review" ? "active" : "",
-                onClick: () => setShowOverflow(false),
-                children: [
-                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(DiffIcon, { size: 14 }),
-                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Diff" })
-                ]
-              }
-            ),
-            /* @__PURE__ */ u3(
-              "a",
-              {
-                href: "#/logs",
-                className: route.tab === "logs" ? "active" : "",
-                onClick: () => setShowOverflow(false),
-                children: [
-                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(LogsIcon, { size: 14 }),
-                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Logs" })
-                ]
-              }
-            ),
-            /* @__PURE__ */ u3(
-              "a",
-              {
-                href: "#/presets",
-                className: route.tab === "presets" ? "active" : "",
-                onClick: () => setShowOverflow(false),
-                children: [
-                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(PresetsIcon, { size: 14 }),
-                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Presets" })
-                ]
-              }
-            ),
-            /* @__PURE__ */ u3(
-              "a",
-              {
-                href: "#/switchboard",
-                className: route.tab === "switchboard" ? "active" : "",
-                onClick: () => setShowOverflow(false),
-                children: [
-                  (headerDisplayMode === "icons" || headerDisplayMode === "both") && /* @__PURE__ */ u3(SwitchboardIcon, { size: 14 }),
-                  (headerDisplayMode === "text" || headerDisplayMode === "both") && /* @__PURE__ */ u3("span", { children: "Switchboard" })
-                ]
-              }
-            )
-          ] })
-        ] })
-      ] })
-    ] }),
-    /* @__PURE__ */ u3("main", { className: `app-content${route.tab === "console" ? " app-content--console" : ""}`, children: [
-      route.tab === "sessions" && /* @__PURE__ */ u3(
-        SessionsView,
-        {
-          sessions: state.sessions,
-          newSessionIds: state.newSessionIds,
-          onNavigate: handleNavigate,
-          onKill: handleKill,
-          onPinToggle: handlePinToggle,
-          highlightSessionId: route.params.session
-        }
-      ),
-      route.tab === "auth" && /* @__PURE__ */ u3(
-        AuthQueueView,
-        {
-          queue: state.authQueue,
-          historyQueue: state.authHistory,
-          outputs: state.authOutputs,
-          branchesByRepo: authBranchesByRepo,
-          selectedAuthId: state.selectedAuthId,
-          initialRequestId: route.params.request,
-          onSelectAuth: handleSelectAuth,
-          onApprove: handleApprove,
-          onReject: handleReject,
-          onRetry: handleRetry,
-          onDismiss: handleDismiss,
-          onUpdateField: handleUpdateAuthField
-        }
-      ),
-      route.tab === "chat-history" && /* @__PURE__ */ u3(
-        ConversationsView,
-        {
-          conversations: state.conversations,
-          consoleSessions: state.consoleSessions,
-          initialConversationId: route.params.conversation ?? null,
-          initialSessionId: route.params.session ?? null
-        }
-      ),
-      route.tab === "work" && /* @__PURE__ */ u3(
-        WorkOverviewView,
-        {
-          repos: state.workRepos,
-          branchesByRepo: state.workBranches,
-          onRescan: handleRescan
-        }
-      ),
-      route.tab === "switchboard" && /* @__PURE__ */ u3(
-        SwitchboardView,
-        {
-          pairings: state.switchboardPairings,
-          selectedPairing: state.switchboardSelected,
-          items: state.switchboardItems,
-          itemsLoading: state.switchboardItemsLoading,
-          consistencyErrors: state.switchboardConsistencyErrors,
-          templates: state.switchboardTemplates,
-          onSelectPairing: handleSelectPairing,
-          onAddPairing: handleAddPairing,
-          onUpdatePairing: handleUpdatePairing,
-          onDeletePairing: handleDeletePairing,
-          onToggleItem: handleToggleItem,
-          onSync: handleSyncPairing,
-          onSaveTemplate: handleSaveTemplate
-        }
-      ),
-      route.tab === "issues" && /* @__PURE__ */ u3(
-        IssuesView,
-        {
-          repos: state.issueRepos,
-          onRescan: handleIssueRescan,
-          initialRepoId: route.params.repo,
-          initialIssueId: route.params.issue
-        }
-      ),
-      route.tab === "review" && /* @__PURE__ */ u3(
-        ReviewView,
-        {
-          params: {
-            repo: route.params.repo,
-            base: route.params.base,
-            head: route.params.head
+        /* @__PURE__ */ u3("nav", { className: "app-rail__footer", "aria-label": "Settings", children: renderRailItem({
+          tab: "settings",
+          href: "#/settings",
+          label: "Settings",
+          title: "Settings",
+          icon: SettingsIcon
+        }) })
+      ] }),
+      /* @__PURE__ */ u3("main", { className: `app-content${route.tab === "console" ? " app-content--console" : ""}`, children: [
+        route.tab === "sessions" && /* @__PURE__ */ u3(
+          SessionsView,
+          {
+            sessions: state.sessions,
+            newSessionIds: state.newSessionIds,
+            onNavigate: handleNavigate,
+            onKill: handleKill,
+            onPinToggle: handlePinToggle,
+            highlightSessionId: route.params.session
           }
-        }
-      ),
-      route.tab === "inbox" && /* @__PURE__ */ u3(
-        InboxView,
-        {
-          data: state.inboxData,
-          loading: state.inboxLoading,
-          selectedItemId: state.selectedInboxItemId,
-          onSelectItem: handleSelectInboxItem,
-          onAckContinuation: handleAckContinuation,
-          onAckAuthResult: handleAckAuthResult,
-          onAckAll: handleAckAll,
-          onRefresh: handleInboxRefresh
-        }
-      ),
-      route.tab === "console" && /* @__PURE__ */ u3(
-        ConsoleView,
-        {
-          sessions: state.consoleSessions,
-          activeSessionId: state.consoleActiveSessionId,
-          onSelectSession: handleConsoleSelectSession,
-          onCloseSession: handleConsoleCloseSession,
-          onNewSession: handleConsoleNewSession,
-          isActive: route.tab === "console",
-          initialSessionId: route.params.session ?? null,
-          initialPresetId: route.params.preset ?? null
-        }
-      ),
-      route.tab === "settings" && /* @__PURE__ */ u3(
-        SettingsView,
-        {
-          settings: state.settings,
-          onSave: handleSettingsSave
-        }
-      ),
-      route.tab === "logs" && /* @__PURE__ */ u3(LogsView, {}),
-      route.tab === "graph" && /* @__PURE__ */ u3(
-        GraphView2,
-        {
-          onNavigate: handleGraphNavigate,
-          refreshToken: graphRefreshToken,
-          initialMode: route.params.mode
-        }
-      ),
-      route.tab === "presets" && /* @__PURE__ */ u3(
-        PresetsView,
-        {
-          presetsState: state.presetsState,
-          dispatch: dispatch2
-        }
-      )
+        ),
+        route.tab === "auth" && /* @__PURE__ */ u3(
+          AuthQueueView,
+          {
+            queue: state.authQueue,
+            historyQueue: state.authHistory,
+            outputs: state.authOutputs,
+            branchesByRepo: authBranchesByRepo,
+            selectedAuthId: state.selectedAuthId,
+            initialRequestId: route.params.request,
+            onSelectAuth: handleSelectAuth,
+            onApprove: handleApprove,
+            onReject: handleReject,
+            onRetry: handleRetry,
+            onDismiss: handleDismiss,
+            onUpdateField: handleUpdateAuthField
+          }
+        ),
+        route.tab === "work" && /* @__PURE__ */ u3(
+          WorkOverviewView,
+          {
+            repos: state.workRepos,
+            branchesByRepo: state.workBranches,
+            onRescan: handleRescan
+          }
+        ),
+        route.tab === "switchboard" && /* @__PURE__ */ u3(
+          SwitchboardView,
+          {
+            pairings: state.switchboardPairings,
+            selectedPairing: state.switchboardSelected,
+            items: state.switchboardItems,
+            itemsLoading: state.switchboardItemsLoading,
+            consistencyErrors: state.switchboardConsistencyErrors,
+            templates: state.switchboardTemplates,
+            onSelectPairing: handleSelectPairing,
+            onAddPairing: handleAddPairing,
+            onUpdatePairing: handleUpdatePairing,
+            onDeletePairing: handleDeletePairing,
+            onToggleItem: handleToggleItem,
+            onSync: handleSyncPairing,
+            onSaveTemplate: handleSaveTemplate
+          }
+        ),
+        route.tab === "issues" && /* @__PURE__ */ u3(
+          IssuesView,
+          {
+            repos: state.issueRepos,
+            onRescan: handleIssueRescan,
+            initialRepoId: route.params.repo,
+            initialIssueId: route.params.issue
+          }
+        ),
+        route.tab === "review" && /* @__PURE__ */ u3(
+          ReviewView,
+          {
+            params: {
+              repo: route.params.repo,
+              base: route.params.base,
+              head: route.params.head
+            }
+          }
+        ),
+        route.tab === "inbox" && /* @__PURE__ */ u3(
+          InboxView,
+          {
+            data: state.inboxData,
+            loading: state.inboxLoading,
+            selectedItemId: state.selectedInboxItemId,
+            onSelectItem: handleSelectInboxItem,
+            onAckContinuation: handleAckContinuation,
+            onAckAuthResult: handleAckAuthResult,
+            onAckAll: handleAckAll,
+            onRefresh: handleInboxRefresh
+          }
+        ),
+        route.tab === "console" && /* @__PURE__ */ u3(
+          ConversationsView,
+          {
+            conversations: state.conversations,
+            consoleSessions: state.consoleSessions,
+            initialConversationId: route.params.conversation ?? null,
+            initialSessionId: route.params.session ?? null,
+            initialPresetId: route.params.preset ?? null,
+            onSelectSession: handleConsoleSelectSession,
+            onNewSession: handleConsoleNewSession
+          }
+        ),
+        route.tab === "settings" && /* @__PURE__ */ u3(
+          SettingsView,
+          {
+            settings: state.settings,
+            onSave: handleSettingsSave
+          }
+        ),
+        route.tab === "logs" && /* @__PURE__ */ u3(LogsView, {}),
+        route.tab === "graph" && /* @__PURE__ */ u3(
+          GraphView2,
+          {
+            onNavigate: handleGraphNavigate,
+            refreshToken: graphRefreshToken,
+            initialMode: route.params.mode,
+            initialFocus: route.params.focus
+          }
+        ),
+        route.tab === "presets" && /* @__PURE__ */ u3(
+          PresetsView,
+          {
+            presetsState: state.presetsState,
+            dispatch: dispatch2
+          }
+        )
+      ] })
     ] })
   ] });
 }
