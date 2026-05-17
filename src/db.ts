@@ -1354,6 +1354,20 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_ledger_operational_link_mismatches_report
         ON ledger_operational_link_mismatches(report_id, source_table, mismatch_type)`
     ]
+  },
+  {
+    version: 59,
+    name: "auth_hook_commit_built_dist",
+    // Bug: b1308c6 — the built-in self-merge hook must not leave generated
+    // dist output dirty in the protected checkout. The script rebuilds and
+    // commits dist/ui-dist when source changes require it.
+    statements: [
+      `UPDATE auth_hooks
+       SET command = 'bash cli/post-merge-build-dist.sh',
+           label = 'Build and commit Mandible dist after merge',
+           updated_at = CAST(strftime('%s','now') * 1000 AS INTEGER)
+       WHERE id = 'builtin-mandible-rebuild'`
+    ]
   }
 ];
 

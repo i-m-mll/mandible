@@ -10,11 +10,14 @@ import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
+import { getCodexSessionIndexPath, loadCodexSessionIndexTitle } from "./parsers/codex.js";
+import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 // --- Watch configuration ---
 const WATCH_CONFIGS = [
     { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/*.jsonl" },
     { base: path.join(os.homedir(), ".codex", "sessions"), glob: "**/*.jsonl" },
     { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.json" },
+    { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.jsonl" },
 ];
 const DEBOUNCE_MS = 2000;
 const RECONCILE_INTERVAL_MS = 60_000;
@@ -27,6 +30,7 @@ const debounceTimers = new Map();
 const ingestQueue = [];
 const queuedIngestPaths = new Set();
 let ingestDrainRunning = false;
+const codexSessionIndexSyncMtimes = new Map();
 // --- Public API ---
 export function startIngestion(log) {
     logger = log;
@@ -183,6 +187,112 @@ async function drainIngestQueue(runToken) {
 function isCurrentIngestionRun(runToken) {
     return ingestionActive && runToken === ingestionRunToken;
 }
+async function syncCodexIndexedTitle(filePath, existing) {
+    if (!existing.session_id) {
+        return false;
+    }
+    const title = (await loadCodexSessionIndexTitle(filePath, existing.session_id))
+        ?.slice(0, 100)
+        .trim();
+    if (!title || title === existing.title) {
+        return false;
+    }
+    const db = getDb();
+    db.prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?")
+        .run(title, existing.id);
+    broadcast("conversation:updated", {
+        id: existing.id,
+        source: "codex",
+        title,
+        block_count: existing.block_count,
+    });
+    logger("info", "ingestion_title_synced", {
+        file: filePath,
+        id: existing.id,
+        source: "codex",
+    });
+    return true;
+}
+async function syncCodexIndexedTitlesForKnownRows(db) {
+    const rows = db.prepare(`
+    SELECT id, source_path, session_id, title, block_count
+    FROM conversations
+    WHERE source = 'codex' AND session_id IS NOT NULL AND session_id != ''
+  `).all();
+    if (rows.length === 0) {
+        return;
+    }
+    const rowsByIndex = new Map();
+    for (const row of rows) {
+        const indexPath = getCodexSessionIndexPath(row.source_path);
+        if (!indexPath)
+            continue;
+        const bucket = rowsByIndex.get(indexPath);
+        if (bucket) {
+            bucket.push(row);
+        }
+        else {
+            rowsByIndex.set(indexPath, [row]);
+        }
+    }
+    for (const [indexPath, indexRows] of rowsByIndex) {
+        let stat;
+        try {
+            stat = await fs.promises.stat(indexPath);
+        }
+        catch {
+            continue;
+        }
+        if (codexSessionIndexSyncMtimes.get(indexPath) === stat.mtimeMs) {
+            continue;
+        }
+        for (const row of indexRows) {
+            await syncCodexIndexedTitle(row.source_path, row);
+        }
+        codexSessionIndexSyncMtimes.set(indexPath, stat.mtimeMs);
+    }
+}
+async function syncGeminiProjectIdentityForKnownRows(db) {
+    const rows = db.prepare(`
+    SELECT id, source_path, project_path, cwd, title, block_count
+    FROM conversations
+    WHERE source = 'gemini'
+  `).all();
+    const identityCache = new Map();
+    for (const row of rows) {
+        const projectHash = row.project_path && /^[a-f0-9]{64}$/i.test(row.project_path)
+            ? row.project_path
+            : null;
+        const projectDir = path.dirname(path.dirname(row.source_path));
+        const cacheKey = `${projectDir}\0${projectHash ?? ""}`;
+        let identity = identityCache.get(cacheKey);
+        if (!identity) {
+            identity = await inferGeminiProjectIdentity(row.source_path, projectHash);
+            identityCache.set(cacheKey, identity);
+        }
+        if (identity.projectPath === row.project_path && identity.cwd === row.cwd) {
+            continue;
+        }
+        db.prepare(`
+      UPDATE conversations SET
+        project_path = ?,
+        cwd = ?,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(identity.projectPath, identity.cwd, row.id);
+        broadcast("conversation:updated", {
+            id: row.id,
+            source: "gemini",
+            title: row.title,
+            block_count: row.block_count,
+        });
+        logger("info", "ingestion_gemini_project_synced", {
+            file: row.source_path,
+            id: row.id,
+            project_path: identity.projectPath,
+        });
+    }
+}
 async function ingestFile(filePath) {
     const parser = getParserForFile(filePath);
     if (!parser) {
@@ -205,6 +315,8 @@ async function ingestFile(filePath) {
       c.id,
       c.source_hash,
       c.source_mtime,
+      c.session_id,
+      c.title,
       c.block_count,
       COALESCE((
         SELECT COUNT(*) FROM conversation_blocks b WHERE b.conversation_id = c.id
@@ -223,6 +335,9 @@ async function ingestFile(filePath) {
     }
     // Quick mtime check first — if mtime hasn't changed, skip the expensive hash
     if (existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100) {
+        if (parser.source === "codex") {
+            await syncCodexIndexedTitle(filePath, existing);
+        }
         return;
     }
     // Parse the file
@@ -258,8 +373,24 @@ async function ingestFile(filePath) {
     }
     // Check hash — if same content, just update mtime
     if (existing && existing.source_hash === result.conversation.source_hash) {
-        db.prepare("UPDATE conversations SET source_mtime = ?, updated_at = datetime('now') WHERE source_path = ?")
-            .run(stat.mtimeMs, filePath);
+        db.prepare(`
+      UPDATE conversations SET
+        source_mtime = ?,
+        title = ?,
+        summary = ?,
+        ended_at = ?,
+        block_count = ?,
+        model = ?,
+        cli_version = ?,
+        updated_at = datetime('now')
+      WHERE source_path = ?
+    `).run(stat.mtimeMs, result.conversation.title, result.conversation.summary, result.conversation.ended_at, result.conversation.block_count, result.conversation.model, result.conversation.cli_version, filePath);
+        broadcast("conversation:updated", {
+            id: existing.id,
+            source: result.conversation.source,
+            title: result.conversation.title,
+            block_count: result.conversation.block_count,
+        });
         return;
     }
     // Determine if this is new or updated
@@ -539,7 +670,10 @@ async function reconcile(runToken) {
     if (cleaned.changes > 0) {
         logger("info", "ingestion_cleanup_empty", { removed: cleaned.changes });
     }
+    await syncCodexIndexedTitlesForKnownRows(db);
+    await syncGeminiProjectIdentityForKnownRows(db);
     const knownPaths = new Set();
+    const scannedBases = [];
     // Get all known source_paths from DB
     const rows = db
         .prepare("SELECT source_path, source_mtime FROM conversations")
@@ -558,6 +692,7 @@ async function reconcile(runToken) {
         }
         if (!fs.existsSync(config.base))
             continue;
+        scannedBases.push(config.base);
         for await (const filePath of walkFiles(config.base, config.glob)) {
             if (!isCurrentIngestionRun(runToken)) {
                 return;
@@ -575,6 +710,28 @@ async function reconcile(runToken) {
             catch {
                 // File inaccessible — skip
             }
+        }
+    }
+    const missingPaths = Array.from(dbPaths.keys()).filter((sourcePath) => scannedBases.some((base) => sourcePath === base || sourcePath.startsWith(`${base}${path.sep}`)) &&
+        !knownPaths.has(sourcePath));
+    if (missingPaths.length > 0) {
+        const deleteBlocks = db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?");
+        const deleteConversation = db.prepare("DELETE FROM conversations WHERE id = ?");
+        const findConversation = db.prepare("SELECT id, starred FROM conversations WHERE source_path = ?");
+        let removed = 0;
+        const cleanupMissing = db.transaction(() => {
+            for (const sourcePath of missingPaths) {
+                const row = findConversation.get(sourcePath);
+                if (!row || row.starred)
+                    continue;
+                deleteBlocks.run(row.id);
+                deleteConversation.run(row.id);
+                removed += 1;
+            }
+        });
+        cleanupMissing();
+        if (removed > 0) {
+            logger("info", "ingestion_cleanup_missing_sources", { removed });
         }
     }
 }

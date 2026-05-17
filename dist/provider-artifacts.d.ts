@@ -15,11 +15,17 @@ interface ProviderInput {
     source?: string;
 }
 interface ArtifactInput {
+    artifact_id?: string;
     provider_id?: string;
     manifest_id?: string;
     role?: string;
     media_type?: string;
     filename?: string;
+    logical_name?: string;
+    sha256?: string;
+    size_bytes?: number;
+    storage_backend?: string;
+    uri?: string;
     metadata?: JsonRecord;
     pinned?: boolean;
     content?: string;
@@ -49,7 +55,22 @@ export declare function registerProvider(db: Db, input: ProviderInput, now?: num
 export declare function ingestArtifact(db: Db, input: ArtifactInput, now?: number, artifactRoot?: string): ArtifactRecord;
 export declare function ingestProviderManifest(db: Db, input: ManifestInput, now?: number, artifactRoot?: string): ProviderManifestRecord;
 export declare function listProviders(db: Db): ProviderRecord[];
+export declare function ingestProviderManifestFile(db: Db, filePath: string, now?: number, artifactRoot?: string): ProviderManifestRecord;
 export declare function getProvider(db: Db, id: string): ProviderRecord | null;
+export declare function getProviderCapabilities(db: Db, id: string): {
+    provider: ProviderRecord;
+    capabilities: Record<string, unknown>;
+    actions: GraphAction[];
+    schemas?: unknown;
+    artifact_roles?: unknown;
+    entry_points?: unknown;
+} | null;
+export declare function getProviderHealth(db: Db, id: string): {
+    provider_id: string;
+    status: string;
+    checked_at: number | null;
+    health: unknown;
+} | null;
 export declare function getArtifact(db: Db, id: string): ArtifactRecord | null;
 export declare function getProviderManifest(db: Db, id: string): ProviderManifestRecord | null;
 export declare function getProviderDetail(db: Db, id: string): {

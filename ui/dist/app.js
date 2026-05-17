@@ -50,7 +50,7 @@ var __privateMethod = (obj, member, method) => {
   return method;
 };
 
-// ../../node_modules/preact/dist/preact.module.js
+// node_modules/preact/dist/preact.module.js
 function w(n2, l3) {
   for (var u4 in l3)
     n2[u4] = l3[u4];
@@ -374,7 +374,7 @@ function Q(n2) {
 }
 var n, l, u, t, i, o, r, e, f, c, s, a, h, p, v, y, d;
 var init_preact_module = __esm({
-  "../../node_modules/preact/dist/preact.module.js"() {
+  "node_modules/preact/dist/preact.module.js"() {
     p = {};
     v = [];
     y = /acit|ex(?:s|g|n|p|$)|rph|grid|ows|mnc|ntw|ine[ch]|zoo|^ord|itera/i;
@@ -402,7 +402,7 @@ var init_preact_module = __esm({
   }
 });
 
-// ../../node_modules/preact/hooks/dist/hooks.module.js
+// node_modules/preact/hooks/dist/hooks.module.js
 function p2(n2, t3) {
   c2.__h && c2.__h(r2, n2, o2 || t3), o2 = 0;
   var u4 = r2.__H || (r2.__H = { __: [], __h: [] });
@@ -541,7 +541,7 @@ function D2(n2, t3) {
 }
 var t2, r2, u2, i2, o2, f2, c2, e2, a2, v2, l2, m2, s2, k2;
 var init_hooks_module = __esm({
-  "../../node_modules/preact/hooks/dist/hooks.module.js"() {
+  "node_modules/preact/hooks/dist/hooks.module.js"() {
     init_preact_module();
     o2 = 0;
     f2 = [];
@@ -1324,12 +1324,14 @@ async function getConversations(params) {
     query.set("starred", "1");
   if (params?.search)
     query.set("search", params.search);
-  if (params?.offset)
+  if (params?.offset != null)
     query.set("offset", String(params.offset));
   if (params?.limit)
     query.set("limit", String(params.limit));
   if (params?.sort)
     query.set("sort", params.sort);
+  if (params?.min_blocks)
+    query.set("min_blocks", String(params.min_blocks));
   if (params?.group)
     query.set("group", "true");
   if (params?.exclude_subagents)
@@ -1390,10 +1392,11 @@ async function forkConversation(conversationId, messageDagUuid) {
   });
   return await parseMaybeJson(resp);
 }
-async function resumeConversation(conversationId, messageDagUuid, label) {
+async function resumeConversation(conversationId, messageDagUuid, label, model) {
   const resp = await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/resume`, {
     message_dag_uuid: messageDagUuid,
-    label
+    label,
+    ...model ? { model } : {}
   });
   return await parseMaybeJson(resp);
 }
@@ -1736,9 +1739,9 @@ var init_api = __esm({
   }
 });
 
-// ../../node_modules/@xterm/xterm/lib/xterm.js
+// node_modules/@xterm/xterm/lib/xterm.js
 var require_xterm = __commonJS({
-  "../../node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
+  "node_modules/@xterm/xterm/lib/xterm.js"(exports, module) {
     !function(e3, t3) {
       if ("object" == typeof exports && "object" == typeof module)
         module.exports = t3();
@@ -8358,9 +8361,9 @@ WARNING: This link could potentially be dangerous`)) {
   }
 });
 
-// ../../node_modules/@xterm/addon-fit/lib/addon-fit.js
+// node_modules/@xterm/addon-fit/lib/addon-fit.js
 var require_addon_fit = __commonJS({
-  "../../node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
+  "node_modules/@xterm/addon-fit/lib/addon-fit.js"(exports, module) {
     !function(e3, t3) {
       "object" == typeof exports && "object" == typeof module ? module.exports = t3() : "function" == typeof define && define.amd ? define([], t3) : "object" == typeof exports ? exports.FitAddon = t3() : e3.FitAddon = t3();
     }(self, () => (() => {
@@ -8398,9 +8401,9 @@ var require_addon_fit = __commonJS({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/compiler.js
+// node_modules/@profoundlogic/hogan/lib/compiler.js
 var require_compiler = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
+  "node_modules/@profoundlogic/hogan/lib/compiler.js"(exports) {
     (function(Hogan4) {
       var rIsWhitespace = /\S/, rQuot = /\"/g, rNewline = /\n/g, rCr = /\r/g, rSlash = /\\/g, rLineSep = /\u2028/, rParagraphSep = /\u2029/;
       Hogan4.tags = {
@@ -8726,9 +8729,9 @@ var require_compiler = __commonJS({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/template.js
+// node_modules/@profoundlogic/hogan/lib/template.js
 var require_template = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
+  "node_modules/@profoundlogic/hogan/lib/template.js"(exports) {
     var Hogan4 = {};
     (function(Hogan5) {
       Hogan5.Template = function(codeObj, text2, compiler, options2) {
@@ -8991,9 +8994,9 @@ var require_template = __commonJS({
   }
 });
 
-// ../../node_modules/@profoundlogic/hogan/lib/hogan.js
+// node_modules/@profoundlogic/hogan/lib/hogan.js
 var require_hogan = __commonJS({
-  "../../node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
+  "node_modules/@profoundlogic/hogan/lib/hogan.js"(exports, module) {
     var Hogan4 = require_compiler();
     Hogan4.Template = require_template().Template;
     Hogan4.template = Hogan4.Template;
@@ -9001,7 +9004,7 @@ var require_hogan = __commonJS({
   }
 });
 
-// ../../node_modules/preact/compat/dist/compat.module.js
+// node_modules/preact/compat/dist/compat.module.js
 var compat_module_exports = {};
 __export(compat_module_exports, {
   Children: () => O2,
@@ -9215,7 +9218,7 @@ function Sn(n2) {
 }
 var I2, T3, A3, L2, O2, U, F3, H2, q3, G2, J2, K2, Q2, X, en, ln, cn, fn, an, sn, hn, vn, gn, En, Cn, Rn, xn;
 var init_compat_module = __esm({
-  "../../node_modules/preact/compat/dist/compat.module.js"() {
+  "node_modules/preact/compat/dist/compat.module.js"() {
     init_preact_module();
     init_preact_module();
     init_hooks_module();
@@ -9384,9 +9387,9 @@ var init_compat_module = __esm({
   }
 });
 
-// ../../node_modules/use-sync-external-store/cjs/use-sync-external-store-shim.development.js
+// node_modules/use-sync-external-store/cjs/use-sync-external-store-shim.development.js
 var require_use_sync_external_store_shim_development = __commonJS({
-  "../../node_modules/use-sync-external-store/cjs/use-sync-external-store-shim.development.js"(exports) {
+  "node_modules/use-sync-external-store/cjs/use-sync-external-store-shim.development.js"(exports) {
     "use strict";
     (function() {
       function is(x6, y5) {
@@ -9448,9 +9451,9 @@ var require_use_sync_external_store_shim_development = __commonJS({
   }
 });
 
-// ../../node_modules/use-sync-external-store/shim/index.js
+// node_modules/use-sync-external-store/shim/index.js
 var require_shim = __commonJS({
-  "../../node_modules/use-sync-external-store/shim/index.js"(exports, module) {
+  "node_modules/use-sync-external-store/shim/index.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -9460,9 +9463,9 @@ var require_shim = __commonJS({
   }
 });
 
-// ../../node_modules/use-sync-external-store/cjs/use-sync-external-store-shim/with-selector.development.js
+// node_modules/use-sync-external-store/cjs/use-sync-external-store-shim/with-selector.development.js
 var require_with_selector_development = __commonJS({
-  "../../node_modules/use-sync-external-store/cjs/use-sync-external-store-shim/with-selector.development.js"(exports) {
+  "node_modules/use-sync-external-store/cjs/use-sync-external-store-shim/with-selector.development.js"(exports) {
     "use strict";
     (function() {
       function is(x6, y5) {
@@ -9528,9 +9531,9 @@ var require_with_selector_development = __commonJS({
   }
 });
 
-// ../../node_modules/use-sync-external-store/shim/with-selector.js
+// node_modules/use-sync-external-store/shim/with-selector.js
 var require_with_selector = __commonJS({
-  "../../node_modules/use-sync-external-store/shim/with-selector.js"(exports, module) {
+  "node_modules/use-sync-external-store/shim/with-selector.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -9540,9 +9543,9 @@ var require_with_selector = __commonJS({
   }
 });
 
-// ../../node_modules/bind-event-listener/dist/bind.js
+// node_modules/bind-event-listener/dist/bind.js
 var require_bind = __commonJS({
-  "../../node_modules/bind-event-listener/dist/bind.js"(exports) {
+  "node_modules/bind-event-listener/dist/bind.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.bind = void 0;
@@ -9557,9 +9560,9 @@ var require_bind = __commonJS({
   }
 });
 
-// ../../node_modules/bind-event-listener/dist/bind-all.js
+// node_modules/bind-event-listener/dist/bind-all.js
 var require_bind_all = __commonJS({
-  "../../node_modules/bind-event-listener/dist/bind-all.js"(exports) {
+  "node_modules/bind-event-listener/dist/bind-all.js"(exports) {
     "use strict";
     var __assign = exports && exports.__assign || function() {
       __assign = Object.assign || function(t3) {
@@ -9609,9 +9612,9 @@ var require_bind_all = __commonJS({
   }
 });
 
-// ../../node_modules/bind-event-listener/dist/index.js
+// node_modules/bind-event-listener/dist/index.js
 var require_dist = __commonJS({
-  "../../node_modules/bind-event-listener/dist/index.js"(exports) {
+  "node_modules/bind-event-listener/dist/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.bindAll = exports.bind = void 0;
@@ -9762,7 +9765,7 @@ function createSSEClient(options2) {
 // ui/src/views/auth.tsx
 init_hooks_module();
 
-// ../../node_modules/marked/lib/marked.esm.js
+// node_modules/marked/lib/marked.esm.js
 function _getDefaults() {
   return {
     async: false,
@@ -12077,7 +12080,7 @@ function useSidebarResize(options2 = {}) {
   return { width: effectiveWidth, handleMouseDown };
 }
 
-// ../../node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
+// node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 init_preact_module();
 init_preact_module();
 var f3 = 0;
@@ -14587,7 +14590,7 @@ function InboxView({
 init_hooks_module();
 init_api();
 
-// ../../node_modules/dompurify/dist/purify.es.mjs
+// node_modules/dompurify/dist/purify.es.mjs
 var {
   entries,
   setPrototypeOf,
@@ -17980,7 +17983,7 @@ init_hooks_module();
 // ui/src/components/message-blocks/FileEditBlock.tsx
 init_hooks_module();
 
-// ../../node_modules/diff2html/lib-esm/types.js
+// node_modules/diff2html/lib-esm/types.js
 var LineType;
 (function(LineType2) {
   LineType2["INSERT"] = "insert";
@@ -18007,7 +18010,7 @@ var ColorSchemeType;
   ColorSchemeType2["LIGHT"] = "light";
 })(ColorSchemeType || (ColorSchemeType = {}));
 
-// ../../node_modules/diff2html/lib-esm/utils.js
+// node_modules/diff2html/lib-esm/utils.js
 var specials = [
   "-",
   "[",
@@ -18052,7 +18055,7 @@ function max(arr) {
   return max2;
 }
 
-// ../../node_modules/diff2html/lib-esm/diff-parser.js
+// node_modules/diff2html/lib-esm/diff-parser.js
 function getExtension(filename, language) {
   const filenameParts = filename.split(".");
   return filenameParts.length > 1 ? filenameParts[filenameParts.length - 1] : language;
@@ -18344,7 +18347,7 @@ function parse(diffInput, config = {}) {
   return files;
 }
 
-// ../../node_modules/diff/libesm/diff/base.js
+// node_modules/diff/libesm/diff/base.js
 var Diff = class {
   diff(oldStr, newStr, options2 = {}) {
     let callback;
@@ -18546,7 +18549,7 @@ var Diff = class {
   }
 };
 
-// ../../node_modules/diff/libesm/diff/character.js
+// node_modules/diff/libesm/diff/character.js
 var CharacterDiff = class extends Diff {
 };
 var characterDiff = new CharacterDiff();
@@ -18554,7 +18557,7 @@ function diffChars(oldStr, newStr, options2) {
   return characterDiff.diff(oldStr, newStr, options2);
 }
 
-// ../../node_modules/diff/libesm/util/string.js
+// node_modules/diff/libesm/util/string.js
 function longestCommonPrefix(str1, str2) {
   let i4;
   for (i4 = 0; i4 < str1.length && i4 < str2.length; i4++) {
@@ -18650,7 +18653,7 @@ function leadingWs(string) {
   return match ? match[0] : "";
 }
 
-// ../../node_modules/diff/libesm/diff/word.js
+// node_modules/diff/libesm/diff/word.js
 var extendedWordChars = "a-zA-Z0-9_\\u{AD}\\u{C0}-\\u{D6}\\u{D8}-\\u{F6}\\u{F8}-\\u{2C6}\\u{2C8}-\\u{2D7}\\u{2DE}-\\u{2FF}\\u{1E00}-\\u{1EFF}";
 var tokenizeIncludingWhitespace = new RegExp(`[${extendedWordChars}]+|\\s+|[^${extendedWordChars}]`, "ug");
 var WordDiff = class extends Diff {
@@ -18797,7 +18800,7 @@ function diffWordsWithSpace(oldStr, newStr, options2) {
   return wordsWithSpaceDiff.diff(oldStr, newStr, options2);
 }
 
-// ../../node_modules/diff2html/lib-esm/rematch.js
+// node_modules/diff2html/lib-esm/rematch.js
 function levenshtein(a4, b3) {
   if (a4.length === 0) {
     return b3.length;
@@ -18881,7 +18884,7 @@ function newMatcherFn(distance3) {
   return group;
 }
 
-// ../../node_modules/diff2html/lib-esm/render-utils.js
+// node_modules/diff2html/lib-esm/render-utils.js
 var CSSLineClass = {
   INSERTS: "d2h-ins",
   DELETES: "d2h-del",
@@ -19059,7 +19062,7 @@ function diffHighlight(diffLine1, diffLine2, isCombined, config = {}) {
   };
 }
 
-// ../../node_modules/diff2html/lib-esm/file-list-renderer.js
+// node_modules/diff2html/lib-esm/file-list-renderer.js
 var baseTemplatesPath = "file-summary";
 var iconsBaseTemplatesPath = "icon";
 var defaultFileListRendererConfig = {
@@ -19089,7 +19092,7 @@ var FileListRenderer = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/line-by-line-renderer.js
+// node_modules/diff2html/lib-esm/line-by-line-renderer.js
 var defaultLineByLineRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath = "generic";
 var baseTemplatesPath2 = "line-by-line";
@@ -19264,7 +19267,7 @@ var LineByLineRenderer = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/side-by-side-renderer.js
+// node_modules/diff2html/lib-esm/side-by-side-renderer.js
 var defaultSideBySideRendererConfig = Object.assign(Object.assign({}, defaultRenderConfig), { renderNothingWhenEmpty: false, matchingMaxComparisons: 2500, maxLineSizeInBlockForComparison: 200 });
 var genericTemplatesPath2 = "generic";
 var baseTemplatesPath3 = "side-by-side";
@@ -19450,10 +19453,10 @@ var SideBySideRenderer = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
+// node_modules/diff2html/lib-esm/hoganjs-utils.js
 var Hogan3 = __toESM(require_hogan());
 
-// ../../node_modules/diff2html/lib-esm/diff2html-templates.js
+// node_modules/diff2html/lib-esm/diff2html-templates.js
 var Hogan2 = __toESM(require_hogan());
 var defaultTemplates = {};
 defaultTemplates["file-summary-line"] = new Hogan2.Template({ code: function(c4, p3, i4) {
@@ -19861,7 +19864,7 @@ defaultTemplates["tag-file-renamed"] = new Hogan2.Template({ code: function(c4, 
   return t3.fl();
 }, partials: {}, subs: {} });
 
-// ../../node_modules/diff2html/lib-esm/hoganjs-utils.js
+// node_modules/diff2html/lib-esm/hoganjs-utils.js
 var HoganJsUtils = class {
   constructor({ compiledTemplates = {}, rawTemplates = {} }) {
     const compiledRawTemplates = Object.entries(rawTemplates).reduce((previousTemplates, [name, templateString]) => {
@@ -19890,7 +19893,7 @@ var HoganJsUtils = class {
   }
 };
 
-// ../../node_modules/diff2html/lib-esm/diff2html.js
+// node_modules/diff2html/lib-esm/diff2html.js
 var defaultDiff2HtmlConfig = Object.assign(Object.assign(Object.assign({}, defaultLineByLineRendererConfig), defaultSideBySideRendererConfig), { outputFormat: OutputFormatType.LINE_BY_LINE, drawFileList: true });
 function html3(diffInput, configuration = {}) {
   const config = Object.assign(Object.assign({}, defaultDiff2HtmlConfig), configuration);
@@ -23345,7 +23348,6 @@ function BlockTypeIcon({ type }) {
 }
 
 // ui/src/views/conversations.tsx
-marked.setOptions({ async: false, gfm: true, breaks: false });
 function Toast({ toast, onDismiss }) {
   if (!toast)
     return null;
@@ -23435,6 +23437,7 @@ var AGENT_LABELS = {
 };
 var MODEL_OPTIONS2 = {
   claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
+  codex: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2"],
   gemini: [
     "auto",
     "pro",
@@ -23487,6 +23490,15 @@ function truncate(text2, maxLen) {
     return text2;
   return text2.slice(0, maxLen) + "\u2026";
 }
+function stripMarkdownText(src) {
+  if (!src)
+    return "";
+  return src.replace(/```[\s\S]*?```/g, " ").replace(/`([^`]+)`/g, "$1").replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/^[\s>#*-]+/gm, "").replace(/[*_~]{1,3}/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+function getConversationTitle(conversation) {
+  const raw = conversation?.label || conversation?.title || "Untitled";
+  return stripMarkdownText(raw) || "Untitled";
+}
 function isLiveConsoleSession(session) {
   return session.status !== "stopped" && session.status !== "crashed";
 }
@@ -23536,14 +23548,87 @@ function parseModelFromArgs2(args) {
   }
   return void 0;
 }
-function projectNameFromPath(pathValue) {
+function normalizePathish(pathValue) {
   if (!pathValue)
     return "No Project";
-  const parts = pathValue.split("/").filter(Boolean);
+  return pathValue.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+function pathKey(pathValue) {
+  if (!pathValue)
+    return "";
+  return normalizePathish(pathValue).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+function decodeClaudeProjectPath(pathValue) {
+  if (!pathValue)
+    return null;
+  const normalized = normalizePathish(pathValue);
+  const leaf = normalized.split("/").filter(Boolean).pop() ?? normalized;
+  if (!leaf.startsWith("-"))
+    return normalized;
+  const parts = leaf.split("-").filter(Boolean);
+  if (parts.length === 0)
+    return normalized;
+  return `/${parts.join("/")}`;
+}
+function isCodexUnboundArchivePath(pathValue) {
+  return /\/Documents\/Codex\/\d{4}-\d{2}-\d{2}\/[^/]+$/i.test(normalizePathish(pathValue));
+}
+function repoDisplayName(repo) {
+  const name = typeof repo.name === "string" ? repo.name.trim() : "";
+  if (name)
+    return name;
+  const root2 = typeof repo.root === "string" ? repo.root : typeof repo.path === "string" ? repo.path : "";
+  if (!root2)
+    return null;
+  const parts = normalizePathish(root2).split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? null;
+}
+function projectNameFromPath(pathValue) {
+  const normalized = normalizePathish(pathValue);
+  if (normalized === "No Project")
+    return normalized;
+  const parts = normalized.split("/").filter(Boolean);
   return parts[parts.length - 1] || "No Project";
 }
-function getConversationProject(conversation) {
-  return projectNameFromPath(conversation.project_path ?? conversation.cwd);
+function getConversationProject(conversation, workRepos = []) {
+  if (conversation.source === "codex" && !conversation.project_path && isCodexUnboundArchivePath(conversation.cwd)) {
+    return "No Project";
+  }
+  const candidates = [
+    conversation.cwd,
+    conversation.project_path,
+    decodeClaudeProjectPath(conversation.project_path)
+  ].filter((value) => Boolean(value));
+  const repos = workRepos.map((repo) => {
+    const root2 = typeof repo.root === "string" ? repo.root : typeof repo.path === "string" ? repo.path : "";
+    return {
+      repo,
+      root: root2,
+      rootKey: pathKey(root2),
+      rootNorm: normalizePathish(root2),
+      name: repoDisplayName(repo)
+    };
+  }).filter((entry) => entry.root && entry.rootKey && entry.name && !entry.rootNorm.includes("/worktrees/")).sort((a4, b3) => b3.rootKey.length - a4.rootKey.length);
+  for (const candidate of candidates) {
+    const normalized = normalizePathish(candidate);
+    const candidateKey = pathKey(candidate);
+    for (const repo of repos) {
+      if (normalized === repo.rootNorm || normalized.startsWith(`${repo.rootNorm}/`) || candidateKey.startsWith(repo.rootKey)) {
+        return repo.name;
+      }
+    }
+  }
+  const fallback = decodeClaudeProjectPath(conversation.project_path) ?? conversation.project_path ?? conversation.cwd;
+  return projectNameFromPath(fallback);
+}
+function isSubagentConversation(conversation) {
+  const sourcePath = normalizePathish(conversation.source_path).toLowerCase();
+  const projectPath = normalizePathish(conversation.project_path).toLowerCase();
+  const title = stripMarkdownText(conversation.title).toLowerCase();
+  return Boolean(conversation.parent_conversation_id) || projectPath === "subagents" || sourcePath.includes("/subagents/") || title.startsWith("you are a subagent");
+}
+function isSubagentSession(session) {
+  return stripMarkdownText(session.label).toLowerCase().startsWith("you are a subagent");
 }
 function getConversationTime(conversation) {
   const ended = conversation.ended_at ? Date.parse(conversation.ended_at) : Number.NaN;
@@ -23595,6 +23680,14 @@ function getBlockHeaderLabel(block2, metadata) {
       return block2.type;
   }
 }
+function conversationShell(conversation) {
+  return { ...conversation, blocks: [], children: [] };
+}
+function getEntryTitle(entry) {
+  if (entry.conversation)
+    return getConversationTitle(entry.conversation);
+  return stripMarkdownText(entry.session?.label) || "Untitled";
+}
 function speakerForBlock(block2) {
   if (block2.type === "user_message") {
     return "user";
@@ -23622,23 +23715,6 @@ function buildTranscriptTurns(blocks) {
     current.blocks.push(block2);
   }
   return turns;
-}
-function sanitizeInlineHtml5(html4) {
-  let out = html4.replace(
-    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
-    ""
-  );
-  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, "");
-  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "");
-  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, "");
-  return out;
-}
-function renderInlineMarkdown5(src) {
-  if (!src)
-    return "";
-  const html4 = marked.parse(src, { async: false });
-  const stripped = html4.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
-  return sanitizeInlineHtml5(stripped);
 }
 function CopyButton({ content }) {
   const [copied, setCopied] = d2(false);
@@ -24154,6 +24230,7 @@ function ConversationInfoDialog({
   linkedConsoleSession,
   issueLinks,
   presets,
+  workRepos,
   onClose
 }) {
   return /* @__PURE__ */ u3("div", { className: "conv-modal-overlay", onClick: onClose, children: /* @__PURE__ */ u3("div", { className: "conv-modal", onClick: (event) => event.stopPropagation(), children: [
@@ -24172,7 +24249,7 @@ function ConversationInfoDialog({
       ] }),
       /* @__PURE__ */ u3("div", { children: [
         /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Project" }),
-        /* @__PURE__ */ u3("span", { children: getConversationProject(conversation) })
+        /* @__PURE__ */ u3("span", { children: getConversationProject(conversation, workRepos) })
       ] }),
       /* @__PURE__ */ u3("div", { children: [
         /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Branch" }),
@@ -24228,10 +24305,15 @@ function ConversationInfoDialog({
 }
 function ConversationDetail({
   conversationId,
+  initialConversation,
   onNavigate,
-  consoleSessions
+  consoleSessions,
+  workRepos,
+  sidebarCollapsed
 }) {
-  const [conversation, setConversation] = d2(null);
+  const [conversation, setConversation] = d2(
+    initialConversation ? conversationShell(initialConversation) : null
+  );
   const [loading, setLoading] = d2(true);
   const [error, setError] = d2(null);
   const [loadNonce, setLoadNonce] = d2(0);
@@ -24246,6 +24328,7 @@ function ConversationDetail({
   const [infoOpen, setInfoOpen] = d2(false);
   const [showMessageFilters, setShowMessageFilters] = d2(false);
   const [composerControlsOpen, setComposerControlsOpen] = d2(false);
+  const [composerModel, setComposerModel] = d2("");
   const [sessionIssueLinks, setSessionIssueLinks] = d2([]);
   const [sessionPresets, setSessionPresets] = d2([]);
   const [toast, setToast] = d2(null);
@@ -24262,6 +24345,7 @@ function ConversationDetail({
   const [containerHeight, setContainerHeight] = d2(800);
   y2(() => {
     let active = true;
+    setConversation(initialConversation ? conversationShell(initialConversation) : null);
     setLoading(true);
     setError(null);
     getConversation(conversationId).then((conv) => {
@@ -24285,7 +24369,7 @@ function ConversationDetail({
     return () => {
       active = false;
     };
-  }, [conversationId, loadNonce]);
+  }, [conversationId, initialConversation, loadNonce]);
   y2(() => {
     if (loading || !conversation || renderMode !== "transcript")
       return;
@@ -24620,10 +24704,22 @@ function ConversationDetail({
     }
     return null;
   }, [latestDagUuid, linkedConsoleSession]);
+  const providerFamily = linkedConsoleSession ? getSessionProviderFamily(linkedConsoleSession) : conversation?.source === "gemini" ? "gemini" : conversation?.source === "codex" ? "codex" : "claude";
+  const currentModel = conversation?.model || parseModelFromArgs2(linkedConsoleSession?.args) || "default";
+  const modelOptions = MODEL_OPTIONS2[providerFamily] ?? [];
+  const canShowSessionControls = linkedConsoleSession && (linkedConsoleSession.backend_type === "sdk" || linkedConsoleSession.backend_type === "pty");
+  const canSaveComposerModel = Boolean(linkedConsoleSession) && (linkedConsoleSession?.backend_type === "sdk" || linkedConsoleSession?.backend_type === "pty" || linkedConsoleSession?.backend_type === "spawn");
+  y2(() => {
+    setComposerModel(currentModel === "default" ? "" : currentModel);
+  }, [conversationId, currentModel]);
   const handleContinueSubmit = q2(async (event) => {
     event.preventDefault();
     const prompt = continueDraft.trim();
-    if (!prompt || continueDisabledReason) {
+    if (!prompt) {
+      return;
+    }
+    if (continueDisabledReason) {
+      setContinueError(continueDisabledReason);
       return;
     }
     setContinueBusy(true);
@@ -24634,7 +24730,7 @@ function ConversationDetail({
         if (!latestDagUuid) {
           throw new Error("No resumable message is available.");
         }
-        const result = await resumeConversation(conversationId, latestDagUuid);
+        const result = await resumeConversation(conversationId, latestDagUuid, void 0, composerModel || void 0);
         targetSessionId = result.console_session_id;
       }
       await sendConsolePrompt(targetSessionId, prompt);
@@ -24646,10 +24742,30 @@ function ConversationDetail({
     } finally {
       setContinueBusy(false);
     }
-  }, [continueDisabledReason, continueDraft, conversationId, latestDagUuid, linkedConsoleSession]);
-  const providerFamily = linkedConsoleSession ? getSessionProviderFamily(linkedConsoleSession) : conversation?.source === "gemini" ? "gemini" : conversation?.source === "codex" ? "codex" : "claude";
-  const currentModel = conversation?.model || parseModelFromArgs2(linkedConsoleSession?.args) || "default";
-  const canShowSessionControls = linkedConsoleSession && (linkedConsoleSession.backend_type === "sdk" || linkedConsoleSession.backend_type === "pty");
+  }, [composerModel, continueDisabledReason, continueDraft, conversationId, latestDagUuid, linkedConsoleSession]);
+  const handleComposerKeyDown = q2((event) => {
+    if (event.key !== "Enter")
+      return;
+    if (event.shiftKey && !event.metaKey && !event.ctrlKey)
+      return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
+  }, []);
+  const handleComposerModelChange = q2(async (value) => {
+    setComposerModel(value);
+    if (!linkedConsoleSession || !canSaveComposerModel)
+      return;
+    setContinueError(null);
+    try {
+      if (linkedConsoleSession.backend_type === "sdk") {
+        await updateConsoleSessionOptions(linkedConsoleSession.id, { model: value || void 0 });
+      } else {
+        await updateConsoleSession(linkedConsoleSession.id, { model: value || void 0 });
+      }
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err));
+    }
+  }, [canSaveComposerModel, linkedConsoleSession]);
   const navigateToGraph = q2(() => {
     const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
     const focus = sessionId ? `session:${sessionId}` : void 0;
@@ -24658,10 +24774,10 @@ function ConversationDetail({
       params.set("focus", focus);
     window.location.hash = `#/graph?${params.toString()}`;
   }, [conversation?.session_id, linkedConsoleSession?.id]);
-  if (loading) {
+  if (loading && !conversation) {
     return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: "Loading conversation..." }) });
   }
-  if (error || !conversation) {
+  if (error && !conversation) {
     return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: [
       /* @__PURE__ */ u3("div", { children: error || "Conversation not found." }),
       /* @__PURE__ */ u3(
@@ -24675,7 +24791,10 @@ function ConversationDetail({
       )
     ] }) });
   }
-  return /* @__PURE__ */ u3("div", { className: "conv-detail", children: [
+  if (!conversation) {
+    return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: "Conversation not found." }) });
+  }
+  return /* @__PURE__ */ u3("div", { className: `conv-detail${sidebarCollapsed ? " conv-detail--shelf-collapsed" : ""}`, children: [
     conversation.parent_conversation_id && /* @__PURE__ */ u3("div", { className: "conv-parent-link", children: /* @__PURE__ */ u3(
       "button",
       {
@@ -24686,25 +24805,10 @@ function ConversationDetail({
       }
     ) }),
     /* @__PURE__ */ u3("div", { className: "conv-detail__header", children: [
-      /* @__PURE__ */ u3("div", { className: "conv-detail__header-left", children: [
-        /* @__PURE__ */ u3("h2", { className: "conv-detail__title", children: [
-          conversation.parent_conversation_id && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent conversation", children: "\u2937 " }),
-          /* @__PURE__ */ u3(
-            "span",
-            {
-              dangerouslySetInnerHTML: {
-                __html: renderInlineMarkdown5(conversation.title || "Untitled")
-              }
-            }
-          )
-        ] }),
-        /* @__PURE__ */ u3("div", { className: "conv-detail__meta", children: [
-          linkedConsoleSession && /* @__PURE__ */ u3("span", { className: `chat-entry__status chat-entry__status--${linkedConsoleSession.status}` }),
-          /* @__PURE__ */ u3("span", { children: SOURCE_LABELS[conversation.source] || conversation.source }),
-          /* @__PURE__ */ u3("span", { children: currentModel }),
-          conversation.branch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: conversation.branch })
-        ] })
-      ] }),
+      /* @__PURE__ */ u3("div", { className: "conv-detail__header-left", children: /* @__PURE__ */ u3("h2", { className: "conv-detail__title", children: [
+        conversation.parent_conversation_id && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent conversation", children: "\u2937 " }),
+        /* @__PURE__ */ u3("span", { children: getConversationTitle(conversation) })
+      ] }) }),
       /* @__PURE__ */ u3("div", { className: "conv-detail__header-right", children: [
         /* @__PURE__ */ u3(
           "button",
@@ -24764,6 +24868,18 @@ function ConversationDetail({
           ] })
         ] })
       ] })
+    ] }),
+    error && /* @__PURE__ */ u3("div", { className: "conv-load-error", children: [
+      /* @__PURE__ */ u3("span", { children: error }),
+      /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--ghost btn--sm",
+          onClick: () => setLoadNonce((prev) => prev + 1),
+          children: "Retry"
+        }
+      )
     ] }),
     conversation.children && conversation.children.length > 0 && /* @__PURE__ */ u3(SubAgentsList, { children: conversation.children, onNavigate }),
     showMessageFilters && /* @__PURE__ */ u3("div", { className: "conv-filter-bar", children: [
@@ -24867,7 +24983,7 @@ function ConversationDetail({
         },
         turn.id
       )),
-      transcriptTurns.length === 0 && /* @__PURE__ */ u3("div", { className: "empty-state", children: "No blocks match the current filters." })
+      transcriptTurns.length === 0 && /* @__PURE__ */ u3("div", { className: "empty-state", children: loading ? "Loading messages..." : "No blocks match the current filters." })
     ] }) : /* @__PURE__ */ u3(
       "div",
       {
@@ -24904,7 +25020,7 @@ function ConversationDetail({
             },
             block2.id
           )),
-          visibleBlocks.length === 0 && /* @__PURE__ */ u3("div", { className: "empty-state", children: "No blocks match the current filters." })
+          visibleBlocks.length === 0 && /* @__PURE__ */ u3("div", { className: "empty-state", children: loading ? "Loading messages..." : "No blocks match the current filters." })
         ]
       }
     ),
@@ -24916,8 +25032,9 @@ function ConversationDetail({
             className: "conv-compose__input",
             value: continueDraft,
             onInput: (event) => setContinueDraft(event.currentTarget.value),
+            onKeyDown: handleComposerKeyDown,
             placeholder: "Message...",
-            disabled: continueBusy || !!continueDisabledReason,
+            disabled: continueBusy,
             rows: 3
           }
         ),
@@ -24925,17 +25042,34 @@ function ConversationDetail({
           "button",
           {
             type: "submit",
-            className: "btn btn--success btn--sm",
-            disabled: continueBusy || !!continueDisabledReason || !continueDraft.trim(),
-            children: continueBusy ? "Sending..." : "Send"
+            className: "conv-compose__send",
+            disabled: continueBusy || !continueDraft.trim(),
+            title: "Send message",
+            "aria-label": "Send message",
+            children: continueBusy ? "..." : "\u2191"
           }
         )
       ] }),
       /* @__PURE__ */ u3("div", { className: "conv-compose__footer", children: [
         /* @__PURE__ */ u3("div", { className: "conv-compose__runtime", children: [
           /* @__PURE__ */ u3("span", { className: `agent-mark ${SOURCE_CLASSES[conversation.source] || ""}`, children: getSourceMark(conversation.source) }),
-          /* @__PURE__ */ u3("span", { children: linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession) ? "running" : "history" }),
-          /* @__PURE__ */ u3("span", { children: currentModel })
+          /* @__PURE__ */ u3(
+            "select",
+            {
+              className: "conv-compose__model",
+              value: composerModel,
+              disabled: continueBusy || modelOptions.length === 0,
+              title: "Model",
+              "aria-label": "Model",
+              onChange: (event) => {
+                void handleComposerModelChange(event.currentTarget.value);
+              },
+              children: [
+                /* @__PURE__ */ u3("option", { value: currentModel === "default" ? "" : currentModel, children: currentModel === "default" ? "Default" : currentModel }),
+                modelOptions.filter((model) => model !== currentModel).map((model) => /* @__PURE__ */ u3("option", { value: model, children: model }, model))
+              ]
+            }
+          )
         ] }),
         canShowSessionControls && /* @__PURE__ */ u3(
           "button",
@@ -24975,24 +25109,103 @@ function ConversationDetail({
         linkedConsoleSession,
         issueLinks: sessionIssueLinks,
         presets: sessionPresets,
+        workRepos,
         onClose: () => setInfoOpen(false)
       }
     )
   ] });
 }
+function PinIcon({ size = 13 }) {
+  return /* @__PURE__ */ u3(
+    "svg",
+    {
+      width: size,
+      height: size,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: "2",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      "aria-hidden": "true",
+      children: [
+        /* @__PURE__ */ u3("path", { d: "M12 17v5" }),
+        /* @__PURE__ */ u3("path", { d: "M5 17h14" }),
+        /* @__PURE__ */ u3("path", { d: "M7 17l2-8-2-3V3h10v3l-2 3 2 8" })
+      ]
+    }
+  );
+}
+function FolderIcon({ size = 13, open = false }) {
+  return /* @__PURE__ */ u3(
+    "svg",
+    {
+      width: size,
+      height: size,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: "2",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      "aria-hidden": "true",
+      children: open ? /* @__PURE__ */ u3("path", { d: "M3 7.5A2.5 2.5 0 0 1 5.5 5h4l2 2.5H19A2.5 2.5 0 0 1 21.4 11l-1.55 5.8A2.5 2.5 0 0 1 17.44 18.7H5.35A2.35 2.35 0 0 1 3 16.35z" }) : /* @__PURE__ */ u3("path", { d: "M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2.5h7A2.5 2.5 0 0 1 21 9v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17z" })
+    }
+  );
+}
+function ShelfIcon({ size = 17 }) {
+  return /* @__PURE__ */ u3(
+    "svg",
+    {
+      width: size,
+      height: size,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: "1.8",
+      strokeLinecap: "round",
+      strokeLinejoin: "round",
+      "aria-hidden": "true",
+      children: [
+        /* @__PURE__ */ u3("rect", { x: "3.5", y: "4", width: "17", height: "16", rx: "3" }),
+        /* @__PURE__ */ u3("path", { d: "M6.6 6.8h2.2v10.4H6.6z", fill: "currentColor", stroke: "none", opacity: "0.22" }),
+        /* @__PURE__ */ u3("path", { d: "M8.5 4v16" })
+      ]
+    }
+  );
+}
 function ChatEntryItem({
   entry,
   isSelected,
-  onClick
+  onClick,
+  onTogglePin,
+  onRename,
+  showPinnedIcon = false
 }) {
+  const [actionsOpen, setActionsOpen] = d2(false);
   const conversation = entry.conversation;
   const session = entry.session;
-  const liveSession = entry.liveSession ?? (entry.kind === "session" ? session ?? null : null);
   const isSubAgent = !!conversation?.parent_conversation_id;
   const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
-  const title = conversation?.title || session?.label || "Untitled";
-  const branch = conversation?.branch;
-  const unread = liveSession?.unread_count ?? 0;
+  const title = conversation ? getConversationTitle(conversation) : stripMarkdownText(session?.label) || "Untitled";
+  const canShowActions = Boolean(onTogglePin || onRename);
+  const isPinned = Boolean(conversation?.starred || session?.pinned);
+  const handleRename = (event) => {
+    event.stopPropagation();
+    setActionsOpen(false);
+    if (!onRename)
+      return;
+    const nextLabel = window.prompt("Rename chat", title);
+    if (nextLabel === null)
+      return;
+    const normalized = stripMarkdownText(nextLabel);
+    onRename(normalized || null);
+  };
+  const handleTogglePin = (event) => {
+    event.stopPropagation();
+    setActionsOpen(false);
+    onTogglePin?.();
+  };
   return /* @__PURE__ */ u3(
     "div",
     {
@@ -25004,39 +25217,41 @@ function ChatEntryItem({
         if (e3.key === "Enter" || e3.key === " ")
           onClick();
       },
-      children: [
-        /* @__PURE__ */ u3("div", { className: "chat-history-item__line", children: [
-          /* @__PURE__ */ u3("span", { className: "chat-history-item__title", children: [
-            conversation?.starred ? "\u2605 " : "",
-            isSubAgent && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent", children: "\u2937 " }),
-            /* @__PURE__ */ u3(
-              "span",
-              {
-                dangerouslySetInnerHTML: {
-                  __html: renderInlineMarkdown5(truncate(title, 58))
-                }
-              }
-            )
-          ] }),
-          /* @__PURE__ */ u3(
-            "span",
-            {
-              className: `agent-mark ${source ? SOURCE_CLASSES[source] || "" : ""}`,
-              title: source ? SOURCE_LABELS[source] : session ? getAgentLabel(session.agent_type) : void 0,
-              children: source ? getSourceMark(source) : session ? getSessionMark(session) : "??"
-            }
-          )
+      children: /* @__PURE__ */ u3("div", { className: "chat-history-item__line", children: [
+        showPinnedIcon && /* @__PURE__ */ u3("span", { className: "chat-history-item__pin", title: "Pinned", children: /* @__PURE__ */ u3(PinIcon, {}) }),
+        /* @__PURE__ */ u3("span", { className: "chat-history-item__title", children: [
+          isSubAgent && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent", children: "\u2937 " }),
+          /* @__PURE__ */ u3("span", { children: truncate(title, 70) })
         ] }),
-        /* @__PURE__ */ u3("div", { className: "chat-history-item__meta", children: [
-          liveSession && /* @__PURE__ */ u3("span", { className: `chat-entry__status chat-entry__status--${liveSession.status}` }),
-          branch && /* @__PURE__ */ u3("span", { className: "chat-history-item__branch", children: truncate(branch, 22) }),
-          unread > 0 && /* @__PURE__ */ u3("span", { children: [
-            unread,
-            " unread"
-          ] }),
-          entry.kind === "session" && /* @__PURE__ */ u3("span", { children: session?.backend_type ?? "live" })
-        ] })
-      ]
+        canShowActions && /* @__PURE__ */ u3("div", { className: "chat-history-item__actions", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "chat-history-item__menu-btn",
+              onClick: (event) => {
+                event.stopPropagation();
+                setActionsOpen((prev) => !prev);
+              },
+              title: "Chat actions",
+              "aria-label": "Chat actions",
+              children: "..."
+            }
+          ),
+          actionsOpen && /* @__PURE__ */ u3("div", { className: "chat-history-item__menu", onClick: (event) => event.stopPropagation(), children: [
+            onTogglePin && /* @__PURE__ */ u3("button", { type: "button", onClick: handleTogglePin, children: isPinned ? "Unpin" : "Pin" }),
+            onRename && /* @__PURE__ */ u3("button", { type: "button", onClick: handleRename, children: "Rename" })
+          ] })
+        ] }),
+        /* @__PURE__ */ u3(
+          "span",
+          {
+            className: `agent-mark ${source ? SOURCE_CLASSES[source] || "" : ""}`,
+            title: source ? SOURCE_LABELS[source] : session ? getAgentLabel(session.agent_type) : void 0,
+            children: source ? getSourceMark(source) : session ? getSessionMark(session) : "??"
+          }
+        )
+      ] })
     }
   );
 }
@@ -25080,6 +25295,7 @@ function LiveSessionDetail({
 function ConversationsView({
   conversations: initialConversations,
   consoleSessions,
+  workRepos,
   initialConversationId,
   initialSessionId,
   initialPresetId,
@@ -25098,9 +25314,10 @@ function ConversationsView({
   const [sourceFilter, setSourceFilter] = d2("all");
   const [starredOnly, setStarredOnly] = d2(false);
   const [hideEmpty, setHideEmpty] = d2(true);
-  const [groupSubAgents, setGroupSubAgents] = d2(true);
   const [sort, setSort] = d2("date");
   const [filterPanelOpen, setFilterPanelOpen] = d2(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = d2(false);
+  const [collapsedSections, setCollapsedSections] = d2(/* @__PURE__ */ new Set());
   const [collapsedProjects, setCollapsedProjects] = d2(/* @__PURE__ */ new Set());
   const [conversations, setConversations] = d2(initialConversations);
   const [total, setTotal] = d2(0);
@@ -25194,10 +25411,12 @@ function ConversationsView({
         params.source = sourceFilter;
       if (starredOnly)
         params.starred = true;
+      if (hideEmpty)
+        params.min_blocks = 1;
       if (search.trim())
         params.search = search.trim();
-      if (groupSubAgents)
-        params.group = true;
+      params.group = true;
+      params.exclude_subagents = true;
       const result = await getConversations(params);
       if (reset) {
         setConversations(result.conversations);
@@ -25209,7 +25428,7 @@ function ConversationsView({
     } finally {
       setLoading(false);
     }
-  }, [sourceFilter, starredOnly, sort, search, groupSubAgents]);
+  }, [hideEmpty, sourceFilter, starredOnly, sort, search]);
   const initialConversationsRef = A2(initialConversations);
   y2(() => {
     if (initialConversationsRef.current === initialConversations)
@@ -25231,14 +25450,18 @@ function ConversationsView({
   const loadMore = () => {
     fetchConversations(false);
   };
-  const hasMore = conversations.length < total;
+  const remainingConversationCount = Math.max(0, total - conversations.length);
+  const hasMore = remainingConversationCount > 0;
+  const selectedConversationSummary = selection2?.type === "conversation" ? conversations.find((conv) => conv.id === selection2.id) ?? null : null;
   const displayedConversations = T2(() => {
-    const base = conversations.filter((conv) => !hideEmpty || conv.block_count > 0);
+    const base = conversations.filter(
+      (conv) => !isSubagentConversation(conv) && (!hideEmpty || conv.block_count > 0)
+    );
     if (!search.trim() || searchMode === "full")
       return base;
     const needle = search.trim().toLowerCase();
     return base.filter(
-      (conv) => (conv.title || "").toLowerCase().includes(needle)
+      (conv) => getConversationTitle(conv).toLowerCase().includes(needle)
     );
   }, [conversations, hideEmpty, search, searchMode]);
   const liveByProviderSession = T2(() => {
@@ -25250,10 +25473,10 @@ function ConversationsView({
     }
     return map;
   }, [liveSessions]);
-  const chatGroups = T2(() => {
+  const chatSections = T2(() => {
     const entries2 = displayedConversations.map((conversation) => ({
       key: `conversation:${conversation.id}`,
-      project: getConversationProject(conversation),
+      project: getConversationProject(conversation, workRepos),
       time: getConversationTime(conversation),
       kind: "conversation",
       conversation,
@@ -25261,6 +25484,9 @@ function ConversationsView({
     }));
     const conversationProviderIds = new Set(displayedConversations.map((conversation) => conversation.session_id));
     for (const session of liveSessions) {
+      if (isSubagentSession(session)) {
+        continue;
+      }
       if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
         continue;
       }
@@ -25273,35 +25499,38 @@ function ConversationsView({
         liveSession: session
       });
     }
+    const sortEntries = (items) => [...items].sort((a4, b3) => {
+      if (sort === "blocks") {
+        const aBlocks = a4.conversation?.block_count ?? 0;
+        const bBlocks = b3.conversation?.block_count ?? 0;
+        if (aBlocks !== bBlocks)
+          return bBlocks - aBlocks;
+      }
+      return b3.time - a4.time || getEntryTitle(a4).localeCompare(getEntryTitle(b3));
+    });
+    const pinned = sortEntries(entries2.filter((entry) => Boolean(entry.conversation?.starred || entry.session?.pinned)));
+    const unpinned = entries2.filter((entry) => !entry.conversation?.starred && !entry.session?.pinned);
+    const looseChats = sortEntries(unpinned.filter((entry) => entry.project === "No Project"));
     const groupMap = /* @__PURE__ */ new Map();
-    for (const entry of entries2) {
+    for (const entry of unpinned) {
+      if (entry.project === "No Project")
+        continue;
       const group = groupMap.get(entry.project) ?? [];
       group.push(entry);
       groupMap.set(entry.project, group);
     }
-    return Array.from(groupMap.entries()).map(([project, groupEntries]) => {
-      const sortedEntries = [...groupEntries].sort((a4, b3) => {
-        if (sort === "blocks") {
-          const aBlocks = a4.conversation?.block_count ?? 0;
-          const bBlocks = b3.conversation?.block_count ?? 0;
-          if (aBlocks !== bBlocks)
-            return bBlocks - aBlocks;
-        }
-        return b3.time - a4.time;
-      });
-      return {
-        project,
-        latestTime: Math.max(...sortedEntries.map((entry) => entry.time)),
-        entries: sortedEntries
-      };
-    }).sort((a4, b3) => b3.latestTime - a4.latestTime || a4.project.localeCompare(b3.project));
-  }, [displayedConversations, liveByProviderSession, liveSessions, sort]);
-  const firstChatEntry = chatGroups[0]?.entries[0] ?? null;
+    const projects = Array.from(groupMap.entries()).map(([project, groupEntries]) => ({
+      project,
+      latestTime: Math.max(...groupEntries.map((entry) => entry.time)),
+      entries: sortEntries(groupEntries)
+    })).sort((a4, b3) => a4.project.localeCompare(b3.project));
+    return { pinned, projects, chats: looseChats };
+  }, [displayedConversations, liveByProviderSession, liveSessions, sort, workRepos]);
+  const firstChatEntry = chatSections.pinned[0] ?? chatSections.projects[0]?.entries[0] ?? chatSections.chats[0] ?? null;
   const activeFilterCount = [
     sourceFilter !== "all",
     starredOnly,
     !hideEmpty,
-    !groupSubAgents,
     sort !== "date",
     searchMode !== "title"
   ].filter(Boolean).length;
@@ -25348,23 +25577,98 @@ function ConversationsView({
       return next;
     });
   };
+  const toggleSection = (section) => {
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(section)) {
+        next.delete(section);
+      } else {
+        next.add(section);
+      }
+      return next;
+    });
+  };
+  const updateConversationInList = (updated) => {
+    setConversations((prev) => prev.map((conv) => conv.id === updated.id ? { ...conv, ...updated } : conv));
+  };
+  const handleToggleEntryPin = async (entry) => {
+    if (!entry.conversation)
+      return;
+    const starred = entry.conversation.starred ? 0 : 1;
+    try {
+      const updated = await updateConversation(entry.conversation.id, { starred });
+      updateConversationInList(updated);
+    } catch {
+    }
+  };
+  const handleRenameEntry = async (entry, label) => {
+    try {
+      if (entry.conversation) {
+        const updated = await updateConversation(entry.conversation.id, { label });
+        updateConversationInList(updated);
+        return;
+      }
+      if (entry.session && label) {
+        await updateConsoleSession(entry.session.id, { label });
+      }
+    } catch {
+    }
+  };
   const handleNewSession = (input) => {
     onNewSession(input);
     setDialogOpen(false);
   };
+  const renderEntry = (entry, showPinnedIcon = false) => /* @__PURE__ */ u3(
+    ChatEntryItem,
+    {
+      entry,
+      isSelected: entry.kind === "conversation" ? selectedConversationId === entry.conversation?.id : selectedSessionId === entry.session?.id,
+      showPinnedIcon,
+      onTogglePin: entry.conversation ? () => {
+        void handleToggleEntryPin(entry);
+      } : void 0,
+      onRename: (label) => {
+        void handleRenameEntry(entry, label);
+      },
+      onClick: () => {
+        if (entry.kind === "conversation" && entry.conversation) {
+          setSelection({ type: "conversation", id: entry.conversation.id });
+          return;
+        }
+        if (entry.session) {
+          handleSelectSession(entry.session.id);
+        }
+      }
+    },
+    entry.key
+  );
+  const totalVisibleEntries = chatSections.pinned.length + chatSections.projects.reduce((sum, group) => sum + group.entries.length, 0) + chatSections.chats.length;
   return /* @__PURE__ */ u3("div", { className: "chat-history-view", children: [
-    /* @__PURE__ */ u3("div", { className: "chat-history-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
+    !sidebarCollapsed && /* @__PURE__ */ u3("div", { className: "chat-history-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
       /* @__PURE__ */ u3("div", { className: "chat-sidebar-top", children: [
         /* @__PURE__ */ u3(
           "button",
           {
             type: "button",
-            className: "btn btn--ghost btn--sm chat-sidebar-new",
-            onClick: () => setDialogOpen(true),
-            children: "New"
+            className: "icon-btn chat-sidebar-shelf-btn",
+            onClick: () => setSidebarCollapsed(true),
+            title: "Hide chat list",
+            "aria-label": "Hide chat list",
+            children: /* @__PURE__ */ u3(ShelfIcon, {})
           }
         ),
         /* @__PURE__ */ u3("div", { className: "chat-history-search-row", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "icon-btn chat-sidebar-new",
+              onClick: () => setDialogOpen(true),
+              title: "New chat",
+              "aria-label": "New chat",
+              children: "+"
+            }
+          ),
           /* @__PURE__ */ u3(
             "input",
             {
@@ -25394,7 +25698,6 @@ function ConversationsView({
           sourceFilter !== "all" && /* @__PURE__ */ u3("span", { children: SOURCE_LABELS[sourceFilter] }),
           starredOnly && /* @__PURE__ */ u3("span", { children: "Starred" }),
           !hideEmpty && /* @__PURE__ */ u3("span", { children: "Empty shown" }),
-          !groupSubAgents && /* @__PURE__ */ u3("span", { children: "Sub-agents ungrouped" }),
           sort !== "date" && /* @__PURE__ */ u3("span", { children: "By blocks" }),
           searchMode === "full" && /* @__PURE__ */ u3("span", { children: "Full text" })
         ] }),
@@ -25434,17 +25737,6 @@ function ConversationsView({
                 }
               ),
               /* @__PURE__ */ u3("span", { children: "Hide empty chats" })
-            ] }),
-            /* @__PURE__ */ u3("label", { className: "chat-filter-popover__toggle", children: [
-              /* @__PURE__ */ u3(
-                "input",
-                {
-                  type: "checkbox",
-                  checked: groupSubAgents,
-                  onChange: () => setGroupSubAgents((prev) => !prev)
-                }
-              ),
-              /* @__PURE__ */ u3("span", { children: "Group sub-agents" })
             ] })
           ] }),
           /* @__PURE__ */ u3("div", { className: "chat-filter-popover__section", children: [
@@ -25488,65 +25780,109 @@ function ConversationsView({
         ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "chat-history-list", children: [
-        chatGroups.map((group) => {
-          const collapsed = collapsedProjects.has(group.project);
-          return /* @__PURE__ */ u3("div", { className: "chat-project-group", children: [
-            /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                className: "chat-project-group__header",
-                onClick: () => toggleProject(group.project),
-                children: [
-                  /* @__PURE__ */ u3("span", { children: collapsed ? "\u25B8" : "\u25BE" }),
-                  /* @__PURE__ */ u3("strong", { children: group.project }),
-                  /* @__PURE__ */ u3("em", { children: group.entries.length })
-                ]
-              }
-            ),
-            !collapsed && group.entries.map((entry) => /* @__PURE__ */ u3(
-              ChatEntryItem,
-              {
-                entry,
-                isSelected: entry.kind === "conversation" ? selectedConversationId === entry.conversation?.id : selectedSessionId === entry.session?.id,
-                onClick: () => {
-                  if (entry.kind === "conversation" && entry.conversation) {
-                    setSelection({ type: "conversation", id: entry.conversation.id });
-                    return;
-                  }
-                  if (entry.session) {
-                    handleSelectSession(entry.session.id);
-                  }
+        /* @__PURE__ */ u3("div", { className: "chat-sidebar-section", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "chat-sidebar-section__heading",
+              onClick: () => toggleSection("pinned"),
+              children: [
+                /* @__PURE__ */ u3("strong", { children: "Pinned" }),
+                /* @__PURE__ */ u3("em", { children: chatSections.pinned.length })
+              ]
+            }
+          ),
+          !collapsedSections.has("pinned") && chatSections.pinned.map((entry) => renderEntry(entry, true))
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "chat-sidebar-section", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "chat-sidebar-section__heading",
+              onClick: () => toggleSection("projects"),
+              children: [
+                /* @__PURE__ */ u3("strong", { children: "Projects" }),
+                /* @__PURE__ */ u3("em", { children: chatSections.projects.length })
+              ]
+            }
+          ),
+          !collapsedSections.has("projects") && chatSections.projects.map((group) => {
+            const collapsed = collapsedProjects.has(group.project);
+            return /* @__PURE__ */ u3("div", { className: "chat-project-group", children: [
+              /* @__PURE__ */ u3(
+                "button",
+                {
+                  type: "button",
+                  className: "chat-project-group__header",
+                  onClick: () => toggleProject(group.project),
+                  children: [
+                    /* @__PURE__ */ u3("span", { className: "chat-project-group__folder", children: /* @__PURE__ */ u3(FolderIcon, { open: !collapsed }) }),
+                    /* @__PURE__ */ u3("strong", { children: group.project }),
+                    /* @__PURE__ */ u3("em", { children: group.entries.length })
+                  ]
                 }
-              },
-              entry.key
-            ))
-          ] }, group.project);
-        }),
-        chatGroups.length === 0 && !loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "No conversations found." }),
+              ),
+              !collapsed && /* @__PURE__ */ u3("div", { className: "chat-project-group__items", children: group.entries.map((entry) => renderEntry(entry)) })
+            ] }, group.project);
+          })
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "chat-sidebar-section", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "chat-sidebar-section__heading",
+              onClick: () => toggleSection("chats"),
+              children: [
+                /* @__PURE__ */ u3("strong", { children: "Chats" }),
+                /* @__PURE__ */ u3("em", { children: chatSections.chats.length })
+              ]
+            }
+          ),
+          !collapsedSections.has("chats") && chatSections.chats.map((entry) => renderEntry(entry))
+        ] }),
+        totalVisibleEntries === 0 && !loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "No conversations found." }),
         loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "Loading\u2026" }),
         hasMore && !loading && /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost chat-history-load-more", onClick: loadMore, children: [
           "Load more (",
-          total - conversations.length,
+          remainingConversationCount,
           " remaining)"
         ] })
       ] })
     ] }),
-    /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
-    /* @__PURE__ */ u3("div", { className: "chat-history-detail", children: selection2?.type === "conversation" ? /* @__PURE__ */ u3(
-      ConversationDetail,
-      {
-        conversationId: selection2.id,
-        onNavigate: (id2) => setSelection({ type: "conversation", id: id2 }),
-        consoleSessions
-      }
-    ) : selection2?.type === "session" && selectedLiveSession ? /* @__PURE__ */ u3(
-      LiveSessionDetail,
-      {
-        session: selectedLiveSession
-      },
-      selectedLiveSession.id
-    ) : /* @__PURE__ */ u3("div", { className: "chat-history-detail__empty", children: "Select a conversation to view it" }) }),
+    !sidebarCollapsed && /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
+    /* @__PURE__ */ u3("div", { className: "chat-history-detail", children: [
+      sidebarCollapsed && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "icon-btn chat-sidebar-reveal",
+          onClick: () => setSidebarCollapsed(false),
+          title: "Show chat list",
+          "aria-label": "Show chat list",
+          children: /* @__PURE__ */ u3(ShelfIcon, {})
+        }
+      ),
+      selection2?.type === "conversation" ? /* @__PURE__ */ u3(
+        ConversationDetail,
+        {
+          conversationId: selection2.id,
+          initialConversation: selectedConversationSummary,
+          onNavigate: (id2) => setSelection({ type: "conversation", id: id2 }),
+          consoleSessions,
+          workRepos,
+          sidebarCollapsed
+        }
+      ) : selection2?.type === "session" && selectedLiveSession ? /* @__PURE__ */ u3(
+        LiveSessionDetail,
+        {
+          session: selectedLiveSession
+        },
+        selectedLiveSession.id
+      ) : /* @__PURE__ */ u3("div", { className: "chat-history-detail__empty", children: "Select a conversation to view it" })
+    ] }),
     /* @__PURE__ */ u3(
       NewSessionDialog,
       {
@@ -28439,10 +28775,10 @@ function LogsView() {
 // ui/src/views/graph.tsx
 init_hooks_module();
 
-// ../../node_modules/@xyflow/react/dist/esm/index.js
+// node_modules/@xyflow/react/dist/esm/index.js
 init_compat_module();
 
-// ../../node_modules/classcat/index.js
+// node_modules/classcat/index.js
 function cc(names) {
   if (typeof names === "string" || typeof names === "number")
     return "" + names;
@@ -28462,7 +28798,7 @@ function cc(names) {
   return out;
 }
 
-// ../../node_modules/d3-dispatch/src/dispatch.js
+// node_modules/d3-dispatch/src/dispatch.js
 var noop = { value: () => {
 } };
 function dispatch() {
@@ -28549,7 +28885,7 @@ function set(type, name, callback) {
 }
 var dispatch_default = dispatch;
 
-// ../../node_modules/d3-selection/src/namespaces.js
+// node_modules/d3-selection/src/namespaces.js
 var xhtml = "http://www.w3.org/1999/xhtml";
 var namespaces_default = {
   svg: "http://www.w3.org/2000/svg",
@@ -28559,7 +28895,7 @@ var namespaces_default = {
   xmlns: "http://www.w3.org/2000/xmlns/"
 };
 
-// ../../node_modules/d3-selection/src/namespace.js
+// node_modules/d3-selection/src/namespace.js
 function namespace_default(name) {
   var prefix = name += "", i4 = prefix.indexOf(":");
   if (i4 >= 0 && (prefix = name.slice(0, i4)) !== "xmlns")
@@ -28567,7 +28903,7 @@ function namespace_default(name) {
   return namespaces_default.hasOwnProperty(prefix) ? { space: namespaces_default[prefix], local: name } : name;
 }
 
-// ../../node_modules/d3-selection/src/creator.js
+// node_modules/d3-selection/src/creator.js
 function creatorInherit(name) {
   return function() {
     var document2 = this.ownerDocument, uri = this.namespaceURI;
@@ -28584,7 +28920,7 @@ function creator_default(name) {
   return (fullname.local ? creatorFixed : creatorInherit)(fullname);
 }
 
-// ../../node_modules/d3-selection/src/selector.js
+// node_modules/d3-selection/src/selector.js
 function none() {
 }
 function selector_default(selector) {
@@ -28593,7 +28929,7 @@ function selector_default(selector) {
   };
 }
 
-// ../../node_modules/d3-selection/src/selection/select.js
+// node_modules/d3-selection/src/selection/select.js
 function select_default(select) {
   if (typeof select !== "function")
     select = selector_default(select);
@@ -28609,12 +28945,12 @@ function select_default(select) {
   return new Selection(subgroups, this._parents);
 }
 
-// ../../node_modules/d3-selection/src/array.js
+// node_modules/d3-selection/src/array.js
 function array(x6) {
   return x6 == null ? [] : Array.isArray(x6) ? x6 : Array.from(x6);
 }
 
-// ../../node_modules/d3-selection/src/selectorAll.js
+// node_modules/d3-selection/src/selectorAll.js
 function empty() {
   return [];
 }
@@ -28624,7 +28960,7 @@ function selectorAll_default(selector) {
   };
 }
 
-// ../../node_modules/d3-selection/src/selection/selectAll.js
+// node_modules/d3-selection/src/selection/selectAll.js
 function arrayAll(select) {
   return function() {
     return array(select.apply(this, arguments));
@@ -28646,7 +28982,7 @@ function selectAll_default(select) {
   return new Selection(subgroups, parents);
 }
 
-// ../../node_modules/d3-selection/src/matcher.js
+// node_modules/d3-selection/src/matcher.js
 function matcher_default(selector) {
   return function() {
     return this.matches(selector);
@@ -28658,7 +28994,7 @@ function childMatcher(selector) {
   };
 }
 
-// ../../node_modules/d3-selection/src/selection/selectChild.js
+// node_modules/d3-selection/src/selection/selectChild.js
 var find = Array.prototype.find;
 function childFind(match) {
   return function() {
@@ -28672,7 +29008,7 @@ function selectChild_default(match) {
   return this.select(match == null ? childFirst : childFind(typeof match === "function" ? match : childMatcher(match)));
 }
 
-// ../../node_modules/d3-selection/src/selection/selectChildren.js
+// node_modules/d3-selection/src/selection/selectChildren.js
 var filter = Array.prototype.filter;
 function children() {
   return Array.from(this.children);
@@ -28686,7 +29022,7 @@ function selectChildren_default(match) {
   return this.selectAll(match == null ? children : childrenFilter(typeof match === "function" ? match : childMatcher(match)));
 }
 
-// ../../node_modules/d3-selection/src/selection/filter.js
+// node_modules/d3-selection/src/selection/filter.js
 function filter_default(match) {
   if (typeof match !== "function")
     match = matcher_default(match);
@@ -28700,12 +29036,12 @@ function filter_default(match) {
   return new Selection(subgroups, this._parents);
 }
 
-// ../../node_modules/d3-selection/src/selection/sparse.js
+// node_modules/d3-selection/src/selection/sparse.js
 function sparse_default(update) {
   return new Array(update.length);
 }
 
-// ../../node_modules/d3-selection/src/selection/enter.js
+// node_modules/d3-selection/src/selection/enter.js
 function enter_default() {
   return new Selection(this._enter || this._groups.map(sparse_default), this._parents);
 }
@@ -28732,14 +29068,14 @@ EnterNode.prototype = {
   }
 };
 
-// ../../node_modules/d3-selection/src/constant.js
+// node_modules/d3-selection/src/constant.js
 function constant_default(x6) {
   return function() {
     return x6;
   };
 }
 
-// ../../node_modules/d3-selection/src/selection/data.js
+// node_modules/d3-selection/src/selection/data.js
 function bindIndex(parent, group, enter, update, exit, data) {
   var i4 = 0, node, groupLength = group.length, dataLength = data.length;
   for (; i4 < dataLength; ++i4) {
@@ -28815,12 +29151,12 @@ function arraylike(data) {
   return typeof data === "object" && "length" in data ? data : Array.from(data);
 }
 
-// ../../node_modules/d3-selection/src/selection/exit.js
+// node_modules/d3-selection/src/selection/exit.js
 function exit_default() {
   return new Selection(this._exit || this._groups.map(sparse_default), this._parents);
 }
 
-// ../../node_modules/d3-selection/src/selection/join.js
+// node_modules/d3-selection/src/selection/join.js
 function join_default(onenter, onupdate, onexit) {
   var enter = this.enter(), update = this, exit = this.exit();
   if (typeof onenter === "function") {
@@ -28842,7 +29178,7 @@ function join_default(onenter, onupdate, onexit) {
   return enter && update ? enter.merge(update).order() : update;
 }
 
-// ../../node_modules/d3-selection/src/selection/merge.js
+// node_modules/d3-selection/src/selection/merge.js
 function merge_default(context) {
   var selection2 = context.selection ? context.selection() : context;
   for (var groups0 = this._groups, groups1 = selection2._groups, m0 = groups0.length, m1 = groups1.length, m4 = Math.min(m0, m1), merges = new Array(m0), j4 = 0; j4 < m4; ++j4) {
@@ -28858,7 +29194,7 @@ function merge_default(context) {
   return new Selection(merges, this._parents);
 }
 
-// ../../node_modules/d3-selection/src/selection/order.js
+// node_modules/d3-selection/src/selection/order.js
 function order_default() {
   for (var groups = this._groups, j4 = -1, m4 = groups.length; ++j4 < m4; ) {
     for (var group = groups[j4], i4 = group.length - 1, next = group[i4], node; --i4 >= 0; ) {
@@ -28872,7 +29208,7 @@ function order_default() {
   return this;
 }
 
-// ../../node_modules/d3-selection/src/selection/sort.js
+// node_modules/d3-selection/src/selection/sort.js
 function sort_default(compare) {
   if (!compare)
     compare = ascending;
@@ -28893,7 +29229,7 @@ function ascending(a4, b3) {
   return a4 < b3 ? -1 : a4 > b3 ? 1 : a4 >= b3 ? 0 : NaN;
 }
 
-// ../../node_modules/d3-selection/src/selection/call.js
+// node_modules/d3-selection/src/selection/call.js
 function call_default() {
   var callback = arguments[0];
   arguments[0] = this;
@@ -28901,12 +29237,12 @@ function call_default() {
   return this;
 }
 
-// ../../node_modules/d3-selection/src/selection/nodes.js
+// node_modules/d3-selection/src/selection/nodes.js
 function nodes_default() {
   return Array.from(this);
 }
 
-// ../../node_modules/d3-selection/src/selection/node.js
+// node_modules/d3-selection/src/selection/node.js
 function node_default() {
   for (var groups = this._groups, j4 = 0, m4 = groups.length; j4 < m4; ++j4) {
     for (var group = groups[j4], i4 = 0, n2 = group.length; i4 < n2; ++i4) {
@@ -28918,7 +29254,7 @@ function node_default() {
   return null;
 }
 
-// ../../node_modules/d3-selection/src/selection/size.js
+// node_modules/d3-selection/src/selection/size.js
 function size_default() {
   let size = 0;
   for (const node of this)
@@ -28926,12 +29262,12 @@ function size_default() {
   return size;
 }
 
-// ../../node_modules/d3-selection/src/selection/empty.js
+// node_modules/d3-selection/src/selection/empty.js
 function empty_default() {
   return !this.node();
 }
 
-// ../../node_modules/d3-selection/src/selection/each.js
+// node_modules/d3-selection/src/selection/each.js
 function each_default(callback) {
   for (var groups = this._groups, j4 = 0, m4 = groups.length; j4 < m4; ++j4) {
     for (var group = groups[j4], i4 = 0, n2 = group.length, node; i4 < n2; ++i4) {
@@ -28942,7 +29278,7 @@ function each_default(callback) {
   return this;
 }
 
-// ../../node_modules/d3-selection/src/selection/attr.js
+// node_modules/d3-selection/src/selection/attr.js
 function attrRemove(name) {
   return function() {
     this.removeAttribute(name);
@@ -28990,12 +29326,12 @@ function attr_default(name, value) {
   return this.each((value == null ? fullname.local ? attrRemoveNS : attrRemove : typeof value === "function" ? fullname.local ? attrFunctionNS : attrFunction : fullname.local ? attrConstantNS : attrConstant)(fullname, value));
 }
 
-// ../../node_modules/d3-selection/src/window.js
+// node_modules/d3-selection/src/window.js
 function window_default(node) {
   return node.ownerDocument && node.ownerDocument.defaultView || node.document && node || node.defaultView;
 }
 
-// ../../node_modules/d3-selection/src/selection/style.js
+// node_modules/d3-selection/src/selection/style.js
 function styleRemove(name) {
   return function() {
     this.style.removeProperty(name);
@@ -29022,7 +29358,7 @@ function styleValue(node, name) {
   return node.style.getPropertyValue(name) || window_default(node).getComputedStyle(node, null).getPropertyValue(name);
 }
 
-// ../../node_modules/d3-selection/src/selection/property.js
+// node_modules/d3-selection/src/selection/property.js
 function propertyRemove(name) {
   return function() {
     delete this[name];
@@ -29046,7 +29382,7 @@ function property_default(name, value) {
   return arguments.length > 1 ? this.each((value == null ? propertyRemove : typeof value === "function" ? propertyFunction : propertyConstant)(name, value)) : this.node()[name];
 }
 
-// ../../node_modules/d3-selection/src/selection/classed.js
+// node_modules/d3-selection/src/selection/classed.js
 function classArray(string) {
   return string.trim().split(/^|\s+/);
 }
@@ -29113,7 +29449,7 @@ function classed_default(name, value) {
   return this.each((typeof value === "function" ? classedFunction : value ? classedTrue : classedFalse)(names, value));
 }
 
-// ../../node_modules/d3-selection/src/selection/text.js
+// node_modules/d3-selection/src/selection/text.js
 function textRemove() {
   this.textContent = "";
 }
@@ -29132,7 +29468,7 @@ function text_default(value) {
   return arguments.length ? this.each(value == null ? textRemove : (typeof value === "function" ? textFunction : textConstant)(value)) : this.node().textContent;
 }
 
-// ../../node_modules/d3-selection/src/selection/html.js
+// node_modules/d3-selection/src/selection/html.js
 function htmlRemove() {
   this.innerHTML = "";
 }
@@ -29151,7 +29487,7 @@ function html_default(value) {
   return arguments.length ? this.each(value == null ? htmlRemove : (typeof value === "function" ? htmlFunction : htmlConstant)(value)) : this.node().innerHTML;
 }
 
-// ../../node_modules/d3-selection/src/selection/raise.js
+// node_modules/d3-selection/src/selection/raise.js
 function raise() {
   if (this.nextSibling)
     this.parentNode.appendChild(this);
@@ -29160,7 +29496,7 @@ function raise_default() {
   return this.each(raise);
 }
 
-// ../../node_modules/d3-selection/src/selection/lower.js
+// node_modules/d3-selection/src/selection/lower.js
 function lower() {
   if (this.previousSibling)
     this.parentNode.insertBefore(this, this.parentNode.firstChild);
@@ -29169,7 +29505,7 @@ function lower_default() {
   return this.each(lower);
 }
 
-// ../../node_modules/d3-selection/src/selection/append.js
+// node_modules/d3-selection/src/selection/append.js
 function append_default(name) {
   var create3 = typeof name === "function" ? name : creator_default(name);
   return this.select(function() {
@@ -29177,7 +29513,7 @@ function append_default(name) {
   });
 }
 
-// ../../node_modules/d3-selection/src/selection/insert.js
+// node_modules/d3-selection/src/selection/insert.js
 function constantNull() {
   return null;
 }
@@ -29188,7 +29524,7 @@ function insert_default(name, before) {
   });
 }
 
-// ../../node_modules/d3-selection/src/selection/remove.js
+// node_modules/d3-selection/src/selection/remove.js
 function remove() {
   var parent = this.parentNode;
   if (parent)
@@ -29198,7 +29534,7 @@ function remove_default() {
   return this.each(remove);
 }
 
-// ../../node_modules/d3-selection/src/selection/clone.js
+// node_modules/d3-selection/src/selection/clone.js
 function selection_cloneShallow() {
   var clone2 = this.cloneNode(false), parent = this.parentNode;
   return parent ? parent.insertBefore(clone2, this.nextSibling) : clone2;
@@ -29211,12 +29547,12 @@ function clone_default(deep) {
   return this.select(deep ? selection_cloneDeep : selection_cloneShallow);
 }
 
-// ../../node_modules/d3-selection/src/selection/datum.js
+// node_modules/d3-selection/src/selection/datum.js
 function datum_default(value) {
   return arguments.length ? this.property("__data__", value) : this.node().__data__;
 }
 
-// ../../node_modules/d3-selection/src/selection/on.js
+// node_modules/d3-selection/src/selection/on.js
 function contextListener(listener) {
   return function(event) {
     listener.call(this, event, this.__data__);
@@ -29288,7 +29624,7 @@ function on_default(typename, value, options2) {
   return this;
 }
 
-// ../../node_modules/d3-selection/src/selection/dispatch.js
+// node_modules/d3-selection/src/selection/dispatch.js
 function dispatchEvent(node, type, params) {
   var window2 = window_default(node), event = window2.CustomEvent;
   if (typeof event === "function") {
@@ -29316,7 +29652,7 @@ function dispatch_default2(type, params) {
   return this.each((typeof params === "function" ? dispatchFunction : dispatchConstant)(type, params));
 }
 
-// ../../node_modules/d3-selection/src/selection/iterator.js
+// node_modules/d3-selection/src/selection/iterator.js
 function* iterator_default() {
   for (var groups = this._groups, j4 = 0, m4 = groups.length; j4 < m4; ++j4) {
     for (var group = groups[j4], i4 = 0, n2 = group.length, node; i4 < n2; ++i4) {
@@ -29326,7 +29662,7 @@ function* iterator_default() {
   }
 }
 
-// ../../node_modules/d3-selection/src/selection/index.js
+// node_modules/d3-selection/src/selection/index.js
 var root = [null];
 function Selection(groups, parents) {
   this._groups = groups;
@@ -29378,12 +29714,12 @@ Selection.prototype = selection.prototype = {
 };
 var selection_default = selection;
 
-// ../../node_modules/d3-selection/src/select.js
+// node_modules/d3-selection/src/select.js
 function select_default2(selector) {
   return typeof selector === "string" ? new Selection([[document.querySelector(selector)]], [document.documentElement]) : new Selection([[selector]], root);
 }
 
-// ../../node_modules/d3-selection/src/sourceEvent.js
+// node_modules/d3-selection/src/sourceEvent.js
 function sourceEvent_default(event) {
   let sourceEvent;
   while (sourceEvent = event.sourceEvent)
@@ -29391,7 +29727,7 @@ function sourceEvent_default(event) {
   return event;
 }
 
-// ../../node_modules/d3-selection/src/pointer.js
+// node_modules/d3-selection/src/pointer.js
 function pointer_default(event, node) {
   event = sourceEvent_default(event);
   if (node === void 0)
@@ -29412,7 +29748,7 @@ function pointer_default(event, node) {
   return [event.pageX, event.pageY];
 }
 
-// ../../node_modules/d3-drag/src/noevent.js
+// node_modules/d3-drag/src/noevent.js
 var nonpassive = { passive: false };
 var nonpassivecapture = { capture: true, passive: false };
 function nopropagation(event) {
@@ -29423,7 +29759,7 @@ function noevent_default(event) {
   event.stopImmediatePropagation();
 }
 
-// ../../node_modules/d3-drag/src/nodrag.js
+// node_modules/d3-drag/src/nodrag.js
 function nodrag_default(view) {
   var root2 = view.document.documentElement, selection2 = select_default2(view).on("dragstart.drag", noevent_default, nonpassivecapture);
   if ("onselectstart" in root2) {
@@ -29449,10 +29785,10 @@ function yesdrag(view, noclick) {
   }
 }
 
-// ../../node_modules/d3-drag/src/constant.js
+// node_modules/d3-drag/src/constant.js
 var constant_default2 = (x6) => () => x6;
 
-// ../../node_modules/d3-drag/src/event.js
+// node_modules/d3-drag/src/event.js
 function DragEvent(type, {
   sourceEvent,
   subject,
@@ -29484,7 +29820,7 @@ DragEvent.prototype.on = function() {
   return value === this._ ? this : value;
 };
 
-// ../../node_modules/d3-drag/src/drag.js
+// node_modules/d3-drag/src/drag.js
 function defaultFilter(event) {
   return !event.ctrlKey && !event.button;
 }
@@ -29633,7 +29969,7 @@ function drag_default() {
   return drag;
 }
 
-// ../../node_modules/d3-color/src/define.js
+// node_modules/d3-color/src/define.js
 function define_default(constructor, factory, prototype) {
   constructor.prototype = factory.prototype = prototype;
   prototype.constructor = constructor;
@@ -29645,7 +29981,7 @@ function extend(parent, definition) {
   return prototype;
 }
 
-// ../../node_modules/d3-color/src/color.js
+// node_modules/d3-color/src/color.js
 function Color() {
 }
 var darker = 0.7;
@@ -29995,7 +30331,7 @@ function hsl2rgb(h3, m1, m22) {
   return (h3 < 60 ? m1 + (m22 - m1) * h3 / 60 : h3 < 180 ? m22 : h3 < 240 ? m1 + (m22 - m1) * (240 - h3) / 60 : m1) * 255;
 }
 
-// ../../node_modules/d3-interpolate/src/basis.js
+// node_modules/d3-interpolate/src/basis.js
 function basis(t1, v0, v1, v22, v3) {
   var t22 = t1 * t1, t3 = t22 * t1;
   return ((1 - 3 * t1 + 3 * t22 - t3) * v0 + (4 - 6 * t22 + 3 * t3) * v1 + (1 + 3 * t1 + 3 * t22 - 3 * t3) * v22 + t3 * v3) / 6;
@@ -30008,7 +30344,7 @@ function basis_default(values) {
   };
 }
 
-// ../../node_modules/d3-interpolate/src/basisClosed.js
+// node_modules/d3-interpolate/src/basisClosed.js
 function basisClosed_default(values) {
   var n2 = values.length;
   return function(t3) {
@@ -30017,10 +30353,10 @@ function basisClosed_default(values) {
   };
 }
 
-// ../../node_modules/d3-interpolate/src/constant.js
+// node_modules/d3-interpolate/src/constant.js
 var constant_default3 = (x6) => () => x6;
 
-// ../../node_modules/d3-interpolate/src/color.js
+// node_modules/d3-interpolate/src/color.js
 function linear(a4, d3) {
   return function(t3) {
     return a4 + t3 * d3;
@@ -30041,7 +30377,7 @@ function nogamma(a4, b3) {
   return d3 ? linear(a4, d3) : constant_default3(isNaN(a4) ? b3 : a4);
 }
 
-// ../../node_modules/d3-interpolate/src/rgb.js
+// node_modules/d3-interpolate/src/rgb.js
 var rgb_default = function rgbGamma(y5) {
   var color2 = gamma(y5);
   function rgb2(start3, end) {
@@ -30081,7 +30417,7 @@ function rgbSpline(spline) {
 var rgbBasis = rgbSpline(basis_default);
 var rgbBasisClosed = rgbSpline(basisClosed_default);
 
-// ../../node_modules/d3-interpolate/src/numberArray.js
+// node_modules/d3-interpolate/src/numberArray.js
 function numberArray_default(a4, b3) {
   if (!b3)
     b3 = [];
@@ -30096,7 +30432,7 @@ function isNumberArray(x6) {
   return ArrayBuffer.isView(x6) && !(x6 instanceof DataView);
 }
 
-// ../../node_modules/d3-interpolate/src/array.js
+// node_modules/d3-interpolate/src/array.js
 function genericArray(a4, b3) {
   var nb = b3 ? b3.length : 0, na = a4 ? Math.min(nb, a4.length) : 0, x6 = new Array(na), c4 = new Array(nb), i4;
   for (i4 = 0; i4 < na; ++i4)
@@ -30110,7 +30446,7 @@ function genericArray(a4, b3) {
   };
 }
 
-// ../../node_modules/d3-interpolate/src/date.js
+// node_modules/d3-interpolate/src/date.js
 function date_default(a4, b3) {
   var d3 = /* @__PURE__ */ new Date();
   return a4 = +a4, b3 = +b3, function(t3) {
@@ -30118,14 +30454,14 @@ function date_default(a4, b3) {
   };
 }
 
-// ../../node_modules/d3-interpolate/src/number.js
+// node_modules/d3-interpolate/src/number.js
 function number_default(a4, b3) {
   return a4 = +a4, b3 = +b3, function(t3) {
     return a4 * (1 - t3) + b3 * t3;
   };
 }
 
-// ../../node_modules/d3-interpolate/src/object.js
+// node_modules/d3-interpolate/src/object.js
 function object_default(a4, b3) {
   var i4 = {}, c4 = {}, k4;
   if (a4 === null || typeof a4 !== "object")
@@ -30146,7 +30482,7 @@ function object_default(a4, b3) {
   };
 }
 
-// ../../node_modules/d3-interpolate/src/string.js
+// node_modules/d3-interpolate/src/string.js
 var reA = /[-+]?(?:\d+\.?\d*|\.?\d+)(?:[eE][-+]?\d+)?/g;
 var reB = new RegExp(reA.source, "g");
 function zero(b3) {
@@ -30195,13 +30531,13 @@ function string_default(a4, b3) {
   });
 }
 
-// ../../node_modules/d3-interpolate/src/value.js
+// node_modules/d3-interpolate/src/value.js
 function value_default(a4, b3) {
   var t3 = typeof b3, c4;
   return b3 == null || t3 === "boolean" ? constant_default3(b3) : (t3 === "number" ? number_default : t3 === "string" ? (c4 = color(b3)) ? (b3 = c4, rgb_default) : string_default : b3 instanceof color ? rgb_default : b3 instanceof Date ? date_default : isNumberArray(b3) ? numberArray_default : Array.isArray(b3) ? genericArray : typeof b3.valueOf !== "function" && typeof b3.toString !== "function" || isNaN(b3) ? object_default : number_default)(a4, b3);
 }
 
-// ../../node_modules/d3-interpolate/src/transform/decompose.js
+// node_modules/d3-interpolate/src/transform/decompose.js
 var degrees = 180 / Math.PI;
 var identity = {
   translateX: 0,
@@ -30231,7 +30567,7 @@ function decompose_default(a4, b3, c4, d3, e3, f4) {
   };
 }
 
-// ../../node_modules/d3-interpolate/src/transform/parse.js
+// node_modules/d3-interpolate/src/transform/parse.js
 var svgNode;
 function parseCss(value) {
   const m4 = new (typeof DOMMatrix === "function" ? DOMMatrix : WebKitCSSMatrix)(value + "");
@@ -30249,7 +30585,7 @@ function parseSvg(value) {
   return decompose_default(value.a, value.b, value.c, value.d, value.e, value.f);
 }
 
-// ../../node_modules/d3-interpolate/src/transform/index.js
+// node_modules/d3-interpolate/src/transform/index.js
 function interpolateTransform(parse2, pxComma, pxParen, degParen) {
   function pop(s3) {
     return s3.length ? s3.pop() + " " : "";
@@ -30307,7 +30643,7 @@ function interpolateTransform(parse2, pxComma, pxParen, degParen) {
 var interpolateTransformCss = interpolateTransform(parseCss, "px, ", "px)", "deg)");
 var interpolateTransformSvg = interpolateTransform(parseSvg, ", ", ")", ")");
 
-// ../../node_modules/d3-interpolate/src/zoom.js
+// node_modules/d3-interpolate/src/zoom.js
 var epsilon2 = 1e-12;
 function cosh(x6) {
   return ((x6 = Math.exp(x6)) + 1 / x6) / 2;
@@ -30352,7 +30688,7 @@ var zoom_default = function zoomRho(rho, rho2, rho4) {
   return zoom;
 }(Math.SQRT2, 2, 4);
 
-// ../../node_modules/d3-timer/src/timer.js
+// node_modules/d3-timer/src/timer.js
 var frame = 0;
 var timeout = 0;
 var interval = 0;
@@ -30465,7 +30801,7 @@ function sleep(time) {
   }
 }
 
-// ../../node_modules/d3-timer/src/timeout.js
+// node_modules/d3-timer/src/timeout.js
 function timeout_default(callback, delay, time) {
   var t3 = new Timer();
   delay = delay == null ? 0 : +delay;
@@ -30476,7 +30812,7 @@ function timeout_default(callback, delay, time) {
   return t3;
 }
 
-// ../../node_modules/d3-transition/src/transition/schedule.js
+// node_modules/d3-transition/src/transition/schedule.js
 var emptyOn = dispatch_default("start", "end", "cancel", "interrupt");
 var emptyTween = [];
 var CREATED = 0;
@@ -30598,7 +30934,7 @@ function create2(node, id2, self2) {
   }
 }
 
-// ../../node_modules/d3-transition/src/interrupt.js
+// node_modules/d3-transition/src/interrupt.js
 function interrupt_default(node, name) {
   var schedules = node.__transition, schedule, active, empty2 = true, i4;
   if (!schedules)
@@ -30619,14 +30955,14 @@ function interrupt_default(node, name) {
     delete node.__transition;
 }
 
-// ../../node_modules/d3-transition/src/selection/interrupt.js
+// node_modules/d3-transition/src/selection/interrupt.js
 function interrupt_default2(name) {
   return this.each(function() {
     interrupt_default(this, name);
   });
 }
 
-// ../../node_modules/d3-transition/src/transition/tween.js
+// node_modules/d3-transition/src/transition/tween.js
 function tweenRemove(id2, name) {
   var tween0, tween1;
   return function() {
@@ -30689,13 +31025,13 @@ function tweenValue(transition2, name, value) {
   };
 }
 
-// ../../node_modules/d3-transition/src/transition/interpolate.js
+// node_modules/d3-transition/src/transition/interpolate.js
 function interpolate_default(a4, b3) {
   var c4;
   return (typeof b3 === "number" ? number_default : b3 instanceof color ? rgb_default : (c4 = color(b3)) ? (b3 = c4, rgb_default) : string_default)(a4, b3);
 }
 
-// ../../node_modules/d3-transition/src/transition/attr.js
+// node_modules/d3-transition/src/transition/attr.js
 function attrRemove2(name) {
   return function() {
     this.removeAttribute(name);
@@ -30747,7 +31083,7 @@ function attr_default2(name, value) {
   return this.attrTween(name, typeof value === "function" ? (fullname.local ? attrFunctionNS2 : attrFunction2)(fullname, i4, tweenValue(this, "attr." + name, value)) : value == null ? (fullname.local ? attrRemoveNS2 : attrRemove2)(fullname) : (fullname.local ? attrConstantNS2 : attrConstant2)(fullname, i4, value));
 }
 
-// ../../node_modules/d3-transition/src/transition/attrTween.js
+// node_modules/d3-transition/src/transition/attrTween.js
 function attrInterpolate(name, i4) {
   return function(t3) {
     this.setAttribute(name, i4.call(this, t3));
@@ -30792,7 +31128,7 @@ function attrTween_default(name, value) {
   return this.tween(key2, (fullname.local ? attrTweenNS : attrTween)(fullname, value));
 }
 
-// ../../node_modules/d3-transition/src/transition/delay.js
+// node_modules/d3-transition/src/transition/delay.js
 function delayFunction(id2, value) {
   return function() {
     init(this, id2).delay = +value.apply(this, arguments);
@@ -30808,7 +31144,7 @@ function delay_default(value) {
   return arguments.length ? this.each((typeof value === "function" ? delayFunction : delayConstant)(id2, value)) : get2(this.node(), id2).delay;
 }
 
-// ../../node_modules/d3-transition/src/transition/duration.js
+// node_modules/d3-transition/src/transition/duration.js
 function durationFunction(id2, value) {
   return function() {
     set2(this, id2).duration = +value.apply(this, arguments);
@@ -30824,7 +31160,7 @@ function duration_default(value) {
   return arguments.length ? this.each((typeof value === "function" ? durationFunction : durationConstant)(id2, value)) : get2(this.node(), id2).duration;
 }
 
-// ../../node_modules/d3-transition/src/transition/ease.js
+// node_modules/d3-transition/src/transition/ease.js
 function easeConstant(id2, value) {
   if (typeof value !== "function")
     throw new Error();
@@ -30837,7 +31173,7 @@ function ease_default(value) {
   return arguments.length ? this.each(easeConstant(id2, value)) : get2(this.node(), id2).ease;
 }
 
-// ../../node_modules/d3-transition/src/transition/easeVarying.js
+// node_modules/d3-transition/src/transition/easeVarying.js
 function easeVarying(id2, value) {
   return function() {
     var v3 = value.apply(this, arguments);
@@ -30852,7 +31188,7 @@ function easeVarying_default(value) {
   return this.each(easeVarying(this._id, value));
 }
 
-// ../../node_modules/d3-transition/src/transition/filter.js
+// node_modules/d3-transition/src/transition/filter.js
 function filter_default2(match) {
   if (typeof match !== "function")
     match = matcher_default(match);
@@ -30866,7 +31202,7 @@ function filter_default2(match) {
   return new Transition(subgroups, this._parents, this._name, this._id);
 }
 
-// ../../node_modules/d3-transition/src/transition/merge.js
+// node_modules/d3-transition/src/transition/merge.js
 function merge_default2(transition2) {
   if (transition2._id !== this._id)
     throw new Error();
@@ -30883,7 +31219,7 @@ function merge_default2(transition2) {
   return new Transition(merges, this._parents, this._name, this._id);
 }
 
-// ../../node_modules/d3-transition/src/transition/on.js
+// node_modules/d3-transition/src/transition/on.js
 function start(name) {
   return (name + "").trim().split(/^|\s+/).every(function(t3) {
     var i4 = t3.indexOf(".");
@@ -30906,7 +31242,7 @@ function on_default2(name, listener) {
   return arguments.length < 2 ? get2(this.node(), id2).on.on(name) : this.each(onFunction(id2, name, listener));
 }
 
-// ../../node_modules/d3-transition/src/transition/remove.js
+// node_modules/d3-transition/src/transition/remove.js
 function removeFunction(id2) {
   return function() {
     var parent = this.parentNode;
@@ -30921,7 +31257,7 @@ function remove_default2() {
   return this.on("end.remove", removeFunction(this._id));
 }
 
-// ../../node_modules/d3-transition/src/transition/select.js
+// node_modules/d3-transition/src/transition/select.js
 function select_default3(select) {
   var name = this._name, id2 = this._id;
   if (typeof select !== "function")
@@ -30939,7 +31275,7 @@ function select_default3(select) {
   return new Transition(subgroups, this._parents, name, id2);
 }
 
-// ../../node_modules/d3-transition/src/transition/selectAll.js
+// node_modules/d3-transition/src/transition/selectAll.js
 function selectAll_default2(select) {
   var name = this._name, id2 = this._id;
   if (typeof select !== "function")
@@ -30960,13 +31296,13 @@ function selectAll_default2(select) {
   return new Transition(subgroups, parents, name, id2);
 }
 
-// ../../node_modules/d3-transition/src/transition/selection.js
+// node_modules/d3-transition/src/transition/selection.js
 var Selection2 = selection_default.prototype.constructor;
 function selection_default2() {
   return new Selection2(this._groups, this._parents);
 }
 
-// ../../node_modules/d3-transition/src/transition/style.js
+// node_modules/d3-transition/src/transition/style.js
 function styleNull(name, interpolate) {
   var string00, string10, interpolate0;
   return function() {
@@ -31009,7 +31345,7 @@ function style_default2(name, value, priority) {
   return value == null ? this.styleTween(name, styleNull(name, i4)).on("end.style." + name, styleRemove2(name)) : typeof value === "function" ? this.styleTween(name, styleFunction2(name, i4, tweenValue(this, "style." + name, value))).each(styleMaybeRemove(this._id, name)) : this.styleTween(name, styleConstant2(name, i4, value), priority).on("end.style." + name, null);
 }
 
-// ../../node_modules/d3-transition/src/transition/styleTween.js
+// node_modules/d3-transition/src/transition/styleTween.js
 function styleInterpolate(name, i4, priority) {
   return function(t3) {
     this.style.setProperty(name, i4.call(this, t3), priority);
@@ -31037,7 +31373,7 @@ function styleTween_default(name, value, priority) {
   return this.tween(key2, styleTween(name, value, priority == null ? "" : priority));
 }
 
-// ../../node_modules/d3-transition/src/transition/text.js
+// node_modules/d3-transition/src/transition/text.js
 function textConstant2(value) {
   return function() {
     this.textContent = value;
@@ -31053,7 +31389,7 @@ function text_default2(value) {
   return this.tween("text", typeof value === "function" ? textFunction2(tweenValue(this, "text", value)) : textConstant2(value == null ? "" : value + ""));
 }
 
-// ../../node_modules/d3-transition/src/transition/textTween.js
+// node_modules/d3-transition/src/transition/textTween.js
 function textInterpolate(i4) {
   return function(t3) {
     this.textContent = i4.call(this, t3);
@@ -31081,7 +31417,7 @@ function textTween_default(value) {
   return this.tween(key2, textTween(value));
 }
 
-// ../../node_modules/d3-transition/src/transition/transition.js
+// node_modules/d3-transition/src/transition/transition.js
 function transition_default() {
   var name = this._name, id0 = this._id, id1 = newId();
   for (var groups = this._groups, m4 = groups.length, j4 = 0; j4 < m4; ++j4) {
@@ -31100,7 +31436,7 @@ function transition_default() {
   return new Transition(groups, this._parents, name, id1);
 }
 
-// ../../node_modules/d3-transition/src/transition/end.js
+// node_modules/d3-transition/src/transition/end.js
 function end_default() {
   var on0, on1, that = this, id2 = that._id, size = that.size();
   return new Promise(function(resolve, reject) {
@@ -31123,7 +31459,7 @@ function end_default() {
   });
 }
 
-// ../../node_modules/d3-transition/src/transition/index.js
+// node_modules/d3-transition/src/transition/index.js
 var id = 0;
 function Transition(groups, parents, name, id2) {
   this._groups = groups;
@@ -31171,12 +31507,12 @@ Transition.prototype = transition.prototype = {
   [Symbol.iterator]: selection_prototype[Symbol.iterator]
 };
 
-// ../../node_modules/d3-ease/src/cubic.js
+// node_modules/d3-ease/src/cubic.js
 function cubicInOut(t3) {
   return ((t3 *= 2) <= 1 ? t3 * t3 * t3 : (t3 -= 2) * t3 * t3 + 2) / 2;
 }
 
-// ../../node_modules/d3-transition/src/selection/transition.js
+// node_modules/d3-transition/src/selection/transition.js
 var defaultTiming = {
   time: null,
   // Set on use.
@@ -31210,14 +31546,14 @@ function transition_default2(name) {
   return new Transition(groups, this._parents, name, id2);
 }
 
-// ../../node_modules/d3-transition/src/selection/index.js
+// node_modules/d3-transition/src/selection/index.js
 selection_default.prototype.interrupt = interrupt_default2;
 selection_default.prototype.transition = transition_default2;
 
-// ../../node_modules/d3-zoom/src/constant.js
+// node_modules/d3-zoom/src/constant.js
 var constant_default4 = (x6) => () => x6;
 
-// ../../node_modules/d3-zoom/src/event.js
+// node_modules/d3-zoom/src/event.js
 function ZoomEvent(type, {
   sourceEvent,
   target,
@@ -31233,7 +31569,7 @@ function ZoomEvent(type, {
   });
 }
 
-// ../../node_modules/d3-zoom/src/transform.js
+// node_modules/d3-zoom/src/transform.js
 function Transform(k4, x6, y5) {
   this.k = k4;
   this.x = x6;
@@ -31284,7 +31620,7 @@ function transform(node) {
   return node.__zoom;
 }
 
-// ../../node_modules/d3-zoom/src/noevent.js
+// node_modules/d3-zoom/src/noevent.js
 function nopropagation2(event) {
   event.stopImmediatePropagation();
 }
@@ -31293,7 +31629,7 @@ function noevent_default2(event) {
   event.stopImmediatePropagation();
 }
 
-// ../../node_modules/d3-zoom/src/zoom.js
+// node_modules/d3-zoom/src/zoom.js
 function defaultFilter2(event) {
   return (!event.ctrlKey || event.type === "wheel") && !event.button;
 }
@@ -31636,7 +31972,7 @@ function zoom_default2() {
   return zoom;
 }
 
-// ../../node_modules/@xyflow/system/dist/esm/index.js
+// node_modules/@xyflow/system/dist/esm/index.js
 var errorMessages = {
   error001: () => "[React Flow]: Seems like you have not used zustand provider as an ancestor. Help: https://reactflow.dev/error#001",
   error002: () => "It looks like you've created a new nodeTypes or edgeTypes object. If this wasn't on purpose please define the nodeTypes/edgeTypes outside of the component or memoize them.",
@@ -34236,11 +34572,11 @@ function XYResizer({ domNode, nodeId, getStoreItems, onChange, onEnd }) {
   };
 }
 
-// ../../node_modules/zustand/esm/traditional.mjs
+// node_modules/zustand/esm/traditional.mjs
 init_compat_module();
 var import_with_selector = __toESM(require_with_selector(), 1);
 
-// ../../node_modules/zustand/esm/vanilla.mjs
+// node_modules/zustand/esm/vanilla.mjs
 var createStoreImpl = (createState) => {
   let state;
   const listeners = /* @__PURE__ */ new Set();
@@ -34272,7 +34608,7 @@ var createStoreImpl = (createState) => {
 };
 var createStore = (createState) => createState ? createStoreImpl(createState) : createStoreImpl;
 
-// ../../node_modules/zustand/esm/traditional.mjs
+// node_modules/zustand/esm/traditional.mjs
 var { useDebugValue } = xn;
 var { useSyncExternalStoreWithSelector } = import_with_selector.default;
 var identity3 = (arg) => arg;
@@ -34295,7 +34631,7 @@ var createWithEqualityFnImpl = (createState, defaultEqualityFn) => {
 };
 var createWithEqualityFn = (createState, defaultEqualityFn) => createState ? createWithEqualityFnImpl(createState, defaultEqualityFn) : createWithEqualityFnImpl;
 
-// ../../node_modules/zustand/esm/shallow.mjs
+// node_modules/zustand/esm/shallow.mjs
 function shallow$1(objA, objB) {
   if (Object.is(objA, objB)) {
     return true;
@@ -34335,7 +34671,7 @@ function shallow$1(objA, objB) {
   return true;
 }
 
-// ../../node_modules/@xyflow/react/dist/esm/index.js
+// node_modules/@xyflow/react/dist/esm/index.js
 init_compat_module();
 var StoreContext = Q(null);
 var Provider$1 = StoreContext.Provider;
@@ -37468,7 +37804,7 @@ function ResizeControl({ nodeId, position, variant = ResizeControlVariant.Handle
 }
 var NodeResizeControl = M2(ResizeControl);
 
-// ../../node_modules/d3-quadtree/src/add.js
+// node_modules/d3-quadtree/src/add.js
 function add_default(d3) {
   const x6 = +this._x.call(null, d3), y5 = +this._y.call(null, d3);
   return add(this.cover(x6, y5), x6, y5, d3);
@@ -37533,7 +37869,7 @@ function addAll(data) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/cover.js
+// node_modules/d3-quadtree/src/cover.js
 function cover_default(x6, y5) {
   if (isNaN(x6 = +x6) || isNaN(y5 = +y5))
     return this;
@@ -37571,7 +37907,7 @@ function cover_default(x6, y5) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/data.js
+// node_modules/d3-quadtree/src/data.js
 function data_default2() {
   var data = [];
   this.visit(function(node) {
@@ -37583,12 +37919,12 @@ function data_default2() {
   return data;
 }
 
-// ../../node_modules/d3-quadtree/src/extent.js
+// node_modules/d3-quadtree/src/extent.js
 function extent_default(_3) {
   return arguments.length ? this.cover(+_3[0][0], +_3[0][1]).cover(+_3[1][0], +_3[1][1]) : isNaN(this._x0) ? void 0 : [[this._x0, this._y0], [this._x1, this._y1]];
 }
 
-// ../../node_modules/d3-quadtree/src/quad.js
+// node_modules/d3-quadtree/src/quad.js
 function quad_default(node, x0, y0, x1, y1) {
   this.node = node;
   this.x0 = x0;
@@ -37597,7 +37933,7 @@ function quad_default(node, x0, y0, x1, y1) {
   this.y1 = y1;
 }
 
-// ../../node_modules/d3-quadtree/src/find.js
+// node_modules/d3-quadtree/src/find.js
 function find_default(x6, y5, radius) {
   var data, x0 = this._x0, y0 = this._y0, x1, y1, x22, y22, x32 = this._x1, y32 = this._y1, quads = [], node = this._root, q4, i4;
   if (node)
@@ -37638,7 +37974,7 @@ function find_default(x6, y5, radius) {
   return data;
 }
 
-// ../../node_modules/d3-quadtree/src/remove.js
+// node_modules/d3-quadtree/src/remove.js
 function remove_default3(d3) {
   if (isNaN(x6 = +this._x.call(null, d3)) || isNaN(y5 = +this._y.call(null, d3)))
     return this;
@@ -37686,12 +38022,12 @@ function removeAll(data) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/root.js
+// node_modules/d3-quadtree/src/root.js
 function root_default() {
   return this._root;
 }
 
-// ../../node_modules/d3-quadtree/src/size.js
+// node_modules/d3-quadtree/src/size.js
 function size_default2() {
   var size = 0;
   this.visit(function(node) {
@@ -37703,7 +38039,7 @@ function size_default2() {
   return size;
 }
 
-// ../../node_modules/d3-quadtree/src/visit.js
+// node_modules/d3-quadtree/src/visit.js
 function visit_default(callback) {
   var quads = [], q4, node = this._root, child, x0, y0, x1, y1;
   if (node)
@@ -37724,7 +38060,7 @@ function visit_default(callback) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/visitAfter.js
+// node_modules/d3-quadtree/src/visitAfter.js
 function visitAfter_default(callback) {
   var quads = [], next = [], q4;
   if (this._root)
@@ -37750,7 +38086,7 @@ function visitAfter_default(callback) {
   return this;
 }
 
-// ../../node_modules/d3-quadtree/src/x.js
+// node_modules/d3-quadtree/src/x.js
 function defaultX(d3) {
   return d3[0];
 }
@@ -37758,7 +38094,7 @@ function x_default(_3) {
   return arguments.length ? (this._x = _3, this) : this._x;
 }
 
-// ../../node_modules/d3-quadtree/src/y.js
+// node_modules/d3-quadtree/src/y.js
 function defaultY(d3) {
   return d3[1];
 }
@@ -37766,7 +38102,7 @@ function y_default(_3) {
   return arguments.length ? (this._y = _3, this) : this._y;
 }
 
-// ../../node_modules/d3-quadtree/src/quadtree.js
+// node_modules/d3-quadtree/src/quadtree.js
 function quadtree(nodes, x6, y5) {
   var tree = new Quadtree(x6 == null ? defaultX : x6, y5 == null ? defaultY : y5, NaN, NaN, NaN, NaN);
   return nodes == null ? tree : tree.addAll(nodes);
@@ -37821,19 +38157,19 @@ treeProto.visitAfter = visitAfter_default;
 treeProto.x = x_default;
 treeProto.y = y_default;
 
-// ../../node_modules/d3-force/src/constant.js
+// node_modules/d3-force/src/constant.js
 function constant_default5(x6) {
   return function() {
     return x6;
   };
 }
 
-// ../../node_modules/d3-force/src/jiggle.js
+// node_modules/d3-force/src/jiggle.js
 function jiggle_default(random) {
   return (random() - 0.5) * 1e-6;
 }
 
-// ../../node_modules/d3-force/src/collide.js
+// node_modules/d3-force/src/collide.js
 function x4(d3) {
   return d3.x + d3.vx;
 }
@@ -37912,7 +38248,7 @@ function collide_default(radius) {
   return force;
 }
 
-// ../../node_modules/d3-force/src/link.js
+// node_modules/d3-force/src/link.js
 function index2(d3) {
   return d3.index;
 }
@@ -38001,7 +38337,7 @@ function link_default(links) {
   return force;
 }
 
-// ../../node_modules/d3-force/src/lcg.js
+// node_modules/d3-force/src/lcg.js
 var a3 = 1664525;
 var c3 = 1013904223;
 var m3 = 4294967296;
@@ -38010,7 +38346,7 @@ function lcg_default() {
   return () => (s3 = (a3 * s3 + c3) % m3) / m3;
 }
 
-// ../../node_modules/d3-force/src/simulation.js
+// node_modules/d3-force/src/simulation.js
 function x5(d3) {
   return d3.x;
 }
@@ -38131,7 +38467,7 @@ function simulation_default(nodes) {
   };
 }
 
-// ../../node_modules/d3-force/src/manyBody.js
+// node_modules/d3-force/src/manyBody.js
 function manyBody_default() {
   var nodes, node, random, alpha, strength = constant_default5(-30), strengths, distanceMin2 = 1, distanceMax2 = Infinity, theta2 = 0.81;
   function force(_3) {
@@ -38221,7 +38557,7 @@ function manyBody_default() {
   return force;
 }
 
-// ../../node_modules/d3-force/src/x.js
+// node_modules/d3-force/src/x.js
 function x_default2(x6) {
   var strength = constant_default5(0.1), nodes, strengths, xz;
   if (typeof x6 !== "function")
@@ -38254,7 +38590,7 @@ function x_default2(x6) {
   return force;
 }
 
-// ../../node_modules/d3-force/src/y.js
+// node_modules/d3-force/src/y.js
 function y_default2(y5) {
   var strength = constant_default5(0.1), nodes, strengths, yz;
   if (typeof y5 !== "function")
@@ -39279,13 +39615,13 @@ init_api();
 // ui/src/components/presets/PresetNode.tsx
 init_hooks_module();
 
-// ../../node_modules/@babel/runtime/helpers/esm/arrayWithHoles.js
+// node_modules/@babel/runtime/helpers/esm/arrayWithHoles.js
 function _arrayWithHoles(r3) {
   if (Array.isArray(r3))
     return r3;
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/iterableToArrayLimit.js
+// node_modules/@babel/runtime/helpers/esm/iterableToArrayLimit.js
 function _iterableToArrayLimit(r3, l3) {
   var t3 = null == r3 ? null : "undefined" != typeof Symbol && r3[Symbol.iterator] || r3["@@iterator"];
   if (null != t3) {
@@ -39313,7 +39649,7 @@ function _iterableToArrayLimit(r3, l3) {
   }
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/arrayLikeToArray.js
+// node_modules/@babel/runtime/helpers/esm/arrayLikeToArray.js
 function _arrayLikeToArray(r3, a4) {
   (null == a4 || a4 > r3.length) && (a4 = r3.length);
   for (var e3 = 0, n2 = Array(a4); e3 < a4; e3++)
@@ -39321,7 +39657,7 @@ function _arrayLikeToArray(r3, a4) {
   return n2;
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/unsupportedIterableToArray.js
+// node_modules/@babel/runtime/helpers/esm/unsupportedIterableToArray.js
 function _unsupportedIterableToArray(r3, a4) {
   if (r3) {
     if ("string" == typeof r3)
@@ -39331,28 +39667,28 @@ function _unsupportedIterableToArray(r3, a4) {
   }
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/nonIterableRest.js
+// node_modules/@babel/runtime/helpers/esm/nonIterableRest.js
 function _nonIterableRest() {
   throw new TypeError("Invalid attempt to destructure non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method.");
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/slicedToArray.js
+// node_modules/@babel/runtime/helpers/esm/slicedToArray.js
 function _slicedToArray(r3, e3) {
   return _arrayWithHoles(r3) || _iterableToArrayLimit(r3, e3) || _unsupportedIterableToArray(r3, e3) || _nonIterableRest();
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/adapter/element-adapter.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/adapter/element-adapter.js
 var import_bind_event_listener4 = __toESM(require_dist());
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/honey-pot-data-attribute.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/honey-pot-data-attribute.js
 var honeyPotDataAttribute = "data-pdnd-honey-pot";
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/is-honey-pot-element.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/is-honey-pot-element.js
 function isHoneyPotElement(target) {
   return target instanceof Element && target.hasAttribute(honeyPotDataAttribute);
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/get-element-from-point-without-honey-pot.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/get-element-from-point-without-honey-pot.js
 function getElementFromPointWithoutHoneypot(client) {
   var _document$elementsFro = document.elementsFromPoint(client.x, client.y), _document$elementsFro2 = _slicedToArray(_document$elementsFro, 2), top2 = _document$elementsFro2[0], second = _document$elementsFro2[1];
   if (!top2) {
@@ -39364,7 +39700,7 @@ function getElementFromPointWithoutHoneypot(client) {
   return top2;
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/typeof.js
+// node_modules/@babel/runtime/helpers/esm/typeof.js
 function _typeof(o3) {
   "@babel/helpers - typeof";
   return _typeof = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function(o4) {
@@ -39374,7 +39710,7 @@ function _typeof(o3) {
   }, _typeof(o3);
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/toPrimitive.js
+// node_modules/@babel/runtime/helpers/esm/toPrimitive.js
 function toPrimitive(t3, r3) {
   if ("object" != _typeof(t3) || !t3)
     return t3;
@@ -39388,13 +39724,13 @@ function toPrimitive(t3, r3) {
   return ("string" === r3 ? String : Number)(t3);
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/toPropertyKey.js
+// node_modules/@babel/runtime/helpers/esm/toPropertyKey.js
 function toPropertyKey(t3) {
   var i4 = toPrimitive(t3, "string");
   return "symbol" == _typeof(i4) ? i4 : i4 + "";
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/defineProperty.js
+// node_modules/@babel/runtime/helpers/esm/defineProperty.js
 function _defineProperty(e3, r3, t3) {
   return (r3 = toPropertyKey(r3)) in e3 ? Object.defineProperty(e3, r3, {
     value: t3,
@@ -39404,13 +39740,13 @@ function _defineProperty(e3, r3, t3) {
   }) : e3[r3] = t3, e3;
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/make-honey-pot-fix.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/make-honey-pot-fix.js
 var import_bind_event_listener = __toESM(require_dist());
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/max-z-index.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/max-z-index.js
 var maxZIndex = 2147483647;
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/make-honey-pot-fix.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/honey-pot-fix/make-honey-pot-fix.js
 function ownKeys(e3, r3) {
   var t3 = Object.keys(e3);
   if (Object.getOwnPropertySymbols) {
@@ -39643,32 +39979,32 @@ function makeHoneyPotFix() {
   };
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/arrayWithoutHoles.js
+// node_modules/@babel/runtime/helpers/esm/arrayWithoutHoles.js
 function _arrayWithoutHoles(r3) {
   if (Array.isArray(r3))
     return _arrayLikeToArray(r3);
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/iterableToArray.js
+// node_modules/@babel/runtime/helpers/esm/iterableToArray.js
 function _iterableToArray(r3) {
   if ("undefined" != typeof Symbol && null != r3[Symbol.iterator] || null != r3["@@iterator"])
     return Array.from(r3);
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/nonIterableSpread.js
+// node_modules/@babel/runtime/helpers/esm/nonIterableSpread.js
 function _nonIterableSpread() {
   throw new TypeError("Invalid attempt to spread non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method.");
 }
 
-// ../../node_modules/@babel/runtime/helpers/esm/toConsumableArray.js
+// node_modules/@babel/runtime/helpers/esm/toConsumableArray.js
 function _toConsumableArray(r3) {
   return _arrayWithoutHoles(r3) || _iterableToArray(r3) || _unsupportedIterableToArray(r3) || _nonIterableSpread();
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/ledger/lifecycle-manager.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/ledger/lifecycle-manager.js
 var import_bind_event_listener3 = __toESM(require_dist());
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/public-utils/once.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/public-utils/once.js
 function once(fn2) {
   var cache = null;
   return function wrapped() {
@@ -39685,7 +40021,7 @@ function once(fn2) {
   };
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/is-firefox.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/is-firefox.js
 var isFirefox = once(function isFirefox2() {
   if (false) {
     return false;
@@ -39693,7 +40029,7 @@ var isFirefox = once(function isFirefox2() {
   return navigator.userAgent.includes("Firefox");
 });
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/is-safari.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/is-safari.js
 var isSafari = once(function isSafari2() {
   if (false) {
     return false;
@@ -39702,7 +40038,7 @@ var isSafari = once(function isSafari2() {
   return userAgent.includes("AppleWebKit") && !userAgent.includes("Chrome");
 });
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/changing-window/count-events-for-safari.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/changing-window/count-events-for-safari.js
 var import_bind_event_listener2 = __toESM(require_dist());
 var symbols = {
   isLeavingWindow: Symbol("leaving"),
@@ -39776,7 +40112,7 @@ function isLeavingWindowInSafari(_ref2) {
   );
 })();
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/changing-window/is-from-another-window.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/changing-window/is-from-another-window.js
 function isNodeLike(target) {
   return "nodeName" in target;
 }
@@ -39784,7 +40120,7 @@ function isFromAnotherWindow(eventTarget) {
   return isNodeLike(eventTarget) && eventTarget.ownerDocument !== document;
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/changing-window/is-leaving-window.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/changing-window/is-leaving-window.js
 function isLeavingWindow(_ref) {
   var dragLeave = _ref.dragLeave;
   var type = dragLeave.type, relatedTarget = dragLeave.relatedTarget;
@@ -39805,7 +40141,7 @@ function isLeavingWindow(_ref) {
   return relatedTarget instanceof HTMLIFrameElement;
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/detect-broken-drag.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/detect-broken-drag.js
 function getBindingsForBrokenDrags(_ref) {
   var onDragEnd = _ref.onDragEnd;
   return [
@@ -39851,7 +40187,7 @@ function getBindingsForBrokenDrags(_ref) {
   ];
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/get-input.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/get-input.js
 function getInput(event) {
   return {
     altKey: event.altKey,
@@ -39867,7 +40203,7 @@ function getInput(event) {
   };
 }
 
-// ../../node_modules/raf-schd/dist/raf-schd.esm.js
+// node_modules/raf-schd/dist/raf-schd.esm.js
 var rafSchd = function rafSchd2(fn2) {
   var lastArgs = [];
   var frameId = null;
@@ -39895,7 +40231,7 @@ var rafSchd = function rafSchd2(fn2) {
 };
 var raf_schd_esm_default = rafSchd;
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/ledger/dispatch-consumer-event.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/ledger/dispatch-consumer-event.js
 var scheduleOnDrag = raf_schd_esm_default(function(fn2) {
   return fn2();
 });
@@ -40014,7 +40350,7 @@ function makeDispatch(_ref) {
   return dispatch2;
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/ledger/lifecycle-manager.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/ledger/lifecycle-manager.js
 var globalState = {
   isActive: false
 };
@@ -40239,7 +40575,7 @@ var lifecycle = {
   start: start2
 };
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/ledger/usage-ledger.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/ledger/usage-ledger.js
 var ledger = /* @__PURE__ */ new Map();
 function registerUsage(_ref) {
   var typeKey = _ref.typeKey, mount2 = _ref.mount;
@@ -40268,7 +40604,7 @@ function register(args) {
   };
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/public-utils/combine.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/public-utils/combine.js
 function combine() {
   for (var _len = arguments.length, fns = new Array(_len), _key = 0; _key < _len; _key++) {
     fns[_key] = arguments[_key];
@@ -40280,7 +40616,7 @@ function combine() {
   };
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/add-attribute.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/add-attribute.js
 function addAttribute(element, _ref) {
   var attribute = _ref.attribute, value = _ref.value;
   element.setAttribute(attribute, value);
@@ -40289,7 +40625,7 @@ function addAttribute(element, _ref) {
   };
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/make-adapter/make-drop-target.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/make-adapter/make-drop-target.js
 function ownKeys2(e3, r3) {
   var t3 = Object.keys(e3);
   if (Object.getOwnPropertySymbols) {
@@ -40584,7 +40920,7 @@ function makeDropTarget(_ref) {
   };
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/make-adapter/make-monitor.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/make-adapter/make-monitor.js
 function _createForOfIteratorHelper2(r3, e3) {
   var t3 = "undefined" != typeof Symbol && r3[Symbol.iterator] || r3["@@iterator"];
   if (!t3) {
@@ -40719,7 +41055,7 @@ function makeMonitor() {
   };
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/make-adapter/make-adapter.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/make-adapter/make-adapter.js
 function makeAdapter(_ref) {
   var typeKey = _ref.typeKey, mount2 = _ref.mount, dispatchEventToSource2 = _ref.dispatchEventToSource, onPostDispatch = _ref.onPostDispatch, defaultDropEffect = _ref.defaultDropEffect;
   var monitorAPI = makeMonitor();
@@ -40762,22 +41098,22 @@ function makeAdapter(_ref) {
   };
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/android.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/android.js
 var isAndroid = once(function isAndroid2() {
   return navigator.userAgent.toLocaleLowerCase().includes("android");
 });
 var androidFallbackText = "pdnd:android-fallback";
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/media-types/text-media-type.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/media-types/text-media-type.js
 var textMediaType = "text/plain";
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/media-types/url-media-type.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/util/media-types/url-media-type.js
 var URLMediaType = "text/uri-list";
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/adapter/element-adapter-native-data-key.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/adapter/element-adapter-native-data-key.js
 var elementAdapterNativeDataKey = "application/vnd.pdnd";
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/adapter/element-adapter.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop/dist/esm/adapter/element-adapter.js
 var draggableRegistry = /* @__PURE__ */ new WeakMap();
 function addToRegistry(args) {
   draggableRegistry.set(args.element, args);
@@ -40910,7 +41246,7 @@ function draggable(args) {
   return once(cleanup);
 }
 
-// ../../node_modules/@atlaskit/pragmatic-drag-and-drop-hitbox/dist/esm/closest-edge.js
+// node_modules/@atlaskit/pragmatic-drag-and-drop-hitbox/dist/esm/closest-edge.js
 function ownKeys4(e3, r3) {
   var t3 = Object.keys(e3);
   if (Object.getOwnPropertySymbols) {
@@ -43754,7 +44090,7 @@ function App() {
         dispatch2({ type: "setIssueRepos", repos });
       }
     }).catch(() => void 0);
-    getConversations({ limit: 50 }).then((result) => {
+    getConversations({ limit: 50, group: true, exclude_subagents: true, min_blocks: 1 }).then((result) => {
       if (active) {
         dispatch2({ type: "setConversations", conversations: result.conversations });
       }
@@ -43957,8 +44293,8 @@ function App() {
     state.switchboardTemplates
   ]);
   const badges = T2(() => selectBadgeCounts(state), [state]);
-  const headerDisplayMode = state.settings.header_display_mode ?? "text";
-  const railDisplayMode = headerDisplayMode === "icons" ? "icons" : "both";
+  const headerDisplayMode = state.settings.header_display_mode ?? "icons";
+  const railDisplayMode = headerDisplayMode === "both" ? "both" : "icons";
   const authBranchesByRepo = T2(() => {
     const result = {};
     for (const [repoId, branches] of Object.entries(state.workBranches)) {
@@ -44351,7 +44687,7 @@ function App() {
         href: item.href,
         className: `app-rail__item${active ? " app-rail__item--active" : ""}`,
         "aria-current": active ? "page" : void 0,
-        title: item.title,
+        "aria-label": item.title,
         onClick: (event) => {
           if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
             return;
@@ -44362,6 +44698,7 @@ function App() {
         children: [
           /* @__PURE__ */ u3("span", { className: "app-rail__icon", children: /* @__PURE__ */ u3(Icon, { size: 18 }) }),
           railDisplayMode === "both" && /* @__PURE__ */ u3("span", { className: "app-rail__label", children: item.label }),
+          railDisplayMode !== "both" && /* @__PURE__ */ u3("span", { className: "app-rail__tooltip", children: item.label }),
           item.badge ? /* @__PURE__ */ u3("span", { className: `tab-badge app-rail__badge${item.badgeClass ? ` ${item.badgeClass}` : ""}`, children: item.badge }) : null
         ]
       },
@@ -44408,10 +44745,7 @@ function App() {
     ] }),
     /* @__PURE__ */ u3("div", { className: `app-layout app-layout--rail-${railDisplayMode}`, children: [
       /* @__PURE__ */ u3("aside", { className: "app-rail", "data-tauri-drag-region": true, children: [
-        /* @__PURE__ */ u3("div", { className: "app-rail__brand", title: "Mandible", children: [
-          /* @__PURE__ */ u3("span", { className: "app-rail__mark", "aria-hidden": "true", children: "M" }),
-          railDisplayMode === "both" && /* @__PURE__ */ u3("span", { className: "app-rail__brand-text", children: "Mandible" })
-        ] }),
+        /* @__PURE__ */ u3("div", { className: "app-rail__brand", title: "Mandible", children: /* @__PURE__ */ u3("span", { className: "app-rail__mark", "aria-hidden": "true", children: "M" }) }),
         /* @__PURE__ */ u3("nav", { className: "app-rail__nav", "aria-label": "Main navigation", children: [
           /* @__PURE__ */ u3("div", { className: "app-rail__group", children: primaryNavItems.map(renderRailItem) }),
           /* @__PURE__ */ u3("div", { className: "app-rail__group app-rail__group--secondary", children: secondaryNavItems.map(renderRailItem) })
@@ -44516,6 +44850,7 @@ function App() {
           {
             conversations: state.conversations,
             consoleSessions: state.consoleSessions,
+            workRepos: state.workRepos,
             initialConversationId: route.params.conversation ?? null,
             initialSessionId: route.params.session ?? null,
             initialPresetId: route.params.preset ?? null,

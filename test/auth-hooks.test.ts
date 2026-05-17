@@ -27,8 +27,8 @@ function createDbWithHooks(): InstanceType<typeof Database> {
       "builtin-mandible-rebuild",
       "mandible",
       "merge",
-      "npm install --legacy-peer-deps --no-audit --no-fund && npm run build",
-      "Rebuild Mandible after merge",
+      "bash cli/post-merge-build-dist.sh",
+      "Build and commit Mandible dist after merge",
       now,
       now,
     );
@@ -45,9 +45,8 @@ describe("AuthHookManager", () => {
     expect(builtin).toBeDefined();
     expect(builtin!.repo_pattern).toBe("mandible");
     expect(builtin!.auth_type).toBe("merge");
-    expect(builtin!.command).toBe(
-      "npm install --legacy-peer-deps --no-audit --no-fund && npm run build",
-    );
+    expect(builtin!.command).toBe("bash cli/post-merge-build-dist.sh");
+    expect(builtin!.label).toBe("Build and commit Mandible dist after merge");
     expect(builtin!.builtin).toBe(true);
     expect(builtin!.enabled).toBe(true);
   });
