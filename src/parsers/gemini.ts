@@ -1,5 +1,7 @@
-// Parser for Gemini CLI JSON conversation files.
-// Format: ~/.gemini/tmp/<project_hash>/chats/session-<timestamp>-<uuid>.json
+// Parser for Gemini CLI conversation files.
+// Formats:
+// - ~/.gemini/tmp/<project>/chats/session-<timestamp>-<uuid>.json
+// - ~/.gemini/tmp/<project>/chats/session-<timestamp>-<uuid>.jsonl
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
@@ -53,6 +55,30 @@ interface GeminiSession {
   messages: GeminiMessage[];
 }
 
+interface GeminiJsonlUpdate {
+  $set?: {
+    lastUpdated?: string;
+  };
+}
+
+type GeminiJsonlEntry = Partial<GeminiSession> | Partial<GeminiMessage> | GeminiJsonlUpdate;
+
+interface GeminiProjectIdentity {
+  projectPath: string | null;
+  cwd: string | null;
+}
+
+interface GeminiProjectsFile {
+  projects?: Record<string, string>;
+}
+
+let geminiProjectsCache: {
+  path: string;
+  mtimeMs: number;
+  byHash: Map<string, string>;
+  byAlias: Map<string, string>;
+} | null = null;
+
 function renderGeminiContent(content: unknown): string {
   if (typeof content === "string") {
     return content;
@@ -83,15 +109,175 @@ function renderGeminiContent(content: unknown): string {
   return "";
 }
 
+function isSha256Hex(value: string | null | undefined): boolean {
+  return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+}
+
+function geminiSessionIdFromPath(filePath: string): string {
+  return path.basename(filePath).replace(/\.(jsonl|json)$/i, "");
+}
+
+function parseGeminiSession(raw: string, filePath: string): GeminiSession {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { sessionId: geminiSessionIdFromPath(filePath), messages: [] };
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<GeminiSession>;
+    if (Array.isArray(parsed.messages)) {
+      return {
+        sessionId: parsed.sessionId || geminiSessionIdFromPath(filePath),
+        projectHash: parsed.projectHash,
+        startTime: parsed.startTime,
+        lastUpdated: parsed.lastUpdated,
+        messages: parsed.messages,
+      };
+    }
+  } catch {
+    // Newer Gemini logs are JSONL, so a whole-file JSON parse is expected to fail.
+  }
+
+  const session: GeminiSession = {
+    sessionId: geminiSessionIdFromPath(filePath),
+    messages: [],
+  };
+  for (const line of raw.split(/\r?\n/)) {
+    const lineTrimmed = line.trim();
+    if (!lineTrimmed) continue;
+
+    let entry: GeminiJsonlEntry;
+    try {
+      entry = JSON.parse(lineTrimmed) as GeminiJsonlEntry;
+    } catch {
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+
+    const update = entry as GeminiJsonlUpdate;
+    if (update.$set) {
+      if (typeof update.$set.lastUpdated === "string") {
+        session.lastUpdated = update.$set.lastUpdated;
+      }
+      continue;
+    }
+
+    const record = entry as Partial<GeminiSession> & Partial<GeminiMessage>;
+    if (typeof record.sessionId === "string") session.sessionId = record.sessionId;
+    if (typeof record.projectHash === "string") session.projectHash = record.projectHash;
+    if (typeof record.startTime === "string") session.startTime = record.startTime;
+    if (typeof record.lastUpdated === "string") session.lastUpdated = record.lastUpdated;
+
+    if (typeof record.type === "string" && typeof record.id === "string") {
+      session.messages.push(record as GeminiMessage);
+    }
+  }
+
+  return session;
+}
+
+function geminiTmpProjectDir(filePath: string): string | null {
+  const chatsDir = path.dirname(filePath);
+  if (path.basename(chatsDir) !== "chats") {
+    return null;
+  }
+  return path.dirname(chatsDir);
+}
+
+function geminiRootForFile(filePath: string): string | null {
+  const projectDir = geminiTmpProjectDir(filePath);
+  if (!projectDir) return null;
+  const tmpDir = path.dirname(projectDir);
+  if (path.basename(tmpDir) !== "tmp") return null;
+  return path.dirname(tmpDir);
+}
+
+async function readGeminiProjects(filePath: string): Promise<{
+  byHash: Map<string, string>;
+  byAlias: Map<string, string>;
+} | null> {
+  const geminiRoot = geminiRootForFile(filePath);
+  if (!geminiRoot) return null;
+  const projectsPath = path.join(geminiRoot, "projects.json");
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.stat(projectsPath);
+  } catch {
+    return null;
+  }
+
+  if (!geminiProjectsCache || geminiProjectsCache.path !== projectsPath || geminiProjectsCache.mtimeMs !== stat.mtimeMs) {
+    const byHash = new Map<string, string>();
+    const byAlias = new Map<string, string>();
+    try {
+      const parsed = JSON.parse(await fs.promises.readFile(projectsPath, "utf8")) as GeminiProjectsFile;
+      for (const [projectRoot, alias] of Object.entries(parsed.projects ?? {})) {
+        const normalizedRoot = projectRoot.trim();
+        if (!normalizedRoot) continue;
+        const hash = crypto.createHash("sha256").update(normalizedRoot).digest("hex");
+        byHash.set(hash, normalizedRoot);
+        if (alias.trim()) {
+          byAlias.set(alias.trim(), normalizedRoot);
+        }
+      }
+    } catch {
+      return null;
+    }
+    geminiProjectsCache = { path: projectsPath, mtimeMs: stat.mtimeMs, byHash, byAlias };
+  }
+
+  return {
+    byHash: geminiProjectsCache.byHash,
+    byAlias: geminiProjectsCache.byAlias,
+  };
+}
+
+export async function inferGeminiProjectIdentity(
+  filePath: string,
+  projectHash: string | null | undefined,
+): Promise<GeminiProjectIdentity> {
+  const projectDir = geminiTmpProjectDir(filePath);
+  const alias = projectDir ? path.basename(projectDir) : "";
+
+  if (projectDir) {
+    try {
+      const projectRoot = (await fs.promises.readFile(path.join(projectDir, ".project_root"), "utf8")).trim();
+      if (projectRoot) {
+        return { projectPath: projectRoot, cwd: projectRoot };
+      }
+    } catch {
+      // Older Gemini temp directories may not have a project-root sidecar.
+    }
+  }
+
+  const projects = await readGeminiProjects(filePath);
+  const normalizedHash = typeof projectHash === "string" ? projectHash.trim().toLowerCase() : "";
+  const rootFromHash = normalizedHash ? projects?.byHash.get(normalizedHash) : null;
+  if (rootFromHash) {
+    return { projectPath: rootFromHash, cwd: rootFromHash };
+  }
+
+  const rootFromAlias = alias ? projects?.byAlias.get(alias) : null;
+  if (rootFromAlias) {
+    return { projectPath: rootFromAlias, cwd: rootFromAlias };
+  }
+
+  if (alias && !isSha256Hex(alias)) {
+    return { projectPath: alias, cwd: null };
+  }
+
+  return { projectPath: null, cwd: null };
+}
+
 // --- Parser ---
 
 export class GeminiParser implements ConversationParser {
   source = "gemini" as const;
 
   canParse(filePath: string): boolean {
-    // Match ~/.gemini/tmp/<hash>/chats/session-*.json
+    // Match ~/.gemini/tmp/<project>/chats/session-*.json or .jsonl
     return (
-      filePath.endsWith(".json") &&
+      /\.(jsonl|json)$/i.test(filePath) &&
       filePath.includes("/.gemini/tmp/") &&
       filePath.includes("/chats/session-")
     );
@@ -99,10 +285,11 @@ export class GeminiParser implements ConversationParser {
 
   async parse(filePath: string): Promise<ParseResult | null> {
     const raw = await fs.promises.readFile(filePath, "utf8");
-    const session = JSON.parse(raw) as GeminiSession;
+    const session = parseGeminiSession(raw, filePath);
 
-    const sessionId = session.sessionId || path.basename(filePath, ".json");
+    const sessionId = session.sessionId || geminiSessionIdFromPath(filePath);
     const projectHash = session.projectHash || null;
+    const projectIdentity = await inferGeminiProjectIdentity(filePath, projectHash);
     const startedAt = session.startTime || new Date().toISOString();
     const endedAt = session.lastUpdated || null;
 
@@ -266,8 +453,8 @@ export class GeminiParser implements ConversationParser {
         ended_at: endedAt,
         block_count: blocks.length,
         session_id: sessionId,
-        project_path: projectHash,
-        cwd: null,
+        project_path: projectIdentity.projectPath,
+        cwd: projectIdentity.cwd,
         branch: null,
         model,
         cli_version: null,

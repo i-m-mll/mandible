@@ -293,6 +293,10 @@ function decodeClaudeProjectPath(pathValue: string | null | undefined): string |
   return `/${parts.join('/')}`;
 }
 
+function isCodexUnboundArchivePath(pathValue: string | null | undefined): boolean {
+  return /\/Documents\/Codex\/\d{4}-\d{2}-\d{2}\/[^/]+$/i.test(normalizePathish(pathValue));
+}
+
 function repoDisplayName(repo: WorkRepo): string | null {
   const name = typeof repo.name === 'string' ? repo.name.trim() : '';
   if (name) return name;
@@ -310,6 +314,14 @@ function projectNameFromPath(pathValue: string | null | undefined): string {
 }
 
 function getConversationProject(conversation: Conversation, workRepos: WorkRepo[] = []): string {
+  if (
+    conversation.source === 'codex' &&
+    !conversation.project_path &&
+    isCodexUnboundArchivePath(conversation.cwd)
+  ) {
+    return 'No Project';
+  }
+
   const candidates = [
     conversation.cwd,
     conversation.project_path,
@@ -451,11 +463,19 @@ type ChatSidebarSections = {
   projects: ChatProjectGroup[];
   chats: ChatEntry[];
 };
+type ConversationWithDetails = Conversation & {
+  blocks: ConversationBlock[];
+  children: ConversationChild[];
+};
 type TranscriptTurn = {
   id: string;
   speaker: TranscriptSpeaker;
   blocks: ConversationBlock[];
 };
+
+function conversationShell(conversation: Conversation): ConversationWithDetails {
+  return { ...conversation, blocks: [], children: [] };
+}
 
 function getEntryTitle(entry: ChatEntry): string {
   if (entry.conversation) return getConversationTitle(entry.conversation);
@@ -1270,16 +1290,22 @@ function ConversationInfoDialog({
 
 function ConversationDetail({
   conversationId,
+  initialConversation,
   onNavigate,
   consoleSessions,
   workRepos,
+  sidebarCollapsed,
 }: {
   conversationId: string;
+  initialConversation?: Conversation | null;
   onNavigate: (id: string) => void;
   consoleSessions: ConsoleSession[];
   workRepos: WorkRepo[];
+  sidebarCollapsed: boolean;
 }): JSX.Element {
-  const [conversation, setConversation] = useState<(Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] }) | null>(null);
+  const [conversation, setConversation] = useState<ConversationWithDetails | null>(
+    initialConversation ? conversationShell(initialConversation) : null,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadNonce, setLoadNonce] = useState(0);
@@ -1321,6 +1347,7 @@ function ConversationDetail({
 
   useEffect(() => {
     let active = true;
+    setConversation(initialConversation ? conversationShell(initialConversation) : null);
     setLoading(true);
     setError(null);
     getConversation(conversationId)
@@ -1344,7 +1371,7 @@ function ConversationDetail({
         setLoading(false);
       });
     return () => { active = false; };
-  }, [conversationId, loadNonce]);
+  }, [conversationId, initialConversation, loadNonce]);
 
   useEffect(() => {
     if (loading || !conversation || renderMode !== 'transcript') return;
@@ -1800,7 +1827,7 @@ function ConversationDetail({
     window.location.hash = `#/graph?${params.toString()}`;
   }, [conversation?.session_id, linkedConsoleSession?.id]);
 
-  if (loading) {
+  if (loading && !conversation) {
     return (
       <div className="conv-detail">
         <div className="empty-state">Loading conversation...</div>
@@ -1808,7 +1835,7 @@ function ConversationDetail({
     );
   }
 
-  if (error || !conversation) {
+  if (error && !conversation) {
     return (
       <div className="conv-detail">
         <div className="empty-state">
@@ -1825,8 +1852,16 @@ function ConversationDetail({
     );
   }
 
+  if (!conversation) {
+    return (
+      <div className="conv-detail">
+        <div className="empty-state">Conversation not found.</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="conv-detail">
+    <div className={`conv-detail${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}>
       {/* Parent link for sub-agent conversations */}
       {conversation.parent_conversation_id && (
         <div className="conv-parent-link">
@@ -1900,6 +1935,19 @@ function ConversationDetail({
           </div>
         </div>
       </div>
+
+      {error && (
+        <div className="conv-load-error">
+          <span>{error}</span>
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            onClick={() => setLoadNonce((prev) => prev + 1)}
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Sub-agents section */}
       {conversation.children && conversation.children.length > 0 && (
@@ -2005,7 +2053,9 @@ function ConversationDetail({
             />
           ))}
           {transcriptTurns.length === 0 && (
-            <div className="empty-state">No blocks match the current filters.</div>
+            <div className="empty-state">
+              {loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+            </div>
           )}
         </div>
       ) : (
@@ -2050,7 +2100,9 @@ function ConversationDetail({
             ))
           )}
           {visibleBlocks.length === 0 && (
-            <div className="empty-state">No blocks match the current filters.</div>
+            <div className="empty-state">
+              {loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+            </div>
           )}
         </div>
       )}
@@ -2174,7 +2226,7 @@ function PinIcon({ size = 13 }: { size?: number }): JSX.Element {
   );
 }
 
-function FolderIcon({ size = 13 }: { size?: number }): JSX.Element {
+function FolderIcon({ size = 13, open = false }: { size?: number; open?: boolean }): JSX.Element {
   return (
     <svg
       width={size}
@@ -2187,7 +2239,31 @@ function FolderIcon({ size = 13 }: { size?: number }): JSX.Element {
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2.5h7A2.5 2.5 0 0 1 21 9v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17z" />
+      {open ? (
+        <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h4l2 2.5H19A2.5 2.5 0 0 1 21.4 11l-1.55 5.8A2.5 2.5 0 0 1 17.44 18.7H5.35A2.35 2.35 0 0 1 3 16.35z" />
+      ) : (
+        <path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2.5h7A2.5 2.5 0 0 1 21 9v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17z" />
+      )}
+    </svg>
+  );
+}
+
+function ShelfIcon({ size = 17 }: { size?: number }): JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="4" width="17" height="16" rx="3" />
+      <path d="M6.6 6.8h2.2v10.4H6.6z" fill="currentColor" stroke="none" opacity="0.22" />
+      <path d="M8.5 4v16" />
     </svg>
   );
 }
@@ -2466,6 +2542,7 @@ export function ConversationsView({
         offset?: number;
         limit?: number;
         sort?: string;
+        min_blocks?: number;
         group?: boolean;
         exclude_subagents?: boolean;
       } = {
@@ -2475,6 +2552,7 @@ export function ConversationsView({
       };
       if (sourceFilter !== 'all') params.source = sourceFilter;
       if (starredOnly) params.starred = true;
+      if (hideEmpty) params.min_blocks = 1;
       if (search.trim()) params.search = search.trim();
       params.group = true;
       params.exclude_subagents = true;
@@ -2491,7 +2569,7 @@ export function ConversationsView({
     } finally {
       setLoading(false);
     }
-  }, [sourceFilter, starredOnly, sort, search]);
+  }, [hideEmpty, sourceFilter, starredOnly, sort, search]);
 
   // When parent's initialConversations changes (e.g., via SSE upsert), re-fetch
   // with current filters instead of blindly overwriting local state.
@@ -2519,7 +2597,11 @@ export function ConversationsView({
     fetchConversations(false);
   };
 
-  const hasMore = conversations.length < total;
+  const remainingConversationCount = Math.max(0, total - conversations.length);
+  const hasMore = remainingConversationCount > 0;
+  const selectedConversationSummary = selection?.type === 'conversation'
+    ? conversations.find((conv) => conv.id === selection.id) ?? null
+    : null;
 
   // Client-side title-only filter (when searchMode === 'title', server already
   // searched summary too, so we narrow here to title-only for the title mode).
@@ -2740,197 +2822,193 @@ export function ConversationsView({
   return (
     <div className="chat-history-view">
       {!sidebarCollapsed && (
-      <div className="chat-history-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-        <div className="chat-sidebar-top">
-          <button
-            type="button"
-            className="icon-btn chat-sidebar-shelf-btn"
-            onClick={() => setSidebarCollapsed(true)}
-            title="Hide chat list"
-            aria-label="Hide chat list"
-          >
-            ‹
-          </button>
-          <div className="chat-history-search-row">
-          <button
-            type="button"
-            className="icon-btn chat-sidebar-new"
-            onClick={() => setDialogOpen(true)}
-            title="New chat"
-            aria-label="New chat"
-          >
-            +
-          </button>
-            <input
-              type="text"
-              className="conv-search"
-              placeholder="Search chats"
-              value={search}
-              onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
-            />
+        <div className="chat-history-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
+          <div className="chat-sidebar-top">
             <button
               type="button"
-              className={`icon-btn chat-filter-trigger${activeFilterCount > 0 ? ' chat-filter-trigger--active' : ''}`}
-              title="Search and filter options"
-              aria-label="Search and filter options"
-              onClick={() => setFilterPanelOpen((prev) => !prev)}
+              className="icon-btn chat-sidebar-shelf-btn"
+              onClick={() => setSidebarCollapsed(true)}
+              title="Hide chat list"
+              aria-label="Hide chat list"
             >
-              ⋯
-              {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+              <ShelfIcon />
             </button>
-          </div>
-          {activeFilterCount > 0 && (
-            <div className="chat-filter-summary">
-              {sourceFilter !== 'all' && <span>{SOURCE_LABELS[sourceFilter]}</span>}
-              {starredOnly && <span>Starred</span>}
-              {!hideEmpty && <span>Empty shown</span>}
-              {sort !== 'date' && <span>By blocks</span>}
-              {searchMode === 'full' && <span>Full text</span>}
+            <div className="chat-history-search-row">
+              <button
+                type="button"
+                className="icon-btn chat-sidebar-new"
+                onClick={() => setDialogOpen(true)}
+                title="New chat"
+                aria-label="New chat"
+              >
+                +
+              </button>
+              <input
+                type="text"
+                className="conv-search"
+                placeholder="Search chats"
+                value={search}
+                onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
+              />
+              <button
+                type="button"
+                className={`icon-btn chat-filter-trigger${activeFilterCount > 0 ? ' chat-filter-trigger--active' : ''}`}
+                title="Search and filter options"
+                aria-label="Search and filter options"
+                onClick={() => setFilterPanelOpen((prev) => !prev)}
+              >
+                ⋯
+                {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+              </button>
             </div>
-          )}
-          {filterPanelOpen && (
-            <div className="chat-filter-popover">
-              <div className="chat-filter-popover__section">
-                <div className="chat-filter-popover__label">Agent</div>
-                <div className="chat-filter-popover__row">
-                  {(['all', 'claude_code', 'codex', 'gemini'] as const).map((src) => (
+            {activeFilterCount > 0 && (
+              <div className="chat-filter-summary">
+                {sourceFilter !== 'all' && <span>{SOURCE_LABELS[sourceFilter]}</span>}
+                {starredOnly && <span>Starred</span>}
+                {!hideEmpty && <span>Empty shown</span>}
+                {sort !== 'date' && <span>By blocks</span>}
+                {searchMode === 'full' && <span>Full text</span>}
+              </div>
+            )}
+            {filterPanelOpen && (
+              <div className="chat-filter-popover">
+                <div className="chat-filter-popover__section">
+                  <div className="chat-filter-popover__label">Agent</div>
+                  <div className="chat-filter-popover__row">
+                    {(['all', 'claude_code', 'codex', 'gemini'] as const).map((src) => (
+                      <button
+                        key={src}
+                        type="button"
+                        className={`conv-filter-btn${sourceFilter === src ? ' conv-filter-btn--active' : ''}`}
+                        onClick={() => setSourceFilter(src)}
+                      >
+                        {src === 'all' ? 'All' : SOURCE_LABELS[src]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="chat-filter-popover__section">
+                  <label className="chat-filter-popover__toggle">
+                    <input
+                      type="checkbox"
+                      checked={starredOnly}
+                      onChange={() => setStarredOnly((prev) => !prev)}
+                    />
+                    <span>Starred only</span>
+                  </label>
+                  <label className="chat-filter-popover__toggle">
+                    <input
+                      type="checkbox"
+                      checked={hideEmpty}
+                      onChange={() => setHideEmpty((prev) => !prev)}
+                    />
+                    <span>Hide empty chats</span>
+                  </label>
+                </div>
+                <div className="chat-filter-popover__section">
+                  <div className="chat-filter-popover__label">Search</div>
+                  <div className="chat-filter-popover__row">
                     <button
-                      key={src}
                       type="button"
-                      className={`conv-filter-btn${sourceFilter === src ? ' conv-filter-btn--active' : ''}`}
-                      onClick={() => setSourceFilter(src)}
+                      className={`conv-filter-btn${searchMode === 'title' ? ' conv-filter-btn--active' : ''}`}
+                      onClick={() => setSearchMode('title')}
                     >
-                      {src === 'all' ? 'All' : SOURCE_LABELS[src]}
+                      Title
                     </button>
-                  ))}
+                    <button
+                      type="button"
+                      className={`conv-filter-btn${searchMode === 'full' ? ' conv-filter-btn--active' : ''}`}
+                      onClick={() => setSearchMode('full')}
+                    >
+                      Full text
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <div className="chat-filter-popover__section">
-                <label className="chat-filter-popover__toggle">
-                  <input
-                    type="checkbox"
-                    checked={starredOnly}
-                    onChange={() => setStarredOnly((prev) => !prev)}
-                  />
-                  <span>Starred only</span>
-                </label>
-                <label className="chat-filter-popover__toggle">
-                  <input
-                    type="checkbox"
-                    checked={hideEmpty}
-                    onChange={() => setHideEmpty((prev) => !prev)}
-                  />
-                  <span>Hide empty chats</span>
+                <label className="chat-filter-popover__select">
+                  <span>Sort</span>
+                  <select
+                    className="conv-sort"
+                    value={sort}
+                    onChange={(e) => setSort((e.target as HTMLSelectElement).value as 'date' | 'blocks')}
+                  >
+                    <option value="date">Recent activity</option>
+                    <option value="blocks">Message count</option>
+                  </select>
                 </label>
               </div>
-              <div className="chat-filter-popover__section">
-                <div className="chat-filter-popover__label">Search</div>
-                <div className="chat-filter-popover__row">
-                  <button
-                    type="button"
-                    className={`conv-filter-btn${searchMode === 'title' ? ' conv-filter-btn--active' : ''}`}
-                    onClick={() => setSearchMode('title')}
-                  >
-                    Title
-                  </button>
-                  <button
-                    type="button"
-                    className={`conv-filter-btn${searchMode === 'full' ? ' conv-filter-btn--active' : ''}`}
-                    onClick={() => setSearchMode('full')}
-                  >
-                    Full text
-                  </button>
-                </div>
-              </div>
-              <label className="chat-filter-popover__select">
-                <span>Sort</span>
-                <select
-                  className="conv-sort"
-                  value={sort}
-                  onChange={(e) => setSort((e.target as HTMLSelectElement).value as 'date' | 'blocks')}
-                >
-                  <option value="date">Recent activity</option>
-                  <option value="blocks">Message count</option>
-                </select>
-              </label>
+            )}
+          </div>
+
+          <div className="chat-history-list">
+            <div className="chat-sidebar-section">
+              <button
+                type="button"
+                className="chat-sidebar-section__heading"
+                onClick={() => toggleSection('pinned')}
+              >
+                <strong>Pinned</strong>
+                <em>{chatSections.pinned.length}</em>
+              </button>
+              {!collapsedSections.has('pinned') && chatSections.pinned.map((entry) => renderEntry(entry, true))}
             </div>
-          )}
+
+            <div className="chat-sidebar-section">
+              <button
+                type="button"
+                className="chat-sidebar-section__heading"
+                onClick={() => toggleSection('projects')}
+              >
+                <strong>Projects</strong>
+                <em>{chatSections.projects.length}</em>
+              </button>
+              {!collapsedSections.has('projects') && chatSections.projects.map((group) => {
+                const collapsed = collapsedProjects.has(group.project);
+                return (
+                  <div key={group.project} className="chat-project-group">
+                    <button
+                      type="button"
+                      className="chat-project-group__header"
+                      onClick={() => toggleProject(group.project)}
+                    >
+                      <span className="chat-project-group__folder"><FolderIcon open={!collapsed} /></span>
+                      <strong>{group.project}</strong>
+                      <em>{group.entries.length}</em>
+                    </button>
+                    {!collapsed && (
+                      <div className="chat-project-group__items">
+                        {group.entries.map((entry) => renderEntry(entry))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="chat-sidebar-section">
+              <button
+                type="button"
+                className="chat-sidebar-section__heading"
+                onClick={() => toggleSection('chats')}
+              >
+                <strong>Chats</strong>
+                <em>{chatSections.chats.length}</em>
+              </button>
+              {!collapsedSections.has('chats') && chatSections.chats.map((entry) => renderEntry(entry))}
+            </div>
+
+            {totalVisibleEntries === 0 && !loading && (
+              <div className="chat-history-empty">No conversations found.</div>
+            )}
+            {loading && (
+              <div className="chat-history-empty">Loading…</div>
+            )}
+            {hasMore && !loading && (
+              <button type="button" className="btn btn--ghost chat-history-load-more" onClick={loadMore}>
+                Load more ({remainingConversationCount} remaining)
+              </button>
+            )}
+          </div>
         </div>
-
-        <div className="chat-history-list">
-          <div className="chat-sidebar-section">
-            <button
-              type="button"
-              className="chat-sidebar-section__heading"
-              onClick={() => toggleSection('pinned')}
-            >
-              <span>{collapsedSections.has('pinned') ? '▸' : '▾'}</span>
-              <strong>Pinned</strong>
-              <em>{chatSections.pinned.length}</em>
-            </button>
-            {!collapsedSections.has('pinned') && chatSections.pinned.map((entry) => renderEntry(entry, true))}
-          </div>
-
-          <div className="chat-sidebar-section">
-            <button
-              type="button"
-              className="chat-sidebar-section__heading"
-              onClick={() => toggleSection('projects')}
-            >
-              <span>{collapsedSections.has('projects') ? '▸' : '▾'}</span>
-              <strong>Projects</strong>
-              <em>{chatSections.projects.length}</em>
-            </button>
-            {!collapsedSections.has('projects') && chatSections.projects.map((group) => {
-              const collapsed = collapsedProjects.has(group.project);
-              return (
-                <div key={group.project} className="chat-project-group">
-                  <button
-                    type="button"
-                    className="chat-project-group__header"
-                    onClick={() => toggleProject(group.project)}
-                  >
-                    <span>{collapsed ? '▸' : '▾'}</span>
-                    <span className="chat-project-group__folder"><FolderIcon /></span>
-                    <strong>{group.project}</strong>
-                    <em>{group.entries.length}</em>
-                  </button>
-                  {!collapsed && (
-                    <div className="chat-project-group__items">
-                      {group.entries.map((entry) => renderEntry(entry))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="chat-sidebar-section">
-            <button
-              type="button"
-              className="chat-sidebar-section__heading"
-              onClick={() => toggleSection('chats')}
-            >
-              <span>{collapsedSections.has('chats') ? '▸' : '▾'}</span>
-              <strong>Chats</strong>
-              <em>{chatSections.chats.length}</em>
-            </button>
-            {!collapsedSections.has('chats') && chatSections.chats.map((entry) => renderEntry(entry))}
-          </div>
-
-          {totalVisibleEntries === 0 && !loading && (
-            <div className="chat-history-empty">No conversations found.</div>
-          )}
-          {loading && (
-            <div className="chat-history-empty">Loading…</div>
-          )}
-          {hasMore && !loading && (
-            <button type="button" className="btn btn--ghost chat-history-load-more" onClick={loadMore}>
-              Load more ({total - conversations.length} remaining)
-            </button>
-          )}
-        </div>
-      </div>
       )}
 
       {/* Drag handle */}
@@ -2946,15 +3024,17 @@ export function ConversationsView({
             title="Show chat list"
             aria-label="Show chat list"
           >
-            ›
+            <ShelfIcon />
           </button>
         )}
         {selection?.type === 'conversation' ? (
           <ConversationDetail
             conversationId={selection.id}
+            initialConversation={selectedConversationSummary}
             onNavigate={(id) => setSelection({ type: 'conversation', id })}
             consoleSessions={consoleSessions}
             workRepos={workRepos}
+            sidebarCollapsed={sidebarCollapsed}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
           <LiveSessionDetail

@@ -85,7 +85,18 @@ interface CodexRecord {
   instructions?: string;
 }
 
+interface CodexSessionIndexEntry {
+  id?: string;
+  thread_name?: string;
+}
+
 // --- Helpers ---
+
+let sessionIndexCache: {
+  path: string;
+  mtimeMs: number;
+  titles: Map<string, string>;
+} | null = null;
 
 function extractResponseItemText(payload: CodexResponsePayload): string {
   if (payload.content && Array.isArray(payload.content)) {
@@ -113,6 +124,58 @@ function parseToolArguments(argumentsText: string | undefined): unknown {
   } catch {
     return argumentsText;
   }
+}
+
+function codexRootForSessionFile(filePath: string): string | null {
+  let dir = path.dirname(filePath);
+  while (dir && dir !== path.dirname(dir)) {
+    if (path.basename(dir) === "sessions") {
+      return path.dirname(dir);
+    }
+    dir = path.dirname(dir);
+  }
+  return null;
+}
+
+export function getCodexSessionIndexPath(filePath: string): string | null {
+  const codexRoot = codexRootForSessionFile(filePath);
+  return codexRoot ? path.join(codexRoot, "session_index.jsonl") : null;
+}
+
+export async function loadCodexSessionIndexTitle(filePath: string, sessionId: string): Promise<string | null> {
+  if (!sessionId) return null;
+  const indexPath = getCodexSessionIndexPath(filePath);
+  if (!indexPath) return null;
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.stat(indexPath);
+  } catch {
+    return null;
+  }
+
+  if (!sessionIndexCache || sessionIndexCache.path !== indexPath || sessionIndexCache.mtimeMs !== stat.mtimeMs) {
+    const titles = new Map<string, string>();
+    try {
+      const raw = await fs.promises.readFile(indexPath, "utf8");
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line) as CodexSessionIndexEntry;
+          const title = typeof entry.thread_name === "string" ? entry.thread_name.trim() : "";
+          if (entry.id && title) {
+            titles.set(entry.id, title);
+          }
+        } catch {
+          // Skip malformed index rows.
+        }
+      }
+    } catch {
+      return null;
+    }
+    sessionIndexCache = { path: indexPath, mtimeMs: stat.mtimeMs, titles };
+  }
+
+  return sessionIndexCache.titles.get(sessionId) ?? null;
 }
 
 // --- Parser ---
@@ -187,42 +250,45 @@ export class CodexParser implements ConversationParser {
       sessionId = match ? match[1] : basename;
     }
 
-    // Build title from first real user message (not developer/system prompt).
+    // Build title from Codex's local session index when available, falling back
+    // to the first real user message rather than developer/system prompt.
     // Bug: d51fbc8 — developer role (AGENTS.md) content was being used as title.
     // In Codex, `role: "user"` response_items include system-injected context
     // (AGENTS.md, environment_context) before the actual user prompt. The real
     // user prompt appears as an event_msg with type "user_message". Prefer that
     // source, falling back to the last response_item user message only if needed.
-    let title = "";
+    let title = (await loadCodexSessionIndexTitle(filePath, sessionId))?.slice(0, 100).trim() ?? "";
     let titleFromResponseItem = "";
     let seenNonUserResponse = false;
-    for (const rec of records) {
-      if (!rec.type) continue;
-      if (rec.type === "event_msg") {
-        const evt = rec.payload as CodexEventMsg;
-        if (evt.type === "user_message" && evt.message) {
-          title = evt.message.slice(0, 100).trim();
-          break; // Best source found — stop searching
-        }
-      } else if (rec.type === "response_item" && !seenNonUserResponse) {
-        const payload = rec.payload as CodexResponsePayload;
-        if (payload.type === "message" && (payload.role === "user" || payload.role === "developer")) {
-          if (payload.role === "user") {
-            const text = extractResponseItemText(payload);
-            if (text) {
-              // Keep overwriting — the LAST initial user message is typically the
-              // actual prompt; earlier ones are AGENTS.md and environment_context.
-              titleFromResponseItem = text.slice(0, 100).trim();
-            }
+    if (!title) {
+      for (const rec of records) {
+        if (!rec.type) continue;
+        if (rec.type === "event_msg") {
+          const evt = rec.payload as CodexEventMsg;
+          if (evt.type === "user_message" && evt.message) {
+            title = evt.message.slice(0, 100).trim();
+            break; // Best source found — stop searching
           }
-        } else {
-          // Stop scanning once we see the first non-user/non-developer response
-          // (reasoning, function_call, assistant message, etc.)
-          seenNonUserResponse = true;
+        } else if (rec.type === "response_item" && !seenNonUserResponse) {
+          const payload = rec.payload as CodexResponsePayload;
+          if (payload.type === "message" && (payload.role === "user" || payload.role === "developer")) {
+            if (payload.role === "user") {
+              const text = extractResponseItemText(payload);
+              if (text) {
+                // Keep overwriting — the LAST initial user message is typically the
+                // actual prompt; earlier ones are AGENTS.md and environment_context.
+                titleFromResponseItem = text.slice(0, 100).trim();
+              }
+            }
+          } else {
+            // Stop scanning once we see the first non-user/non-developer response
+            // (reasoning, function_call, assistant message, etc.)
+            seenNonUserResponse = true;
+          }
         }
       }
+      if (!title) title = titleFromResponseItem;
     }
-    if (!title) title = titleFromResponseItem;
 
     // Parse blocks
     const blocks: Omit<ConversationBlock, "id" | "conversation_id">[] = [];
