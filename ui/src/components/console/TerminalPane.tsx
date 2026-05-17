@@ -1095,7 +1095,7 @@ export function TerminalPane({
             <button
               type="button"
               className="terminal-pane__link-btn"
-              onClick={() => { window.location.hash = `#/chat-history?session=${encodeURIComponent(providerSessionId)}`; }}
+              onClick={() => { window.location.hash = `#/console?session=${encodeURIComponent(providerSessionId)}`; }}
             >
               View history
             </button>

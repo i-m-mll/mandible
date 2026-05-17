@@ -53,7 +53,6 @@ import { SwitchboardView } from './views/switchboard';
 import type { HookTemplate, PairingHooks, SwitchboardItem, SwitchboardPairing } from './views/switchboard';
 import { WorkOverviewView } from './views/work';
 import type { WorkBranch, WorkRepo } from './views/work';
-import { ConsoleView } from './views/console';
 import { LogsView } from './views/logs';
 import { GraphView } from './views/graph';
 import type { GraphNodeType } from './views/graph';
@@ -62,7 +61,6 @@ import { appReducer, initialState, loadCachedState, saveCachedState, selectBadge
 import type { BugRef, ConsoleSession } from './state';
 import {
   ChatIcon,
-  HistoryIcon,
   MonitorIcon,
   IssuesIcon,
   InboxIcon,
@@ -133,8 +131,8 @@ function parseRouteFromHash(hashValue: string): Route {
       params[key] = value;
     });
   }
-  // Support legacy 'conversations' and 'chats' routes as aliases for 'chat-history'
-  const normalizedPath = (path === 'conversations' || path === 'chats') ? 'chat-history' : path;
+  // Support legacy history routes as aliases for the unified Chat workspace.
+  const normalizedPath = (path === 'conversations' || path === 'chats' || path === 'chat-history') ? 'console' : path;
   const tab = ['sessions', 'auth', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph', 'presets'].includes(normalizedPath)
     ? (normalizedPath as Route['tab'])
     : 'graph';
@@ -982,13 +980,6 @@ function App(): JSX.Element {
 
   const secondaryNavItems: NavItem[] = [
     {
-      tab: 'chat-history',
-      href: '#/chat-history',
-      label: 'History',
-      title: 'History',
-      icon: HistoryIcon,
-    },
-    {
       tab: 'work',
       href: '#/work',
       label: 'Projects',
@@ -1159,14 +1150,6 @@ function App(): JSX.Element {
             onUpdateField={handleUpdateAuthField}
           />
         )}
-        {route.tab === 'chat-history' && (
-          <ConversationsView
-            conversations={state.conversations}
-            consoleSessions={state.consoleSessions}
-            initialConversationId={route.params.conversation ?? null}
-            initialSessionId={route.params.session ?? null}
-          />
-        )}
         {route.tab === 'work' && (
           <WorkOverviewView
             repos={state.workRepos}
@@ -1221,15 +1204,16 @@ function App(): JSX.Element {
           />
         )}
         {route.tab === 'console' && (
-          <ConsoleView
-            sessions={state.consoleSessions}
+          <ConversationsView
+            conversations={state.conversations}
+            consoleSessions={state.consoleSessions}
             activeSessionId={state.consoleActiveSessionId}
+            initialConversationId={route.params.conversation ?? null}
+            initialSessionId={route.params.session ?? null}
+            initialPresetId={route.params.preset ?? null}
             onSelectSession={handleConsoleSelectSession}
             onCloseSession={handleConsoleCloseSession}
             onNewSession={handleConsoleNewSession}
-            isActive={route.tab === 'console'}
-            initialSessionId={route.params.session ?? null}
-            initialPresetId={route.params.preset ?? null}
           />
         )}
         {route.tab === 'settings' && (
