@@ -20,7 +20,6 @@ import {
   getSettings,
   resumeConversation,
   sendConsolePrompt,
-  triggerIngestion,
   updateConversation,
   type ForkData,
   type ForkPoint,
@@ -30,6 +29,7 @@ import { MessageActions } from '../components/shared/MessageActions';
 import { BranchSelector, type BranchInfo } from '../components/console/BranchSelector';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
+import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
 // Bug: bce7370 — Shared message-block components
 import {
@@ -142,12 +142,34 @@ const SOURCE_CLASSES: Record<ConversationSource, string> = {
   gemini: 'source-badge--gemini',
 };
 
+const SOURCE_MARKS: Record<ConversationSource, string> = {
+  claude_code: 'CL',
+  codex: 'CX',
+  gemini: 'GM',
+};
+
 const AGENT_LABELS: Record<string, string> = {
   operator: 'Operator',
   claude: 'Claude',
   codex: 'Codex',
   gemini: 'Gemini',
   shell: 'Shell',
+};
+
+const MODEL_OPTIONS: Record<string, string[]> = {
+  claude: ['sonnet', 'opus', 'haiku', 'sonnet[1m]', 'opusplan'],
+  gemini: [
+    'auto',
+    'pro',
+    'flash',
+    'flash-lite',
+    'gemini-3.1-pro-preview',
+    'gemini-3-flash-preview',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+  ],
 };
 
 const PAGE_SIZE = 50;
@@ -180,12 +202,6 @@ function formatAbsoluteTime(dateStr: string | null): string {
   return new Date(ts).toLocaleString();
 }
 
-function formatEpochRelativeTime(value: number | null | undefined): string {
-  if (!value) return '\u2014';
-  const ms = value < 1_000_000_000_000 ? value * 1000 : value;
-  return formatRelativeTime(new Date(ms).toISOString());
-}
-
 function truncate(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return text.slice(0, maxLen) + '\u2026';
@@ -197,6 +213,66 @@ function isLiveConsoleSession(session: ConsoleSession): boolean {
 
 function getAgentLabel(agentType: string): string {
   return AGENT_LABELS[agentType] ?? agentType;
+}
+
+function getSourceMark(source: ConversationSource): string {
+  return SOURCE_MARKS[source] ?? source.slice(0, 2).toUpperCase();
+}
+
+function sourceFromSession(session: ConsoleSession): ConversationSource | null {
+  const agent = session.agent_type.toLowerCase();
+  const command = (session.command ?? '').toLowerCase();
+  if (agent.includes('claude') || command.includes('claude')) return 'claude_code';
+  if (agent.includes('codex') || command.includes('codex')) return 'codex';
+  if (agent.includes('gemini') || command.includes('gemini')) return 'gemini';
+  return null;
+}
+
+function getSessionMark(session: ConsoleSession): string {
+  const source = sourceFromSession(session);
+  if (source) return getSourceMark(source);
+  return getAgentLabel(session.agent_type).slice(0, 2).toUpperCase();
+}
+
+function getSessionProviderFamily(session: ConsoleSession): string {
+  if (session.is_operator) return 'claude';
+  const command = (session.command ?? session.agent_type).toLowerCase();
+  if (command.includes('claude')) return 'claude';
+  if (command.includes('gemini')) return 'gemini';
+  if (command.includes('codex')) return 'codex';
+  return command;
+}
+
+function parseModelFromArgs(args: string[] | undefined): string | undefined {
+  if (!args) return undefined;
+  for (let i = args.length - 2; i >= 0; i -= 1) {
+    const arg = args[i];
+    if ((arg === '--model' || arg === '-m') && args[i + 1]?.trim()) {
+      return args[i + 1].trim();
+    }
+  }
+  return undefined;
+}
+
+function projectNameFromPath(pathValue: string | null | undefined): string {
+  if (!pathValue) return 'No Project';
+  const parts = pathValue.split('/').filter(Boolean);
+  return parts[parts.length - 1] || 'No Project';
+}
+
+function getConversationProject(conversation: Conversation): string {
+  return projectNameFromPath(conversation.project_path ?? conversation.cwd);
+}
+
+function getConversationTime(conversation: Conversation): number {
+  const ended = conversation.ended_at ? Date.parse(conversation.ended_at) : Number.NaN;
+  if (!Number.isNaN(ended)) return ended;
+  const started = Date.parse(conversation.started_at);
+  return Number.isNaN(started) ? 0 : started;
+}
+
+function getSessionTime(session: ConsoleSession): number {
+  return session.started_at ?? session.created_at ?? 0;
 }
 
 function parseMetadata(json: string): Record<string, unknown> {
@@ -257,6 +333,20 @@ type ChatSelection =
   | { type: 'conversation'; id: string }
   | { type: 'session'; id: string }
   | null;
+type ChatEntry = {
+  key: string;
+  project: string;
+  time: number;
+  kind: 'conversation' | 'session';
+  conversation?: Conversation;
+  session?: ConsoleSession;
+  liveSession?: ConsoleSession | null;
+};
+type ChatProjectGroup = {
+  project: string;
+  latestTime: number;
+  entries: ChatEntry[];
+};
 type TranscriptTurn = {
   id: string;
   speaker: TranscriptSpeaker;
@@ -305,12 +395,10 @@ function buildTranscriptTurns(blocks: ConversationBlock[]): TranscriptTurn[] {
 export type ConversationsViewProps = {
   conversations: Conversation[];
   consoleSessions: ConsoleSession[];
-  activeSessionId: string | null;
   initialConversationId: string | null;
   initialSessionId: string | null;
   initialPresetId?: string | null;
   onSelectSession: (sessionId: string) => void;
-  onCloseSession: (sessionId: string) => void;
   onNewSession: (input: {
     label: string;
     backend: string;
@@ -792,7 +880,7 @@ function TranscriptTurnRenderer({
   );
 
   return (
-    <TurnGroup speaker={turn.speaker} isShort={isShort} footer={footer}>
+    <TurnGroup speaker={turn.speaker} isShort={isShort} footer={footer} showSpeakerBadge={false}>
       {turn.blocks.map((block) => (
         <TranscriptBlockItem
           key={block.id}
@@ -1010,6 +1098,102 @@ function SubAgentsList({
   );
 }
 
+function ConversationInfoDialog({
+  conversation,
+  linkedConsoleSession,
+  issueLinks,
+  presets,
+  onClose,
+}: {
+  conversation: Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
+  linkedConsoleSession: ConsoleSession | null;
+  issueLinks: Array<{ issue_id: string; repo_id: string }>;
+  presets: SessionPreset[];
+  onClose: () => void;
+}): JSX.Element {
+  return (
+    <div className="conv-modal-overlay" onClick={onClose}>
+      <div className="conv-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="conv-modal__header">
+          <h3 className="conv-modal__title">Conversation Info</h3>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close info">
+            &times;
+          </button>
+        </div>
+        <div className="conv-info-grid">
+          <div>
+            <span className="conv-info-grid__label">Agent</span>
+            <span>{SOURCE_LABELS[conversation.source] ?? conversation.source}</span>
+          </div>
+          <div>
+            <span className="conv-info-grid__label">Runtime</span>
+            <span>
+              {linkedConsoleSession
+                ? `${linkedConsoleSession.status} ${linkedConsoleSession.backend_type}`
+                : 'not running'}
+            </span>
+          </div>
+          <div>
+            <span className="conv-info-grid__label">Project</span>
+            <span>{getConversationProject(conversation)}</span>
+          </div>
+          <div>
+            <span className="conv-info-grid__label">Branch</span>
+            <span>{conversation.branch || 'unknown'}</span>
+          </div>
+          <div>
+            <span className="conv-info-grid__label">Model</span>
+            <span>{conversation.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default'}</span>
+          </div>
+          <div>
+            <span className="conv-info-grid__label">Blocks</span>
+            <span>{conversation.block_count}</span>
+          </div>
+          <div>
+            <span className="conv-info-grid__label">Started</span>
+            <span>{formatAbsoluteTime(conversation.started_at) || 'unknown'}</span>
+          </div>
+          <div>
+            <span className="conv-info-grid__label">Session</span>
+            <span className="conv-info-grid__mono">{conversation.session_id || linkedConsoleSession?.id || 'none'}</span>
+          </div>
+        </div>
+        {(issueLinks.length > 0 || presets.length > 0) && (
+          <div className="conv-modal__section">
+            {issueLinks.length > 0 && (
+              <div className="conv-modal__chips">
+                {issueLinks.map((link) => (
+                  <EntityPill
+                    key={`${link.repo_id}-${link.issue_id}`}
+                    type="issue"
+                    id={link.issue_id}
+                    repoId={link.repo_id}
+                  />
+                ))}
+              </div>
+            )}
+            {presets.length > 0 && (
+              <div className="conv-modal__chips">
+                {presets.map((preset) => (
+                  <button
+                    key={preset.preset_id}
+                    type="button"
+                    className="session-preset-badge"
+                    onClick={() => { window.location.hash = `#/presets?id=${encodeURIComponent(preset.preset_id)}`; }}
+                  >
+                    {preset.preset_name}
+                    <span className="session-preset-badge__version">v{preset.version}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ConversationDetail({
   conversationId,
   onNavigate,
@@ -1032,6 +1216,10 @@ function ConversationDetail({
   const [collapsedBlocks, setCollapsedBlocks] = useState<Set<string>>(new Set());
   const [showExport, setShowExport] = useState(false);
   const [renderMode, setRenderMode] = useState<'transcript' | 'raw'>('transcript');
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [showMessageFilters, setShowMessageFilters] = useState(false);
+  const [composerControlsOpen, setComposerControlsOpen] = useState(false);
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
@@ -1050,6 +1238,7 @@ function ConversationDetail({
 
   // Virtual scroll state
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(800);
 
@@ -1079,6 +1268,17 @@ function ConversationDetail({
       });
     return () => { active = false; };
   }, [conversationId, loadNonce]);
+
+  useEffect(() => {
+    if (loading || !conversation || renderMode !== 'transcript') return;
+    const frame = window.requestAnimationFrame(() => {
+      const el = transcriptContainerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [conversation?.id, loading, renderMode]);
 
   // Fetch fork data for branch selector
   useEffect(() => {
@@ -1433,13 +1633,10 @@ function ConversationDetail({
   }, [blocks]);
 
   const continueDisabledReason = useMemo(() => {
-    if (linkedConsoleSession?.interaction_mode === 'inbox_only') {
+    if (linkedConsoleSession?.interaction_mode === 'inbox_only' && isLiveConsoleSession(linkedConsoleSession)) {
       return 'Direct input is disabled for this session.';
     }
-    if (linkedConsoleSession && !isLiveConsoleSession(linkedConsoleSession)) {
-      return 'The linked session is not running.';
-    }
-    if (!linkedConsoleSession && !latestDagUuid) {
+    if ((!linkedConsoleSession || !isLiveConsoleSession(linkedConsoleSession)) && !latestDagUuid) {
       return 'No resumable message is available.';
     }
     return null;
@@ -1454,7 +1651,9 @@ function ConversationDetail({
     setContinueBusy(true);
     setContinueError(null);
     try {
-      let targetSessionId = linkedConsoleSession?.id ?? null;
+      let targetSessionId = linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession)
+        ? linkedConsoleSession.id
+        : null;
       if (!targetSessionId) {
         if (!latestDagUuid) {
           throw new Error('No resumable message is available.');
@@ -1465,13 +1664,29 @@ function ConversationDetail({
       await sendConsolePrompt(targetSessionId, prompt);
       setContinueDraft('');
       setToast({ message: 'Message sent.', type: 'info' });
-      window.location.hash = `#/console?session=${encodeURIComponent(targetSessionId)}`;
+      setLoadNonce((prev) => prev + 1);
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : String(err));
     } finally {
       setContinueBusy(false);
     }
   }, [continueDisabledReason, continueDraft, conversationId, latestDagUuid, linkedConsoleSession]);
+
+  const providerFamily = linkedConsoleSession ? getSessionProviderFamily(linkedConsoleSession) : (
+    conversation?.source === 'gemini' ? 'gemini' :
+    conversation?.source === 'codex' ? 'codex' :
+    'claude'
+  );
+  const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
+  const canShowSessionControls = linkedConsoleSession
+    && (linkedConsoleSession.backend_type === 'sdk' || linkedConsoleSession.backend_type === 'pty');
+  const navigateToGraph = useCallback(() => {
+    const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
+    const focus = sessionId ? `session:${sessionId}` : undefined;
+    const params = new URLSearchParams({ mode: 'activity' });
+    if (focus) params.set('focus', focus);
+    window.location.hash = `#/graph?${params.toString()}`;
+  }, [conversation?.session_id, linkedConsoleSession?.id]);
 
   if (loading) {
     return (
@@ -1513,7 +1728,6 @@ function ConversationDetail({
         </div>
       )}
 
-      {/* Header */}
       <div className="conv-detail__header">
         <div className="conv-detail__header-left">
           <h2 className="conv-detail__title">
@@ -1528,77 +1742,63 @@ function ConversationDetail({
             />
           </h2>
           <div className="conv-detail__meta">
-            <span className={`source-badge ${SOURCE_CLASSES[conversation.source] || ''}`}>
-              {SOURCE_LABELS[conversation.source] || conversation.source}
-            </span>
-            <span className="text-muted" title={formatAbsoluteTime(conversation.started_at)}>
-              {formatRelativeTime(conversation.started_at)}
-            </span>
-            {conversation.branch && (
-              <span className="branch-tag">{conversation.branch}</span>
+            {linkedConsoleSession && (
+              <span className={`chat-entry__status chat-entry__status--${linkedConsoleSession.status}`} />
             )}
-            {conversation.model && (
-              <span className="text-muted">{conversation.model}</span>
-            )}
-            {/* Bug: 84cd5ae — linked issue pills */}
-            {sessionIssueLinks.length > 0 && sessionIssueLinks.map((link) => (
-              <EntityPill
-                key={`${link.repo_id}-${link.issue_id}`}
-                type="issue"
-                id={link.issue_id}
-                repoId={link.repo_id}
-              />
-            ))}
-            {/* Bug: 11f4f47 — preset provenance badges */}
-            {sessionPresets.length > 0 && (
-              <div className="session-presets">
-                {sessionPresets.map((sp) => (
-                  <span
-                    key={sp.preset_id}
-                    className="session-preset-badge"
-                    title={`Preset: ${sp.preset_name} (v${sp.version})`}
-                    onClick={() => { window.location.hash = `#/presets?id=${encodeURIComponent(sp.preset_id)}`; }}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    {sp.preset_name}
-                    <span className="session-preset-badge__version">v{sp.version}</span>
-                  </span>
-                ))}
-              </div>
-            )}
+            <span>{SOURCE_LABELS[conversation.source] || conversation.source}</span>
+            <span>{currentModel}</span>
+            {conversation.branch && <span className="branch-tag">{conversation.branch}</span>}
           </div>
         </div>
         <div className="conv-detail__header-right">
-          {/* Bug: bce7370 — Resume button in conversation header */}
-          {conversation.session_id && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => handleResume(conversation.blocks?.[conversation.blocks.length - 1]?.dag_uuid ?? '')}
-              title="Resume this conversation in Console"
-            >
-              Resume
-            </button>
-          )}
-          {linkedConsoleSession && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => {
-                window.location.hash = `#/console?session=${encodeURIComponent(linkedConsoleSession.id)}`;
-              }}
-            >
-              Open live chat
-            </button>
-          )}
           <button
             type="button"
-            className={`btn btn--ghost btn--sm conv-star-btn${conversation.starred ? ' conv-star-btn--active' : ''}`}
-            onClick={handleStarToggle}
-            title={conversation.starred ? 'Unstar' : 'Star'}
+            className="icon-btn"
+            onClick={navigateToGraph}
+            title="Show in graph"
+            aria-label="Show in graph"
           >
-            {conversation.starred ? '\u2605' : '\u2606'}
+            ⬡
           </button>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={() => setInfoOpen(true)}
+            title="Conversation info"
+            aria-label="Conversation info"
+          >
+            i
+          </button>
+          <div className="conv-actions">
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setActionsOpen((prev) => !prev)}
+              title="Conversation actions"
+              aria-label="Conversation actions"
+            >
+              ⋯
+            </button>
+            {actionsOpen && (
+              <div className="conv-actions__menu">
+                <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
+                  {conversation.starred ? 'Unstar' : 'Star'}
+                </button>
+                <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
+                  Show in graph
+                </button>
+                <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
+                  {showMessageFilters ? 'Hide message filters' : 'Message filters'}
+                </button>
+                <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
+                  {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
+                </button>
+                <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
+                  Select messages
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1607,54 +1807,39 @@ function ConversationDetail({
         <SubAgentsList children={conversation.children} onNavigate={onNavigate} />
       )}
 
-      {/* Filter bar */}
-      <div className="conv-filter-bar">
-        <div className="conv-filter-bar__types">
-          {presentTypes.map((type) => (
+      {showMessageFilters && (
+        <div className="conv-filter-bar">
+          <div className="conv-filter-bar__types">
+            {presentTypes.map((type) => (
+              <button
+                key={type}
+                type="button"
+                className={`conv-filter-btn${visibleTypes.has(type) ? ' conv-filter-btn--active' : ''}`}
+                onClick={() => toggleType(type)}
+              >
+                {BLOCK_TYPE_LABELS[type]}
+                <span className="conv-filter-btn__count">{typeCounts[type] || 0}</span>
+              </button>
+            ))}
+          </div>
+          <div className="conv-filter-bar__actions">
             <button
-              key={type}
               type="button"
-              className={`conv-filter-btn${visibleTypes.has(type) ? ' conv-filter-btn--active' : ''}`}
-              onClick={() => toggleType(type)}
+              className="btn btn--ghost btn--sm"
+              onClick={() => setVisibleTypes(new Set(ALL_BLOCK_TYPES))}
             >
-              {BLOCK_TYPE_LABELS[type]}
-              <span className="conv-filter-btn__count">{typeCounts[type] || 0}</span>
+              Show all
             </button>
-          ))}
-        </div>
-        <div className="conv-filter-bar__actions">
-          <div className="toggle-group">
             <button
               type="button"
-              className={`btn btn--sm${renderMode === 'transcript' ? ' btn--active' : ' btn--ghost'}`}
-              onClick={() => setRenderMode('transcript')}
+              className="btn btn--ghost btn--sm"
+              onClick={() => setVisibleTypes(new Set())}
             >
-              Transcript
-            </button>
-            <button
-              type="button"
-              className={`btn btn--sm${renderMode === 'raw' ? ' btn--active' : ' btn--ghost'}`}
-              onClick={() => setRenderMode('raw')}
-            >
-              Inspect raw
+              Hide all
             </button>
           </div>
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => setVisibleTypes(new Set(ALL_BLOCK_TYPES))}
-          >
-            Show all
-          </button>
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => setVisibleTypes(new Set())}
-          >
-            Hide all
-          </button>
         </div>
-      </div>
+      )}
 
       {/* Selection toolbar */}
       {(selectMode || selected.size > 0) && (
@@ -1685,19 +1870,6 @@ function ConversationDetail({
             disabled={exportableBlocks.length === 0}
           >
             Export ({exportableBlocks.length})
-          </button>
-        </div>
-      )}
-
-      {/* Enable select mode button when not in select mode */}
-      {!selectMode && selected.size === 0 && (
-        <div className="conv-selection-toolbar conv-selection-toolbar--minimal">
-          <button
-            type="button"
-            className="btn btn--ghost btn--sm"
-            onClick={() => setSelectMode(true)}
-          >
-            Select mode
           </button>
         </div>
       )}
@@ -1786,13 +1958,13 @@ function ConversationDetail({
 
       <div className="conv-compose">
         <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
-          <input
-            type="text"
+          <textarea
             className="conv-compose__input"
             value={continueDraft}
             onInput={(event) => setContinueDraft(event.currentTarget.value)}
             placeholder="Message..."
             disabled={continueBusy || !!continueDisabledReason}
+            rows={3}
           />
           <button
             type="submit"
@@ -1802,6 +1974,35 @@ function ConversationDetail({
             {continueBusy ? 'Sending...' : 'Send'}
           </button>
         </form>
+        <div className="conv-compose__footer">
+          <div className="conv-compose__runtime">
+            <span className={`agent-mark ${SOURCE_CLASSES[conversation.source] || ''}`}>
+              {getSourceMark(conversation.source)}
+            </span>
+            <span>{linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession) ? 'running' : 'history'}</span>
+            <span>{currentModel}</span>
+          </div>
+          {canShowSessionControls && (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => setComposerControlsOpen((prev) => !prev)}
+            >
+              Controls
+            </button>
+          )}
+        </div>
+        {canShowSessionControls && composerControlsOpen && linkedConsoleSession && (
+          <div className="conv-compose__controls">
+            <SessionControls
+              sessionId={linkedConsoleSession.id}
+              backendType={linkedConsoleSession.backend_type === 'sdk' ? 'sdk' : 'pty'}
+              model={parseModelFromArgs(linkedConsoleSession.args)}
+              modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
+              allowedTools={linkedConsoleSession.allowed_tools}
+            />
+          </div>
+        )}
         {(continueError || continueDisabledReason) && (
           <div className={`conv-compose__status${continueError ? ' conv-compose__status--error' : ''}`}>
             {continueError ?? continueDisabledReason}
@@ -1820,22 +2021,38 @@ function ConversationDetail({
           onCancel={() => setConflictDialog(null)}
         />
       )}
+      {infoOpen && (
+        <ConversationInfoDialog
+          conversation={conversation}
+          linkedConsoleSession={linkedConsoleSession}
+          issueLinks={sessionIssueLinks}
+          presets={sessionPresets}
+          onClose={() => setInfoOpen(false)}
+        />
+      )}
     </div>
   );
 }
 
 // ── Sidebar Item ──
 
-function ChatHistoryItem({
-  conversation,
+function ChatEntryItem({
+  entry,
   isSelected,
   onClick,
 }: {
-  conversation: Conversation;
+  entry: ChatEntry;
   isSelected: boolean;
   onClick: () => void;
 }): JSX.Element {
-  const isSubAgent = !!conversation.parent_conversation_id;
+  const conversation = entry.conversation;
+  const session = entry.session;
+  const liveSession = entry.liveSession ?? (entry.kind === 'session' ? session ?? null : null);
+  const isSubAgent = !!conversation?.parent_conversation_id;
+  const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
+  const title = conversation?.title || session?.label || 'Untitled';
+  const branch = conversation?.branch;
+  const unread = liveSession?.unread_count ?? 0;
 
   return (
     <div
@@ -1845,94 +2062,44 @@ function ChatHistoryItem({
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
     >
-      <div className="chat-history-item__header">
-        <span className={`source-badge ${SOURCE_CLASSES[conversation.source] || ''}`}>
-          {SOURCE_LABELS[conversation.source] || conversation.source}
+      <div className="chat-history-item__line">
+        <span className="chat-history-item__title">
+          {conversation?.starred ? '\u2605 ' : ''}
+          {isSubAgent && <span className="conv-subagent-indicator" title="Sub-agent">&#x2937; </span>}
+          <span
+            // Bug: a44fd6a — render conversation titles as inline markdown
+            dangerouslySetInnerHTML={{
+              __html: renderInlineMarkdown(truncate(title, 58)),
+            }}
+          />
         </span>
-        <span className="chat-history-item__date" title={formatAbsoluteTime(conversation.started_at)}>
-          {formatRelativeTime(conversation.started_at)}
-        </span>
-      </div>
-      <div className="chat-history-item__title">
-        {conversation.starred ? '\u2605 ' : ''}
-        {isSubAgent && <span className="conv-subagent-indicator" title="Sub-agent">&#x2937; </span>}
         <span
-          // Bug: a44fd6a — render conversation titles as inline markdown
-          dangerouslySetInnerHTML={{
-            __html: renderInlineMarkdown(truncate(conversation.title || 'Untitled', 55)),
-          }}
-        />
+          className={`agent-mark ${source ? SOURCE_CLASSES[source] || '' : ''}`}
+          title={source ? SOURCE_LABELS[source] : session ? getAgentLabel(session.agent_type) : undefined}
+        >
+          {source ? getSourceMark(source) : session ? getSessionMark(session) : '??'}
+        </span>
       </div>
       <div className="chat-history-item__meta">
-        <span className="chat-history-item__blocks">{conversation.block_count} blocks</span>
-        {conversation.branch && (
-          <span className="chat-history-item__branch">{truncate(conversation.branch, 20)}</span>
+        {liveSession && (
+          <span className={`chat-entry__status chat-entry__status--${liveSession.status}`} />
         )}
+        {branch && (
+          <span className="chat-history-item__branch">{truncate(branch, 22)}</span>
+        )}
+        {unread > 0 && <span>{unread} unread</span>}
+        {entry.kind === 'session' && <span>{session?.backend_type ?? 'live'}</span>}
       </div>
-    </div>
-  );
-}
-
-function ChatLiveSessionItem({
-  session,
-  isSelected,
-  onClick,
-  onClose,
-}: {
-  session: ConsoleSession;
-  isSelected: boolean;
-  onClick: () => void;
-  onClose: () => void;
-}): JSX.Element {
-  return (
-    <div
-      className={`chat-live-session${isSelected ? ' chat-live-session--selected' : ''}`}
-      onClick={onClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
-    >
-      <div className="chat-live-session__body">
-        <div className="chat-live-session__header">
-          <span className={`chat-live-session__status chat-live-session__status--${session.status}`} />
-          <span className="chat-live-session__agent">{getAgentLabel(session.agent_type)}</span>
-          <span className="chat-live-session__date">
-            {formatEpochRelativeTime(session.started_at ?? session.created_at)}
-          </span>
-        </div>
-        <div className="chat-live-session__title">{session.label || 'Untitled session'}</div>
-        <div className="chat-live-session__meta">
-          <span>{session.backend_type}</span>
-          {session.provider_session_id && <span>history linked</span>}
-          {session.unread_count > 0 && <span>{session.unread_count} unread</span>}
-        </div>
-      </div>
-      {!session.pinned && (
-        <button
-          type="button"
-          className="chat-live-session__close"
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose();
-          }}
-          title="Close session"
-        >
-          &times;
-        </button>
-      )}
     </div>
   );
 }
 
 function LiveSessionDetail({
   session,
-  onClose,
 }: {
   session: ConsoleSession;
-  onClose: (sessionId: string) => void;
 }): JSX.Element {
   const [viewMode, setViewMode] = useState<ViewMode>('rich');
-  const canClose = !session.pinned;
 
   return (
     <div className="chat-live-detail">
@@ -1945,28 +2112,6 @@ function LiveSessionDetail({
             <span>{session.status}</span>
             <span>{session.backend_type}</span>
           </div>
-        </div>
-        <div className="chat-live-detail__actions">
-          {session.provider_session_id && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => {
-                window.location.hash = `#/console?session=${encodeURIComponent(session.provider_session_id!)}`;
-              }}
-            >
-              View history
-            </button>
-          )}
-          {canClose && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={() => onClose(session.id)}
-            >
-              Close
-            </button>
-          )}
         </div>
       </div>
       <div className="chat-live-detail__pane">
@@ -1986,6 +2131,7 @@ function LiveSessionDetail({
           onViewModeChange={setViewMode}
           resumeAtMessage={session.resume_at_message}
           channelEnabled={!!session.channel_enabled}
+          workspaceMode
         />
       </div>
     </div>
@@ -1997,12 +2143,10 @@ function LiveSessionDetail({
 export function ConversationsView({
   conversations: initialConversations,
   consoleSessions,
-  activeSessionId,
   initialConversationId,
   initialSessionId,
   initialPresetId,
   onSelectSession,
-  onCloseSession,
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
@@ -2020,10 +2164,11 @@ export function ConversationsView({
   const [hideEmpty, setHideEmpty] = useState(true);
   const [groupSubAgents, setGroupSubAgents] = useState(true);
   const [sort, setSort] = useState<'date' | 'blocks'>('date');
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [ingesting, setIngesting] = useState(false);
   const searchTimer = useRef<number | null>(null);
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
@@ -2063,16 +2208,17 @@ export function ConversationsView({
     }
 
     const liveById = consoleSessions.find((session) => session.id === initialSessionId);
-    if (liveById) {
+    if (liveById && !liveById.provider_session_id) {
       setSelection({ type: 'session', id: liveById.id });
       onSelectSession(liveById.id);
       return () => {
         active = false;
       };
     }
+    const sessionLookupId = liveById?.provider_session_id ?? initialSessionId;
 
     const resolveConversation = (attemptsRemaining: number) => {
-      void getConversations({ session_id: initialSessionId, limit: 1 })
+      void getConversations({ session_id: sessionLookupId, limit: 1 })
         .then((result) => {
           if (!active) return;
           const resolvedId = result.conversations[0]?.id ?? null;
@@ -2081,7 +2227,7 @@ export function ConversationsView({
             return;
           }
           const liveByProvider = consoleSessions.find(
-            (session) => session.provider_session_id === initialSessionId && isLiveConsoleSession(session),
+            (session) => session.provider_session_id === sessionLookupId && isLiveConsoleSession(session),
           );
           if (liveByProvider && attemptsRemaining <= 0) {
             setSelection({ type: 'session', id: liveByProvider.id });
@@ -2168,18 +2314,6 @@ export function ConversationsView({
     };
   }, [fetchConversations]);
 
-  const handleIngest = async () => {
-    setIngesting(true);
-    try {
-      await triggerIngestion();
-      await fetchConversations(true);
-    } catch {
-      // ignore
-    } finally {
-      setIngesting(false);
-    }
-  };
-
   const loadMore = () => {
     fetchConversations(false);
   };
@@ -2198,6 +2332,75 @@ export function ConversationsView({
     );
   }, [conversations, hideEmpty, search, searchMode]);
 
+  const liveByProviderSession = useMemo(() => {
+    const map = new Map<string, ConsoleSession>();
+    for (const session of liveSessions) {
+      if (session.provider_session_id) {
+        map.set(session.provider_session_id, session);
+      }
+    }
+    return map;
+  }, [liveSessions]);
+
+  const chatGroups = useMemo<ChatProjectGroup[]>(() => {
+    const entries: ChatEntry[] = displayedConversations.map((conversation) => ({
+      key: `conversation:${conversation.id}`,
+      project: getConversationProject(conversation),
+      time: getConversationTime(conversation),
+      kind: 'conversation',
+      conversation,
+      liveSession: liveByProviderSession.get(conversation.session_id) ?? null,
+    }));
+    const conversationProviderIds = new Set(displayedConversations.map((conversation) => conversation.session_id));
+    for (const session of liveSessions) {
+      if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
+        continue;
+      }
+      entries.push({
+        key: `session:${session.id}`,
+        project: 'No Project',
+        time: getSessionTime(session),
+        kind: 'session',
+        session,
+        liveSession: session,
+      });
+    }
+
+    const groupMap = new Map<string, ChatEntry[]>();
+    for (const entry of entries) {
+      const group = groupMap.get(entry.project) ?? [];
+      group.push(entry);
+      groupMap.set(entry.project, group);
+    }
+    return Array.from(groupMap.entries())
+      .map(([project, groupEntries]) => {
+        const sortedEntries = [...groupEntries].sort((a, b) => {
+          if (sort === 'blocks') {
+            const aBlocks = a.conversation?.block_count ?? 0;
+            const bBlocks = b.conversation?.block_count ?? 0;
+            if (aBlocks !== bBlocks) return bBlocks - aBlocks;
+          }
+          return b.time - a.time;
+        });
+        return {
+          project,
+          latestTime: Math.max(...sortedEntries.map((entry) => entry.time)),
+          entries: sortedEntries,
+        };
+      })
+      .sort((a, b) => b.latestTime - a.latestTime || a.project.localeCompare(b.project));
+  }, [displayedConversations, liveByProviderSession, liveSessions, sort]);
+
+  const firstChatEntry = chatGroups[0]?.entries[0] ?? null;
+  const activeFilterCount = [
+    sourceFilter !== 'all',
+    starredOnly,
+    !hideEmpty,
+    !groupSubAgents,
+    sort !== 'date',
+    searchMode !== 'title',
+  ].filter(Boolean).length;
+
   const selectedLiveSession = useMemo(() => {
     if (!selectedSessionId) return null;
     return consoleSessions.find((session) => session.id === selectedSessionId) ?? null;
@@ -2212,23 +2415,32 @@ export function ConversationsView({
 
   useEffect(() => {
     if (selection) return;
-    const activeLiveSession = activeSessionId
-      ? (liveSessions.find((session) => session.id === activeSessionId) ?? liveSessions[0] ?? null)
-      : (liveSessions[0] ?? null);
-    if (activeLiveSession) {
-      setSelection({ type: 'session', id: activeLiveSession.id });
-      onSelectSession(activeLiveSession.id);
+    if (!firstChatEntry) return;
+    if (firstChatEntry.kind === 'conversation' && firstChatEntry.conversation) {
+      setSelection({ type: 'conversation', id: firstChatEntry.conversation.id });
       return;
     }
-    const firstConversation = displayedConversations[0];
-    if (firstConversation) {
-      setSelection({ type: 'conversation', id: firstConversation.id });
+    if (firstChatEntry.session) {
+      setSelection({ type: 'session', id: firstChatEntry.session.id });
+      onSelectSession(firstChatEntry.session.id);
     }
-  }, [activeSessionId, displayedConversations, liveSessions, onSelectSession, selection]);
+  }, [firstChatEntry, onSelectSession, selection]);
 
   const handleSelectSession = (sessionId: string) => {
     setSelection({ type: 'session', id: sessionId });
     onSelectSession(sessionId);
+  };
+
+  const toggleProject = (project: string) => {
+    setCollapsedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(project)) {
+        next.delete(project);
+      } else {
+        next.add(project);
+      }
+      return next;
+    });
   };
 
   const handleNewSession = (input: {
@@ -2245,127 +2457,158 @@ export function ConversationsView({
 
   return (
     <div className="chat-history-view">
-      {/* Sidebar */}
       <div className="chat-history-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-        {/* Search row */}
-        <div className="chat-history-search-row">
-          <input
-            type="text"
-            className="conv-search"
-            placeholder="Search…"
-            value={search}
-            onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
-          />
+        <div className="chat-sidebar-top">
           <button
             type="button"
-            className={`btn btn--sm chat-history-search-mode${searchMode === 'full' ? ' btn--active' : ' btn--ghost'}`}
-            title={searchMode === 'title' ? 'Title-only search (click for full text)' : 'Full-text search (click for title only)'}
-            onClick={() => setSearchMode((prev) => prev === 'title' ? 'full' : 'title')}
+            className="btn btn--ghost btn--sm chat-sidebar-new"
+            onClick={() => setDialogOpen(true)}
           >
-            {searchMode === 'full' ? 'Full' : 'Title'}
+            New
           </button>
-        </div>
-
-        {/* Source filters */}
-        <div className="chat-history-filters">
-          <div className="conv-filters__sources">
-            {(['all', 'claude_code', 'codex', 'gemini'] as const).map((src) => (
-              <button
-                key={src}
-                type="button"
-                className={`conv-filter-btn${sourceFilter === src ? ' conv-filter-btn--active' : ''}`}
-                onClick={() => setSourceFilter(src)}
-              >
-                {src === 'all' ? 'All' : SOURCE_LABELS[src]}
-              </button>
-            ))}
-          </div>
-          <div className="chat-history-filter-controls">
-            <button
-              type="button"
-              className={`btn btn--sm${starredOnly ? ' btn--active' : ' btn--ghost'}`}
-              onClick={() => setStarredOnly((prev) => !prev)}
-            >
-              Starred
-            </button>
-            <button
-              type="button"
-              className={`btn btn--sm${groupSubAgents ? ' btn--active' : ' btn--ghost'}`}
-              onClick={() => setGroupSubAgents((prev) => !prev)}
-              title="When on, sub-agent conversations are hidden from the main list and shown under their parent"
-            >
-              Group subs
-            </button>
-            <button
-              type="button"
-              className={`btn btn--sm${hideEmpty ? ' btn--active' : ' btn--ghost'}`}
-              onClick={() => setHideEmpty((prev) => !prev)}
-            >
-              Hide empty
-            </button>
-            <select
-              className="conv-sort"
-              value={sort}
-              onChange={(e) => setSort((e.target as HTMLSelectElement).value as 'date' | 'blocks')}
-            >
-              <option value="date">Date</option>
-              <option value="blocks">Blocks</option>
-            </select>
-            <button
-              type="button"
-              className="btn btn--ghost btn--sm"
-              onClick={handleIngest}
-              disabled={ingesting}
-              title="Refresh conversation logs"
-            >
-              {ingesting ? '…' : 'Refresh'}
-            </button>
-          </div>
-        </div>
-
-        {/* List */}
-        <div className="chat-history-list">
-          <div className="chat-history-section">
-            <div className="chat-history-section__header">
-              <span>Live</span>
-              <button
-                type="button"
-                className="btn btn--ghost btn--sm"
-                onClick={() => setDialogOpen(true)}
-              >
-                New
-              </button>
-            </div>
-            {liveSessions.map((session) => (
-              <ChatLiveSessionItem
-                key={session.id}
-                session={session}
-                isSelected={selectedSessionId === session.id}
-                onClick={() => handleSelectSession(session.id)}
-                onClose={() => onCloseSession(session.id)}
-              />
-            ))}
-            {liveSessions.length === 0 && (
-              <div className="chat-history-empty chat-history-empty--compact">
-                No live sessions.
-              </div>
-            )}
-          </div>
-          <div className="chat-history-section__header chat-history-section__header--history">
-            <span>History</span>
-          </div>
-          {displayedConversations.map((conv) => (
-            <ChatHistoryItem
-              key={conv.id}
-              conversation={conv}
-              isSelected={selectedConversationId === conv.id}
-              onClick={() => setSelection({ type: 'conversation', id: conv.id })}
+          <div className="chat-history-search-row">
+            <input
+              type="text"
+              className="conv-search"
+              placeholder="Search chats"
+              value={search}
+              onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
             />
-          ))}
-          {displayedConversations.length === 0 && !loading && (
-            <div className="chat-history-empty">
-              No conversations found.
+            <button
+              type="button"
+              className={`icon-btn chat-filter-trigger${activeFilterCount > 0 ? ' chat-filter-trigger--active' : ''}`}
+              title="Search and filter options"
+              aria-label="Search and filter options"
+              onClick={() => setFilterPanelOpen((prev) => !prev)}
+            >
+              ⋯
+              {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+            </button>
+          </div>
+          {activeFilterCount > 0 && (
+            <div className="chat-filter-summary">
+              {sourceFilter !== 'all' && <span>{SOURCE_LABELS[sourceFilter]}</span>}
+              {starredOnly && <span>Starred</span>}
+              {!hideEmpty && <span>Empty shown</span>}
+              {!groupSubAgents && <span>Sub-agents ungrouped</span>}
+              {sort !== 'date' && <span>By blocks</span>}
+              {searchMode === 'full' && <span>Full text</span>}
             </div>
+          )}
+          {filterPanelOpen && (
+            <div className="chat-filter-popover">
+              <div className="chat-filter-popover__section">
+                <div className="chat-filter-popover__label">Agent</div>
+                <div className="chat-filter-popover__row">
+                  {(['all', 'claude_code', 'codex', 'gemini'] as const).map((src) => (
+                    <button
+                      key={src}
+                      type="button"
+                      className={`conv-filter-btn${sourceFilter === src ? ' conv-filter-btn--active' : ''}`}
+                      onClick={() => setSourceFilter(src)}
+                    >
+                      {src === 'all' ? 'All' : SOURCE_LABELS[src]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="chat-filter-popover__section">
+                <label className="chat-filter-popover__toggle">
+                  <input
+                    type="checkbox"
+                    checked={starredOnly}
+                    onChange={() => setStarredOnly((prev) => !prev)}
+                  />
+                  <span>Starred only</span>
+                </label>
+                <label className="chat-filter-popover__toggle">
+                  <input
+                    type="checkbox"
+                    checked={hideEmpty}
+                    onChange={() => setHideEmpty((prev) => !prev)}
+                  />
+                  <span>Hide empty chats</span>
+                </label>
+                <label className="chat-filter-popover__toggle">
+                  <input
+                    type="checkbox"
+                    checked={groupSubAgents}
+                    onChange={() => setGroupSubAgents((prev) => !prev)}
+                  />
+                  <span>Group sub-agents</span>
+                </label>
+              </div>
+              <div className="chat-filter-popover__section">
+                <div className="chat-filter-popover__label">Search</div>
+                <div className="chat-filter-popover__row">
+                  <button
+                    type="button"
+                    className={`conv-filter-btn${searchMode === 'title' ? ' conv-filter-btn--active' : ''}`}
+                    onClick={() => setSearchMode('title')}
+                  >
+                    Title
+                  </button>
+                  <button
+                    type="button"
+                    className={`conv-filter-btn${searchMode === 'full' ? ' conv-filter-btn--active' : ''}`}
+                    onClick={() => setSearchMode('full')}
+                  >
+                    Full text
+                  </button>
+                </div>
+              </div>
+              <label className="chat-filter-popover__select">
+                <span>Sort</span>
+                <select
+                  className="conv-sort"
+                  value={sort}
+                  onChange={(e) => setSort((e.target as HTMLSelectElement).value as 'date' | 'blocks')}
+                >
+                  <option value="date">Recent activity</option>
+                  <option value="blocks">Message count</option>
+                </select>
+              </label>
+            </div>
+          )}
+        </div>
+
+        <div className="chat-history-list">
+          {chatGroups.map((group) => {
+            const collapsed = collapsedProjects.has(group.project);
+            return (
+              <div key={group.project} className="chat-project-group">
+                <button
+                  type="button"
+                  className="chat-project-group__header"
+                  onClick={() => toggleProject(group.project)}
+                >
+                  <span>{collapsed ? '▸' : '▾'}</span>
+                  <strong>{group.project}</strong>
+                  <em>{group.entries.length}</em>
+                </button>
+                {!collapsed && group.entries.map((entry) => (
+                  <ChatEntryItem
+                    key={entry.key}
+                    entry={entry}
+                    isSelected={entry.kind === 'conversation'
+                      ? selectedConversationId === entry.conversation?.id
+                      : selectedSessionId === entry.session?.id}
+                    onClick={() => {
+                      if (entry.kind === 'conversation' && entry.conversation) {
+                        setSelection({ type: 'conversation', id: entry.conversation.id });
+                        return;
+                      }
+                      if (entry.session) {
+                        handleSelectSession(entry.session.id);
+                      }
+                    }}
+                  />
+                ))}
+              </div>
+            );
+          })}
+          {chatGroups.length === 0 && !loading && (
+            <div className="chat-history-empty">No conversations found.</div>
           )}
           {loading && (
             <div className="chat-history-empty">Loading…</div>
@@ -2393,7 +2636,6 @@ export function ConversationsView({
           <LiveSessionDetail
             key={selectedLiveSession.id}
             session={selectedLiveSession}
-            onClose={onCloseSession}
           />
         ) : (
           <div className="chat-history-detail__empty">

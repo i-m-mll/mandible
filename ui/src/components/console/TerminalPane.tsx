@@ -57,6 +57,7 @@ type TerminalPaneProps = {
   resumeAtMessage?: string | null;
   // Bug: b5e1c51 — Channel-enabled PTY sessions get Terminal + Events tabs
   channelEnabled?: boolean;
+  workspaceMode?: boolean;
 };
 
 const MODEL_OPTIONS: Record<string, string[]> = {
@@ -375,6 +376,7 @@ export function TerminalPane({
   onViewModeChange,
   resumeAtMessage,
   channelEnabled = false,
+  workspaceMode = false,
 }: TerminalPaneProps): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -1087,29 +1089,31 @@ export function TerminalPane({
             unseenEventCount={unseenEventCount}
           />
         </div>
-        <div className="terminal-pane__header-actions">
-          <button type="button" className="terminal-pane__link-btn" onClick={() => { window.location.hash = '#/inbox'; }}>
-            View inbox
-          </button>
-          {providerSessionId && (
+        {!workspaceMode && (
+          <div className="terminal-pane__header-actions">
+            <button type="button" className="terminal-pane__link-btn" onClick={() => { window.location.hash = '#/inbox'; }}>
+              View inbox
+            </button>
+            {providerSessionId && (
+              <button
+                type="button"
+                className="terminal-pane__link-btn"
+                onClick={() => { window.location.hash = `#/console?session=${encodeURIComponent(providerSessionId)}`; }}
+              >
+                View history
+              </button>
+            )}
+            {/* Bug: 52b75c0 — Sidebar toggle moved from floating gear icon to header actions */}
             <button
               type="button"
               className="terminal-pane__link-btn"
-              onClick={() => { window.location.hash = `#/console?session=${encodeURIComponent(providerSessionId)}`; }}
+              onClick={() => setSidebarOpen((prev) => !prev)}
+              title="Session settings"
             >
-              View history
+              ⋮
             </button>
-          )}
-          {/* Bug: 52b75c0 — Sidebar toggle moved from floating gear icon to header actions */}
-          <button
-            type="button"
-            className="terminal-pane__link-btn"
-            onClick={() => setSidebarOpen((prev) => !prev)}
-            title="Session settings"
-          >
-            ⋮
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
       {/* inbox_only mode: yellow banner */}
@@ -1297,7 +1301,7 @@ export function TerminalPane({
             {/* Bug: 6634023 — Collapsible right sidebar for session controls
                 Bug: 52b75c0 — Toggle moved to header; no more floating gear icon
                 Bug: 60b1fd7 — P5: Tabbed sidebar with settings and info tabs */}
-            {sidebarOpen && (
+            {sidebarOpen && !workspaceMode && (
               <div className="terminal-pane__sidebar">
                 <div className="terminal-pane__sidebar-header">
                   <div className="terminal-pane__sidebar-tabs">

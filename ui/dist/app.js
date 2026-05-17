@@ -20415,11 +20415,18 @@ var BADGE_LABELS = {
   assistant: "Assistant",
   system: "System"
 };
-function TurnGroup({ speaker, children: children2, footer, isShort }) {
+function TurnGroup({
+  speaker,
+  children: children2,
+  footer,
+  isShort,
+  showSpeakerBadge = true
+}) {
   const entityClass = `turn-group--${speaker}`;
   const shortClass = isShort ? " turn-group--short" : "";
-  return /* @__PURE__ */ u3("div", { className: `turn-group ${entityClass}${shortClass}`, style: { position: "relative" }, children: [
-    /* @__PURE__ */ u3("div", { className: "turn-group__speaker", children: /* @__PURE__ */ u3("span", { className: "turn-group__badge", children: BADGE_LABELS[speaker] ?? speaker }) }),
+  const speakerClass = showSpeakerBadge ? "" : " turn-group--no-speaker";
+  return /* @__PURE__ */ u3("div", { className: `turn-group ${entityClass}${shortClass}${speakerClass}`, style: { position: "relative" }, children: [
+    showSpeakerBadge && /* @__PURE__ */ u3("div", { className: "turn-group__speaker", children: /* @__PURE__ */ u3("span", { className: "turn-group__badge", children: BADGE_LABELS[speaker] ?? speaker }) }),
     /* @__PURE__ */ u3("div", { className: "turn-group__body", children: [
       children2,
       footer
@@ -22119,7 +22126,8 @@ function TerminalPane({
   viewMode,
   onViewModeChange,
   resumeAtMessage,
-  channelEnabled = false
+  channelEnabled = false,
+  workspaceMode = false
 }) {
   const containerRef = A2(null);
   const termRef = A2(null);
@@ -22680,7 +22688,7 @@ function TerminalPane({
               unseenEventCount
             }
           ) }),
-          /* @__PURE__ */ u3("div", { className: "terminal-pane__header-actions", children: [
+          !workspaceMode && /* @__PURE__ */ u3("div", { className: "terminal-pane__header-actions", children: [
             /* @__PURE__ */ u3("button", { type: "button", className: "terminal-pane__link-btn", onClick: () => {
               window.location.hash = "#/inbox";
             }, children: "View inbox" }),
@@ -22871,7 +22879,7 @@ function TerminalPane({
                 }
               )
             ] }),
-            sidebarOpen && /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar", children: [
+            sidebarOpen && !workspaceMode && /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar", children: [
               /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar-header", children: [
                 /* @__PURE__ */ u3("div", { className: "terminal-pane__sidebar-tabs", children: [
                   /* @__PURE__ */ u3(
@@ -23413,12 +23421,32 @@ var SOURCE_CLASSES = {
   codex: "source-badge--codex",
   gemini: "source-badge--gemini"
 };
+var SOURCE_MARKS = {
+  claude_code: "CL",
+  codex: "CX",
+  gemini: "GM"
+};
 var AGENT_LABELS = {
   operator: "Operator",
   claude: "Claude",
   codex: "Codex",
   gemini: "Gemini",
   shell: "Shell"
+};
+var MODEL_OPTIONS2 = {
+  claude: ["sonnet", "opus", "haiku", "sonnet[1m]", "opusplan"],
+  gemini: [
+    "auto",
+    "pro",
+    "flash",
+    "flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite"
+  ]
 };
 var PAGE_SIZE = 50;
 var VIRTUAL_BUFFER = 10;
@@ -23454,12 +23482,6 @@ function formatAbsoluteTime(dateStr) {
     return "";
   return new Date(ts).toLocaleString();
 }
-function formatEpochRelativeTime(value) {
-  if (!value)
-    return "\u2014";
-  const ms = value < 1e12 ? value * 1e3 : value;
-  return formatRelativeTime5(new Date(ms).toISOString());
-}
 function truncate(text2, maxLen) {
   if (text2.length <= maxLen)
     return text2;
@@ -23470,6 +23492,68 @@ function isLiveConsoleSession(session) {
 }
 function getAgentLabel(agentType) {
   return AGENT_LABELS[agentType] ?? agentType;
+}
+function getSourceMark(source) {
+  return SOURCE_MARKS[source] ?? source.slice(0, 2).toUpperCase();
+}
+function sourceFromSession(session) {
+  const agent = session.agent_type.toLowerCase();
+  const command = (session.command ?? "").toLowerCase();
+  if (agent.includes("claude") || command.includes("claude"))
+    return "claude_code";
+  if (agent.includes("codex") || command.includes("codex"))
+    return "codex";
+  if (agent.includes("gemini") || command.includes("gemini"))
+    return "gemini";
+  return null;
+}
+function getSessionMark(session) {
+  const source = sourceFromSession(session);
+  if (source)
+    return getSourceMark(source);
+  return getAgentLabel(session.agent_type).slice(0, 2).toUpperCase();
+}
+function getSessionProviderFamily(session) {
+  if (session.is_operator)
+    return "claude";
+  const command = (session.command ?? session.agent_type).toLowerCase();
+  if (command.includes("claude"))
+    return "claude";
+  if (command.includes("gemini"))
+    return "gemini";
+  if (command.includes("codex"))
+    return "codex";
+  return command;
+}
+function parseModelFromArgs2(args) {
+  if (!args)
+    return void 0;
+  for (let i4 = args.length - 2; i4 >= 0; i4 -= 1) {
+    const arg = args[i4];
+    if ((arg === "--model" || arg === "-m") && args[i4 + 1]?.trim()) {
+      return args[i4 + 1].trim();
+    }
+  }
+  return void 0;
+}
+function projectNameFromPath(pathValue) {
+  if (!pathValue)
+    return "No Project";
+  const parts = pathValue.split("/").filter(Boolean);
+  return parts[parts.length - 1] || "No Project";
+}
+function getConversationProject(conversation) {
+  return projectNameFromPath(conversation.project_path ?? conversation.cwd);
+}
+function getConversationTime(conversation) {
+  const ended = conversation.ended_at ? Date.parse(conversation.ended_at) : Number.NaN;
+  if (!Number.isNaN(ended))
+    return ended;
+  const started = Date.parse(conversation.started_at);
+  return Number.isNaN(started) ? 0 : started;
+}
+function getSessionTime(session) {
+  return session.started_at ?? session.created_at ?? 0;
 }
 function parseMetadata(json) {
   try {
@@ -23884,7 +23968,7 @@ function TranscriptTurnRenderer({
       }
     )
   ] });
-  return /* @__PURE__ */ u3(TurnGroup, { speaker: turn.speaker, isShort, footer, children: turn.blocks.map((block2) => /* @__PURE__ */ u3(
+  return /* @__PURE__ */ u3(TurnGroup, { speaker: turn.speaker, isShort, footer, showSpeakerBadge: false, children: turn.blocks.map((block2) => /* @__PURE__ */ u3(
     TranscriptBlockItem,
     {
       block: block2,
@@ -24065,6 +24149,83 @@ function SubAgentsList({
     }) })
   ] });
 }
+function ConversationInfoDialog({
+  conversation,
+  linkedConsoleSession,
+  issueLinks,
+  presets,
+  onClose
+}) {
+  return /* @__PURE__ */ u3("div", { className: "conv-modal-overlay", onClick: onClose, children: /* @__PURE__ */ u3("div", { className: "conv-modal", onClick: (event) => event.stopPropagation(), children: [
+    /* @__PURE__ */ u3("div", { className: "conv-modal__header", children: [
+      /* @__PURE__ */ u3("h3", { className: "conv-modal__title", children: "Conversation Info" }),
+      /* @__PURE__ */ u3("button", { type: "button", className: "icon-btn", onClick: onClose, "aria-label": "Close info", children: "\xD7" })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "conv-info-grid", children: [
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Agent" }),
+        /* @__PURE__ */ u3("span", { children: SOURCE_LABELS[conversation.source] ?? conversation.source })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Runtime" }),
+        /* @__PURE__ */ u3("span", { children: linkedConsoleSession ? `${linkedConsoleSession.status} ${linkedConsoleSession.backend_type}` : "not running" })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Project" }),
+        /* @__PURE__ */ u3("span", { children: getConversationProject(conversation) })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Branch" }),
+        /* @__PURE__ */ u3("span", { children: conversation.branch || "unknown" })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Model" }),
+        /* @__PURE__ */ u3("span", { children: conversation.model || parseModelFromArgs2(linkedConsoleSession?.args) || "default" })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Blocks" }),
+        /* @__PURE__ */ u3("span", { children: conversation.block_count })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Started" }),
+        /* @__PURE__ */ u3("span", { children: formatAbsoluteTime(conversation.started_at) || "unknown" })
+      ] }),
+      /* @__PURE__ */ u3("div", { children: [
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Session" }),
+        /* @__PURE__ */ u3("span", { className: "conv-info-grid__mono", children: conversation.session_id || linkedConsoleSession?.id || "none" })
+      ] })
+    ] }),
+    (issueLinks.length > 0 || presets.length > 0) && /* @__PURE__ */ u3("div", { className: "conv-modal__section", children: [
+      issueLinks.length > 0 && /* @__PURE__ */ u3("div", { className: "conv-modal__chips", children: issueLinks.map((link2) => /* @__PURE__ */ u3(
+        EntityPill,
+        {
+          type: "issue",
+          id: link2.issue_id,
+          repoId: link2.repo_id
+        },
+        `${link2.repo_id}-${link2.issue_id}`
+      )) }),
+      presets.length > 0 && /* @__PURE__ */ u3("div", { className: "conv-modal__chips", children: presets.map((preset) => /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "session-preset-badge",
+          onClick: () => {
+            window.location.hash = `#/presets?id=${encodeURIComponent(preset.preset_id)}`;
+          },
+          children: [
+            preset.preset_name,
+            /* @__PURE__ */ u3("span", { className: "session-preset-badge__version", children: [
+              "v",
+              preset.version
+            ] })
+          ]
+        },
+        preset.preset_id
+      )) })
+    ] })
+  ] }) });
+}
 function ConversationDetail({
   conversationId,
   onNavigate,
@@ -24081,6 +24242,10 @@ function ConversationDetail({
   const [collapsedBlocks, setCollapsedBlocks] = d2(/* @__PURE__ */ new Set());
   const [showExport, setShowExport] = d2(false);
   const [renderMode, setRenderMode] = d2("transcript");
+  const [actionsOpen, setActionsOpen] = d2(false);
+  const [infoOpen, setInfoOpen] = d2(false);
+  const [showMessageFilters, setShowMessageFilters] = d2(false);
+  const [composerControlsOpen, setComposerControlsOpen] = d2(false);
   const [sessionIssueLinks, setSessionIssueLinks] = d2([]);
   const [sessionPresets, setSessionPresets] = d2([]);
   const [toast, setToast] = d2(null);
@@ -24092,6 +24257,7 @@ function ConversationDetail({
   const [branchSelections, setBranchSelections] = d2({});
   const [selectedLeaf, setSelectedLeaf] = d2(null);
   const scrollContainerRef = A2(null);
+  const transcriptContainerRef = A2(null);
   const [scrollTop, setScrollTop] = d2(0);
   const [containerHeight, setContainerHeight] = d2(800);
   y2(() => {
@@ -24120,6 +24286,17 @@ function ConversationDetail({
       active = false;
     };
   }, [conversationId, loadNonce]);
+  y2(() => {
+    if (loading || !conversation || renderMode !== "transcript")
+      return;
+    const frame2 = window.requestAnimationFrame(() => {
+      const el = transcriptContainerRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame2);
+  }, [conversation?.id, loading, renderMode]);
   y2(() => {
     let active = true;
     getConversationForks(conversationId).then((data) => {
@@ -24435,13 +24612,10 @@ function ConversationDetail({
     return null;
   }, [blocks]);
   const continueDisabledReason = T2(() => {
-    if (linkedConsoleSession?.interaction_mode === "inbox_only") {
+    if (linkedConsoleSession?.interaction_mode === "inbox_only" && isLiveConsoleSession(linkedConsoleSession)) {
       return "Direct input is disabled for this session.";
     }
-    if (linkedConsoleSession && !isLiveConsoleSession(linkedConsoleSession)) {
-      return "The linked session is not running.";
-    }
-    if (!linkedConsoleSession && !latestDagUuid) {
+    if ((!linkedConsoleSession || !isLiveConsoleSession(linkedConsoleSession)) && !latestDagUuid) {
       return "No resumable message is available.";
     }
     return null;
@@ -24455,7 +24629,7 @@ function ConversationDetail({
     setContinueBusy(true);
     setContinueError(null);
     try {
-      let targetSessionId = linkedConsoleSession?.id ?? null;
+      let targetSessionId = linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession) ? linkedConsoleSession.id : null;
       if (!targetSessionId) {
         if (!latestDagUuid) {
           throw new Error("No resumable message is available.");
@@ -24466,13 +24640,24 @@ function ConversationDetail({
       await sendConsolePrompt(targetSessionId, prompt);
       setContinueDraft("");
       setToast({ message: "Message sent.", type: "info" });
-      window.location.hash = `#/console?session=${encodeURIComponent(targetSessionId)}`;
+      setLoadNonce((prev) => prev + 1);
     } catch (err) {
       setContinueError(err instanceof Error ? err.message : String(err));
     } finally {
       setContinueBusy(false);
     }
   }, [continueDisabledReason, continueDraft, conversationId, latestDagUuid, linkedConsoleSession]);
+  const providerFamily = linkedConsoleSession ? getSessionProviderFamily(linkedConsoleSession) : conversation?.source === "gemini" ? "gemini" : conversation?.source === "codex" ? "codex" : "claude";
+  const currentModel = conversation?.model || parseModelFromArgs2(linkedConsoleSession?.args) || "default";
+  const canShowSessionControls = linkedConsoleSession && (linkedConsoleSession.backend_type === "sdk" || linkedConsoleSession.backend_type === "pty");
+  const navigateToGraph = q2(() => {
+    const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
+    const focus = sessionId ? `session:${sessionId}` : void 0;
+    const params = new URLSearchParams({ mode: "activity" });
+    if (focus)
+      params.set("focus", focus);
+    window.location.hash = `#/graph?${params.toString()}`;
+  }, [conversation?.session_id, linkedConsoleSession?.id]);
   if (loading) {
     return /* @__PURE__ */ u3("div", { className: "conv-detail", children: /* @__PURE__ */ u3("div", { className: "empty-state", children: "Loading conversation..." }) });
   }
@@ -24514,76 +24699,74 @@ function ConversationDetail({
           )
         ] }),
         /* @__PURE__ */ u3("div", { className: "conv-detail__meta", children: [
-          /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
-          /* @__PURE__ */ u3("span", { className: "text-muted", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime5(conversation.started_at) }),
-          conversation.branch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: conversation.branch }),
-          conversation.model && /* @__PURE__ */ u3("span", { className: "text-muted", children: conversation.model }),
-          sessionIssueLinks.length > 0 && sessionIssueLinks.map((link2) => /* @__PURE__ */ u3(
-            EntityPill,
-            {
-              type: "issue",
-              id: link2.issue_id,
-              repoId: link2.repo_id
-            },
-            `${link2.repo_id}-${link2.issue_id}`
-          )),
-          sessionPresets.length > 0 && /* @__PURE__ */ u3("div", { className: "session-presets", children: sessionPresets.map((sp) => /* @__PURE__ */ u3(
-            "span",
-            {
-              className: "session-preset-badge",
-              title: `Preset: ${sp.preset_name} (v${sp.version})`,
-              onClick: () => {
-                window.location.hash = `#/presets?id=${encodeURIComponent(sp.preset_id)}`;
-              },
-              style: { cursor: "pointer" },
-              children: [
-                sp.preset_name,
-                /* @__PURE__ */ u3("span", { className: "session-preset-badge__version", children: [
-                  "v",
-                  sp.version
-                ] })
-              ]
-            },
-            sp.preset_id
-          )) })
+          linkedConsoleSession && /* @__PURE__ */ u3("span", { className: `chat-entry__status chat-entry__status--${linkedConsoleSession.status}` }),
+          /* @__PURE__ */ u3("span", { children: SOURCE_LABELS[conversation.source] || conversation.source }),
+          /* @__PURE__ */ u3("span", { children: currentModel }),
+          conversation.branch && /* @__PURE__ */ u3("span", { className: "branch-tag", children: conversation.branch })
         ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "conv-detail__header-right", children: [
-        conversation.session_id && /* @__PURE__ */ u3(
+        /* @__PURE__ */ u3(
           "button",
           {
             type: "button",
-            className: "btn btn--ghost btn--sm",
-            onClick: () => handleResume(conversation.blocks?.[conversation.blocks.length - 1]?.dag_uuid ?? ""),
-            title: "Resume this conversation in Console",
-            children: "Resume"
-          }
-        ),
-        linkedConsoleSession && /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--ghost btn--sm",
-            onClick: () => {
-              window.location.hash = `#/console?session=${encodeURIComponent(linkedConsoleSession.id)}`;
-            },
-            children: "Open live chat"
+            className: "icon-btn",
+            onClick: navigateToGraph,
+            title: "Show in graph",
+            "aria-label": "Show in graph",
+            children: "\u2B21"
           }
         ),
         /* @__PURE__ */ u3(
           "button",
           {
             type: "button",
-            className: `btn btn--ghost btn--sm conv-star-btn${conversation.starred ? " conv-star-btn--active" : ""}`,
-            onClick: handleStarToggle,
-            title: conversation.starred ? "Unstar" : "Star",
-            children: conversation.starred ? "\u2605" : "\u2606"
+            className: "icon-btn",
+            onClick: () => setInfoOpen(true),
+            title: "Conversation info",
+            "aria-label": "Conversation info",
+            children: "i"
           }
-        )
+        ),
+        /* @__PURE__ */ u3("div", { className: "conv-actions", children: [
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "icon-btn",
+              onClick: () => setActionsOpen((prev) => !prev),
+              title: "Conversation actions",
+              "aria-label": "Conversation actions",
+              children: "\u22EF"
+            }
+          ),
+          actionsOpen && /* @__PURE__ */ u3("div", { className: "conv-actions__menu", children: [
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              void handleStarToggle();
+              setActionsOpen(false);
+            }, children: conversation.starred ? "Unstar" : "Star" }),
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              navigateToGraph();
+              setActionsOpen(false);
+            }, children: "Show in graph" }),
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              setShowMessageFilters((prev) => !prev);
+              setActionsOpen(false);
+            }, children: showMessageFilters ? "Hide message filters" : "Message filters" }),
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              setRenderMode((prev) => prev === "transcript" ? "raw" : "transcript");
+              setActionsOpen(false);
+            }, children: renderMode === "transcript" ? "Inspect raw blocks" : "Show transcript" }),
+            /* @__PURE__ */ u3("button", { type: "button", onClick: () => {
+              setSelectMode(true);
+              setActionsOpen(false);
+            }, children: "Select messages" })
+          ] })
+        ] })
       ] })
     ] }),
     conversation.children && conversation.children.length > 0 && /* @__PURE__ */ u3(SubAgentsList, { children: conversation.children, onNavigate }),
-    /* @__PURE__ */ u3("div", { className: "conv-filter-bar", children: [
+    showMessageFilters && /* @__PURE__ */ u3("div", { className: "conv-filter-bar", children: [
       /* @__PURE__ */ u3("div", { className: "conv-filter-bar__types", children: presentTypes.map((type) => /* @__PURE__ */ u3(
         "button",
         {
@@ -24598,26 +24781,6 @@ function ConversationDetail({
         type
       )) }),
       /* @__PURE__ */ u3("div", { className: "conv-filter-bar__actions", children: [
-        /* @__PURE__ */ u3("div", { className: "toggle-group", children: [
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: `btn btn--sm${renderMode === "transcript" ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setRenderMode("transcript"),
-              children: "Transcript"
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: `btn btn--sm${renderMode === "raw" ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setRenderMode("raw"),
-              children: "Inspect raw"
-            }
-          )
-        ] }),
         /* @__PURE__ */ u3(
           "button",
           {
@@ -24674,15 +24837,6 @@ function ConversationDetail({
         }
       )
     ] }),
-    !selectMode && selected2.size === 0 && /* @__PURE__ */ u3("div", { className: "conv-selection-toolbar conv-selection-toolbar--minimal", children: /* @__PURE__ */ u3(
-      "button",
-      {
-        type: "button",
-        className: "btn btn--ghost btn--sm",
-        onClick: () => setSelectMode(true),
-        children: "Select mode"
-      }
-    ) }),
     showExport && /* @__PURE__ */ u3(
       ExportPanel,
       {
@@ -24757,14 +24911,14 @@ function ConversationDetail({
     /* @__PURE__ */ u3("div", { className: "conv-compose", children: [
       /* @__PURE__ */ u3("form", { className: "conv-compose__form", onSubmit: handleContinueSubmit, children: [
         /* @__PURE__ */ u3(
-          "input",
+          "textarea",
           {
-            type: "text",
             className: "conv-compose__input",
             value: continueDraft,
             onInput: (event) => setContinueDraft(event.currentTarget.value),
             placeholder: "Message...",
-            disabled: continueBusy || !!continueDisabledReason
+            disabled: continueBusy || !!continueDisabledReason,
+            rows: 3
           }
         ),
         /* @__PURE__ */ u3(
@@ -24777,6 +24931,32 @@ function ConversationDetail({
           }
         )
       ] }),
+      /* @__PURE__ */ u3("div", { className: "conv-compose__footer", children: [
+        /* @__PURE__ */ u3("div", { className: "conv-compose__runtime", children: [
+          /* @__PURE__ */ u3("span", { className: `agent-mark ${SOURCE_CLASSES[conversation.source] || ""}`, children: getSourceMark(conversation.source) }),
+          /* @__PURE__ */ u3("span", { children: linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession) ? "running" : "history" }),
+          /* @__PURE__ */ u3("span", { children: currentModel })
+        ] }),
+        canShowSessionControls && /* @__PURE__ */ u3(
+          "button",
+          {
+            type: "button",
+            className: "btn btn--ghost btn--sm",
+            onClick: () => setComposerControlsOpen((prev) => !prev),
+            children: "Controls"
+          }
+        )
+      ] }),
+      canShowSessionControls && composerControlsOpen && linkedConsoleSession && /* @__PURE__ */ u3("div", { className: "conv-compose__controls", children: /* @__PURE__ */ u3(
+        SessionControls,
+        {
+          sessionId: linkedConsoleSession.id,
+          backendType: linkedConsoleSession.backend_type === "sdk" ? "sdk" : "pty",
+          model: parseModelFromArgs2(linkedConsoleSession.args),
+          modelOptions: MODEL_OPTIONS2[providerFamily] ?? [],
+          allowedTools: linkedConsoleSession.allowed_tools
+        }
+      ) }),
       (continueError || continueDisabledReason) && /* @__PURE__ */ u3("div", { className: `conv-compose__status${continueError ? " conv-compose__status--error" : ""}`, children: continueError ?? continueDisabledReason })
     ] }),
     /* @__PURE__ */ u3(Toast, { toast, onDismiss: () => setToast(null) }),
@@ -24787,15 +24967,32 @@ function ConversationDetail({
         onFork: handleConflictFork,
         onCancel: () => setConflictDialog(null)
       }
+    ),
+    infoOpen && /* @__PURE__ */ u3(
+      ConversationInfoDialog,
+      {
+        conversation,
+        linkedConsoleSession,
+        issueLinks: sessionIssueLinks,
+        presets: sessionPresets,
+        onClose: () => setInfoOpen(false)
+      }
     )
   ] });
 }
-function ChatHistoryItem({
-  conversation,
+function ChatEntryItem({
+  entry,
   isSelected,
   onClick
 }) {
-  const isSubAgent = !!conversation.parent_conversation_id;
+  const conversation = entry.conversation;
+  const session = entry.session;
+  const liveSession = entry.liveSession ?? (entry.kind === "session" ? session ?? null : null);
+  const isSubAgent = !!conversation?.parent_conversation_id;
+  const source = conversation?.source ?? (session ? sourceFromSession(session) : null);
+  const title = conversation?.title || session?.label || "Untitled";
+  const branch = conversation?.branch;
+  const unread = liveSession?.unread_count ?? 0;
   return /* @__PURE__ */ u3(
     "div",
     {
@@ -24808,124 +25005,55 @@ function ChatHistoryItem({
           onClick();
       },
       children: [
-        /* @__PURE__ */ u3("div", { className: "chat-history-item__header", children: [
-          /* @__PURE__ */ u3("span", { className: `source-badge ${SOURCE_CLASSES[conversation.source] || ""}`, children: SOURCE_LABELS[conversation.source] || conversation.source }),
-          /* @__PURE__ */ u3("span", { className: "chat-history-item__date", title: formatAbsoluteTime(conversation.started_at), children: formatRelativeTime5(conversation.started_at) })
-        ] }),
-        /* @__PURE__ */ u3("div", { className: "chat-history-item__title", children: [
-          conversation.starred ? "\u2605 " : "",
-          isSubAgent && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent", children: "\u2937 " }),
+        /* @__PURE__ */ u3("div", { className: "chat-history-item__line", children: [
+          /* @__PURE__ */ u3("span", { className: "chat-history-item__title", children: [
+            conversation?.starred ? "\u2605 " : "",
+            isSubAgent && /* @__PURE__ */ u3("span", { className: "conv-subagent-indicator", title: "Sub-agent", children: "\u2937 " }),
+            /* @__PURE__ */ u3(
+              "span",
+              {
+                dangerouslySetInnerHTML: {
+                  __html: renderInlineMarkdown5(truncate(title, 58))
+                }
+              }
+            )
+          ] }),
           /* @__PURE__ */ u3(
             "span",
             {
-              dangerouslySetInnerHTML: {
-                __html: renderInlineMarkdown5(truncate(conversation.title || "Untitled", 55))
-              }
+              className: `agent-mark ${source ? SOURCE_CLASSES[source] || "" : ""}`,
+              title: source ? SOURCE_LABELS[source] : session ? getAgentLabel(session.agent_type) : void 0,
+              children: source ? getSourceMark(source) : session ? getSessionMark(session) : "??"
             }
           )
         ] }),
         /* @__PURE__ */ u3("div", { className: "chat-history-item__meta", children: [
-          /* @__PURE__ */ u3("span", { className: "chat-history-item__blocks", children: [
-            conversation.block_count,
-            " blocks"
+          liveSession && /* @__PURE__ */ u3("span", { className: `chat-entry__status chat-entry__status--${liveSession.status}` }),
+          branch && /* @__PURE__ */ u3("span", { className: "chat-history-item__branch", children: truncate(branch, 22) }),
+          unread > 0 && /* @__PURE__ */ u3("span", { children: [
+            unread,
+            " unread"
           ] }),
-          conversation.branch && /* @__PURE__ */ u3("span", { className: "chat-history-item__branch", children: truncate(conversation.branch, 20) })
+          entry.kind === "session" && /* @__PURE__ */ u3("span", { children: session?.backend_type ?? "live" })
         ] })
-      ]
-    }
-  );
-}
-function ChatLiveSessionItem({
-  session,
-  isSelected,
-  onClick,
-  onClose
-}) {
-  return /* @__PURE__ */ u3(
-    "div",
-    {
-      className: `chat-live-session${isSelected ? " chat-live-session--selected" : ""}`,
-      onClick,
-      role: "button",
-      tabIndex: 0,
-      onKeyDown: (e3) => {
-        if (e3.key === "Enter" || e3.key === " ")
-          onClick();
-      },
-      children: [
-        /* @__PURE__ */ u3("div", { className: "chat-live-session__body", children: [
-          /* @__PURE__ */ u3("div", { className: "chat-live-session__header", children: [
-            /* @__PURE__ */ u3("span", { className: `chat-live-session__status chat-live-session__status--${session.status}` }),
-            /* @__PURE__ */ u3("span", { className: "chat-live-session__agent", children: getAgentLabel(session.agent_type) }),
-            /* @__PURE__ */ u3("span", { className: "chat-live-session__date", children: formatEpochRelativeTime(session.started_at ?? session.created_at) })
-          ] }),
-          /* @__PURE__ */ u3("div", { className: "chat-live-session__title", children: session.label || "Untitled session" }),
-          /* @__PURE__ */ u3("div", { className: "chat-live-session__meta", children: [
-            /* @__PURE__ */ u3("span", { children: session.backend_type }),
-            session.provider_session_id && /* @__PURE__ */ u3("span", { children: "history linked" }),
-            session.unread_count > 0 && /* @__PURE__ */ u3("span", { children: [
-              session.unread_count,
-              " unread"
-            ] })
-          ] })
-        ] }),
-        !session.pinned && /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "chat-live-session__close",
-            onClick: (e3) => {
-              e3.stopPropagation();
-              onClose();
-            },
-            title: "Close session",
-            children: "\xD7"
-          }
-        )
       ]
     }
   );
 }
 function LiveSessionDetail({
-  session,
-  onClose
+  session
 }) {
   const [viewMode, setViewMode] = d2("rich");
-  const canClose = !session.pinned;
   return /* @__PURE__ */ u3("div", { className: "chat-live-detail", children: [
-    /* @__PURE__ */ u3("div", { className: "chat-live-detail__header", children: [
-      /* @__PURE__ */ u3("div", { className: "chat-live-detail__title-group", children: [
-        /* @__PURE__ */ u3("h2", { className: "chat-live-detail__title", children: session.label || "Untitled session" }),
-        /* @__PURE__ */ u3("div", { className: "chat-live-detail__meta", children: [
-          /* @__PURE__ */ u3("span", { className: `chat-live-session__status chat-live-session__status--${session.status}` }),
-          /* @__PURE__ */ u3("span", { children: getAgentLabel(session.agent_type) }),
-          /* @__PURE__ */ u3("span", { children: session.status }),
-          /* @__PURE__ */ u3("span", { children: session.backend_type })
-        ] })
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "chat-live-detail__actions", children: [
-        session.provider_session_id && /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--ghost btn--sm",
-            onClick: () => {
-              window.location.hash = `#/console?session=${encodeURIComponent(session.provider_session_id)}`;
-            },
-            children: "View history"
-          }
-        ),
-        canClose && /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--ghost btn--sm",
-            onClick: () => onClose(session.id),
-            children: "Close"
-          }
-        )
+    /* @__PURE__ */ u3("div", { className: "chat-live-detail__header", children: /* @__PURE__ */ u3("div", { className: "chat-live-detail__title-group", children: [
+      /* @__PURE__ */ u3("h2", { className: "chat-live-detail__title", children: session.label || "Untitled session" }),
+      /* @__PURE__ */ u3("div", { className: "chat-live-detail__meta", children: [
+        /* @__PURE__ */ u3("span", { className: `chat-live-session__status chat-live-session__status--${session.status}` }),
+        /* @__PURE__ */ u3("span", { children: getAgentLabel(session.agent_type) }),
+        /* @__PURE__ */ u3("span", { children: session.status }),
+        /* @__PURE__ */ u3("span", { children: session.backend_type })
       ] })
-    ] }),
+    ] }) }),
     /* @__PURE__ */ u3("div", { className: "chat-live-detail__pane", children: /* @__PURE__ */ u3(
       TerminalPane,
       {
@@ -24943,7 +25071,8 @@ function LiveSessionDetail({
         viewMode,
         onViewModeChange: setViewMode,
         resumeAtMessage: session.resume_at_message,
-        channelEnabled: !!session.channel_enabled
+        channelEnabled: !!session.channel_enabled,
+        workspaceMode: true
       }
     ) })
   ] });
@@ -24951,12 +25080,10 @@ function LiveSessionDetail({
 function ConversationsView({
   conversations: initialConversations,
   consoleSessions,
-  activeSessionId,
   initialConversationId,
   initialSessionId,
   initialPresetId,
   onSelectSession,
-  onCloseSession,
   onNewSession
 }) {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
@@ -24973,10 +25100,11 @@ function ConversationsView({
   const [hideEmpty, setHideEmpty] = d2(true);
   const [groupSubAgents, setGroupSubAgents] = d2(true);
   const [sort, setSort] = d2("date");
+  const [filterPanelOpen, setFilterPanelOpen] = d2(false);
+  const [collapsedProjects, setCollapsedProjects] = d2(/* @__PURE__ */ new Set());
   const [conversations, setConversations] = d2(initialConversations);
   const [total, setTotal] = d2(0);
   const [loading, setLoading] = d2(false);
-  const [ingesting, setIngesting] = d2(false);
   const searchTimer = A2(null);
   const conversationsRef = A2(conversations);
   conversationsRef.current = conversations;
@@ -25010,15 +25138,16 @@ function ConversationsView({
       };
     }
     const liveById = consoleSessions.find((session) => session.id === initialSessionId);
-    if (liveById) {
+    if (liveById && !liveById.provider_session_id) {
       setSelection({ type: "session", id: liveById.id });
       onSelectSession(liveById.id);
       return () => {
         active = false;
       };
     }
+    const sessionLookupId = liveById?.provider_session_id ?? initialSessionId;
     const resolveConversation = (attemptsRemaining) => {
-      void getConversations({ session_id: initialSessionId, limit: 1 }).then((result) => {
+      void getConversations({ session_id: sessionLookupId, limit: 1 }).then((result) => {
         if (!active)
           return;
         const resolvedId = result.conversations[0]?.id ?? null;
@@ -25027,7 +25156,7 @@ function ConversationsView({
           return;
         }
         const liveByProvider = consoleSessions.find(
-          (session) => session.provider_session_id === initialSessionId && isLiveConsoleSession(session)
+          (session) => session.provider_session_id === sessionLookupId && isLiveConsoleSession(session)
         );
         if (liveByProvider && attemptsRemaining <= 0) {
           setSelection({ type: "session", id: liveByProvider.id });
@@ -25099,16 +25228,6 @@ function ConversationsView({
         clearTimeout(searchTimer.current);
     };
   }, [fetchConversations]);
-  const handleIngest = async () => {
-    setIngesting(true);
-    try {
-      await triggerIngestion();
-      await fetchConversations(true);
-    } catch {
-    } finally {
-      setIngesting(false);
-    }
-  };
   const loadMore = () => {
     fetchConversations(false);
   };
@@ -25122,6 +25241,70 @@ function ConversationsView({
       (conv) => (conv.title || "").toLowerCase().includes(needle)
     );
   }, [conversations, hideEmpty, search, searchMode]);
+  const liveByProviderSession = T2(() => {
+    const map = /* @__PURE__ */ new Map();
+    for (const session of liveSessions) {
+      if (session.provider_session_id) {
+        map.set(session.provider_session_id, session);
+      }
+    }
+    return map;
+  }, [liveSessions]);
+  const chatGroups = T2(() => {
+    const entries2 = displayedConversations.map((conversation) => ({
+      key: `conversation:${conversation.id}`,
+      project: getConversationProject(conversation),
+      time: getConversationTime(conversation),
+      kind: "conversation",
+      conversation,
+      liveSession: liveByProviderSession.get(conversation.session_id) ?? null
+    }));
+    const conversationProviderIds = new Set(displayedConversations.map((conversation) => conversation.session_id));
+    for (const session of liveSessions) {
+      if (session.provider_session_id && conversationProviderIds.has(session.provider_session_id)) {
+        continue;
+      }
+      entries2.push({
+        key: `session:${session.id}`,
+        project: "No Project",
+        time: getSessionTime(session),
+        kind: "session",
+        session,
+        liveSession: session
+      });
+    }
+    const groupMap = /* @__PURE__ */ new Map();
+    for (const entry of entries2) {
+      const group = groupMap.get(entry.project) ?? [];
+      group.push(entry);
+      groupMap.set(entry.project, group);
+    }
+    return Array.from(groupMap.entries()).map(([project, groupEntries]) => {
+      const sortedEntries = [...groupEntries].sort((a4, b3) => {
+        if (sort === "blocks") {
+          const aBlocks = a4.conversation?.block_count ?? 0;
+          const bBlocks = b3.conversation?.block_count ?? 0;
+          if (aBlocks !== bBlocks)
+            return bBlocks - aBlocks;
+        }
+        return b3.time - a4.time;
+      });
+      return {
+        project,
+        latestTime: Math.max(...sortedEntries.map((entry) => entry.time)),
+        entries: sortedEntries
+      };
+    }).sort((a4, b3) => b3.latestTime - a4.latestTime || a4.project.localeCompare(b3.project));
+  }, [displayedConversations, liveByProviderSession, liveSessions, sort]);
+  const firstChatEntry = chatGroups[0]?.entries[0] ?? null;
+  const activeFilterCount = [
+    sourceFilter !== "all",
+    starredOnly,
+    !hideEmpty,
+    !groupSubAgents,
+    sort !== "date",
+    searchMode !== "title"
+  ].filter(Boolean).length;
   const selectedLiveSession = T2(() => {
     if (!selectedSessionId)
       return null;
@@ -25139,20 +25322,31 @@ function ConversationsView({
   y2(() => {
     if (selection2)
       return;
-    const activeLiveSession = activeSessionId ? liveSessions.find((session) => session.id === activeSessionId) ?? liveSessions[0] ?? null : liveSessions[0] ?? null;
-    if (activeLiveSession) {
-      setSelection({ type: "session", id: activeLiveSession.id });
-      onSelectSession(activeLiveSession.id);
+    if (!firstChatEntry)
+      return;
+    if (firstChatEntry.kind === "conversation" && firstChatEntry.conversation) {
+      setSelection({ type: "conversation", id: firstChatEntry.conversation.id });
       return;
     }
-    const firstConversation = displayedConversations[0];
-    if (firstConversation) {
-      setSelection({ type: "conversation", id: firstConversation.id });
+    if (firstChatEntry.session) {
+      setSelection({ type: "session", id: firstChatEntry.session.id });
+      onSelectSession(firstChatEntry.session.id);
     }
-  }, [activeSessionId, displayedConversations, liveSessions, onSelectSession, selection2]);
+  }, [firstChatEntry, onSelectSession, selection2]);
   const handleSelectSession = (sessionId) => {
     setSelection({ type: "session", id: sessionId });
     onSelectSession(sessionId);
+  };
+  const toggleProject = (project) => {
+    setCollapsedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(project)) {
+        next.delete(project);
+      } else {
+        next.add(project);
+      }
+      return next;
+    });
   };
   const handleNewSession = (input) => {
     onNewSession(input);
@@ -25160,130 +25354,176 @@ function ConversationsView({
   };
   return /* @__PURE__ */ u3("div", { className: "chat-history-view", children: [
     /* @__PURE__ */ u3("div", { className: "chat-history-sidebar", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
-      /* @__PURE__ */ u3("div", { className: "chat-history-search-row", children: [
+      /* @__PURE__ */ u3("div", { className: "chat-sidebar-top", children: [
         /* @__PURE__ */ u3(
-          "input",
+          "button",
           {
-            type: "text",
-            className: "conv-search",
-            placeholder: "Search\u2026",
-            value: search,
-            onInput: (e3) => setSearch(e3.target.value)
+            type: "button",
+            className: "btn btn--ghost btn--sm chat-sidebar-new",
+            onClick: () => setDialogOpen(true),
+            children: "New"
           }
         ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: `btn btn--sm chat-history-search-mode${searchMode === "full" ? " btn--active" : " btn--ghost"}`,
-            title: searchMode === "title" ? "Title-only search (click for full text)" : "Full-text search (click for title only)",
-            onClick: () => setSearchMode((prev) => prev === "title" ? "full" : "title"),
-            children: searchMode === "full" ? "Full" : "Title"
-          }
-        )
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "chat-history-filters", children: [
-        /* @__PURE__ */ u3("div", { className: "conv-filters__sources", children: ["all", "claude_code", "codex", "gemini"].map((src) => /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: `conv-filter-btn${sourceFilter === src ? " conv-filter-btn--active" : ""}`,
-            onClick: () => setSourceFilter(src),
-            children: src === "all" ? "All" : SOURCE_LABELS[src]
-          },
-          src
-        )) }),
-        /* @__PURE__ */ u3("div", { className: "chat-history-filter-controls", children: [
+        /* @__PURE__ */ u3("div", { className: "chat-history-search-row", children: [
           /* @__PURE__ */ u3(
-            "button",
+            "input",
             {
-              type: "button",
-              className: `btn btn--sm${starredOnly ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setStarredOnly((prev) => !prev),
-              children: "Starred"
+              type: "text",
+              className: "conv-search",
+              placeholder: "Search chats",
+              value: search,
+              onInput: (e3) => setSearch(e3.target.value)
             }
           ),
           /* @__PURE__ */ u3(
             "button",
             {
               type: "button",
-              className: `btn btn--sm${groupSubAgents ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setGroupSubAgents((prev) => !prev),
-              title: "When on, sub-agent conversations are hidden from the main list and shown under their parent",
-              children: "Group subs"
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: `btn btn--sm${hideEmpty ? " btn--active" : " btn--ghost"}`,
-              onClick: () => setHideEmpty((prev) => !prev),
-              children: "Hide empty"
-            }
-          ),
-          /* @__PURE__ */ u3(
-            "select",
-            {
-              className: "conv-sort",
-              value: sort,
-              onChange: (e3) => setSort(e3.target.value),
+              className: `icon-btn chat-filter-trigger${activeFilterCount > 0 ? " chat-filter-trigger--active" : ""}`,
+              title: "Search and filter options",
+              "aria-label": "Search and filter options",
+              onClick: () => setFilterPanelOpen((prev) => !prev),
               children: [
-                /* @__PURE__ */ u3("option", { value: "date", children: "Date" }),
-                /* @__PURE__ */ u3("option", { value: "blocks", children: "Blocks" })
+                "\u22EF",
+                activeFilterCount > 0 && /* @__PURE__ */ u3("span", { children: activeFilterCount })
               ]
             }
-          ),
-          /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: "btn btn--ghost btn--sm",
-              onClick: handleIngest,
-              disabled: ingesting,
-              title: "Refresh conversation logs",
-              children: ingesting ? "\u2026" : "Refresh"
-            }
           )
+        ] }),
+        activeFilterCount > 0 && /* @__PURE__ */ u3("div", { className: "chat-filter-summary", children: [
+          sourceFilter !== "all" && /* @__PURE__ */ u3("span", { children: SOURCE_LABELS[sourceFilter] }),
+          starredOnly && /* @__PURE__ */ u3("span", { children: "Starred" }),
+          !hideEmpty && /* @__PURE__ */ u3("span", { children: "Empty shown" }),
+          !groupSubAgents && /* @__PURE__ */ u3("span", { children: "Sub-agents ungrouped" }),
+          sort !== "date" && /* @__PURE__ */ u3("span", { children: "By blocks" }),
+          searchMode === "full" && /* @__PURE__ */ u3("span", { children: "Full text" })
+        ] }),
+        filterPanelOpen && /* @__PURE__ */ u3("div", { className: "chat-filter-popover", children: [
+          /* @__PURE__ */ u3("div", { className: "chat-filter-popover__section", children: [
+            /* @__PURE__ */ u3("div", { className: "chat-filter-popover__label", children: "Agent" }),
+            /* @__PURE__ */ u3("div", { className: "chat-filter-popover__row", children: ["all", "claude_code", "codex", "gemini"].map((src) => /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: `conv-filter-btn${sourceFilter === src ? " conv-filter-btn--active" : ""}`,
+                onClick: () => setSourceFilter(src),
+                children: src === "all" ? "All" : SOURCE_LABELS[src]
+              },
+              src
+            )) })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "chat-filter-popover__section", children: [
+            /* @__PURE__ */ u3("label", { className: "chat-filter-popover__toggle", children: [
+              /* @__PURE__ */ u3(
+                "input",
+                {
+                  type: "checkbox",
+                  checked: starredOnly,
+                  onChange: () => setStarredOnly((prev) => !prev)
+                }
+              ),
+              /* @__PURE__ */ u3("span", { children: "Starred only" })
+            ] }),
+            /* @__PURE__ */ u3("label", { className: "chat-filter-popover__toggle", children: [
+              /* @__PURE__ */ u3(
+                "input",
+                {
+                  type: "checkbox",
+                  checked: hideEmpty,
+                  onChange: () => setHideEmpty((prev) => !prev)
+                }
+              ),
+              /* @__PURE__ */ u3("span", { children: "Hide empty chats" })
+            ] }),
+            /* @__PURE__ */ u3("label", { className: "chat-filter-popover__toggle", children: [
+              /* @__PURE__ */ u3(
+                "input",
+                {
+                  type: "checkbox",
+                  checked: groupSubAgents,
+                  onChange: () => setGroupSubAgents((prev) => !prev)
+                }
+              ),
+              /* @__PURE__ */ u3("span", { children: "Group sub-agents" })
+            ] })
+          ] }),
+          /* @__PURE__ */ u3("div", { className: "chat-filter-popover__section", children: [
+            /* @__PURE__ */ u3("div", { className: "chat-filter-popover__label", children: "Search" }),
+            /* @__PURE__ */ u3("div", { className: "chat-filter-popover__row", children: [
+              /* @__PURE__ */ u3(
+                "button",
+                {
+                  type: "button",
+                  className: `conv-filter-btn${searchMode === "title" ? " conv-filter-btn--active" : ""}`,
+                  onClick: () => setSearchMode("title"),
+                  children: "Title"
+                }
+              ),
+              /* @__PURE__ */ u3(
+                "button",
+                {
+                  type: "button",
+                  className: `conv-filter-btn${searchMode === "full" ? " conv-filter-btn--active" : ""}`,
+                  onClick: () => setSearchMode("full"),
+                  children: "Full text"
+                }
+              )
+            ] })
+          ] }),
+          /* @__PURE__ */ u3("label", { className: "chat-filter-popover__select", children: [
+            /* @__PURE__ */ u3("span", { children: "Sort" }),
+            /* @__PURE__ */ u3(
+              "select",
+              {
+                className: "conv-sort",
+                value: sort,
+                onChange: (e3) => setSort(e3.target.value),
+                children: [
+                  /* @__PURE__ */ u3("option", { value: "date", children: "Recent activity" }),
+                  /* @__PURE__ */ u3("option", { value: "blocks", children: "Message count" })
+                ]
+              }
+            )
+          ] })
         ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "chat-history-list", children: [
-        /* @__PURE__ */ u3("div", { className: "chat-history-section", children: [
-          /* @__PURE__ */ u3("div", { className: "chat-history-section__header", children: [
-            /* @__PURE__ */ u3("span", { children: "Live" }),
+        chatGroups.map((group) => {
+          const collapsed = collapsedProjects.has(group.project);
+          return /* @__PURE__ */ u3("div", { className: "chat-project-group", children: [
             /* @__PURE__ */ u3(
               "button",
               {
                 type: "button",
-                className: "btn btn--ghost btn--sm",
-                onClick: () => setDialogOpen(true),
-                children: "New"
+                className: "chat-project-group__header",
+                onClick: () => toggleProject(group.project),
+                children: [
+                  /* @__PURE__ */ u3("span", { children: collapsed ? "\u25B8" : "\u25BE" }),
+                  /* @__PURE__ */ u3("strong", { children: group.project }),
+                  /* @__PURE__ */ u3("em", { children: group.entries.length })
+                ]
               }
-            )
-          ] }),
-          liveSessions.map((session) => /* @__PURE__ */ u3(
-            ChatLiveSessionItem,
-            {
-              session,
-              isSelected: selectedSessionId === session.id,
-              onClick: () => handleSelectSession(session.id),
-              onClose: () => onCloseSession(session.id)
-            },
-            session.id
-          )),
-          liveSessions.length === 0 && /* @__PURE__ */ u3("div", { className: "chat-history-empty chat-history-empty--compact", children: "No live sessions." })
-        ] }),
-        /* @__PURE__ */ u3("div", { className: "chat-history-section__header chat-history-section__header--history", children: /* @__PURE__ */ u3("span", { children: "History" }) }),
-        displayedConversations.map((conv) => /* @__PURE__ */ u3(
-          ChatHistoryItem,
-          {
-            conversation: conv,
-            isSelected: selectedConversationId === conv.id,
-            onClick: () => setSelection({ type: "conversation", id: conv.id })
-          },
-          conv.id
-        )),
-        displayedConversations.length === 0 && !loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "No conversations found." }),
+            ),
+            !collapsed && group.entries.map((entry) => /* @__PURE__ */ u3(
+              ChatEntryItem,
+              {
+                entry,
+                isSelected: entry.kind === "conversation" ? selectedConversationId === entry.conversation?.id : selectedSessionId === entry.session?.id,
+                onClick: () => {
+                  if (entry.kind === "conversation" && entry.conversation) {
+                    setSelection({ type: "conversation", id: entry.conversation.id });
+                    return;
+                  }
+                  if (entry.session) {
+                    handleSelectSession(entry.session.id);
+                  }
+                }
+              },
+              entry.key
+            ))
+          ] }, group.project);
+        }),
+        chatGroups.length === 0 && !loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "No conversations found." }),
         loading && /* @__PURE__ */ u3("div", { className: "chat-history-empty", children: "Loading\u2026" }),
         hasMore && !loading && /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost chat-history-load-more", onClick: loadMore, children: [
           "Load more (",
@@ -25303,8 +25543,7 @@ function ConversationsView({
     ) : selection2?.type === "session" && selectedLiveSession ? /* @__PURE__ */ u3(
       LiveSessionDetail,
       {
-        session: selectedLiveSession,
-        onClose: onCloseSession
+        session: selectedLiveSession
       },
       selectedLiveSession.id
     ) : /* @__PURE__ */ u3("div", { className: "chat-history-detail__empty", children: "Select a conversation to view it" }) }),
@@ -38794,7 +39033,7 @@ function DetailPane({
     ] })
   ] });
 }
-function GraphView2({ onNavigate, refreshToken, initialMode }) {
+function GraphView2({ onNavigate, refreshToken, initialMode, initialFocus }) {
   const routeMode = coerceGraphMode(initialMode);
   const [payload, setPayload] = d2({ nodes: [], edges: [], mode: "activity" });
   const [loading, setLoading] = d2(true);
@@ -38824,7 +39063,9 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
         return;
       setPayload(data);
       setEnabledLayers(new Set((data.layers ?? []).filter((layer) => layer.enabled).map((layer) => layer.id)));
-      if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
+      if (initialFocus && data.nodes.some((node) => node.id === initialFocus)) {
+        setSelectedNodeId(initialFocus);
+      } else if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
         setSelectedNodeId(data.nodes[0].id);
       }
     }).catch((err) => {
@@ -38838,7 +39079,7 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
     return () => {
       active = false;
     };
-  }, [mode, sinceFilter, statusFilter, repoFilters, branchFilters, refreshToken]);
+  }, [mode, sinceFilter, statusFilter, repoFilters, branchFilters, refreshToken, initialFocus]);
   const rawModes = payload.modes ?? Object.entries(MODE_LABELS).map(([id2, label]) => ({
     id: id2,
     label,
@@ -38877,15 +39118,22 @@ function GraphView2({ onNavigate, refreshToken, initialMode }) {
     () => payload.edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)),
     [payload.edges, visibleNodeIds]
   );
-  const flowNodes = T2(() => layoutNodes(visibleNodes, visibleEdges, mode), [visibleNodes, visibleEdges, mode]);
+  const flowNodes = T2(
+    () => layoutNodes(visibleNodes, visibleEdges, mode).map((node) => ({
+      ...node,
+      selected: node.data.node.id === selectedNodeId
+    })),
+    [visibleNodes, visibleEdges, mode, selectedNodeId]
+  );
   const flowEdgeList = T2(() => flowEdges(visibleEdges), [visibleEdges]);
   const flowSignature = T2(
     () => [
       mode,
+      selectedNodeId ?? "",
       flowNodes.map((node) => node.id).join(","),
       flowEdgeList.map((edge) => edge.id).join(",")
     ].join(":"),
-    [flowEdgeList, flowNodes, mode]
+    [flowEdgeList, flowNodes, mode, selectedNodeId]
   );
   const selectedNode = T2(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
@@ -44268,12 +44516,10 @@ function App() {
           {
             conversations: state.conversations,
             consoleSessions: state.consoleSessions,
-            activeSessionId: state.consoleActiveSessionId,
             initialConversationId: route.params.conversation ?? null,
             initialSessionId: route.params.session ?? null,
             initialPresetId: route.params.preset ?? null,
             onSelectSession: handleConsoleSelectSession,
-            onCloseSession: handleConsoleCloseSession,
             onNewSession: handleConsoleNewSession
           }
         ),
@@ -44290,7 +44536,8 @@ function App() {
           {
             onNavigate: handleGraphNavigate,
             refreshToken: graphRefreshToken,
-            initialMode: route.params.mode
+            initialMode: route.params.mode,
+            initialFocus: route.params.focus
           }
         ),
         route.tab === "presets" && /* @__PURE__ */ u3(

@@ -1207,12 +1207,10 @@ function App(): JSX.Element {
           <ConversationsView
             conversations={state.conversations}
             consoleSessions={state.consoleSessions}
-            activeSessionId={state.consoleActiveSessionId}
             initialConversationId={route.params.conversation ?? null}
             initialSessionId={route.params.session ?? null}
             initialPresetId={route.params.preset ?? null}
             onSelectSession={handleConsoleSelectSession}
-            onCloseSession={handleConsoleCloseSession}
             onNewSession={handleConsoleNewSession}
           />
         )}
@@ -1230,6 +1228,7 @@ function App(): JSX.Element {
             onNavigate={handleGraphNavigate}
             refreshToken={graphRefreshToken}
             initialMode={route.params.mode}
+            initialFocus={route.params.focus}
           />
         )}
         {route.tab === 'presets' && (
