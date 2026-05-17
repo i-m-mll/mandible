@@ -59,6 +59,7 @@ a {
 
 .app-layout--rail-icons {
   grid-template-columns: 56px minmax(0, 1fr);
+  overflow: visible;
 }
 
 .app-rail {
@@ -174,6 +175,33 @@ a {
   background: var(--accent-blue);
 }
 
+.app-rail__tooltip {
+  position: absolute;
+  left: calc(100% + 9px);
+  top: 50%;
+  z-index: 80;
+  max-width: 180px;
+  transform: translateY(-50%) translateX(-2px);
+  opacity: 0;
+  pointer-events: none;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(12, 17, 24, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-soft);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition: opacity 0.12s ease 0.28s, transform 0.12s ease 0.28s;
+}
+
+.app-rail__item:hover .app-rail__tooltip,
+.app-rail__item:focus-visible .app-rail__tooltip {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
 .app-rail__icon {
   width: 22px;
   height: 22px;
@@ -200,11 +228,17 @@ a {
 .app-layout--rail-icons .app-rail {
   align-items: center;
   padding-inline: 6px;
+  overflow: visible;
+  z-index: 30;
 }
 
 .app-layout--rail-icons .app-rail__brand {
   justify-content: center;
   padding-inline: 0;
+}
+
+.app-layout--rail-icons .app-rail__nav {
+  overflow: visible;
 }
 
 .app-layout--rail-icons .app-rail__item {
@@ -4340,7 +4374,7 @@ tr:hover .work-actions__trigger {
 .chat-sidebar-section__heading {
   width: 100%;
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
   padding: 7px 7px 6px;
@@ -4378,7 +4412,7 @@ tr:hover .work-actions__trigger {
 .chat-project-group__header {
   width: 100%;
   display: grid;
-  grid-template-columns: 14px 16px minmax(0, 1fr) auto;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
   padding: 6px 7px;
@@ -4415,7 +4449,11 @@ tr:hover .work-actions__trigger {
 }
 
 .chat-project-group__items {
-  margin-left: 30px;
+  margin-left: 0;
+}
+
+.chat-project-group__items .chat-history-item {
+  padding-left: 29px;
 }
 
 .chat-history-section {
@@ -4543,8 +4581,8 @@ tr:hover .work-actions__trigger {
   border-radius: 7px;
   cursor: pointer;
   margin-bottom: 2px;
-  border: 1px solid transparent;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  border: 0;
+  transition: background 0.15s ease;
 }
 
 .chat-history-item:hover {
@@ -4553,7 +4591,6 @@ tr:hover .work-actions__trigger {
 
 .chat-history-item--selected {
   background: rgba(77, 163, 255, 0.12);
-  border-color: rgba(77, 163, 255, 0.25);
 }
 
 .chat-history-item--subagent {
@@ -4776,9 +4813,25 @@ tr:hover .work-actions__trigger {
 
 .chat-sidebar-reveal {
   position: absolute;
-  left: 8px;
+  left: 12px;
   top: 8px;
   z-index: 20;
+}
+
+.conv-detail--shelf-collapsed .conv-detail__header {
+  padding-left: 54px;
+}
+
+.conv-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 18px;
+  border-bottom: 1px solid rgba(255, 91, 91, 0.18);
+  background: rgba(255, 91, 91, 0.07);
+  color: var(--accent-red);
+  font-size: 12px;
 }
 
 .chat-history-detail__empty {

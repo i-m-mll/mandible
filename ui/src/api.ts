@@ -1196,6 +1196,7 @@ export async function getConversations(params?: {
   offset?: number;
   limit?: number;
   sort?: string;
+  min_blocks?: number;
   group?: boolean;
   exclude_subagents?: boolean;
   parent_id?: string;
@@ -1205,9 +1206,10 @@ export async function getConversations(params?: {
   if (params?.source) query.set('source', params.source);
   if (params?.starred) query.set('starred', '1');
   if (params?.search) query.set('search', params.search);
-  if (params?.offset) query.set('offset', String(params.offset));
+  if (params?.offset != null) query.set('offset', String(params.offset));
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.sort) query.set('sort', params.sort);
+  if (params?.min_blocks) query.set('min_blocks', String(params.min_blocks));
   if (params?.group) query.set('group', 'true');
   if (params?.exclude_subagents) query.set('exclude_subagents', 'true');
   if (params?.parent_id) query.set('parent_id', params.parent_id);

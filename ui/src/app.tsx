@@ -286,7 +286,7 @@ function App(): JSX.Element {
       })
       .catch(() => undefined);
 
-    getConversations({ limit: 50 })
+    getConversations({ limit: 50, group: true, exclude_subagents: true, min_blocks: 1 })
       .then((result) => {
         if (active) {
           dispatch({ type: 'setConversations', conversations: result.conversations });
@@ -1026,7 +1026,7 @@ function App(): JSX.Element {
         href={item.href}
         className={`app-rail__item${active ? ' app-rail__item--active' : ''}`}
         aria-current={active ? 'page' : undefined}
-        title={item.title}
+        aria-label={item.title}
         onClick={(event) => {
           if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
             return;
@@ -1039,6 +1039,7 @@ function App(): JSX.Element {
           <Icon size={18} />
         </span>
         {railDisplayMode === 'both' && <span className="app-rail__label">{item.label}</span>}
+        {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{item.label}</span>}
         {item.badge ? (
           <span className={`tab-badge app-rail__badge${item.badgeClass ? ` ${item.badgeClass}` : ''}`}>
             {item.badge}
