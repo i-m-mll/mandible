@@ -192,7 +192,10 @@ export function registerConversationRoutes(server, sessionManager) {
         const query = req.query ?? {};
         const page = Math.max(1, parseInt(query.page || "1", 10) || 1);
         const limit = Math.min(200, Math.max(1, parseInt(query.limit || "50", 10) || 50));
-        const offset = (page - 1) * limit;
+        const queryOffset = parseInt(query.offset || "", 10);
+        const offset = Number.isFinite(queryOffset) && queryOffset >= 0
+            ? queryOffset
+            : (page - 1) * limit;
         const groupMode = query.group === "true" || query.group === "1";
         const excludeSubagents = groupMode || query.exclude_subagents === "true" || query.exclude_subagents === "1";
         const parentIdFilter = query.parent_id || null;
@@ -214,6 +217,11 @@ export function registerConversationRoutes(server, sessionManager) {
         if (query.search) {
             conditions.push("c.title LIKE ?");
             params.push(`%${query.search}%`);
+        }
+        const minBlocks = parseInt(query.min_blocks || "", 10);
+        if (Number.isFinite(minBlocks) && minBlocks > 0) {
+            conditions.push("c.block_count >= ?");
+            params.push(minBlocks);
         }
         if (query.session_id) {
             conditions.push("c.session_id = ?");
@@ -238,6 +246,9 @@ export function registerConversationRoutes(server, sessionManager) {
         else if (excludeSubagents) {
             // Hide sub-agent conversations from the main list
             conditions.push("c.parent_conversation_id IS NULL");
+            conditions.push("(c.project_path IS NULL OR c.project_path != 'subagents')");
+            conditions.push("LOWER(c.source_path) NOT LIKE '%/subagents/%'");
+            conditions.push("LOWER(c.title) NOT LIKE 'you are a subagent%'");
         }
         const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
         // Sort
@@ -473,7 +484,7 @@ export function registerConversationRoutes(server, sessionManager) {
             return;
         }
         const conv = db
-            .prepare("SELECT session_id, title FROM conversations WHERE id = ?")
+            .prepare("SELECT session_id, title, source, cwd, model FROM conversations WHERE id = ?")
             .get(id);
         if (!conv) {
             sendJson(res, 404, { error: "Conversation not found" });
@@ -484,12 +495,27 @@ export function registerConversationRoutes(server, sessionManager) {
                 sendJson(res, 501, { error: "SessionManager not available" });
                 return;
             }
+            const args = [];
+            const model = typeof body.model === "string" && body.model.trim()
+                ? body.model.trim()
+                : conv.model;
+            if (model) {
+                args.push("--model", model);
+            }
+            const command = conv.source === "codex"
+                ? "codex"
+                : conv.source === "gemini"
+                    ? "gemini"
+                    : "claude";
+            const backendType = command === "claude" ? "sdk" : "spawn";
             const newSession = sessionManager.create({
                 label: body.label || conv.title || "Resumed conversation",
-                command: "claude",
-                backend_type: "sdk",
+                command,
+                args,
+                backend_type: backendType,
                 provider_session_id: conv.session_id,
-                resume_at_message: body.message_dag_uuid,
+                resume_at_message: command === "claude" ? body.message_dag_uuid : null,
+                cwd: conv.cwd ?? undefined,
             });
             sendJson(res, 200, { console_session_id: newSession.id });
         }
