@@ -60,7 +60,7 @@ const MODE_LAYER_ORDER: Partial<Record<GraphMode, string[]>> = {
   activity: ["auth_request", "issue", "session"],
   issue: ["issue"],
   work: ["repo", "issue", "work_unit", "branch", "session", "auth_request"],
-  "provider-lineage": ["provider", "provider_spec", "provider_manifest", "run", "analysis", "artifact"],
+  "provider-lineage": ["provider", "issue", "provider_spec", "provider_manifest", "run", "analysis", "artifact"],
   "artifact-lineage": ["artifact", "dataset", "model", "report"],
   provenance: ["provider", "provider_manifest", "artifact", "analysis", "report"],
 };

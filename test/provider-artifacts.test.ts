@@ -4,8 +4,11 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  getArtifact,
   getIndexedGraph,
   getIndexedGraphCount,
+  getProviderCapabilities,
+  getProviderHealth,
   ingestArtifact,
   ingestProviderManifest,
   listProviders,
@@ -168,5 +171,150 @@ describe("provider/artifact substrate", () => {
     expect(graph.nodes.map((node) => node.type)).toContain("artifact");
     expect(graph.edges.map((edge) => edge.type)).toContain("provider_emitted_manifest");
     expect(graph.edges.map((edge) => edge.type)).toContain("produced");
+  });
+
+  it("normalizes native Feedbax provider capability manifests", () => {
+    ingestProviderManifest(db, {
+      manifest: {
+        provider: "feedbax",
+        kind: "experiment_provider",
+        version: "feedbax-provider.v1",
+        feedbax_version: "0.1.0",
+        schema_version: "feedbax.manifest.v1",
+        health: { check: "python:feedbax.provider.health" },
+        capabilities: {
+          validate_graph_spec: {
+            input_schema: "GraphSpec",
+            output_schema: "ProviderValidationResult",
+            requires_review: false,
+          },
+          start_training_run: {
+            input_schema: "TrainingSpec",
+            output_schema: "TrainingRunManifest",
+            requires_review: true,
+          },
+        },
+        artifact_roles: ["training_checkpoint", "training_history"],
+        schemas: { GraphSpec: { type: "object" } },
+        entry_points: {
+          cli: "feedbax-provider manifest",
+          http: "/api/provider/manifest",
+        },
+      },
+    }, 1000, tempDir);
+
+    const capabilities = getProviderCapabilities(db, "feedbax");
+    expect(capabilities?.provider.display_name).toBe("Feedbax");
+    expect(capabilities?.capabilities.validate_graph_spec).toMatchObject({
+      input_schema: "GraphSpec",
+    });
+    expect(capabilities?.artifact_roles).toEqual(["training_checkpoint", "training_history"]);
+    expect(capabilities?.actions.some((action) => action.id === "feedbax.start_training_run" && action.requires_auth)).toBe(true);
+
+    const health = getProviderHealth(db, "feedbax");
+    expect(health?.status).toBe("active");
+    expect(health?.health).toMatchObject({ check: "python:feedbax.provider.health" });
+  });
+
+  it("normalizes native Feedbax training manifests into provider lineage", () => {
+    const checkpointHash = "a".repeat(64);
+    const graphHash = "b".repeat(64);
+    const trainingHash = "c".repeat(64);
+    const taskHash = "d".repeat(64);
+    ingestProviderManifest(db, {
+      manifest: {
+        provider: "feedbax",
+        kind: "experiment_provider",
+        version: "feedbax-provider.v1",
+        schema_version: "feedbax.manifest.v1",
+        capabilities: {
+          start_training_run: {
+            input_schema: "TrainingSpec",
+            output_schema: "TrainingRunManifest",
+            requires_review: true,
+          },
+        },
+      },
+    }, 500, tempDir);
+
+    const manifest = ingestProviderManifest(db, {
+      manifest: {
+        kind: "TrainingRunManifest",
+        schema_version: "feedbax.manifest.v1",
+        id: "feedbax-training-run:stub-job",
+        created_at: "2026-05-17T12:00:00Z",
+        feedbax_version: "0.1.0",
+        provider_version: "feedbax-provider.v1",
+        status: "completed",
+        job_id: "stub-job",
+        summary_metrics: { final_loss: 0.25, total_batches: 1 },
+        provenance: {
+          source_repo: "https://example.invalid/feedbax.git",
+          source_branch: "develop",
+          source_commit: "abc123",
+          dirty: false,
+          issues: ["5429a23"],
+          parents: [
+            { kind: "GraphSpecManifest", id: "feedbax-graph:baseline", role: "graph_spec" },
+          ],
+        },
+        graph_spec: {
+          kind: "GraphSpec",
+          inline: { nodes: {}, wires: [] },
+          sha256: graphHash,
+        },
+        training_spec: {
+          kind: "TrainingSpec",
+          inline: { n_batches: 1 },
+          sha256: trainingHash,
+        },
+        task_spec: {
+          kind: "TaskSpec",
+          inline: { type: "SimpleReaches" },
+          sha256: taskHash,
+        },
+        artifacts: [
+          {
+            role: "training_checkpoint",
+            logical_name: "feedbax_checkpoint_stub-job.eqx",
+            artifact_id: `artifact://sha256/${checkpointHash}`,
+            sha256: checkpointHash,
+            media_type: "application/x-equinox",
+            size_bytes: 16,
+            storage_backend: "feedbax-local",
+            uri: "/tmp/feedbax_checkpoint_stub-job.eqx",
+            metadata: { relative_path: "artifacts/sha256/aa/checkpoint.eqx" },
+          },
+        ],
+      },
+    }, 1000, tempDir);
+
+    expect(manifest.provider_id).toBe("feedbax");
+    expect(manifest.manifest_type).toBe("TrainingRunManifest");
+    expect(getArtifact(db, `artifact:sha256:${checkpointHash}`)).toMatchObject({
+      id: `artifact:sha256:${checkpointHash}`,
+      provider_id: "feedbax",
+      manifest_id: manifest.id,
+      role: "training_checkpoint",
+      size_bytes: 16,
+    });
+
+    const graph = getIndexedGraph(db, { mode: "provider-lineage", limit: 100 });
+    const nodeIds = new Set(graph.nodes.map((node) => node.id));
+    const edgeTypes = graph.edges.map((edge) => edge.type);
+    expect(nodeIds).toContain("provider:feedbax");
+    expect(nodeIds).toContain(manifest.id);
+    expect(nodeIds).toContain("run:feedbax:feedbax-training-run:stub-job");
+    expect(nodeIds).toContain(`artifact:sha256:${checkpointHash}`);
+    expect(graph.nodes.some((node) => node.type === "provider_spec" && node.detail?.manifest_id === manifest.id)).toBe(true);
+    expect(edgeTypes).toContain("manifest_declares");
+    expect(edgeTypes).toContain("manifest_references_artifact");
+    expect(edgeTypes).toContain("produced");
+    expect(edgeTypes).toContain("run_used_spec");
+    expect(edgeTypes).toContain("derived_from");
+    expect(edgeTypes).toContain("requested_by");
+    expect(getProviderCapabilities(db, "feedbax")?.actions).toContainEqual(
+      expect.objectContaining({ id: "feedbax.start_training_run", requires_auth: true }),
+    );
   });
 });
