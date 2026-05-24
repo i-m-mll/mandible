@@ -59,9 +59,11 @@ Key optional fields:
 - `session_id` — Links the request to the agent session that submitted it.
 - `repo`, `base_branch`, `head_branch` — Branch metadata for merge requests.
 - `diff_summary` — A text summary of the changes being merged.
-- `commit_message` — The proposed merge commit message, including `Bug:` trailers.
+- `commit_message` — The proposed merge commit message. `Bug:` trailers are work-tracking references, not closure signals.
 - `spec_content` — A specification explaining the intent and design decisions.
-- `issues` — An array of issue IDs to close on successful merge.
+- `issue_references` — Issue IDs attached for review context/provenance; these do not close on merge.
+- `issue_closures` — Issue IDs to close on successful merge.
+- `issues` — Legacy close-on-merge issue list; prefer `issue_closures`.
 - `depends_on_id` — Another auth request ID that must complete first (dependency chaining).
 - `execution_mode` — `"daemon"` (default, Mandible executes locally) or `"remote"` (an external process manages execution).
 
@@ -75,7 +77,7 @@ Duplicates are detected by two signals:
 
 ### Bug Reference Verification
 
-For merge requests, the queue verifies that every non-merge commit in the branch range contains a `Bug:` trailer linking it to an issue. Commits missing this reference cause the submission to be rejected with a descriptive error listing the offending commits. This enforces the work-tracking convention that every unit of work has an associated issue.
+For merge requests, the queue verifies that every non-merge commit in the branch range contains a `Bug:` trailer linking it to an issue. Commits missing this reference cause the submission to be rejected with a descriptive error listing the offending commits. This enforces the work-tracking convention that every unit of work has an associated issue. `Bug:` trailers are reference-only; closure requires `issue_closures` or an explicit closure trailer such as `Closes:` / `Resolves:`.
 
 ## Reviewing and Acting on Requests
 
@@ -179,7 +181,7 @@ When a merge request completes successfully, Mandible automatically dismisses an
 
 ## Work Unit Resolution
 
-On successful merge, the queue automatically resolves associated work units --- those linked to the request directly, those on the merged branch, and those linked to issues referenced in the commit message.
+On successful merge, the queue automatically resolves associated work units --- those linked to the request directly, those on the merged branch, and those linked to explicit closure issues.
 
 This closes the loop between the auth queue, the issue tracker, and the work-unit lifecycle.
 

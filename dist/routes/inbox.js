@@ -74,7 +74,7 @@ function computeOutcome(row) {
     }
 }
 const COLUMNS_AUTH_RESULT = "id, title, status, exit_code, error, head_branch, resolved_at, repo, base_branch, " +
-    "post_merge_handoff, issue_ids, target_session_id, target_repo_root, delivered_at";
+    "post_merge_handoff, issue_references, issue_closures, issue_ids, target_session_id, target_repo_root, delivered_at";
 const RESOLVED_STATUSES = "('completed', 'rejected', 'expired', 'dismissed')";
 /**
  * Bug: 4e32923 — fetch auth_results for the given session + repo with the
@@ -170,6 +170,8 @@ authQueue) {
             head_branch: row.head_branch,
             resolved_at: row.resolved_at,
             post_merge_handoff: row.post_merge_handoff ?? null,
+            issue_references: row.issue_references ? JSON.parse(row.issue_references) : null,
+            issue_closures: row.issue_closures ? JSON.parse(row.issue_closures) : null,
             issue_ids: row.issue_ids ? JSON.parse(row.issue_ids) : null,
             // Bug: 4e32923 — surface delivery scope so clients can distinguish
             // "this was meant for me" (tier 1) from escalated items (tier 2/3).

@@ -16,7 +16,9 @@
 #   --cwd <path>            Override auto-detected protected branch worktree path
 #   --target <branch>       Override auto-detected target/base branch (default: protected branch)
 #   --depends-on <id>       Auth request ID that must complete before this one runs
-#   --issue <id>            Issue ID to associate with this auth request (repeatable; required; all associated issues are closed on merge)
+#   --issue <id>            Issue ID to reference for context (repeatable; does not close)
+#   --ref-issue <id>        Alias for --issue
+#   --closes-issue <id>     Issue ID to close on successful merge (repeatable)
 #   --type <type>           Auth request type (default: merge; options: merge, commit, force-push, branch-delete, config-change, preset-promote, data-delete)
 #   --handoff <text>        Post-merge handoff note for next session
 #   --timeout <seconds>     SSE listen timeout (default: 14400 / 4 hours)
@@ -49,7 +51,8 @@ diff_summary=""
 spec_content=""
 post_merge_handoff=""
 depends_on_id=""
-ISSUES=()
+ISSUE_REFERENCES=()
+ISSUE_CLOSURES=()
 repo=""
 cwd_override=""
 target_override=""
@@ -66,7 +69,8 @@ while [[ $# -gt 0 ]]; do
     --spec)           spec_content="$2"; shift 2 ;;
     --handoff)        post_merge_handoff="$2"; shift 2 ;;
     --depends-on)     depends_on_id="$2"; shift 2 ;;
-    --issue)          ISSUES+=("$2"); shift 2 ;;
+    --issue|--ref-issue|--references-issue) ISSUE_REFERENCES+=("$2"); shift 2 ;;
+    --closes-issue|--close-issue) ISSUE_CLOSURES+=("$2"); shift 2 ;;
     --repo)           repo="$2"; shift 2 ;;
     --cwd)            cwd_override="$2"; shift 2 ;;
     --target)         target_override="$2"; shift 2 ;;
@@ -94,8 +98,8 @@ if [[ -z "$title" ]]; then
   echo "Error: --title is required" >&2
   exit 2
 fi
-if [ ${#ISSUES[@]} -eq 0 ]; then
-  echo "Error: at least one --issue <id> is required" >&2
+if [ $(( ${#ISSUE_REFERENCES[@]} + ${#ISSUE_CLOSURES[@]} )) -eq 0 ]; then
+  echo "Error: at least one --issue <id> or --closes-issue <id> is required" >&2
   exit 1
 fi
 
@@ -297,12 +301,16 @@ if git_common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/nul
   target_repo_root=$(dirname "$git_common")
 fi
 
-# --- Build issues JSON array ---
-# Bug: 297677f — serialize --issue flags into a JSON array for the API
+# --- Build issue relationship JSON arrays ---
+# Bug: 7b83c1f — reference-only issues are distinct from close-on-merge issues.
 
-issues_json="null"
-if [[ ${#ISSUES[@]} -gt 0 ]]; then
-  issues_json=$(printf '%s\n' "${ISSUES[@]}" | jq -R . | jq -sc .)
+issue_references_json="null"
+if [[ ${#ISSUE_REFERENCES[@]} -gt 0 ]]; then
+  issue_references_json=$(printf '%s\n' "${ISSUE_REFERENCES[@]}" | jq -R . | jq -sc .)
+fi
+issue_closures_json="null"
+if [[ ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
+  issue_closures_json=$(printf '%s\n' "${ISSUE_CLOSURES[@]}" | jq -R . | jq -sc .)
 fi
 
 # --- Submit to Mandible ---
@@ -327,7 +335,8 @@ payload=$(jq -nc \
   --arg target_session_id "$target_session_id" \
   --arg target_repo_root "$target_repo_root" \
   --arg conversation_id "$conversation_id" \
-  --argjson issues "$issues_json" \
+  --argjson issue_references "$issue_references_json" \
+  --argjson issue_closures "$issue_closures_json" \
   '{
     command: $command,
     cwd: $cwd,
@@ -344,7 +353,9 @@ payload=$(jq -nc \
     commit_message: $commit_message,
     spec_content: $spec_content,
     post_merge_handoff: (if $post_merge_handoff == "" then null else $post_merge_handoff end),
-    issues: $issues,
+    issue_references: $issue_references,
+    issue_closures: $issue_closures,
+    issues: $issue_closures,
     depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
     target_session_id: (if $target_session_id == "" then null else $target_session_id end),
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),

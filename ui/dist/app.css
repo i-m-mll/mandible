@@ -1,6 +1,6 @@
 @import "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600&display=swap";
 
-/* node_modules/@xterm/xterm/css/xterm.css */
+/* ../../node_modules/@xterm/xterm/css/xterm.css */
 .xterm {
   cursor: text;
   position: relative;
@@ -165,7 +165,7 @@
   position: relative;
 }
 
-/* node_modules/@xyflow/react/dist/style.css */
+/* ../../node_modules/@xyflow/react/dist/style.css */
 .react-flow {
   direction: ltr;
   --xy-edge-stroke-default: #b1b1b7;
@@ -727,7 +727,7 @@ svg.react-flow__connectionline {
   fill: var(--xy-edge-label-color, var(--xy-edge-label-color-default));
 }
 
-/* node_modules/diff2html/bundles/css/diff2html.min.css */
+/* ../../node_modules/diff2html/bundles/css/diff2html.min.css */
 :host,
 :root {
   --d2h-bg-color:#fff;
@@ -2853,6 +2853,7 @@ tr:last-child td {
 }
 .auth-card__row--links {
   gap: 8px;
+  flex-wrap: wrap;
 }
 .auth-card__link {
   display: inline-flex;
@@ -2876,6 +2877,17 @@ tr:last-child td {
 }
 .auth-card__link--issue:hover {
   background: rgba(77, 163, 255, 0.3);
+}
+.auth-card__issue-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.auth-card__issue-group-label {
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
 }
 .auth-actions {
   display: flex;

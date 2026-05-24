@@ -190,6 +190,8 @@ export class AuthQueue {
             additions: payload.additions ?? 0,
             deletions: payload.deletions ?? 0,
             post_merge_handoff: payload.post_merge_handoff ?? null,
+            issue_references: payload.issue_references ?? null,
+            issue_closures: payload.issue_closures ?? payload.issues ?? null,
             issue_ids: extractIssueIdsFromCommitMessage(payload.commit_message),
             issues: payload.issues ?? null,
             depends_on_id: payload.depends_on_id ?? null,
@@ -233,6 +235,8 @@ export class AuthQueue {
         additions,
         deletions,
         post_merge_handoff,
+        issue_references,
+        issue_closures,
         issue_ids,
         issues,
         depends_on_id,
@@ -272,6 +276,8 @@ export class AuthQueue {
         @additions,
         @deletions,
         @post_merge_handoff,
+        @issue_references,
+        @issue_closures,
         @issue_ids,
         @issues,
         @depends_on_id,
@@ -301,6 +307,8 @@ export class AuthQueue {
             base_branch: request.base_branch ?? null,
             head_branch: request.head_branch ?? null,
             post_merge_handoff: request.post_merge_handoff ?? null,
+            issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
+            issue_closures: request.issue_closures ? JSON.stringify(request.issue_closures) : null,
             issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
             issues: request.issues ? JSON.stringify(request.issues) : null
         });
@@ -375,7 +383,17 @@ export class AuthQueue {
                 values.push(payload[field]);
             }
         }
-        // Bug: 297677f — issues is a JSON array, needs serialization
+        if ("issue_references" in payload) {
+            const refs = payload.issue_references;
+            updates.push("issue_references = ?");
+            values.push(refs && Array.isArray(refs) ? JSON.stringify(refs) : null);
+        }
+        if ("issue_closures" in payload) {
+            const closures = payload.issue_closures;
+            updates.push("issue_closures = ?");
+            values.push(closures && Array.isArray(closures) ? JSON.stringify(closures) : null);
+        }
+        // Bug: 297677f — legacy issues is a close-on-merge JSON array.
         if ("issues" in payload) {
             const ci = payload.issues;
             updates.push("issues = ?");
@@ -846,6 +864,8 @@ export class AuthQueue {
             syncAuthRequestLedgerLinks(this.db, {
                 auth_request_id: request.id,
                 repo_ref: request.repo ?? request.cwd ?? request.target_repo_root ?? null,
+                issue_references: request.issue_references ?? null,
+                issue_closures: request.issue_closures ?? null,
                 issue_ids: request.issue_ids ?? null,
                 issues: request.issues ?? null,
                 commit_message: request.commit_message,
@@ -861,6 +881,8 @@ export class AuthQueue {
             applyAuthRequestLedgerCompletion(this.db, {
                 auth_request_id: request.id,
                 repo_ref: request.repo ?? request.cwd ?? request.target_repo_root ?? null,
+                issue_references: request.issue_references ?? null,
+                issue_closures: request.issue_closures ?? null,
                 issue_ids: request.issue_ids ?? null,
                 issues: request.issues ?? null,
                 commit_message: request.commit_message,
@@ -908,7 +930,7 @@ export class AuthQueue {
      * associated work units:
      * 1. Work units whose auth_request_id matches the completed request
      * 2. Work units whose branch matches the auth request's head_branch
-     * 3. Work units linked to issue IDs found in Bug: trailers of the commit message
+     * 3. Work units linked to explicit auth closure issue IDs
      * Bug: 8a281b3
      */
     resolveWorkUnitsOnMerge(completed) {
@@ -935,10 +957,10 @@ export class AuthQueue {
                 }
             }
         }
-        // 3. Match by Bug: trailer issue IDs
-        const issueIds = completed.issue_ids ?? [];
-        const closesIssues = completed.issues ?? [];
-        const allIssueIds = [...issueIds, ...closesIssues];
+        // 3. Match by explicit close-on-merge issue IDs. Bug: trailers and
+        // issue_references are provenance links, not completion signals.
+        const closesIssues = completed.issue_closures ?? completed.issues ?? [];
+        const allIssueIds = [...closesIssues];
         // Bug: f3dbb3e — bidirectional prefix match: the work unit may store a
         // short prefix of the issue ID, or the auth request may have a short prefix.
         // SQL LIKE only handles one direction, so we fetch all unresolved work units
@@ -1082,6 +1104,8 @@ export class AuthQueue {
         additions INTEGER DEFAULT 0,
         deletions INTEGER DEFAULT 0,
         post_merge_handoff TEXT,
+        issue_references TEXT,
+        issue_closures TEXT,
         issue_ids TEXT,
         issues TEXT,
         depends_on_id TEXT,
@@ -1145,6 +1169,24 @@ function mapRow(row) {
             issueIds = null;
         }
     }
+    let issueReferences = null;
+    if (row.issue_references != null) {
+        try {
+            issueReferences = JSON.parse(String(row.issue_references));
+        }
+        catch {
+            issueReferences = null;
+        }
+    }
+    let issueClosures = null;
+    if (row.issue_closures != null) {
+        try {
+            issueClosures = JSON.parse(String(row.issue_closures));
+        }
+        catch {
+            issueClosures = null;
+        }
+    }
     // Bug: 297677f — parse issues JSON array from DB
     let parsedIssues = null;
     if (row.issues != null) {
@@ -1177,6 +1219,8 @@ function mapRow(row) {
         additions: row.additions == null ? undefined : Number(row.additions),
         deletions: row.deletions == null ? undefined : Number(row.deletions),
         post_merge_handoff: row.post_merge_handoff == null ? null : String(row.post_merge_handoff),
+        issue_references: issueReferences,
+        issue_closures: issueClosures ?? parsedIssues,
         issue_ids: issueIds,
         issues: parsedIssues,
         depends_on_id: row.depends_on_id == null ? null : String(row.depends_on_id),

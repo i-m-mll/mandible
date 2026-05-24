@@ -41,6 +41,8 @@ export interface InboxAuthResult {
   head_branch: string | null;
   resolved_at: number | null;
   post_merge_handoff?: string | null;
+  issue_references?: string[] | null;
+  issue_closures?: string[] | null;
   issue_ids?: string[] | null;
   repo?: string | null;
   base_branch?: string | null;

@@ -16,7 +16,7 @@ Everything stays on your machine. No cloud services, no external databases, no t
 
 **[Work units](/docs/concepts/work-units)** --- A reconciliation layer that joins issues (git-bug), branches (git worktrees), and sessions into a single lifecycle. Track what's being worked on, by whom, and what state it's in.
 
-**[Issue tracking](/docs/features/issues)** --- Aggregates git-bug issues from all registered repositories. Issues are linked to sessions and auth requests, and automatically closed when referenced in merge commits.
+**[Issue tracking](/docs/features/issues)** --- Aggregates git-bug issues from all registered repositories. Issues are linked to sessions and auth requests; auth requests close only explicit closure targets.
 
 **[Real-time events](/docs/concepts/real-time-events)** --- Server-Sent Events push every state mutation to the dashboard. No polling required (though fallback polling is there as a safety net).
 

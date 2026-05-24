@@ -52,6 +52,8 @@ export type AuthRequest = {
   spec_content?: string;
   diff_summary?: string;
   post_merge_handoff?: string | null;
+  issue_references?: string[] | null;
+  issue_closures?: string[] | null;
   issue_ids?: string[] | null;
   created_at?: string | number;
   last_executed_at?: string | number | null;
@@ -132,6 +134,10 @@ function extractBugRefs(message: string): string[] {
     refs.push(match[1]);
   }
   return refs;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 /** Parse [branch-name] prefix from commit message first line. */
@@ -510,14 +516,24 @@ function AuthCard({
 
   // Session & issue links
   const sessionId = request.session_id;
-  // Bug: ba9687f — prefer structured issue_ids when available, fall back to parsing commitMsg
-  const structuredIds = request.issue_ids;
-  const bugRefs = useMemo(
-    () => (Array.isArray(structuredIds) && structuredIds.length > 0) ? structuredIds : extractBugRefs(commitMsg),
-    [structuredIds, commitMsg]
+  const structuredReferenceIds = request.issue_references;
+  const structuredLegacyIds = request.issue_ids;
+  const referenceRefs = useMemo(
+    () => uniqueStrings([
+      ...(Array.isArray(structuredReferenceIds) ? structuredReferenceIds : []),
+      ...(Array.isArray(structuredLegacyIds) ? structuredLegacyIds : extractBugRefs(commitMsg)),
+    ]),
+    [structuredReferenceIds, structuredLegacyIds, commitMsg]
+  );
+  const closureRefs = useMemo(
+    () => uniqueStrings([
+      ...(Array.isArray(request.issue_closures) ? request.issue_closures : []),
+      ...(Array.isArray(request.issues) ? request.issues as string[] : []),
+    ]),
+    [request.issue_closures, request.issues]
   );
   const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
-  const hasLinks = Boolean(sessionId) || (bugRefs.length > 0 && canIssueLink);
+  const hasLinks = Boolean(sessionId) || ((referenceRefs.length > 0 || closureRefs.length > 0) && canIssueLink);
 
   // Bug: 816476e — auto-open console output when status transitions to approved
   // so live output is visible without requiring a manual click.
@@ -615,10 +631,21 @@ function AuthCard({
               Session
             </a>
           )}
-          {bugRefs.length > 0 && canIssueLink && (
-            bugRefs.map((ref) => (
-              <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
-            ))
+          {referenceRefs.length > 0 && canIssueLink && (
+            <span className="auth-card__issue-group">
+              <span className="auth-card__issue-group-label">References</span>
+              {referenceRefs.map((ref) => (
+                <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+              ))}
+            </span>
+          )}
+          {closureRefs.length > 0 && canIssueLink && (
+            <span className="auth-card__issue-group">
+              <span className="auth-card__issue-group-label">Closes</span>
+              {closureRefs.map((ref) => (
+                <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+              ))}
+            </span>
           )}
         </div>
       )}

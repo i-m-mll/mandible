@@ -62,26 +62,31 @@ function insertWorkUnit(id: string, issueId: string, repoId: string): void {
 }
 
 function insertAuthRequest(input: {
-  id: string;
-  repo: string;
-  issueIds?: string[] | null;
-  issues?: string[] | null;
+	  id: string;
+	  repo: string;
+	  issueReferences?: string[] | null;
+	  issueClosures?: string[] | null;
+	  issueIds?: string[] | null;
+	  issues?: string[] | null;
   commitMessage?: string | null;
 }): void {
   const now = Date.now();
-  db.prepare(
-    `INSERT INTO auth_requests (
-      id, type, command, title, repo, commit_message, issue_ids, issues,
-      execution_mode, status, created_at, updated_at, expires_at, output,
-      approval_source
-    ) VALUES (?, 'merge', 'git merge feature/x', 'Merge feature/x', ?, ?, ?, ?,
-      'daemon', 'pending', ?, ?, ?, '', 'manual')`,
-  ).run(
-    input.id,
-    input.repo,
-    input.commitMessage ?? null,
-    input.issueIds ? JSON.stringify(input.issueIds) : null,
-    input.issues ? JSON.stringify(input.issues) : null,
+	db.prepare(
+	  `INSERT INTO auth_requests (
+	      id, type, command, title, repo, commit_message,
+	      issue_references, issue_closures, issue_ids, issues,
+	      execution_mode, status, created_at, updated_at, expires_at, output,
+	      approval_source
+	    ) VALUES (?, 'merge', 'git merge feature/x', 'Merge feature/x', ?, ?, ?, ?, ?, ?,
+	      'daemon', 'pending', ?, ?, ?, '', 'manual')`,
+	).run(
+	  input.id,
+	  input.repo,
+	  input.commitMessage ?? null,
+	  input.issueReferences ? JSON.stringify(input.issueReferences) : null,
+	  input.issueClosures ? JSON.stringify(input.issueClosures) : null,
+	  input.issueIds ? JSON.stringify(input.issueIds) : null,
+	  input.issues ? JSON.stringify(input.issues) : null,
     now,
     now,
     now + 60_000,
@@ -131,11 +136,11 @@ describe("ledger operational links", () => {
       issue_ref: "abc1234",
       repo_ref: project.checkout.root,
     });
-    const authResults = syncAuthRequestLedgerLinks(db, {
-      auth_request_id: "auth_1",
-      repo_ref: project.checkout.root,
-      issue_ids: ["abc1234"],
-      commit_message: "Merge work\n\nBug: abc1234\n",
+	const authResults = syncAuthRequestLedgerLinks(db, {
+	  auth_request_id: "auth_1",
+	  repo_ref: project.checkout.root,
+	  issue_ids: ["abc1234"],
+	  commit_message: "Merge work\n\nBug: abc1234\n",
     });
 
     expect(workResult).toMatchObject({ ok: true, issue_id: issue.id });
@@ -148,9 +153,9 @@ describe("ledger operational links", () => {
     expect(
       db.prepare("SELECT issue_id, link_type FROM ledger_session_issue_links WHERE session_id = 'sess_1'").get(),
     ).toEqual({ issue_id: issue.id, link_type: "worked_on" });
-    expect(
-      db.prepare("SELECT issue_id, link_type FROM ledger_auth_issue_links WHERE auth_request_id = 'auth_1'").get(),
-    ).toEqual({ issue_id: issue.id, link_type: "resolves" });
+	expect(
+	  db.prepare("SELECT issue_id, link_type FROM ledger_auth_issue_links WHERE auth_request_id = 'auth_1'").get(),
+	).toEqual({ issue_id: issue.id, link_type: "references" });
   });
 
   it("backfills legacy operational rows and persists unresolved mismatches", () => {
@@ -185,11 +190,11 @@ describe("ledger operational links", () => {
     const project = createProject("repo");
     const resolvedIssue = createIssue(project.project.id, "done123", "Resolved issue");
     const referencedIssue = createIssue(project.project.id, "note123", "Referenced issue");
-    insertAuthRequest({
-      id: "auth_2",
-      repo: project.checkout.root,
-      issueIds: ["done123"],
-    });
+	insertAuthRequest({
+	  id: "auth_2",
+	  repo: project.checkout.root,
+	  issueClosures: ["done123"],
+	});
     linkAuthRequestToLedgerIssue(db, {
       auth_request_id: "auth_2",
       issue_ref: "note123",
@@ -197,12 +202,12 @@ describe("ledger operational links", () => {
       link_type: "references",
     });
 
-    const results = applyAuthRequestLedgerCompletion(db, {
-      auth_request_id: "auth_2",
-      repo_ref: project.checkout.root,
-      issue_ids: ["done123"],
-      approval_source: "manual",
-      approval_lease_id: "lease_1",
+	const results = applyAuthRequestLedgerCompletion(db, {
+	  auth_request_id: "auth_2",
+	  repo_ref: project.checkout.root,
+	  issue_closures: ["done123"],
+	  approval_source: "manual",
+	  approval_lease_id: "lease_1",
     });
 
     expect(results).toHaveLength(1);

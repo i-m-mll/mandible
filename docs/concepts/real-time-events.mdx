@@ -173,7 +173,7 @@ When the daemon restarts (e.g., after an update), clients that connect within th
 - The commit hash and summary of the running Mandible version
 - The daemon uptime at the time of connection
 - Any auth requests that completed recently (within the 60-second window)
-- Bug references from those requests (for issue auto-close notification)
+- Issue references and explicit closure targets from those requests
 
 The dashboard uses this to show a "daemon restarted" notification with version info and any merge results that the user might have missed during the restart.
 

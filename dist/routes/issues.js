@@ -785,9 +785,10 @@ export function registerIssueRoutes(server, workScanner, deps) {
             }
         }
         // 4. Auth requests linked to this issue, preferring canonical ledger links
-        // and keeping legacy JSON issue_ids matching for pre-ledger rows.
+        // and keeping legacy JSON issue matching for pre-ledger rows.
         const authRows = db
-            .prepare(`SELECT id, title, status, head_branch, issue_ids, created_at
+            .prepare(`SELECT id, title, status, head_branch,
+                issue_references, issue_closures, issue_ids, issues, created_at
          FROM auth_requests
          ORDER BY created_at DESC`)
             .all();
@@ -795,19 +796,13 @@ export function registerIssueRoutes(server, workScanner, deps) {
         // as auth-queue.ts resolveWorkUnitsOnMerge)
         const legacyAuthRequests = authRows
             .filter((row) => {
-            const ids = row.issue_ids;
-            if (!ids)
-                return false;
-            try {
-                const parsed = typeof ids === "string" ? JSON.parse(ids) : ids;
-                if (Array.isArray(parsed)) {
-                    return parsed.some((id) => id.startsWith(issue.id) || issue.id.startsWith(id));
-                }
-            }
-            catch {
-                // not valid JSON
-            }
-            return false;
+            const refs = [
+                ...parseJsonStringArray(row.issue_references),
+                ...parseJsonStringArray(row.issue_closures),
+                ...parseJsonStringArray(row.issue_ids),
+                ...parseJsonStringArray(row.issues),
+            ];
+            return refs.some((id) => id.startsWith(issue.id) || issue.id.startsWith(id));
         })
             .map((row) => ({
             id: String(row.id ?? ""),
@@ -1012,4 +1007,20 @@ export function registerIssueRoutes(server, workScanner, deps) {
         });
     });
     return issueScanner;
+}
+function parseJsonStringArray(value) {
+    if (Array.isArray(value)) {
+        return value.filter((item) => typeof item === "string");
+    }
+    if (typeof value !== "string" || !value.trim())
+        return [];
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed)
+            ? parsed.filter((item) => typeof item === "string")
+            : [];
+    }
+    catch {
+        return [];
+    }
 }

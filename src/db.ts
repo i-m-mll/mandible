@@ -511,9 +511,8 @@ const MIGRATIONS: Migration[] = [
   {
     version: 33,
     name: "auth_requests_closes_issues",
-    // Bug: 297677f — allow auth requests to declare issue IDs to close on merge,
-    // independent of Bug: trailers in commit messages. Enables umbrella issue
-    // auto-closure in bigbuild workflows.
+    // Bug: 297677f — legacy close-on-merge issue IDs. New callers should use
+    // issue_closures so reference-only auth links remain non-closing.
     statements: [
       `ALTER TABLE auth_requests ADD COLUMN issues TEXT`
     ]
@@ -1362,11 +1361,51 @@ const MIGRATIONS: Migration[] = [
     // dist output dirty in the protected checkout. The script rebuilds and
     // commits dist/ui-dist when source changes require it.
     statements: [
+      `CREATE TABLE IF NOT EXISTS auth_hooks (
+        id            TEXT PRIMARY KEY,
+        repo_pattern  TEXT NOT NULL DEFAULT '*',
+        auth_type     TEXT NOT NULL DEFAULT 'merge',
+        command       TEXT NOT NULL,
+        label         TEXT NOT NULL DEFAULT '',
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        builtin       INTEGER NOT NULL DEFAULT 0,
+        position      INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      )`,
       `UPDATE auth_hooks
        SET command = 'bash cli/post-merge-build-dist.sh',
            label = 'Build and commit Mandible dist after merge',
            updated_at = CAST(strftime('%s','now') * 1000 AS INTEGER)
        WHERE id = 'builtin-mandible-rebuild'`
+    ]
+  },
+  {
+    version: 60,
+    name: "auth_request_issue_relationship_kinds",
+    // Bug: 7b83c1f — distinguish reference-only issue links from close-on-merge links.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS auth_requests (
+        id            TEXT PRIMARY KEY,
+        session_id    TEXT,
+        command       TEXT NOT NULL,
+        title         TEXT NOT NULL,
+        cwd           TEXT,
+        diff_summary  TEXT,
+        spec_content  TEXT,
+        status        TEXT NOT NULL DEFAULT 'pending',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        approved_at   INTEGER,
+        resolved_at   INTEGER,
+        skipped_at    INTEGER,
+        expires_at    INTEGER NOT NULL,
+        exit_code     INTEGER,
+        output        TEXT NOT NULL DEFAULT '',
+        error         TEXT
+      )`,
+      `ALTER TABLE auth_requests ADD COLUMN issue_references TEXT`,
+      `ALTER TABLE auth_requests ADD COLUMN issue_closures TEXT`
     ]
   }
 ];

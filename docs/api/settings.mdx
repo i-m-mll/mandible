@@ -82,7 +82,7 @@ curl -X PUT http://localhost:19420/api/settings/reaper_enabled \
 | `reaper_codex_idle_minutes` | — | Idle threshold for Codex sessions |
 | `reaper_dry_run` | — | Reaper dry-run mode |
 | `reaper_cleanup_orphan_mcps` | — | Clean up orphaned MCP processes |
-| `auto_close_issues_on_merge` | `true` | Auto-close Bug:-referenced issues after merge |
+| `auto_close_issues_on_merge` | `true` | Auto-close issues from explicit `Closes:` / `Resolves:` trailers after merge |
 | `backup.enabled` | `true` | Enable scheduled backups |
 | `backup.interval_hours` | `6` | Hours between backups |
 | `console_pinned_sessions` | `[]` | JSON array of pinned console session IDs |

@@ -110,7 +110,8 @@ describe("channel-server client", () => {
       command: "mandible auth merge feature/x",
       title: "Merge feature/x",
       head_branch: "feature/x",
-      issues: ["abc123"],
+      issue_references: ["abc123"],
+      issue_closures: ["def456"],
       cwd: "/tmp/repo",
       session_id: "session-456",
     });
@@ -119,7 +120,8 @@ describe("channel-server client", () => {
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(call[1].body as string);
     expect(body.command).toBe("mandible auth merge feature/x");
-    expect(body.issues).toEqual(["abc123"]);
+    expect(body.issue_references).toEqual(["abc123"]);
+    expect(body.issue_closures).toEqual(["def456"]);
   });
 
   it("throws MandibleClientError on non-200 response", async () => {
