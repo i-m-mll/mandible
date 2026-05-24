@@ -86,7 +86,10 @@ export interface AuthRequest {
     additions?: number;
     deletions?: number;
     post_merge_handoff?: string | null;
+    issue_references?: string[] | null;
+    issue_closures?: string[] | null;
     issue_ids?: string[] | null;
+    /** @deprecated Legacy close-on-merge issue list. Use issue_closures. */
     issues?: string[] | null;
     depends_on_id?: string | null;
     execution_mode: AuthExecutionMode;
@@ -125,6 +128,9 @@ export interface AuthRequestInput {
     additions?: number;
     deletions?: number;
     post_merge_handoff?: string | null;
+    issue_references?: string[] | null;
+    issue_closures?: string[] | null;
+    /** @deprecated Legacy close-on-merge issue list. Use issue_closures. */
     issues?: string[] | null;
     depends_on_id?: string | null;
     execution_mode?: AuthExecutionMode;

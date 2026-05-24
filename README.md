@@ -13,7 +13,7 @@ Agents work on feature branches freely. Protected-branch operations require expl
 3. You review and approve — Mandible executes the operation with your hardware key.
 4. The result is delivered to the agent's next session via the inbox.
 
-Auth types are generalized beyond merges: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `preset-promote`, and `data-delete` are all supported. Requests support dependency chains, custom commit messages, post-action handoff notes, and automatic `Bug:` trailer extraction for issue auto-close.
+Auth types are generalized beyond merges: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `preset-promote`, and `data-delete` are all supported. Requests support dependency chains, custom commit messages, post-action handoff notes, automatic `Bug:` trailer extraction for reference-only issue links, and explicit close-on-merge issue links.
 
 ### Auth Hook System
 
@@ -73,7 +73,7 @@ Aggregates git-bug issues from all registered repos:
 - Grouped by repo with open/closed counts
 - Issue detail view with title, labels, comments
 - Deep-linkable views
-- Auto-close on merge via `Bug:` trailers in commit messages
+- Auth request issue links distinguish reference-only `Bug:`/`--issue` context from explicit `--closes-issue` closure targets
 - "Resume Work" spawns a first-class SDK session for any issue
 
 ### Project & Branch Tracking

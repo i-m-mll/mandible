@@ -104,6 +104,8 @@ export function registerAuthRoutes(
       commit_message: request.commit_message ?? null,
       spec_content: request.spec_content ?? null,
       post_merge_handoff: request.post_merge_handoff ?? null,
+      issue_references: request.issue_references ?? null,
+      issue_closures: request.issue_closures ?? null,
       issue_ids: request.issue_ids ?? null,
       issues: request.issues ?? null,
       depends_on_id: request.depends_on_id ?? null,
@@ -372,6 +374,8 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     additions,
     deletions,
     post_merge_handoff: typeof body.post_merge_handoff === "string" ? body.post_merge_handoff : (body.post_merge_handoff === null ? null : undefined),
+    issue_references: parseStringArray(body.issue_references),
+    issue_closures: parseStringArray(body.issue_closures),
     issues: parseStringArray(body.issues),
     depends_on_id: typeof body.depends_on_id === "string" ? body.depends_on_id : (body.depends_on_id === null ? null : undefined),
     execution_mode: executionMode,
@@ -521,7 +525,23 @@ function parseAuthRequestUpdatePayload(
     }
   }
 
-  // Bug: 297677f — issues: array of issue IDs to close on merge
+  if (hasKey("issue_references")) {
+    const parsed = parseStringArray(body.issue_references);
+    if (parsed === undefined) {
+      return { ok: false, error: "Invalid 'issue_references' — must be an array of strings or null" };
+    }
+    payload.issue_references = parsed;
+  }
+
+  if (hasKey("issue_closures")) {
+    const parsed = parseStringArray(body.issue_closures);
+    if (parsed === undefined) {
+      return { ok: false, error: "Invalid 'issue_closures' — must be an array of strings or null" };
+    }
+    payload.issue_closures = parsed;
+  }
+
+  // Bug: 297677f — legacy issues: array of issue IDs to close on merge
   if (hasKey("issues")) {
     const parsed = parseStringArray(body.issues);
     if (parsed === undefined) {

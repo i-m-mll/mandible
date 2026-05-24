@@ -401,6 +401,36 @@ describe("auth queue", () => {
   });
 
   // Bug: 297677f — issues field tests
+  it("stores issue references and closures separately", () => {
+    const queue = createQueue();
+
+    const request = queue.submit({
+      command: "echo merge",
+      title: "Merge with typed issue links",
+      issue_references: ["umbrella123"],
+      issue_closures: ["done456"]
+    });
+
+    const fetched = queue.getRequest(request.id);
+    expect(fetched?.issue_references).toEqual(["umbrella123"]);
+    expect(fetched?.issue_closures).toEqual(["done456"]);
+    expect(fetched?.issues).toBeNull();
+  });
+
+  it("maps legacy issues to issue_closures for compatibility", () => {
+    const queue = createQueue();
+
+    const request = queue.submit({
+      command: "echo merge",
+      title: "Merge with legacy closes",
+      issues: ["legacy123"]
+    });
+
+    const fetched = queue.getRequest(request.id);
+    expect(fetched?.issue_closures).toEqual(["legacy123"]);
+    expect(fetched?.issues).toEqual(["legacy123"]);
+  });
+
   it("stores issues on submit and retrieves them", () => {
     const queue = createQueue();
 

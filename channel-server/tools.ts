@@ -178,7 +178,11 @@ export function registerTools(
       issue_ids: z
         .array(z.string())
         .optional()
-        .describe("Issue IDs to associate with and close on merge"),
+        .describe("Issue IDs to reference for context; these do not close on merge"),
+      closes_issue_ids: z
+        .array(z.string())
+        .optional()
+        .describe("Issue IDs to close on successful merge"),
       cwd: z
         .string()
         .optional()
@@ -199,7 +203,9 @@ export function registerTools(
           title: args.title,
           head_branch: args.branch,
           spec_content: args.spec ?? null,
-          issues: args.issue_ids ?? null,
+          issue_references: args.issue_ids ?? null,
+          issue_closures: args.closes_issue_ids ?? null,
+          issues: args.closes_issue_ids ?? null,
           cwd: args.cwd ?? null,
           commit_message: args.commit_message ?? null,
           session_id: sessionId,

@@ -357,7 +357,8 @@ has_coordination_label() {
   [[ "$labels" == *coordination* ]]
 }
 
-# Bug: 670e375 — auto-close issues referenced in Bug: trailers after merge
+# Bug: 670e375 — auto-close issues referenced in explicit closure trailers after merge
+# Bug: 7b83c1f — Bug: trailers are reference/work-tracking links only.
 # Bug: 49e81d9 — coordination-labeled issues are skipped (project-spanning, never auto-close)
 auto_close_issues() {
   local target="$1"
@@ -374,10 +375,10 @@ auto_close_issues() {
     fi
   fi
 
-  # Extract Bug: trailers from merged commits
+  # Extract explicit closure trailers from merged commits.
   local issue_ids
   issue_ids=$(git log --format='%b' "${base_commit}..HEAD" 2>/dev/null \
-    | grep -oE '^Bug: [a-f0-9]+' \
+    | grep -oE '^(Closes|Resolves): [a-f0-9]+' \
     | awk '{print $2}' \
     | sort -u)
 
@@ -424,6 +425,7 @@ auto_close_issues() {
 }
 
 # Bug: 297677f — close issues declared in the auth request's issues field.
+# Bug: 7b83c1f — prefer issue_closures; issues remains legacy close-on-merge.
 # These are issue IDs explicitly listed by the submitter (e.g., umbrella issues
 # in bigbuild workflows) that should be closed on merge, independent of Bug: trailers.
 # Bug: 49e81d9 — coordination-labeled issues are skipped (project-spanning, never auto-close)
@@ -442,7 +444,7 @@ close_declared_issues() {
   response=$(curl -sf --max-time 5 "${base}/api/auth/request/${request_id}" 2>/dev/null) || return 0
 
   local issues_json
-  issues_json=$(printf '%s' "$response" | jq -r '.issues // empty' 2>/dev/null) || return 0
+  issues_json=$(printf '%s' "$response" | jq -r '.issue_closures // .issues // empty' 2>/dev/null) || return 0
   if [[ -z "$issues_json" || "$issues_json" == "null" ]]; then
     return 0
   fi

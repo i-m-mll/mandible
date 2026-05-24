@@ -23,7 +23,7 @@ npm test             # Run tests (vitest)
 - **Integration branches:** `feature/<name>` when aggregating child branches
 - **Sub-branch separator:** `__` (e.g., `feature/stage1__sim-oracle`) — Git refuses path-based refs that conflict
 - **Agent commits:** use agent signing key (GIT_CONFIG_COUNT pattern from dotfiles CLAUDE.md)
-- **Auth requests:** `mandible auth request <branch> --no-watch`
+- **Auth requests:** `mandible auth request <branch> --ref-issue <id> --no-watch`
 - **Worktrees:** `wt <branch>` from dotfiles tooling (`~/.dotfiles/bin/wt`)
 
 ## Database
@@ -60,10 +60,13 @@ npm run build
 ## Auth flow
 
 The auth queue is the mechanism for protected-branch merges. Full protocol is in the dotfiles CLAUDE.md (`~/.claude/CLAUDE.md`). Key points:
-- Agent submits: `mandible auth request <branch> --no-watch`
+- Agent submits: `mandible auth request <branch> --ref-issue <id> --no-watch`
 - User approves via dashboard or terminal pane
 - `auth-merge` runs the actual `git merge --gpg-sign` with YubiKey
 - Auth results arrive in the session inbox at next session start
+- `--issue` / `--ref-issue` attach reference-only issue context for review and tracking; they do not close issues on merge
+- Use `--closes-issue <id>` only when a successful protected-branch merge should close that issue
+- `Bug:` commit trailers are work-tracking references. Only explicit `Closes:` / `Resolves:` trailers or `--closes-issue` are closure signals
 
 ## Agent interaction tiers
 

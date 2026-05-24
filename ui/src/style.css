@@ -1637,6 +1637,7 @@ tr:last-child td {
 /* Auth card cross-reference links (session, issues) */
 .auth-card__row--links {
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .auth-card__link {
@@ -1664,6 +1665,19 @@ tr:last-child td {
 
 .auth-card__link--issue:hover {
   background: rgba(77, 163, 255, 0.3);
+}
+
+.auth-card__issue-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.auth-card__issue-group-label {
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
 }
 
 .auth-actions {

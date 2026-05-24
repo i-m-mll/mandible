@@ -75,6 +75,8 @@ export declare function linkCommitToLedgerIssue(db: Db, input: {
 export declare function syncAuthRequestLedgerLinks(db: Db, input: {
     auth_request_id: string;
     repo_ref?: string | null;
+    issue_references?: string[] | null;
+    issue_closures?: string[] | null;
     issue_ids?: string[] | null;
     issues?: string[] | null;
     commit_message?: string | null;
@@ -83,6 +85,8 @@ export declare function syncAuthRequestLedgerLinks(db: Db, input: {
 export declare function applyAuthRequestLedgerCompletion(db: Db, input: {
     auth_request_id: string;
     repo_ref?: string | null;
+    issue_references?: string[] | null;
+    issue_closures?: string[] | null;
     issue_ids?: string[] | null;
     issues?: string[] | null;
     commit_message?: string | null;

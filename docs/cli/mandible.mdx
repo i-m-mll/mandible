@@ -128,7 +128,9 @@ mandible auth request <branch> --title <text> [options]
 | Flag | Description |
 |---|---|
 | `--type <type>` | Auth request type (default: `merge`). Options: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `preset-promote`, `data-delete` |
-| `--issue <id>` | Issue ID to close on merge (repeatable, required) |
+| `--issue <id>` | Issue ID to reference for context; does not close on merge (repeatable) |
+| `--ref-issue <id>` | Alias for `--issue` |
+| `--closes-issue <id>` | Issue ID to close on successful merge (repeatable) |
 | `--commit-message <text>` | Override commit message (auto-generated from git log) |
 | `--diff-summary <text>` | Override diff (auto-generated, truncated at 100KB) |
 | `--spec <text>` | Spec/design notes |
@@ -193,8 +195,8 @@ mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
 6. Performs `git merge --no-ff --no-edit -S` (signed merge).
 7. Auto-resolves conflicts in generated dist files (takes `--theirs`).
 8. Verifies the merge is not empty (tree differs from parent).
-9. Auto-closes issues referenced via `Bug:` trailers in merged commits.
-10. Closes issues declared in the auth request's `issues` field.
+9. Auto-closes issues referenced via explicit `Closes:` / `Resolves:` trailers in merged commits.
+10. Closes issues declared in the auth request's `issue_closures` field.
 11. Cleans up merged branch worktrees (via `dwt`).
 
 ### mandible search

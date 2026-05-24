@@ -108,7 +108,7 @@ export declare class AuthQueue {
      * associated work units:
      * 1. Work units whose auth_request_id matches the completed request
      * 2. Work units whose branch matches the auth request's head_branch
-     * 3. Work units linked to issue IDs found in Bug: trailers of the commit message
+     * 3. Work units linked to explicit auth closure issue IDs
      * Bug: 8a281b3
      */
     private resolveWorkUnitsOnMerge;

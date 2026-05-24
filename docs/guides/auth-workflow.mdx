@@ -15,12 +15,12 @@ The agent runs:
 ```bash
 mandible auth request feature/add-dark-mode \
   --title "Merge feature/add-dark-mode: dark mode support" \
-  --issue abc1234 \
+  --closes-issue abc1234 \
   --spec "Adds dark mode toggle to the settings panel. Uses CSS custom properties for theme switching. Preserves user preference in localStorage." \
   --no-watch
 ```
 
-The `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, checks for duplicate requests, and submits everything to the Mandible API.
+The `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close.
 
 The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
 

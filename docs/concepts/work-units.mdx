@@ -72,7 +72,7 @@ At least one commit exists on the branch. The work is in progress or ready for r
 
 ### resolved
 
-The auth merge completed successfully. The branch has been merged into the protected branch. Issues referenced via `Bug:` trailers are auto-closed.
+The auth merge completed successfully. The branch has been merged into the protected branch. Explicit auth closure targets are closed; `Bug:` trailers remain reference/work-tracking links.
 
 ### abandoned
 
@@ -146,7 +146,7 @@ mandible inbox ack continuation <session-id>
 When an agent submits an auth request for a branch that has a work unit, the work unit's `auth_request_id` field is set. This links the work lifecycle to the merge lifecycle:
 
 - When the auth merge completes, the work unit transitions to `resolved`
-- Issues linked via `Bug:` trailers in the commit message are auto-closed
+- Issues linked as explicit auth closure targets are auto-closed
 - The auth result (success/failure) is delivered to the next session's inbox
 
 ## Kind: solo vs. partition

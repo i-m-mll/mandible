@@ -209,6 +209,9 @@ export async function submitAuth(payload: {
   repo?: string;
   base_branch?: string;
   head_branch?: string;
+  issue_references?: string[] | null;
+  issue_closures?: string[] | null;
+  /** @deprecated Legacy close-on-merge issue list. */
   issues?: string[] | null;
   session_id?: string | null;
 }): Promise<AuthSubmitResponse> {

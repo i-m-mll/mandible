@@ -268,6 +268,8 @@ export function syncAuthRequestLedgerLinks(
   input: {
     auth_request_id: string;
     repo_ref?: string | null;
+    issue_references?: string[] | null;
+    issue_closures?: string[] | null;
     issue_ids?: string[] | null;
     issues?: string[] | null;
     commit_message?: string | null;
@@ -275,8 +277,11 @@ export function syncAuthRequestLedgerLinks(
   },
 ): OperationalLinkResult[] {
   const refs = new Map<string, "references" | "resolves">();
-  for (const ref of input.issue_ids ?? []) refs.set(ref, "resolves");
-  for (const ref of extractIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "resolves");
+  for (const ref of input.issue_ids ?? []) refs.set(ref, "references");
+  for (const ref of extractIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "references");
+  for (const ref of input.issue_references ?? []) refs.set(ref, "references");
+  for (const ref of input.issue_closures ?? []) refs.set(ref, "resolves");
+  // Legacy issues were documented as close-on-merge; preserve that meaning.
   for (const ref of input.issues ?? []) refs.set(ref, "resolves");
 
   const results: OperationalLinkResult[] = [];
@@ -298,6 +303,8 @@ export function applyAuthRequestLedgerCompletion(
   input: {
     auth_request_id: string;
     repo_ref?: string | null;
+    issue_references?: string[] | null;
+    issue_closures?: string[] | null;
     issue_ids?: string[] | null;
     issues?: string[] | null;
     commit_message?: string | null;
@@ -429,7 +436,9 @@ function backfillSessions(db: Db, report: OperationalLinkReport): void {
 function backfillAuthRequests(db: Db, report: OperationalLinkReport): void {
   if (!tableExists(db, "auth_requests")) return;
   const rows = db.prepare(
-    "SELECT id, repo, cwd, target_repo_root, issue_ids, issues, commit_message FROM auth_requests",
+    `SELECT id, repo, cwd, target_repo_root, issue_references, issue_closures,
+            issue_ids, issues, commit_message
+     FROM auth_requests`,
   ).all() as Array<Record<string, unknown>>;
   report.source_counts.auth_requests = rows.length;
   for (const row of rows) {
@@ -437,6 +446,8 @@ function backfillAuthRequests(db: Db, report: OperationalLinkReport): void {
     const results = syncAuthRequestLedgerLinks(db, {
       auth_request_id: String(row.id),
       repo_ref: repoRef,
+      issue_references: parseStringArray(row.issue_references),
+      issue_closures: parseStringArray(row.issue_closures),
       issue_ids: parseStringArray(row.issue_ids),
       issues: parseStringArray(row.issues),
       commit_message: stringOrNull(row.commit_message),
@@ -633,9 +644,17 @@ function candidateProjectIds(db: Db, repoRef?: string | null): string[] {
 
 function sourceFieldsForAuthRef(
   ref: string,
-  input: { issue_ids?: string[] | null; issues?: string[] | null; commit_message?: string | null },
+  input: {
+    issue_references?: string[] | null;
+    issue_closures?: string[] | null;
+    issue_ids?: string[] | null;
+    issues?: string[] | null;
+    commit_message?: string | null;
+  },
 ): string[] {
   const fields: string[] = [];
+  if ((input.issue_references ?? []).includes(ref)) fields.push("issue_references");
+  if ((input.issue_closures ?? []).includes(ref)) fields.push("issue_closures");
   if ((input.issue_ids ?? []).includes(ref)) fields.push("issue_ids");
   if ((input.issues ?? []).includes(ref)) fields.push("issues");
   if (extractIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message");

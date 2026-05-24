@@ -447,14 +447,18 @@ interface AuthRow {
   repo: string | null;
   head_branch: string | null;
   commit_message: string | null;
+  issue_references: string | null;
+  issue_closures: string | null;
   issue_ids: string | null;
+  issues: string | null;
   created_at: number;
 }
 
 function getAuthRows(params: GraphQueryParams, sinceMs: number | null, limit: number): AuthRow[] {
   const db = getDb();
   let query = `
-    SELECT id, title, status, repo, head_branch, commit_message, issue_ids, created_at
+    SELECT id, title, status, repo, head_branch, commit_message,
+           issue_references, issue_closures, issue_ids, issues, created_at
       FROM auth_requests
      WHERE 1=1
   `;
@@ -504,10 +508,12 @@ function addAuthNodesAndEdges(
       extractBugRefs(auth.commit_message).forEach((ref) => refs.add(ref));
     }
     try {
-      const parsed = auth.issue_ids ? JSON.parse(auth.issue_ids) : [];
-      if (Array.isArray(parsed)) parsed.forEach((ref) => typeof ref === "string" && refs.add(ref));
+      for (const field of [auth.issue_references, auth.issue_closures, auth.issue_ids, auth.issues]) {
+        const parsed = field ? JSON.parse(field) : [];
+        if (Array.isArray(parsed)) parsed.forEach((ref) => typeof ref === "string" && refs.add(ref));
+      }
     } catch {
-      // ignore legacy malformed issue_ids values
+      // ignore legacy malformed issue values
     }
 
     for (const ref of refs) {
