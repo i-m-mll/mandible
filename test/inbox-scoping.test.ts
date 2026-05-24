@@ -17,10 +17,17 @@
 
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { setDb } from "../src/db.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
+import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
 import type { SseEvent } from "../src/types.js";
 
 // --- DB helpers ---------------------------------------------------------
@@ -1109,7 +1116,108 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
     void mod;
     void fakeRouter;
   });
+
+  it("derives repo metadata from a protected branch worktree cwd", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-cwd-"));
+    try {
+      const repoRoot = path.join(tempDir, "feedbax");
+      const developWorktree = path.join(repoRoot, "worktrees", "develop");
+
+      execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+      execFileSync(
+        "git",
+        [
+          "-C",
+          repoRoot,
+          "-c",
+          "user.name=Mandible Test",
+          "-c",
+          "user.email=test@example.invalid",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "init"
+        ],
+        { stdio: "ignore" }
+      );
+      mkdirSync(path.dirname(developWorktree), { recursive: true });
+      execFileSync("git", ["-C", repoRoot, "worktree", "add", "-b", "develop", developWorktree], {
+        stdio: "ignore"
+      });
+
+      const db = new Database(":memory:");
+      const queue = new AuthQueue({ db });
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "echo ok",
+          title: "Worktree cwd auth",
+          cwd: developWorktree
+        }
+      });
+
+      expect(response.statusCode).toBe(201);
+      const requestId = (response.body as { request_id: string }).request_id;
+      const request = queue.getRequest(requestId);
+      expect(request?.repo).toBe("feedbax");
+      expect(request?.target_repo_root).toBe(realpathSync(repoRoot));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
+
+class TestRouteRegistrar implements RouteRegistrar {
+  private readonly handlers = new Map<string, RouteHandler>();
+
+  get(_path: string, _handler: RouteHandler): void {}
+
+  post(path: string, handler: RouteHandler): void {
+    this.handlers.set(`POST ${path}`, handler);
+  }
+
+  put(_path: string, _handler: RouteHandler): void {}
+
+  patch(_path: string, _handler: RouteHandler): void {}
+
+  delete(_path: string, _handler: RouteHandler): void {}
+
+  async invoke(
+    method: string,
+    routePath: string,
+    request: { body?: unknown } = {}
+  ): Promise<TestRouteResponse> {
+    const handler = this.handlers.get(`${method} ${routePath}`);
+    if (!handler) {
+      throw new Error(`missing handler for ${method} ${routePath}`);
+    }
+    const response = new TestRouteResponse();
+    await handler({
+      method,
+      url: routePath,
+      params: {},
+      query: {},
+      body: request.body
+    } satisfies RequestLike, response);
+    return response;
+  }
+}
+
+class TestRouteResponse implements ResponseLike {
+  statusCode = 200;
+  body: unknown;
+
+  status(code: number): ResponseLike {
+    this.statusCode = code;
+    return this;
+  }
+
+  json(payload: unknown): void {
+    this.body = payload;
+  }
+}
 
 // --- Test helpers -------------------------------------------------------
 
@@ -1153,4 +1261,3 @@ function callInbox(
   }
   return captured as { auth_results: Array<{ id: string; tier: number }> };
 }
-

@@ -15,14 +15,22 @@ export function registerAuthRoutes(app, queue, autoApprove) {
             res.status(400).json({ error: "Invalid auth request payload." });
             return;
         }
+        const cwdRepoRoot = payload.cwd ? repoRootFromGitCommonDir(payload.cwd) : null;
+        if (!payload.target_repo_root && cwdRepoRoot) {
+            payload.target_repo_root = cwdRepoRoot;
+        }
         // Bug: 76ea6c6 — fallback for repo name from cwd if missing
-        // Bug: b011e5b — if repo looks like a branch name (contains / but not owner/repo), derive from cwd
+        // Bug: b011e5b — if repo looks like a branch name, derive from cwd.
+        // Bug: 32a2800 — worktree cwd basenames can be branch names; derive from the
+        // Git common dir when possible so `worktrees/develop` records repo `feedbax`.
         const repo = payload.repo;
-        const looksLikeBranch = repo && (repo.includes("/") && !repo.match(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/));
+        const looksLikeBranch = repo && repo.includes("/") && !repo.match(/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/);
         if (!repo || looksLikeBranch) {
-            if (payload.cwd) {
-                payload.repo = path.basename(payload.cwd);
-            }
+            payload.repo = cwdRepoRoot
+                ? path.basename(cwdRepoRoot)
+                : payload.cwd
+                    ? path.basename(payload.cwd)
+                    : payload.repo;
         }
         // Auth merge gate: verify Bug: references in non-merge commits
         if (payload.command && (payload.command.includes("auth merge") || payload.command.includes("auth-merge"))) {
@@ -534,6 +542,15 @@ function tailLines(text, n) {
     const tail = lines.slice(-n);
     const result = tail.join("\n").trim();
     return result || null;
+}
+function repoRootFromGitCommonDir(cwd) {
+    try {
+        const gitCommonDir = execSync("git rev-parse --path-format=absolute --git-common-dir", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+        return gitCommonDir ? path.dirname(gitCommonDir) : null;
+    }
+    catch {
+        return null;
+    }
 }
 function verifyBugReferences(payload) {
     const { cwd, head_branch, base_branch } = payload;
