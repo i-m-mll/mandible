@@ -199,7 +199,8 @@ export function IssuesView({
     if (!ledgerIssueDetail || !initialCommentId) return;
     const scrollKey = `${ledgerIssueDetail.id}:${initialCommentId}`;
     if (lastScrolledCommentRef.current === scrollKey) return;
-    const comment = document.getElementById(`comment-${initialCommentId}`);
+    const comment = document.getElementById(`comment-${initialCommentId}`)
+      ?? document.querySelector(`[data-comment-ordinal="${CSS.escape(initialCommentId)}"]`);
     if (!comment) return;
     lastScrolledCommentRef.current = scrollKey;
     comment.scrollIntoView({ block: 'center' });

@@ -16,12 +16,43 @@ export interface LedgerIssueDetailActor {
 }
 export interface LedgerIssueDetailComment {
     id: string;
+    ordinal: number;
     body: string;
     author: LedgerIssueDetailActor;
     source: LedgerEventSource;
     created_at: number;
     updated_at: number | null;
 }
+export type LedgerIssueTimelineEntry = {
+    id: string;
+    kind: "body";
+    ordinal: 0;
+    body: string;
+    author: LedgerIssueDetailActor;
+    source: LedgerEventSource;
+    created_at: number;
+    updated_at: number | null;
+} | {
+    id: string;
+    kind: "comment";
+    comment_id: string;
+    ordinal: number;
+    body: string;
+    author: LedgerIssueDetailActor;
+    source: LedgerEventSource;
+    created_at: number;
+    updated_at: number | null;
+} | {
+    id: string;
+    kind: "state";
+    event_type: string;
+    status: LedgerIssueStatus | null;
+    resolution: LedgerIssueResolution | null;
+    author: LedgerIssueDetailActor;
+    source: LedgerEventSource;
+    created_at: number;
+    payload: Record<string, unknown>;
+};
 export interface LedgerIssueSummaryRef {
     id: string;
     display_id: string;
@@ -151,6 +182,7 @@ export interface LedgerIssueDetailProjection {
     aliases: LedgerIssueDetailAlias[];
     labels: string[];
     comments: LedgerIssueDetailComment[];
+    timeline: LedgerIssueTimelineEntry[];
     relationships: LedgerIssueDetailRelationship[];
     work_units: LedgerIssueDetailWorkUnit[];
     sessions: LedgerIssueDetailSession[];

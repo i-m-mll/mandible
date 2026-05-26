@@ -316,7 +316,7 @@ describe('LedgerIssueDetail', () => {
     expect(issueVisibleMeta).not.toContain('umbrella');
     expect(issueMeta?.querySelector('[aria-label="Issue metadata"]')).toBeTruthy();
 
-    const commentHeader = document.querySelector('.ledger-comment-card__header');
+    const commentHeader = document.querySelectorAll('.ledger-comment-card__header')[1];
     const commentVisibleMeta = Array.from(commentHeader?.querySelectorAll(':scope > span, :scope > time') ?? [])
       .map((node) => node.textContent)
       .join(' ');

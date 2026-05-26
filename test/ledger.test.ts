@@ -161,7 +161,7 @@ describe("ledger IDs and project identity", () => {
 });
 
 describe("ledger store", () => {
-  it("writes issue current state, alias, event, outbox, and SSE atomically", () => {
+  it("writes issue current state, alias, event, and SSE atomically without default outbox", () => {
     const project = createProject();
     const broadcasts: string[] = [];
     const store = new LedgerStore(db, {
@@ -170,16 +170,26 @@ describe("ledger store", () => {
 
     const issue = createIssue(store, project.project.id);
 
-    expect(issue.id).toMatch(/^iss_/);
+    expect(issue.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(issue.short_id).toBe(issue.id.slice(0, 7));
     expect(store.listAliases(issue.id).map((alias) => alias.alias_kind)).toContain("canonical");
     expect(store.listEvents({ entity_type: "issue", entity_id: issue.id })).toHaveLength(1);
-    expect(store.listOutbox({ status: "pending" })).toHaveLength(1);
+    expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
     expect(broadcasts).toEqual(["ledger:issue:created", "ledger:event:created"]);
+  });
+
+  it("enqueues outbox rows only when an adapter is explicitly configured", () => {
+    const project = createProject();
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
+
+    createIssue(store, project.project.id);
+
+    expect(store.listOutbox({ status: "pending" })).toHaveLength(1);
   });
 
   it("does not enqueue outbox rows for imported adapter-sourced events", () => {
     const project = createProject();
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
 
     store.createIssue({
       project_id: project.project.id,
@@ -191,7 +201,7 @@ describe("ledger store", () => {
     expect(store.listOutbox()).toHaveLength(0);
   });
 
-  it("writes comments with event and outbox rows in one transaction", () => {
+  it("writes comments with events without default outbox rows", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
@@ -202,9 +212,10 @@ describe("ledger store", () => {
       author_display: "Mandible User",
     });
 
-    expect(comment.id).toMatch(/^com_/);
+    expect(comment.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(comment.ordinal).toBe(1);
     expect(store.listEvents({ entity_type: "comment", entity_id: comment.id })).toHaveLength(1);
-    expect(store.listOutbox({ status: "pending" })).toHaveLength(2);
+    expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
   });
 
   it("sets labels idempotently and records only state-changing events", () => {
@@ -247,7 +258,7 @@ describe("ledger store", () => {
 
   it("upserts relationships, external refs, conflicts, and outbox status", () => {
     const project = createProject();
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
     const parent = createIssue(store, project.project.id, "Parent");
     const child = createIssue(store, project.project.id, "Child");
 

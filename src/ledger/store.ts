@@ -1,7 +1,12 @@
 import type { Db } from "../db.js";
 import { broadcast } from "../sse.js";
 import { emitLedgerEvents, type LedgerBroadcaster, type LedgerSsePayload } from "./events.js";
-import { createLedgerId } from "./ids.js";
+import {
+  createCreationNonce,
+  createLedgerId,
+  createStableCommentId,
+  createStableIssueId,
+} from "./ids.js";
 import type {
   LedgerActorInput,
   LedgerActorType,
@@ -152,26 +157,39 @@ export class LedgerStore {
   constructor(db: Db, options: LedgerStoreOptions = {}) {
     this.db = db;
     this.db.pragma("foreign_keys = ON");
-    this.outboxAdapters = options.outboxAdapters ?? ["git_bug"];
+    this.outboxAdapters = options.outboxAdapters ?? [];
     this.broadcaster = options.broadcaster ?? broadcast;
   }
 
   createIssue(input: CreateLedgerIssueInput): LedgerIssue {
     const emitted: LedgerSsePayload[] = [];
     const now = input.created_at ?? Date.now();
-    const id = input.id ?? createLedgerId("iss", { now });
     const source = input.source ?? "mandible";
     const actor = normalizeActor(input);
+    const nonce = createCreationNonce();
+    const id = input.id ?? createStableIssueId({
+      project_id: input.project_id,
+      title: input.title,
+      body: input.body ?? "",
+      source,
+      created_at: now,
+      author_actor_id: actor.actor_id,
+      author_actor_type: actor.actor_type,
+      author_display: input.author_display ?? "",
+      nonce,
+    });
+    const shortId = this.allocateIssueShortId(input.project_id, id);
 
     const run = this.db.transaction(() => {
       this.db.prepare(
         `INSERT INTO ledger_issues (
-          id, project_id, title, body, status, resolution, kind, priority,
+          id, short_id, project_id, title, body, status, resolution, kind, priority,
           author_actor_id, author_actor_type, author_display, source,
           created_at, updated_at, closed_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       ).run(
         id,
+        shortId,
         input.project_id,
         input.title,
         input.body ?? "",
@@ -225,7 +243,7 @@ export class LedgerStore {
         actor_id: actor.actor_id,
         actor_type: actor.actor_type,
         source,
-        payload: { issue_id: id, project_id: input.project_id, title: input.title },
+        payload: { issue_id: id, short_id: shortId, project_id: input.project_id, title: input.title, creation_nonce: nonce },
         project_id: input.project_id,
         occurred_at: now,
       });
@@ -422,19 +440,32 @@ export class LedgerStore {
     const issue = this.requireIssue(issueId);
     const emitted: LedgerSsePayload[] = [];
     const now = input.created_at ?? Date.now();
-    const id = input.id ?? createLedgerId("com", { now });
     const source = input.source ?? "mandible";
     const actor = normalizeActor(input);
+    const ordinal = this.nextCommentOrdinal(issueId);
+    const nonce = createCreationNonce();
+    const id = input.id ?? createStableCommentId({
+      issue_id: issueId,
+      ordinal,
+      body: input.body,
+      source,
+      created_at: now,
+      author_actor_id: actor.actor_id,
+      author_actor_type: actor.actor_type,
+      author_display: input.author_display ?? "",
+      nonce,
+    });
 
     const run = this.db.transaction(() => {
       this.db.prepare(
         `INSERT INTO ledger_comments (
-          id, issue_id, body, author_actor_id, author_actor_type,
+          id, issue_id, ordinal, body, author_actor_id, author_actor_type,
           author_display, source, created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
       ).run(
         id,
         issueId,
+        ordinal,
         input.body,
         actor.actor_id,
         actor.actor_type,
@@ -449,11 +480,11 @@ export class LedgerStore {
         actor_id: actor.actor_id,
         actor_type: actor.actor_type,
         source,
-        payload: { issue_id: issueId, comment_id: id },
+        payload: { issue_id: issueId, comment_id: id, ordinal, creation_nonce: nonce },
         project_id: issue.project_id,
         occurred_at: now,
       });
-      emitted.push({ event, payload: { issue_id: issueId, comment_id: id } });
+      emitted.push({ event, payload: { issue_id: issueId, comment_id: id, ordinal } });
       return this.getComment(id);
     });
 
@@ -875,11 +906,15 @@ export class LedgerStore {
         "SELECT id FROM ledger_issues WHERE id = ? AND project_id = ?",
       ).all(trimmed, options.project_id) as Array<{ id: string }>);
       addRows(this.db.prepare(
+        "SELECT id FROM ledger_issues WHERE short_id = ? AND project_id = ?",
+      ).all(trimmed, options.project_id) as Array<{ id: string }>);
+      addRows(this.db.prepare(
         `SELECT issue_id FROM ledger_issue_aliases
          WHERE alias = ? AND project_id = ?`,
       ).all(trimmed, options.project_id) as Array<{ issue_id: string }>);
     } else {
       addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE id = ?").all(trimmed) as Array<{ id: string }>);
+      addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE short_id = ?").all(trimmed) as Array<{ id: string }>);
       addRows(this.db.prepare("SELECT issue_id FROM ledger_issue_aliases WHERE alias = ?").all(trimmed) as Array<{ issue_id: string }>);
     }
 
@@ -898,12 +933,19 @@ export class LedgerStore {
            WHERE id LIKE ? ESCAPE '\\' AND project_id = ?`,
         ).all(`${escaped}%`, options.project_id) as Array<{ id: string }>);
         addRows(this.db.prepare(
+          `SELECT id FROM ledger_issues
+           WHERE short_id LIKE ? ESCAPE '\\' AND project_id = ?`,
+        ).all(`${escaped}%`, options.project_id) as Array<{ id: string }>);
+        addRows(this.db.prepare(
           `SELECT issue_id FROM ledger_issue_aliases
            WHERE alias LIKE ? ESCAPE '\\' AND project_id = ?`,
         ).all(`${escaped}%`, options.project_id) as Array<{ issue_id: string }>);
       } else {
         addRows(this.db.prepare(
           "SELECT id FROM ledger_issues WHERE id LIKE ? ESCAPE '\\'",
+        ).all(`${escaped}%`) as Array<{ id: string }>);
+        addRows(this.db.prepare(
+          "SELECT id FROM ledger_issues WHERE short_id LIKE ? ESCAPE '\\'",
         ).all(`${escaped}%`) as Array<{ id: string }>);
         addRows(this.db.prepare(
           "SELECT issue_id FROM ledger_issue_aliases WHERE alias LIKE ? ESCAPE '\\'",
@@ -1083,6 +1125,31 @@ export class LedgerStore {
 
   private requireIssue(id: string): LedgerIssue {
     return this.getIssue(id);
+  }
+
+  private allocateIssueShortId(projectId: string, id: string): string {
+    for (let length = Math.min(7, id.length); length <= id.length; length++) {
+      const prefix = id.slice(0, length);
+      const row = this.db.prepare(
+        `SELECT id FROM ledger_issues
+         WHERE project_id = ? AND id != ? AND id LIKE ? ESCAPE '\\'
+         LIMIT 1`,
+      ).get(projectId, id, `${escapeLike(prefix)}%`) as { id: string } | undefined;
+      const short = this.db.prepare(
+        `SELECT id FROM ledger_issues
+         WHERE project_id = ? AND id != ? AND short_id = ?
+         LIMIT 1`,
+      ).get(projectId, id, prefix) as { id: string } | undefined;
+      if (!row && !short) return prefix;
+    }
+    return id;
+  }
+
+  private nextCommentOrdinal(issueId: string): number {
+    const row = this.db.prepare(
+      "SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal FROM ledger_comments WHERE issue_id = ?",
+    ).get(issueId) as { ordinal: number } | undefined;
+    return row?.ordinal ?? 1;
   }
 
   private getLabel(issueId: string, label: string): LedgerLabel | null {

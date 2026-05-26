@@ -120,7 +120,7 @@ describe("git-bug ledger import", () => {
 describe("git-bug ledger export", () => {
   it("exports local issue creation through pending outbox rows", async () => {
     const checkout = createCheckout();
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
     const issue = store.createIssue({
       project_id: checkout.project_id,
       title: "Local issue",
@@ -157,7 +157,7 @@ describe("git-bug ledger export", () => {
     const remote = makeDetail({ id: "git-1", human_id: "abc123", title: "Remote" });
     const client = new FakeGitBugClient([remote]);
     await importGitBugCheckout({ db, client, checkout });
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
     const issue = store.listIssues({ project_id: checkout.project_id })[0];
 
     client.replaceDetail("abc123", makeDetail({ id: "git-1", human_id: "abc123", title: "Changed remotely" }));
@@ -181,7 +181,7 @@ describe("git-bug ledger export", () => {
       makeDetail({ id: "git-1", human_id: "abc123", title: "Remote" }),
     ]);
     await importGitBugCheckout({ db, client, checkout });
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
     const issue = store.listIssues({ project_id: checkout.project_id })[0];
 
     store.setLabel(issue.id, "mandible:priority:high", true);
@@ -210,7 +210,7 @@ describe("git-bug ledger export", () => {
       makeDetail({ id: "git-1", human_id: "abc123", title: "Remote", body: "Old body" }),
     ]);
     await importGitBugCheckout({ db, client, checkout });
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
     const issue = store.listIssues({ project_id: checkout.project_id })[0];
 
     store.updateIssue(issue.id, { title: "Updated title", body: "Updated body" });
@@ -232,7 +232,7 @@ describe("git-bug ledger export", () => {
 describe("git-bug sync jobs", () => {
   it("does not mark successful zero-conflict exports as conflicted", async () => {
     const checkout = createCheckout();
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
     store.createIssue({
       project_id: checkout.project_id,
       title: "Local issue",
@@ -249,7 +249,7 @@ describe("git-bug sync jobs", () => {
 
   it("marks retryable git-bug export failures retryable at the sync-job level", async () => {
     const checkout = createCheckout();
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
     store.createIssue({
       project_id: checkout.project_id,
       title: "Local issue",
@@ -274,7 +274,7 @@ describe("git-bug sync jobs", () => {
 
     expect(job.status).toBe("retryable");
     expect(job.next_retry_at).toBeGreaterThan(Date.now());
-    expect(issue.id).toMatch(/^iss_/);
+    expect(issue.id).toMatch(/^[0-9a-f]{64}$/);
     expect(listLedgerSyncJobs(db, { adapter: "git_bug" })).toHaveLength(1);
   });
 });

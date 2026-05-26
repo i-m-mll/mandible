@@ -1,6 +1,6 @@
 import { broadcast } from "../sse.js";
 import { emitLedgerEvents } from "./events.js";
-import { createLedgerId } from "./ids.js";
+import { createCreationNonce, createLedgerId, createStableCommentId, createStableIssueId, } from "./ids.js";
 export class LedgerStore {
     db;
     outboxAdapters;
@@ -8,21 +8,33 @@ export class LedgerStore {
     constructor(db, options = {}) {
         this.db = db;
         this.db.pragma("foreign_keys = ON");
-        this.outboxAdapters = options.outboxAdapters ?? ["git_bug"];
+        this.outboxAdapters = options.outboxAdapters ?? [];
         this.broadcaster = options.broadcaster ?? broadcast;
     }
     createIssue(input) {
         const emitted = [];
         const now = input.created_at ?? Date.now();
-        const id = input.id ?? createLedgerId("iss", { now });
         const source = input.source ?? "mandible";
         const actor = normalizeActor(input);
+        const nonce = createCreationNonce();
+        const id = input.id ?? createStableIssueId({
+            project_id: input.project_id,
+            title: input.title,
+            body: input.body ?? "",
+            source,
+            created_at: now,
+            author_actor_id: actor.actor_id,
+            author_actor_type: actor.actor_type,
+            author_display: input.author_display ?? "",
+            nonce,
+        });
+        const shortId = this.allocateIssueShortId(input.project_id, id);
         const run = this.db.transaction(() => {
             this.db.prepare(`INSERT INTO ledger_issues (
-          id, project_id, title, body, status, resolution, kind, priority,
+          id, short_id, project_id, title, body, status, resolution, kind, priority,
           author_actor_id, author_actor_type, author_display, source,
           created_at, updated_at, closed_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(id, input.project_id, input.title, input.body ?? "", input.status ?? "open", input.resolution ?? null, input.kind ?? "unknown", input.priority ?? "unknown", actor.actor_id, actor.actor_type, input.author_display ?? "", source, now, now, input.status === "closed" ? now : null);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`).run(id, shortId, input.project_id, input.title, input.body ?? "", input.status ?? "open", input.resolution ?? null, input.kind ?? "unknown", input.priority ?? "unknown", actor.actor_id, actor.actor_type, input.author_display ?? "", source, now, now, input.status === "closed" ? now : null);
             this.insertAlias({
                 issue_id: id,
                 project_id: input.project_id,
@@ -57,7 +69,7 @@ export class LedgerStore {
                 actor_id: actor.actor_id,
                 actor_type: actor.actor_type,
                 source,
-                payload: { issue_id: id, project_id: input.project_id, title: input.title },
+                payload: { issue_id: id, short_id: shortId, project_id: input.project_id, title: input.title, creation_nonce: nonce },
                 project_id: input.project_id,
                 occurred_at: now,
             });
@@ -204,14 +216,26 @@ export class LedgerStore {
         const issue = this.requireIssue(issueId);
         const emitted = [];
         const now = input.created_at ?? Date.now();
-        const id = input.id ?? createLedgerId("com", { now });
         const source = input.source ?? "mandible";
         const actor = normalizeActor(input);
+        const ordinal = this.nextCommentOrdinal(issueId);
+        const nonce = createCreationNonce();
+        const id = input.id ?? createStableCommentId({
+            issue_id: issueId,
+            ordinal,
+            body: input.body,
+            source,
+            created_at: now,
+            author_actor_id: actor.actor_id,
+            author_actor_type: actor.actor_type,
+            author_display: input.author_display ?? "",
+            nonce,
+        });
         const run = this.db.transaction(() => {
             this.db.prepare(`INSERT INTO ledger_comments (
-          id, issue_id, body, author_actor_id, author_actor_type,
+          id, issue_id, ordinal, body, author_actor_id, author_actor_type,
           author_display, source, created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`).run(id, issueId, input.body, actor.actor_id, actor.actor_type, input.author_display ?? "", source, now);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`).run(id, issueId, ordinal, input.body, actor.actor_id, actor.actor_type, input.author_display ?? "", source, now);
             const event = this.insertEvent({
                 entity_type: "comment",
                 entity_id: id,
@@ -219,11 +243,11 @@ export class LedgerStore {
                 actor_id: actor.actor_id,
                 actor_type: actor.actor_type,
                 source,
-                payload: { issue_id: issueId, comment_id: id },
+                payload: { issue_id: issueId, comment_id: id, ordinal, creation_nonce: nonce },
                 project_id: issue.project_id,
                 occurred_at: now,
             });
-            emitted.push({ event, payload: { issue_id: issueId, comment_id: id } });
+            emitted.push({ event, payload: { issue_id: issueId, comment_id: id, ordinal } });
             return this.getComment(id);
         });
         const comment = run();
@@ -490,11 +514,13 @@ export class LedgerStore {
         };
         if (options.project_id) {
             addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE id = ? AND project_id = ?").all(trimmed, options.project_id));
+            addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE short_id = ? AND project_id = ?").all(trimmed, options.project_id));
             addRows(this.db.prepare(`SELECT issue_id FROM ledger_issue_aliases
          WHERE alias = ? AND project_id = ?`).all(trimmed, options.project_id));
         }
         else {
             addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE id = ?").all(trimmed));
+            addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE short_id = ?").all(trimmed));
             addRows(this.db.prepare("SELECT issue_id FROM ledger_issue_aliases WHERE alias = ?").all(trimmed));
         }
         if (matches.size === 1) {
@@ -508,11 +534,14 @@ export class LedgerStore {
             if (options.project_id) {
                 addRows(this.db.prepare(`SELECT id FROM ledger_issues
            WHERE id LIKE ? ESCAPE '\\' AND project_id = ?`).all(`${escaped}%`, options.project_id));
+                addRows(this.db.prepare(`SELECT id FROM ledger_issues
+           WHERE short_id LIKE ? ESCAPE '\\' AND project_id = ?`).all(`${escaped}%`, options.project_id));
                 addRows(this.db.prepare(`SELECT issue_id FROM ledger_issue_aliases
            WHERE alias LIKE ? ESCAPE '\\' AND project_id = ?`).all(`${escaped}%`, options.project_id));
             }
             else {
                 addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE id LIKE ? ESCAPE '\\'").all(`${escaped}%`));
+                addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE short_id LIKE ? ESCAPE '\\'").all(`${escaped}%`));
                 addRows(this.db.prepare("SELECT issue_id FROM ledger_issue_aliases WHERE alias LIKE ? ESCAPE '\\'").all(`${escaped}%`));
             }
         }
@@ -622,6 +651,24 @@ export class LedgerStore {
     }
     requireIssue(id) {
         return this.getIssue(id);
+    }
+    allocateIssueShortId(projectId, id) {
+        for (let length = Math.min(7, id.length); length <= id.length; length++) {
+            const prefix = id.slice(0, length);
+            const row = this.db.prepare(`SELECT id FROM ledger_issues
+         WHERE project_id = ? AND id != ? AND id LIKE ? ESCAPE '\\'
+         LIMIT 1`).get(projectId, id, `${escapeLike(prefix)}%`);
+            const short = this.db.prepare(`SELECT id FROM ledger_issues
+         WHERE project_id = ? AND id != ? AND short_id = ?
+         LIMIT 1`).get(projectId, id, prefix);
+            if (!row && !short)
+                return prefix;
+        }
+        return id;
+    }
+    nextCommentOrdinal(issueId) {
+        const row = this.db.prepare("SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal FROM ledger_comments WHERE issue_id = ?").get(issueId);
+        return row?.ordinal ?? 1;
     }
     getLabel(issueId, label) {
         return this.db.prepare("SELECT * FROM ledger_labels WHERE issue_id = ? AND label = ?").get(issueId, label) ?? null;

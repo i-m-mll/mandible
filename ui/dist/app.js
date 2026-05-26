@@ -15678,6 +15678,7 @@ function LedgerIssueDetail({
   const activeSessions = detail.sessions.filter((session) => session.status === "active" || session.status === "idle");
   const historicalSessions = detail.sessions.filter((session) => session.status !== "active" && session.status !== "idle");
   const primaryWorkUnit = detail.work_units[0] ?? null;
+  const timeline = detail.timeline ?? fallbackTimeline(detail);
   const syncTone = detail.sync.state === "clean" ? "clean" : detail.sync.state === "pending" ? "pending" : detail.sync.state === "conflicted" ? "conflicted" : "failed";
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy)
@@ -15745,10 +15746,9 @@ function LedgerIssueDetail({
         }
       )
     ] }),
-    /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-issue-detail__body spec-panel", empty: "No description.", source: detail.body, detail }) }),
     /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
-      /* @__PURE__ */ u3(SectionTitle, { title: "Comments", count: detail.comments.length }),
-      detail.comments.length === 0 ? /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__empty", children: "No comments yet." }) : /* @__PURE__ */ u3("div", { className: "ledger-comment-list", children: detail.comments.map((comment) => /* @__PURE__ */ u3(CommentCard, { comment, detail }, comment.id)) }),
+      /* @__PURE__ */ u3(SectionTitle, { title: "Timeline", count: timeline.length }),
+      /* @__PURE__ */ u3("div", { className: "ledger-comment-list ledger-timeline-list", children: timeline.map((entry) => /* @__PURE__ */ u3(TimelineEntryCard, { entry, detail }, entry.id)) }),
       onAddComment && /* @__PURE__ */ u3("div", { className: "ledger-comment-composer", children: !showComposer ? /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost", onClick: () => setShowComposer(true), children: "Add Comment" }) : /* @__PURE__ */ u3(k, { children: [
         /* @__PURE__ */ u3(
           "textarea",
@@ -15784,6 +15784,31 @@ function LedgerIssueDetail({
     ] })
   ] });
 }
+function fallbackTimeline(detail) {
+  return [
+    {
+      id: `${detail.id}:body`,
+      kind: "body",
+      ordinal: 0,
+      body: detail.body,
+      author: detail.author,
+      source: detail.source,
+      created_at: detail.created_at,
+      updated_at: detail.updated_at
+    },
+    ...detail.comments.map((comment) => ({
+      id: comment.id,
+      kind: "comment",
+      comment_id: comment.id,
+      ordinal: comment.ordinal ?? 0,
+      body: comment.body,
+      author: comment.author,
+      source: comment.source,
+      created_at: comment.created_at,
+      updated_at: comment.updated_at
+    }))
+  ];
+}
 function StatusPill({
   status,
   resolution,
@@ -15797,27 +15822,74 @@ function StatusPill({
   }
   return /* @__PURE__ */ u3("span", { className: `status-pill status-pill--lg ${cls}`, children: label });
 }
-function CommentCard({
-  comment,
+function TimelineEntryCard({
+  entry,
   detail
 }) {
-  return /* @__PURE__ */ u3("div", { className: "ledger-comment-card", id: `comment-${comment.id}`, children: [
-    /* @__PURE__ */ u3("div", { className: "ledger-comment-card__header", children: [
-      /* @__PURE__ */ u3("span", { children: comment.author.display }),
-      /* @__PURE__ */ u3("time", { children: formatRelativeTime3(comment.created_at) }),
-      /* @__PURE__ */ u3(MetadataDisclosure, { label: "Comment metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: commentMetadataRows(comment) }) })
-    ] }),
-    /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-comment-card__body spec-panel", source: comment.body, empty: "", detail })
-  ] });
+  if (entry.kind === "state") {
+    return /* @__PURE__ */ u3("div", { className: "ledger-comment-card ledger-timeline-card ledger-timeline-card--state", children: /* @__PURE__ */ u3("div", { className: "ledger-comment-card__header", children: [
+      /* @__PURE__ */ u3("span", { children: stateEntryLabel(entry) }),
+      /* @__PURE__ */ u3("time", { children: formatRelativeTime3(entry.created_at) }),
+      /* @__PURE__ */ u3(MetadataDisclosure, { label: "Timeline metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: stateMetadataRows(entry) }) })
+    ] }) });
+  }
+  const isBody = entry.kind === "body";
+  return /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "ledger-comment-card ledger-timeline-card",
+      id: entry.kind === "comment" ? `comment-${entry.comment_id}` : "comment-0",
+      "data-comment-ordinal": String(entry.ordinal),
+      children: [
+        /* @__PURE__ */ u3("div", { className: "ledger-comment-card__header", children: [
+          /* @__PURE__ */ u3("span", { children: entry.author.display }),
+          /* @__PURE__ */ u3("time", { children: formatRelativeTime3(entry.created_at) }),
+          /* @__PURE__ */ u3(MetadataDisclosure, { label: isBody ? "Opening metadata" : "Comment metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: isBody ? bodyMetadataRows(entry) : commentMetadataRows(entry) }) })
+        ] }),
+        /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-comment-card__body spec-panel", source: entry.body, empty: isBody ? "No description." : "", detail })
+      ]
+    }
+  );
 }
 function MetadataDisclosure({
   label,
   children: children2
 }) {
-  return /* @__PURE__ */ u3("details", { className: "ledger-metadata-popover", children: [
-    /* @__PURE__ */ u3("summary", { "aria-label": label, title: label, children: "i" }),
-    /* @__PURE__ */ u3("div", { className: "ledger-metadata-popover__panel", children: children2 })
-  ] });
+  const [open, setOpen] = d2(false);
+  const ref = A2(null);
+  y2(() => {
+    if (!open)
+      return void 0;
+    const closeOnOutsidePointer = (event) => {
+      const node = ref.current;
+      if (!node || node.contains(event.target))
+        return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape")
+        setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [open]);
+  return /* @__PURE__ */ u3(
+    "details",
+    {
+      ref,
+      className: "ledger-metadata-popover",
+      open,
+      onToggle: (event) => setOpen(event.currentTarget.open),
+      children: [
+        /* @__PURE__ */ u3("summary", { "aria-label": label, title: label, children: "i" }),
+        /* @__PURE__ */ u3("div", { className: "ledger-metadata-popover__panel", children: children2 })
+      ]
+    }
+  );
 }
 function MetadataRows({ rows }) {
   return /* @__PURE__ */ u3("dl", { className: "ledger-metadata-grid", children: rows.map(([key2, value]) => /* @__PURE__ */ u3("div", { children: [
@@ -15959,7 +16031,7 @@ function MarkdownBlock({
   }
   return /* @__PURE__ */ u3("div", { className, dangerouslySetInnerHTML: { __html: html4 } });
 }
-var REF_PATTERN = /\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,16})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
+var REF_PATTERN = /\[#(\d+)\]|\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,64})\b|(?<![\w/])([0-9a-f]{7,64})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
 function linkifyLedgerRefs(html4, detail) {
   if (typeof document === "undefined" || !html4)
     return html4;
@@ -16004,11 +16076,21 @@ function linkifyLedgerRefs(html4, detail) {
   return container.innerHTML;
 }
 function refLink(match, detail) {
-  const explicitType = match[1];
-  const explicitRef = match[2];
-  const hashIssueRef = match[3];
-  const canonicalIssueRef = !explicitType && !hashIssueRef ? match[0] : "";
-  const ref = explicitRef || hashIssueRef || canonicalIssueRef;
+  const ordinalCommentRef = match[1];
+  const explicitType = match[2];
+  const explicitRef = match[3];
+  const hashIssueRef = match[4];
+  const bareIssueRef = match[5];
+  const canonicalIssueRef = !ordinalCommentRef && !explicitType && !hashIssueRef && !bareIssueRef ? match[0] : "";
+  if (ordinalCommentRef) {
+    const anchor2 = document.createElement("a");
+    anchor2.className = "ledger-xref";
+    anchor2.textContent = `#${ordinalCommentRef}`;
+    anchor2.href = issueHref(detail.project.repo_id ?? detail.project.display_name, detail.display_id, ordinalCommentRef);
+    anchor2.title = `Open comment #${ordinalCommentRef}`;
+    return anchor2;
+  }
+  const ref = explicitRef || hashIssueRef || bareIssueRef || canonicalIssueRef;
   if (!ref)
     return null;
   const anchor = document.createElement("a");
@@ -16025,7 +16107,7 @@ function refLink(match, detail) {
   const parsedIssue = parseIssueRef(ref, detail);
   if (!parsedIssue)
     return null;
-  anchor.textContent = explicitType ? issueRefLabel(parsedIssue, detail) : match[0];
+  anchor.textContent = explicitType ? issueRefLabel(parsedIssue, detail) : bareIssueRef || match[0];
   anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
   anchor.title = `Open issue ${parsedIssue.issue}`;
   return anchor;
@@ -16040,8 +16122,7 @@ function commentRefLabel(parsed, detail) {
 }
 function issueMetadataRows(detail) {
   const rows = [
-    ["Issue ID", detail.display_id],
-    ["Canonical ID", detail.id],
+    ["Reference", detail.display_id],
     ["Kind", detail.kind],
     ["Priority", detail.priority],
     ["Source", detail.source || "unknown"],
@@ -16049,21 +16130,30 @@ function issueMetadataRows(detail) {
     ["Created", formatAbsoluteTime(detail.created_at)],
     ["Updated", formatAbsoluteTime(detail.updated_at)]
   ];
+  if (detail.id !== detail.display_id)
+    rows.push(["Canonical ID", detail.id]);
   if (detail.closed_at)
     rows.push(["Closed", formatAbsoluteTime(detail.closed_at)]);
-  if (detail.aliases.length > 0) {
-    rows.push([
-      "Aliases",
-      detail.aliases.map((alias) => alias.alias || alias.external_id).filter(Boolean).join(", ")
-    ]);
-  }
+  const alternateAliases = detail.aliases.map((alias) => alias.alias || alias.external_id).filter((alias) => alias && alias !== detail.id && alias !== detail.display_id);
+  if (alternateAliases.length > 0)
+    rows.push(["Alternate refs", alternateAliases.join(", ")]);
   if (detail.sync.state !== "clean")
     rows.push(["Sync", syncLabel(detail.sync.state)]);
   return rows.filter(([, value]) => Boolean(value));
 }
+function bodyMetadataRows(entry) {
+  return [
+    ["Entry", "#0"],
+    ["Author type", entry.author.type.replace(/_/g, " ")],
+    ["Source", entry.source || "unknown"],
+    ["Created", formatAbsoluteTime(entry.created_at)],
+    ["Updated", formatAbsoluteTime(entry.updated_at)]
+  ].filter(([, value]) => Boolean(value));
+}
 function commentMetadataRows(comment) {
   const rows = [
-    ["Comment ID", comment.id],
+    ["Comment", `#${comment.ordinal}`],
+    ["Comment ID", comment.comment_id],
     ["Author type", comment.author.type.replace(/_/g, " ")],
     ["Source", comment.source || "unknown"],
     ["Created", formatAbsoluteTime(comment.created_at)]
@@ -16073,6 +16163,21 @@ function commentMetadataRows(comment) {
   if (comment.author.id)
     rows.push(["Author ID", comment.author.id]);
   return rows;
+}
+function stateMetadataRows(entry) {
+  return [
+    ["Event ID", entry.id],
+    ["Event type", entry.event_type],
+    ["Source", entry.source || "unknown"],
+    ["Created", formatAbsoluteTime(entry.created_at)]
+  ].filter(([, value]) => Boolean(value));
+}
+function stateEntryLabel(entry) {
+  if (entry.status === "closed")
+    return entry.resolution ? `Closed: ${entry.resolution}` : "Closed";
+  if (entry.status === "open")
+    return "Reopened";
+  return "State updated";
 }
 function parseIssueRef(ref, detail) {
   const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
@@ -16285,7 +16390,7 @@ function IssuesView({
     const scrollKey = `${ledgerIssueDetail.id}:${initialCommentId}`;
     if (lastScrolledCommentRef.current === scrollKey)
       return;
-    const comment = document.getElementById(`comment-${initialCommentId}`);
+    const comment = document.getElementById(`comment-${initialCommentId}`) ?? document.querySelector(`[data-comment-ordinal="${CSS.escape(initialCommentId)}"]`);
     if (!comment)
       return;
     lastScrolledCommentRef.current = scrollKey;

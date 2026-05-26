@@ -175,6 +175,8 @@ export declare class LedgerStore {
         external_kind?: string;
     }): LedgerExternalRef | null;
     private requireIssue;
+    private allocateIssueShortId;
+    private nextCommentOrdinal;
     private getLabel;
     private getConflict;
     private requireOutbox;
