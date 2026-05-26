@@ -3,11 +3,11 @@ import { marked } from 'marked';
 import { sanitizeHtml, sanitizeMarkdown } from '../../sanitize';
 import type {
   LedgerIssueDetailAuthRequest,
-  LedgerIssueDetailComment,
   LedgerIssueDetailConflict,
   LedgerIssueDetailProjection,
   LedgerIssueDetailRelationship,
   LedgerIssueDetailSession,
+  LedgerIssueTimelineEntry,
 } from '../../api';
 
 type EntityType = 'issue' | 'session' | 'auth_request' | 'conversation';
@@ -47,6 +47,7 @@ export function LedgerIssueDetail({
   const activeSessions = detail.sessions.filter((session) => session.status === 'active' || session.status === 'idle');
   const historicalSessions = detail.sessions.filter((session) => session.status !== 'active' && session.status !== 'idle');
   const primaryWorkUnit = detail.work_units[0] ?? null;
+  const timeline = detail.timeline ?? fallbackTimeline(detail);
   const syncTone = detail.sync.state === 'clean'
     ? 'clean'
     : detail.sync.state === 'pending'
@@ -142,20 +143,12 @@ export function LedgerIssueDetail({
       )}
 
       <section className="ledger-issue-detail__section">
-        <MarkdownBlock className="ledger-issue-detail__body spec-panel" empty="No description." source={detail.body} detail={detail} />
-      </section>
-
-      <section className="ledger-issue-detail__section">
-        <SectionTitle title="Comments" count={detail.comments.length} />
-        {detail.comments.length === 0 ? (
-          <div className="ledger-issue-detail__empty">No comments yet.</div>
-        ) : (
-          <div className="ledger-comment-list">
-            {detail.comments.map((comment) => (
-              <CommentCard key={comment.id} comment={comment} detail={detail} />
-            ))}
-          </div>
-        )}
+        <SectionTitle title="Timeline" count={timeline.length} />
+        <div className="ledger-comment-list ledger-timeline-list">
+          {timeline.map((entry) => (
+            <TimelineEntryCard key={entry.id} entry={entry} detail={detail} />
+          ))}
+        </div>
         {onAddComment && (
           <div className="ledger-comment-composer">
             {!showComposer ? (
@@ -216,6 +209,32 @@ export function LedgerIssueDetail({
   );
 }
 
+function fallbackTimeline(detail: LedgerIssueDetailProjection): LedgerIssueTimelineEntry[] {
+  return [
+    {
+      id: `${detail.id}:body`,
+      kind: 'body',
+      ordinal: 0,
+      body: detail.body,
+      author: detail.author,
+      source: detail.source,
+      created_at: detail.created_at,
+      updated_at: detail.updated_at,
+    },
+    ...detail.comments.map((comment) => ({
+      id: comment.id,
+      kind: 'comment' as const,
+      comment_id: comment.id,
+      ordinal: comment.ordinal ?? 0,
+      body: comment.body,
+      author: comment.author,
+      source: comment.source,
+      created_at: comment.created_at,
+      updated_at: comment.updated_at,
+    })),
+  ];
+}
+
 function StatusPill({
   status,
   resolution,
@@ -239,23 +258,41 @@ function StatusPill({
   return <span className={`status-pill status-pill--lg ${cls}`}>{label}</span>;
 }
 
-function CommentCard({
-  comment,
+function TimelineEntryCard({
+  entry,
   detail,
 }: {
-  comment: LedgerIssueDetailComment;
+  entry: LedgerIssueTimelineEntry;
   detail: LedgerIssueDetailProjection;
 }): JSX.Element {
+  if (entry.kind === 'state') {
+    return (
+      <div className="ledger-comment-card ledger-timeline-card ledger-timeline-card--state">
+        <div className="ledger-comment-card__header">
+          <span>{stateEntryLabel(entry)}</span>
+          <time>{formatRelativeTime(entry.created_at)}</time>
+          <MetadataDisclosure label="Timeline metadata">
+            <MetadataRows rows={stateMetadataRows(entry)} />
+          </MetadataDisclosure>
+        </div>
+      </div>
+    );
+  }
+  const isBody = entry.kind === 'body';
   return (
-    <div className="ledger-comment-card" id={`comment-${comment.id}`}>
+    <div
+      className="ledger-comment-card ledger-timeline-card"
+      id={entry.kind === 'comment' ? `comment-${entry.comment_id}` : 'comment-0'}
+      data-comment-ordinal={String(entry.ordinal)}
+    >
       <div className="ledger-comment-card__header">
-        <span>{comment.author.display}</span>
-        <time>{formatRelativeTime(comment.created_at)}</time>
-        <MetadataDisclosure label="Comment metadata">
-          <MetadataRows rows={commentMetadataRows(comment)} />
+        <span>{entry.author.display}</span>
+        <time>{formatRelativeTime(entry.created_at)}</time>
+        <MetadataDisclosure label={isBody ? 'Opening metadata' : 'Comment metadata'}>
+          <MetadataRows rows={isBody ? bodyMetadataRows(entry) : commentMetadataRows(entry)} />
         </MetadataDisclosure>
       </div>
-      <MarkdownBlock className="ledger-comment-card__body spec-panel" source={comment.body} empty="" detail={detail} />
+      <MarkdownBlock className="ledger-comment-card__body spec-panel" source={entry.body} empty={isBody ? 'No description.' : ''} detail={detail} />
     </div>
   );
 }
@@ -496,7 +533,7 @@ function MarkdownBlock({
   return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-const REF_PATTERN = /\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,16})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
+const REF_PATTERN = /\[#(\d+)\]|\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,64})\b|(?<![\w/])([0-9a-f]{7,64})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
 
 function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): string {
   if (typeof document === 'undefined' || !html) return html;
@@ -540,11 +577,21 @@ function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): s
 }
 
 function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): HTMLAnchorElement | null {
-  const explicitType = match[1];
-  const explicitRef = match[2];
-  const hashIssueRef = match[3];
-  const canonicalIssueRef = !explicitType && !hashIssueRef ? match[0] : '';
-  const ref = explicitRef || hashIssueRef || canonicalIssueRef;
+  const ordinalCommentRef = match[1];
+  const explicitType = match[2];
+  const explicitRef = match[3];
+  const hashIssueRef = match[4];
+  const bareIssueRef = match[5];
+  const canonicalIssueRef = !ordinalCommentRef && !explicitType && !hashIssueRef && !bareIssueRef ? match[0] : '';
+  if (ordinalCommentRef) {
+    const anchor = document.createElement('a');
+    anchor.className = 'ledger-xref';
+    anchor.textContent = `#${ordinalCommentRef}`;
+    anchor.href = issueHref(detail.project.repo_id ?? detail.project.display_name, detail.display_id, ordinalCommentRef);
+    anchor.title = `Open comment #${ordinalCommentRef}`;
+    return anchor;
+  }
+  const ref = explicitRef || hashIssueRef || bareIssueRef || canonicalIssueRef;
   if (!ref) return null;
 
   const anchor = document.createElement('a');
@@ -560,7 +607,7 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): H
 
   const parsedIssue = parseIssueRef(ref, detail);
   if (!parsedIssue) return null;
-  anchor.textContent = explicitType ? issueRefLabel(parsedIssue, detail) : match[0];
+  anchor.textContent = explicitType ? issueRefLabel(parsedIssue, detail) : (bareIssueRef || match[0]);
   anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
   anchor.title = `Open issue ${parsedIssue.issue}`;
   return anchor;
@@ -596,9 +643,20 @@ function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, 
   return rows.filter(([, value]) => Boolean(value));
 }
 
-function commentMetadataRows(comment: LedgerIssueDetailComment): Array<[string, string]> {
+function bodyMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'body' }>): Array<[string, string]> {
+  return [
+    ['Entry', '#0'],
+    ['Author type', entry.author.type.replace(/_/g, ' ')],
+    ['Source', entry.source || 'unknown'],
+    ['Created', formatAbsoluteTime(entry.created_at)],
+    ['Updated', formatAbsoluteTime(entry.updated_at)],
+  ].filter(([, value]) => Boolean(value));
+}
+
+function commentMetadataRows(comment: Extract<LedgerIssueTimelineEntry, { kind: 'comment' }>): Array<[string, string]> {
   const rows: Array<[string, string]> = [
-    ['Comment ID', comment.id],
+    ['Comment', `#${comment.ordinal}`],
+    ['Comment ID', comment.comment_id],
     ['Author type', comment.author.type.replace(/_/g, ' ')],
     ['Source', comment.source || 'unknown'],
     ['Created', formatAbsoluteTime(comment.created_at)],
@@ -606,6 +664,21 @@ function commentMetadataRows(comment: LedgerIssueDetailComment): Array<[string, 
   if (comment.updated_at) rows.push(['Updated', formatAbsoluteTime(comment.updated_at)]);
   if (comment.author.id) rows.push(['Author ID', comment.author.id]);
   return rows;
+}
+
+function stateMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state' }>): Array<[string, string]> {
+  return [
+    ['Event ID', entry.id],
+    ['Event type', entry.event_type],
+    ['Source', entry.source || 'unknown'],
+    ['Created', formatAbsoluteTime(entry.created_at)],
+  ].filter(([, value]) => Boolean(value));
+}
+
+function stateEntryLabel(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state' }>): string {
+  if (entry.status === 'closed') return entry.resolution ? `Closed: ${entry.resolution}` : 'Closed';
+  if (entry.status === 'open') return 'Reopened';
+  return 'State updated';
 }
 
 function parseIssueRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string } | null {

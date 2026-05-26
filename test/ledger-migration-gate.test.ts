@@ -238,7 +238,7 @@ describe("ledger legacy issue projection", () => {
 
     expect(summaries).toHaveLength(1);
     expect(summaries[0].issues[0]).toMatchObject({
-      id: "abc123",
+      id: issue.short_id,
       repo_id: "repo-1",
       repo_name: "mandible",
       title: "Projected issue",
@@ -378,7 +378,10 @@ describe("ledger migration sync", () => {
     expect(sync).toMatchObject({ total: 1, completed: 1, failed: 0 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_projects").get()).toMatchObject({ count: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_project_checkouts").get()).toMatchObject({ count: 1 });
-    expect(summaries).toMatchObject([{ repo_id: "repo-1", issues: [{ id: "abc123", title: "Imported issue" }] }]);
+    expect(summaries).toMatchObject([{
+      repo_id: "repo-1",
+      issues: [{ id: expect.stringMatching(/^[0-9a-f]{7,64}$/), title: "Imported issue" }],
+    }]);
     expect(report.status).toBe("clean");
   });
 
@@ -417,7 +420,7 @@ describe("ledger issue route gate", () => {
     ).run("sess-1", "codex", "idle", "2026-05-16T12:00:00.000Z", "2026-05-16T12:00:00.000Z");
     db.prepare(
       "INSERT INTO session_issues (session_id, issue_id, repo_id, created_at) VALUES (?, ?, ?, ?)",
-    ).run("sess-1", "abc123", repoInfo.id, 1);
+    ).run("sess-1", issue.short_id, repoInfo.id, 1);
     updateLedgerIssueMigrationConfig(db, { read_mode: "ledger" });
 
     const server = new TestIssueServer();
@@ -425,20 +428,20 @@ describe("ledger issue route gate", () => {
 
     const list = await server.invoke("GET", "/api/issues");
     expect(list.statusCode).toBe(200);
-    expect(list.body).toMatchObject([{ repo_id: repoInfo.id, issues: [{ id: "abc123" }] }]);
+    expect(list.body).toMatchObject([{ repo_id: repoInfo.id, issues: [{ id: issue.short_id }] }]);
 
     const detail = await server.invoke("GET", "/api/issues/:repoId/:issueId", {
       params: { repoId: "mandible", issueId: issue.id.slice(0, 10) },
     });
     expect(detail.statusCode).toBe(200);
-    expect(detail.body).toMatchObject({ id: "abc123", title: "Route issue", description: "Route body" });
+    expect(detail.body).toMatchObject({ id: issue.short_id, title: "Route issue", description: "Route body" });
 
     const context = await server.invoke("GET", "/api/issues/:repoId/:issueId/context", {
       params: { repoId: repoInfo.id, issueId: "abc123" },
     });
     expect(context.statusCode).toBe(200);
     expect(context.body).toMatchObject({
-      issue: { id: "abc123", title: "Route issue" },
+      issue: { id: issue.short_id, title: "Route issue" },
       sessions: [{ session_id: "sess-1" }],
     });
 
@@ -446,7 +449,7 @@ describe("ledger issue route gate", () => {
       params: { repoId: repoInfo.id, issueId: "abc123" },
     });
     expect(sessions.statusCode).toBe(200);
-    expect(sessions.body).toMatchObject([{ session_id: "sess-1", issue_id: "abc123" }]);
+    expect(sessions.body).toMatchObject([{ session_id: "sess-1", issue_id: issue.short_id }]);
   });
 
   it("guards dual writes and applies ledger writes only when explicitly configured", async () => {

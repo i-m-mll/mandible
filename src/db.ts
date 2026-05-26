@@ -1028,6 +1028,7 @@ const MIGRATIONS: Migration[] = [
         ON ledger_project_checkouts(project_id)`,
       `CREATE TABLE IF NOT EXISTS ledger_issues (
         id TEXT PRIMARY KEY,
+        short_id TEXT NOT NULL DEFAULT '',
         project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
         title TEXT NOT NULL,
         body TEXT NOT NULL DEFAULT '',
@@ -1050,6 +1051,9 @@ const MIGRATIONS: Migration[] = [
       )`,
       `CREATE INDEX IF NOT EXISTS idx_ledger_issues_project_status_updated
         ON ledger_issues(project_id, status, updated_at DESC)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_issues_project_short_id
+        ON ledger_issues(project_id, short_id)
+        WHERE short_id != ''`,
       `CREATE INDEX IF NOT EXISTS idx_ledger_issues_kind
         ON ledger_issues(kind)`,
       `CREATE TABLE IF NOT EXISTS ledger_issue_aliases (
@@ -1070,6 +1074,7 @@ const MIGRATIONS: Migration[] = [
       `CREATE TABLE IF NOT EXISTS ledger_comments (
         id TEXT PRIMARY KEY,
         issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL DEFAULT 0,
         body TEXT NOT NULL,
         author_actor_id TEXT,
         author_actor_type TEXT NOT NULL
@@ -1083,6 +1088,9 @@ const MIGRATIONS: Migration[] = [
       )`,
       `CREATE INDEX IF NOT EXISTS idx_ledger_comments_issue_created
         ON ledger_comments(issue_id, created_at)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_comments_issue_ordinal
+        ON ledger_comments(issue_id, ordinal)
+        WHERE ordinal > 0`,
       `CREATE TABLE IF NOT EXISTS ledger_labels (
         issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
         label TEXT NOT NULL,
@@ -1407,6 +1415,13 @@ const MIGRATIONS: Migration[] = [
       `ALTER TABLE auth_requests ADD COLUMN issue_references TEXT`,
       `ALTER TABLE auth_requests ADD COLUMN issue_closures TEXT`
     ]
+  },
+  {
+    version: 60,
+    name: "ledger_hash_id_support",
+    // Bug: 871f32e — SHA-256 issue/comment IDs with cached Git-style short
+    // prefixes and append-only per-issue comment ordinals.
+    statements: []
   }
 ];
 
@@ -1494,6 +1509,11 @@ export function migrate(db: Db): void {
   // Bug: e8c1d43 — link existing work_units to canonical ledger issues.
   if (pending.some((m) => m.version === 58)) {
     ensureWorkUnitLedgerIssueColumn(db);
+  }
+  // Bug: 871f32e — add hash-ID display/ordinal columns safely on both fresh
+  // and upgraded databases.
+  if (pending.some((m) => m.version === 60)) {
+    ensureLedgerHashIdColumns(db);
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
   if (pending.some((m) => m.version === 26)) {
@@ -1605,6 +1625,44 @@ function ensureWorkUnitLedgerIssueColumn(db: Db): void {
     `CREATE INDEX IF NOT EXISTS idx_work_units_ledger_issue
       ON work_units(ledger_issue_id) WHERE ledger_issue_id IS NOT NULL`
   );
+}
+
+function ensureLedgerHashIdColumns(db: Db): void {
+  const issueTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issues'")
+    .get();
+  if (issueTable) {
+    const columns = db
+      .prepare("PRAGMA table_info(ledger_issues)")
+      .all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has("short_id")) {
+      db.exec("ALTER TABLE ledger_issues ADD COLUMN short_id TEXT NOT NULL DEFAULT ''");
+    }
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_issues_project_short_id
+        ON ledger_issues(project_id, short_id)
+        WHERE short_id != ''`
+    );
+  }
+
+  const commentTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_comments'")
+    .get();
+  if (commentTable) {
+    const columns = db
+      .prepare("PRAGMA table_info(ledger_comments)")
+      .all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+    if (!names.has("ordinal")) {
+      db.exec("ALTER TABLE ledger_comments ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0");
+    }
+    db.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_comments_issue_ordinal
+        ON ledger_comments(issue_id, ordinal)
+        WHERE ordinal > 0`
+    );
+  }
 }
 
 /**

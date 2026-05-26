@@ -46,6 +46,7 @@ export interface LedgerProjectCheckout {
 }
 export interface LedgerIssue {
     id: string;
+    short_id: string;
     project_id: string;
     title: string;
     body: string;
@@ -75,6 +76,7 @@ export interface LedgerIssueAlias {
 export interface LedgerComment {
     id: string;
     issue_id: string;
+    ordinal: number;
     body: string;
     author_actor_id: string | null;
     author_actor_type: LedgerActorType;

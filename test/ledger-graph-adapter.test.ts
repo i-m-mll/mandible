@@ -131,10 +131,12 @@ describe("ledger graph projection", () => {
 
     expect(projection).not.toBeNull();
     expect(projection?.nodes.map((node) => node.type)).toEqual(["issue", "issue"]);
+    const parentNode = findNode(projection?.nodes ?? [], "Umbrella parent");
+    const childNode = findNode(projection?.nodes ?? [], "Child issue");
     expect(projection?.edges).toEqual([
       expect.objectContaining({
-        source: expect.stringContaining("par1234"),
-        target: expect.stringContaining("chi1234"),
+        source: parentNode.id,
+        target: childNode.id,
         type: "umbrella_child",
         edge_class: "semantic",
         provenance: "ledger_issue_relationships",
@@ -146,8 +148,6 @@ describe("ledger graph projection", () => {
       }),
     ]);
 
-    const parentNode = findNode(projection?.nodes ?? [], "Umbrella parent");
-    const childNode = findNode(projection?.nodes ?? [], "Child issue");
     expect(parentNode.summary).toMatchObject({ children: 1, auth_evidence: 0 });
     expect(parentNode.detail?.layout).toMatchObject({ role: "umbrella_parent", rank: 0 });
     expect(childNode.summary).toMatchObject({

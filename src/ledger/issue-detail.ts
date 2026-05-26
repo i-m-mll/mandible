@@ -5,6 +5,7 @@ import { LedgerStore } from "./store.js";
 import type {
   LedgerActorType,
   LedgerConflict,
+  LedgerEvent,
   LedgerEventSource,
   LedgerIssue,
   LedgerIssueAlias,
@@ -34,12 +35,47 @@ export interface LedgerIssueDetailActor {
 
 export interface LedgerIssueDetailComment {
   id: string;
+  ordinal: number;
   body: string;
   author: LedgerIssueDetailActor;
   source: LedgerEventSource;
   created_at: number;
   updated_at: number | null;
 }
+
+export type LedgerIssueTimelineEntry =
+  | {
+      id: string;
+      kind: "body";
+      ordinal: 0;
+      body: string;
+      author: LedgerIssueDetailActor;
+      source: LedgerEventSource;
+      created_at: number;
+      updated_at: number | null;
+    }
+  | {
+      id: string;
+      kind: "comment";
+      comment_id: string;
+      ordinal: number;
+      body: string;
+      author: LedgerIssueDetailActor;
+      source: LedgerEventSource;
+      created_at: number;
+      updated_at: number | null;
+    }
+  | {
+      id: string;
+      kind: "state";
+      event_type: string;
+      status: LedgerIssueStatus | null;
+      resolution: LedgerIssueResolution | null;
+      author: LedgerIssueDetailActor;
+      source: LedgerEventSource;
+      created_at: number;
+      payload: Record<string, unknown>;
+    };
 
 export interface LedgerIssueSummaryRef {
   id: string;
@@ -179,6 +215,7 @@ export interface LedgerIssueDetailProjection {
   aliases: LedgerIssueDetailAlias[];
   labels: string[];
   comments: LedgerIssueDetailComment[];
+  timeline: LedgerIssueTimelineEntry[];
   relationships: LedgerIssueDetailRelationship[];
   work_units: LedgerIssueDetailWorkUnit[];
   sessions: LedgerIssueDetailSession[];
@@ -199,6 +236,7 @@ export function buildLedgerIssueDetailProjection(
     .filter((comment) => comment.deleted_at === null)
     .map((comment) => ({
       id: comment.id,
+      ordinal: comment.ordinal,
       body: comment.body,
       author: {
         id: comment.author_actor_id,
@@ -210,6 +248,12 @@ export function buildLedgerIssueDetailProjection(
       updated_at: comment.updated_at,
     }));
   const relationships = buildRelationships(db, detail);
+  const author = {
+    id: detail.author_actor_id,
+    type: detail.author_actor_type,
+    display: detail.author_display || actorTypeLabel(detail.author_actor_type),
+  };
+  const timeline = buildTimeline(db, detail, comments, author);
   const conflicts = listIssueConflicts(db, detail.id, comments.map((comment) => comment.id), relationships.map((rel) => rel.id));
   const sync = buildSyncSummary(db, detail, comments.map((comment) => comment.id), relationships.map((rel) => rel.id), conflicts.length);
 
@@ -224,17 +268,14 @@ export function buildLedgerIssueDetailProjection(
     kind: detail.kind,
     priority: detail.priority,
     source: detail.source,
-    author: {
-      id: detail.author_actor_id,
-      type: detail.author_actor_type,
-      display: detail.author_display || actorTypeLabel(detail.author_actor_type),
-    },
+    author,
     created_at: detail.created_at,
     updated_at: detail.updated_at,
     closed_at: detail.closed_at,
     aliases,
     labels,
     comments,
+    timeline,
     relationships,
     work_units: listWorkUnits(db, detail.id),
     sessions: listSessions(db, detail.id),
@@ -268,6 +309,82 @@ function buildRelationships(db: Db, issue: LedgerIssue & {
     updated_at: row.updated_at,
     related_issue: getIssueSummary(db, related),
   }));
+}
+
+function buildTimeline(
+  db: Db,
+  issue: LedgerIssue,
+  comments: LedgerIssueDetailComment[],
+  issueAuthor: LedgerIssueDetailActor,
+): LedgerIssueTimelineEntry[] {
+  const entries: LedgerIssueTimelineEntry[] = [{
+    id: `${issue.id}:body`,
+    kind: "body",
+    ordinal: 0,
+    body: issue.body,
+    author: issueAuthor,
+    source: issue.source,
+    created_at: issue.created_at,
+    updated_at: issue.updated_at,
+  }];
+
+  for (const comment of comments) {
+    entries.push({
+      id: comment.id,
+      kind: "comment",
+      comment_id: comment.id,
+      ordinal: comment.ordinal,
+      body: comment.body,
+      author: comment.author,
+      source: comment.source,
+      created_at: comment.created_at,
+      updated_at: comment.updated_at,
+    });
+  }
+
+  const events = db.prepare(
+    `SELECT * FROM ledger_events
+     WHERE entity_type = 'issue'
+       AND entity_id = ?
+       AND event_type = 'issue.updated'
+     ORDER BY occurred_at, observed_at`,
+  ).all(issue.id) as LedgerEvent[];
+  for (const event of events) {
+    const payload = parseJsonObject(event.payload_json);
+    const patch = parsePatch(payload);
+    const status = typeof patch.status === "string" ? patch.status as LedgerIssueStatus : null;
+    const resolution = typeof patch.resolution === "string" ? patch.resolution as LedgerIssueResolution : null;
+    if (!status && !("resolution" in patch)) continue;
+    entries.push({
+      id: event.id,
+      kind: "state",
+      event_type: event.event_type,
+      status,
+      resolution,
+      author: {
+        id: event.actor_id,
+        type: event.actor_type,
+        display: actorTypeLabel(event.actor_type),
+      },
+      source: event.source,
+      created_at: event.occurred_at,
+      payload,
+    });
+  }
+
+  return entries.sort((a, b) => {
+    if (a.created_at !== b.created_at) return a.created_at - b.created_at;
+    const order = { body: 0, comment: 1, state: 2 };
+    return order[a.kind] - order[b.kind];
+  });
+}
+
+function parsePatch(payload: Record<string, unknown>): Record<string, unknown> {
+  const patch = payload.patch;
+  if (patch && typeof patch === "object" && !Array.isArray(patch)) {
+    return patch as Record<string, unknown>;
+  }
+  return payload;
 }
 
 function listWorkUnits(db: Db, issueId: string): LedgerIssueDetailWorkUnit[] {
@@ -508,7 +625,7 @@ function getProjectInfo(db: Db, projectId: string): LedgerIssueDetailProject {
 
 function getIssueSummary(db: Db, issueId: string): LedgerIssueSummaryRef | null {
   const row = db.prepare(
-    `SELECT id, project_id, title, status, resolution, kind, priority
+    `SELECT id, short_id, project_id, title, status, resolution, kind, priority
      FROM ledger_issues
      WHERE id = ?`,
   ).get(issueId) as LedgerIssue | undefined;
@@ -599,13 +716,8 @@ function mapAlias(alias: LedgerIssueAlias): LedgerIssueDetailAlias {
   };
 }
 
-function displayIssueId(issue: Pick<LedgerIssue, "id">, aliases: LedgerIssueAlias[]): string {
-  const preferred =
-    aliases.find((alias) => alias.is_primary === 1 && alias.alias_kind !== "canonical") ??
-    aliases.find((alias) => alias.alias_kind !== "canonical") ??
-    aliases.find((alias) => alias.is_primary === 1) ??
-    aliases[0];
-  return preferred?.alias || issue.id;
+function displayIssueId(issue: Pick<LedgerIssue, "id" | "short_id">, _aliases: LedgerIssueAlias[]): string {
+  return issue.short_id || issue.id.slice(0, 7);
 }
 
 function mapConflict(row: LedgerConflict): LedgerIssueDetailConflict {

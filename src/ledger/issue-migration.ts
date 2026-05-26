@@ -509,10 +509,7 @@ function ledgerIssueToLegacyDetail(db: Db, checkout: CheckoutProjection, detail:
 }
 
 function displayIssueId(detail: LedgerIssueDetail): string {
-  return detail.aliases.find((alias) => alias.is_primary === 1 && alias.alias_kind !== "canonical")?.alias
-    ?? detail.aliases.find((alias) => alias.alias_kind === "git_bug_human")?.alias
-    ?? detail.aliases.find((alias) => alias.alias_kind !== "canonical")?.alias
-    ?? detail.id;
+  return detail.short_id || detail.id.slice(0, 7);
 }
 
 function parentRef(db: Db, detail: LedgerIssueDetail, labels: string[]): string | undefined {
