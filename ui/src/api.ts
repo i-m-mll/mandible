@@ -593,12 +593,47 @@ export type LedgerIssueDetailActor = {
 
 export type LedgerIssueDetailComment = {
   id: string;
+  ordinal: number;
   body: string;
   author: LedgerIssueDetailActor;
   source: string;
   created_at: number;
   updated_at: number | null;
 };
+
+export type LedgerIssueTimelineEntry =
+  | {
+      id: string;
+      kind: 'body';
+      ordinal: 0;
+      body: string;
+      author: LedgerIssueDetailActor;
+      source: string;
+      created_at: number;
+      updated_at: number | null;
+    }
+  | {
+      id: string;
+      kind: 'comment';
+      comment_id: string;
+      ordinal: number;
+      body: string;
+      author: LedgerIssueDetailActor;
+      source: string;
+      created_at: number;
+      updated_at: number | null;
+    }
+  | {
+      id: string;
+      kind: 'state';
+      event_type: string;
+      status: string | null;
+      resolution: string | null;
+      author: LedgerIssueDetailActor;
+      source: string;
+      created_at: number;
+      payload: Record<string, unknown>;
+    };
 
 export type LedgerIssueSummaryRef = {
   id: string;
@@ -742,6 +777,7 @@ export type LedgerIssueDetailProjection = {
   aliases: Array<{ kind: string; alias: string; external_id: string; source: string; primary: boolean }>;
   labels: string[];
   comments: LedgerIssueDetailComment[];
+  timeline: LedgerIssueTimelineEntry[];
   relationships: LedgerIssueDetailRelationship[];
   work_units: LedgerIssueDetailWorkUnit[];
   sessions: LedgerIssueDetailSession[];

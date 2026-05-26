@@ -170,7 +170,8 @@ describe("ledger store", () => {
 
     const issue = createIssue(store, project.project.id);
 
-    expect(issue.id).toMatch(/^iss_/);
+    expect(issue.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(issue.short_id).toBe(issue.id.slice(0, 7));
     expect(store.listAliases(issue.id).map((alias) => alias.alias_kind)).toContain("canonical");
     expect(store.listEvents({ entity_type: "issue", entity_id: issue.id })).toHaveLength(1);
     expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
@@ -211,7 +212,8 @@ describe("ledger store", () => {
       author_display: "Mandible User",
     });
 
-    expect(comment.id).toMatch(/^com_/);
+    expect(comment.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(comment.ordinal).toBe(1);
     expect(store.listEvents({ entity_type: "comment", entity_id: comment.id })).toHaveLength(1);
     expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
   });

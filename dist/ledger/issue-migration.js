@@ -350,10 +350,7 @@ function ledgerIssueToLegacyDetail(db, checkout, detail) {
     };
 }
 function displayIssueId(detail) {
-    return detail.aliases.find((alias) => alias.is_primary === 1 && alias.alias_kind !== "canonical")?.alias
-        ?? detail.aliases.find((alias) => alias.alias_kind === "git_bug_human")?.alias
-        ?? detail.aliases.find((alias) => alias.alias_kind !== "canonical")?.alias
-        ?? detail.id;
+    return detail.short_id || detail.id.slice(0, 7);
 }
 function parentRef(db, detail, labels) {
     const legacy = labels.find((label) => label.startsWith("parent:"))?.slice("parent:".length);

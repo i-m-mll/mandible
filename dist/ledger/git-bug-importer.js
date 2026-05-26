@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { hashGitBugPayload } from "./git-bug-hash.js";
+import { isSha256Hex } from "./ids.js";
 import { parseGitBugLabel } from "./git-bug-labels.js";
 import { LedgerStore } from "./store.js";
 export async function importGitBugCheckout(options) {
@@ -62,6 +63,11 @@ function importIssueDetail(store, projectId, detail) {
         adapter: "git_bug",
         project_id: projectId,
         external_kind: "git_bug_issue",
+        external_id: fullId,
+    }) ?? store.findExternalRef({
+        adapter: "git_bug",
+        project_id: projectId,
+        external_kind: "git_bug_issue",
         external_id: externalId,
     });
     let issueId = existingRef?.entity_id ?? null;
@@ -73,6 +79,7 @@ function importIssueDetail(store, projectId, detail) {
     let updated = false;
     if (!issueId) {
         const issue = store.createIssue({
+            id: isSha256Hex(fullId) ? fullId : undefined,
             project_id: projectId,
             title: detail.title,
             body: detail.description,
@@ -83,8 +90,7 @@ function importIssueDetail(store, projectId, detail) {
             author_display: detail.author_name,
             created_at: parseGitBugTime(detail.created_at) ?? Date.now(),
             aliases: [
-                { alias_kind: "git_bug_human", alias: externalId, external_id: externalId, source: "git_bug", is_primary: true },
-                { alias_kind: "git_bug_full", alias: fullId, external_id: fullId, source: "git_bug" },
+                ...(externalId !== fullId ? [{ alias_kind: "git_bug_legacy", alias: externalId, external_id: externalId, source: "git_bug" }] : []),
             ],
         });
         issueId = issue.id;
@@ -107,7 +113,7 @@ function importIssueDetail(store, projectId, detail) {
         adapter: "git_bug",
         project_id: projectId,
         external_kind: "git_bug_issue",
-        external_id: externalId,
+        external_id: fullId,
         remote_hash: remoteHash,
         last_imported_at: Date.now(),
         metadata: { full_id: fullId },
@@ -132,6 +138,7 @@ function importIssueDetail(store, projectId, detail) {
             continue;
         }
         const ledgerComment = store.addComment(issueId, {
+            id: isSha256Hex(comment.id) ? comment.id : undefined,
             body: comment.body,
             source: "git_bug",
             actor_type: "external_adapter",

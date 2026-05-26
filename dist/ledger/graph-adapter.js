@@ -103,10 +103,7 @@ function getAliasRows(db) {
       ORDER BY is_primary DESC, alias_kind, alias`).all());
 }
 function displayIssueId(issue, aliases) {
-    return aliases.find((alias) => alias.is_primary === 1 && alias.alias_kind !== "canonical")?.alias
-        ?? aliases.find((alias) => alias.alias_kind === "git_bug_human")?.alias
-        ?? aliases.find((alias) => alias.alias_kind !== "canonical")?.alias
-        ?? issue.id;
+    return issue.short_id || issue.id.slice(0, 7);
 }
 function getLabelsByIssue(db) {
     if (!tableExists(db, "ledger_labels"))
@@ -334,7 +331,7 @@ export function buildLedgerIssueProjection(db, params) {
         return null;
     }
     const projectInfos = getProjectInfos(db);
-    const issueRows = db.prepare(`SELECT id, project_id, title, body, status, resolution, kind, priority,
+    const issueRows = db.prepare(`SELECT id, short_id, project_id, title, body, status, resolution, kind, priority,
             author_actor_id, author_actor_type, author_display, source,
             created_at, updated_at, closed_at
        FROM ledger_issues

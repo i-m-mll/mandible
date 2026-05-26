@@ -129,7 +129,7 @@ describe("ledger issue detail projection", () => {
 
     expect(projection).toMatchObject({
       id: child.id,
-      display_id: "chi1234",
+      display_id: child.short_id,
       project: { repo_id: "repo", repo_name: "repo" },
       title: "Child",
       body: "Child body",
@@ -137,13 +137,17 @@ describe("ledger issue detail projection", () => {
       sync: { state: "conflicted", open_conflicts: 1 },
     });
     expect(projection.comments).toMatchObject([
-      { body: "Implementation note", author: { type: "agent", display: "Codex" }, source: "session" },
+      { ordinal: 1, body: "Implementation note", author: { type: "agent", display: "Codex" }, source: "session" },
+    ]);
+    expect(projection.timeline).toMatchObject([
+      { kind: "body", ordinal: 0, body: "Child body" },
+      { kind: "comment", ordinal: 1, body: "Implementation note" },
     ]);
     expect(projection.relationships).toMatchObject([
       {
         direction: "incoming",
         relationship_type: "parent_child",
-        related_issue: { display_id: "par1234", title: "Umbrella" },
+        related_issue: { display_id: parent.short_id, title: "Umbrella" },
       },
     ]);
     expect(projection.work_units).toMatchObject([

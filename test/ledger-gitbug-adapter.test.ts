@@ -274,7 +274,7 @@ describe("git-bug sync jobs", () => {
 
     expect(job.status).toBe("retryable");
     expect(job.next_retry_at).toBeGreaterThan(Date.now());
-    expect(issue.id).toMatch(/^iss_/);
+    expect(issue.id).toMatch(/^[0-9a-f]{64}$/);
     expect(listLedgerSyncJobs(db, { adapter: "git_bug" })).toHaveLength(1);
   });
 });

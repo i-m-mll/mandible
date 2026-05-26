@@ -12,6 +12,7 @@ interface ProjectInfo {
 
 interface IssueRow {
   id: string;
+  short_id: string;
   project_id: string;
   title: string;
   body: string;
@@ -187,10 +188,7 @@ function getAliasRows(db: Db): Map<string, AliasRow[]> {
 }
 
 function displayIssueId(issue: IssueRow, aliases: AliasRow[]): string {
-  return aliases.find((alias) => alias.is_primary === 1 && alias.alias_kind !== "canonical")?.alias
-    ?? aliases.find((alias) => alias.alias_kind === "git_bug_human")?.alias
-    ?? aliases.find((alias) => alias.alias_kind !== "canonical")?.alias
-    ?? issue.id;
+  return issue.short_id || issue.id.slice(0, 7);
 }
 
 function getLabelsByIssue(db: Db): Map<string, string[]> {
@@ -473,7 +471,7 @@ export function buildLedgerIssueProjection(
 
   const projectInfos = getProjectInfos(db);
   const issueRows = db.prepare(
-    `SELECT id, project_id, title, body, status, resolution, kind, priority,
+    `SELECT id, short_id, project_id, title, body, status, resolution, kind, priority,
             author_actor_id, author_actor_type, author_display, source,
             created_at, updated_at, closed_at
        FROM ledger_issues
