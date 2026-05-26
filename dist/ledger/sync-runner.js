@@ -1,6 +1,7 @@
 import { createLedgerId } from "./ids.js";
 import { exportGitBugOutbox } from "./git-bug-exporter.js";
 import { importGitBugCheckout } from "./git-bug-importer.js";
+import { resolveProjectForCheckout } from "./projects.js";
 export async function runGitBugSync(options) {
     const now = Date.now();
     const jobId = createLedgerId("job", { now });
@@ -73,6 +74,57 @@ export async function runGitBugSync(options) {
     }
     return getJob(options.db, jobId);
 }
+export async function runGitBugSyncForRepos(options) {
+    const selected = selectRepos(options.repos, options.repoRefs);
+    const results = [];
+    for (const repo of selected) {
+        if (!repo.exists || repo.excluded) {
+            results.push({
+                repo_id: repo.id,
+                repo_name: repo.name,
+                root: repo.root,
+                status: "skipped",
+                error: repo.excluded ? "repo is excluded" : "repo path does not exist",
+            });
+            continue;
+        }
+        try {
+            const { project, checkout } = resolveProjectForCheckout(options.db, {
+                root: repo.root,
+                name: repo.name,
+                workRepoId: repo.id,
+                defaultBranch: repo.default_branch,
+            });
+            const job = await runGitBugSync({
+                db: options.db,
+                client: options.client,
+                checkout,
+                direction: options.direction,
+            });
+            results.push({
+                repo_id: repo.id,
+                repo_name: repo.name,
+                root: repo.root,
+                project_id: project.id,
+                checkout_id: checkout.id,
+                status: job.status,
+                job_id: job.id,
+                error: job.last_error ?? undefined,
+                stats: parseStats(job.stats_json),
+            });
+        }
+        catch (error) {
+            results.push({
+                repo_id: repo.id,
+                repo_name: repo.name,
+                root: repo.root,
+                status: "failed",
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+    return summarizeCorpusSync(options.direction, results);
+}
 export function listLedgerSyncJobs(db, filters = {}) {
     if (filters.adapter && filters.status) {
         return db.prepare(`SELECT * FROM ledger_sync_jobs
@@ -103,4 +155,52 @@ function getJob(db, id) {
     if (!row)
         throw new Error(`Ledger sync job not found: ${id}`);
     return row;
+}
+function selectRepos(repos, repoRefs) {
+    if (!repoRefs || repoRefs.length === 0)
+        return repos;
+    const wanted = new Set(repoRefs);
+    return repos.filter((repo) => wanted.has(repo.id) ||
+        wanted.has(repo.name) ||
+        wanted.has(repo.root));
+}
+function summarizeCorpusSync(direction, results) {
+    let completed = 0;
+    let failed = 0;
+    let retryable = 0;
+    let conflicted = 0;
+    let skipped = 0;
+    for (const result of results) {
+        if (result.status === "completed")
+            completed++;
+        else if (result.status === "retryable")
+            retryable++;
+        else if (result.status === "conflicted")
+            conflicted++;
+        else if (result.status === "skipped")
+            skipped++;
+        else if (result.status === "failed")
+            failed++;
+    }
+    return {
+        direction,
+        total: results.length,
+        completed,
+        failed,
+        retryable,
+        conflicted,
+        skipped,
+        results,
+    };
+}
+function parseStats(value) {
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed
+            : {};
+    }
+    catch {
+        return {};
+    }
 }

@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import type { RepoInfo } from "../work-scanner.js";
 import type { GitBugClient } from "./git-bug-client.js";
 import type { LedgerProjectCheckout } from "./types.js";
 export type LedgerSyncDirection = "import" | "export" | "full";
@@ -26,7 +27,36 @@ export interface RunGitBugSyncOptions {
     checkout: Pick<LedgerProjectCheckout, "id" | "project_id" | "root">;
     direction: LedgerSyncDirection;
 }
+export interface RunGitBugSyncForReposOptions {
+    db: Db;
+    client: GitBugClient;
+    repos: RepoInfo[];
+    direction: LedgerSyncDirection;
+    repoRefs?: string[];
+}
+export interface RepoGitBugSyncResult {
+    repo_id: string;
+    repo_name: string;
+    root: string;
+    project_id?: string;
+    checkout_id?: string;
+    status: "completed" | "failed" | "skipped" | LedgerSyncJobStatus;
+    job_id?: string;
+    error?: string;
+    stats?: Record<string, unknown>;
+}
+export interface GitBugCorpusSyncResult {
+    direction: LedgerSyncDirection;
+    total: number;
+    completed: number;
+    failed: number;
+    retryable: number;
+    conflicted: number;
+    skipped: number;
+    results: RepoGitBugSyncResult[];
+}
 export declare function runGitBugSync(options: RunGitBugSyncOptions): Promise<LedgerSyncJob>;
+export declare function runGitBugSyncForRepos(options: RunGitBugSyncForReposOptions): Promise<GitBugCorpusSyncResult>;
 export declare function listLedgerSyncJobs(db: Db, filters?: {
     adapter?: string;
     status?: LedgerSyncJobStatus;

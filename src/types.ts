@@ -194,7 +194,7 @@ export interface AuthOutputChunk {
   timestamp: number;
 }
 
-// --- Issue tracking types (git-bug) ---
+// --- Issue tracking types ---
 
 export interface GitBugIssue {
   id: string;

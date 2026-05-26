@@ -228,7 +228,7 @@ export function registerTools(
   // 4. mandible_get_issues
   server.tool(
     "mandible_get_issues",
-    "List open issues from git-bug across tracked repositories.",
+    "List open issues from the Mandible ledger across tracked repositories.",
     {
       repo: z
         .string()

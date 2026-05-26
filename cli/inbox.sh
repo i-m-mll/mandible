@@ -4,7 +4,7 @@
 # Usage:
 #   mandible inbox                        Pretty-print pending items for current branch
 #   mandible inbox check                  Machine-friendly one-liner for hooks
-#   mandible inbox add "text"             Create git-bug reminder (label: reminder)
+#   mandible inbox add "text"             Create Mandible reminder issue (label: reminder)
 #   mandible inbox ack <type> <id>        Acknowledge an item (type: continuation|auth_result)
 #   mandible inbox watch <request-id>  Poll until auth request resolves (timeout 30 min)
 
@@ -117,24 +117,31 @@ cmd_add() {
     exit 1
   fi
 
-  if ! command -v git-bug >/dev/null 2>&1; then
-    print -u2 "error: git-bug not found"
+  if ! command -v jq >/dev/null 2>&1; then
+    print -u2 "error: jq not found"
     exit 1
   fi
 
-  local issue_id
-  issue_id=$(git-bug bug new -t "$text" -m "Reminder created via mandible inbox on branch $branch" --non-interactive 2>&1)
-  if [[ $? -ne 0 ]]; then
-    print -u2 "error: failed to create issue: $issue_id"
+  local root repo_name payload response reminder_id
+  root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  repo_name=$(basename "$root")
+  payload=$(jq -n \
+    --arg title "$text" \
+    --arg body "Reminder created via mandible inbox on branch $branch" \
+    --arg root "$root" \
+    '{title:$title, body:$body, root:$root, labels:["reminder"]}')
+
+  response=$(api_post "${MANDIBLE_BASE}/api/issues/${repo_name}" "$payload") || {
+    print -u2 "error: failed to create reminder (Mandible unreachable or ledger writes unavailable)"
+    exit 1
+  }
+
+  reminder_id=$(printf '%s' "$response" | jq -r '.display_id // .id // empty')
+  if [[ -z "$reminder_id" ]]; then
+    print -u2 "error: failed to parse created reminder ID"
     exit 1
   fi
-
-  # Extract the short ID
-  local short_id
-  short_id=$(printf '%s' "$issue_id" | sed 's/ created$//')
-
-  git-bug bug label "$short_id" reminder 2>/dev/null || true
-  print "Created reminder: $short_id"
+  print "Created reminder: $reminder_id"
 }
 
 cmd_ack() {
@@ -244,7 +251,7 @@ case "${1:-}" in
     print "Commands:"
     print "  (none)              Pretty-print pending items for current branch"
     print "  check               Machine-friendly one-liner (for hooks)"
-    print "  add \"text\"          Create git-bug reminder with 'reminder' label"
+    print "  add \"text\"          Create Mandible reminder issue with 'reminder' label"
     print "  ack <type> <id>     Acknowledge an item"
     print "  watch <id>          Poll until auth request resolves"
     exit 0

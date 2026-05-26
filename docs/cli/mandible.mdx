@@ -65,7 +65,7 @@ Query and manage the session inbox.
 ```
 mandible inbox                         Pretty-print pending items for current branch
 mandible inbox check                   Machine-friendly one-liner (for hooks)
-mandible inbox add "text"              Create git-bug reminder with 'reminder' label
+mandible inbox add "text"              Create Mandible reminder issue with 'reminder' label
 mandible inbox ack <type> <id>         Acknowledge an item (type: continuation|auth_result)
 mandible inbox watch <request-id>      Poll until auth request resolves (timeout: 30 min)
 ```
@@ -76,13 +76,13 @@ mandible inbox watch <request-id>      Poll until auth request resolves (timeout
 |---|---|
 | *(none)* | Pretty-print continuations, auth results, and open issues for the current branch |
 | `check` | Machine-friendly summary line for use in shell hooks |
-| `add "text"` | Create a git-bug issue with the `reminder` label |
+| `add "text"` | Create a Mandible issue with the `reminder` label |
 | `ack <type> <id>` | Acknowledge a continuation or auth result |
 | `watch <id>` | Poll `GET /api/auth/request/:id` every 5 seconds until resolved or timeout |
 
 ### mandible issue
 
-Issue management wrapper around git-bug with Mandible integration.
+Issue management wrapper around the Mandible ledger.
 
 ```
 mandible issue new -t <title> -m <body> [--label <label>]...
@@ -102,7 +102,7 @@ mandible issue label rm <id> <label>
 | `new` | Create a new issue with title, body, and optional labels |
 | `list` | List issues (default: open only) |
 | `show` | Show issue details |
-| `close` | Close an issue, recording the resolving commit SHA. Adds a git-bug comment, appends a git note, and reports the resolution to the Mandible API. |
+| `close` | Close an issue, recording the resolving commit SHA. Adds a ledger comment, appends a git note, and reports the resolution to the Mandible API. |
 | `open` | Reopen a closed issue |
 | `comment` | Add a comment to an issue |
 | `label add` | Add a label |

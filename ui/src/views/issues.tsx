@@ -139,8 +139,8 @@ function labelColor(label: string): { bg: string; fg: string } {
   return LABEL_COLORS[Math.abs(hash) % LABEL_COLORS.length];
 }
 
-// Bug: cce48c1 — maps git-bug internal label names → user-facing display text
-// "error" is the git-bug label for bug-fix issues; displaying it as "error" looks like an error state.
+// Bug: cce48c1 — maps internal label names → user-facing display text.
+// "error" is the legacy bug-fix label; displaying it as "error" looks like an error state.
 const LABEL_DISPLAY_NAMES: Record<string, string> = {
   error: 'bug',
   umbrella: 'umbrella',
@@ -679,7 +679,7 @@ export function IssuesView({
         {items.length === 0 ? (
           <div className="issues-tree__empty">
             {repos.length === 0
-              ? 'No repos with git-bug issues found.'
+              ? 'No repos with issues found.'
               : 'No issues match the current filter.'}
           </div>
         ) : (

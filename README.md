@@ -26,7 +26,7 @@ Tracks all running Claude Code, Codex, and Gemini sessions:
 - **Status**: active (green), ended, or dead (PID vanished)
 - **Navigation**: click to switch your terminal multiplexer (Zellij/tmux) to the session's pane
 - **Kill / Pin**: terminate or protect sessions from the automatic reaper
-- **Issues & Projects**: linked git-bug issues and repo associations
+- **Issues & Projects**: linked Mandible issues and repo associations
 - **Channel sessions**: Claude CLI sessions connected via MCP channel server appear with a link badge
 
 Session discovery runs on startup and periodically via the reaper timer.
@@ -68,7 +68,7 @@ A tree-structured editor for managing agent instruction sets:
 
 ### Issue Tracking
 
-Aggregates git-bug issues from all registered repos:
+Aggregates Mandible ledger issues from all registered repos:
 
 - Grouped by repo with open/closed counts
 - Issue detail view with title, labels, comments
@@ -115,7 +115,7 @@ SDK session stream events are cached in IndexedDB on the client for instant hydr
 
 - **Node.js** >= 18 (ESM, `node:` imports, `structuredClone`)
 - **macOS** (primary target; Linux should work but is less tested)
-- **git-bug** for issue tracking features (optional but recommended)
+- **git-bug** for legacy issue import/export compatibility (optional)
 - **node-pty** native module (postinstall script fixes permissions)
 
 ### Installation
@@ -186,7 +186,7 @@ Channel-connected sessions get tool-mediated access to inbox, issues, work units
 |  |    Runtime Manager - Zone 2 patches         |  |
 |  |    Channel Registry - MCP channel sessions  |  |
 |  |    Work Scanner    - git repo/branch scan   |  |
-|  |    Issue Scanner   - git-bug ref parsing    |  |
+|  |    Issue Ledger    - local issue storage    |  |
 |  |    Ingestion       - transcript watching    |  |
 |  |    Push Manager    - SSH batch push         |  |
 |  |    Reaper Timer    - dead session cleanup   |  |

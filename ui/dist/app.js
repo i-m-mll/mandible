@@ -14867,7 +14867,7 @@ function createDOMPurify() {
     HTMLTemplateElement,
     Node: Node2,
     Element: Element2,
-    NodeFilter,
+    NodeFilter: NodeFilter2,
     NamedNodeMap = window2.NamedNodeMap || window2.MozNamedAttrMap,
     HTMLFormElement,
     DOMParser,
@@ -15270,7 +15270,7 @@ function createDOMPurify() {
       root2.ownerDocument || root2,
       root2,
       // eslint-disable-next-line no-bitwise
-      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_TEXT | NodeFilter.SHOW_PROCESSING_INSTRUCTION | NodeFilter.SHOW_CDATA_SECTION,
+      NodeFilter2.SHOW_ELEMENT | NodeFilter2.SHOW_COMMENT | NodeFilter2.SHOW_TEXT | NodeFilter2.SHOW_PROCESSING_INSTRUCTION | NodeFilter2.SHOW_CDATA_SECTION,
       null
     );
   };
@@ -15750,10 +15750,10 @@ function LedgerIssueDetail({
         }
       )
     ] }),
-    /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-issue-detail__body spec-panel", empty: "No description.", source: detail.body }) }),
+    /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-issue-detail__body spec-panel", empty: "No description.", source: detail.body, detail }) }),
     /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
       /* @__PURE__ */ u3(SectionTitle, { title: "Comments", count: detail.comments.length }),
-      detail.comments.length === 0 ? /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__empty", children: "No comments yet." }) : /* @__PURE__ */ u3("div", { className: "ledger-comment-list", children: detail.comments.map((comment) => /* @__PURE__ */ u3(CommentCard, { comment }, comment.id)) }),
+      detail.comments.length === 0 ? /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__empty", children: "No comments yet." }) : /* @__PURE__ */ u3("div", { className: "ledger-comment-list", children: detail.comments.map((comment) => /* @__PURE__ */ u3(CommentCard, { comment, detail }, comment.id)) }),
       onAddComment && /* @__PURE__ */ u3("div", { className: "ledger-comment-composer", children: !showComposer ? /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost", onClick: () => setShowComposer(true), children: "Add Comment" }) : /* @__PURE__ */ u3(k, { children: [
         /* @__PURE__ */ u3(
           "textarea",
@@ -15813,15 +15813,18 @@ function StatusPill({
   }
   return /* @__PURE__ */ u3("span", { className: `status-pill status-pill--lg ${cls}`, children: label });
 }
-function CommentCard({ comment }) {
-  return /* @__PURE__ */ u3("div", { className: "ledger-comment-card", children: [
+function CommentCard({
+  comment,
+  detail
+}) {
+  return /* @__PURE__ */ u3("div", { className: "ledger-comment-card", id: `comment-${comment.id}`, children: [
     /* @__PURE__ */ u3("div", { className: "ledger-comment-card__header", children: [
       /* @__PURE__ */ u3("span", { children: comment.author.display }),
       /* @__PURE__ */ u3("em", { children: comment.author.type.replace(/_/g, " ") }),
       /* @__PURE__ */ u3("small", { children: comment.source }),
       /* @__PURE__ */ u3("time", { children: formatRelativeTime3(comment.created_at) })
     ] }),
-    /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-comment-card__body spec-panel", source: comment.body, empty: "" })
+    /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-comment-card__body spec-panel", source: comment.body, empty: "", detail })
   ] });
 }
 function RelationshipList({
@@ -15940,17 +15943,118 @@ function SectionTitle({ title, count }) {
     count !== void 0 && /* @__PURE__ */ u3("em", { children: count })
   ] });
 }
-function MarkdownBlock({ source, className, empty: empty2 }) {
+function MarkdownBlock({
+  source,
+  className,
+  empty: empty2,
+  detail
+}) {
   const html4 = T2(() => {
     if (!source)
       return "";
     const parsed = marked.parse(source, { async: false });
-    return sanitizeMarkdown(typeof parsed === "string" ? parsed : "");
-  }, [source]);
+    const sanitized = sanitizeMarkdown(typeof parsed === "string" ? parsed : "");
+    return linkifyLedgerRefs(sanitized, detail);
+  }, [source, detail.id, detail.display_id, detail.project.repo_id]);
   if (!html4) {
     return /* @__PURE__ */ u3("div", { className: `${className} spec-panel--empty`, children: empty2 });
   }
   return /* @__PURE__ */ u3("div", { className, dangerouslySetInnerHTML: { __html: html4 } });
+}
+var REF_PATTERN = /\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,16})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
+function linkifyLedgerRefs(html4, detail) {
+  if (typeof document === "undefined" || !html4)
+    return html4;
+  const container = document.createElement("div");
+  container.innerHTML = html4;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node2) {
+      const parent = node2.parentElement;
+      if (!parent)
+        return NodeFilter.FILTER_REJECT;
+      if (parent.closest("a, code, pre"))
+        return NodeFilter.FILTER_REJECT;
+      REF_PATTERN.lastIndex = 0;
+      return REF_PATTERN.test(node2.nodeValue ?? "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    }
+  });
+  const nodes = [];
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node);
+    node = walker.nextNode();
+  }
+  for (const textNode of nodes) {
+    const fragment = document.createDocumentFragment();
+    const text2 = textNode.nodeValue ?? "";
+    REF_PATTERN.lastIndex = 0;
+    let lastIndex = 0;
+    let match;
+    while (match = REF_PATTERN.exec(text2)) {
+      if (match.index > lastIndex) {
+        fragment.appendChild(document.createTextNode(text2.slice(lastIndex, match.index)));
+      }
+      const link2 = refLink(match, detail);
+      fragment.appendChild(link2 ?? document.createTextNode(match[0]));
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text2.length) {
+      fragment.appendChild(document.createTextNode(text2.slice(lastIndex)));
+    }
+    textNode.replaceWith(fragment);
+  }
+  return container.innerHTML;
+}
+function refLink(match, detail) {
+  const explicitType = match[1];
+  const explicitRef = match[2];
+  const hashIssueRef = match[3];
+  const canonicalIssueRef = !explicitType && !hashIssueRef ? match[0] : "";
+  const ref = explicitRef || hashIssueRef || canonicalIssueRef;
+  if (!ref)
+    return null;
+  const anchor = document.createElement("a");
+  anchor.className = "ledger-xref";
+  anchor.textContent = match[0];
+  if (explicitType === "comment") {
+    const parsed = parseCommentRef(ref, detail);
+    if (!parsed)
+      return null;
+    anchor.href = issueHref(parsed.repo, parsed.issue, parsed.comment);
+    anchor.title = `Open comment ${parsed.comment}`;
+    return anchor;
+  }
+  const parsedIssue = parseIssueRef(ref, detail);
+  if (!parsedIssue)
+    return null;
+  anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
+  anchor.title = `Open issue ${parsedIssue.issue}`;
+  return anchor;
+}
+function parseIssueRef(ref, detail) {
+  const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
+  if (scoped)
+    return { repo: scoped[1], issue: scoped[2] };
+  return { repo: detail.project.repo_id ?? detail.project.display_name, issue: ref.replace(/^#/, "") };
+}
+function parseCommentRef(ref, detail) {
+  if (ref.startsWith("#")) {
+    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: detail.display_id, comment: ref.slice(1) };
+  }
+  const scoped = ref.match(/^([^/#]+)\/([^/#]+)#([^#]+)$/);
+  if (scoped)
+    return { repo: scoped[1], issue: scoped[2], comment: scoped[3] };
+  const currentProject = ref.match(/^([^/#]+)#([^#]+)$/);
+  if (currentProject) {
+    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: currentProject[1], comment: currentProject[2] };
+  }
+  return null;
+}
+function issueHref(repo, issue, comment) {
+  const params = new URLSearchParams({ repo, issue });
+  if (comment)
+    params.set("comment", comment);
+  return `#/issues?${params.toString()}`;
 }
 function inlineMarkdown(source) {
   const parsed = marked.parse(source || "", { async: false });
@@ -16079,7 +16183,13 @@ var LABEL_INTERNAL_NAMES = {
   feature: "feature",
   deferred: "deferred"
 };
-function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
+function IssuesView({
+  repos,
+  onRescan,
+  initialRepoId,
+  initialIssueId,
+  initialCommentId
+}) {
   const [selectedRepoId, setSelectedRepoId] = d2(null);
   const [selectedIssueId, setSelectedIssueId] = d2(null);
   const [filter2, setFilter] = d2("");
@@ -16098,6 +16208,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [linkedSessions, setLinkedSessions] = d2([]);
   const [issueContext, setIssueContext] = d2(null);
   const lastAppliedDeepLinkRef = A2(null);
+  const lastScrolledCommentRef = A2(null);
   const resolveRepoId = q2((rawRepoId) => {
     if (!rawRepoId)
       return null;
@@ -16130,7 +16241,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   y2(() => {
     if (!initialIssueId)
       return;
-    const deepLinkKey = `${initialRepoId ?? ""}:${initialIssueId}`;
+    const deepLinkKey = `${initialRepoId ?? ""}:${initialIssueId}:${initialCommentId ?? ""}`;
     if (lastAppliedDeepLinkRef.current === deepLinkKey)
       return;
     lastAppliedDeepLinkRef.current = deepLinkKey;
@@ -16160,7 +16271,19 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
         });
       });
     }
-  }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
+  }, [initialRepoId, initialIssueId, initialCommentId, resolveRepoId, resolveIssueId]);
+  y2(() => {
+    if (!ledgerIssueDetail || !initialCommentId)
+      return;
+    const scrollKey = `${ledgerIssueDetail.id}:${initialCommentId}`;
+    if (lastScrolledCommentRef.current === scrollKey)
+      return;
+    const comment = document.getElementById(`comment-${initialCommentId}`);
+    if (!comment)
+      return;
+    lastScrolledCommentRef.current = scrollKey;
+    comment.scrollIntoView({ block: "center" });
+  }, [ledgerIssueDetail, initialCommentId]);
   y2(() => {
     if (repoFilter) {
       const repo = repos.find((r3) => r3.repo_id === repoFilter);
@@ -16525,7 +16648,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           }
         )
       ] }),
-      items.length === 0 ? /* @__PURE__ */ u3("div", { className: "issues-tree__empty", children: repos.length === 0 ? "No repos with git-bug issues found." : "No issues match the current filter." }) : /* @__PURE__ */ u3("div", { className: "issues-list", children: items.map((item) => /* @__PURE__ */ u3(
+      items.length === 0 ? /* @__PURE__ */ u3("div", { className: "issues-tree__empty", children: repos.length === 0 ? "No repos with issues found." : "No issues match the current filter." }) : /* @__PURE__ */ u3("div", { className: "issues-list", children: items.map((item) => /* @__PURE__ */ u3(
         "button",
         {
           type: "button",
@@ -44840,7 +44963,8 @@ function App() {
             repos: state.issueRepos,
             onRescan: handleIssueRescan,
             initialRepoId: route.params.repo,
-            initialIssueId: route.params.issue
+            initialIssueId: route.params.issue,
+            initialCommentId: route.params.comment
           }
         ),
         route.tab === "review" && /* @__PURE__ */ u3(
