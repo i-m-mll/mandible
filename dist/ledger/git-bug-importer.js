@@ -27,11 +27,7 @@ export async function importGitBugCheckout(options) {
     const imported = [];
     for (const summary of summaries.value) {
         const detailResult = await options.client.getIssue(options.checkout.root, summary.human_id || summary.id);
-        if (!detailResult.ok) {
-            result.skipped++;
-            continue;
-        }
-        const detail = detailResult.value;
+        const detail = detailResult.ok ? detailResult.value : summaryToDetail(summary);
         const importedIssue = importIssueDetail(store, options.checkout.project_id, detail);
         result.imported++;
         if (importedIssue.created)
@@ -48,6 +44,15 @@ export async function importGitBugCheckout(options) {
         result.conflicts += relationships.conflicts;
     }
     return result;
+}
+function summaryToDetail(summary) {
+    return {
+        ...summary,
+        description: "",
+        description_comment_id: "",
+        comments: [],
+        raw: summary,
+    };
 }
 function importIssueDetail(store, projectId, detail) {
     const externalId = detail.human_id || detail.id;

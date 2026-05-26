@@ -207,7 +207,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }
 
   // Periodic issue rescan every 5 minutes to keep the cache fresh as
-  // git-bug issues are created/closed in the background.
+  // Issue operations are routed through the Mandible ledger in the background.
   const ISSUE_SCAN_INTERVAL_MS = 5 * 60 * 1_000;
   const issueRescanTimer = setInterval(() => {
     void issueScanner.scanAllAsync().catch((error) => {

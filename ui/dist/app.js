@@ -12120,9 +12120,6 @@ function EntityPill({ type, id: id2, label, href, repoId }) {
     }
   );
 }
-function EntityPillList({ children: children2 }) {
-  return /* @__PURE__ */ u3("div", { className: "entity-pill-list", children: children2 });
-}
 
 // ui/src/views/auth.tsx
 init_api();
@@ -14867,7 +14864,7 @@ function createDOMPurify() {
     HTMLTemplateElement,
     Node: Node2,
     Element: Element2,
-    NodeFilter,
+    NodeFilter: NodeFilter2,
     NamedNodeMap = window2.NamedNodeMap || window2.MozNamedAttrMap,
     HTMLFormElement,
     DOMParser,
@@ -15270,7 +15267,7 @@ function createDOMPurify() {
       root2.ownerDocument || root2,
       root2,
       // eslint-disable-next-line no-bitwise
-      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_COMMENT | NodeFilter.SHOW_TEXT | NodeFilter.SHOW_PROCESSING_INSTRUCTION | NodeFilter.SHOW_CDATA_SECTION,
+      NodeFilter2.SHOW_ELEMENT | NodeFilter2.SHOW_COMMENT | NodeFilter2.SHOW_TEXT | NodeFilter2.SHOW_PROCESSING_INSTRUCTION | NodeFilter2.SHOW_CDATA_SECTION,
       null
     );
   };
@@ -15713,15 +15710,12 @@ function LedgerIssueDetail({
             onOpenAuth: onOpenEntity ? (auth) => onOpenEntity("auth_request", auth.id) : void 0
           }
         ),
-        /* @__PURE__ */ u3("span", { className: `ledger-sync-pill ledger-sync-pill--${syncTone}`, children: syncLabel(detail.sync.state) })
+        detail.sync.state !== "clean" && /* @__PURE__ */ u3("span", { className: `ledger-sync-pill ledger-sync-pill--${syncTone}`, children: syncLabel(detail.sync.state) })
       ] })
     ] }),
     /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__meta", children: [
-      /* @__PURE__ */ u3("span", { children: detail.kind }),
-      /* @__PURE__ */ u3("span", { children: detail.priority }),
       /* @__PURE__ */ u3("span", { children: detail.author.display }),
-      /* @__PURE__ */ u3("span", { children: formatRelativeTime3(detail.created_at) }),
-      detail.source && /* @__PURE__ */ u3("span", { children: detail.source })
+      /* @__PURE__ */ u3("span", { children: formatRelativeTime3(detail.created_at) })
     ] }),
     detail.labels.length > 0 && /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__labels", children: [
       detail.labels.map((label) => /* @__PURE__ */ u3("span", { className: "ledger-label", children: displayLabel(label) }, label)),
@@ -15750,10 +15744,10 @@ function LedgerIssueDetail({
         }
       )
     ] }),
-    /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-issue-detail__body spec-panel", empty: "No description.", source: detail.body }) }),
+    /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-issue-detail__body spec-panel", empty: "No description.", source: detail.body, detail }) }),
     /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
       /* @__PURE__ */ u3(SectionTitle, { title: "Comments", count: detail.comments.length }),
-      detail.comments.length === 0 ? /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__empty", children: "No comments yet." }) : /* @__PURE__ */ u3("div", { className: "ledger-comment-list", children: detail.comments.map((comment) => /* @__PURE__ */ u3(CommentCard, { comment }, comment.id)) }),
+      detail.comments.length === 0 ? /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__empty", children: "No comments yet." }) : /* @__PURE__ */ u3("div", { className: "ledger-comment-list", children: detail.comments.map((comment) => /* @__PURE__ */ u3(CommentCard, { comment, detail }, comment.id)) }),
       onAddComment && /* @__PURE__ */ u3("div", { className: "ledger-comment-composer", children: !showComposer ? /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost", onClick: () => setShowComposer(true), children: "Add Comment" }) : /* @__PURE__ */ u3(k, { children: [
         /* @__PURE__ */ u3(
           "textarea",
@@ -15783,17 +15777,6 @@ function LedgerIssueDetail({
       /* @__PURE__ */ u3(SectionTitle, { title: "Sessions", count: detail.sessions.length }),
       /* @__PURE__ */ u3(SessionHistory, { active: activeSessions, historical: historicalSessions, onOpenEntity })
     ] }),
-    detail.work_units.length > 0 && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
-      /* @__PURE__ */ u3(SectionTitle, { title: "Work Units", count: detail.work_units.length }),
-      /* @__PURE__ */ u3("div", { className: "ledger-kv-list", children: detail.work_units.map((work) => /* @__PURE__ */ u3("div", { className: "ledger-kv-card", children: [
-        /* @__PURE__ */ u3("span", { children: work.state }),
-        /* @__PURE__ */ u3("code", { children: work.branch ?? work.id }),
-        work.assigned_session_id && /* @__PURE__ */ u3("small", { children: [
-          "assigned ",
-          work.assigned_session_id.slice(0, 10)
-        ] })
-      ] }, work.id)) })
-    ] }),
     (detail.sync.state !== "clean" || detail.conflicts.length > 0) && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
       /* @__PURE__ */ u3(SectionTitle, { title: "Sync", count: detail.conflicts.length || void 0 }),
       /* @__PURE__ */ u3(SyncStatus, { detail, onResolveConflict, busy })
@@ -15813,15 +15796,18 @@ function StatusPill({
   }
   return /* @__PURE__ */ u3("span", { className: `status-pill status-pill--lg ${cls}`, children: label });
 }
-function CommentCard({ comment }) {
-  return /* @__PURE__ */ u3("div", { className: "ledger-comment-card", children: [
+function CommentCard({
+  comment,
+  detail
+}) {
+  return /* @__PURE__ */ u3("div", { className: "ledger-comment-card", id: `comment-${comment.id}`, children: [
     /* @__PURE__ */ u3("div", { className: "ledger-comment-card__header", children: [
       /* @__PURE__ */ u3("span", { children: comment.author.display }),
       /* @__PURE__ */ u3("em", { children: comment.author.type.replace(/_/g, " ") }),
       /* @__PURE__ */ u3("small", { children: comment.source }),
       /* @__PURE__ */ u3("time", { children: formatRelativeTime3(comment.created_at) })
     ] }),
-    /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-comment-card__body spec-panel", source: comment.body, empty: "" })
+    /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-comment-card__body spec-panel", source: comment.body, empty: "", detail })
   ] });
 }
 function RelationshipList({
@@ -15940,17 +15926,127 @@ function SectionTitle({ title, count }) {
     count !== void 0 && /* @__PURE__ */ u3("em", { children: count })
   ] });
 }
-function MarkdownBlock({ source, className, empty: empty2 }) {
+function MarkdownBlock({
+  source,
+  className,
+  empty: empty2,
+  detail
+}) {
   const html4 = T2(() => {
     if (!source)
       return "";
     const parsed = marked.parse(source, { async: false });
-    return sanitizeMarkdown(typeof parsed === "string" ? parsed : "");
-  }, [source]);
+    const sanitized = sanitizeMarkdown(typeof parsed === "string" ? parsed : "");
+    return linkifyLedgerRefs(sanitized, detail);
+  }, [source, detail.id, detail.display_id, detail.project.repo_id]);
   if (!html4) {
     return /* @__PURE__ */ u3("div", { className: `${className} spec-panel--empty`, children: empty2 });
   }
   return /* @__PURE__ */ u3("div", { className, dangerouslySetInnerHTML: { __html: html4 } });
+}
+var REF_PATTERN = /\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,16})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
+function linkifyLedgerRefs(html4, detail) {
+  if (typeof document === "undefined" || !html4)
+    return html4;
+  const container = document.createElement("div");
+  container.innerHTML = html4;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node2) {
+      const parent = node2.parentElement;
+      if (!parent)
+        return NodeFilter.FILTER_REJECT;
+      if (parent.closest("a, code, pre"))
+        return NodeFilter.FILTER_REJECT;
+      REF_PATTERN.lastIndex = 0;
+      return REF_PATTERN.test(node2.nodeValue ?? "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    }
+  });
+  const nodes = [];
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node);
+    node = walker.nextNode();
+  }
+  for (const textNode of nodes) {
+    const fragment = document.createDocumentFragment();
+    const text2 = textNode.nodeValue ?? "";
+    REF_PATTERN.lastIndex = 0;
+    let lastIndex = 0;
+    let match;
+    while (match = REF_PATTERN.exec(text2)) {
+      if (match.index > lastIndex) {
+        fragment.appendChild(document.createTextNode(text2.slice(lastIndex, match.index)));
+      }
+      const link2 = refLink(match, detail);
+      fragment.appendChild(link2 ?? document.createTextNode(match[0]));
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text2.length) {
+      fragment.appendChild(document.createTextNode(text2.slice(lastIndex)));
+    }
+    textNode.replaceWith(fragment);
+  }
+  return container.innerHTML;
+}
+function refLink(match, detail) {
+  const explicitType = match[1];
+  const explicitRef = match[2];
+  const hashIssueRef = match[3];
+  const canonicalIssueRef = !explicitType && !hashIssueRef ? match[0] : "";
+  const ref = explicitRef || hashIssueRef || canonicalIssueRef;
+  if (!ref)
+    return null;
+  const anchor = document.createElement("a");
+  anchor.className = "ledger-xref";
+  if (explicitType === "comment") {
+    const parsed = parseCommentRef(ref, detail);
+    if (!parsed)
+      return null;
+    anchor.textContent = commentRefLabel(parsed, detail);
+    anchor.href = issueHref(parsed.repo, parsed.issue, parsed.comment);
+    anchor.title = `Open comment ${parsed.comment}`;
+    return anchor;
+  }
+  const parsedIssue = parseIssueRef(ref, detail);
+  if (!parsedIssue)
+    return null;
+  anchor.textContent = explicitType ? issueRefLabel(parsedIssue, detail) : match[0];
+  anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
+  anchor.title = `Open issue ${parsedIssue.issue}`;
+  return anchor;
+}
+function issueRefLabel(parsed, detail) {
+  const currentRepo = detail.project.repo_id ?? detail.project.display_name;
+  return parsed.repo === currentRepo ? parsed.issue : `${parsed.repo}/${parsed.issue}`;
+}
+function commentRefLabel(parsed, detail) {
+  const issueLabel = issueRefLabel(parsed, detail);
+  return `${issueLabel}#${parsed.comment}`;
+}
+function parseIssueRef(ref, detail) {
+  const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
+  if (scoped)
+    return { repo: scoped[1], issue: scoped[2] };
+  return { repo: detail.project.repo_id ?? detail.project.display_name, issue: ref.replace(/^#/, "") };
+}
+function parseCommentRef(ref, detail) {
+  if (ref.startsWith("#")) {
+    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: detail.display_id, comment: ref.slice(1) };
+  }
+  const scoped = ref.match(/^([^/#]+)\/([^/#]+)#([^#]+)$/);
+  if (scoped)
+    return { repo: scoped[1], issue: scoped[2], comment: scoped[3] };
+  const currentProject = ref.match(/^([^/#]+)#([^#]+)$/);
+  if (currentProject) {
+    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: currentProject[1], comment: currentProject[2] };
+  }
+  return null;
+}
+function issueHref(repo, issue, comment) {
+  const params = new URLSearchParams({ repo, issue });
+  if (comment)
+    params.set("comment", comment);
+  return `#/issues?${params.toString()}`;
 }
 function inlineMarkdown(source) {
   const parsed = marked.parse(source || "", { async: false });
@@ -16014,12 +16110,6 @@ function getVisualState(issue) {
     return "merged";
   return "closed";
 }
-function renderMarkdown2(src) {
-  if (!src)
-    return "";
-  const result = marked.parse(src, { async: false });
-  return sanitizeMarkdown(typeof result === "string" ? result : "");
-}
 function sanitizeInlineHtml3(html4) {
   return sanitizeHtml(html4);
 }
@@ -16031,55 +16121,34 @@ function renderInlineMarkdown3(src) {
   const stripped = html4.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
   return sanitizeInlineHtml3(stripped);
 }
-function formatRelativeTime4(value) {
-  if (!value)
-    return "";
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed))
-    return value;
-  const delta = Date.now() - parsed;
-  if (delta < 0)
-    return "just now";
-  const seconds = Math.floor(delta / 1e3);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (days > 1)
-    return `${days}d ago`;
-  if (days === 1)
-    return "yesterday";
-  if (hours > 0)
-    return `${hours}h ago`;
-  if (minutes > 0)
-    return `${minutes}m ago`;
-  return `${seconds}s ago`;
-}
-var LABEL_COLORS = [
-  { bg: "rgba(77, 163, 255, 0.2)", fg: "#4da3ff" },
-  { bg: "rgba(50, 210, 150, 0.2)", fg: "#32d296" },
-  { bg: "rgba(245, 194, 92, 0.2)", fg: "#f5c25c" },
-  { bg: "rgba(242, 107, 107, 0.2)", fg: "#f26b6b" },
-  { bg: "rgba(187, 134, 252, 0.2)", fg: "#bb86fc" },
-  { bg: "rgba(255, 167, 38, 0.2)", fg: "#ffa726" }
-];
-function labelColor(label) {
-  let hash = 0;
-  for (let i4 = 0; i4 < label.length; i4++) {
-    hash = hash * 31 + label.charCodeAt(i4) | 0;
-  }
-  return LABEL_COLORS[Math.abs(hash) % LABEL_COLORS.length];
-}
-var LABEL_DISPLAY_NAMES = {
-  error: "bug",
-  umbrella: "umbrella"
-};
 var LABEL_INTERNAL_NAMES = {
   bug: "error",
   umbrella: "umbrella",
   feature: "feature",
   deferred: "deferred"
 };
-function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
+function ledgerDetailMatchesSelection(detail, repoId, issueId) {
+  if (!detail || !repoId || !issueId)
+    return false;
+  const repoMatches = detail.project.repo_id === repoId || detail.project.repo_name === repoId || detail.project.display_name === repoId;
+  if (!repoMatches)
+    return false;
+  const refs = /* @__PURE__ */ new Set([detail.id, detail.display_id]);
+  for (const alias of detail.aliases) {
+    if (alias.alias)
+      refs.add(alias.alias);
+    if (alias.external_id)
+      refs.add(alias.external_id);
+  }
+  return [...refs].some((ref) => ref === issueId || ref.startsWith(issueId) || issueId.startsWith(ref));
+}
+function IssuesView({
+  repos,
+  onRescan,
+  initialRepoId,
+  initialIssueId,
+  initialCommentId
+}) {
   const [selectedRepoId, setSelectedRepoId] = d2(null);
   const [selectedIssueId, setSelectedIssueId] = d2(null);
   const [filter2, setFilter] = d2("");
@@ -16089,15 +16158,11 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const [labelFilter, setLabelFilter] = d2(null);
   const [parentFilter, setParentFilter] = d2(null);
   const [sortField] = d2("created_at");
-  const [issueDetail, setIssueDetail] = d2(null);
   const [ledgerIssueDetail, setLedgerIssueDetail] = d2(null);
   const [detailLoading, setDetailLoading] = d2(false);
-  const [commentText, setCommentText] = d2("");
-  const [showCommentBox, setShowCommentBox] = d2(false);
   const [actionInFlight, setActionInFlight] = d2(false);
-  const [linkedSessions, setLinkedSessions] = d2([]);
-  const [issueContext, setIssueContext] = d2(null);
   const lastAppliedDeepLinkRef = A2(null);
+  const lastScrolledCommentRef = A2(null);
   const resolveRepoId = q2((rawRepoId) => {
     if (!rawRepoId)
       return null;
@@ -16130,7 +16195,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   y2(() => {
     if (!initialIssueId)
       return;
-    const deepLinkKey = `${initialRepoId ?? ""}:${initialIssueId}`;
+    const deepLinkKey = `${initialRepoId ?? ""}:${initialIssueId}:${initialCommentId ?? ""}`;
     if (lastAppliedDeepLinkRef.current === deepLinkKey)
       return;
     lastAppliedDeepLinkRef.current = deepLinkKey;
@@ -16141,26 +16206,26 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       setSelectedIssueId(canonicalIssueId);
       setRepoFilter(canonicalRepoId);
     } else {
-      findIssue(initialIssueId).then((detail) => {
-        const d3 = detail;
-        if (d3?.repo_id && d3?.id) {
-          setSelectedRepoId(d3.repo_id);
-          setSelectedIssueId(d3.id);
-          setRepoFilter(d3.repo_id);
-        }
-      }).catch(() => {
-        onRescan().then(() => findIssue(initialIssueId)).then((retried) => {
-          const r3 = retried;
-          if (r3?.repo_id && r3?.id) {
-            setSelectedRepoId(r3.repo_id);
-            setSelectedIssueId(r3.id);
-            setRepoFilter(r3.repo_id);
-          }
-        }).catch(() => {
-        });
-      });
+      const found = repos.flatMap((repo) => repo.issues.map((issue) => ({ repo, issue }))).find(({ issue }) => issue.id === initialIssueId || issue.id.startsWith(initialIssueId));
+      if (found) {
+        setSelectedRepoId(found.repo.repo_id);
+        setSelectedIssueId(found.issue.id);
+        setRepoFilter(found.repo.repo_id);
+      }
     }
-  }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
+  }, [initialRepoId, initialIssueId, initialCommentId, resolveRepoId, resolveIssueId, repos]);
+  y2(() => {
+    if (!ledgerIssueDetail || !initialCommentId)
+      return;
+    const scrollKey = `${ledgerIssueDetail.id}:${initialCommentId}`;
+    if (lastScrolledCommentRef.current === scrollKey)
+      return;
+    const comment = document.getElementById(`comment-${initialCommentId}`);
+    if (!comment)
+      return;
+    lastScrolledCommentRef.current = scrollKey;
+    comment.scrollIntoView({ block: "center" });
+  }, [ledgerIssueDetail, initialCommentId]);
   y2(() => {
     if (repoFilter) {
       const repo = repos.find((r3) => r3.repo_id === repoFilter);
@@ -16210,74 +16275,30 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     () => repos.reduce((acc, r3) => acc + r3.open_count, 0),
     [repos]
   );
+  const visibleLedgerIssueDetail = T2(
+    () => ledgerDetailMatchesSelection(ledgerIssueDetail, selectedRepoId, selectedIssueId) ? ledgerIssueDetail : null,
+    [ledgerIssueDetail, selectedRepoId, selectedIssueId]
+  );
   y2(() => {
     if (!selectedRepoId || !selectedIssueId) {
-      setIssueDetail(null);
       setLedgerIssueDetail(null);
-      setLinkedSessions([]);
-      setIssueContext(null);
+      setDetailLoading(false);
       return;
     }
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
     const issueId = resolveIssueId(repoId, selectedIssueId);
     let cancelled = false;
-    if (!issueDetail) {
-      setDetailLoading(true);
-    }
-    setLedgerIssueDetail(null);
-    const fetchDetail = (rId, iId) => getIssueDetail(rId, iId).then((data) => {
-      if (!cancelled) {
-        if (rId !== selectedRepoId)
-          setSelectedRepoId(rId);
-        if (iId !== selectedIssueId)
-          setSelectedIssueId(iId);
-        setIssueDetail(data);
-        setDetailLoading(false);
-      }
-    });
-    fetchDetail(repoId, issueId).catch(() => {
-      scanIssueRepo(repoId).then(() => fetchDetail(repoId, issueId)).catch(() => {
-        findIssue(issueId).then((found) => {
-          if (cancelled)
-            return;
-          const d3 = found;
-          if (d3?.repo_id && d3?.id) {
-            setSelectedRepoId(d3.repo_id);
-            setSelectedIssueId(d3.id);
-            setIssueDetail(found);
-          } else {
-            setIssueDetail(null);
-          }
-          setDetailLoading(false);
-        }).catch(() => {
-          if (!cancelled) {
-            setIssueDetail(null);
-            setDetailLoading(false);
-          }
-        });
-      });
-    });
-    getIssueSessions(repoId, issueId).then((data) => {
-      if (!cancelled) {
-        setLinkedSessions(data);
-      }
-    }).catch(() => {
-      if (!cancelled)
-        setLinkedSessions([]);
-    });
-    getIssueContext(repoId, issueId).then((ctx) => {
-      if (!cancelled)
-        setIssueContext(ctx);
-    }).catch(() => {
-      if (!cancelled)
-        setIssueContext(null);
-    });
+    setDetailLoading(true);
     getLedgerIssueDetailByRef(repoId, issueId).then((detail) => {
-      if (!cancelled)
-        setLedgerIssueDetail(detail);
+      if (cancelled)
+        return;
+      setLedgerIssueDetail(detail);
     }).catch(() => {
       if (!cancelled)
         setLedgerIssueDetail(null);
+    }).finally(() => {
+      if (!cancelled)
+        setDetailLoading(false);
     });
     return () => {
       cancelled = true;
@@ -16286,8 +16307,6 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
   const selectIssue = q2((repoId, issueId) => {
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
-    setShowCommentBox(false);
-    setCommentText("");
   }, []);
   const refreshLedgerIssueDetail = q2(async () => {
     if (!selectedRepoId || !selectedIssueId)
@@ -16300,66 +16319,43 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
     }
   }, [selectedRepoId, selectedIssueId]);
   const handleCloseIssue = q2(async () => {
-    if (!selectedRepoId || !selectedIssueId || actionInFlight)
+    if (!visibleLedgerIssueDetail || actionInFlight)
       return;
     setActionInFlight(true);
     try {
-      await issueAction(selectedRepoId, selectedIssueId, "status", {
-        status: "closed"
-      });
-      const data = await getIssueDetail(selectedRepoId, selectedIssueId);
-      setIssueDetail(data);
-      await refreshLedgerIssueDetail();
-      onRescan();
+      const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: "closed" });
+      setLedgerIssueDetail(detail);
+      void onRescan();
     } catch {
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, refreshLedgerIssueDetail]);
+  }, [visibleLedgerIssueDetail, actionInFlight, onRescan]);
   const handleReopenIssue = q2(async () => {
-    if (!selectedRepoId || !selectedIssueId || actionInFlight)
+    if (!visibleLedgerIssueDetail || actionInFlight)
       return;
     setActionInFlight(true);
     try {
-      if (issueDetail && issueDetail.labels.includes("merged")) {
-        await issueAction(selectedRepoId, selectedIssueId, "label", {
-          action: "remove",
-          label: "merged"
-        });
-      }
-      await issueAction(selectedRepoId, selectedIssueId, "status", {
-        status: "open"
-      });
-      const data = await getIssueDetail(selectedRepoId, selectedIssueId);
-      setIssueDetail(data);
-      await refreshLedgerIssueDetail();
-      onRescan();
+      const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: "open", resolution: null });
+      setLedgerIssueDetail(detail);
+      void onRescan();
     } catch {
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, issueDetail, refreshLedgerIssueDetail]);
+  }, [visibleLedgerIssueDetail, actionInFlight, onRescan]);
   const handleAddCommentBody = q2(async (message) => {
-    if (!selectedRepoId || !selectedIssueId || !message.trim() || actionInFlight)
+    if (!visibleLedgerIssueDetail || !message.trim() || actionInFlight)
       return;
     setActionInFlight(true);
     try {
-      await issueAction(selectedRepoId, selectedIssueId, "comment", {
-        message: message.trim()
-      });
-      setCommentText("");
-      setShowCommentBox(false);
-      const data = await getIssueDetail(selectedRepoId, selectedIssueId);
-      setIssueDetail(data);
-      await refreshLedgerIssueDetail();
+      const detail = await addLedgerIssueComment(visibleLedgerIssueDetail.id, message.trim());
+      setLedgerIssueDetail(detail);
     } catch {
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, refreshLedgerIssueDetail]);
-  const handleAddComment = q2(async () => {
-    await handleAddCommentBody(commentText);
-  }, [handleAddCommentBody, commentText]);
+  }, [visibleLedgerIssueDetail, actionInFlight]);
   const handleStartAgent = q2(async () => {
     if (!selectedRepoId || !selectedIssueId || actionInFlight)
       return;
@@ -16372,10 +16368,13 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       setActionInFlight(false);
     }
   }, [selectedRepoId, selectedIssueId, actionInFlight]);
-  const handleOpenLedgerEntity = q2((type, id2) => {
+  const handleOpenLedgerEntity = q2((type, id2, repoId) => {
     if (type === "issue") {
-      if (selectedRepoId)
+      if (repoId) {
+        selectIssue(repoId, id2);
+      } else if (selectedRepoId) {
         selectIssue(selectedRepoId, id2);
+      }
       return;
     }
     if (type === "session") {
@@ -16390,18 +16389,6 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       window.location.hash = `#/auth?request=${encodeURIComponent(id2.replace(/^auth_request:/, ""))}`;
     }
   }, [selectedRepoId, selectIssue]);
-  const descriptionHtml = T2(
-    () => issueDetail?.description ? renderMarkdown2(issueDetail.description) : "",
-    [issueDetail?.description]
-  );
-  const detailVisualState = T2(
-    () => issueDetail ? getVisualState(issueDetail) : null,
-    [issueDetail]
-  );
-  const displayLabels = T2(
-    () => issueDetail ? issueDetail.labels.filter((l3) => l3 !== "merged") : [],
-    [issueDetail]
-  );
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 280,
     minWidth: 190,
@@ -16525,7 +16512,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           }
         )
       ] }),
-      items.length === 0 ? /* @__PURE__ */ u3("div", { className: "issues-tree__empty", children: repos.length === 0 ? "No repos with git-bug issues found." : "No issues match the current filter." }) : /* @__PURE__ */ u3("div", { className: "issues-list", children: items.map((item) => /* @__PURE__ */ u3(
+      items.length === 0 ? /* @__PURE__ */ u3("div", { className: "issues-tree__empty", children: repos.length === 0 ? "No repos with issues found." : "No issues match the current filter." }) : /* @__PURE__ */ u3("div", { className: "issues-list", children: items.map((item) => /* @__PURE__ */ u3(
         "button",
         {
           type: "button",
@@ -16552,10 +16539,10 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
       )) })
     ] }),
     /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
-    /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : !issueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) : ledgerIssueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: /* @__PURE__ */ u3(
+    /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : visibleLedgerIssueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: /* @__PURE__ */ u3(
       LedgerIssueDetail,
       {
-        detail: ledgerIssueDetail,
+        detail: visibleLedgerIssueDetail,
         actionInFlight,
         onAddComment: handleAddCommentBody,
         onSetStatus: (status) => status === "open" ? handleReopenIssue() : handleCloseIssue(),
@@ -16571,308 +16558,7 @@ function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }) {
           await refreshLedgerIssueDetail();
         }
       }
-    ) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: [
-      /* @__PURE__ */ u3("div", { className: "issue-hub__banner", children: [
-        /* @__PURE__ */ u3("div", { className: "issue-hub__banner-top", children: /* @__PURE__ */ u3(
-          "h2",
-          {
-            className: "issues-detail__title",
-            dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(issueDetail.title) }
-          }
-        ) }),
-        /* @__PURE__ */ u3("div", { className: "issues-detail__meta", children: [
-          /* @__PURE__ */ u3(
-            "span",
-            {
-              className: `status-pill status-pill--lg ${detailVisualState === "open" ? "status-pill--success" : detailVisualState === "merged" ? "status-pill--merged" : "status-pill--dismissed"}`,
-              children: detailVisualState
-            }
-          ),
-          displayLabels.map((lbl) => {
-            const color2 = labelColor(lbl);
-            const display = LABEL_DISPLAY_NAMES[lbl] ?? lbl;
-            return /* @__PURE__ */ u3(
-              "span",
-              {
-                className: "issue-label-pill",
-                style: { background: color2.bg, color: color2.fg },
-                title: "label",
-                children: display
-              },
-              lbl
-            );
-          }),
-          issueDetail.labels.includes("umbrella") && /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: "btn btn--ghost btn--sm",
-              onClick: () => {
-                setRepoFilter(issueDetail.repo_id);
-                setParentFilter(issueDetail.id.slice(0, 8));
-              },
-              children: "Show children"
-            }
-          )
-        ] }),
-        issueContext?.work_unit && /* @__PURE__ */ u3("div", { className: "issue-hub__work-status", children: [
-          issueContext.work_unit.branch && /* @__PURE__ */ u3("span", { className: "issue-hub__branch-status", children: [
-            issueContext.work_unit.state === "committed" ? "Committed on " : "Assigned to ",
-            /* @__PURE__ */ u3(
-              EntityPill,
-              {
-                type: "branch",
-                id: issueContext.work_unit.branch,
-                label: issueContext.work_unit.branch,
-                repoId: issueDetail.repo_id
-              }
-            )
-          ] }),
-          /* @__PURE__ */ u3("span", { className: `issue-hub__liveness issue-hub__liveness--${issueContext.work_unit.liveness.has_live_agent ? issueContext.work_unit.liveness.is_processing ? "active" : "idle" : "unassigned"}`, children: [
-            /* @__PURE__ */ u3("span", { className: "issue-hub__liveness-dot" }),
-            issueContext.work_unit.liveness.has_live_agent ? issueContext.work_unit.liveness.is_processing ? "Active \u2014 SDK session running" : "Idle" : "Unassigned"
-          ] })
-        ] }),
-        /* @__PURE__ */ u3("div", { className: "issue-hub__actions", children: [
-          issueContext?.work_unit?.liveness.has_live_agent && issueContext.work_unit.assigned_session_id && /* @__PURE__ */ u3(
-            "a",
-            {
-              className: "issue-hub__action-btn issue-hub__action-btn--primary",
-              href: `#/console?session=${encodeURIComponent(issueContext.work_unit.assigned_session_id)}`,
-              children: "Open in Console"
-            }
-          ),
-          issueContext?.work_unit?.continuation && !issueContext.work_unit.liveness.has_live_agent && /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: "issue-hub__action-btn issue-hub__action-btn--secondary",
-              disabled: actionInFlight,
-              onClick: async () => {
-                if (!selectedRepoId || !selectedIssueId || actionInFlight)
-                  return;
-                setActionInFlight(true);
-                try {
-                  const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
-                  window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
-                } catch {
-                } finally {
-                  setActionInFlight(false);
-                }
-              },
-              children: "Resume Work"
-            }
-          ),
-          (!issueContext?.work_unit || !issueContext.work_unit.liveness.has_live_agent && !issueContext.work_unit.continuation) && /* @__PURE__ */ u3(
-            "button",
-            {
-              type: "button",
-              className: "issue-hub__action-btn issue-hub__action-btn--secondary",
-              disabled: actionInFlight,
-              onClick: async () => {
-                if (!selectedRepoId || !selectedIssueId || actionInFlight)
-                  return;
-                setActionInFlight(true);
-                try {
-                  const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
-                  window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
-                } catch {
-                } finally {
-                  setActionInFlight(false);
-                }
-              },
-              children: "Start Agent"
-            }
-          )
-        ] })
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "issues-detail__info text-muted", children: [
-        /* @__PURE__ */ u3("span", { children: issueDetail.author }),
-        issueDetail.created_at && /* @__PURE__ */ u3("span", { children: [
-          " \xB7 ",
-          formatRelativeTime4(issueDetail.created_at)
-        ] }),
-        /* @__PURE__ */ u3("span", { className: "issues-detail__id", children: [
-          " \xB7 ",
-          issueDetail.id.slice(0, 8)
-        ] })
-      ] }),
-      descriptionHtml ? /* @__PURE__ */ u3(
-        "div",
-        {
-          className: "issues-detail__body spec-panel",
-          dangerouslySetInnerHTML: { __html: descriptionHtml }
-        }
-      ) : /* @__PURE__ */ u3("div", { className: "issues-detail__body spec-panel spec-panel--empty", children: "No description." }),
-      /* @__PURE__ */ u3("hr", { className: "issues-detail__divider" }),
-      /* @__PURE__ */ u3("h3", { className: "issues-detail__section-title", children: "Activity" }),
-      /* @__PURE__ */ u3("div", { className: "issue-hub__timeline", children: (() => {
-        const items2 = [];
-        for (const sess of issueContext?.sessions ?? []) {
-          const ts = sess.created_at ? typeof sess.created_at === "string" ? Date.parse(sess.created_at) : Number(sess.created_at) : 0;
-          items2.push({ kind: "session", ts: Number.isNaN(ts) ? 0 : ts, sess });
-        }
-        for (const auth of issueContext?.auth_requests ?? []) {
-          const ts = auth.created_at ? Number(auth.created_at) : 0;
-          items2.push({ kind: "auth", ts: Number.isNaN(ts) ? 0 : ts, auth });
-        }
-        for (const comment of issueDetail.comments) {
-          const ts = comment.date ? Date.parse(comment.date) : 0;
-          items2.push({ kind: "comment", ts: Number.isNaN(ts) ? 0 : ts, comment });
-        }
-        if (issueContext?.work_unit?.continuation) {
-          items2.push({
-            kind: "handoff",
-            ts: Number.MAX_SAFE_INTEGER,
-            continuation: issueContext.work_unit.continuation
-          });
-        }
-        items2.sort((a4, b3) => a4.ts - b3.ts);
-        if (items2.length === 0) {
-          return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-empty text-muted", children: "No activity yet." });
-        }
-        return items2.map((item, idx) => {
-          if (item.kind === "session") {
-            const sess = item.sess;
-            return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-item", children: [
-              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-icon issue-hub__timeline-icon--session" }),
-              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-text", children: [
-                "Session started",
-                sess.app ? ` (${sess.app})` : "",
-                " \u2014 ",
-                /* @__PURE__ */ u3(EntityPill, { type: "session", id: sess.session_id })
-              ] }),
-              sess.created_at && /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-time text-muted", children: formatRelativeTime4(typeof sess.created_at === "string" ? sess.created_at : new Date(sess.created_at).toISOString()) })
-            ] }, `sess-${sess.session_id}`);
-          }
-          if (item.kind === "auth") {
-            const auth = item.auth;
-            return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-item", children: [
-              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-icon issue-hub__timeline-icon--auth" }),
-              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-text", children: [
-                "Auth request: ",
-                auth.status,
-                " \u2014 ",
-                /* @__PURE__ */ u3(EntityPill, { type: "auth", id: auth.id, label: auth.title?.slice(0, 30) || auth.id.slice(0, 8) })
-              ] }),
-              item.ts > 0 && /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-time text-muted", children: formatRelativeTime4(new Date(item.ts).toISOString()) })
-            ] }, `auth-${auth.id}`);
-          }
-          if (item.kind === "comment") {
-            const comment = item.comment;
-            return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-item", children: [
-              /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-icon issue-hub__timeline-icon--comment" }),
-              /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-comment", children: [
-                /* @__PURE__ */ u3("div", { className: "issue-comment__header", children: [
-                  /* @__PURE__ */ u3("span", { className: "issue-comment__author", children: comment.author }),
-                  comment.date && /* @__PURE__ */ u3("span", { className: "issue-comment__date text-muted", children: formatRelativeTime4(comment.date) })
-                ] }),
-                /* @__PURE__ */ u3(
-                  "div",
-                  {
-                    className: "issue-comment__body spec-panel",
-                    dangerouslySetInnerHTML: {
-                      __html: renderMarkdown2(comment.body)
-                    }
-                  }
-                )
-              ] })
-            ] }, comment.id);
-          }
-          return /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-item", children: [
-            /* @__PURE__ */ u3("span", { className: "issue-hub__timeline-icon issue-hub__timeline-icon--handoff" }),
-            /* @__PURE__ */ u3("div", { className: "issue-hub__timeline-comment", children: [
-              /* @__PURE__ */ u3("div", { className: "issue-comment__header", children: /* @__PURE__ */ u3("span", { className: "issue-comment__author", children: "Handoff Note" }) }),
-              /* @__PURE__ */ u3(
-                "div",
-                {
-                  className: "issue-comment__body spec-panel",
-                  dangerouslySetInnerHTML: {
-                    __html: renderMarkdown2(item.continuation)
-                  }
-                }
-              )
-            ] })
-          ] }, `handoff-${idx}`);
-        });
-      })() }),
-      ((issueContext?.sessions ?? []).length > 0 || (issueContext?.auth_requests ?? []).length > 0 || linkedSessions.length > 0) && /* @__PURE__ */ u3(k, { children: [
-        /* @__PURE__ */ u3("hr", { className: "issues-detail__divider" }),
-        /* @__PURE__ */ u3("h3", { className: "issues-detail__section-title", children: "Related" }),
-        /* @__PURE__ */ u3("div", { className: "issue-hub__related", children: [
-          (issueContext?.sessions ?? linkedSessions.map((l3) => ({
-            session_id: l3.session_id,
-            has_conversation: false
-          }))).length > 0 && /* @__PURE__ */ u3("div", { className: "issue-hub__related-group", children: [
-            /* @__PURE__ */ u3("span", { className: "issue-hub__related-label", children: "Sessions" }),
-            /* @__PURE__ */ u3(EntityPillList, { children: [
-              (issueContext?.sessions ?? []).map((sess) => /* @__PURE__ */ u3(EntityPill, { type: "session", id: sess.session_id }, sess.session_id)),
-              !issueContext && linkedSessions.map((link2) => /* @__PURE__ */ u3(EntityPill, { type: "session", id: link2.session_id }, link2.session_id))
-            ] })
-          ] }),
-          (issueContext?.auth_requests ?? []).length > 0 && /* @__PURE__ */ u3("div", { className: "issue-hub__related-group", children: [
-            /* @__PURE__ */ u3("span", { className: "issue-hub__related-label", children: "Auth Requests" }),
-            /* @__PURE__ */ u3(EntityPillList, { children: (issueContext?.auth_requests ?? []).map((auth) => /* @__PURE__ */ u3(EntityPill, { type: "auth", id: auth.id, label: auth.id.slice(0, 8) }, auth.id)) })
-          ] }),
-          (issueContext?.sessions ?? []).filter((s3) => s3.has_conversation).length > 0 && /* @__PURE__ */ u3("div", { className: "issue-hub__related-group", children: [
-            /* @__PURE__ */ u3("span", { className: "issue-hub__related-label", children: "Conversations" }),
-            /* @__PURE__ */ u3(EntityPillList, { children: (issueContext?.sessions ?? []).filter((s3) => s3.has_conversation).map((s3) => /* @__PURE__ */ u3(EntityPill, { type: "conversation", id: s3.session_id }, `conv-${s3.session_id}`)) })
-          ] })
-        ] })
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "issue-actions", children: [
-        detailVisualState === "open" ? /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--danger",
-            disabled: actionInFlight,
-            onClick: handleCloseIssue,
-            children: "Close Issue"
-          }
-        ) : /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--success",
-            disabled: actionInFlight,
-            onClick: handleReopenIssue,
-            children: "Reopen Issue"
-          }
-        ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--ghost",
-            onClick: () => setShowCommentBox((prev) => !prev),
-            children: showCommentBox ? "Cancel" : "Add Comment"
-          }
-        )
-      ] }),
-      showCommentBox && /* @__PURE__ */ u3("div", { className: "issue-comment-form", children: [
-        /* @__PURE__ */ u3(
-          "textarea",
-          {
-            className: "issue-comment-form__input",
-            placeholder: "Write a comment...",
-            value: commentText,
-            onInput: (e3) => setCommentText(e3.currentTarget.value),
-            rows: 4
-          }
-        ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "btn btn--active",
-            disabled: actionInFlight || !commentText.trim(),
-            onClick: handleAddComment,
-            children: "Submit Comment"
-          }
-        )
-      ] })
-    ] }) })
+    ) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) })
   ] });
 }
 
@@ -23475,7 +23161,7 @@ var MODEL_OPTIONS2 = {
 var PAGE_SIZE = 50;
 var VIRTUAL_BUFFER = 10;
 var ESTIMATED_BLOCK_HEIGHT = 120;
-function formatRelativeTime5(dateStr) {
+function formatRelativeTime4(dateStr) {
   if (!dateStr)
     return "\u2014";
   const ts = Date.parse(dateStr);
@@ -23880,7 +23566,7 @@ function BlockRenderer({
       ] }),
       /* @__PURE__ */ u3("div", { className: "block-header__right", children: [
         /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
-        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime5(block2.timestamp) })
+        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
       ] })
     ] }),
     !showHeader && /* @__PURE__ */ u3("div", { className: "block-header block-header--user", children: [
@@ -23896,7 +23582,7 @@ function BlockRenderer({
       ) }),
       /* @__PURE__ */ u3("div", { className: "block-header__right", children: [
         /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
-        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime5(block2.timestamp) })
+        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
       ] })
     ] }),
     renderConversationBlockBody(block2, collapsed),
@@ -26073,7 +25759,7 @@ function SelectInput(props) {
     )
   ] });
 }
-function formatRelativeTime6(ts) {
+function formatRelativeTime5(ts) {
   const diffMs = Date.now() - ts;
   const diffSec = Math.floor(diffMs / 1e3);
   if (diffSec < 60)
@@ -26448,7 +26134,7 @@ function BackupSection() {
         /* @__PURE__ */ u3("div", { className: "settings-view__number-info", children: /* @__PURE__ */ u3("span", { className: "settings-view__number-label", children: "Last backup" }) }),
         /* @__PURE__ */ u3("div", { className: "settings-view__number-controls", children: [
           status === null ? /* @__PURE__ */ u3("span", { className: "text-muted", children: "Loading..." }) : status.last_run_at ? /* @__PURE__ */ u3("span", { children: [
-            formatRelativeTime6(status.last_run_at),
+            formatRelativeTime5(status.last_run_at),
             status.last_size_bytes != null && /* @__PURE__ */ u3("span", { className: "text-muted", children: [
               " \u2014 ",
               formatBytes(status.last_size_bytes)
@@ -27816,7 +27502,7 @@ function getBranchTimestamp(branch) {
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
-function formatRelativeTime7(value) {
+function formatRelativeTime6(value) {
   if (!value) {
     return "\u2014";
   }
@@ -28025,7 +27711,7 @@ function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, on
       ] }) : /* @__PURE__ */ u3("span", { className: "no-upstream", children: "no upstream" }) }),
       /* @__PURE__ */ u3("td", { children: /* @__PURE__ */ u3("div", { className: "cell-stack", children: [
         /* @__PURE__ */ u3("span", { children: lastMessage }),
-        /* @__PURE__ */ u3("span", { className: "branch-timestamp", children: formatRelativeTime7(lastTime) })
+        /* @__PURE__ */ u3("span", { className: "branch-timestamp", children: formatRelativeTime6(lastTime) })
       ] }) }),
       /* @__PURE__ */ u3("td", { className: "work-col-actions", children: /* @__PURE__ */ u3(BranchContextMenu, { branch, anchorRef }) })
     ] }, expandKey),
@@ -41329,7 +41015,7 @@ function extractClosestEdge(userData) {
 }
 
 // ui/src/components/presets/PresetNode.tsx
-function renderMarkdown3(src) {
+function renderMarkdown2(src) {
   if (!src)
     return "";
   const result = marked.parse(src, { async: false });
@@ -41477,7 +41163,7 @@ function PresetNodeView({
     setShowMenu(false);
   }, [node.id, onCopy]);
   const HeadingTag = `h${Math.min(node.level + 1, 6)}`;
-  const renderedBody = renderMarkdown3(node.body);
+  const renderedBody = renderMarkdown2(node.body);
   const sanitizedBody = sanitizeHtml(renderedBody);
   const hasChildren = !isLeaf;
   return /* @__PURE__ */ u3(
@@ -42380,7 +42066,7 @@ function PresetTree({
 // ui/src/components/presets/ConventionLibrary.tsx
 init_hooks_module();
 init_api();
-function renderMarkdown4(src) {
+function renderMarkdown3(src) {
   if (!src)
     return "";
   const result = marked.parse(src, { async: false });
@@ -42553,7 +42239,7 @@ function ConventionLibrary({
               {
                 className: "convention-library__card-body",
                 dangerouslySetInnerHTML: {
-                  __html: sanitizeHtml(renderMarkdown4(conv.body))
+                  __html: sanitizeHtml(renderMarkdown3(conv.body))
                 }
               }
             )
@@ -44840,7 +44526,8 @@ function App() {
             repos: state.issueRepos,
             onRescan: handleIssueRescan,
             initialRepoId: route.params.repo,
-            initialIssueId: route.params.issue
+            initialIssueId: route.params.issue,
+            initialCommentId: route.params.comment
           }
         ),
         route.tab === "review" && /* @__PURE__ */ u3(

@@ -193,7 +193,7 @@ export function registerTools(server, sessionId) {
         }
     });
     // 4. mandible_get_issues
-    server.tool("mandible_get_issues", "List open issues from git-bug across tracked repositories.", {
+    server.tool("mandible_get_issues", "List open issues from the Mandible ledger across tracked repositories.", {
         repo: z
             .string()
             .optional()

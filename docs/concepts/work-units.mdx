@@ -1,6 +1,6 @@
 # Work units
 
-Work units are Mandible's reconciliation layer. They join three trees that are naturally separate --- issues (tracked in git-bug), branches (tracked in git), and sessions (tracked in Mandible) --- into a single entity with a lifecycle.
+Work units are Mandible's reconciliation layer. They join three trees that are naturally separate --- issues (tracked in the Mandible ledger), branches (tracked in git), and sessions (tracked in Mandible) --- into a single entity with a lifecycle.
 
 ## The problem they solve
 
@@ -19,7 +19,7 @@ A work unit has:
 | Field | Description |
 |---|---|
 | `id` | Unique identifier (UUID) |
-| `issue_id` | The git-bug issue this work unit tracks |
+| `issue_id` | The Mandible issue this work unit tracks |
 | `repo_id` | The repository the issue belongs to |
 | `branch` | The git branch where work happens |
 | `parent_branch` | The branch this feature branch was created from |

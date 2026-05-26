@@ -36,7 +36,7 @@ export function updateLedgerIssueMigrationConfig(db, patch) {
     return getLedgerIssueMigrationConfig(db);
 }
 export function listLedgerIssueSummaries(db, workScanner) {
-    const checkouts = listCheckouts(db, workScanner.getRepos());
+    const checkouts = representativeCheckouts(listCheckouts(db, workScanner.getRepos()));
     const store = new LedgerStore(db);
     const summaries = [];
     for (const checkout of checkouts) {
@@ -149,7 +149,8 @@ export function reconcileIssueSummaries(scannerSummaries, ledgerSummaries, readM
 }
 export function runIssueReconciliation(db, issueScanner, workScanner, readMode = "shadow") {
     try {
-        const report = reconcileIssueSummaries(issueScanner.getRepoSummaries(), listLedgerIssueSummaries(db, workScanner), readMode);
+        const checkouts = listCheckouts(db, workScanner.getRepos());
+        const report = reconcileIssueSummaries(collapseSummariesToProjects(issueScanner.getRepoSummaries(), checkouts), listLedgerIssueSummaries(db, workScanner), readMode);
         persistReconciliationReport(db, report);
         return report;
     }
@@ -247,8 +248,66 @@ function listCheckouts(db, repos) {
             repo_id: repo?.id ?? row.work_repo_id ?? row.project_id,
             repo_name: repo?.name ?? row.name ?? row.display_name,
             repo_root: repo?.root ?? row.root,
+            last_scanned_at: repo?.last_scanned_at ?? null,
         };
     });
+}
+function representativeCheckouts(checkouts) {
+    const byProject = new Map();
+    for (const checkout of checkouts) {
+        const current = byProject.get(checkout.project_id);
+        if (!current || checkoutRank(checkout) > checkoutRank(current)) {
+            byProject.set(checkout.project_id, checkout);
+        }
+    }
+    return Array.from(byProject.values());
+}
+function collapseSummariesToProjects(summaries, checkouts) {
+    if (checkouts.length === 0)
+        return summaries;
+    const checkoutByRepo = new Map();
+    for (const checkout of checkouts) {
+        checkoutByRepo.set(checkout.repo_id, checkout);
+        checkoutByRepo.set(checkout.repo_name, checkout);
+        checkoutByRepo.set(checkout.repo_root, checkout);
+    }
+    const representatives = new Map(representativeCheckouts(checkouts).map((checkout) => [checkout.project_id, checkout]));
+    const grouped = new Map();
+    for (const summary of summaries) {
+        const checkout = checkoutByRepo.get(summary.repo_id) ??
+            checkoutByRepo.get(summary.repo_name) ??
+            checkoutByRepo.get(summary.repo_root);
+        const key = checkout?.project_id ?? summary.repo_id;
+        let issues = grouped.get(key);
+        if (!issues) {
+            issues = new Map();
+            grouped.set(key, issues);
+        }
+        for (const issue of summary.issues) {
+            issues.set(issue.id, issue);
+        }
+    }
+    return Array.from(grouped.entries()).map(([key, issues]) => {
+        const representative = representatives.get(key);
+        const issueList = Array.from(issues.values()).sort((a, b) => a.id.localeCompare(b.id));
+        return {
+            repo_id: representative?.repo_id ?? key,
+            repo_name: representative?.repo_name ?? key,
+            repo_root: representative?.repo_root ?? "",
+            open_count: issueList.filter((issue) => issue.status === "open").length,
+            merged_count: issueList.filter((issue) => issue.status === "closed" && issue.labels.includes("merged")).length,
+            closed_count: issueList.filter((issue) => issue.status === "closed" && !issue.labels.includes("merged")).length,
+            issues: issueList.map((issue) => representative ? {
+                ...issue,
+                repo_id: representative.repo_id,
+                repo_name: representative.repo_name,
+            } : issue),
+        };
+    }).sort((a, b) => a.repo_name.localeCompare(b.repo_name));
+}
+function checkoutRank(checkout) {
+    const scanned = checkout.last_scanned_at ? Date.parse(checkout.last_scanned_at) : 0;
+    return Number.isFinite(scanned) ? scanned : 0;
 }
 function resolveCheckout(db, workScanner, repoRef) {
     const repo = workScanner.getRepoById(repoRef);
