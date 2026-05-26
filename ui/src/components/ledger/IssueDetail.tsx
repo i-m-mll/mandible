@@ -84,16 +84,15 @@ export function LedgerIssueDetail({
             linkedAuth={resolvingAuth}
             onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
           />
-          <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
+          {detail.sync.state !== 'clean' && (
+            <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
+          )}
         </div>
       </header>
 
       <div className="ledger-issue-detail__meta">
-        <span>{detail.kind}</span>
-        <span>{detail.priority}</span>
         <span>{detail.author.display}</span>
         <span>{formatRelativeTime(detail.created_at)}</span>
-        {detail.source && <span>{detail.source}</span>}
       </div>
 
       {detail.labels.length > 0 && (
@@ -201,21 +200,6 @@ export function LedgerIssueDetail({
         <section className="ledger-issue-detail__section">
           <SectionTitle title="Sessions" count={detail.sessions.length} />
           <SessionHistory active={activeSessions} historical={historicalSessions} onOpenEntity={onOpenEntity} />
-        </section>
-      )}
-
-      {detail.work_units.length > 0 && (
-        <section className="ledger-issue-detail__section">
-          <SectionTitle title="Work Units" count={detail.work_units.length} />
-          <div className="ledger-kv-list">
-            {detail.work_units.map((work) => (
-              <div key={work.id} className="ledger-kv-card">
-                <span>{work.state}</span>
-                <code>{work.branch ?? work.id}</code>
-                {work.assigned_session_id && <small>assigned {work.assigned_session_id.slice(0, 10)}</small>}
-              </div>
-            ))}
-          </div>
         </section>
       )}
 
@@ -507,10 +491,10 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): H
 
   const anchor = document.createElement('a');
   anchor.className = 'ledger-xref';
-  anchor.textContent = match[0];
   if (explicitType === 'comment') {
     const parsed = parseCommentRef(ref, detail);
     if (!parsed) return null;
+    anchor.textContent = commentRefLabel(parsed, detail);
     anchor.href = issueHref(parsed.repo, parsed.issue, parsed.comment);
     anchor.title = `Open comment ${parsed.comment}`;
     return anchor;
@@ -518,9 +502,20 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): H
 
   const parsedIssue = parseIssueRef(ref, detail);
   if (!parsedIssue) return null;
+  anchor.textContent = explicitType ? issueRefLabel(parsedIssue, detail) : match[0];
   anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
   anchor.title = `Open issue ${parsedIssue.issue}`;
   return anchor;
+}
+
+function issueRefLabel(parsed: { repo: string; issue: string }, detail: LedgerIssueDetailProjection): string {
+  const currentRepo = detail.project.repo_id ?? detail.project.display_name;
+  return parsed.repo === currentRepo ? parsed.issue : `${parsed.repo}/${parsed.issue}`;
+}
+
+function commentRefLabel(parsed: { repo: string; issue: string; comment: string }, detail: LedgerIssueDetailProjection): string {
+  const issueLabel = issueRefLabel(parsed, detail);
+  return `${issueLabel}#${parsed.comment}`;
 }
 
 function parseIssueRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string } | null {

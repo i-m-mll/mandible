@@ -243,14 +243,14 @@ describe('LedgerIssueDetail', () => {
       text: node.textContent,
       href: (node as HTMLAnchorElement).getAttribute('href'),
     }));
-    expect(issueLinks).toContainEqual({ text: '[issue:def456]', href: '#/issues?repo=mandible&issue=def456' });
+    expect(issueLinks).toContainEqual({ text: 'def456', href: '#/issues?repo=mandible&issue=def456' });
     expect(issueLinks).toContainEqual({ text: '#789abcd', href: '#/issues?repo=mandible&issue=789abcd' });
     expect(issueLinks).toContainEqual({
-      text: '[comment:mandible/def456#com_2]',
+      text: 'def456#com_2',
       href: '#/issues?repo=mandible&issue=def456&comment=com_2',
     });
     expect(issueLinks).toContainEqual({
-      text: '[comment:#com_1]',
+      text: 'abc123#com_1',
       href: '#/issues?repo=mandible&issue=abc123&comment=com_1',
     });
     const codeBlocks = Array.from(document.querySelectorAll('code'));

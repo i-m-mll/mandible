@@ -1,29 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import {
-  findIssue,
+  addLedgerIssueComment,
   getLedgerIssueDetailByRef,
-  getIssueContext,
-  getIssueDetail,
-  getIssueSessions,
-  issueAction,
+  patchLedgerIssue,
   resolveLedgerConflict,
-  scanIssueRepo,
   spawnIssueAgent,
   type LedgerIssueDetailProjection,
-  type IssueContext,
-  type IssueContextAuthRequest,
-  type IssueContextSession,
-  type IssueContextWorkUnit,
 } from '../api';
-import { sanitizeHtml, sanitizeMarkdown } from '../sanitize';
+import { sanitizeHtml } from '../sanitize';
 import { useSidebarResize } from '../hooks/useSidebarResize';
-import { EntityPill, EntityPillList } from '../components/shared/EntityPill';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 
 // --- Types ---
 
-export type GitBugIssue = {
+export type IssueSummary = {
   id: string;
   repo_id: string;
   repo_name: string;
@@ -36,17 +27,6 @@ export type GitBugIssue = {
   parent_id?: string;  // derived from parent:<human_id> label
 };
 
-export type GitBugComment = {
-  id: string;
-  author: string;
-  date: string;
-  body: string;
-};
-
-export type GitBugIssueDetail = GitBugIssue & {
-  comments: GitBugComment[];
-};
-
 export type IssueRepoSummary = {
   repo_id: string;
   repo_name: string;
@@ -54,7 +34,7 @@ export type IssueRepoSummary = {
   open_count: number;
   merged_count: number;
   closed_count: number;
-  issues: GitBugIssue[];
+  issues: IssueSummary[];
 };
 
 export type IssuesViewProps = {
@@ -74,12 +54,6 @@ function getVisualState(issue: { status: string; labels: string[] }): VisualStat
   if (issue.status === 'open') return 'open';
   if (issue.labels.includes('merged')) return 'merged';
   return 'closed';
-}
-
-function renderMarkdown(src: string): string {
-  if (!src) return '';
-  const result = marked.parse(src, { async: false });
-  return sanitizeMarkdown(typeof result === 'string' ? result : '');
 }
 
 /**
@@ -103,49 +77,6 @@ function renderInlineMarkdown(src: string): string {
   return sanitizeInlineHtml(stripped);
 }
 
-function formatRelativeTime(value?: string): string {
-  if (!value) return '';
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) return value;
-  const delta = Date.now() - parsed;
-  if (delta < 0) return 'just now';
-  const seconds = Math.floor(delta / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (days > 1) return `${days}d ago`;
-  if (days === 1) return 'yesterday';
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  return `${seconds}s ago`;
-}
-
-// --- Label color palette ---
-
-const LABEL_COLORS = [
-  { bg: 'rgba(77, 163, 255, 0.2)', fg: '#4da3ff' },
-  { bg: 'rgba(50, 210, 150, 0.2)', fg: '#32d296' },
-  { bg: 'rgba(245, 194, 92, 0.2)', fg: '#f5c25c' },
-  { bg: 'rgba(242, 107, 107, 0.2)', fg: '#f26b6b' },
-  { bg: 'rgba(187, 134, 252, 0.2)', fg: '#bb86fc' },
-  { bg: 'rgba(255, 167, 38, 0.2)', fg: '#ffa726' },
-];
-
-function labelColor(label: string): { bg: string; fg: string } {
-  let hash = 0;
-  for (let i = 0; i < label.length; i++) {
-    hash = (hash * 31 + label.charCodeAt(i)) | 0;
-  }
-  return LABEL_COLORS[Math.abs(hash) % LABEL_COLORS.length];
-}
-
-// Bug: cce48c1 — maps internal label names → user-facing display text.
-// "error" is the legacy bug-fix label; displaying it as "error" looks like an error state.
-const LABEL_DISPLAY_NAMES: Record<string, string> = {
-  error: 'bug',
-  umbrella: 'umbrella',
-};
-
 // Reverse map: display name → internal label (for filter pills)
 const LABEL_INTERNAL_NAMES: Record<string, string> = {
   bug: 'error',
@@ -154,9 +85,29 @@ const LABEL_INTERNAL_NAMES: Record<string, string> = {
   deferred: 'deferred',
 };
 
+function ledgerDetailMatchesSelection(
+  detail: LedgerIssueDetailProjection | null,
+  repoId: string | null,
+  issueId: string | null,
+): detail is LedgerIssueDetailProjection {
+  if (!detail || !repoId || !issueId) return false;
+  const repoMatches =
+    detail.project.repo_id === repoId ||
+    detail.project.repo_name === repoId ||
+    detail.project.display_name === repoId;
+  if (!repoMatches) return false;
+
+  const refs = new Set<string>([detail.id, detail.display_id]);
+  for (const alias of detail.aliases) {
+    if (alias.alias) refs.add(alias.alias);
+    if (alias.external_id) refs.add(alias.external_id);
+  }
+  return [...refs].some((ref) => ref === issueId || ref.startsWith(issueId) || issueId.startsWith(ref));
+}
+
 // --- Flat list item types ---
 
-type ListItem = { kind: 'issue'; issue: GitBugIssue; repo: IssueRepoSummary };
+type ListItem = { kind: 'issue'; issue: IssueSummary; repo: IssueRepoSummary };
 
 // --- Components ---
 
@@ -180,14 +131,9 @@ export function IssuesView({
   const [parentFilter, setParentFilter] = useState<string | null>(null);
   type SortField = 'created_at';
   const [sortField] = useState<SortField>('created_at');
-  const [issueDetail, setIssueDetail] = useState<GitBugIssueDetail | null>(null);
   const [ledgerIssueDetail, setLedgerIssueDetail] = useState<LedgerIssueDetailProjection | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [commentText, setCommentText] = useState('');
-  const [showCommentBox, setShowCommentBox] = useState(false);
   const [actionInFlight, setActionInFlight] = useState(false);
-  const [linkedSessions, setLinkedSessions] = useState<Array<{session_id: string; created_at: number}>>([]);
-  const [issueContext, setIssueContext] = useState<IssueContext | null>(null);
 
   // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
@@ -232,31 +178,16 @@ export function IssuesView({
       setSelectedIssueId(canonicalIssueId);
       setRepoFilter(canonicalRepoId);
     } else {
-      // No repo: search all scanned repos for this issue ID
-      findIssue(initialIssueId).then((detail) => {
-        const d = detail as { repo_id?: string; id?: string } | null;
-        if (d?.repo_id && d?.id) {
-          setSelectedRepoId(d.repo_id);
-          setSelectedIssueId(d.id);
-          setRepoFilter(d.repo_id);
-        }
-      }).catch(() => {
-        // Bug: aee671a — cold scanner cache: trigger global scan and retry once
-        onRescan().then(() => findIssue(initialIssueId))
-          .then((retried) => {
-            const r = retried as { repo_id?: string; id?: string } | null;
-            if (r?.repo_id && r?.id) {
-              setSelectedRepoId(r.repo_id);
-              setSelectedIssueId(r.id);
-              setRepoFilter(r.repo_id);
-            }
-          })
-          .catch(() => {
-            // Issue genuinely not found after scan — leave selection unchanged
-          });
-      });
+      const found = repos
+        .flatMap((repo) => repo.issues.map((issue) => ({ repo, issue })))
+        .find(({ issue }) => issue.id === initialIssueId || issue.id.startsWith(initialIssueId));
+      if (found) {
+        setSelectedRepoId(found.repo.repo_id);
+        setSelectedIssueId(found.issue.id);
+        setRepoFilter(found.repo.repo_id);
+      }
     }
-  }, [initialRepoId, initialIssueId, initialCommentId, resolveRepoId, resolveIssueId]);
+  }, [initialRepoId, initialIssueId, initialCommentId, resolveRepoId, resolveIssueId, repos]);
 
   useEffect(() => {
     if (!ledgerIssueDetail || !initialCommentId) return;
@@ -331,81 +262,34 @@ export function IssuesView({
     [repos],
   );
 
-  // Fetch detail when selection changes.
+  const visibleLedgerIssueDetail = useMemo(
+    () => ledgerDetailMatchesSelection(ledgerIssueDetail, selectedRepoId, selectedIssueId)
+      ? ledgerIssueDetail
+      : null,
+    [ledgerIssueDetail, selectedRepoId, selectedIssueId],
+  );
+
+  // Fetch canonical ledger detail when selection changes.
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) {
-      setIssueDetail(null);
       setLedgerIssueDetail(null);
-      setLinkedSessions([]);
-      setIssueContext(null);
+      setDetailLoading(false);
       return;
     }
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
     const issueId = resolveIssueId(repoId, selectedIssueId);
     let cancelled = false;
-    // Bug: a44fd6a — only show loading spinner when the detail pane is empty.
-    if (!issueDetail) {
-      setDetailLoading(true);
-    }
-    setLedgerIssueDetail(null);
-    const fetchDetail = (rId: string, iId: string) =>
-      getIssueDetail(rId, iId).then((data) => {
-        if (!cancelled) {
-          if (rId !== selectedRepoId) setSelectedRepoId(rId);
-          if (iId !== selectedIssueId) setSelectedIssueId(iId);
-          setIssueDetail(data as GitBugIssueDetail);
-          setDetailLoading(false);
-        }
-      });
-    // Bug: 88d3b1d — defensive fallback chain
-    fetchDetail(repoId, issueId).catch(() => {
-      scanIssueRepo(repoId)
-        .then(() => fetchDetail(repoId, issueId))
-        .catch(() => {
-          findIssue(issueId)
-            .then((found) => {
-              if (cancelled) return;
-              const d = found as { repo_id?: string; id?: string } | null;
-              if (d?.repo_id && d?.id) {
-                setSelectedRepoId(d.repo_id);
-                setSelectedIssueId(d.id);
-                setIssueDetail(found as GitBugIssueDetail);
-              } else {
-                setIssueDetail(null);
-              }
-              setDetailLoading(false);
-            })
-            .catch(() => {
-              if (!cancelled) {
-                setIssueDetail(null);
-                setDetailLoading(false);
-              }
-            });
-        });
-    });
-    getIssueSessions(repoId, issueId)
-      .then((data) => {
-        if (!cancelled) {
-          setLinkedSessions(data as Array<{session_id: string; created_at: number}>);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setLinkedSessions([]);
-      });
-    // Bug: 84cd5ae — fetch issue context for the hub view
-    getIssueContext(repoId, issueId)
-      .then((ctx) => {
-        if (!cancelled) setIssueContext(ctx);
-      })
-      .catch(() => {
-        if (!cancelled) setIssueContext(null);
-      });
+    setDetailLoading(true);
     getLedgerIssueDetailByRef(repoId, issueId)
       .then((detail) => {
-        if (!cancelled) setLedgerIssueDetail(detail);
+        if (cancelled) return;
+        setLedgerIssueDetail(detail);
       })
       .catch(() => {
         if (!cancelled) setLedgerIssueDetail(null);
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
       });
     return () => {
       cancelled = true;
@@ -415,8 +299,6 @@ export function IssuesView({
   const selectIssue = useCallback((repoId: string, issueId: string) => {
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
-    setShowCommentBox(false);
-    setCommentText('');
   }, []);
 
   const refreshLedgerIssueDetail = useCallback(async () => {
@@ -429,74 +311,46 @@ export function IssuesView({
     }
   }, [selectedRepoId, selectedIssueId]);
 
-  // Close issue (manual close — no "merged" label)
   const handleCloseIssue = useCallback(async () => {
-    if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
+    if (!visibleLedgerIssueDetail || actionInFlight) return;
     setActionInFlight(true);
     try {
-      await issueAction(selectedRepoId, selectedIssueId, 'status', {
-        status: 'closed',
-      });
-      const data = await getIssueDetail(selectedRepoId, selectedIssueId);
-      setIssueDetail(data as GitBugIssueDetail);
-      await refreshLedgerIssueDetail();
-      onRescan();
+      const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'closed' });
+      setLedgerIssueDetail(detail);
+      void onRescan();
     } catch {
       // silently fail
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, refreshLedgerIssueDetail]);
+  }, [visibleLedgerIssueDetail, actionInFlight, onRescan]);
 
-  // Reopen issue (works for both closed and merged)
   const handleReopenIssue = useCallback(async () => {
-    if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
+    if (!visibleLedgerIssueDetail || actionInFlight) return;
     setActionInFlight(true);
     try {
-      // If merged, remove the "merged" label first
-      if (issueDetail && issueDetail.labels.includes('merged')) {
-        await issueAction(selectedRepoId, selectedIssueId, 'label', {
-          action: 'remove',
-          label: 'merged',
-        });
-      }
-      await issueAction(selectedRepoId, selectedIssueId, 'status', {
-        status: 'open',
-      });
-      const data = await getIssueDetail(selectedRepoId, selectedIssueId);
-      setIssueDetail(data as GitBugIssueDetail);
-      await refreshLedgerIssueDetail();
-      onRescan();
+      const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'open', resolution: null });
+      setLedgerIssueDetail(detail);
+      void onRescan();
     } catch {
       // silently fail
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, onRescan, issueDetail, refreshLedgerIssueDetail]);
+  }, [visibleLedgerIssueDetail, actionInFlight, onRescan]);
 
   const handleAddCommentBody = useCallback(async (message: string) => {
-    if (!selectedRepoId || !selectedIssueId || !message.trim() || actionInFlight) return;
+    if (!visibleLedgerIssueDetail || !message.trim() || actionInFlight) return;
     setActionInFlight(true);
     try {
-      await issueAction(selectedRepoId, selectedIssueId, 'comment', {
-        message: message.trim(),
-      });
-      setCommentText('');
-      setShowCommentBox(false);
-      // Refresh detail
-      const data = await getIssueDetail(selectedRepoId, selectedIssueId);
-      setIssueDetail(data as GitBugIssueDetail);
-      await refreshLedgerIssueDetail();
+      const detail = await addLedgerIssueComment(visibleLedgerIssueDetail.id, message.trim());
+      setLedgerIssueDetail(detail);
     } catch {
       // silently fail
     } finally {
       setActionInFlight(false);
     }
-  }, [selectedRepoId, selectedIssueId, actionInFlight, refreshLedgerIssueDetail]);
-
-  const handleAddComment = useCallback(async () => {
-    await handleAddCommentBody(commentText);
-  }, [handleAddCommentBody, commentText]);
+  }, [visibleLedgerIssueDetail, actionInFlight]);
 
   const handleStartAgent = useCallback(async () => {
     if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
@@ -511,9 +365,13 @@ export function IssuesView({
     }
   }, [selectedRepoId, selectedIssueId, actionInFlight]);
 
-  const handleOpenLedgerEntity = useCallback((type: 'issue' | 'session' | 'auth_request' | 'conversation', id: string) => {
+  const handleOpenLedgerEntity = useCallback((type: 'issue' | 'session' | 'auth_request' | 'conversation', id: string, repoId?: string) => {
     if (type === 'issue') {
-      if (selectedRepoId) selectIssue(selectedRepoId, id);
+      if (repoId) {
+        selectIssue(repoId, id);
+      } else if (selectedRepoId) {
+        selectIssue(selectedRepoId, id);
+      }
       return;
     }
     if (type === 'session') {
@@ -528,24 +386,6 @@ export function IssuesView({
       window.location.hash = `#/auth?request=${encodeURIComponent(id.replace(/^auth_request:/, ''))}`;
     }
   }, [selectedRepoId, selectIssue]);
-
-  // Description and comments as HTML
-  const descriptionHtml = useMemo(
-    () => (issueDetail?.description ? renderMarkdown(issueDetail.description) : ''),
-    [issueDetail?.description],
-  );
-
-  // Compute visual state of the currently selected detail
-  const detailVisualState: VisualState | null = useMemo(
-    () => (issueDetail ? getVisualState(issueDetail) : null),
-    [issueDetail],
-  );
-
-  // Labels to display in detail — hide the "merged" label since it's shown via the status pill
-  const displayLabels = useMemo(
-    () => (issueDetail ? issueDetail.labels.filter((l) => l !== 'merged') : []),
-    [issueDetail],
-  );
 
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 280,
@@ -720,18 +560,10 @@ export function IssuesView({
           <div className="issues-detail__empty">
             <p className="text-muted">Select an issue to view details</p>
           </div>
-        ) : detailLoading ? (
-          <div className="issues-detail__empty">
-            <p className="text-muted">Loading...</p>
-          </div>
-        ) : !issueDetail ? (
-          <div className="issues-detail__empty">
-            <p className="text-muted">Failed to load issue detail.</p>
-          </div>
-        ) : ledgerIssueDetail ? (
+        ) : visibleLedgerIssueDetail ? (
           <div className="issues-detail__content">
             <LedgerIssueDetail
-              detail={ledgerIssueDetail}
+              detail={visibleLedgerIssueDetail}
               actionInFlight={actionInFlight}
               onAddComment={handleAddCommentBody}
               onSetStatus={(status) => status === 'open' ? handleReopenIssue() : handleCloseIssue()}
@@ -747,401 +579,13 @@ export function IssuesView({
               }}
             />
           </div>
+        ) : detailLoading ? (
+          <div className="issues-detail__empty">
+            <p className="text-muted">Loading...</p>
+          </div>
         ) : (
-          <div className="issues-detail__content">
-            {/* ── Status Banner ── Bug: 84cd5ae */}
-            <div className="issue-hub__banner">
-              <div className="issue-hub__banner-top">
-                {/* Bug: a44fd6a — render issue detail title as inline markdown */}
-                <h2
-                  className="issues-detail__title"
-                  dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issueDetail.title) }}
-                />
-              </div>
-              <div className="issues-detail__meta">
-                <span
-                  className={`status-pill status-pill--lg ${
-                    detailVisualState === 'open'
-                      ? 'status-pill--success'
-                      : detailVisualState === 'merged'
-                        ? 'status-pill--merged'
-                        : 'status-pill--dismissed'
-                  }`}
-                >
-                  {detailVisualState}
-                </span>
-                {displayLabels.map((lbl) => {
-                  const color = labelColor(lbl);
-                  const display = LABEL_DISPLAY_NAMES[lbl] ?? lbl;
-                  return (
-                    <span
-                      key={lbl}
-                      className="issue-label-pill"
-                      style={{ background: color.bg, color: color.fg }}
-                      title="label"
-                    >
-                      {display}
-                    </span>
-                  );
-                })}
-                {/* Umbrella: show children button */}
-                {issueDetail.labels.includes('umbrella') && (
-                  <button
-                    type="button"
-                    className="btn btn--ghost btn--sm"
-                    onClick={() => {
-                      setRepoFilter(issueDetail.repo_id);
-                      setParentFilter(issueDetail.id.slice(0, 8));
-                    }}
-                  >
-                    Show children
-                  </button>
-                )}
-              </div>
-
-              {/* Work unit status line */}
-              {issueContext?.work_unit && (
-                <div className="issue-hub__work-status">
-                  {issueContext.work_unit.branch && (
-                    <span className="issue-hub__branch-status">
-                      {issueContext.work_unit.state === 'committed' ? 'Committed on ' : 'Assigned to '}
-                      <EntityPill
-                        type="branch"
-                        id={issueContext.work_unit.branch}
-                        label={issueContext.work_unit.branch}
-                        repoId={issueDetail.repo_id}
-                      />
-                    </span>
-                  )}
-                  <span className={`issue-hub__liveness issue-hub__liveness--${
-                    issueContext.work_unit.liveness.has_live_agent
-                      ? (issueContext.work_unit.liveness.is_processing ? 'active' : 'idle')
-                      : 'unassigned'
-                  }`}>
-                    <span className="issue-hub__liveness-dot" />
-                    {issueContext.work_unit.liveness.has_live_agent
-                      ? (issueContext.work_unit.liveness.is_processing
-                          ? 'Active \u2014 SDK session running'
-                          : 'Idle')
-                      : 'Unassigned'}
-                  </span>
-                </div>
-              )}
-
-              {/* Action buttons */}
-              <div className="issue-hub__actions">
-                {/* Open in Console — only if there's an active session */}
-                {issueContext?.work_unit?.liveness.has_live_agent &&
-                  issueContext.work_unit.assigned_session_id && (
-                  <a
-                    className="issue-hub__action-btn issue-hub__action-btn--primary"
-                    href={`#/console?session=${encodeURIComponent(issueContext.work_unit.assigned_session_id)}`}
-                  >
-                    Open in Console
-                  </a>
-                )}
-                {/* Resume Work — continuation exists, no active session */}
-                {issueContext?.work_unit?.continuation &&
-                  !issueContext.work_unit.liveness.has_live_agent && (
-                  <button
-                    type="button"
-                    className="issue-hub__action-btn issue-hub__action-btn--secondary"
-                    disabled={actionInFlight}
-                    onClick={async () => {
-                      // Bug: cbbb3d9 — spawn SDK session from issue hub
-                      if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
-                      setActionInFlight(true);
-                      try {
-                        const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
-                        window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
-                      } catch {
-                        // silently fail
-                      } finally {
-                        setActionInFlight(false);
-                      }
-                    }}
-                  >
-                    Resume Work
-                  </button>
-                )}
-                {/* Start Agent — no active session, no continuation */}
-                {(!issueContext?.work_unit || (
-                  !issueContext.work_unit.liveness.has_live_agent &&
-                  !issueContext.work_unit.continuation
-                )) && (
-                  <button
-                    type="button"
-                    className="issue-hub__action-btn issue-hub__action-btn--secondary"
-                    disabled={actionInFlight}
-                    onClick={async () => {
-                      // Bug: cbbb3d9 — spawn SDK session from issue hub
-                      if (!selectedRepoId || !selectedIssueId || actionInFlight) return;
-                      setActionInFlight(true);
-                      try {
-                        const result = await spawnIssueAgent(selectedRepoId, selectedIssueId);
-                        window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
-                      } catch {
-                        // silently fail
-                      } finally {
-                        setActionInFlight(false);
-                      }
-                    }}
-                  >
-                    Start Agent
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="issues-detail__info text-muted">
-              <span>{issueDetail.author}</span>
-              {issueDetail.created_at && (
-                <span> &middot; {formatRelativeTime(issueDetail.created_at)}</span>
-              )}
-              <span className="issues-detail__id"> &middot; {issueDetail.id.slice(0, 8)}</span>
-            </div>
-
-            {descriptionHtml ? (
-              <div
-                className="issues-detail__body spec-panel"
-                dangerouslySetInnerHTML={{ __html: descriptionHtml }}
-              />
-            ) : (
-              <div className="issues-detail__body spec-panel spec-panel--empty">
-                No description.
-              </div>
-            )}
-
-            {/* ── Activity Timeline ── Bug: 84cd5ae, f3dbb3e (chronological sort) */}
-            <hr className="issues-detail__divider" />
-            <h3 className="issues-detail__section-title">Activity</h3>
-            <div className="issue-hub__timeline">
-              {(() => {
-                // Bug: f3dbb3e — normalize all timeline items to a common shape and sort chronologically
-                type TimelineItem =
-                  | { kind: 'session'; ts: number; sess: IssueContextSession }
-                  | { kind: 'auth'; ts: number; auth: IssueContextAuthRequest }
-                  | { kind: 'comment'; ts: number; comment: GitBugComment }
-                  | { kind: 'handoff'; ts: number; continuation: string };
-
-                const items: TimelineItem[] = [];
-
-                for (const sess of (issueContext?.sessions ?? [])) {
-                  const ts = sess.created_at
-                    ? (typeof sess.created_at === 'string' ? Date.parse(sess.created_at) : Number(sess.created_at))
-                    : 0;
-                  items.push({ kind: 'session', ts: Number.isNaN(ts) ? 0 : ts, sess });
-                }
-
-                for (const auth of (issueContext?.auth_requests ?? [])) {
-                  const ts = auth.created_at ? Number(auth.created_at) : 0;
-                  items.push({ kind: 'auth', ts: Number.isNaN(ts) ? 0 : ts, auth });
-                }
-
-                for (const comment of issueDetail.comments) {
-                  const ts = comment.date ? Date.parse(comment.date) : 0;
-                  items.push({ kind: 'comment', ts: Number.isNaN(ts) ? 0 : ts, comment });
-                }
-
-                if (issueContext?.work_unit?.continuation) {
-                  // Handoff note: use continuation_at if available, otherwise sort last
-                  items.push({
-                    kind: 'handoff',
-                    ts: Number.MAX_SAFE_INTEGER,
-                    continuation: issueContext.work_unit.continuation,
-                  });
-                }
-
-                items.sort((a, b) => a.ts - b.ts);
-
-                if (items.length === 0) {
-                  return <div className="issue-hub__timeline-empty text-muted">No activity yet.</div>;
-                }
-
-                return items.map((item, idx) => {
-                  if (item.kind === 'session') {
-                    const sess = item.sess;
-                    return (
-                      <div key={`sess-${sess.session_id}`} className="issue-hub__timeline-item">
-                        <span className="issue-hub__timeline-icon issue-hub__timeline-icon--session" />
-                        <span className="issue-hub__timeline-text">
-                          Session started
-                          {sess.app ? ` (${sess.app})` : ''}
-                          {' \u2014 '}
-                          <EntityPill type="session" id={sess.session_id} />
-                        </span>
-                        {sess.created_at && (
-                          <span className="issue-hub__timeline-time text-muted">
-                            {formatRelativeTime(typeof sess.created_at === 'string' ? sess.created_at : new Date(sess.created_at).toISOString())}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  }
-                  if (item.kind === 'auth') {
-                    const auth = item.auth;
-                    return (
-                      <div key={`auth-${auth.id}`} className="issue-hub__timeline-item">
-                        <span className="issue-hub__timeline-icon issue-hub__timeline-icon--auth" />
-                        <span className="issue-hub__timeline-text">
-                          Auth request: {auth.status}
-                          {' \u2014 '}
-                          <EntityPill type="auth" id={auth.id} label={auth.title?.slice(0, 30) || auth.id.slice(0, 8)} />
-                        </span>
-                        {item.ts > 0 && (
-                          <span className="issue-hub__timeline-time text-muted">
-                            {formatRelativeTime(new Date(item.ts).toISOString())}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  }
-                  if (item.kind === 'comment') {
-                    const comment = item.comment;
-                    return (
-                      <div key={comment.id} className="issue-hub__timeline-item">
-                        <span className="issue-hub__timeline-icon issue-hub__timeline-icon--comment" />
-                        <div className="issue-hub__timeline-comment">
-                          <div className="issue-comment__header">
-                            <span className="issue-comment__author">{comment.author}</span>
-                            {comment.date && (
-                              <span className="issue-comment__date text-muted">
-                                {formatRelativeTime(comment.date)}
-                              </span>
-                            )}
-                          </div>
-                          <div
-                            className="issue-comment__body spec-panel"
-                            dangerouslySetInnerHTML={{
-                              __html: renderMarkdown(comment.body),
-                            }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  }
-                  // handoff
-                  return (
-                    <div key={`handoff-${idx}`} className="issue-hub__timeline-item">
-                      <span className="issue-hub__timeline-icon issue-hub__timeline-icon--handoff" />
-                      <div className="issue-hub__timeline-comment">
-                        <div className="issue-comment__header">
-                          <span className="issue-comment__author">Handoff Note</span>
-                        </div>
-                        <div
-                          className="issue-comment__body spec-panel"
-                          dangerouslySetInnerHTML={{
-                            __html: renderMarkdown(item.continuation),
-                          }}
-                        />
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
-            </div>
-
-            {/* ── Related Entities ── Bug: 84cd5ae */}
-            {((issueContext?.sessions ?? []).length > 0 ||
-              (issueContext?.auth_requests ?? []).length > 0 ||
-              linkedSessions.length > 0) && (
-              <>
-                <hr className="issues-detail__divider" />
-                <h3 className="issues-detail__section-title">Related</h3>
-                <div className="issue-hub__related">
-                  {/* Sessions */}
-                  {(issueContext?.sessions ?? linkedSessions.map((l) => ({
-                    session_id: l.session_id,
-                    has_conversation: false,
-                  }))).length > 0 && (
-                    <div className="issue-hub__related-group">
-                      <span className="issue-hub__related-label">Sessions</span>
-                      <EntityPillList>
-                        {(issueContext?.sessions ?? []).map((sess: IssueContextSession) => (
-                          <EntityPill key={sess.session_id} type="session" id={sess.session_id} />
-                        ))}
-                        {!issueContext && linkedSessions.map((link) => (
-                          <EntityPill key={link.session_id} type="session" id={link.session_id} />
-                        ))}
-                      </EntityPillList>
-                    </div>
-                  )}
-                  {/* Auth requests */}
-                  {(issueContext?.auth_requests ?? []).length > 0 && (
-                    <div className="issue-hub__related-group">
-                      <span className="issue-hub__related-label">Auth Requests</span>
-                      <EntityPillList>
-                        {(issueContext?.auth_requests ?? []).map((auth: IssueContextAuthRequest) => (
-                          <EntityPill key={auth.id} type="auth" id={auth.id} label={auth.id.slice(0, 8)} />
-                        ))}
-                      </EntityPillList>
-                    </div>
-                  )}
-                  {/* Conversations — from sessions that have conversations */}
-                  {(issueContext?.sessions ?? []).filter((s: IssueContextSession) => s.has_conversation).length > 0 && (
-                    <div className="issue-hub__related-group">
-                      <span className="issue-hub__related-label">Conversations</span>
-                      <EntityPillList>
-                        {(issueContext?.sessions ?? [])
-                          .filter((s: IssueContextSession) => s.has_conversation)
-                          .map((s: IssueContextSession) => (
-                            <EntityPill key={`conv-${s.session_id}`} type="conversation" id={s.session_id} />
-                          ))}
-                      </EntityPillList>
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-
-            <div className="issue-actions">
-              {detailVisualState === 'open' ? (
-                <button
-                  type="button"
-                  className="btn btn--danger"
-                  disabled={actionInFlight}
-                  onClick={handleCloseIssue}
-                >
-                  Close Issue
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn--success"
-                  disabled={actionInFlight}
-                  onClick={handleReopenIssue}
-                >
-                  Reopen Issue
-                </button>
-              )}
-              <button
-                type="button"
-                className="btn btn--ghost"
-                onClick={() => setShowCommentBox((prev) => !prev)}
-              >
-                {showCommentBox ? 'Cancel' : 'Add Comment'}
-              </button>
-            </div>
-
-            {showCommentBox && (
-              <div className="issue-comment-form">
-                <textarea
-                  className="issue-comment-form__input"
-                  placeholder="Write a comment..."
-                  value={commentText}
-                  onInput={(e) => setCommentText(e.currentTarget.value)}
-                  rows={4}
-                />
-                <button
-                  type="button"
-                  className="btn btn--active"
-                  disabled={actionInFlight || !commentText.trim()}
-                  onClick={handleAddComment}
-                >
-                  Submit Comment
-                </button>
-              </div>
-            )}
+          <div className="issues-detail__empty">
+            <p className="text-muted">Failed to load issue detail.</p>
           </div>
         )}
       </div>
