@@ -15715,7 +15715,8 @@ function LedgerIssueDetail({
     ] }),
     /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__meta", children: [
       /* @__PURE__ */ u3("span", { children: detail.author.display }),
-      /* @__PURE__ */ u3("span", { children: formatRelativeTime3(detail.created_at) })
+      /* @__PURE__ */ u3("span", { children: formatRelativeTime3(detail.created_at) }),
+      /* @__PURE__ */ u3(MetadataDisclosure, { label: "Issue metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: issueMetadataRows(detail) }) })
     ] }),
     detail.labels.length > 0 && /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__labels", children: [
       detail.labels.map((label) => /* @__PURE__ */ u3("span", { className: "ledger-label", children: displayLabel(label) }, label)),
@@ -15803,12 +15804,26 @@ function CommentCard({
   return /* @__PURE__ */ u3("div", { className: "ledger-comment-card", id: `comment-${comment.id}`, children: [
     /* @__PURE__ */ u3("div", { className: "ledger-comment-card__header", children: [
       /* @__PURE__ */ u3("span", { children: comment.author.display }),
-      /* @__PURE__ */ u3("em", { children: comment.author.type.replace(/_/g, " ") }),
-      /* @__PURE__ */ u3("small", { children: comment.source }),
-      /* @__PURE__ */ u3("time", { children: formatRelativeTime3(comment.created_at) })
+      /* @__PURE__ */ u3("time", { children: formatRelativeTime3(comment.created_at) }),
+      /* @__PURE__ */ u3(MetadataDisclosure, { label: "Comment metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: commentMetadataRows(comment) }) })
     ] }),
     /* @__PURE__ */ u3(MarkdownBlock, { className: "ledger-comment-card__body spec-panel", source: comment.body, empty: "", detail })
   ] });
+}
+function MetadataDisclosure({
+  label,
+  children: children2
+}) {
+  return /* @__PURE__ */ u3("details", { className: "ledger-metadata-popover", children: [
+    /* @__PURE__ */ u3("summary", { "aria-label": label, title: label, children: "i" }),
+    /* @__PURE__ */ u3("div", { className: "ledger-metadata-popover__panel", children: children2 })
+  ] });
+}
+function MetadataRows({ rows }) {
+  return /* @__PURE__ */ u3("dl", { className: "ledger-metadata-grid", children: rows.map(([key2, value]) => /* @__PURE__ */ u3("div", { children: [
+    /* @__PURE__ */ u3("dt", { children: key2 }),
+    /* @__PURE__ */ u3("dd", { children: value })
+  ] }, key2)) });
 }
 function RelationshipList({
   relationships,
@@ -16023,6 +16038,42 @@ function commentRefLabel(parsed, detail) {
   const issueLabel = issueRefLabel(parsed, detail);
   return `${issueLabel}#${parsed.comment}`;
 }
+function issueMetadataRows(detail) {
+  const rows = [
+    ["Issue ID", detail.display_id],
+    ["Canonical ID", detail.id],
+    ["Kind", detail.kind],
+    ["Priority", detail.priority],
+    ["Source", detail.source || "unknown"],
+    ["Project", detail.project.repo_name ?? detail.project.display_name],
+    ["Created", formatAbsoluteTime(detail.created_at)],
+    ["Updated", formatAbsoluteTime(detail.updated_at)]
+  ];
+  if (detail.closed_at)
+    rows.push(["Closed", formatAbsoluteTime(detail.closed_at)]);
+  if (detail.aliases.length > 0) {
+    rows.push([
+      "Aliases",
+      detail.aliases.map((alias) => alias.alias || alias.external_id).filter(Boolean).join(", ")
+    ]);
+  }
+  if (detail.sync.state !== "clean")
+    rows.push(["Sync", syncLabel(detail.sync.state)]);
+  return rows.filter(([, value]) => Boolean(value));
+}
+function commentMetadataRows(comment) {
+  const rows = [
+    ["Comment ID", comment.id],
+    ["Author type", comment.author.type.replace(/_/g, " ")],
+    ["Source", comment.source || "unknown"],
+    ["Created", formatAbsoluteTime(comment.created_at)]
+  ];
+  if (comment.updated_at)
+    rows.push(["Updated", formatAbsoluteTime(comment.updated_at)]);
+  if (comment.author.id)
+    rows.push(["Author ID", comment.author.id]);
+  return rows;
+}
 function parseIssueRef(ref, detail) {
   const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
   if (scoped)
@@ -16075,6 +16126,14 @@ function formatRelativeTime3(value) {
   if (minutes > 0)
     return `${minutes}m ago`;
   return `${seconds}s ago`;
+}
+function formatAbsoluteTime(value) {
+  if (!value)
+    return "";
+  const parsed = typeof value === "number" ? value : Date.parse(value);
+  if (Number.isNaN(parsed))
+    return String(value);
+  return new Date(parsed).toLocaleString();
 }
 function displayLabel(label) {
   if (label === "error")
@@ -16141,6 +16200,12 @@ function ledgerDetailMatchesSelection(detail, repoId, issueId) {
       refs.add(alias.external_id);
   }
   return [...refs].some((ref) => ref === issueId || ref.startsWith(issueId) || issueId.startsWith(ref));
+}
+function issueRouteHash(repoId, issueId, commentId) {
+  const params = new URLSearchParams({ repo: repoId, issue: issueId });
+  if (commentId)
+    params.set("comment", commentId);
+  return `#/issues?${params.toString()}`;
 }
 function IssuesView({
   repos,
@@ -16305,6 +16370,11 @@ function IssuesView({
     };
   }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
   const selectIssue = q2((repoId, issueId) => {
+    const nextHash = issueRouteHash(repoId, issueId);
+    if (typeof window !== "undefined" && window.location.hash !== nextHash) {
+      window.history.pushState(null, "", nextHash);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
   }, []);
@@ -23184,7 +23254,7 @@ function formatRelativeTime4(dateStr) {
     return `${days}d ago`;
   return new Date(ts).toLocaleDateString();
 }
-function formatAbsoluteTime(dateStr) {
+function formatAbsoluteTime2(dateStr) {
   if (!dateStr)
     return "";
   const ts = Date.parse(dateStr);
@@ -23566,7 +23636,7 @@ function BlockRenderer({
       ] }),
       /* @__PURE__ */ u3("div", { className: "block-header__right", children: [
         /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
-        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
+        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime2(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
       ] })
     ] }),
     !showHeader && /* @__PURE__ */ u3("div", { className: "block-header block-header--user", children: [
@@ -23582,7 +23652,7 @@ function BlockRenderer({
       ) }),
       /* @__PURE__ */ u3("div", { className: "block-header__right", children: [
         /* @__PURE__ */ u3(CopyButton, { content: block2.content }),
-        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
+        /* @__PURE__ */ u3("span", { className: "block-timestamp", title: formatAbsoluteTime2(block2.timestamp), children: formatRelativeTime4(block2.timestamp) })
       ] })
     ] }),
     renderConversationBlockBody(block2, collapsed),
@@ -23972,7 +24042,7 @@ function ConversationInfoDialog({
       ] }),
       /* @__PURE__ */ u3("div", { children: [
         /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Started" }),
-        /* @__PURE__ */ u3("span", { children: formatAbsoluteTime(conversation.started_at) || "unknown" })
+        /* @__PURE__ */ u3("span", { children: formatAbsoluteTime2(conversation.started_at) || "unknown" })
       ] }),
       /* @__PURE__ */ u3("div", { children: [
         /* @__PURE__ */ u3("span", { className: "conv-info-grid__label", children: "Session" }),

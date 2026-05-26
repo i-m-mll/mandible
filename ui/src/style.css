@@ -9979,6 +9979,7 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 .ledger-issue-detail__meta {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 7px;
   color: var(--text-muted);
   font-size: 12px;
@@ -9988,6 +9989,84 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   padding: 2px 6px;
   border-radius: 4px;
   background: rgba(255,255,255,0.04);
+}
+
+.ledger-metadata-popover {
+  position: relative;
+  display: inline-flex;
+}
+
+.ledger-metadata-popover summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  list-style: none;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.035);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.ledger-metadata-popover summary::-webkit-details-marker {
+  display: none;
+}
+
+.ledger-metadata-popover summary:hover,
+.ledger-metadata-popover[open] summary {
+  color: var(--text-primary);
+  border-color: rgba(255,255,255,0.32);
+  background: rgba(255,255,255,0.07);
+}
+
+.ledger-metadata-popover__panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: min(360px, calc(100vw - 40px));
+  max-width: min(520px, calc(100vw - 40px));
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  box-shadow: 0 14px 40px rgba(0,0,0,0.35);
+}
+
+.ledger-metadata-grid {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.ledger-metadata-grid div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.ledger-metadata-grid dt,
+.ledger-metadata-grid dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.ledger-metadata-grid dt {
+  color: var(--text-muted);
+}
+
+.ledger-metadata-grid dd {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
 }
 
 .ledger-label {
@@ -10077,6 +10156,25 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 .ledger-comment-card__header time {
   color: var(--text-muted);
   font-style: normal;
+}
+
+.ledger-comment-card__header .ledger-metadata-popover {
+  margin-left: -2px;
+}
+
+.spec-panel a.ledger-xref,
+.ledger-xref {
+  color: inherit;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255,255,255,0.42);
+}
+
+.ledger-xref:hover {
+  color: var(--text-primary);
+  text-decoration-color: currentColor;
 }
 
 .ledger-comment-composer {

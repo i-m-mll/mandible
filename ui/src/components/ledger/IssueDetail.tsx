@@ -93,6 +93,9 @@ export function LedgerIssueDetail({
       <div className="ledger-issue-detail__meta">
         <span>{detail.author.display}</span>
         <span>{formatRelativeTime(detail.created_at)}</span>
+        <MetadataDisclosure label="Issue metadata">
+          <MetadataRows rows={issueMetadataRows(detail)} />
+        </MetadataDisclosure>
       </div>
 
       {detail.labels.length > 0 && (
@@ -247,12 +250,41 @@ function CommentCard({
     <div className="ledger-comment-card" id={`comment-${comment.id}`}>
       <div className="ledger-comment-card__header">
         <span>{comment.author.display}</span>
-        <em>{comment.author.type.replace(/_/g, ' ')}</em>
-        <small>{comment.source}</small>
         <time>{formatRelativeTime(comment.created_at)}</time>
+        <MetadataDisclosure label="Comment metadata">
+          <MetadataRows rows={commentMetadataRows(comment)} />
+        </MetadataDisclosure>
       </div>
       <MarkdownBlock className="ledger-comment-card__body spec-panel" source={comment.body} empty="" detail={detail} />
     </div>
+  );
+}
+
+function MetadataDisclosure({
+  label,
+  children,
+}: {
+  label: string;
+  children: JSX.Element;
+}): JSX.Element {
+  return (
+    <details className="ledger-metadata-popover">
+      <summary aria-label={label} title={label}>i</summary>
+      <div className="ledger-metadata-popover__panel">{children}</div>
+    </details>
+  );
+}
+
+function MetadataRows({ rows }: { rows: Array<[string, string]> }): JSX.Element {
+  return (
+    <dl className="ledger-metadata-grid">
+      {rows.map(([key, value]) => (
+        <div key={key}>
+          <dt>{key}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -518,6 +550,43 @@ function commentRefLabel(parsed: { repo: string; issue: string; comment: string 
   return `${issueLabel}#${parsed.comment}`;
 }
 
+function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ['Issue ID', detail.display_id],
+    ['Canonical ID', detail.id],
+    ['Kind', detail.kind],
+    ['Priority', detail.priority],
+    ['Source', detail.source || 'unknown'],
+    ['Project', detail.project.repo_name ?? detail.project.display_name],
+    ['Created', formatAbsoluteTime(detail.created_at)],
+    ['Updated', formatAbsoluteTime(detail.updated_at)],
+  ];
+  if (detail.closed_at) rows.push(['Closed', formatAbsoluteTime(detail.closed_at)]);
+  if (detail.aliases.length > 0) {
+    rows.push([
+      'Aliases',
+      detail.aliases
+        .map((alias) => alias.alias || alias.external_id)
+        .filter(Boolean)
+        .join(', '),
+    ]);
+  }
+  if (detail.sync.state !== 'clean') rows.push(['Sync', syncLabel(detail.sync.state)]);
+  return rows.filter(([, value]) => Boolean(value));
+}
+
+function commentMetadataRows(comment: LedgerIssueDetailComment): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ['Comment ID', comment.id],
+    ['Author type', comment.author.type.replace(/_/g, ' ')],
+    ['Source', comment.source || 'unknown'],
+    ['Created', formatAbsoluteTime(comment.created_at)],
+  ];
+  if (comment.updated_at) rows.push(['Updated', formatAbsoluteTime(comment.updated_at)]);
+  if (comment.author.id) rows.push(['Author ID', comment.author.id]);
+  return rows;
+}
+
 function parseIssueRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string } | null {
   const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
   if (scoped) return { repo: scoped[1], issue: scoped[2] };
@@ -564,6 +633,13 @@ function formatRelativeTime(value?: number | string | null): string {
   if (hours > 0) return `${hours}h ago`;
   if (minutes > 0) return `${minutes}m ago`;
   return `${seconds}s ago`;
+}
+
+function formatAbsoluteTime(value?: number | string | null): string {
+  if (!value) return '';
+  const parsed = typeof value === 'number' ? value : Date.parse(value);
+  if (Number.isNaN(parsed)) return String(value);
+  return new Date(parsed).toLocaleString();
 }
 
 function displayLabel(label: string): string {
