@@ -347,14 +347,47 @@ cleanup_merged_worktrees() {
   done
 }
 
-# Bug: 49e81d9 — skip auto-close for issues with the `coordination` label.
-# Returns 0 (true) if the issue has the coordination label, 1 otherwise.
-# Used by auto_close_issues and close_declared_issues to guard closures.
-has_coordination_label() {
+urlencode() {
+  jq -rn --arg value "$1" '$value|@uri'
+}
+
+current_repo_id() {
+  local root
+  root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  basename "$root"
+}
+
+ledger_issue_has_label() {
   local id="$1"
-  local labels
-  labels=$(git-bug bug show "$id" 2>/dev/null | grep -Ei '^labels:' | sed 's/^[Ll]abels:[[:space:]]*//')
-  [[ "$labels" == *coordination* ]]
+  local label="$2"
+  curl -sf --max-time 5 "${MANDIBLE_BASE}/api/ledger/issues/$(urlencode "$id")" \
+    | jq -e --arg label "$label" '.labels | index($label)' >/dev/null 2>&1
+}
+
+close_ledger_issue() {
+  local id="$1"
+  local message="$2"
+  local merge_sha="$3"
+  local encoded
+  encoded=$(urlencode "$id")
+
+  curl -sf --max-time 5 -X POST "${MANDIBLE_BASE}/api/ledger/issues/${encoded}/comments" \
+    -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg message "$message" '{message:$message}')" >/dev/null 2>&1 || true
+
+  curl -sf --max-time 5 -X POST "${MANDIBLE_BASE}/api/ledger/issues/${encoded}/labels" \
+    -H 'Content-Type: application/json' \
+    -d '{"label":"merged","present":true}' >/dev/null 2>&1 || true
+
+  curl -sf --max-time 5 -X PATCH "${MANDIBLE_BASE}/api/ledger/issues/${encoded}" \
+    -H 'Content-Type: application/json' \
+    -d '{"status":"closed","resolution":"merged"}' >/dev/null 2>&1 || return 1
+
+  curl -sf --max-time 5 -X POST "${MANDIBLE_BASE}/api/issues/resolutions" \
+    -H 'Content-Type: application/json' \
+    -d "$(jq -n --arg issue_id "$id" --arg commit_sha "$merge_sha" --arg repo_id "$(current_repo_id)" \
+      '{issue_id:$issue_id, commit_sha:$commit_sha, repo_id:$repo_id}')" >/dev/null 2>&1 || true
+
 }
 
 # Bug: 670e375 — auto-close issues referenced in explicit closure trailers after merge
@@ -386,28 +419,17 @@ auto_close_issues() {
     return 0
   fi
 
-  # Close each referenced issue via git-bug
-  if ! command -v git-bug >/dev/null 2>&1; then
-    err "${DIM_WHITE}[auto-close] git-bug not found, skipping issue closure${RESET}"
-    return 0
-  fi
-
   local id
   local closed=0
+  local merge_sha
+  merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
   for id in $issue_ids; do
     # Bug: 49e81d9 — coordination issues are project-spanning and must never auto-close
-    if has_coordination_label "$id"; then
+    if ledger_issue_has_label "$id" "coordination"; then
       err "${DIM_WHITE}[auto-close] skipping coordination issue ${id}${RESET}"
       continue
     fi
-    if git-bug bug status close "$id" 2>/dev/null; then
-      # Bug: e32ee8b — mark as "merged" (closed + merged label = three-state lifecycle)
-      git-bug bug label new "$id" merged 2>/dev/null || true
-
-      # Bug: fa1ac4c — record resolving commit SHA for traceability
-      local merge_sha
-      merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-      git-bug bug comment new "$id" -m "Resolved by merge ${merge_sha:0:12}" --non-interactive 2>/dev/null || true
+    if close_ledger_issue "$id" "Resolved by merge ${merge_sha:0:12}" "$merge_sha"; then
       git notes append -m "closes: ${id:0:8}" HEAD 2>/dev/null || true
 
       err "${DIM_WHITE}[auto-close] merged issue ${id}${RESET}"
@@ -456,26 +478,17 @@ close_declared_issues() {
     return 0
   fi
 
-  if ! command -v git-bug >/dev/null 2>&1; then
-    err "${DIM_WHITE}[issues] git-bug not found, skipping declared issue closure${RESET}"
-    return 0
-  fi
-
   local id
   local closed=0
+  local merge_sha
+  merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
   for id in $ids; do
     # Bug: 49e81d9 — coordination issues are project-spanning and must never auto-close
-    if has_coordination_label "$id"; then
+    if ledger_issue_has_label "$id" "coordination"; then
       err "${DIM_WHITE}[issues] skipping coordination issue ${id}${RESET}"
       continue
     fi
-    if git-bug bug status close "$id" 2>/dev/null; then
-      git-bug bug label new "$id" merged 2>/dev/null || true
-
-      local merge_sha
-      merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-      git-bug bug comment new "$id" -m "Resolved by merge ${merge_sha:0:12} (declared in auth request ${request_id:0:8})" --non-interactive 2>/dev/null || true
-
+    if close_ledger_issue "$id" "Resolved by merge ${merge_sha:0:12} (declared in auth request ${request_id:0:8})" "$merge_sha" "$request_id"; then
       err "${DIM_WHITE}[issues] merged declared issue ${id}${RESET}"
       closed=$((closed + 1))
     fi

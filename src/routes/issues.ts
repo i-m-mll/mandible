@@ -16,6 +16,7 @@ import {
 import {
   buildLedgerIssueDetailProjection,
 } from "../ledger/issue-detail.js";
+import { resolveProjectForCheckout } from "../ledger/projects.js";
 import {
   findLedgerIssueAcrossRepos,
   getLedgerIssueDetailForRoute,
@@ -145,7 +146,7 @@ function filterIssueSummaries(
 
   if (filters.repo) {
     filtered = filtered.filter(
-      (s) => s.repo_id === filters.repo || s.repo_name === filters.repo,
+      (s) => s.repo_id === filters.repo || s.repo_name === filters.repo || s.repo_root === filters.repo,
     );
   }
 
@@ -206,6 +207,14 @@ function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[n
 
 function parseSyncDirection(value: unknown): LedgerSyncDirection {
   return value === "export" || value === "full" ? value : "import";
+}
+
+function kindFromLabels(labels: string[]): LedgerIssueKind {
+  if (labels.includes("error")) return "bug";
+  if (labels.includes("umbrella")) return "umbrella";
+  if (labels.includes("deferred")) return "deferred";
+  if (labels.includes("feature")) return "feature";
+  return "unknown";
 }
 
 function tableExists(db: Db, table: string): boolean {
@@ -416,6 +425,51 @@ export function registerIssueRoutes(
       return;
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.post("/api/issues/:repoId", (req, res) => {
+    const repoRef = getParam(req, "repoId");
+    if (!repoRef) {
+      sendJson(res, 400, { error: "missing repoId" });
+      return;
+    }
+    const body = getBody(req) ?? {};
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const issueBody = typeof body.body === "string" ? body.body : "";
+    const labels = getStringArray(body.labels ?? body.label) ?? [];
+    const root = typeof body.root === "string" && body.root.trim() ? body.root.trim() : repoRef;
+    if (!title || !issueBody.trim()) {
+      sendJson(res, 400, { error: "title and body are required" });
+      return;
+    }
+
+    const db = getDb();
+    const config = getLedgerIssueMigrationConfig(db);
+    if (!isLedgerWriteModeEnabled(config)) {
+      sendJson(res, 409, { error: "ledger issue writes are not enabled" });
+      return;
+    }
+    if (ledgerWriteUnavailable(res, config.write_mode)) return;
+
+    const repo = workScanner.getRepoById(root) ?? workScanner.getRepoById(repoRef);
+    const { project } = resolveProjectForCheckout(db, {
+      root: repo?.root ?? root,
+      name: repo?.name ?? repoRef,
+      workRepoId: repo?.id ?? repoRef,
+      defaultBranch: repo?.default_branch,
+    });
+    const store = new LedgerStore(db);
+    const issue = store.createIssue({
+      project_id: project.id,
+      title,
+      body: issueBody,
+      labels,
+      kind: kindFromLabels(labels),
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+      source: "mandible",
+    });
+    sendLedgerIssueProjection(res, db, issue.id);
   });
 
   server.post("/api/ledger/issues/:issueId/comments", (req, res) => {
