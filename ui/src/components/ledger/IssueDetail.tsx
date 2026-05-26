@@ -7,6 +7,7 @@ import type {
   LedgerIssueDetailProjection,
   LedgerIssueDetailRelationship,
   LedgerIssueDetailSession,
+  LedgerIssueDetailWorkUnit,
   LedgerIssueTimelineEntry,
 } from '../../api';
 
@@ -37,7 +38,9 @@ export function LedgerIssueDetail({
 }: LedgerIssueDetailProps): JSX.Element {
   const [commentText, setCommentText] = useState('');
   const [showComposer, setShowComposer] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
+  const actionMenuRef = useRef<HTMLDivElement>(null);
   const busy = actionInFlight || localBusy;
   const resolvingAuth = detail.auth_requests.find((auth) =>
     (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') &&
@@ -48,6 +51,13 @@ export function LedgerIssueDetail({
   const historicalSessions = detail.sessions.filter((session) => session.status !== 'active' && session.status !== 'idle');
   const primaryWorkUnit = detail.work_units[0] ?? null;
   const timeline = detail.timeline ?? fallbackTimeline(detail);
+  const hasIssueActions = Boolean(
+    liveSession ||
+    onStartAgent ||
+    onSetStatus ||
+    onAddComment ||
+    (detail.labels.includes('umbrella') && onShowChildren)
+  );
   const syncTone = detail.sync.state === 'clean'
     ? 'clean'
     : detail.sync.state === 'pending'
@@ -55,6 +65,24 @@ export function LedgerIssueDetail({
       : detail.sync.state === 'conflicted'
         ? 'conflicted'
         : 'failed';
+
+  useEffect(() => {
+    if (!actionsOpen) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const node = actionMenuRef.current;
+      if (!node || node.contains(event.target as Node)) return;
+      setActionsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActionsOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [actionsOpen]);
 
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy) return;
@@ -75,8 +103,25 @@ export function LedgerIssueDetail({
           <div className="ledger-issue-detail__eyebrow">
             <span>{detail.project.repo_name ?? detail.project.display_name}</span>
             <code>{detail.display_id}</code>
+            <MetadataDisclosure label="Issue metadata">
+              <MetadataRows rows={issueMetadataRows(detail)} />
+            </MetadataDisclosure>
           </div>
           <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
+          <div className="ledger-issue-detail__meta">
+            <span className="ledger-issue-detail__byline-author">{detail.author.display}</span>
+            <time>{formatRelativeTime(detail.created_at)}</time>
+            {detail.labels.length > 0 && (
+              <>
+                <span className="ledger-issue-detail__meta-separator" aria-hidden="true" />
+                <span className="ledger-issue-detail__label-row">
+                  {detail.labels.map((label) => (
+                    <span key={label} className="ledger-label">{displayLabel(label)}</span>
+                  ))}
+                </span>
+              </>
+            )}
+          </div>
         </div>
         <div className="ledger-issue-detail__header-actions">
           <StatusPill
@@ -88,62 +133,26 @@ export function LedgerIssueDetail({
           {detail.sync.state !== 'clean' && (
             <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
           )}
+          {hasIssueActions && (
+            <IssueActionsMenu
+              menuRef={actionMenuRef}
+              open={actionsOpen}
+              busy={busy}
+              detail={detail}
+              liveSession={liveSession}
+              primaryWorkUnit={primaryWorkUnit}
+              onToggle={() => setActionsOpen((prev) => !prev)}
+              onClose={() => setActionsOpen(false)}
+              onStartAgent={onStartAgent}
+              onSetStatus={onSetStatus}
+              onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
+              onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
+            />
+          )}
         </div>
       </header>
 
-      <div className="ledger-issue-detail__meta">
-        <span>{detail.author.display}</span>
-        <span>{formatRelativeTime(detail.created_at)}</span>
-        <MetadataDisclosure label="Issue metadata">
-          <MetadataRows rows={issueMetadataRows(detail)} />
-        </MetadataDisclosure>
-      </div>
-
-      {detail.labels.length > 0 && (
-        <div className="ledger-issue-detail__labels">
-          {detail.labels.map((label) => (
-            <span key={label} className="ledger-label">{displayLabel(label)}</span>
-          ))}
-          {detail.labels.includes('umbrella') && onShowChildren && (
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => onShowChildren(detail)}>
-              Show children
-            </button>
-          )}
-        </div>
-      )}
-
-      {(liveSession || primaryWorkUnit || onStartAgent || onSetStatus) && (
-        <div className="ledger-issue-detail__actions">
-          {liveSession && (
-            <a className="issue-hub__action-btn issue-hub__action-btn--primary" href={`#/console?session=${encodeURIComponent(liveSession.id)}`}>
-              Open Console
-            </a>
-          )}
-          {!liveSession && onStartAgent && (
-            <button
-              type="button"
-              className="issue-hub__action-btn issue-hub__action-btn--secondary"
-              disabled={busy}
-              onClick={() => void onStartAgent()}
-            >
-              {primaryWorkUnit?.continuation ? 'Resume Work' : 'Start Agent'}
-            </button>
-          )}
-          {onSetStatus && (
-            <button
-              type="button"
-              className={`btn ${detail.status === 'open' ? 'btn--danger' : 'btn--success'}`}
-              disabled={busy}
-              onClick={() => void onSetStatus(detail.status === 'open' ? 'closed' : 'open')}
-            >
-              {detail.status === 'open' ? 'Close Issue' : 'Reopen Issue'}
-            </button>
-          )}
-        </div>
-      )}
-
       <section className="ledger-issue-detail__section">
-        <SectionTitle title="Timeline" count={timeline.length} />
         <div className="ledger-comment-list ledger-timeline-list">
           {timeline.map((entry) => (
             <TimelineEntryCard key={entry.id} entry={entry} detail={detail} />
@@ -206,6 +215,112 @@ export function LedgerIssueDetail({
         </section>
       )}
     </article>
+  );
+}
+
+function IssueActionsMenu({
+  menuRef,
+  open,
+  busy,
+  detail,
+  liveSession,
+  primaryWorkUnit,
+  onToggle,
+  onClose,
+  onStartAgent,
+  onSetStatus,
+  onAddComment,
+  onShowChildren,
+}: {
+  menuRef: { current: HTMLDivElement | null };
+  open: boolean;
+  busy: boolean;
+  detail: LedgerIssueDetailProjection;
+  liveSession: LedgerIssueDetailSession | null;
+  primaryWorkUnit: LedgerIssueDetailWorkUnit | null;
+  onToggle: () => void;
+  onClose: () => void;
+  onStartAgent?: () => Promise<void> | void;
+  onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
+  onAddComment?: () => void;
+  onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
+}): JSX.Element {
+  const closeAfter = (callback: () => void) => {
+    callback();
+    onClose();
+  };
+  return (
+    <div className="ledger-issue-actions-menu" ref={menuRef}>
+      <button
+        type="button"
+        className={`ledger-issue-actions-menu__trigger${open ? ' ledger-issue-actions-menu__trigger--active' : ''}`}
+        aria-label="Issue actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Issue actions"
+        onClick={onToggle}
+      >
+        ...
+      </button>
+      {open && (
+        <div className="ledger-issue-actions-menu__dropdown" role="menu">
+          {liveSession && (
+            <a
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              href={`#/console?session=${encodeURIComponent(liveSession.id)}`}
+              onClick={onClose}
+            >
+              Open Console
+            </a>
+          )}
+          {!liveSession && onStartAgent && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(() => void onStartAgent())}
+            >
+              {primaryWorkUnit?.continuation ? 'Resume Work' : 'Start Agent'}
+            </button>
+          )}
+          {onAddComment && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(onAddComment)}
+            >
+              Add Comment
+            </button>
+          )}
+          {onShowChildren && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(() => onShowChildren(detail))}
+            >
+              Show Children
+            </button>
+          )}
+          {onSetStatus && (
+            <button
+              type="button"
+              className={`ledger-issue-actions-menu__item${detail.status === 'open' ? ' ledger-issue-actions-menu__item--danger' : ''}`}
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(() => void onSetStatus(detail.status === 'open' ? 'closed' : 'open'))}
+            >
+              {detail.status === 'open' ? 'Close Issue' : 'Reopen Issue'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

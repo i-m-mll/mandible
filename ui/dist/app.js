@@ -15669,7 +15669,9 @@ function LedgerIssueDetail({
 }) {
   const [commentText, setCommentText] = d2("");
   const [showComposer, setShowComposer] = d2(false);
+  const [actionsOpen, setActionsOpen] = d2(false);
   const [localBusy, setLocalBusy] = d2(false);
+  const actionMenuRef = A2(null);
   const busy = actionInFlight || localBusy;
   const resolvingAuth = detail.auth_requests.find(
     (auth) => (auth.link_type === "resolves" || auth.link_type === "fixed_by") && (auth.status === "completed" || auth.status === "approved" || auth.status === "executing")
@@ -15679,7 +15681,30 @@ function LedgerIssueDetail({
   const historicalSessions = detail.sessions.filter((session) => session.status !== "active" && session.status !== "idle");
   const primaryWorkUnit = detail.work_units[0] ?? null;
   const timeline = detail.timeline ?? fallbackTimeline(detail);
+  const hasIssueActions = Boolean(
+    liveSession || onStartAgent || onSetStatus || onAddComment || detail.labels.includes("umbrella") && onShowChildren
+  );
   const syncTone = detail.sync.state === "clean" ? "clean" : detail.sync.state === "pending" ? "pending" : detail.sync.state === "conflicted" ? "conflicted" : "failed";
+  y2(() => {
+    if (!actionsOpen)
+      return void 0;
+    const closeOnOutsidePointer = (event) => {
+      const node = actionMenuRef.current;
+      if (!node || node.contains(event.target))
+        return;
+      setActionsOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape")
+        setActionsOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [actionsOpen]);
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy)
       return;
@@ -15697,9 +15722,18 @@ function LedgerIssueDetail({
       /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__heading", children: [
         /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__eyebrow", children: [
           /* @__PURE__ */ u3("span", { children: detail.project.repo_name ?? detail.project.display_name }),
-          /* @__PURE__ */ u3("code", { children: detail.display_id })
+          /* @__PURE__ */ u3("code", { children: detail.display_id }),
+          /* @__PURE__ */ u3(MetadataDisclosure, { label: "Issue metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: issueMetadataRows(detail) }) })
         ] }),
-        /* @__PURE__ */ u3("h2", { dangerouslySetInnerHTML: { __html: inlineMarkdown(detail.title) } })
+        /* @__PURE__ */ u3("h2", { dangerouslySetInnerHTML: { __html: inlineMarkdown(detail.title) } }),
+        /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__meta", children: [
+          /* @__PURE__ */ u3("span", { className: "ledger-issue-detail__byline-author", children: detail.author.display }),
+          /* @__PURE__ */ u3("time", { children: formatRelativeTime3(detail.created_at) }),
+          detail.labels.length > 0 && /* @__PURE__ */ u3(k, { children: [
+            /* @__PURE__ */ u3("span", { className: "ledger-issue-detail__meta-separator", "aria-hidden": "true" }),
+            /* @__PURE__ */ u3("span", { className: "ledger-issue-detail__label-row", children: detail.labels.map((label) => /* @__PURE__ */ u3("span", { className: "ledger-label", children: displayLabel(label) }, label)) })
+          ] })
+        ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__header-actions", children: [
         /* @__PURE__ */ u3(
@@ -15711,43 +15745,27 @@ function LedgerIssueDetail({
             onOpenAuth: onOpenEntity ? (auth) => onOpenEntity("auth_request", auth.id) : void 0
           }
         ),
-        detail.sync.state !== "clean" && /* @__PURE__ */ u3("span", { className: `ledger-sync-pill ledger-sync-pill--${syncTone}`, children: syncLabel(detail.sync.state) })
+        detail.sync.state !== "clean" && /* @__PURE__ */ u3("span", { className: `ledger-sync-pill ledger-sync-pill--${syncTone}`, children: syncLabel(detail.sync.state) }),
+        hasIssueActions && /* @__PURE__ */ u3(
+          IssueActionsMenu,
+          {
+            menuRef: actionMenuRef,
+            open: actionsOpen,
+            busy,
+            detail,
+            liveSession,
+            primaryWorkUnit,
+            onToggle: () => setActionsOpen((prev) => !prev),
+            onClose: () => setActionsOpen(false),
+            onStartAgent,
+            onSetStatus,
+            onAddComment: onAddComment ? () => setShowComposer(true) : void 0,
+            onShowChildren: detail.labels.includes("umbrella") ? onShowChildren : void 0
+          }
+        )
       ] })
     ] }),
-    /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__meta", children: [
-      /* @__PURE__ */ u3("span", { children: detail.author.display }),
-      /* @__PURE__ */ u3("span", { children: formatRelativeTime3(detail.created_at) }),
-      /* @__PURE__ */ u3(MetadataDisclosure, { label: "Issue metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: issueMetadataRows(detail) }) })
-    ] }),
-    detail.labels.length > 0 && /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__labels", children: [
-      detail.labels.map((label) => /* @__PURE__ */ u3("span", { className: "ledger-label", children: displayLabel(label) }, label)),
-      detail.labels.includes("umbrella") && onShowChildren && /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", onClick: () => onShowChildren(detail), children: "Show children" })
-    ] }),
-    (liveSession || primaryWorkUnit || onStartAgent || onSetStatus) && /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__actions", children: [
-      liveSession && /* @__PURE__ */ u3("a", { className: "issue-hub__action-btn issue-hub__action-btn--primary", href: `#/console?session=${encodeURIComponent(liveSession.id)}`, children: "Open Console" }),
-      !liveSession && onStartAgent && /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "issue-hub__action-btn issue-hub__action-btn--secondary",
-          disabled: busy,
-          onClick: () => void onStartAgent(),
-          children: primaryWorkUnit?.continuation ? "Resume Work" : "Start Agent"
-        }
-      ),
-      onSetStatus && /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: `btn ${detail.status === "open" ? "btn--danger" : "btn--success"}`,
-          disabled: busy,
-          onClick: () => void onSetStatus(detail.status === "open" ? "closed" : "open"),
-          children: detail.status === "open" ? "Close Issue" : "Reopen Issue"
-        }
-      )
-    ] }),
     /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
-      /* @__PURE__ */ u3(SectionTitle, { title: "Timeline", count: timeline.length }),
       /* @__PURE__ */ u3("div", { className: "ledger-comment-list ledger-timeline-list", children: timeline.map((entry) => /* @__PURE__ */ u3(TimelineEntryCard, { entry, detail }, entry.id)) }),
       onAddComment && /* @__PURE__ */ u3("div", { className: "ledger-comment-composer", children: !showComposer ? /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost", onClick: () => setShowComposer(true), children: "Add Comment" }) : /* @__PURE__ */ u3(k, { children: [
         /* @__PURE__ */ u3(
@@ -15781,6 +15799,96 @@ function LedgerIssueDetail({
     (detail.sync.state !== "clean" || detail.conflicts.length > 0) && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
       /* @__PURE__ */ u3(SectionTitle, { title: "Sync", count: detail.conflicts.length || void 0 }),
       /* @__PURE__ */ u3(SyncStatus, { detail, onResolveConflict, busy })
+    ] })
+  ] });
+}
+function IssueActionsMenu({
+  menuRef,
+  open,
+  busy,
+  detail,
+  liveSession,
+  primaryWorkUnit,
+  onToggle,
+  onClose,
+  onStartAgent,
+  onSetStatus,
+  onAddComment,
+  onShowChildren
+}) {
+  const closeAfter = (callback) => {
+    callback();
+    onClose();
+  };
+  return /* @__PURE__ */ u3("div", { className: "ledger-issue-actions-menu", ref: menuRef, children: [
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: `ledger-issue-actions-menu__trigger${open ? " ledger-issue-actions-menu__trigger--active" : ""}`,
+        "aria-label": "Issue actions",
+        "aria-haspopup": "menu",
+        "aria-expanded": open,
+        title: "Issue actions",
+        onClick: onToggle,
+        children: "..."
+      }
+    ),
+    open && /* @__PURE__ */ u3("div", { className: "ledger-issue-actions-menu__dropdown", role: "menu", children: [
+      liveSession && /* @__PURE__ */ u3(
+        "a",
+        {
+          className: "ledger-issue-actions-menu__item",
+          role: "menuitem",
+          href: `#/console?session=${encodeURIComponent(liveSession.id)}`,
+          onClick: onClose,
+          children: "Open Console"
+        }
+      ),
+      !liveSession && onStartAgent && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "ledger-issue-actions-menu__item",
+          role: "menuitem",
+          disabled: busy,
+          onClick: () => closeAfter(() => void onStartAgent()),
+          children: primaryWorkUnit?.continuation ? "Resume Work" : "Start Agent"
+        }
+      ),
+      onAddComment && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "ledger-issue-actions-menu__item",
+          role: "menuitem",
+          disabled: busy,
+          onClick: () => closeAfter(onAddComment),
+          children: "Add Comment"
+        }
+      ),
+      onShowChildren && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "ledger-issue-actions-menu__item",
+          role: "menuitem",
+          disabled: busy,
+          onClick: () => closeAfter(() => onShowChildren(detail)),
+          children: "Show Children"
+        }
+      ),
+      onSetStatus && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `ledger-issue-actions-menu__item${detail.status === "open" ? " ledger-issue-actions-menu__item--danger" : ""}`,
+          role: "menuitem",
+          disabled: busy,
+          onClick: () => closeAfter(() => void onSetStatus(detail.status === "open" ? "closed" : "open")),
+          children: detail.status === "open" ? "Close Issue" : "Reopen Issue"
+        }
+      )
     ] })
   ] });
 }
