@@ -191,6 +191,72 @@ describe('LedgerIssueDetail', () => {
     expect(document.body.innerHTML).not.toContain('onerror');
     expect(document.body.innerHTML).not.toContain('<script');
   });
+
+  it('linkifies typed ledger issue and comment references outside code', () => {
+    const detail = {
+      id: 'iss_1',
+      display_id: 'abc123',
+      project: {
+        id: 'proj_1',
+        display_name: 'Mandible',
+        remote_identity: '',
+        upstream_identity: '',
+        repo_id: 'mandible',
+        repo_name: 'mandible',
+        repo_root: '/repo',
+        default_branch: 'main',
+      },
+      title: 'Refs',
+      body: 'See [issue:def456], #789abcd, [comment:mandible/def456#com_2], and `#deadbee`.',
+      status: 'open',
+      resolution: null,
+      kind: 'feature',
+      priority: 'normal',
+      source: 'mandible',
+      author: { id: null, type: 'agent', display: 'Codex' },
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      closed_at: null,
+      aliases: [],
+      labels: ['feature'],
+      comments: [
+        {
+          id: 'com_1',
+          body: 'Local [comment:#com_1]',
+          author: { id: null, type: 'agent', display: 'Codex' },
+          source: 'session',
+          created_at: Date.now(),
+          updated_at: null,
+        },
+      ],
+      relationships: [],
+      work_units: [],
+      sessions: [],
+      auth_requests: [],
+      conflicts: [],
+      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
+    } as const;
+
+    render(h(LedgerIssueDetail, { detail }));
+
+    const issueLinks = Array.from(document.querySelectorAll('a.ledger-xref')).map((node) => ({
+      text: node.textContent,
+      href: (node as HTMLAnchorElement).getAttribute('href'),
+    }));
+    expect(issueLinks).toContainEqual({ text: '[issue:def456]', href: '#/issues?repo=mandible&issue=def456' });
+    expect(issueLinks).toContainEqual({ text: '#789abcd', href: '#/issues?repo=mandible&issue=789abcd' });
+    expect(issueLinks).toContainEqual({
+      text: '[comment:mandible/def456#com_2]',
+      href: '#/issues?repo=mandible&issue=def456&comment=com_2',
+    });
+    expect(issueLinks).toContainEqual({
+      text: '[comment:#com_1]',
+      href: '#/issues?repo=mandible&issue=abc123&comment=com_1',
+    });
+    const codeBlocks = Array.from(document.querySelectorAll('code'));
+    expect(codeBlocks.some((node) => node.innerHTML.includes('#deadbee'))).toBe(true);
+    expect(codeBlocks.some((node) => Boolean(node.querySelector('a')))).toBe(false);
+  });
 });
 
 describe('SSE handling', () => {

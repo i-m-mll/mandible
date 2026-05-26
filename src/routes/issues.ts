@@ -34,6 +34,12 @@ import {
   linkCommitToLedgerIssue,
   resolveOperationalIssueRef,
 } from "../ledger/operational-links.js";
+import { SubprocessGitBugClient } from "../ledger/git-bug-client.js";
+import {
+  listLedgerSyncJobs,
+  runGitBugSyncForRepos,
+  type LedgerSyncDirection,
+} from "../ledger/sync-runner.js";
 import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
 
 export interface RouteHandler<Request = unknown, Response = unknown> {
@@ -96,6 +102,15 @@ function getBody(req: unknown): Record<string, unknown> | null {
     return record.body as Record<string, unknown>;
   }
   return null;
+}
+
+function getStringArray(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    return items.length > 0 ? items : undefined;
+  }
+  if (typeof value === "string" && value.trim()) return [value.trim()];
+  return undefined;
 }
 
 function sendJson(res: unknown, status: number, payload: unknown): void {
@@ -187,6 +202,10 @@ function sendLedgerIssueProjection(res: unknown, db: Db, issueId: string): void 
 
 function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[number] | null {
   return typeof value === "string" && (allowed as readonly string[]).includes(value) ? value as T[number] : null;
+}
+
+function parseSyncDirection(value: unknown): LedgerSyncDirection {
+  return value === "export" || value === "full" ? value : "import";
 }
 
 function tableExists(db: Db, table: string): boolean {
@@ -315,6 +334,7 @@ export function registerIssueRoutes(
     sendJson(res, 200, {
       config: getLedgerIssueMigrationConfig(db),
       reports: listReconciliationReports(db, 10),
+      sync_jobs: listLedgerSyncJobs(db).slice(0, 10),
     });
   });
 
@@ -333,6 +353,21 @@ export function registerIssueRoutes(
       getLedgerIssueMigrationConfig(db).read_mode,
     );
     sendJson(res, 200, report);
+  });
+
+  server.post("/api/issues/migration/sync", async (req, res) => {
+    const body = getBody(req) ?? {};
+    const db = getDb();
+    const direction = parseSyncDirection(body.direction);
+    const repos = getStringArray(body.repos ?? body.repo);
+    const result = await runGitBugSyncForRepos({
+      db,
+      client: new SubprocessGitBugClient(),
+      repos: workScanner.getRepos(),
+      direction,
+      repoRefs: repos,
+    });
+    sendJson(res, 200, result);
   });
 
   server.get("/api/issues/reconcile/:reportId", (req, res) => {

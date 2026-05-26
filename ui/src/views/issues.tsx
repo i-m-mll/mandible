@@ -62,6 +62,7 @@ export type IssuesViewProps = {
   onRescan: () => Promise<void>;
   initialRepoId?: string;
   initialIssueId?: string;
+  initialCommentId?: string;
 };
 
 // --- Helpers ---
@@ -161,7 +162,13 @@ type ListItem = { kind: 'issue'; issue: GitBugIssue; repo: IssueRepoSummary };
 
 type StatusFilter = 'all' | 'open' | 'merged' | 'closed';
 
-export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: IssuesViewProps): JSX.Element {
+export function IssuesView({
+  repos,
+  onRescan,
+  initialRepoId,
+  initialIssueId,
+  initialCommentId,
+}: IssuesViewProps): JSX.Element {
   // Local state
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
@@ -184,6 +191,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
 
   // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
+  const lastScrolledCommentRef = useRef<string | null>(null);
 
   const resolveRepoId = useCallback((rawRepoId: string | null | undefined): string | null => {
     if (!rawRepoId) return null;
@@ -213,7 +221,7 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
   // When initialIssueId is present, select it.
   useEffect(() => {
     if (!initialIssueId) return;
-    const deepLinkKey = `${initialRepoId ?? ''}:${initialIssueId}`;
+    const deepLinkKey = `${initialRepoId ?? ''}:${initialIssueId}:${initialCommentId ?? ''}`;
     if (lastAppliedDeepLinkRef.current === deepLinkKey) return;
     lastAppliedDeepLinkRef.current = deepLinkKey;
 
@@ -248,7 +256,17 @@ export function IssuesView({ repos, onRescan, initialRepoId, initialIssueId }: I
           });
       });
     }
-  }, [initialRepoId, initialIssueId, resolveRepoId, resolveIssueId]);
+  }, [initialRepoId, initialIssueId, initialCommentId, resolveRepoId, resolveIssueId]);
+
+  useEffect(() => {
+    if (!ledgerIssueDetail || !initialCommentId) return;
+    const scrollKey = `${ledgerIssueDetail.id}:${initialCommentId}`;
+    if (lastScrolledCommentRef.current === scrollKey) return;
+    const comment = document.getElementById(`comment-${initialCommentId}`);
+    if (!comment) return;
+    lastScrolledCommentRef.current = scrollKey;
+    comment.scrollIntoView({ block: 'center' });
+  }, [ledgerIssueDetail, initialCommentId]);
 
   // Sync repoInput display name when repoFilter is set externally (e.g. deep-link or "Show children")
   useEffect(() => {

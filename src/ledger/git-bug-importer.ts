@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Db } from "../db.js";
 import type { LedgerProjectCheckout } from "./types.js";
-import type { GitBugClient, GitBugIssueDetail } from "./git-bug-client.js";
+import type { GitBugClient, GitBugIssueDetail, GitBugIssueSummary } from "./git-bug-client.js";
 import { hashGitBugPayload } from "./git-bug-hash.js";
 import { parseGitBugLabel } from "./git-bug-labels.js";
 import { LedgerStore } from "./store.js";
@@ -56,11 +56,7 @@ export async function importGitBugCheckout(options: GitBugImportOptions): Promis
   const imported: ImportedIssue[] = [];
   for (const summary of summaries.value) {
     const detailResult = await options.client.getIssue(options.checkout.root, summary.human_id || summary.id);
-    if (!detailResult.ok) {
-      result.skipped++;
-      continue;
-    }
-    const detail = detailResult.value;
+    const detail = detailResult.ok ? detailResult.value : summaryToDetail(summary);
     const importedIssue = importIssueDetail(store, options.checkout.project_id, detail);
     result.imported++;
     if (importedIssue.created) result.created++;
@@ -77,6 +73,16 @@ export async function importGitBugCheckout(options: GitBugImportOptions): Promis
   }
 
   return result;
+}
+
+function summaryToDetail(summary: GitBugIssueSummary): GitBugIssueDetail {
+  return {
+    ...summary,
+    description: "",
+    description_comment_id: "",
+    comments: [],
+    raw: summary,
+  };
 }
 
 function importIssueDetail(

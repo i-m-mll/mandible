@@ -16,6 +16,16 @@ import {
 } from "../src/ledger/issue-migration.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
+import {
+  runGitBugSyncForRepos,
+} from "../src/ledger/sync-runner.js";
+import type {
+  GitBugClient,
+  GitBugCreateIssueInput,
+  GitBugIssueDetail,
+  GitBugIssueSummary,
+  GitBugResult,
+} from "../src/ledger/git-bug-client.js";
 import { registerIssueRoutes, type IssueServer, type RouteHandler } from "../src/routes/issues.js";
 import type { IssueRepoSummary } from "../src/types.js";
 import type { RepoInfo } from "../src/work-scanner.js";
@@ -332,6 +342,61 @@ describe("ledger reconciliation reports", () => {
   });
 });
 
+describe("ledger migration sync", () => {
+  it("seeds projects/checkouts and imports registered repo issues", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const client = new FakeGitBugClient([
+      makeDetail({
+        id: "git-1",
+        human_id: "abc123",
+        title: "Imported issue",
+        body: "Imported body",
+        labels: ["feature"],
+      }),
+    ]);
+
+    const sync = await runGitBugSyncForRepos({
+      db,
+      client,
+      repos: [repoInfo],
+      direction: "import",
+    });
+    const workScanner = fakeWorkScanner([repoInfo]);
+    const summaries = listLedgerIssueSummaries(db, workScanner);
+    const report = runIssueReconciliation(
+      db,
+      { getRepoSummaries: () => summaries },
+      workScanner,
+      "shadow",
+    );
+
+    expect(sync).toMatchObject({ total: 1, completed: 1, failed: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_projects").get()).toMatchObject({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_project_checkouts").get()).toMatchObject({ count: 1 });
+    expect(summaries).toMatchObject([{ repo_id: "repo-1", issues: [{ id: "abc123", title: "Imported issue" }] }]);
+    expect(report.status).toBe("clean");
+  });
+
+  it("skips missing or excluded repos without blocking other imports", async () => {
+    const active = repo("repo-1", "active");
+    const missing = { ...repo("repo-2", "missing"), exists: false };
+    const excluded = { ...repo("repo-3", "excluded"), excluded: true };
+    const client = new FakeGitBugClient([
+      makeDetail({ id: "git-1", human_id: "abc123", title: "Active issue" }),
+    ]);
+
+    const sync = await runGitBugSyncForRepos({
+      db,
+      client,
+      repos: [active, missing, excluded],
+      direction: "import",
+    });
+
+    expect(sync).toMatchObject({ total: 3, completed: 1, skipped: 2, failed: 0 });
+    expect(sync.results.map((result) => result.status)).toEqual(["completed", "skipped", "skipped"]);
+  });
+});
+
 describe("ledger issue route gate", () => {
   it("serves list, detail, context, and session routes from ledger read mode", async () => {
     const repoInfo = repo("repo-1", "mandible");
@@ -415,3 +480,94 @@ describe("ledger issue route gate", () => {
     expect(detail.labels.map((row) => row.label)).toContain("reviewed");
   });
 });
+
+class FakeGitBugClient implements GitBugClient {
+  private details = new Map<string, GitBugIssueDetail>();
+
+  constructor(details: GitBugIssueDetail[]) {
+    for (const detail of details) {
+      this.details.set(detail.id, detail);
+      this.details.set(detail.human_id, detail);
+    }
+  }
+
+  async hasGitBugRefs(): Promise<GitBugResult<boolean>> {
+    return ok(this.details.size > 0);
+  }
+
+  async listIssues(): Promise<GitBugResult<GitBugIssueSummary[]>> {
+    const unique = Array.from(new Set(this.details.values()));
+    return ok(unique.map(({ description: _description, comments: _comments, raw: _raw, ...summary }) => summary));
+  }
+
+  async getIssue(_repoRoot: string, ref: string): Promise<GitBugResult<GitBugIssueDetail>> {
+    const detail = this.details.get(ref);
+    return detail ? ok(detail) : fail("not found");
+  }
+
+  async createIssue(_repoRoot: string, _input: GitBugCreateIssueInput): Promise<GitBugResult<{ id: string }>> {
+    return fail("not implemented");
+  }
+
+  async editTitle(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+
+  async editComment(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+
+  async setStatus(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+
+  async addComment(): Promise<GitBugResult<{ id?: string }>> {
+    return fail("not implemented");
+  }
+
+  async addLabel(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+
+  async removeLabel(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+}
+
+function makeDetail(input: {
+  id: string;
+  human_id: string;
+  title: string;
+  body?: string;
+  status?: "open" | "closed";
+  labels?: string[];
+  comments?: Array<{ id: string; body: string }>;
+}): GitBugIssueDetail {
+  return {
+    id: input.id,
+    human_id: input.human_id,
+    title: input.title,
+    status: input.status ?? "open",
+    labels: input.labels ?? [],
+    author_name: "Codex",
+    created_at: "2026-05-16T12:00:00.000Z",
+    description: input.body ?? "",
+    description_comment_id: `${input.human_id}-desc`,
+    comments: (input.comments ?? []).map((comment) => ({
+      id: comment.id,
+      human_id: comment.id,
+      author_name: "Codex",
+      body: comment.body,
+      created_at: "2026-05-16T12:00:00.000Z",
+    })),
+    raw: input,
+  };
+}
+
+function ok<T>(value: T): GitBugResult<T> {
+  return { ok: true, value, stdout: "", stderr: "", exit_code: 0 };
+}
+
+function fail<T>(error: string): GitBugResult<T> {
+  return { ok: false, error, retry: "fatal", stdout: "", stderr: error, exit_code: 1 };
+}
