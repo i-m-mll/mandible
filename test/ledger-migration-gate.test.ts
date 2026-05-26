@@ -69,7 +69,7 @@ function fakeWorkScanner(repos: RepoInfo[]) {
   };
 }
 
-type Method = "GET" | "POST" | "PUT";
+type Method = "GET" | "POST" | "PUT" | "PATCH";
 
 interface TestResponse {
   statusCode: number;
@@ -86,6 +86,7 @@ class TestIssueServer implements IssueServer {
     GET: new Map(),
     POST: new Map(),
     PUT: new Map(),
+    PATCH: new Map(),
   };
 
   get(path: string, handler: RouteHandler): void {
@@ -98,6 +99,10 @@ class TestIssueServer implements IssueServer {
 
   put(path: string, handler: RouteHandler): void {
     this.handlers.PUT.set(path, handler);
+  }
+
+  patch(path: string, handler: RouteHandler): void {
+    this.handlers.PATCH.set(path, handler);
   }
 
   async invoke(
@@ -478,6 +483,35 @@ describe("ledger issue route gate", () => {
     expect(detail.status).toBe("closed");
     expect(detail.comments.map((row) => row.body)).toContain("Mandible note");
     expect(detail.labels.map((row) => row.label)).toContain("reviewed");
+  });
+
+  it("creates ledger-native issues through the repo route", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
+
+    const created = await server.invoke("POST", "/api/issues/:repoId", {
+      params: { repoId: repoInfo.name },
+      body: {
+        title: "Ledger-native issue",
+        body: "Created through API",
+        root: repoInfo.root,
+        labels: ["feature"],
+      },
+    });
+    const list = await server.invoke("GET", "/api/issues", {
+      query: { repo: repoInfo.root, status: "open" },
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(created.body).toMatchObject({
+      title: "Ledger-native issue",
+      source: "mandible",
+      labels: ["feature"],
+    });
+    expect(list.body).toMatchObject([{ repo_root: repoInfo.root, issues: [{ title: "Ledger-native issue" }] }]);
+    expect(db.prepare("SELECT source FROM ledger_issues").get()).toMatchObject({ source: "mandible" });
   });
 });
 
