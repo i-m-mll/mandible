@@ -3,7 +3,7 @@
 Mandible is a local-first agent control plane and conversation browser. It provides:
 - An async auth queue for protected-branch merges (agent submits, user authenticates via YubiKey)
 - A web dashboard (sessions, issues, conversations, switchboard, console)
-- A daemon that manages git-bug ref sync, session lifecycle, and inbox delivery
+- A daemon that manages the local issue ledger, legacy git-bug sync, session lifecycle, and inbox delivery
 - A Tauri native window wrapper (Level 1: thin launcher; Level 2: bundled sidecar, see issue fdc0e8a)
 
 ## Build
@@ -34,7 +34,7 @@ Uses SQLite via better-sqlite3. Schema migrations live in `src/db.ts` in the `MI
 
 ## Work units
 
-The `work_units` table tracks the dispatch state of issues through their lifecycle: open → committed → resolved (+ abandoned). Work units join the issue tree (git-bug), branch tree (git worktrees), and session tree (agent sessions) into a single reconciliation layer. See umbrella issue f3dbb3e for the full design.
+The `work_units` table tracks the dispatch state of issues through their lifecycle: open → committed → resolved (+ abandoned). Work units join the issue ledger, branch tree (git worktrees), and session tree (agent sessions) into a single reconciliation layer. See umbrella issue f3dbb3e for the full design.
 
 Key conventions:
 - `wt --issue <id>` registers a work unit and writes a `.issue` file for auto-discovery
@@ -108,7 +108,7 @@ Note: DELETE body parsing requires "DELETE" in the method allowlist in `server.t
 
 ## Issue tracking
 
-Issues are stored in git-bug refs. See the open issue list with `git-bug bug`.
+Use `mandible issue` commands for issue reads and writes. During ledger migration, git-bug refs are a legacy sync/import source and emergency compatibility surface, not the intended hot path. See the open issue list with `mandible issue list --status open`.
 
 Key open issues by area:
 - Auth queue UX: 40a3976, 0a803ab, 831cb3e, a7ef2fe, 2bce9cb
@@ -123,7 +123,7 @@ Key open issues by area:
 
 When making architectural changes to Mandible's backend or behavior, agents MUST explicitly reflect on `~/.claude/CLAUDE.md` (the global conventions) as part of their design process. Mandible's behavior and the global workflow conventions are tightly coupled — changes to one often imply changes to the other.
 
-This goes beyond the standard "read CLAUDE.md before working": agents must actively reason about how a proposed change interacts with worktree conventions, issue tracking rules, commit workflows, merge protocols, and the auth queue. If a Mandible change would require or benefit from a corresponding CLAUDE.md update, file a git-bug issue in the dotfiles repo proposing the change.
+This goes beyond the standard "read CLAUDE.md before working": agents must actively reason about how a proposed change interacts with worktree conventions, issue tracking rules, commit workflows, merge protocols, and the auth queue. If a Mandible change would require or benefit from a corresponding CLAUDE.md update, file a Mandible issue in the dotfiles repo proposing the change.
 
 Examples:
 - Adding a new work-unit state → does CLAUDE.md's "Issue Registration" section need updating?

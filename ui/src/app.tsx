@@ -1180,6 +1180,7 @@ function App(): JSX.Element {
             onRescan={handleIssueRescan}
             initialRepoId={route.params.repo}
             initialIssueId={route.params.issue}
+            initialCommentId={route.params.comment}
           />
         )}
         {route.tab === 'review' && (

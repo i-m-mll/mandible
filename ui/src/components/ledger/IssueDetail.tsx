@@ -140,7 +140,7 @@ export function LedgerIssueDetail({
       )}
 
       <section className="ledger-issue-detail__section">
-        <MarkdownBlock className="ledger-issue-detail__body spec-panel" empty="No description." source={detail.body} />
+        <MarkdownBlock className="ledger-issue-detail__body spec-panel" empty="No description." source={detail.body} detail={detail} />
       </section>
 
       <section className="ledger-issue-detail__section">
@@ -150,7 +150,7 @@ export function LedgerIssueDetail({
         ) : (
           <div className="ledger-comment-list">
             {detail.comments.map((comment) => (
-              <CommentCard key={comment.id} comment={comment} />
+              <CommentCard key={comment.id} comment={comment} detail={detail} />
             ))}
           </div>
         )}
@@ -252,16 +252,22 @@ function StatusPill({
   return <span className={`status-pill status-pill--lg ${cls}`}>{label}</span>;
 }
 
-function CommentCard({ comment }: { comment: LedgerIssueDetailComment }): JSX.Element {
+function CommentCard({
+  comment,
+  detail,
+}: {
+  comment: LedgerIssueDetailComment;
+  detail: LedgerIssueDetailProjection;
+}): JSX.Element {
   return (
-    <div className="ledger-comment-card">
+    <div className="ledger-comment-card" id={`comment-${comment.id}`}>
       <div className="ledger-comment-card__header">
         <span>{comment.author.display}</span>
         <em>{comment.author.type.replace(/_/g, ' ')}</em>
         <small>{comment.source}</small>
         <time>{formatRelativeTime(comment.created_at)}</time>
       </div>
-      <MarkdownBlock className="ledger-comment-card__body spec-panel" source={comment.body} empty="" />
+      <MarkdownBlock className="ledger-comment-card__body spec-panel" source={comment.body} empty="" detail={detail} />
     </div>
   );
 }
@@ -425,16 +431,121 @@ function SectionTitle({ title, count }: { title: string; count?: number }): JSX.
   );
 }
 
-function MarkdownBlock({ source, className, empty }: { source: string; className: string; empty: string }): JSX.Element {
+function MarkdownBlock({
+  source,
+  className,
+  empty,
+  detail,
+}: {
+  source: string;
+  className: string;
+  empty: string;
+  detail: LedgerIssueDetailProjection;
+}): JSX.Element {
   const html = useMemo(() => {
     if (!source) return '';
     const parsed = marked.parse(source, { async: false });
-    return sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
-  }, [source]);
+    const sanitized = sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
+    return linkifyLedgerRefs(sanitized, detail);
+  }, [source, detail.id, detail.display_id, detail.project.repo_id]);
   if (!html) {
     return <div className={`${className} spec-panel--empty`}>{empty}</div>;
   }
   return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+const REF_PATTERN = /\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,16})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
+
+function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): string {
+  if (typeof document === 'undefined' || !html) return html;
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (parent.closest('a, code, pre')) return NodeFilter.FILTER_REJECT;
+      REF_PATTERN.lastIndex = 0;
+      return REF_PATTERN.test(node.nodeValue ?? '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes: Text[] = [];
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node as Text);
+    node = walker.nextNode();
+  }
+  for (const textNode of nodes) {
+    const fragment = document.createDocumentFragment();
+    const text = textNode.nodeValue ?? '';
+    REF_PATTERN.lastIndex = 0;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = REF_PATTERN.exec(text))) {
+      if (match.index > lastIndex) {
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+      }
+      const link = refLink(match, detail);
+      fragment.appendChild(link ?? document.createTextNode(match[0]));
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+    textNode.replaceWith(fragment);
+  }
+  return container.innerHTML;
+}
+
+function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): HTMLAnchorElement | null {
+  const explicitType = match[1];
+  const explicitRef = match[2];
+  const hashIssueRef = match[3];
+  const canonicalIssueRef = !explicitType && !hashIssueRef ? match[0] : '';
+  const ref = explicitRef || hashIssueRef || canonicalIssueRef;
+  if (!ref) return null;
+
+  const anchor = document.createElement('a');
+  anchor.className = 'ledger-xref';
+  anchor.textContent = match[0];
+  if (explicitType === 'comment') {
+    const parsed = parseCommentRef(ref, detail);
+    if (!parsed) return null;
+    anchor.href = issueHref(parsed.repo, parsed.issue, parsed.comment);
+    anchor.title = `Open comment ${parsed.comment}`;
+    return anchor;
+  }
+
+  const parsedIssue = parseIssueRef(ref, detail);
+  if (!parsedIssue) return null;
+  anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
+  anchor.title = `Open issue ${parsedIssue.issue}`;
+  return anchor;
+}
+
+function parseIssueRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string } | null {
+  const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
+  if (scoped) return { repo: scoped[1], issue: scoped[2] };
+  return { repo: detail.project.repo_id ?? detail.project.display_name, issue: ref.replace(/^#/, '') };
+}
+
+function parseCommentRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string; comment: string } | null {
+  if (ref.startsWith('#')) {
+    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: detail.display_id, comment: ref.slice(1) };
+  }
+  const scoped = ref.match(/^([^/#]+)\/([^/#]+)#([^#]+)$/);
+  if (scoped) return { repo: scoped[1], issue: scoped[2], comment: scoped[3] };
+  const currentProject = ref.match(/^([^/#]+)#([^#]+)$/);
+  if (currentProject) {
+    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: currentProject[1], comment: currentProject[2] };
+  }
+  return null;
+}
+
+function issueHref(repo: string, issue: string, comment?: string): string {
+  const params = new URLSearchParams({ repo, issue });
+  if (comment) params.set('comment', comment);
+  return `#/issues?${params.toString()}`;
 }
 
 function inlineMarkdown(source: string): string {
