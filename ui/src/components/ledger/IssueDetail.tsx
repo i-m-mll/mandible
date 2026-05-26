@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { sanitizeHtml, sanitizeMarkdown } from '../../sanitize';
 import type {
@@ -267,8 +267,34 @@ function MetadataDisclosure({
   label: string;
   children: JSX.Element;
 }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDetailsElement>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const node = ref.current;
+      if (!node || node.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [open]);
+
   return (
-    <details className="ledger-metadata-popover">
+    <details
+      ref={ref}
+      className="ledger-metadata-popover"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary aria-label={label} title={label}>i</summary>
       <div className="ledger-metadata-popover__panel">{children}</div>
     </details>
@@ -552,8 +578,7 @@ function commentRefLabel(parsed: { repo: string; issue: string; comment: string 
 
 function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, string]> {
   const rows: Array<[string, string]> = [
-    ['Issue ID', detail.display_id],
-    ['Canonical ID', detail.id],
+    ['Reference', detail.display_id],
     ['Kind', detail.kind],
     ['Priority', detail.priority],
     ['Source', detail.source || 'unknown'],
@@ -561,16 +586,12 @@ function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, 
     ['Created', formatAbsoluteTime(detail.created_at)],
     ['Updated', formatAbsoluteTime(detail.updated_at)],
   ];
+  if (detail.id !== detail.display_id) rows.push(['Canonical ID', detail.id]);
   if (detail.closed_at) rows.push(['Closed', formatAbsoluteTime(detail.closed_at)]);
-  if (detail.aliases.length > 0) {
-    rows.push([
-      'Aliases',
-      detail.aliases
-        .map((alias) => alias.alias || alias.external_id)
-        .filter(Boolean)
-        .join(', '),
-    ]);
-  }
+  const alternateAliases = detail.aliases
+    .map((alias) => alias.alias || alias.external_id)
+    .filter((alias) => alias && alias !== detail.id && alias !== detail.display_id);
+  if (alternateAliases.length > 0) rows.push(['Alternate refs', alternateAliases.join(', ')]);
   if (detail.sync.state !== 'clean') rows.push(['Sync', syncLabel(detail.sync.state)]);
   return rows.filter(([, value]) => Boolean(value));
 }

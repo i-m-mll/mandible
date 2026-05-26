@@ -15814,10 +15814,41 @@ function MetadataDisclosure({
   label,
   children: children2
 }) {
-  return /* @__PURE__ */ u3("details", { className: "ledger-metadata-popover", children: [
-    /* @__PURE__ */ u3("summary", { "aria-label": label, title: label, children: "i" }),
-    /* @__PURE__ */ u3("div", { className: "ledger-metadata-popover__panel", children: children2 })
-  ] });
+  const [open, setOpen] = d2(false);
+  const ref = A2(null);
+  y2(() => {
+    if (!open)
+      return void 0;
+    const closeOnOutsidePointer = (event) => {
+      const node = ref.current;
+      if (!node || node.contains(event.target))
+        return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape")
+        setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [open]);
+  return /* @__PURE__ */ u3(
+    "details",
+    {
+      ref,
+      className: "ledger-metadata-popover",
+      open,
+      onToggle: (event) => setOpen(event.currentTarget.open),
+      children: [
+        /* @__PURE__ */ u3("summary", { "aria-label": label, title: label, children: "i" }),
+        /* @__PURE__ */ u3("div", { className: "ledger-metadata-popover__panel", children: children2 })
+      ]
+    }
+  );
 }
 function MetadataRows({ rows }) {
   return /* @__PURE__ */ u3("dl", { className: "ledger-metadata-grid", children: rows.map(([key2, value]) => /* @__PURE__ */ u3("div", { children: [
@@ -16040,8 +16071,7 @@ function commentRefLabel(parsed, detail) {
 }
 function issueMetadataRows(detail) {
   const rows = [
-    ["Issue ID", detail.display_id],
-    ["Canonical ID", detail.id],
+    ["Reference", detail.display_id],
     ["Kind", detail.kind],
     ["Priority", detail.priority],
     ["Source", detail.source || "unknown"],
@@ -16049,14 +16079,13 @@ function issueMetadataRows(detail) {
     ["Created", formatAbsoluteTime(detail.created_at)],
     ["Updated", formatAbsoluteTime(detail.updated_at)]
   ];
+  if (detail.id !== detail.display_id)
+    rows.push(["Canonical ID", detail.id]);
   if (detail.closed_at)
     rows.push(["Closed", formatAbsoluteTime(detail.closed_at)]);
-  if (detail.aliases.length > 0) {
-    rows.push([
-      "Aliases",
-      detail.aliases.map((alias) => alias.alias || alias.external_id).filter(Boolean).join(", ")
-    ]);
-  }
+  const alternateAliases = detail.aliases.map((alias) => alias.alias || alias.external_id).filter((alias) => alias && alias !== detail.id && alias !== detail.display_id);
+  if (alternateAliases.length > 0)
+    rows.push(["Alternate refs", alternateAliases.join(", ")]);
   if (detail.sync.state !== "clean")
     rows.push(["Sync", syncLabel(detail.sync.state)]);
   return rows.filter(([, value]) => Boolean(value));
