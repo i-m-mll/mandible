@@ -105,6 +105,12 @@ function ledgerDetailMatchesSelection(
   return [...refs].some((ref) => ref === issueId || ref.startsWith(issueId) || issueId.startsWith(ref));
 }
 
+function issueRouteHash(repoId: string, issueId: string, commentId?: string | null): string {
+  const params = new URLSearchParams({ repo: repoId, issue: issueId });
+  if (commentId) params.set('comment', commentId);
+  return `#/issues?${params.toString()}`;
+}
+
 // --- Flat list item types ---
 
 type ListItem = { kind: 'issue'; issue: IssueSummary; repo: IssueRepoSummary };
@@ -297,6 +303,11 @@ export function IssuesView({
   }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
 
   const selectIssue = useCallback((repoId: string, issueId: string) => {
+    const nextHash = issueRouteHash(repoId, issueId);
+    if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
+      window.history.pushState(null, '', nextHash);
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    }
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
   }, []);

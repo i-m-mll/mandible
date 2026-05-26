@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/preact';
+import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
@@ -10,6 +10,7 @@ import { WorkOverviewView } from '../ui/src/views/work';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
 
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -256,6 +257,73 @@ describe('LedgerIssueDetail', () => {
     const codeBlocks = Array.from(document.querySelectorAll('code'));
     expect(codeBlocks.some((node) => node.innerHTML.includes('#deadbee'))).toBe(true);
     expect(codeBlocks.some((node) => Boolean(node.querySelector('a')))).toBe(false);
+  });
+
+  it('keeps issue and comment provenance behind metadata controls', () => {
+    const now = Date.now();
+    const detail = {
+      id: 'iss_1',
+      display_id: 'abc123',
+      project: {
+        id: 'proj_1',
+        display_name: 'Mandible',
+        remote_identity: '',
+        upstream_identity: '',
+        repo_id: 'mandible',
+        repo_name: 'mandible',
+        repo_root: '/repo',
+        default_branch: 'main',
+      },
+      title: 'Metadata',
+      body: 'Body',
+      status: 'open',
+      resolution: null,
+      kind: 'umbrella',
+      priority: 'high',
+      source: 'git_bug',
+      author: { id: null, type: 'external_adapter', display: 'MLL' },
+      created_at: now,
+      updated_at: now,
+      closed_at: null,
+      aliases: [],
+      labels: ['feature'],
+      comments: [
+        {
+          id: 'com_1',
+          body: 'Comment',
+          author: { id: null, type: 'external_adapter', display: 'MLL' },
+          source: 'git_bug',
+          created_at: now,
+          updated_at: null,
+        },
+      ],
+      relationships: [],
+      work_units: [],
+      sessions: [],
+      auth_requests: [],
+      conflicts: [],
+      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
+    } as const;
+
+    render(h(LedgerIssueDetail, { detail }));
+
+    const issueMeta = document.querySelector('.ledger-issue-detail__meta');
+    const issueVisibleMeta = Array.from(issueMeta?.querySelectorAll(':scope > span') ?? [])
+      .map((node) => node.textContent)
+      .join(' ');
+    expect(issueVisibleMeta).toContain('MLL');
+    expect(issueVisibleMeta).not.toContain('git_bug');
+    expect(issueVisibleMeta).not.toContain('umbrella');
+    expect(issueMeta?.querySelector('[aria-label="Issue metadata"]')).toBeTruthy();
+
+    const commentHeader = document.querySelector('.ledger-comment-card__header');
+    const commentVisibleMeta = Array.from(commentHeader?.querySelectorAll(':scope > span, :scope > time') ?? [])
+      .map((node) => node.textContent)
+      .join(' ');
+    expect(commentVisibleMeta).toContain('MLL');
+    expect(commentVisibleMeta).not.toContain('external adapter');
+    expect(commentVisibleMeta).not.toContain('git_bug');
+    expect(commentHeader?.querySelector('[aria-label="Comment metadata"]')).toBeTruthy();
   });
 });
 
