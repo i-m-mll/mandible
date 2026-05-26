@@ -152,7 +152,7 @@ export class LedgerStore {
   constructor(db: Db, options: LedgerStoreOptions = {}) {
     this.db = db;
     this.db.pragma("foreign_keys = ON");
-    this.outboxAdapters = options.outboxAdapters ?? ["git_bug"];
+    this.outboxAdapters = options.outboxAdapters ?? [];
     this.broadcaster = options.broadcaster ?? broadcast;
   }
 

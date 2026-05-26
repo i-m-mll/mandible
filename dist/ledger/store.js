@@ -8,7 +8,7 @@ export class LedgerStore {
     constructor(db, options = {}) {
         this.db = db;
         this.db.pragma("foreign_keys = ON");
-        this.outboxAdapters = options.outboxAdapters ?? ["git_bug"];
+        this.outboxAdapters = options.outboxAdapters ?? [];
         this.broadcaster = options.broadcaster ?? broadcast;
     }
     createIssue(input) {
