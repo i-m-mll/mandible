@@ -10019,13 +10019,14 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   width: 18px;
   height: 18px;
   list-style: none;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 999px;
+  border: none;
+  border-radius: 4px;
   color: var(--text-muted);
-  background: rgba(255, 255, 255, 0.035);
+  background: transparent;
   cursor: pointer;
   line-height: 1;
   text-transform: none;
+  padding: 0;
 }
 .ledger-metadata-popover summary::-webkit-details-marker {
   display: none;
@@ -10042,8 +10043,7 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 .ledger-metadata-popover summary:hover,
 .ledger-metadata-popover[open] summary {
   color: var(--text-primary);
-  border-color: rgba(255, 255, 255, 0.32);
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.06);
 }
 .ledger-metadata-popover__panel {
   position: absolute;
@@ -10057,6 +10057,14 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   border-radius: 6px;
   background: var(--bg-secondary);
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+}
+.ledger-metadata-popover__panel--center {
+  left: 50%;
+  transform: translateX(-50%);
+}
+.ledger-metadata-popover__panel--end {
+  right: 0;
+  left: auto;
 }
 .ledger-metadata-grid {
   display: grid;

@@ -16056,10 +16056,28 @@ function MetadataDisclosure({
   children: children2
 }) {
   const [open, setOpen] = d2(false);
+  const [alignment, setAlignment] = d2("start");
   const ref = A2(null);
   y2(() => {
     if (!open)
       return void 0;
+    const positionPanel = () => {
+      const panel = ref.current?.querySelector(".ledger-metadata-popover__panel");
+      if (!panel)
+        return;
+      setAlignment("start");
+      requestAnimationFrame(() => {
+        const bounds = panel.getBoundingClientRect();
+        const inset = 12;
+        if (bounds.right > window.innerWidth - inset) {
+          setAlignment("end");
+        } else if (bounds.left < inset) {
+          setAlignment("start");
+        } else {
+          setAlignment("center");
+        }
+      });
+    };
     const closeOnOutsidePointer = (event) => {
       const node = ref.current;
       if (!node || node.contains(event.target))
@@ -16072,9 +16090,12 @@ function MetadataDisclosure({
     };
     document.addEventListener("pointerdown", closeOnOutsidePointer, true);
     document.addEventListener("keydown", closeOnEscape, true);
+    window.addEventListener("resize", positionPanel);
+    positionPanel();
     return () => {
       document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
       document.removeEventListener("keydown", closeOnEscape, true);
+      window.removeEventListener("resize", positionPanel);
     };
   }, [open]);
   return /* @__PURE__ */ u3(
@@ -16086,7 +16107,7 @@ function MetadataDisclosure({
       onToggle: (event) => setOpen(event.currentTarget.open),
       children: [
         /* @__PURE__ */ u3("summary", { "aria-label": label, title: label, children: /* @__PURE__ */ u3(MetadataIcon, {}) }),
-        /* @__PURE__ */ u3("div", { className: "ledger-metadata-popover__panel", children: children2 })
+        /* @__PURE__ */ u3("div", { className: `ledger-metadata-popover__panel ledger-metadata-popover__panel--${alignment}`, children: children2 })
       ]
     }
   );
@@ -16262,7 +16283,7 @@ function MarkdownBlock({
   const html4 = T2(() => {
     if (!source)
       return "";
-    const parsed = marked.parse(source, { async: false });
+    const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
     const sanitized = sanitizeMarkdown(typeof parsed === "string" ? parsed : "");
     return linkifyLedgerRefs(sanitized, detail);
   }, [source, detail.id, detail.display_id, detail.project.repo_id]);
@@ -16270,6 +16291,15 @@ function MarkdownBlock({
     return /* @__PURE__ */ u3("div", { className: `${className} spec-panel--empty`, children: empty2 });
   }
   return /* @__PURE__ */ u3("div", { className, dangerouslySetInnerHTML: { __html: html4 } });
+}
+function normalizeMarkdownSource(source) {
+  if (!source.includes("\\n"))
+    return source;
+  const literalNewlineCount = (source.match(/\\n/g) ?? []).length;
+  const actualNewlineCount = (source.match(/\n/g) ?? []).length;
+  if (literalNewlineCount < 2 || actualNewlineCount > 0)
+    return source;
+  return source.replace(/\\n/g, "\n");
 }
 var REF_PATTERN = /\[#(\d+)\]|\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,64})\b|(?<![\w/])([0-9a-f]{7,64})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
 function linkifyLedgerRefs(html4, detail) {
@@ -16342,6 +16372,13 @@ function refLink(match, detail) {
     anchor.textContent = commentRefLabel(parsed, detail);
     anchor.href = issueHref(parsed.repo, parsed.issue, parsed.comment);
     anchor.title = `Open comment ${parsed.comment}`;
+    return anchor;
+  }
+  const auth = detail.auth_requests.find((request) => request.id.startsWith(ref));
+  if (auth) {
+    anchor.textContent = explicitType ? auth.id.slice(0, 8) : bareIssueRef || match[0];
+    anchor.href = `#/auth?request=${encodeURIComponent(auth.id)}`;
+    anchor.title = `Open auth request ${auth.id.slice(0, 8)}`;
     return anchor;
   }
   const parsedIssue = parseIssueRef(ref, detail);
