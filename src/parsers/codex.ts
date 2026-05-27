@@ -295,6 +295,7 @@ export class CodexParser implements ConversationParser {
     let position = 0;
     // Map call_id → position for linking function outputs to calls
     const callMap = new Map<string, number>();
+    const callNameMap = new Map<string, string>();
 
     for (const rec of records) {
       if (!rec.type) continue;
@@ -361,6 +362,7 @@ export class CodexParser implements ConversationParser {
         } else if (payload.type === "function_call") {
           const toolPos = position;
           if (payload.call_id) callMap.set(payload.call_id, toolPos);
+          if (payload.call_id && payload.name) callNameMap.set(payload.call_id, payload.name);
           let content = payload.name || "unknown_function";
           if (payload.arguments) {
             content += `(${payload.arguments})`;
@@ -374,6 +376,7 @@ export class CodexParser implements ConversationParser {
               parent_id: null,
               metadata: {
                 tool_name: payload.name || undefined,
+                tool_kind: "function_call",
                 tool_id: payload.call_id || undefined,
                 tool_input: parseToolArguments(payload.arguments),
                 visibility: "default_hidden",
@@ -390,6 +393,8 @@ export class CodexParser implements ConversationParser {
             parent_id: parentPos !== undefined ? String(parentPos) : null,
             metadata: {
               tool_id: payload.call_id || undefined,
+              tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
+              tool_kind: "function_call_output",
               tool_output: (payload.output || "").length > 1000 ? undefined : payload.output,
               visibility: "default_hidden",
             },
@@ -397,6 +402,7 @@ export class CodexParser implements ConversationParser {
         } else if (payload.type === "custom_tool_call") {
           const toolPos = position;
           if (payload.call_id) callMap.set(payload.call_id, toolPos);
+          if (payload.call_id && payload.name) callNameMap.set(payload.call_id, payload.name);
           blocks.push({
             type: "tool_use",
             role: "assistant",
@@ -406,6 +412,7 @@ export class CodexParser implements ConversationParser {
               parent_id: null,
               metadata: {
                 tool_name: payload.name || undefined,
+                tool_kind: "custom_tool_call",
                 tool_id: payload.call_id || undefined,
                 tool_input: parseToolArguments(payload.arguments),
                 visibility: "default_hidden",
@@ -422,6 +429,8 @@ export class CodexParser implements ConversationParser {
             parent_id: parentPos !== undefined ? String(parentPos) : null,
             metadata: {
               tool_id: payload.call_id || undefined,
+              tool_name: payload.call_id ? callNameMap.get(payload.call_id) : undefined,
+              tool_kind: "custom_tool_call_output",
               visibility: "default_hidden",
             },
           });

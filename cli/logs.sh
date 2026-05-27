@@ -7,9 +7,12 @@ usage() {
   cat <<'EOF'
 Usage:
   mandible logs inventory [--provider codex|claude|gemini|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
+  mandible logs capabilities [--provider codex|claude_code|gemini] [--json]
   mandible logs missing [--provider codex|claude|gemini|all] [--json]
   mandible logs orphans [--provider codex|claude|gemini|all] [--json]
-  mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--json] [--head N]
+  mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--parse] [filters] [--json] [--head N]
+
+Filters for --parse: --role ROLE --type TYPE --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N
 
 Raw provider source logs are the veridical transcript source. These commands do
 not import, reconcile, or mutate the Mandible database.
@@ -34,6 +37,7 @@ import json
 import os
 import pathlib
 import sqlite3
+import subprocess
 import sys
 from typing import Any
 
@@ -233,6 +237,31 @@ def inspect(args: argparse.Namespace) -> int:
     if source == "file":
         source = "unknown"
     summary = summarize_file(source, path)
+    if args.parse:
+        cmd = [
+            "node",
+            str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "dist" / "cli" / "conversation-blocks.js"),
+            "logs",
+            str(path),
+            "--limit",
+            str(args.limit),
+        ]
+        flag_map = {
+            "role": "role",
+            "type": "type",
+            "tool": "tool",
+            "tool_kind": "tool-kind",
+            "since": "since",
+            "until": "until",
+            "content": "content",
+        }
+        for attr, flag in flag_map.items():
+            value = getattr(args, attr)
+            if value:
+                cmd.extend([f"--{flag}", value])
+        if args.json:
+            cmd.append("--json")
+        return subprocess.run(cmd, check=False).returncode
     rows = read_jsonl_head(path, args.head)
     payload = {"summary": summary, "records": rows}
     if args.json:
@@ -250,6 +279,9 @@ def inspect(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(prog="mandible logs", add_help=False)
     sub = parser.add_subparsers(dest="command")
+    cap = sub.add_parser("capabilities")
+    cap.add_argument("--provider", choices=["codex", "claude_code", "gemini"])
+    cap.add_argument("--json", action="store_true")
     inv = sub.add_parser("inventory")
     inv.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
     inv.add_argument("--since")
@@ -265,6 +297,16 @@ def main() -> int:
     ins.add_argument("target")
     ins.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
     ins.add_argument("--head", type=int, default=20)
+    ins.add_argument("--parse", action="store_true")
+    ins.add_argument("--role")
+    ins.add_argument("--type")
+    ins.add_argument("--tool")
+    ins.add_argument("--tool-kind", dest="tool_kind")
+    ins.add_argument("--since")
+    ins.add_argument("--until")
+    ins.add_argument("--content")
+    ins.add_argument("--contains", dest="content")
+    ins.add_argument("--limit", type=int, default=50)
     ins.add_argument("--json", action="store_true")
     if len(sys.argv) == 1 or sys.argv[1] in {"-h", "--help", "help"}:
         usage()
@@ -272,6 +314,17 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "inventory":
         return inventory(args)
+    if args.command == "capabilities":
+        cmd = [
+            "node",
+            str(pathlib.Path(os.environ.get("MANDIBLE_CLI_DIR", ".")).resolve().parent / "dist" / "cli" / "conversation-blocks.js"),
+            "capabilities",
+        ]
+        if args.provider:
+            cmd.append(args.provider)
+        if args.json:
+            cmd.append("--json")
+        return subprocess.run(cmd, check=False).returncode
     if args.command == "missing":
         return missing(args)
     if args.command == "orphans":

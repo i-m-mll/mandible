@@ -120,6 +120,13 @@ For conversation/history audits, keep the source surfaces distinct:
 transcript record, while `mandible conversations ...` inspects Mandible's
 normalized SQLite index for UI, search, export, and metadata workflows.
 
+When updating provider parsers under `src/parsers/`, update the normalized
+block contract and provider capability metadata in `src/parsers/types.ts` and
+`src/parsers/capabilities.ts` in the same change. Parser tests should cover any
+new block type, role, tool metadata, timestamp behavior, or provider limitation
+that affects `mandible logs inspect --parse` or `mandible conversations blocks`
+filters.
+
 Key open issues by area:
 - Auth queue UX: 40a3976, 0a803ab, 831cb3e, a7ef2fe, 2bce9cb
 - Dashboard UI: aee671a, c58f784, b011e5b, 76ea6c6, 7a95348, e7a8bad

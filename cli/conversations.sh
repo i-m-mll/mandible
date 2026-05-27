@@ -10,12 +10,14 @@ usage() {
 Usage:
   mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
   mandible conversations show <id|session-id> [--json] [--blocks]
-  mandible conversations blocks <id|session-id> [--type TYPE] [--limit N] [--json]
+  mandible conversations blocks <id|session-id> [filters] [--json]
   mandible conversations export <id|session-id> [--format json|markdown]
   mandible conversations search "<query>" [search options...]
 
 These commands read Mandible's normalized SQLite conversation index. Use
 `mandible logs ...` for provider-native source files.
+
+Block filters: --role ROLE --type TYPE[,TYPE...] --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N
 EOF
 }
 
@@ -28,6 +30,10 @@ case "${1:-}" in
   search)
     shift
     exec "$(dirname "$0")/search.sh" "$@"
+    ;;
+  blocks)
+    shift
+    exec node "$(cd "$(dirname "$0")/.." && pwd -P)/dist/cli/conversation-blocks.js" conversations "$MANDIBLE_DB" "$@"
     ;;
 esac
 
@@ -48,7 +54,7 @@ def usage() -> None:
     print("""Usage:
   mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
   mandible conversations show <id|session-id> [--json] [--blocks]
-  mandible conversations blocks <id|session-id> [--type TYPE] [--limit N] [--json]
+  mandible conversations blocks <id|session-id> [filters] [--json]
   mandible conversations export <id|session-id> [--format json|markdown]
   mandible conversations search "<query>" [search options...]
 """)
@@ -229,11 +235,6 @@ def main() -> int:
     show_parser.add_argument("ident")
     show_parser.add_argument("--json", action="store_true")
     show_parser.add_argument("--blocks", action="store_true")
-    blocks_parser = sub.add_parser("blocks")
-    blocks_parser.add_argument("ident")
-    blocks_parser.add_argument("--type")
-    blocks_parser.add_argument("--limit", type=int, default=50)
-    blocks_parser.add_argument("--json", action="store_true")
     export_parser = sub.add_parser("export")
     export_parser.add_argument("ident")
     export_parser.add_argument("--format", default="markdown", choices=["json", "markdown"])
@@ -243,8 +244,6 @@ def main() -> int:
         return list_cmd(conn, args)
     if args.command == "show":
         return show_cmd(conn, args)
-    if args.command == "blocks":
-        return blocks_cmd(conn, args)
     if args.command == "export":
         return export_cmd(conn, args)
     usage()

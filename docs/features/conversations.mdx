@@ -2,6 +2,16 @@
 
 Mandible ingests, stores, and indexes conversations from every AI agent you use — Claude Code, Codex, and Gemini. Each conversation is broken into typed blocks (user messages, assistant responses, tool calls, thinking, etc.) and stored in a queryable SQLite database with full-text search, filtering, and export capabilities.
 
+Provider-native source logs are the veridical transcript content. The
+`conversations` database tables are Mandible's normalized index for UI, search,
+export, and metadata workflows. Use `mandible logs inspect --parse` when a
+fresh read of the source file matters; use `mandible conversations blocks` when
+the DB-backed normalized index is the intended surface.
+
+Parser capabilities live in `src/parsers/capabilities.ts`. When a provider
+parser changes the block types, roles, timestamps, or tool metadata it emits,
+update that capability metadata and the parser tests in the same change.
+
 ## Ingestion Pipeline
 
 Conversations are ingested automatically. The daemon watches the filesystem for session transcript files and processes them as they appear or change.
@@ -14,7 +24,7 @@ The ingestion service monitors three directories:
 |-------|-----------|--------------|
 | Claude Code | `~/.claude/projects/` | `**/*.jsonl` |
 | Codex | `~/.codex/sessions/` | `**/*.jsonl` |
-| Gemini | `~/.gemini/tmp/` | `**/chats/*.json` |
+| Gemini | `~/.gemini/tmp/` | `**/chats/*.json`, `**/chats/*.jsonl` |
 
 Each directory is watched via `chokidar` with write-finish detection (stabilityThreshold: 1 second). New files and file modifications both trigger ingestion.
 
@@ -57,8 +67,8 @@ Every conversation is a sequence of blocks. Each block has a `type`, a `role`, c
 ### Block Metadata
 
 Each block carries a `metadata_json` field with type-specific data:
-- **tool_use**: `tool_name`, `tool_id`, `tool_input`.
-- **tool_result**: `tool_output`, `duration_ms`.
+- **tool_use**: `tool_name`, `tool_kind`, `tool_id`, `tool_input`.
+- **tool_result**: `tool_name` when resolvable, `tool_kind`, `tool_output`, `duration_ms`.
 - **assistant_message**: `model`, `token_usage` (input/output/cache_read counts).
 - **Any block**: `source_event_type` (the raw event type from the source format), `visibility` (hint for default show/hide in UI), `truncated` flag, `signature`.
 

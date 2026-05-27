@@ -1,0 +1,84 @@
+import type { BlockType, ConversationSource, Role } from "./types.js";
+
+export interface ParserCapability {
+  source: ConversationSource;
+  display_name: string;
+  source_globs: string[];
+  block_types: BlockType[];
+  roles: Role[];
+  tool_metadata: {
+    tool_name: boolean;
+    tool_kind: boolean;
+    tool_id: boolean;
+    tool_input: boolean;
+    tool_output: boolean;
+  };
+  notes: string[];
+}
+
+export const PARSER_CAPABILITIES: ParserCapability[] = [
+  {
+    source: "codex",
+    display_name: "Codex",
+    source_globs: [
+      "~/.codex/sessions/**/*.jsonl",
+      "~/.codex/archived_sessions/**/*.jsonl",
+    ],
+    block_types: ["user_message", "assistant_message", "thinking", "tool_use", "tool_result", "system"],
+    roles: ["user", "assistant", "tool", "system"],
+    tool_metadata: {
+      tool_name: true,
+      tool_kind: true,
+      tool_id: true,
+      tool_input: true,
+      tool_output: true,
+    },
+    notes: [
+      "Tool uses come from function_call/custom_tool_call response items.",
+      "Tool names are stored in metadata.tool_name.",
+    ],
+  },
+  {
+    source: "claude_code",
+    display_name: "Claude Code",
+    source_globs: ["~/.claude/projects/**/*.jsonl"],
+    block_types: ["user_message", "assistant_message", "thinking", "tool_use", "tool_result", "system"],
+    roles: ["user", "assistant", "tool", "system"],
+    tool_metadata: {
+      tool_name: true,
+      tool_kind: true,
+      tool_id: true,
+      tool_input: true,
+      tool_output: true,
+    },
+    notes: [
+      "Tool uses come from assistant content blocks with type tool_use.",
+      "Tool results come from user content blocks with type tool_result.",
+    ],
+  },
+  {
+    source: "gemini",
+    display_name: "Gemini",
+    source_globs: [
+      "~/.gemini/tmp/**/chats/session-*.json",
+      "~/.gemini/tmp/**/chats/session-*.jsonl",
+    ],
+    block_types: ["user_message", "assistant_message", "thinking", "tool_use", "tool_result"],
+    roles: ["user", "assistant", "tool"],
+    tool_metadata: {
+      tool_name: true,
+      tool_kind: true,
+      tool_id: true,
+      tool_input: true,
+      tool_output: true,
+    },
+    notes: [
+      "Tool-use support depends on Gemini logs containing toolCalls.",
+      "Some Gemini logs only contain user and assistant messages.",
+    ],
+  },
+];
+
+export function getParserCapability(source: ConversationSource): ParserCapability | null {
+  return PARSER_CAPABILITIES.find((capability) => capability.source === source) ?? null;
+}
