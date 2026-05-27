@@ -16704,16 +16704,25 @@ function issueRouteHash(repoId, issueId, commentId) {
     params.set("comment", commentId);
   return `#/issues?${params.toString()}`;
 }
+var DEFAULT_ISSUES_FILTER = "status:open";
+function normalizeIssueDefaultFilter(value) {
+  return value?.trim() || DEFAULT_ISSUES_FILTER;
+}
 function IssuesView({
   repos,
   onRescan,
   initialRepoId,
   initialIssueId,
-  initialCommentId
+  initialCommentId,
+  defaultFilter: defaultFilter3
 }) {
+  const normalizedDefaultFilter = T2(
+    () => normalizeIssueDefaultFilter(defaultFilter3),
+    [defaultFilter3]
+  );
   const [selectedRepoId, setSelectedRepoId] = d2(null);
   const [selectedIssueId, setSelectedIssueId] = d2(null);
-  const [filter2, setFilter] = d2("status:open");
+  const [filter2, setFilter] = d2(normalizedDefaultFilter);
   const [filterMenuOpen, setFilterMenuOpen] = d2(false);
   const [repoFilter, setRepoFilter] = d2(null);
   const [repoInput, setRepoInput] = d2("");
@@ -16725,6 +16734,15 @@ function IssuesView({
   const [actionInFlight, setActionInFlight] = d2(false);
   const lastAppliedDeepLinkRef = A2(null);
   const lastScrolledCommentRef = A2(null);
+  const filterEditedRef = A2(false);
+  y2(() => {
+    if (!filterEditedRef.current)
+      setFilter(normalizedDefaultFilter);
+  }, [normalizedDefaultFilter]);
+  const setIssueFilter = q2((nextFilter) => {
+    filterEditedRef.current = true;
+    setFilter(nextFilter);
+  }, []);
   const resolveRepoId = q2((rawRepoId) => {
     if (!rawRepoId)
       return null;
@@ -16801,10 +16819,14 @@ function IssuesView({
   const selectedKinds = parsedFilter.kinds;
   const selectedPriorities = parsedFilter.priorities;
   const updateStructuredFilter = q2((next) => {
-    setFilter((current) => formatIssueFilter({ ...parseIssueFilter(current), ...next }));
+    setFilter((current) => {
+      filterEditedRef.current = true;
+      return formatIssueFilter({ ...parseIssueFilter(current), ...next });
+    });
   }, []);
   const toggleMultiFilter = q2((field, key2) => {
     setFilter((current) => {
+      filterEditedRef.current = true;
       const parsed = parseIssueFilter(current);
       const values = new Set(parsed[field]);
       if (values.has(key2)) {
@@ -17006,11 +17028,22 @@ function IssuesView({
             /* @__PURE__ */ u3(
               "input",
               {
-                type: "search",
+                type: "text",
                 className: "issues-filter__input",
                 placeholder: "Filter issues...",
                 value: filter2,
-                onInput: (e3) => setFilter(e3.currentTarget.value)
+                onInput: (e3) => setIssueFilter(e3.currentTarget.value)
+              }
+            ),
+            filter2 && /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "issues-filter__clear",
+                "aria-label": "Clear issue filter",
+                title: "Clear issue filter",
+                onClick: () => setIssueFilter(""),
+                children: /* @__PURE__ */ u3(ClearIcon, {})
               }
             ),
             /* @__PURE__ */ u3(
@@ -17032,7 +17065,7 @@ function IssuesView({
                   {
                     type: "button",
                     className: "issues-filter-menu__clear",
-                    onClick: () => setFilter(parsedFilter.text),
+                    onClick: () => setIssueFilter(parsedFilter.text),
                     children: "Clear"
                   }
                 )
@@ -17212,6 +17245,12 @@ function FilterIcon() {
     /* @__PURE__ */ u3("path", { d: "M4 6h16" }),
     /* @__PURE__ */ u3("path", { d: "M7 12h10" }),
     /* @__PURE__ */ u3("path", { d: "M10 18h4" })
+  ] });
+}
+function ClearIcon() {
+  return /* @__PURE__ */ u3("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("path", { d: "M18 6L6 18" }),
+    /* @__PURE__ */ u3("path", { d: "M6 6l12 12" })
   ] });
 }
 
@@ -27001,6 +27040,7 @@ function SettingsView(props) {
   const { settings, onSave } = props;
   const [protectedBranches, setProtectedBranches] = d2("");
   const [quietHours, setQuietHours] = d2("");
+  const [issueDefaultFilter, setIssueDefaultFilter] = d2("status:open");
   const [saving, setSaving] = d2(null);
   const [feedback, setFeedback] = d2(null);
   const feedbackTimer = A2(null);
@@ -27018,6 +27058,9 @@ function SettingsView(props) {
       quietInitialized.current = true;
     }
   }, [settings.quiet_hours]);
+  y2(() => {
+    setIssueDefaultFilter(settings["issues.default_filter"]?.trim() || "status:open");
+  }, [settings["issues.default_filter"]]);
   const showFeedback = q2((state) => {
     if (feedbackTimer.current != null)
       window.clearTimeout(feedbackTimer.current);
@@ -27265,6 +27308,42 @@ function SettingsView(props) {
             children: AUTO_RESUME_POLICIES.map((p3) => /* @__PURE__ */ u3("option", { value: p3, children: AUTO_RESUME_LABELS[p3] ?? p3 }, p3))
           }
         )
+      ] }) })
+    ] }),
+    /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-header", children: [
+        /* @__PURE__ */ u3("h3", { className: "settings-view__section-title", children: "Issues" }),
+        /* @__PURE__ */ u3("p", { className: "settings-view__section-desc", children: "Defaults for the issue ledger browser." })
+      ] }),
+      /* @__PURE__ */ u3("div", { className: "settings-view__section-body", children: /* @__PURE__ */ u3("div", { className: "settings-view__text-row", children: [
+        /* @__PURE__ */ u3("div", { className: "settings-view__text-info", children: [
+          /* @__PURE__ */ u3("span", { className: "settings-view__text-label", children: "Default filter" }),
+          /* @__PURE__ */ u3("span", { className: "settings-view__text-desc", children: "Applied when the Issues tab opens. Supports status, kind, and priority tokens." })
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "settings-view__text-controls", children: [
+          /* @__PURE__ */ u3(
+            "input",
+            {
+              type: "text",
+              className: "settings-view__input settings-view__input--wide",
+              value: issueDefaultFilter,
+              onInput: (e3) => setIssueDefaultFilter(e3.target.value),
+              onKeyDown: handleKeyDown("issues.default_filter", issueDefaultFilter),
+              placeholder: "status:open",
+              disabled: saving === "issues.default_filter"
+            }
+          ),
+          /* @__PURE__ */ u3(
+            "button",
+            {
+              type: "button",
+              className: "btn btn--active btn--sm",
+              onClick: () => void handleSaveField("issues.default_filter", issueDefaultFilter.trim() || "status:open"),
+              disabled: saving === "issues.default_filter",
+              children: saving === "issues.default_filter" ? "..." : "Save"
+            }
+          )
+        ] })
       ] }) })
     ] }),
     /* @__PURE__ */ u3("div", { className: "settings-view__section", children: [
@@ -45184,7 +45263,8 @@ function App() {
             onRescan: handleIssueRescan,
             initialRepoId: route.params.repo,
             initialIssueId: route.params.issue,
-            initialCommentId: route.params.comment
+            initialCommentId: route.params.comment,
+            defaultFilter: state.settings["issues.default_filter"]
           }
         ),
         route.tab === "review" && /* @__PURE__ */ u3(

@@ -43,6 +43,7 @@ export type IssuesViewProps = {
   initialRepoId?: string;
   initialIssueId?: string;
   initialCommentId?: string;
+  defaultFilter?: string;
 };
 
 // --- Helpers ---
@@ -197,17 +198,28 @@ type ListItem = { kind: 'issue'; issue: IssueSummary; repo: IssueRepoSummary };
 
 type StatusFilter = 'all' | 'open' | 'merged' | 'closed';
 
+const DEFAULT_ISSUES_FILTER = 'status:open';
+
+function normalizeIssueDefaultFilter(value: string | null | undefined): string {
+  return value?.trim() || DEFAULT_ISSUES_FILTER;
+}
+
 export function IssuesView({
   repos,
   onRescan,
   initialRepoId,
   initialIssueId,
   initialCommentId,
+  defaultFilter,
 }: IssuesViewProps): JSX.Element {
+  const normalizedDefaultFilter = useMemo(
+    () => normalizeIssueDefaultFilter(defaultFilter),
+    [defaultFilter],
+  );
   // Local state
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
-  const [filter, setFilter] = useState('status:open');
+  const [filter, setFilter] = useState(normalizedDefaultFilter);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [repoInput, setRepoInput] = useState('');
@@ -222,6 +234,16 @@ export function IssuesView({
   // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
   const lastScrolledCommentRef = useRef<string | null>(null);
+  const filterEditedRef = useRef(false);
+
+  useEffect(() => {
+    if (!filterEditedRef.current) setFilter(normalizedDefaultFilter);
+  }, [normalizedDefaultFilter]);
+
+  const setIssueFilter = useCallback((nextFilter: string) => {
+    filterEditedRef.current = true;
+    setFilter(nextFilter);
+  }, []);
 
   const resolveRepoId = useCallback((rawRepoId: string | null | undefined): string | null => {
     if (!rawRepoId) return null;
@@ -298,11 +320,15 @@ export function IssuesView({
   const selectedPriorities = parsedFilter.priorities;
 
   const updateStructuredFilter = useCallback((next: Partial<ParsedIssueFilter>) => {
-    setFilter((current) => formatIssueFilter({ ...parseIssueFilter(current), ...next }));
+    setFilter((current) => {
+      filterEditedRef.current = true;
+      return formatIssueFilter({ ...parseIssueFilter(current), ...next });
+    });
   }, []);
 
   const toggleMultiFilter = useCallback((field: 'kinds' | 'priorities', key: string) => {
     setFilter((current) => {
+      filterEditedRef.current = true;
       const parsed = parseIssueFilter(current);
       const values = new Set(parsed[field]);
       if (values.has(key)) {
@@ -533,12 +559,23 @@ export function IssuesView({
           }}
         >
           <input
-            type="search"
+            type="text"
             className="issues-filter__input"
             placeholder="Filter issues..."
             value={filter}
-            onInput={(e) => setFilter(e.currentTarget.value)}
+            onInput={(e) => setIssueFilter(e.currentTarget.value)}
           />
+          {filter && (
+            <button
+              type="button"
+              className="issues-filter__clear"
+              aria-label="Clear issue filter"
+              title="Clear issue filter"
+              onClick={() => setIssueFilter('')}
+            >
+              <ClearIcon />
+            </button>
+          )}
           <button
             type="button"
             className={`issues-filter__advanced-trigger${filterMenuOpen ? ' issues-filter__advanced-trigger--active' : ''}`}
@@ -555,7 +592,7 @@ export function IssuesView({
                 <button
                   type="button"
                   className="issues-filter-menu__clear"
-                  onClick={() => setFilter(parsedFilter.text)}
+                  onClick={() => setIssueFilter(parsedFilter.text)}
                 >
                   Clear
                 </button>
@@ -770,6 +807,15 @@ function FilterIcon(): JSX.Element {
       <path d="M4 6h16" />
       <path d="M7 12h10" />
       <path d="M10 18h4" />
+    </svg>
+  );
+}
+
+function ClearIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M18 6L6 18" />
+      <path d="M6 6l12 12" />
     </svg>
   );
 }

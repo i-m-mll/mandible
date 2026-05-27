@@ -4111,14 +4111,14 @@ tr:hover .work-actions__trigger {
   font-size: 13px;
 }
 .issues-filter > .issues-filter__input {
-  padding-right: 38px;
+  padding-right: 66px;
 }
 .issues-filter__input::placeholder {
   color: var(--text-muted);
 }
+.issues-filter__clear,
 .issues-filter__advanced-trigger {
   position: absolute;
-  right: 5px;
   top: 50%;
   display: inline-flex;
   align-items: center;
@@ -4132,11 +4132,23 @@ tr:hover .work-actions__trigger {
   color: var(--text-muted);
   cursor: pointer;
 }
+.issues-filter__clear {
+  right: 33px;
+  color: var(--text-secondary);
+}
+.issues-filter__advanced-trigger {
+  right: 5px;
+}
 .issues-filter__advanced-trigger:hover,
 .issues-filter__advanced-trigger--active {
   background: rgba(77, 163, 255, 0.14);
   color: var(--accent-blue);
 }
+.issues-filter__clear:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+.issues-filter__clear svg,
 .issues-filter__advanced-trigger svg {
   width: 15px;
   height: 15px;
@@ -4928,6 +4940,9 @@ tr:hover .work-actions__trigger {
 }
 .settings-view__input--narrow {
   width: 140px;
+}
+.settings-view__input--wide {
+  width: 260px;
 }
 .settings-view__daemon-card {
   display: grid;
@@ -10073,6 +10088,15 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   padding-bottom: 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
+.issues-detail .ledger-issue-detail__header {
+  position: sticky;
+  top: -24px;
+  z-index: 12;
+  margin: -24px -24px 2px;
+  padding: 24px 24px 14px;
+  background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
+  backdrop-filter: blur(12px);
+}
 .ledger-issue-detail__heading {
   display: flex;
   flex-direction: column;
@@ -10287,7 +10311,7 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   padding: 0;
 }
 .ledger-copy-ref-button {
-  margin-left: -4px;
+  margin-left: -6px;
 }
 .ledger-copy-ref-button:hover,
 .ledger-icon-button:hover {
