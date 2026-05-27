@@ -381,14 +381,18 @@ function CopyIssueRefButton({ detail }: { detail: LedgerIssueDetailProjection })
 }
 
 async function copyText(value: string): Promise<void> {
+  if (copyTextWithSelection(value)) return;
+
   if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(value);
-      return;
-    } catch {
-      // Fall through to the selection-based path for local/IAB contexts.
-    }
+    await navigator.clipboard.writeText(value);
+    return;
   }
+
+  throw new Error('copy failed');
+}
+
+function copyTextWithSelection(value: string): boolean {
+  if (!document.queryCommandSupported?.('copy')) return false;
 
   const textarea = document.createElement('textarea');
   textarea.value = value;
@@ -402,7 +406,7 @@ async function copyText(value: string): Promise<void> {
   textarea.setSelectionRange(0, value.length);
   const copied = document.execCommand('copy');
   document.body.removeChild(textarea);
-  if (!copied) throw new Error('copy failed');
+  return copied;
 }
 
 function fallbackTimeline(detail: LedgerIssueDetailProjection): LedgerIssueTimelineEntry[] {

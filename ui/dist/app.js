@@ -15941,13 +15941,17 @@ function CopyIssueRefButton({ detail }) {
   );
 }
 async function copyText(value) {
+  if (copyTextWithSelection(value))
+    return;
   if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(value);
-      return;
-    } catch {
-    }
+    await navigator.clipboard.writeText(value);
+    return;
   }
+  throw new Error("copy failed");
+}
+function copyTextWithSelection(value) {
+  if (!document.queryCommandSupported?.("copy"))
+    return false;
   const textarea = document.createElement("textarea");
   textarea.value = value;
   textarea.setAttribute("readonly", "");
@@ -15960,8 +15964,7 @@ async function copyText(value) {
   textarea.setSelectionRange(0, value.length);
   const copied = document.execCommand("copy");
   document.body.removeChild(textarea);
-  if (!copied)
-    throw new Error("copy failed");
+  return copied;
 }
 function fallbackTimeline(detail) {
   return [
