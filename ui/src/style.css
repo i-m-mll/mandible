@@ -10119,8 +10119,8 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   position: sticky;
   top: -24px;
   z-index: 12;
-  margin: -24px -24px 2px;
-  padding: 24px 24px 14px;
+  margin: -24px -24px 2px -29px;
+  padding: 24px 24px 14px 29px;
   background: transparent;
 }
 
