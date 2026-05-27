@@ -1123,6 +1123,30 @@ const MIGRATIONS: Migration[] = [
         ON ledger_issue_relationships(target_issue_id)`,
       `CREATE INDEX IF NOT EXISTS idx_ledger_relationships_type
         ON ledger_issue_relationships(relationship_type)`,
+      `CREATE TABLE IF NOT EXISTS ledger_issue_relationship_sources (
+        id TEXT PRIMARY KEY,
+        relationship_id TEXT NOT NULL REFERENCES ledger_issue_relationships(id) ON DELETE CASCADE,
+        source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue_body','comment')),
+        source_entity_id TEXT NOT NULL,
+        source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        relationship_type TEXT NOT NULL
+          CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),
+        ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment','deprecated_iss_alias')),
+        raw_ref TEXT NOT NULL,
+        normalized_ref TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        UNIQUE(source_entity_type, source_entity_id, target_issue_id, relationship_type, ref_kind, normalized_ref)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_relationship
+        ON ledger_issue_relationship_sources(relationship_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_source
+        ON ledger_issue_relationship_sources(source_entity_type, source_entity_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_target
+        ON ledger_issue_relationship_sources(target_issue_id)`,
       `CREATE TABLE IF NOT EXISTS ledger_events (
         id TEXT PRIMARY KEY,
         entity_type TEXT NOT NULL,
@@ -1460,6 +1484,38 @@ const MIGRATIONS: Migration[] = [
            updated_at = CAST(strftime('%s','now') * 1000 AS INTEGER)
        WHERE id = 'builtin-mandible-rebuild'
          AND command = 'bash cli/post-merge-build-dist.sh'`
+    ]
+  },
+  {
+    version: 64,
+    name: "ledger_issue_relationship_sources",
+    // Bug: b45f19b — retain source provenance for text-derived references
+    // without making comment nodes part of the graph contract.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS ledger_issue_relationship_sources (
+        id TEXT PRIMARY KEY,
+        relationship_id TEXT NOT NULL REFERENCES ledger_issue_relationships(id) ON DELETE CASCADE,
+        source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue_body','comment')),
+        source_entity_id TEXT NOT NULL,
+        source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        relationship_type TEXT NOT NULL
+          CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),
+        ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment','deprecated_iss_alias')),
+        raw_ref TEXT NOT NULL,
+        normalized_ref TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        UNIQUE(source_entity_type, source_entity_id, target_issue_id, relationship_type, ref_kind, normalized_ref)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_relationship
+        ON ledger_issue_relationship_sources(relationship_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_source
+        ON ledger_issue_relationship_sources(source_entity_type, source_entity_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_target
+        ON ledger_issue_relationship_sources(target_issue_id)`
     ]
   }
 ];

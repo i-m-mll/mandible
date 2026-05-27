@@ -182,4 +182,31 @@ describe("ledger graph projection", () => {
     expect(countLedgerGraphIssues(db, "open")).toBe(1);
     expect(getLedgerGraphFilterOptions(db).repos).toEqual(expect.arrayContaining(["alpha", "beta"]));
   });
+
+  it("projects derived text reference relationships as issue graph edges", () => {
+    const checkout = createProject("repo");
+    const store = new LedgerStore(db);
+    const source = createIssue(store, checkout.project.id, "src1234", "Source issue");
+    const target = createIssue(store, checkout.project.id, "tar1234", "Target issue");
+
+    store.updateIssue(source.id, { body: "See [issue:tar1234] for follow-up." });
+
+    const projection = buildLedgerIssueProjection(db, { mode: "issue", status: "all" });
+    const sourceNode = findNode(projection?.nodes ?? [], "Source issue");
+    const targetNode = findNode(projection?.nodes ?? [], "Target issue");
+
+    expect(projection?.edges).toEqual([
+      expect.objectContaining({
+        source: sourceNode.id,
+        target: targetNode.id,
+        type: "references",
+        edge_class: "semantic",
+        provenance: "ledger_issue_relationships",
+        metadata: expect.objectContaining({
+          relationship_type: "references",
+          label_default_visible: false,
+        }),
+      }),
+    ]);
+  });
 });
