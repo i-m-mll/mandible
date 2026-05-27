@@ -856,7 +856,7 @@ function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): s
       if (match.index > lastIndex) {
         fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
       }
-      const link = refLink(match, detail);
+      const link = refLink(match, detail, text);
       fragment.appendChild(link ?? document.createTextNode(match[0]));
       lastIndex = match.index + match[0].length;
     }
@@ -868,7 +868,7 @@ function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): s
   return container.innerHTML;
 }
 
-function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): HTMLAnchorElement | null {
+function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection, text: string): HTMLAnchorElement | null {
   const ordinalCommentRef = match[1];
   const explicitType = match[2];
   const explicitRef = match[3];
@@ -888,6 +888,15 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): H
 
   const anchor = document.createElement('a');
   anchor.className = 'ledger-xref';
+  if (bareIssueRef && isAuthRequestContext(text, match.index)) {
+    anchor.textContent = match[0];
+    anchor.href = `#/auth?request=${encodeURIComponent(ref)}`;
+    anchor.title = `Open auth request ${ref}`;
+    return anchor;
+  }
+  if (bareIssueRef && isCommitLikeContext(text, match.index)) {
+    return null;
+  }
   if (explicitType === 'comment') {
     const parsed = parseCommentRef(ref, detail);
     if (!parsed) return null;
@@ -910,6 +919,14 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): H
   anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
   anchor.title = `Open issue ${parsedIssue.issue}`;
   return anchor;
+}
+
+function isAuthRequestContext(text: string, matchIndex: number): boolean {
+  return /(?:auth\s+request|auth)\s+$/i.test(text.slice(Math.max(0, matchIndex - 32), matchIndex));
+}
+
+function isCommitLikeContext(text: string, matchIndex: number): boolean {
+  return /(?:merge|commit)\s+$/i.test(text.slice(Math.max(0, matchIndex - 24), matchIndex));
 }
 
 function issueRefLabel(parsed: { repo: string; issue: string }, detail: LedgerIssueDetailProjection): string {
