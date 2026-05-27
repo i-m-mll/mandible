@@ -449,6 +449,7 @@ export function IssuesView({
             placeholder="Filter by repo..."
             value={repoInput}
             onFocus={() => setRepoMenuOpen(true)}
+            onClick={() => setRepoMenuOpen(true)}
             onInput={(e) => {
               const val = e.currentTarget.value;
               setRepoInput(val);

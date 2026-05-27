@@ -16940,6 +16940,7 @@ function IssuesView({
                 placeholder: "Filter by repo...",
                 value: repoInput,
                 onFocus: () => setRepoMenuOpen(true),
+                onClick: () => setRepoMenuOpen(true),
                 onInput: (e3) => {
                   const val = e3.currentTarget.value;
                   setRepoInput(val);
