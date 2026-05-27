@@ -88,6 +88,8 @@ Issue management wrapper around the Mandible ledger.
 mandible issue new -t <title> -m <body> [--label <label>]...
 mandible issue list [--status open|closed|all]
 mandible issue show <id>
+mandible issue report <id> [--json]
+mandible issue triage [--repo <repo-ref>] [--status open|closed|all] [--label <label>] [--stale-days N] [--limit N] [--json]
 mandible issue close <id> [--commit <sha>]
 mandible issue open <id>
 mandible issue comment <id> -m <text>
@@ -102,11 +104,15 @@ mandible issue label rm <id> <label>
 | `new` | Create a new issue with title, body, and optional labels |
 | `list` | List issues (default: open only) |
 | `show` | Show issue details |
+| `report` | Print deterministic issue context for agent handoff. This is factual metadata, comments, relationships, work units, sessions, auth requests, timeline, conflicts, and sync state; it does not synthesize remaining work. |
+| `triage` | Filter issues by status, label, stale age, and limit for deterministic review queues. |
 | `close` | Close an issue, recording the resolving commit SHA. Adds a ledger comment, appends a git note, and reports the resolution to the Mandible API. |
 | `open` | Reopen a closed issue |
 | `comment` | Add a comment to an issue |
 | `label add` | Add a label |
 | `label rm` | Remove a label |
+
+Prefer `mandible issue report <id> --json` when an agent needs issue context for a handoff or planning pass. Agents remain responsible for synthesis and decisions; the CLI output is only a deterministic fact packet.
 
 ### mandible auth request
 
@@ -227,3 +233,37 @@ mandible search "bigbuild" --title
 ```
 
 Searches the SQLite database directly, decompressing gzip-compressed blocks via Python.
+
+### mandible logs
+
+Inspect provider-native source logs without importing, reconciling, or mutating the Mandible database.
+
+```
+mandible logs inventory [--provider codex|claude|gemini|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
+mandible logs missing [--provider codex|claude|gemini|all] [--json]
+mandible logs orphans [--provider codex|claude|gemini|all] [--json]
+mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--json] [--head N]
+```
+
+Use `logs` commands when the provider files are the object of inspection. They treat Codex/Claude/Gemini source logs as the veridical transcript record and only compare against the DB index when needed.
+
+| Command | Description |
+|---|---|
+| `inventory` | List recent provider source files, optionally with lightweight parsed metadata. |
+| `missing` | List source files not represented in `conversations.source_path`. |
+| `orphans` | List DB conversation rows whose `source_path` no longer exists. |
+| `inspect` | Show source-log metadata and the first raw records for a path or provider session ID. |
+
+### mandible conversations
+
+Inspect DB-backed normalized conversation rows and blocks.
+
+```
+mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
+mandible conversations show <id|session-id> [--json] [--blocks]
+mandible conversations blocks <id|session-id> [--type TYPE] [--limit N] [--json]
+mandible conversations export <id|session-id> [--format json|markdown]
+mandible conversations search "<query>" [search options...]
+```
+
+Use `conversations` commands for Mandible's normalized SQLite index, UI/export/search surface, and conversation metadata. `mandible conversations search` is an alias to `mandible search`.

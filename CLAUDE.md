@@ -110,6 +110,16 @@ Note: DELETE body parsing requires "DELETE" in the method allowlist in `server.t
 
 Use `mandible issue` commands for issue reads and writes. During ledger migration, git-bug refs are a legacy sync/import source and emergency compatibility surface, not the intended hot path. See the open issue list with `mandible issue list --status open`.
 
+For agent planning or handoff context, prefer `mandible issue report <id> --json`
+before manually reconstructing issue state. It is a deterministic fact packet,
+not an agentic synthesis of remaining work. Use `mandible issue triage` for
+read-only filtering of open, stale, or labeled issue sets.
+
+For conversation/history audits, keep the source surfaces distinct:
+`mandible logs ...` inspects provider-native source logs as the veridical
+transcript record, while `mandible conversations ...` inspects Mandible's
+normalized SQLite index for UI, search, export, and metadata workflows.
+
 Key open issues by area:
 - Auth queue UX: 40a3976, 0a803ab, 831cb3e, a7ef2fe, 2bce9cb
 - Dashboard UI: aee671a, c58f784, b011e5b, 76ea6c6, 7a95348, e7a8bad
