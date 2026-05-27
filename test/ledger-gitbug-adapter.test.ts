@@ -204,7 +204,7 @@ describe("git-bug ledger export", () => {
     expect(store.listConflicts({ status: "open" })).toHaveLength(0);
   });
 
-  it("exports local title and body updates to git-bug", async () => {
+	  it("exports local title and body updates to git-bug", async () => {
     const checkout = createCheckout();
     const client = new FakeGitBugClient([
       makeDetail({ id: "git-1", human_id: "abc123", title: "Remote", body: "Old body" }),
@@ -225,9 +225,43 @@ describe("git-bug ledger export", () => {
     expect(result).toMatchObject({ applied: 1, conflicted: 0, failed: 0 });
     expect(remote.ok && remote.value.title).toBe("Updated title");
     expect(remote.ok && remote.value.description).toBe("Updated body");
-    expect(store.listConflicts({ status: "open" })).toHaveLength(0);
-  });
-});
+	    expect(store.listConflicts({ status: "open" })).toHaveLength(0);
+	  });
+
+	  it("exports lifecycle status events to git-bug", async () => {
+	    const checkout = createCheckout();
+	    const client = new FakeGitBugClient([
+	      makeDetail({ id: "git-1", human_id: "abc123", title: "Remote", status: "open" }),
+	    ]);
+	    await importGitBugCheckout({ db, client, checkout });
+	    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
+	    const issue = store.listIssues({ project_id: checkout.project_id })[0];
+
+	    store.setIssueStatus(issue.id, "closed", "merged");
+	    const closedResult = await exportGitBugOutbox({
+	      db,
+	      client,
+	      project_id: checkout.project_id,
+	      repoRoot: checkout.root,
+	    });
+	    const closedRemote = await client.getIssue(checkout.root, "abc123");
+
+	    store.setIssueStatus(issue.id, "open", null);
+	    const reopenedResult = await exportGitBugOutbox({
+	      db,
+	      client,
+	      project_id: checkout.project_id,
+	      repoRoot: checkout.root,
+	    });
+	    const reopenedRemote = await client.getIssue(checkout.root, "abc123");
+
+	    expect(closedResult).toMatchObject({ applied: 1, conflicted: 0, failed: 0 });
+	    expect(closedRemote.ok && closedRemote.value.status).toBe("closed");
+	    expect(reopenedResult).toMatchObject({ applied: 1, conflicted: 0, failed: 0 });
+	    expect(reopenedRemote.ok && reopenedRemote.value.status).toBe("open");
+	    expect(store.listConflicts({ status: "open" })).toHaveLength(0);
+	  });
+	});
 
 describe("git-bug sync jobs", () => {
   it("does not mark successful zero-conflict exports as conflicted", async () => {

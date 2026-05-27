@@ -1,6 +1,6 @@
 import { broadcast } from "../sse.js";
 import { emitLedgerEvents } from "./events.js";
-import { createCreationNonce, createLedgerId, createStableCommentId, createStableIssueId, } from "./ids.js";
+import { createCreationNonce, createLedgerId, createStableCommentId, createStableEventId, createStableIssueId, } from "./ids.js";
 export class LedgerStore {
     db;
     outboxAdapters;
@@ -146,14 +146,17 @@ export class LedgerStore {
          SET title = ?, body = ?, kind = ?, priority = ?, author_display = ?,
              status = ?, resolution = ?, closed_at = ?, updated_at = ?
          WHERE id = ?`).run(next.title, next.body, next.kind, next.priority, next.author_display, next.status, next.resolution, next.closed_at, now, id);
+            const eventType = issueLifecycleEventType(existing.status, next.status);
             const event = this.insertEvent({
                 entity_type: "issue",
                 entity_id: id,
-                event_type: "issue.updated",
+                event_type: eventType ?? "issue.updated",
                 actor_id: normalizedActor.actor_id,
                 actor_type: normalizedActor.actor_type,
                 source,
-                payload: { issue_id: id, patch },
+                payload: eventType
+                    ? { issue_id: id, previous_status: existing.status, status: next.status, resolution: next.resolution, patch }
+                    : { issue_id: id, patch },
                 project_id: existing.project_id,
                 occurred_at: now,
             });
@@ -173,18 +176,20 @@ export class LedgerStore {
             this.db.prepare(`UPDATE ledger_issues
          SET status = ?, resolution = ?, closed_at = ?, updated_at = ?
          WHERE id = ?`).run(status, resolution, status === "closed" ? now : null, now, id);
+            const eventType = status === "closed" ? "issue.closed" : "issue.reopened";
+            const payload = { issue_id: id, previous_status: existing.status, status, resolution };
             const event = this.insertEvent({
                 entity_type: "issue",
                 entity_id: id,
-                event_type: "issue.updated",
+                event_type: eventType,
                 actor_id: normalizedActor.actor_id,
                 actor_type: normalizedActor.actor_type,
                 source,
-                payload: { issue_id: id, status, resolution },
+                payload,
                 project_id: existing.project_id,
                 occurred_at: now,
             });
-            emitted.push({ event, payload: { issue_id: id, status, resolution } });
+            emitted.push({ event, payload });
             return this.getIssue(id);
         });
         const issue = run();
@@ -695,11 +700,24 @@ export class LedgerStore {
     }
     insertEvent(input) {
         const observedAt = Date.now();
-        const id = createLedgerId("evt", { now: input.occurred_at });
+        const occurrence = createCreationNonce();
+        const payload = { ...input.payload, event_nonce: occurrence };
+        const id = createStableEventId({
+            entity_type: input.entity_type,
+            entity_id: input.entity_id,
+            event_type: input.event_type,
+            actor_id: input.actor_id,
+            actor_type: input.actor_type,
+            source: input.source,
+            payload,
+            occurred_at: input.occurred_at,
+            observed_at: observedAt,
+            occurrence,
+        });
         this.db.prepare(`INSERT INTO ledger_events (
         id, entity_type, entity_id, event_type, actor_id, actor_type,
         source, payload_json, occurred_at, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.entity_type, input.entity_id, input.event_type, input.actor_id, input.actor_type, input.source, jsonStringify(input.payload), input.occurred_at, observedAt);
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.entity_type, input.entity_id, input.event_type, input.actor_id, input.actor_type, input.source, jsonStringify(payload), input.occurred_at, observedAt);
         if (input.enqueueOutbox ?? shouldEnqueueOutbox(input.source)) {
             for (const adapter of this.outboxAdapters) {
                 this.db.prepare(`INSERT OR IGNORE INTO ledger_outbox (
@@ -710,6 +728,11 @@ export class LedgerStore {
         }
         return this.db.prepare("SELECT * FROM ledger_events WHERE id = ?").get(id);
     }
+}
+function issueLifecycleEventType(previousStatus, nextStatus) {
+    if (previousStatus === nextStatus)
+        return null;
+    return nextStatus === "closed" ? "issue.closed" : "issue.reopened";
 }
 function normalizeActor(input) {
     return {
