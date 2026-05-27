@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# mandible logs: inspect provider-native source logs.
+
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  mandible logs inventory [--provider codex|claude|gemini|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
+  mandible logs missing [--provider codex|claude|gemini|all] [--json]
+  mandible logs orphans [--provider codex|claude|gemini|all] [--json]
+  mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--json] [--head N]
+
+Raw provider source logs are the veridical transcript source. These commands do
+not import, reconcile, or mutate the Mandible database.
+EOF
+}
+
+if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+  usage
+  if [[ $# -eq 0 ]]; then
+    exit 2
+  fi
+  exit 0
+fi
+
+exec python3 - "$@" <<'PY'
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import glob
+import json
+import os
+import pathlib
+import sqlite3
+import sys
+from typing import Any
+
+
+HOME = pathlib.Path.home()
+MANDIBLE_DB = pathlib.Path(os.environ.get("MANDIBLE_DB", str(HOME / ".cache" / "mandible" / "mandible.db")))
+
+
+def parse_since(value: str | None) -> float | None:
+    if not value:
+        return None
+    now = dt.datetime.now(dt.timezone.utc)
+    if value.endswith("d") and value[:-1].isdigit():
+        return (now - dt.timedelta(days=int(value[:-1]))).timestamp()
+    try:
+        return dt.datetime.fromisoformat(value).replace(tzinfo=dt.timezone.utc).timestamp()
+    except ValueError:
+        raise SystemExit("--since must be Nd or YYYY-MM-DD")
+
+
+def provider_patterns(provider: str) -> list[tuple[str, str]]:
+    patterns: list[tuple[str, str]] = []
+    providers = ["codex", "claude", "gemini"] if provider == "all" else [provider]
+    for item in providers:
+        if item == "codex":
+            patterns.extend([
+                ("codex", str(HOME / ".codex" / "sessions" / "**" / "*.jsonl")),
+                ("codex", str(HOME / ".codex" / "archived_sessions" / "**" / "*.jsonl")),
+            ])
+        elif item == "claude":
+            patterns.append(("claude", str(HOME / ".claude" / "projects" / "**" / "*.jsonl")))
+        elif item == "gemini":
+            patterns.extend([
+                ("gemini", str(HOME / ".gemini" / "tmp" / "**" / "chats" / "*.json")),
+                ("gemini", str(HOME / ".gemini" / "tmp" / "**" / "chats" / "*.jsonl")),
+            ])
+        else:
+            raise SystemExit(f"unknown provider: {item}")
+    return patterns
+
+
+def iter_files(provider: str) -> list[tuple[str, pathlib.Path]]:
+    seen: set[str] = set()
+    rows: list[tuple[str, pathlib.Path]] = []
+    for source, pattern in provider_patterns(provider):
+        for match in glob.iglob(pattern, recursive=True):
+            path = pathlib.Path(match)
+            key = str(path)
+            if key in seen or not path.is_file():
+                continue
+            seen.add(key)
+            rows.append((source, path))
+    return rows
+
+
+def read_jsonl_head(path: pathlib.Path, limit: int = 200) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for idx, line in enumerate(handle):
+                if idx >= limit:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return rows
+
+
+def summarize_file(source: str, path: pathlib.Path) -> dict[str, Any]:
+    stat = path.stat()
+    summary: dict[str, Any] = {
+        "provider": source,
+        "path": str(path),
+        "size": stat.st_size,
+        "mtime": dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc).isoformat(),
+        "session_id": None,
+        "title": None,
+        "cwd": None,
+        "model": None,
+    }
+    rows = read_jsonl_head(path)
+    for row in rows:
+        payload = row.get("payload") if isinstance(row, dict) else None
+        if source == "codex" and row.get("type") == "session_meta" and isinstance(payload, dict):
+            summary["session_id"] = payload.get("id")
+            summary["cwd"] = payload.get("cwd")
+            summary["model"] = payload.get("model_provider")
+            git = payload.get("git") if isinstance(payload.get("git"), dict) else {}
+            summary["branch"] = git.get("branch")
+            break
+        if source == "claude":
+            summary["session_id"] = row.get("sessionId") or row.get("session_id") or summary["session_id"]
+            summary["cwd"] = row.get("cwd") or summary["cwd"]
+            summary["model"] = row.get("model") or summary["model"]
+        if source == "gemini":
+            summary["session_id"] = row.get("id") or row.get("session_id") or summary["session_id"]
+    return summary
+
+
+def inventory(args: argparse.Namespace) -> int:
+    cutoff = parse_since(args.since)
+    rows = []
+    for provider, path in iter_files(args.provider):
+        stat = path.stat()
+        if cutoff is not None and stat.st_mtime < cutoff:
+            continue
+        rows.append(summarize_file(provider, path))
+    rows.sort(key=lambda row: row["mtime"], reverse=True)
+    rows = rows[: args.limit]
+    if args.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for row in rows:
+            title = row.get("title") or row.get("session_id") or "-"
+            print(f"{row['provider']}\t{row['mtime'][:19]}\t{title}\t{row['path']}")
+    return 0
+
+
+def db_source(provider: str) -> str | None:
+    return {"claude": "claude_code", "codex": "codex", "gemini": "gemini", "all": None}[provider]
+
+
+def db_paths(provider: str) -> dict[str, dict[str, Any]]:
+    if not MANDIBLE_DB.exists():
+        return {}
+    conn = sqlite3.connect(MANDIBLE_DB)
+    conn.row_factory = sqlite3.Row
+    params: list[Any] = []
+    where = ["source_path IS NOT NULL", "source_path != ''"]
+    source = db_source(provider)
+    if source:
+        where.append("source = ?")
+        params.append(source)
+    rows = conn.execute(
+        f"""
+        SELECT id, source, source_path, source_hash, source_mtime, session_id, title, block_count, updated_at
+        FROM conversations
+        WHERE {' AND '.join(where)}
+        """,
+        params,
+    ).fetchall()
+    return {row["source_path"]: dict(row) for row in rows}
+
+
+def missing(args: argparse.Namespace) -> int:
+    indexed = db_paths(args.provider)
+    rows = []
+    for provider, path in iter_files(args.provider):
+        if str(path) not in indexed:
+            rows.append(summarize_file(provider, path))
+    rows.sort(key=lambda row: row["mtime"], reverse=True)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for row in rows:
+            print(f"{row['provider']}\t{row['mtime'][:19]}\t{row['path']}")
+    return 0
+
+
+def orphans(args: argparse.Namespace) -> int:
+    rows = []
+    for path, row in db_paths(args.provider).items():
+        if not pathlib.Path(path).exists():
+            rows.append(row)
+    rows.sort(key=lambda row: row.get("updated_at") or "", reverse=True)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        for row in rows:
+            print(f"{row['source']}\t{row['id'][:8]}\t{row.get('session_id') or '-'}\t{row['source_path']}")
+    return 0
+
+
+def find_log(target: str, provider: str) -> tuple[str, pathlib.Path] | None:
+    path = pathlib.Path(os.path.expanduser(target))
+    if path.exists():
+        return ("file", path)
+    for source, candidate in iter_files(provider):
+        summary = summarize_file(source, candidate)
+        if target in {summary.get("session_id"), candidate.name, str(candidate)}:
+            return (source, candidate)
+    return None
+
+
+def inspect(args: argparse.Namespace) -> int:
+    found = find_log(args.target, args.provider)
+    if not found:
+        print(f"log not found: {args.target}", file=sys.stderr)
+        return 1
+    source, path = found
+    if source == "file":
+        source = "unknown"
+    summary = summarize_file(source, path)
+    rows = read_jsonl_head(path, args.head)
+    payload = {"summary": summary, "records": rows}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"{summary['provider']} {summary.get('session_id') or path.name}")
+        print(f"path: {path}")
+        print(f"mtime: {summary['mtime']}")
+        print(f"records shown: {len(rows)}")
+        for row in rows:
+            print(json.dumps(row, ensure_ascii=False)[:500])
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="mandible logs", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    inv = sub.add_parser("inventory")
+    inv.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
+    inv.add_argument("--since")
+    inv.add_argument("--limit", type=int, default=50)
+    inv.add_argument("--json", action="store_true")
+    missing_parser = sub.add_parser("missing")
+    missing_parser.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
+    missing_parser.add_argument("--json", action="store_true")
+    orphans_parser = sub.add_parser("orphans")
+    orphans_parser.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
+    orphans_parser.add_argument("--json", action="store_true")
+    ins = sub.add_parser("inspect")
+    ins.add_argument("target")
+    ins.add_argument("--provider", default="all", choices=["codex", "claude", "gemini", "all"])
+    ins.add_argument("--head", type=int, default=20)
+    ins.add_argument("--json", action="store_true")
+    if len(sys.argv) == 1 or sys.argv[1] in {"-h", "--help", "help"}:
+        usage()
+        return 0 if len(sys.argv) > 1 else 2
+    args = parser.parse_args()
+    if args.command == "inventory":
+        return inventory(args)
+    if args.command == "missing":
+        return missing(args)
+    if args.command == "orphans":
+        return orphans(args)
+    if args.command == "inspect":
+        return inspect(args)
+    usage()
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY

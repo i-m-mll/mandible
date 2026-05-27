@@ -25,6 +25,8 @@ Usage:
   mandible issue new -t <title> -m <body> [--label <label>]...   Create a new issue
   mandible issue list [--status open|closed|all]                  List issues (default: open)
   mandible issue show <id>                                        Show issue details
+  mandible issue report <id> [--json]                             Print deterministic issue context
+  mandible issue triage [opts] [--json]                           Filter issues for review
   mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
   mandible issue open <id>                                        Reopen a closed issue
   mandible issue comment <id> -m <text>                           Add a comment
@@ -190,6 +192,160 @@ cmd_show() {
   api_get "/api/ledger/issues/$(urlencode "$id")" | print_issue_detail
 }
 
+cmd_report() {
+  local id=""
+  local json=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$id" ]]; then
+          id="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$id" ]]; then
+    die "Usage: mandible issue report <id> [--json]" 2
+  fi
+
+  require_tools
+  if (( json )); then
+    api_get "/api/ledger/issues/$(urlencode "$id")" | jq '{
+      id,
+      display_id,
+      title,
+      status,
+      resolution,
+      labels,
+      priority,
+      kind,
+      project,
+      created_at,
+      updated_at,
+      closed_at,
+      author,
+      aliases,
+      body,
+      comments,
+      relationships,
+      work_units,
+      sessions,
+      auth_requests,
+      timeline,
+      conflicts
+    }'
+  else
+    api_get "/api/ledger/issues/$(urlencode "$id")" | jq -r '
+      def list_or_dash(xs): if (xs // []) | length == 0 then "-" else (xs | join(", ")) end;
+      def short(s): (s // "" | gsub("\\s+"; " ") | if length > 180 then .[0:177] + "..." else . end);
+      "\(.display_id) [\(.status)] \(.title)",
+      "labels: \(list_or_dash(.labels))",
+      "updated: \(.updated_at // "-")",
+      "created: \(.created_at // "-")",
+      "comments: \((.comments // []) | length)",
+      "relationships: \((.relationships // []) | length)",
+      "work_units: \((.work_units // []) | length)",
+      "sessions: \((.sessions // []) | length)",
+      "auth_requests: \((.auth_requests // []) | length)",
+      "",
+      "body:",
+      (.body // ""),
+      "",
+      "latest comments:",
+      (((.comments // []) | sort_by(.created_at // "") | reverse | .[0:5][])?
+        | "- \(.id // "?") \(.author.display // .author.id // "unknown") \(.created_at // ""): \(short(.body))")
+    '
+  fi
+}
+
+cmd_triage() {
+  local status="open"
+  local label=""
+  local stale_days=""
+  local limit=50
+  local json=0
+  local repo=""
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --status)
+        if (( $# < 2 )); then die "Missing value for --status." 2; fi
+        status="$2"; shift 2 ;;
+      --label)
+        if (( $# < 2 )); then die "Missing value for --label." 2; fi
+        label="$2"; shift 2 ;;
+      --repo)
+        if (( $# < 2 )); then die "Missing value for --repo." 2; fi
+        repo="$2"; shift 2 ;;
+      --stale-days)
+        if (( $# < 2 )); then die "Missing value for --stale-days." 2; fi
+        stale_days="$2"; shift 2 ;;
+      --limit)
+        if (( $# < 2 )); then die "Missing value for --limit." 2; fi
+        limit="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2 ;;
+      *)
+        die "Unexpected argument: $1" 2 ;;
+    esac
+  done
+
+  case "$status" in
+    open|closed|all|merged) ;;
+    *) die "Unknown status: $status (expected open, closed, merged, or all)" 2 ;;
+  esac
+  if [[ -n "$stale_days" && ! "$stale_days" =~ ^[0-9]+$ ]]; then
+    die "--stale-days must be an integer" 2
+  fi
+  if [[ ! "$limit" =~ ^[0-9]+$ ]]; then
+    die "--limit must be an integer" 2
+  fi
+
+  require_tools
+  local root query
+  if [[ -n "$repo" ]]; then
+    root=$(urlencode "$repo")
+  else
+    root=$(urlencode "$(repo_ref)")
+  fi
+  query="repo=${root}&status=$(urlencode "$status")"
+  api_get "/api/issues?${query}" | jq \
+    --arg label "$label" \
+    --arg stale_days "$stale_days" \
+    --argjson limit "$limit" \
+    --argjson json "$json" '
+      def epoch($s):
+        if ($s // "") == "" then 0
+        else (($s | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601?) // 0)
+        end;
+      def stale_cutoff:
+        if $stale_days == "" then null
+        else (now - (($stale_days | tonumber) * 86400))
+        end;
+      [ .[] as $repo
+        | $repo.issues[]
+        | . + {repo_name: $repo.repo_name}
+        | select($label == "" or ((.labels // []) | index($label)))
+        | select((stale_cutoff == null) or (epoch(.updated_at) <= stale_cutoff))
+      ]
+      | sort_by(.updated_at // "")
+      | .[0:$limit]
+      | if $json then .
+        else .[] | "\(.id)\t\(.status)\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
+        end
+    '
+}
+
 cmd_new() {
   local title=""
   local body=""
@@ -344,6 +500,8 @@ case "$subcmd" in
   new)     cmd_new "$@" ;;
   list)    cmd_list "$@" ;;
   show)    cmd_show "${1:-}" ;;
+  report)  cmd_report "$@" ;;
+  triage)  cmd_triage "$@" ;;
   close)   cmd_close "$@" ;;
   open)    cmd_open "${1:-}" ;;
   comment) cmd_comment "$@" ;;
