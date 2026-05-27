@@ -3150,7 +3150,9 @@ tr:hover .work-actions__trigger {
 
 .issues-filter__clear {
   right: 33px;
-  color: var(--text-secondary);
+  width: 24px;
+  height: 24px;
+  color: var(--text-muted);
 }
 
 .issues-filter__advanced-trigger {
@@ -3165,13 +3167,22 @@ tr:hover .work-actions__trigger {
 
 .issues-filter__clear:hover {
   background: rgba(255, 255, 255, 0.08);
-  color: var(--text-primary);
+  color: var(--text-muted);
 }
 
-.issues-filter__clear svg,
 .issues-filter__advanced-trigger svg {
   width: 15px;
   height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.issues-filter__clear svg {
+  width: 12px;
+  height: 12px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -10110,8 +10121,7 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   z-index: 12;
   margin: -24px -24px 2px;
   padding: 24px 24px 14px;
-  background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
-  backdrop-filter: blur(12px);
+  background: transparent;
 }
 
 .ledger-issue-detail__heading {
