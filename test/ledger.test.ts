@@ -97,7 +97,7 @@ describe("ledger schema", () => {
     const version = upgradeDb.prepare(
       "SELECT value FROM meta WHERE key = 'schema_version'",
     ).get() as { value: string };
-    expect(version.value).toBe("61");
+    expect(version.value).toBe("62");
     expect(upgradeDb.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issues'",
     ).get()).toBeTruthy();
@@ -277,6 +277,25 @@ describe("ledger store", () => {
     expect(events.every((event) => /^[0-9a-f]{64}$/.test(event.id))).toBe(true);
     expect(broadcasts).toContain("ledger:issue:closed");
     expect(broadcasts).toContain("ledger:issue:reopened");
+  });
+
+  it("does not emit lifecycle events when status and resolution are unchanged", () => {
+    const project = createProject();
+    const broadcasts: string[] = [];
+    const store = new LedgerStore(db, {
+      broadcaster: (type) => broadcasts.push(type),
+    });
+    const issue = createIssue(store, project.project.id);
+
+    store.setIssueStatus(issue.id, "closed", "merged");
+    store.setIssueStatus(issue.id, "closed", "merged");
+
+    const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
+    expect(events.map((event) => event.event_type)).toEqual([
+      "issue.created",
+      "issue.closed",
+    ]);
+    expect(broadcasts.filter((event) => event === "ledger:issue:closed")).toHaveLength(1);
   });
 
   it("sets labels idempotently and records only state-changing events", () => {

@@ -169,6 +169,9 @@ export class LedgerStore {
     }
     setIssueStatus(id, status, resolution = null, actor = {}, source = "mandible") {
         const existing = this.requireIssue(id);
+        if (existing.status === status && existing.resolution === resolution) {
+            return existing;
+        }
         const emitted = [];
         const now = Date.now();
         const normalizedActor = normalizeActor(actor);

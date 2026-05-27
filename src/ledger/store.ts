@@ -387,6 +387,9 @@ export class LedgerStore {
     source: LedgerEventSource = "mandible",
   ): LedgerIssue {
     const existing = this.requireIssue(id);
+    if (existing.status === status && existing.resolution === resolution) {
+      return existing;
+    }
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
     const normalizedActor = normalizeActor(actor);
