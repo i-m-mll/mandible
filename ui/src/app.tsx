@@ -1185,6 +1185,7 @@ function App(): JSX.Element {
             initialRepoId={route.params.repo}
             initialIssueId={route.params.issue}
             initialCommentId={route.params.comment}
+            defaultFilter={state.settings['issues.default_filter']}
           />
         )}
         {route.tab === 'review' && (

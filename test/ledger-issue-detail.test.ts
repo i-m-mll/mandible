@@ -199,4 +199,25 @@ describe("ledger issue detail projection", () => {
     expect(store.getIssue(issue.id).title).toBe("Conflicted");
     expect(buildLedgerIssueDetailProjection(db, issue.id).conflicts).toEqual([]);
   });
+
+  it("omits no-op state events from the timeline", () => {
+    const checkout = createProject("repo");
+    const store = new LedgerStore(db);
+    const issue = store.createIssue({
+      project_id: checkout.project.id,
+      title: "Closed twice",
+      aliases: [{ alias_kind: "git_bug_human", alias: "dup123", is_primary: true }],
+    });
+
+    store.setIssueStatus(issue.id, "closed", "merged");
+    store.setIssueStatus(issue.id, "closed", "merged");
+
+    const states = buildLedgerIssueDetailProjection(db, issue.id).timeline.filter(
+      (entry) => entry.kind === "state",
+    );
+
+    expect(states).toMatchObject([
+      { event_type: "issue.closed", status: "closed", resolution: "merged" },
+    ]);
+  });
 });
