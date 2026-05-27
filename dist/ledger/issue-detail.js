@@ -104,12 +104,13 @@ function buildTimeline(db, issue, comments, issueAuthor) {
     const events = db.prepare(`SELECT * FROM ledger_events
      WHERE entity_type = 'issue'
        AND entity_id = ?
-       AND event_type = 'issue.updated'
+       AND event_type IN ('issue.updated', 'issue.closed', 'issue.reopened')
      ORDER BY occurred_at, observed_at`).all(issue.id);
     for (const event of events) {
         const payload = parseJsonObject(event.payload_json);
         const patch = parsePatch(payload);
-        const status = typeof patch.status === "string" ? patch.status : null;
+        const status = lifecycleStatusForEvent(event.event_type)
+            ?? (typeof patch.status === "string" ? patch.status : null);
         const resolution = typeof patch.resolution === "string" ? patch.resolution : null;
         if (!status && !("resolution" in patch))
             continue;
@@ -142,6 +143,13 @@ function parsePatch(payload) {
         return patch;
     }
     return payload;
+}
+function lifecycleStatusForEvent(eventType) {
+    if (eventType === "issue.closed")
+        return "closed";
+    if (eventType === "issue.reopened")
+        return "open";
+    return null;
 }
 function listWorkUnits(db, issueId) {
     if (!tableExists(db, "work_units"))

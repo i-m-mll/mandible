@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { compressContent } from "./compression.js";
+import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
 const DEFAULT_CACHE_DIR = path.join(os.homedir(), ".cache", "mandible");
 const DEFAULT_DB_PATH = path.join(DEFAULT_CACHE_DIR, "mandible.db");
 const SCHEMA_VERSION_KEY = "schema_version";
@@ -1412,6 +1413,12 @@ const MIGRATIONS = [
         // Bug: 871f32e — SHA-256 issue/comment IDs with cached Git-style short
         // prefixes and append-only per-issue comment ordinals.
         statements: []
+    },
+    {
+        version: 61,
+        name: "ledger_event_hash_id_support",
+        // Bug: 614f8ee — SHA-256 event IDs and first-class issue lifecycle events.
+        statements: []
     }
 ];
 export function getDbPath() {
@@ -1494,6 +1501,9 @@ export function migrate(db) {
     // and upgraded databases.
     if (pending.some((m) => m.version === 60)) {
         ensureLedgerHashIdColumns(db);
+    }
+    if (pending.some((m) => m.version === 61)) {
+        migrateLedgerEventHashIds(db);
     }
     // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
     if (pending.some((m) => m.version === 26)) {
@@ -1610,6 +1620,99 @@ function ensureLedgerHashIdColumns(db) {
         ON ledger_comments(issue_id, ordinal)
         WHERE ordinal > 0`);
     }
+}
+function migrateLedgerEventHashIds(db) {
+    const table = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_events'")
+        .get();
+    if (!table)
+        return;
+    const rows = db.prepare(`SELECT id, entity_type, entity_id, event_type, actor_id, actor_type,
+            source, payload_json, occurred_at, observed_at
+       FROM ledger_events
+      ORDER BY occurred_at, observed_at, id`).all();
+    if (rows.length === 0)
+        return;
+    const updates = rows.map((row) => {
+        const payload = parseJsonRecord(row.payload_json);
+        const eventType = migratedEventType(row.event_type, payload);
+        const legacyEventId = isSha256Hex(row.id) ? null : row.id;
+        const nextPayload = legacyEventId && !("legacy_event_id" in payload)
+            ? { ...payload, legacy_event_id: legacyEventId }
+            : payload;
+        const nextId = createStableEventId({
+            entity_type: row.entity_type,
+            entity_id: row.entity_id,
+            event_type: eventType,
+            actor_id: row.actor_id,
+            actor_type: row.actor_type,
+            source: row.source,
+            payload: nextPayload,
+            occurred_at: row.occurred_at,
+            observed_at: row.observed_at,
+            occurrence: legacyEventId ?? `migration:${row.id}`,
+        });
+        return {
+            oldId: row.id,
+            nextId,
+            eventType,
+            payloadJson: JSON.stringify(nextPayload),
+        };
+    });
+    const seen = new Set();
+    for (const update of updates) {
+        if (seen.has(update.nextId)) {
+            throw new Error(`Ledger event ID migration collision for ${update.oldId}`);
+        }
+        seen.add(update.nextId);
+    }
+    const previousForeignKeys = db.pragma("foreign_keys", { simple: true });
+    db.pragma("foreign_keys = OFF");
+    try {
+        const run = db.transaction(() => {
+            const updateEvent = db.prepare("UPDATE ledger_events SET id = ?, event_type = ?, payload_json = ? WHERE id = ?");
+            const updateOutbox = db.prepare("UPDATE ledger_outbox SET event_id = ? WHERE event_id = ?");
+            for (const update of updates) {
+                updateEvent.run(update.nextId, update.eventType, update.payloadJson, update.oldId);
+                updateOutbox.run(update.nextId, update.oldId);
+            }
+        });
+        run();
+    }
+    finally {
+        if (previousForeignKeys) {
+            db.pragma("foreign_keys = ON");
+        }
+    }
+    const violations = db.prepare("PRAGMA foreign_key_check").all();
+    if (violations.length > 0) {
+        throw new Error(`Ledger event ID migration left ${violations.length} foreign key violations`);
+    }
+}
+function migratedEventType(eventType, payload) {
+    if (eventType !== "issue.updated")
+        return eventType;
+    const patch = payload.patch;
+    const fields = patch && typeof patch === "object" && !Array.isArray(patch)
+        ? patch
+        : payload;
+    if (fields.status === "closed")
+        return "issue.closed";
+    if (fields.status === "open")
+        return "issue.reopened";
+    return eventType;
+}
+function parseJsonRecord(value) {
+    try {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed;
+        }
+    }
+    catch {
+        // Preserve unreadable payloads as opaque data instead of blocking schema migration.
+    }
+    return { legacy_payload_json: value };
 }
 /**
  * Backfill session_projects rows where repo_id is a branch/worktree name

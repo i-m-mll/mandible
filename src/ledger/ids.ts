@@ -48,6 +48,19 @@ export interface StableCommentIdInput {
   nonce: string;
 }
 
+export interface StableEventIdInput {
+  entity_type: string;
+  entity_id: string;
+  event_type: string;
+  actor_id?: string | null;
+  actor_type: string;
+  source: string;
+  payload: Record<string, unknown>;
+  occurred_at: number;
+  observed_at: number;
+  occurrence: string;
+}
+
 const TIME_WIDTH = 10;
 const RANDOM_BYTES = 10;
 
@@ -104,6 +117,22 @@ export function createStableCommentId(input: StableCommentIdInput): string {
     author_actor_type: input.author_actor_type ?? "external_adapter",
     author_display: input.author_display ?? "",
     nonce: input.nonce,
+  });
+}
+
+export function createStableEventId(input: StableEventIdInput): string {
+  return sha256Hex({
+    type: "mandible.event.v1",
+    entity_type: input.entity_type,
+    entity_id: input.entity_id,
+    event_type: input.event_type,
+    actor_id: input.actor_id ?? null,
+    actor_type: input.actor_type,
+    source: input.source,
+    payload: input.payload,
+    occurred_at: input.occurred_at,
+    observed_at: input.observed_at,
+    occurrence: input.occurrence,
   });
 }
 

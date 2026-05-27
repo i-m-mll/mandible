@@ -68,6 +68,21 @@ export function createStableCommentId(input) {
         nonce: input.nonce,
     });
 }
+export function createStableEventId(input) {
+    return sha256Hex({
+        type: "mandible.event.v1",
+        entity_type: input.entity_type,
+        entity_id: input.entity_id,
+        event_type: input.event_type,
+        actor_id: input.actor_id ?? null,
+        actor_type: input.actor_type,
+        source: input.source,
+        payload: input.payload,
+        occurred_at: input.occurred_at,
+        observed_at: input.observed_at,
+        occurrence: input.occurrence,
+    });
+}
 export function isSha256Hex(value) {
     return /^[0-9a-f]{64}$/.test(value);
 }

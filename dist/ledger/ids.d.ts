@@ -26,6 +26,18 @@ export interface StableCommentIdInput {
     author_display?: string;
     nonce: string;
 }
+export interface StableEventIdInput {
+    entity_type: string;
+    entity_id: string;
+    event_type: string;
+    actor_id?: string | null;
+    actor_type: string;
+    source: string;
+    payload: Record<string, unknown>;
+    occurred_at: number;
+    observed_at: number;
+    occurrence: string;
+}
 /**
  * Generate a Mandible ledger ID. This is UUIDv7-like rather than a full RFC
  * UUIDv7 implementation: lexicographic order follows millisecond time, then a
@@ -36,5 +48,6 @@ export declare function isLedgerIdWithPrefix(value: string, prefix: LedgerIdPref
 export declare function createCreationNonce(): string;
 export declare function createStableIssueId(input: StableIssueIdInput): string;
 export declare function createStableCommentId(input: StableCommentIdInput): string;
+export declare function createStableEventId(input: StableEventIdInput): string;
 export declare function isSha256Hex(value: string): boolean;
 export declare function shortestUniquePrefix(id: string, ids: Iterable<string>, minimum?: number): string;

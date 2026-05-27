@@ -76,13 +76,15 @@ describe("ledger issue detail projection", () => {
       labels: ["feature"],
       aliases: [{ alias_kind: "git_bug_human", alias: "chi1234", is_primary: true }],
     });
-    store.addComment(child.id, {
-      body: "Implementation note",
-      actor_type: "agent",
-      author_display: "Codex",
-      source: "session",
-    });
-    store.upsertIssueRelationship({
+	    store.addComment(child.id, {
+	      body: "Implementation note",
+	      actor_type: "agent",
+	      author_display: "Codex",
+	      source: "session",
+	    });
+	    store.setIssueStatus(child.id, "closed", "merged");
+	    store.setIssueStatus(child.id, "open", null);
+	    store.upsertIssueRelationship({
       source_issue_id: parent.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -142,6 +144,8 @@ describe("ledger issue detail projection", () => {
     expect(projection.timeline).toMatchObject([
       { kind: "body", ordinal: 0, body: "Child body" },
       { kind: "comment", ordinal: 1, body: "Implementation note" },
+      { kind: "state", event_type: "issue.closed", status: "closed", resolution: "merged" },
+      { kind: "state", event_type: "issue.reopened", status: "open", resolution: null },
     ]);
     expect(projection.relationships).toMatchObject([
       {

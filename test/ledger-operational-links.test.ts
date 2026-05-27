@@ -190,11 +190,11 @@ describe("ledger operational links", () => {
     const project = createProject("repo");
     const resolvedIssue = createIssue(project.project.id, "done123", "Resolved issue");
     const referencedIssue = createIssue(project.project.id, "note123", "Referenced issue");
-	insertAuthRequest({
-	  id: "auth_2",
-	  repo: project.checkout.root,
-	  issueClosures: ["done123"],
-	});
+    insertAuthRequest({
+      id: "auth_2",
+      repo: project.checkout.root,
+      issueClosures: ["done123"],
+    });
     linkAuthRequestToLedgerIssue(db, {
       auth_request_id: "auth_2",
       issue_ref: "note123",
@@ -202,12 +202,12 @@ describe("ledger operational links", () => {
       link_type: "references",
     });
 
-	const results = applyAuthRequestLedgerCompletion(db, {
-	  auth_request_id: "auth_2",
-	  repo_ref: project.checkout.root,
-	  issue_closures: ["done123"],
-	  approval_source: "manual",
-	  approval_lease_id: "lease_1",
+    const results = applyAuthRequestLedgerCompletion(db, {
+      auth_request_id: "auth_2",
+      repo_ref: project.checkout.root,
+      issue_closures: ["done123"],
+      approval_source: "manual",
+      approval_lease_id: "lease_1",
     });
 
     expect(results).toHaveLength(1);
@@ -222,7 +222,11 @@ describe("ledger operational links", () => {
     expect(
       new LedgerStore(db)
         .listEvents({ entity_type: "issue", entity_id: resolvedIssue.id })
-        .some((event) => event.event_type === "issue.updated" && event.source === "auth_queue"),
+        .some((event) => (
+          event.event_type === "issue.closed" &&
+          event.source === "auth_queue" &&
+          /^[0-9a-f]{64}$/.test(event.id)
+        )),
     ).toBe(true);
     expect(
       new LedgerStore(db)

@@ -1,6 +1,8 @@
 const LEDGER_EVENT_SSE_TYPES = {
     "issue.created": "ledger:issue:created",
     "issue.updated": "ledger:issue:updated",
+    "issue.closed": "ledger:issue:closed",
+    "issue.reopened": "ledger:issue:reopened",
     "comment.created": "ledger:comment:created",
     "label.updated": "ledger:label:updated",
     "relationship.upserted": "ledger:relationship:upserted",
