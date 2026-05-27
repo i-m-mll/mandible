@@ -16654,8 +16654,9 @@ function IssuesView({
   const [selectedIssueId, setSelectedIssueId] = d2(null);
   const [filter2, setFilter] = d2("");
   const [statusFilter, setStatusFilter] = d2("open");
-  const [repoFilter, setRepoFilter] = d2(initialRepoId ?? null);
+  const [repoFilter, setRepoFilter] = d2(null);
   const [repoInput, setRepoInput] = d2("");
+  const [repoMenuOpen, setRepoMenuOpen] = d2(false);
   const [labelFilter, setLabelFilter] = d2(null);
   const [parentFilter, setParentFilter] = d2(null);
   const [sortField] = d2("created_at");
@@ -16705,13 +16706,11 @@ function IssuesView({
       const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
       setSelectedRepoId(canonicalRepoId);
       setSelectedIssueId(canonicalIssueId);
-      setRepoFilter(canonicalRepoId);
     } else {
       const found = repos.flatMap((repo) => repo.issues.map((issue) => ({ repo, issue }))).find(({ issue }) => issue.id === initialIssueId || issue.id.startsWith(initialIssueId));
       if (found) {
         setSelectedRepoId(found.repo.repo_id);
         setSelectedIssueId(found.issue.id);
-        setRepoFilter(found.repo.repo_id);
       }
     }
   }, [initialRepoId, initialIssueId, initialCommentId, resolveRepoId, resolveIssueId, repos]);
@@ -16772,6 +16771,17 @@ function IssuesView({
     });
     return all;
   }, [filteredRepos, sortField]);
+  const repoOptions = T2(() => {
+    const normalized = repoInput.trim().toLowerCase();
+    return repos.filter((repo) => {
+      if (!normalized)
+        return true;
+      return repo.repo_name.toLowerCase().includes(normalized) || repo.repo_id.toLowerCase().includes(normalized);
+    }).slice(0, 12);
+  }, [repos, repoInput]);
+  const showRepoLabels = T2(() => {
+    return new Set(items.map((item) => item.repo.repo_id)).size > 1;
+  }, [items]);
   const totalOpen = T2(
     () => repos.reduce((acc, r3) => acc + r3.open_count, 0),
     [repos]
@@ -16896,8 +16906,8 @@ function IssuesView({
     }
   }, [selectedRepoId, selectIssue]);
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 280,
-    minWidth: 190,
+    defaultWidth: 420,
+    minWidth: 280,
     storageKey: "sidebar-width:issues"
   });
   return /* @__PURE__ */ u3("div", { className: "issues-view", children: [
@@ -16912,49 +16922,82 @@ function IssuesView({
           onInput: (e3) => setFilter(e3.currentTarget.value)
         }
       ) }),
-      /* @__PURE__ */ u3("div", { className: "issues-repo-filter", children: [
-        /* @__PURE__ */ u3(
-          "input",
-          {
-            type: "search",
-            list: "issues-repo-list",
-            className: "issues-filter__input issues-repo-filter__input",
-            placeholder: "Filter by repo...",
-            value: repoInput,
-            onInput: (e3) => {
-              const val = e3.currentTarget.value;
-              setRepoInput(val);
-              if (!val) {
-                setRepoFilter(null);
-              }
-            },
-            onChange: (e3) => {
-              const val = e3.currentTarget.value;
-              const matched = repos.find(
-                (r3) => r3.repo_name === val || r3.repo_id === val
-              );
-              if (matched) {
-                setRepoFilter(matched.repo_id);
-                setRepoInput(matched.repo_name);
-              }
+      /* @__PURE__ */ u3(
+        "div",
+        {
+          className: "issues-repo-filter",
+          onBlur: (event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) {
+              setRepoMenuOpen(false);
             }
-          }
-        ),
-        repoInput && /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: "issues-repo-filter__clear",
-            onClick: () => {
-              setRepoInput("");
-              setRepoFilter(null);
-            },
-            "aria-label": "Clear repo filter",
-            children: "\xD7"
-          }
-        ),
-        /* @__PURE__ */ u3("datalist", { id: "issues-repo-list", children: repos.map((r3) => /* @__PURE__ */ u3("option", { value: r3.repo_name }, r3.repo_id)) })
-      ] }),
+          },
+          children: [
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "search",
+                className: "issues-filter__input issues-repo-filter__input",
+                placeholder: "Filter by repo...",
+                value: repoInput,
+                onFocus: () => setRepoMenuOpen(true),
+                onInput: (e3) => {
+                  const val = e3.currentTarget.value;
+                  setRepoInput(val);
+                  setRepoMenuOpen(true);
+                  if (!val) {
+                    setRepoFilter(null);
+                  }
+                },
+                onChange: (e3) => {
+                  const val = e3.currentTarget.value;
+                  const matched = repos.find(
+                    (r3) => r3.repo_name === val || r3.repo_id === val
+                  );
+                  if (matched) {
+                    setRepoFilter(matched.repo_id);
+                    setRepoInput(matched.repo_name);
+                    setRepoMenuOpen(false);
+                  }
+                }
+              }
+            ),
+            repoInput && /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "issues-repo-filter__clear",
+                onClick: () => {
+                  setRepoInput("");
+                  setRepoFilter(null);
+                  setRepoMenuOpen(false);
+                },
+                "aria-label": "Clear repo filter",
+                children: "\xD7"
+              }
+            ),
+            repoMenuOpen && repoOptions.length > 0 && /* @__PURE__ */ u3("div", { className: "issues-repo-filter__menu", role: "listbox", children: repoOptions.map((repo) => /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: "issues-repo-filter__option",
+                role: "option",
+                "aria-selected": repoFilter === repo.repo_id,
+                onMouseDown: (event) => event.preventDefault(),
+                onClick: () => {
+                  setRepoFilter(repo.repo_id);
+                  setRepoInput(repo.repo_name);
+                  setRepoMenuOpen(false);
+                },
+                children: [
+                  /* @__PURE__ */ u3("span", { className: "issues-repo-filter__option-name", children: repo.repo_name }),
+                  /* @__PURE__ */ u3("span", { className: "issues-repo-filter__option-count", children: repo.issues.length })
+                ]
+              },
+              repo.repo_id
+            )) })
+          ]
+        }
+      ),
       /* @__PURE__ */ u3("div", { className: "issues-status-filters", children: [
         /* @__PURE__ */ u3(
           "button",
@@ -17038,7 +17081,7 @@ function IssuesView({
                 dangerouslySetInnerHTML: { __html: renderInlineMarkdown3(item.issue.title) }
               }
             ),
-            filteredRepos.length > 1 && /* @__PURE__ */ u3("span", { className: "issues-item__repo", children: item.repo.repo_name })
+            showRepoLabels && /* @__PURE__ */ u3("span", { className: "issues-item__repo", children: item.repo.repo_name })
           ]
         },
         item.issue.id

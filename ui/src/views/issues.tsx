@@ -131,8 +131,9 @@ export function IssuesView({
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('open');
-  const [repoFilter, setRepoFilter] = useState<string | null>(initialRepoId ?? null);
+  const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [repoInput, setRepoInput] = useState('');
+  const [repoMenuOpen, setRepoMenuOpen] = useState(false);
   const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const [parentFilter, setParentFilter] = useState<string | null>(null);
   type SortField = 'created_at';
@@ -168,9 +169,8 @@ export function IssuesView({
     return rawIssueId;
   }, [repos]);
 
-  // Deep-link: auto-select issue from URL params.
-  // When initialRepoId is present, set repoFilter to narrow the list.
-  // When initialIssueId is present, select it.
+  // Deep-link: auto-select issue from URL params without treating the route repo
+  // as a sidebar filter. The repo filter is user-controlled through the field.
   useEffect(() => {
     if (!initialIssueId) return;
     const deepLinkKey = `${initialRepoId ?? ''}:${initialIssueId}:${initialCommentId ?? ''}`;
@@ -182,7 +182,6 @@ export function IssuesView({
       const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
       setSelectedRepoId(canonicalRepoId);
       setSelectedIssueId(canonicalIssueId);
-      setRepoFilter(canonicalRepoId);
     } else {
       const found = repos
         .flatMap((repo) => repo.issues.map((issue) => ({ repo, issue })))
@@ -190,7 +189,6 @@ export function IssuesView({
       if (found) {
         setSelectedRepoId(found.repo.repo_id);
         setSelectedIssueId(found.issue.id);
-        setRepoFilter(found.repo.repo_id);
       }
     }
   }, [initialRepoId, initialIssueId, initialCommentId, resolveRepoId, resolveIssueId, repos]);
@@ -262,6 +260,23 @@ export function IssuesView({
     });
     return all;
   }, [filteredRepos, sortField]);
+
+  const repoOptions = useMemo(() => {
+    const normalized = repoInput.trim().toLowerCase();
+    return repos
+      .filter((repo) => {
+        if (!normalized) return true;
+        return (
+          repo.repo_name.toLowerCase().includes(normalized) ||
+          repo.repo_id.toLowerCase().includes(normalized)
+        );
+      })
+      .slice(0, 12);
+  }, [repos, repoInput]);
+
+  const showRepoLabels = useMemo(() => {
+    return new Set(items.map((item) => item.repo.repo_id)).size > 1;
+  }, [items]);
 
   // Total issue count for badge
   const totalOpen = useMemo(
@@ -400,8 +415,8 @@ export function IssuesView({
   }, [selectedRepoId, selectIssue]);
 
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 280,
-    minWidth: 190,
+    defaultWidth: 420,
+    minWidth: 280,
     storageKey: 'sidebar-width:issues',
   });
 
@@ -420,16 +435,24 @@ export function IssuesView({
         </div>
 
         {/* Repo filter */}
-        <div className="issues-repo-filter">
+        <div
+          className="issues-repo-filter"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setRepoMenuOpen(false);
+            }
+          }}
+        >
           <input
             type="search"
-            list="issues-repo-list"
             className="issues-filter__input issues-repo-filter__input"
             placeholder="Filter by repo..."
             value={repoInput}
+            onFocus={() => setRepoMenuOpen(true)}
             onInput={(e) => {
               const val = e.currentTarget.value;
               setRepoInput(val);
+              setRepoMenuOpen(true);
               if (!val) {
                 setRepoFilter(null);
               }
@@ -443,6 +466,7 @@ export function IssuesView({
               if (matched) {
                 setRepoFilter(matched.repo_id);
                 setRepoInput(matched.repo_name);
+                setRepoMenuOpen(false);
               }
             }}
           />
@@ -453,17 +477,35 @@ export function IssuesView({
               onClick={() => {
                 setRepoInput('');
                 setRepoFilter(null);
+                setRepoMenuOpen(false);
               }}
               aria-label="Clear repo filter"
             >
               ×
             </button>
           )}
-          <datalist id="issues-repo-list">
-            {repos.map((r) => (
-              <option key={r.repo_id} value={r.repo_name} />
-            ))}
-          </datalist>
+          {repoMenuOpen && repoOptions.length > 0 && (
+            <div className="issues-repo-filter__menu" role="listbox">
+              {repoOptions.map((repo) => (
+                <button
+                  key={repo.repo_id}
+                  type="button"
+                  className="issues-repo-filter__option"
+                  role="option"
+                  aria-selected={repoFilter === repo.repo_id}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setRepoFilter(repo.repo_id);
+                    setRepoInput(repo.repo_name);
+                    setRepoMenuOpen(false);
+                  }}
+                >
+                  <span className="issues-repo-filter__option-name">{repo.repo_name}</span>
+                  <span className="issues-repo-filter__option-count">{repo.issues.length}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="issues-status-filters">
@@ -554,7 +596,7 @@ export function IssuesView({
                   className="issues-item__title"
                   dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.issue.title) }}
                 />
-                {filteredRepos.length > 1 && (
+                {showRepoLabels && (
                   <span className="issues-item__repo">{item.repo.repo_name}</span>
                 )}
               </button>
