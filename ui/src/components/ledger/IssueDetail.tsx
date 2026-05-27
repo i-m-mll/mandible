@@ -360,7 +360,7 @@ function CopyIssueRefButton({ detail }: { detail: LedgerIssueDetailProjection })
   const value = `${project}/${detail.display_id}`;
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyText(value);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
     } catch {
@@ -378,6 +378,35 @@ function CopyIssueRefButton({ detail }: { detail: LedgerIssueDetailProjection })
       {copied ? <CheckIcon /> : <CopyIcon />}
     </button>
   );
+}
+
+async function copyText(value: string): Promise<void> {
+  if (copyTextWithSelection(value)) return;
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  throw new Error('copy failed');
+}
+
+function copyTextWithSelection(value: string): boolean {
+  if (!document.queryCommandSupported?.('copy')) return false;
+
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+  textarea.focus({ preventScroll: true });
+  textarea.select();
+  textarea.setSelectionRange(0, value.length);
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  return copied;
 }
 
 function fallbackTimeline(detail: LedgerIssueDetailProjection): LedgerIssueTimelineEntry[] {

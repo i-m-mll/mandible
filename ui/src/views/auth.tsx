@@ -6,12 +6,10 @@ import {
   disableAuthAutoApprove,
   enableAuthAutoApprove,
   fetchAuthHooks,
-  getSettings,
   getAuthAutoApproveStatus,
   createAuthHook,
   updateAuthHook,
   deleteAuthHook,
-  rebuildAuthArtifacts,
   type AuthAutoApproveStatus,
   type AuthHook,
 } from '../api';
@@ -1535,7 +1533,6 @@ export function AuthQueueView({
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [autoApproveStatus, setAutoApproveStatus] = useState<AuthAutoApproveStatus | null>(null);
   const [autoApproveBusy, setAutoApproveBusy] = useState(false);
-  const [rebuildOnApprove, setRebuildOnApprove] = useState(false);
   const autoApproveSigningConfigured = Boolean(autoApproveStatus?.signing?.configured);
 
   const showToast = useCallback((message: string) => {
@@ -1563,11 +1560,6 @@ export function AuthQueueView({
       getAuthAutoApproveStatus()
         .then((status) => {
           if (active) setAutoApproveStatus(status);
-        })
-        .catch(() => undefined);
-      getSettings()
-        .then((settings) => {
-          if (active) setRebuildOnApprove(settings.auth_rebuild_artifacts_on_approval === 'true');
         })
         .catch(() => undefined);
     };
@@ -1628,14 +1620,6 @@ export function AuthQueueView({
       showToast(message);
     }),
     [runAction, onApprove, showToast],
-  );
-
-  const handleRebuildArtifacts = useCallback(
-    (id: string) => runAction(id, rebuildAuthArtifacts, (err) => {
-      const message = err instanceof Error ? err.message : 'Artifact rebuild failed. Try again.';
-      showToast(message);
-    }),
-    [runAction, showToast],
   );
 
   const handleReject = useCallback(
@@ -2011,30 +1995,15 @@ export function AuthQueueView({
       }
       handleApprove(id);
     };
-    const showArtifactRebuild =
-      request.repo === 'mandible' &&
-      getAuthType(request) === 'merge' &&
-      status === 'pending';
-
     return (
       <div className="auth-actions">
-        {showArtifactRebuild && (
-          <button
-            type="button"
-            className="btn btn--secondary"
-            onClick={() => handleRebuildArtifacts(id)}
-            disabled={actionDisabled}
-          >
-            Rebuild Artifacts
-          </button>
-        )}
         <button
           type="button"
           className="btn btn--success"
           onClick={handleApproveClick}
           disabled={actionDisabled}
         >
-          {showArtifactRebuild && rebuildOnApprove ? 'Rebuild + Approve' : 'Approve'}
+          Approve
         </button>
         <button
           type="button"

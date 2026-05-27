@@ -22,13 +22,13 @@ function createDbWithHooks(): InstanceType<typeof Database> {
     const now = Date.now();
     db.prepare(
       `INSERT INTO auth_hooks (id, repo_pattern, auth_type, command, label, enabled, builtin, position, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 0, 1, 0, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
     ).run(
       "builtin-mandible-rebuild",
       "mandible",
       "merge",
       "bash cli/post-merge-build-dist.sh",
-      "Deprecated: post-merge artifact commit disabled",
+      "Build Mandible locally after merge",
       now,
       now,
     );
@@ -46,9 +46,9 @@ describe("AuthHookManager", () => {
     expect(builtin!.repo_pattern).toBe("mandible");
     expect(builtin!.auth_type).toBe("merge");
     expect(builtin!.command).toBe("bash cli/post-merge-build-dist.sh");
-    expect(builtin!.label).toBe("Deprecated: post-merge artifact commit disabled");
+    expect(builtin!.label).toBe("Build Mandible locally after merge");
     expect(builtin!.builtin).toBe(true);
-    expect(builtin!.enabled).toBe(false);
+    expect(builtin!.enabled).toBe(true);
   });
 
   it("creates a custom hook", () => {
@@ -105,9 +105,10 @@ describe("AuthHookManager", () => {
     const db = createDbWithHooks();
     const manager = new AuthHookManager(db);
 
-    // Built-in is disabled; post-merge artifact commits should no longer run.
+    // Built-in matches "mandible" repo with "merge" type.
     const mandibleHooks = manager.findMatchingHooks("mandible", "merge");
-    expect(mandibleHooks.some((h) => h.id === "builtin-mandible-rebuild")).toBe(false);
+    expect(mandibleHooks.length).toBeGreaterThanOrEqual(1);
+    expect(mandibleHooks.some((h) => h.id === "builtin-mandible-rebuild")).toBe(true);
 
     // Add a wildcard hook
     manager.create({
@@ -121,10 +122,9 @@ describe("AuthHookManager", () => {
     const feedbaxHooks = manager.findMatchingHooks("feedbax", "merge");
     expect(feedbaxHooks.some((h) => h.label === "All repos hook")).toBe(true);
 
-    // "mandible" should match the wildcard, not the disabled built-in
+    // "mandible" should match both the built-in and the wildcard.
     const mandibleHooks2 = manager.findMatchingHooks("mandible", "merge");
-    expect(mandibleHooks2.length).toBeGreaterThanOrEqual(1);
-    expect(mandibleHooks2.some((h) => h.id === "builtin-mandible-rebuild")).toBe(false);
+    expect(mandibleHooks2.length).toBeGreaterThanOrEqual(2);
 
     // Wrong auth type should not match
     const commitHooks = manager.findMatchingHooks("mandible", "commit");

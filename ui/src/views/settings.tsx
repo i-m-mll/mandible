@@ -974,6 +974,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
   const { settings, onSave } = props;
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
+  const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
   const [saving, setSaving] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
   const feedbackTimer = useRef<number | null>(null);
@@ -993,6 +994,10 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       quietInitialized.current = true;
     }
   }, [settings.quiet_hours]);
+
+  useEffect(() => {
+    setIssueDefaultFilter(settings['issues.default_filter']?.trim() || 'status:open');
+  }, [settings['issues.default_filter']]);
 
   const showFeedback = useCallback((state: FeedbackState) => {
     if (feedbackTimer.current != null) window.clearTimeout(feedbackTimer.current);
@@ -1245,6 +1250,46 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </div>
 
+      {/* ── Section: Issues ── */}
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Issues</h3>
+          <p className="settings-view__section-desc">
+            Defaults for the issue ledger browser.
+          </p>
+        </div>
+
+        <div className="settings-view__section-body">
+          <div className="settings-view__text-row">
+            <div className="settings-view__text-info">
+              <span className="settings-view__text-label">Default filter</span>
+              <span className="settings-view__text-desc">
+                Applied when the Issues tab opens. Supports status, kind, and priority tokens.
+              </span>
+            </div>
+            <div className="settings-view__text-controls">
+              <input
+                type="text"
+                className="settings-view__input settings-view__input--wide"
+                value={issueDefaultFilter}
+                onInput={(e) => setIssueDefaultFilter((e.target as HTMLInputElement).value)}
+                onKeyDown={handleKeyDown('issues.default_filter', issueDefaultFilter)}
+                placeholder="status:open"
+                disabled={saving === 'issues.default_filter'}
+              />
+              <button
+                type="button"
+                className="btn btn--active btn--sm"
+                onClick={() => void handleSaveField('issues.default_filter', issueDefaultFilter.trim() || 'status:open')}
+                disabled={saving === 'issues.default_filter'}
+              >
+                {saving === 'issues.default_filter' ? '...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* ── Section 4: Appearance ── */}
       <div className="settings-view__section">
         <div className="settings-view__section-header">
@@ -1322,13 +1367,6 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             min={1}
             max={480}
             suffix="min"
-          />
-          <ToggleRow
-            title="Rebuild artifacts on approval"
-            desc="For Mandible self-merges, run the generated-artifact rebuild before approving."
-            settingKey="auth_rebuild_artifacts_on_approval"
-            settings={settings}
-            onSave={onSave}
           />
           <DelegatedSigningSection />
         </div>

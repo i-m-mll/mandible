@@ -1445,6 +1445,22 @@ const MIGRATIONS: Migration[] = [
        WHERE id = 'builtin-mandible-rebuild'
          AND command = 'bash cli/post-merge-build-dist.sh'`
     ]
+  },
+  {
+    version: 63,
+    name: "untrack_local_build_artifacts",
+    // Bug: 6947631 — build artifacts are local runtime output, not reviewed
+    // source. Re-enable the self-merge hook as build-only and remove the
+    // pre-approval artifact setting introduced by version 62.
+    statements: [
+      `DELETE FROM settings WHERE key = 'auth_rebuild_artifacts_on_approval'`,
+      `UPDATE auth_hooks
+       SET enabled = 1,
+           label = 'Build Mandible locally after merge',
+           updated_at = CAST(strftime('%s','now') * 1000 AS INTEGER)
+       WHERE id = 'builtin-mandible-rebuild'
+         AND command = 'bash cli/post-merge-build-dist.sh'`
+    ]
   }
 ];
 
