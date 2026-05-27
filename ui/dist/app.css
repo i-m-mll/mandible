@@ -4413,25 +4413,23 @@ tr:hover .work-actions__trigger {
   gap: 8px;
   width: 100%;
   padding: 8px 10px;
-  background: var(--bg-card);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.025);
+  border: 0;
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
-  border-radius: 8px;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  border-radius: 3px;
+  transition: background 0.15s ease, color 0.15s ease;
   line-height: 1.35;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 .issues-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
 }
 .issues-item--selected {
-  background: rgba(77, 163, 255, 0.12);
-  border-color: rgba(77, 163, 255, 0.35);
+  background: rgba(77, 163, 255, 0.16);
   color: var(--accent-blue);
 }
 .issues-item__title {
@@ -4489,7 +4487,7 @@ tr:hover .work-actions__trigger {
   height: 100%;
 }
 .issues-detail__content {
-  max-width: 720px;
+  max-width: none;
 }
 .issues-detail__title {
   margin: 0 0 12px;
@@ -10104,7 +10102,10 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   z-index: 12;
   margin: -24px -24px 2px -29px;
   padding: 24px 24px 14px 29px;
-  background: transparent;
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--bg-secondary));
+}
+.issues-detail .ledger-issue-detail > :not(.ledger-issue-detail__header) {
+  max-width: 720px;
 }
 .ledger-issue-detail__heading {
   display: flex;

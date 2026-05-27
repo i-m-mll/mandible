@@ -114,6 +114,8 @@ function buildTimeline(db, issue, comments, issueAuthor) {
         const resolution = typeof patch.resolution === "string" ? patch.resolution : null;
         if (!status && !("resolution" in patch))
             continue;
+        if (isNoopStateEvent(payload, status, resolution))
+            continue;
         entries.push({
             id: event.id,
             kind: "state",
@@ -143,6 +145,13 @@ function parsePatch(payload) {
         return patch;
     }
     return payload;
+}
+function isNoopStateEvent(payload, status, resolution) {
+    if (status && payload.previous_status === status) {
+        const previousResolution = payload.previous_resolution;
+        return previousResolution === undefined || previousResolution === resolution;
+    }
+    return false;
 }
 function lifecycleStatusForEvent(eventType) {
     if (eventType === "issue.closed")
