@@ -210,7 +210,7 @@ describe('LedgerIssueDetail', () => {
         default_branch: 'main',
       },
       title: 'Refs',
-      body: 'See [issue:def456], #789abcd, auth request 2257522a, [comment:mandible/def456#com_2], and `#deadbee`.',
+      body: 'See [issue:def456], #789abcd, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], and `#deadbee`.',
       status: 'open',
       resolution: null,
       kind: 'feature',
@@ -270,8 +270,9 @@ describe('LedgerIssueDetail', () => {
     expect(issueLinks).toContainEqual({ text: '#789abcd', href: '#/issues?repo=mandible&issue=789abcd' });
     expect(issueLinks).toContainEqual({
       text: '2257522a',
-      href: '#/auth?request=2257522a-39a2-467b-b3f8-491aea66754c',
+      href: '#/auth?request=2257522a',
     });
+    expect(issueLinks.some((link) => link.text === '204ade09bc3a')).toBe(false);
     expect(issueLinks).toContainEqual({
       text: 'def456#com_2',
       href: '#/issues?repo=mandible&issue=def456&comment=com_2',

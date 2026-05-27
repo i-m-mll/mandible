@@ -16334,7 +16334,7 @@ function linkifyLedgerRefs(html4, detail) {
       if (match.index > lastIndex) {
         fragment.appendChild(document.createTextNode(text2.slice(lastIndex, match.index)));
       }
-      const link2 = refLink(match, detail);
+      const link2 = refLink(match, detail, text2);
       fragment.appendChild(link2 ?? document.createTextNode(match[0]));
       lastIndex = match.index + match[0].length;
     }
@@ -16345,7 +16345,7 @@ function linkifyLedgerRefs(html4, detail) {
   }
   return container.innerHTML;
 }
-function refLink(match, detail) {
+function refLink(match, detail, text2) {
   const ordinalCommentRef = match[1];
   const explicitType = match[2];
   const explicitRef = match[3];
@@ -16365,6 +16365,15 @@ function refLink(match, detail) {
     return null;
   const anchor = document.createElement("a");
   anchor.className = "ledger-xref";
+  if (bareIssueRef && isAuthRequestContext(text2, match.index)) {
+    anchor.textContent = match[0];
+    anchor.href = `#/auth?request=${encodeURIComponent(ref)}`;
+    anchor.title = `Open auth request ${ref}`;
+    return anchor;
+  }
+  if (bareIssueRef && isCommitLikeContext(text2, match.index)) {
+    return null;
+  }
   if (explicitType === "comment") {
     const parsed = parseCommentRef(ref, detail);
     if (!parsed)
@@ -16388,6 +16397,12 @@ function refLink(match, detail) {
   anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
   anchor.title = `Open issue ${parsedIssue.issue}`;
   return anchor;
+}
+function isAuthRequestContext(text2, matchIndex) {
+  return /(?:auth\s+request|auth)\s+$/i.test(text2.slice(Math.max(0, matchIndex - 32), matchIndex));
+}
+function isCommitLikeContext(text2, matchIndex) {
+  return /(?:merge|commit)\s+$/i.test(text2.slice(Math.max(0, matchIndex - 24), matchIndex));
 }
 function issueRefLabel(parsed, detail) {
   const currentRepo = detail.project.repo_id ?? detail.project.display_name;
