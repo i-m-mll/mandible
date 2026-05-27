@@ -187,8 +187,10 @@ describe('LedgerIssueDetail', () => {
 
     render(h(LedgerIssueDetail, { detail }));
 
-    expect(screen.getByText('Auth Evidence')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Auth Evidence' })).toBeNull();
+    expect(screen.getByText('resolved by')).toBeTruthy();
     expect(screen.getByText('Merge feature/x')).toBeTruthy();
+    expect(screen.queryByText('Timeline')).toBeNull();
     expect(document.body.innerHTML).not.toContain('onerror');
     expect(document.body.innerHTML).not.toContain('<script');
   });
@@ -219,7 +221,7 @@ describe('LedgerIssueDetail', () => {
       updated_at: Date.now(),
       closed_at: null,
       aliases: [],
-      labels: ['feature'],
+      labels: ['feature', 'merged'],
       comments: [
         {
           id: 'com_1',
@@ -307,6 +309,7 @@ describe('LedgerIssueDetail', () => {
 
     render(h(LedgerIssueDetail, { detail }));
 
+    const issueHeader = document.querySelector('.ledger-issue-detail__header');
     const issueMeta = document.querySelector('.ledger-issue-detail__meta');
     const issueVisibleMeta = Array.from(issueMeta?.querySelectorAll(':scope > span') ?? [])
       .map((node) => node.textContent)
@@ -314,7 +317,7 @@ describe('LedgerIssueDetail', () => {
     expect(issueVisibleMeta).toContain('MLL');
     expect(issueVisibleMeta).not.toContain('git_bug');
     expect(issueVisibleMeta).not.toContain('umbrella');
-    expect(issueMeta?.querySelector('[aria-label="Issue metadata"]')).toBeTruthy();
+    expect(issueHeader?.querySelector('[aria-label="Issue metadata"]')).toBeTruthy();
 
     const commentHeader = document.querySelectorAll('.ledger-comment-card__header')[1];
     const commentVisibleMeta = Array.from(commentHeader?.querySelectorAll(':scope > span, :scope > time') ?? [])
@@ -324,6 +327,64 @@ describe('LedgerIssueDetail', () => {
     expect(commentVisibleMeta).not.toContain('external adapter');
     expect(commentVisibleMeta).not.toContain('git_bug');
     expect(commentHeader?.querySelector('[aria-label="Comment metadata"]')).toBeTruthy();
+  });
+
+  it('keeps issue actions in the header overflow menu while preserving the comment composer button', () => {
+    const detail = {
+      id: 'iss_1',
+      display_id: 'abc123',
+      project: {
+        id: 'proj_1',
+        display_name: 'Mandible',
+        remote_identity: '',
+        upstream_identity: '',
+        repo_id: 'mandible',
+        repo_name: 'mandible',
+        repo_root: '/repo',
+        default_branch: 'main',
+      },
+      title: 'Actions',
+      body: 'Body',
+      status: 'open',
+      resolution: null,
+      kind: 'feature',
+      priority: 'normal',
+      source: 'mandible',
+      author: { id: null, type: 'mandible_user', display: 'Mandible' },
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      closed_at: null,
+      aliases: [],
+      labels: ['feature'],
+      comments: [],
+      relationships: [],
+      work_units: [],
+      sessions: [],
+      auth_requests: [],
+      conflicts: [],
+      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
+    } as const;
+
+    render(h(LedgerIssueDetail, {
+      detail,
+      onAddComment: () => undefined,
+      onSetStatus: () => undefined,
+      onStartAgent: () => undefined,
+    }));
+
+    expect(document.querySelector('.ledger-issue-detail__actions')).toBeNull();
+    expect(screen.getByText('Add Comment')).toBeTruthy();
+    const visibleLabels = Array.from(document.querySelectorAll('.ledger-label')).map((node) => node.textContent);
+    expect(visibleLabels).toContain('feature');
+    expect(visibleLabels).not.toContain('merged');
+    expect(screen.queryByText('Start Agent')).toBeNull();
+    expect(screen.queryByText('Close Issue')).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('Issue actions'));
+
+    expect(screen.getByText('Start Agent')).toBeTruthy();
+    expect(screen.getByText('Close Issue')).toBeTruthy();
+    expect(screen.getAllByText('Add Comment')).toHaveLength(2);
   });
 });
 
