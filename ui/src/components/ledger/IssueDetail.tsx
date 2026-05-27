@@ -360,7 +360,7 @@ function CopyIssueRefButton({ detail }: { detail: LedgerIssueDetailProjection })
   const value = `${project}/${detail.display_id}`;
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyText(value);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
     } catch {
@@ -378,6 +378,35 @@ function CopyIssueRefButton({ detail }: { detail: LedgerIssueDetailProjection })
       {copied ? <CheckIcon /> : <CopyIcon />}
     </button>
   );
+}
+
+async function copyText(value: string): Promise<void> {
+  if (copyTextWithSelection(value)) return;
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  throw new Error('copy failed');
+}
+
+function copyTextWithSelection(value: string): boolean {
+  if (!document.queryCommandSupported?.('copy')) return false;
+
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+  textarea.focus({ preventScroll: true });
+  textarea.select();
+  textarea.setSelectionRange(0, value.length);
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  return copied;
 }
 
 function fallbackTimeline(detail: LedgerIssueDetailProjection): LedgerIssueTimelineEntry[] {
@@ -523,10 +552,27 @@ function MetadataDisclosure({
   children: JSX.Element;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [alignment, setAlignment] = useState<'start' | 'center' | 'end'>('start');
   const ref = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => {
     if (!open) return undefined;
+    const positionPanel = () => {
+      const panel = ref.current?.querySelector<HTMLElement>('.ledger-metadata-popover__panel');
+      if (!panel) return;
+      setAlignment('start');
+      requestAnimationFrame(() => {
+        const bounds = panel.getBoundingClientRect();
+        const inset = 12;
+        if (bounds.right > window.innerWidth - inset) {
+          setAlignment('end');
+        } else if (bounds.left < inset) {
+          setAlignment('start');
+        } else {
+          setAlignment('center');
+        }
+      });
+    };
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const node = ref.current;
       if (!node || node.contains(event.target as Node)) return;
@@ -537,9 +583,12 @@ function MetadataDisclosure({
     };
     document.addEventListener('pointerdown', closeOnOutsidePointer, true);
     document.addEventListener('keydown', closeOnEscape, true);
+    window.addEventListener('resize', positionPanel);
+    positionPanel();
     return () => {
       document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
       document.removeEventListener('keydown', closeOnEscape, true);
+      window.removeEventListener('resize', positionPanel);
     };
   }, [open]);
 
@@ -553,7 +602,7 @@ function MetadataDisclosure({
       <summary aria-label={label} title={label}>
         <MetadataIcon />
       </summary>
-      <div className="ledger-metadata-popover__panel">{children}</div>
+      <div className={`ledger-metadata-popover__panel ledger-metadata-popover__panel--${alignment}`}>{children}</div>
     </details>
   );
 }
@@ -787,7 +836,7 @@ function MarkdownBlock({
 }): JSX.Element {
   const html = useMemo(() => {
     if (!source) return '';
-    const parsed = marked.parse(source, { async: false });
+    const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
     const sanitized = sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
     return linkifyLedgerRefs(sanitized, detail);
   }, [source, detail.id, detail.display_id, detail.project.repo_id]);
@@ -795,6 +844,14 @@ function MarkdownBlock({
     return <div className={`${className} spec-panel--empty`}>{empty}</div>;
   }
   return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function normalizeMarkdownSource(source: string): string {
+  if (!source.includes('\\n')) return source;
+  const literalNewlineCount = (source.match(/\\n/g) ?? []).length;
+  const actualNewlineCount = (source.match(/\n/g) ?? []).length;
+  if (literalNewlineCount < 2 || actualNewlineCount > 0) return source;
+  return source.replace(/\\n/g, '\n');
 }
 
 const REF_PATTERN = /\[#(\d+)\]|\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,64})\b|(?<![\w/])([0-9a-f]{7,64})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
@@ -828,7 +885,7 @@ function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): s
       if (match.index > lastIndex) {
         fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
       }
-      const link = refLink(match, detail);
+      const link = refLink(match, detail, text);
       fragment.appendChild(link ?? document.createTextNode(match[0]));
       lastIndex = match.index + match[0].length;
     }
@@ -840,7 +897,7 @@ function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): s
   return container.innerHTML;
 }
 
-function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): HTMLAnchorElement | null {
+function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection, text: string): HTMLAnchorElement | null {
   const ordinalCommentRef = match[1];
   const explicitType = match[2];
   const explicitRef = match[3];
@@ -860,6 +917,15 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): H
 
   const anchor = document.createElement('a');
   anchor.className = 'ledger-xref';
+  if (bareIssueRef && isAuthRequestContext(text, match.index)) {
+    anchor.textContent = match[0];
+    anchor.href = `#/auth?request=${encodeURIComponent(ref)}`;
+    anchor.title = `Open auth request ${ref}`;
+    return anchor;
+  }
+  if (bareIssueRef && isCommitLikeContext(text, match.index)) {
+    return null;
+  }
   if (explicitType === 'comment') {
     const parsed = parseCommentRef(ref, detail);
     if (!parsed) return null;
@@ -869,12 +935,27 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection): H
     return anchor;
   }
 
+  const auth = detail.auth_requests.find((request) => request.id.startsWith(ref));
+  if (auth) {
+    anchor.textContent = explicitType ? auth.id.slice(0, 8) : (bareIssueRef || match[0]);
+    anchor.href = `#/auth?request=${encodeURIComponent(auth.id)}`;
+    anchor.title = `Open auth request ${auth.id.slice(0, 8)}`;
+    return anchor;
+  }
   const parsedIssue = parseIssueRef(ref, detail);
   if (!parsedIssue) return null;
   anchor.textContent = explicitType ? issueRefLabel(parsedIssue, detail) : (bareIssueRef || match[0]);
   anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
   anchor.title = `Open issue ${parsedIssue.issue}`;
   return anchor;
+}
+
+function isAuthRequestContext(text: string, matchIndex: number): boolean {
+  return /(?:auth\s+request|auth)\s+$/i.test(text.slice(Math.max(0, matchIndex - 32), matchIndex));
+}
+
+function isCommitLikeContext(text: string, matchIndex: number): boolean {
+  return /(?:merge|commit)\s+$/i.test(text.slice(Math.max(0, matchIndex - 24), matchIndex));
 }
 
 function issueRefLabel(parsed: { repo: string; issue: string }, detail: LedgerIssueDetailProjection): string {

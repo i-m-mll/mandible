@@ -224,6 +224,15 @@ async function applyEvent(
     return "git-bug exporter has no git-bug operation for this issue update";
   }
 
+  if (event.event_type === "issue.closed" || event.event_type === "issue.reopened") {
+    const issueRef = requireGitBugIssueRef(store, event.entity_id);
+    const status = event.event_type === "issue.closed" ? "closed" : "open";
+    const updated = await client.setStatus(repoRoot, issueRef.external_id, status);
+    if (!updated.ok) throw new Error(updated.error);
+    await refreshIssueRemoteRef(store, client, repoRoot, outbox.project_id, event.entity_id);
+    return "applied";
+  }
+
   return `unsupported event type: ${event.event_type}`;
 }
 

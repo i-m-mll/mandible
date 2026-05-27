@@ -3094,10 +3094,19 @@ tr:hover .work-actions__trigger {
 }
 
 .issues-tree {
+  position: relative;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   overflow-y: auto;
   padding: 12px;
   background: var(--bg-secondary);
+}
+
+.issues-tree__resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
 }
 
 .issues-detail {
@@ -3108,6 +3117,7 @@ tr:hover .work-actions__trigger {
 
 /* Filter input */
 .issues-filter {
+  position: relative;
   margin-bottom: 10px;
 }
 
@@ -3122,8 +3132,159 @@ tr:hover .work-actions__trigger {
   font-size: 13px;
 }
 
+.issues-filter > .issues-filter__input {
+  padding-right: 66px;
+}
+
 .issues-filter__input::placeholder {
   color: var(--text-muted);
+}
+
+.issues-filter__clear,
+.issues-filter__advanced-trigger {
+  position: absolute;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.issues-filter__clear {
+  right: 33px;
+  width: 24px;
+  height: 24px;
+  color: var(--text-muted);
+}
+
+.issues-filter__advanced-trigger {
+  right: 5px;
+}
+
+.issues-filter__advanced-trigger:hover,
+.issues-filter__advanced-trigger--active {
+  background: rgba(77, 163, 255, 0.14);
+  color: var(--accent-blue);
+}
+
+.issues-filter__clear:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+}
+
+.issues-filter__advanced-trigger svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.issues-filter__clear svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.issues-filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 25;
+  padding: 10px;
+  background: color-mix(in srgb, var(--bg-secondary) 94%, black);
+  border: 1px solid rgba(77, 163, 255, 0.32);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+}
+
+.issues-filter-menu__header,
+.issues-filter-menu__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.issues-filter-menu__header {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.issues-filter-menu__clear {
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.issues-filter-menu__clear:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--text-primary);
+}
+
+.issues-filter-menu__section + .issues-filter-menu__section {
+  margin-top: 12px;
+}
+
+.issues-filter-menu__label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.issues-filter-menu__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.issues-filter-menu__options--segmented {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.issues-filter-menu__option {
+  min-height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 5px 9px;
+  text-transform: none;
+}
+
+.issues-filter-menu__option:hover,
+.issues-filter-menu__option--active {
+  background: rgba(77, 163, 255, 0.18);
+  color: var(--accent-blue);
 }
 
 /* Status filter pills */
@@ -3160,12 +3321,13 @@ tr:hover .work-actions__trigger {
   color: #bb86fc;
 }
 
-/* Repo filter input + datalist */
+/* Repo filter input + menu */
 .issues-repo-filter {
   position: relative;
   display: flex;
   align-items: center;
-  padding: 0 8px 6px;
+  padding: 0 0 6px;
+  margin-bottom: 2px;
 }
 
 .issues-repo-filter__input {
@@ -3175,7 +3337,9 @@ tr:hover .work-actions__trigger {
 
 .issues-repo-filter__clear {
   position: absolute;
-  right: 12px;
+  right: 8px;
+  top: 50%;
+  transform: translateY(calc(-50% - 3px));
   background: none;
   border: none;
   color: var(--text-muted);
@@ -3187,6 +3351,58 @@ tr:hover .work-actions__trigger {
 
 .issues-repo-filter__clear:hover {
   color: var(--text-primary);
+}
+
+.issues-repo-filter__menu {
+  position: absolute;
+  top: calc(100% - 2px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 6px;
+  background: color-mix(in srgb, var(--bg-secondary) 94%, black);
+  border: 1px solid rgba(77, 163, 255, 0.32);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+}
+
+.issues-repo-filter__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.issues-repo-filter__option:hover,
+.issues-repo-filter__option[aria-selected="true"] {
+  background: rgba(77, 163, 255, 0.14);
+}
+
+.issues-repo-filter__option-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issues-repo-filter__option-count {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 /* Label filter pills */
@@ -3268,31 +3484,31 @@ tr:hover .work-actions__trigger {
   gap: 8px;
   width: 100%;
   padding: 8px 10px;
-  background: var(--bg-card);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.025);
+  border: 0;
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 12px;
   text-align: left;
   cursor: pointer;
-  border-radius: 8px;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  border-radius: 3px;
+  transition: background 0.15s ease, color 0.15s ease;
   line-height: 1.35;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .issues-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .issues-item--selected {
-  background: rgba(77, 163, 255, 0.12);
-  border-color: rgba(77, 163, 255, 0.35);
+  background: rgba(77, 163, 255, 0.16);
   color: var(--accent-blue);
 }
 
 .issues-item__title {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -3301,10 +3517,17 @@ tr:hover .work-actions__trigger {
 }
 
 .issues-item__repo {
+  flex: 0 0 auto;
   display: block;
   font-size: 10px;
   color: var(--text-muted);
   margin-top: 2px;
+  margin-left: auto;
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   opacity: 0.7;
@@ -3350,7 +3573,7 @@ tr:hover .work-actions__trigger {
 
 /* Detail content */
 .issues-detail__content {
-  max-width: 720px;
+  max-width: none;
 }
 
 .issues-detail__title {
@@ -3898,6 +4121,10 @@ tr:hover .work-actions__trigger {
 
 .settings-view__input--narrow {
   width: 140px;
+}
+
+.settings-view__input--wide {
+  width: 260px;
 }
 
 .settings-view__daemon-card {
@@ -9918,6 +10145,19 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   border-bottom: 1px solid rgba(255,255,255,0.06);
 }
 
+.issues-detail .ledger-issue-detail__header {
+  position: sticky;
+  top: -24px;
+  z-index: 12;
+  margin: -24px -24px 2px;
+  padding: 24px 24px 14px;
+  background: #0b0f14;
+}
+
+.issues-detail .ledger-issue-detail > :not(.ledger-issue-detail__header) {
+  max-width: 720px;
+}
+
 .ledger-issue-detail__heading {
   display: flex;
   flex-direction: column;
@@ -10054,13 +10294,14 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   width: 18px;
   height: 18px;
   list-style: none;
-  border: 1px solid rgba(255,255,255,0.18);
-  border-radius: 999px;
+  border: none;
+  border-radius: 4px;
   color: var(--text-muted);
-  background: rgba(255,255,255,0.035);
+  background: transparent;
   cursor: pointer;
   line-height: 1;
   text-transform: none;
+  padding: 0;
 }
 
 .ledger-metadata-popover summary::-webkit-details-marker {
@@ -10080,8 +10321,7 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 .ledger-metadata-popover summary:hover,
 .ledger-metadata-popover[open] summary {
   color: var(--text-primary);
-  border-color: rgba(255,255,255,0.32);
-  background: rgba(255,255,255,0.07);
+  background: rgba(255,255,255,0.06);
 }
 
 .ledger-metadata-popover__panel {
@@ -10096,6 +10336,16 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   border-radius: 6px;
   background: var(--bg-secondary);
   box-shadow: 0 14px 40px rgba(0,0,0,0.35);
+}
+
+.ledger-metadata-popover__panel--center {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.ledger-metadata-popover__panel--end {
+  right: 0;
+  left: auto;
 }
 
 .ledger-metadata-grid {
@@ -10153,6 +10403,10 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   color: var(--text-muted);
   cursor: pointer;
   padding: 0;
+}
+
+.ledger-copy-ref-button {
+  margin-left: -6px;
 }
 
 .ledger-copy-ref-button:hover,

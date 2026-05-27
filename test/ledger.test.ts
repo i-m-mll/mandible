@@ -97,7 +97,7 @@ describe("ledger schema", () => {
     const version = upgradeDb.prepare(
       "SELECT value FROM meta WHERE key = 'schema_version'",
     ).get() as { value: string };
-    expect(version.value).toBe("60");
+    expect(version.value).toBe("62");
     expect(upgradeDb.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issues'",
     ).get()).toBeTruthy();
@@ -112,6 +112,33 @@ describe("ledger schema", () => {
         ) VALUES ('com_missing', 'iss_missing', 'bad', 'system', '', 'system', 1)`,
       ).run();
     }).toThrow();
+  });
+
+  it("migrates legacy event IDs and outbox references to SHA-256", () => {
+    const project = createProject();
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
+    const issue = createIssue(store, project.project.id);
+    const event = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
+    const outbox = store.listOutbox({ status: "pending" })[0];
+    db.pragma("foreign_keys = OFF");
+    db.prepare("UPDATE ledger_events SET id = 'evt_00legacy00_00112233445566778899', event_type = 'issue.updated', payload_json = ? WHERE id = ?")
+      .run(JSON.stringify({ issue_id: issue.id, patch: { status: "closed", resolution: "merged" } }), event.id);
+    db.prepare("UPDATE ledger_outbox SET event_id = 'evt_00legacy00_00112233445566778899' WHERE id = ?")
+      .run(outbox.id);
+    db.pragma("foreign_keys = ON");
+    db.prepare("UPDATE meta SET value = '60' WHERE key = 'schema_version'").run();
+
+    migrate(db);
+
+    const migrated = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
+    const migratedOutbox = store.listOutbox({ status: "pending" })[0];
+    expect(migrated.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(migrated.event_type).toBe("issue.closed");
+    expect(JSON.parse(migrated.payload_json)).toMatchObject({
+      legacy_event_id: "evt_00legacy00_00112233445566778899",
+    });
+    expect(migratedOutbox.event_id).toBe(migrated.id);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 });
 
@@ -169,11 +196,14 @@ describe("ledger store", () => {
     });
 
     const issue = createIssue(store, project.project.id);
+    const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
 
     expect(issue.id).toMatch(/^[0-9a-f]{64}$/);
     expect(issue.short_id).toBe(issue.id.slice(0, 7));
     expect(store.listAliases(issue.id).map((alias) => alias.alias_kind)).toContain("canonical");
-    expect(store.listEvents({ entity_type: "issue", entity_id: issue.id })).toHaveLength(1);
+    expect(events).toHaveLength(1);
+    expect(events[0].id).toMatch(/^[0-9a-f]{64}$/);
+    expect(events[0].id).not.toMatch(/^evt_/);
     expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
     expect(broadcasts).toEqual(["ledger:issue:created", "ledger:event:created"]);
   });
@@ -182,9 +212,13 @@ describe("ledger store", () => {
     const project = createProject();
     const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
 
-    createIssue(store, project.project.id);
+    const issue = createIssue(store, project.project.id);
+    const event = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
+    const outbox = store.listOutbox({ status: "pending" })[0];
 
     expect(store.listOutbox({ status: "pending" })).toHaveLength(1);
+    expect(outbox.event_id).toBe(event.id);
+    expect(outbox.event_id).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("does not enqueue outbox rows for imported adapter-sourced events", () => {
@@ -214,8 +248,54 @@ describe("ledger store", () => {
 
     expect(comment.id).toMatch(/^[0-9a-f]{64}$/);
     expect(comment.ordinal).toBe(1);
-    expect(store.listEvents({ entity_type: "comment", entity_id: comment.id })).toHaveLength(1);
+    const events = store.listEvents({ entity_type: "comment", entity_id: comment.id });
+    expect(events).toHaveLength(1);
+    expect(events[0].id).toMatch(/^[0-9a-f]{64}$/);
     expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
+  });
+
+  it("records issue close and reopen as lifecycle events", () => {
+    const project = createProject();
+    const broadcasts: string[] = [];
+    const store = new LedgerStore(db, {
+      broadcaster: (type) => broadcasts.push(type),
+    });
+    const issue = createIssue(store, project.project.id);
+
+    const closed = store.setIssueStatus(issue.id, "closed", "merged");
+    const reopened = store.setIssueStatus(issue.id, "open", null);
+    const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
+
+    expect(closed).toMatchObject({ status: "closed", resolution: "merged" });
+    expect(closed.closed_at).not.toBeNull();
+    expect(reopened).toMatchObject({ status: "open", resolution: null, closed_at: null });
+    expect(events.map((event) => event.event_type)).toEqual([
+      "issue.created",
+      "issue.closed",
+      "issue.reopened",
+    ]);
+    expect(events.every((event) => /^[0-9a-f]{64}$/.test(event.id))).toBe(true);
+    expect(broadcasts).toContain("ledger:issue:closed");
+    expect(broadcasts).toContain("ledger:issue:reopened");
+  });
+
+  it("does not emit lifecycle events when status and resolution are unchanged", () => {
+    const project = createProject();
+    const broadcasts: string[] = [];
+    const store = new LedgerStore(db, {
+      broadcaster: (type) => broadcasts.push(type),
+    });
+    const issue = createIssue(store, project.project.id);
+
+    store.setIssueStatus(issue.id, "closed", "merged");
+    store.setIssueStatus(issue.id, "closed", "merged");
+
+    const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
+    expect(events.map((event) => event.event_type)).toEqual([
+      "issue.created",
+      "issue.closed",
+    ]);
+    expect(broadcasts.filter((event) => event === "ledger:issue:closed")).toHaveLength(1);
   });
 
   it("sets labels idempotently and records only state-changing events", () => {

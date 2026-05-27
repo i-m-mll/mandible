@@ -28,7 +28,7 @@ function createDbWithHooks(): InstanceType<typeof Database> {
       "mandible",
       "merge",
       "bash cli/post-merge-build-dist.sh",
-      "Build and commit Mandible dist after merge",
+      "Build Mandible locally after merge",
       now,
       now,
     );
@@ -46,7 +46,7 @@ describe("AuthHookManager", () => {
     expect(builtin!.repo_pattern).toBe("mandible");
     expect(builtin!.auth_type).toBe("merge");
     expect(builtin!.command).toBe("bash cli/post-merge-build-dist.sh");
-    expect(builtin!.label).toBe("Build and commit Mandible dist after merge");
+    expect(builtin!.label).toBe("Build Mandible locally after merge");
     expect(builtin!.builtin).toBe(true);
     expect(builtin!.enabled).toBe(true);
   });
@@ -105,7 +105,7 @@ describe("AuthHookManager", () => {
     const db = createDbWithHooks();
     const manager = new AuthHookManager(db);
 
-    // Built-in matches "mandible" repo with "merge" type
+    // Built-in matches "mandible" repo with "merge" type.
     const mandibleHooks = manager.findMatchingHooks("mandible", "merge");
     expect(mandibleHooks.length).toBeGreaterThanOrEqual(1);
     expect(mandibleHooks.some((h) => h.id === "builtin-mandible-rebuild")).toBe(true);
@@ -122,7 +122,7 @@ describe("AuthHookManager", () => {
     const feedbaxHooks = manager.findMatchingHooks("feedbax", "merge");
     expect(feedbaxHooks.some((h) => h.label === "All repos hook")).toBe(true);
 
-    // "mandible" should match both the built-in AND the wildcard
+    // "mandible" should match both the built-in and the wildcard.
     const mandibleHooks2 = manager.findMatchingHooks("mandible", "merge");
     expect(mandibleHooks2.length).toBeGreaterThanOrEqual(2);
 

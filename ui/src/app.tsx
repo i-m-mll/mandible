@@ -453,6 +453,10 @@ function App(): JSX.Element {
       client.on('auth:new', graphRefreshHandler),
       client.on('auth:updated', graphRefreshHandler),
       client.on('auth:resolved', graphRefreshHandler),
+      client.on('ledger:issue:created', graphRefreshHandler),
+      client.on('ledger:issue:updated', graphRefreshHandler),
+      client.on('ledger:issue:closed', graphRefreshHandler),
+      client.on('ledger:issue:reopened', graphRefreshHandler),
       client.on('work:branch:updated', graphRefreshHandler),
       client.on('mandible:rebuilding', rebuildingHandler),
       // Bug: b5abaea — push/sync SSE events forwarded to window for WorkOverviewView
@@ -1181,6 +1185,7 @@ function App(): JSX.Element {
             initialRepoId={route.params.repo}
             initialIssueId={route.params.issue}
             initialCommentId={route.params.comment}
+            defaultFilter={state.settings['issues.default_filter']}
           />
         )}
         {route.tab === 'review' && (

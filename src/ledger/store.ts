@@ -5,6 +5,7 @@ import {
   createCreationNonce,
   createLedgerId,
   createStableCommentId,
+  createStableEventId,
   createStableIssueId,
 } from "./ids.js";
 import type {
@@ -355,14 +356,17 @@ export class LedgerStore {
         now,
         id,
       );
+      const eventType = issueLifecycleEventType(existing.status, next.status);
       const event = this.insertEvent({
         entity_type: "issue",
         entity_id: id,
-        event_type: "issue.updated",
+        event_type: eventType ?? "issue.updated",
         actor_id: normalizedActor.actor_id,
         actor_type: normalizedActor.actor_type,
         source,
-        payload: { issue_id: id, patch },
+        payload: eventType
+          ? { issue_id: id, previous_status: existing.status, status: next.status, resolution: next.resolution, patch }
+          : { issue_id: id, patch },
         project_id: existing.project_id,
         occurred_at: now,
       });
@@ -383,6 +387,9 @@ export class LedgerStore {
     source: LedgerEventSource = "mandible",
   ): LedgerIssue {
     const existing = this.requireIssue(id);
+    if (existing.status === status && existing.resolution === resolution) {
+      return existing;
+    }
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
     const normalizedActor = normalizeActor(actor);
@@ -393,18 +400,20 @@ export class LedgerStore {
          SET status = ?, resolution = ?, closed_at = ?, updated_at = ?
          WHERE id = ?`,
       ).run(status, resolution, status === "closed" ? now : null, now, id);
+      const eventType = status === "closed" ? "issue.closed" : "issue.reopened";
+      const payload = { issue_id: id, previous_status: existing.status, status, resolution };
       const event = this.insertEvent({
         entity_type: "issue",
         entity_id: id,
-        event_type: "issue.updated",
+        event_type: eventType,
         actor_id: normalizedActor.actor_id,
         actor_type: normalizedActor.actor_type,
         source,
-        payload: { issue_id: id, status, resolution },
+        payload,
         project_id: existing.project_id,
         occurred_at: now,
       });
-      emitted.push({ event, payload: { issue_id: id, status, resolution } });
+      emitted.push({ event, payload });
       return this.getIssue(id);
     });
 
@@ -1205,7 +1214,20 @@ export class LedgerStore {
     enqueueOutbox?: boolean;
   }): LedgerEvent {
     const observedAt = Date.now();
-    const id = createLedgerId("evt", { now: input.occurred_at });
+    const occurrence = createCreationNonce();
+    const payload = { ...input.payload, event_nonce: occurrence };
+    const id = createStableEventId({
+      entity_type: input.entity_type,
+      entity_id: input.entity_id,
+      event_type: input.event_type,
+      actor_id: input.actor_id,
+      actor_type: input.actor_type,
+      source: input.source,
+      payload,
+      occurred_at: input.occurred_at,
+      observed_at: observedAt,
+      occurrence,
+    });
     this.db.prepare(
       `INSERT INTO ledger_events (
         id, entity_type, entity_id, event_type, actor_id, actor_type,
@@ -1219,7 +1241,7 @@ export class LedgerStore {
       input.actor_id,
       input.actor_type,
       input.source,
-      jsonStringify(input.payload),
+      jsonStringify(payload),
       input.occurred_at,
       observedAt,
     );
@@ -1245,6 +1267,14 @@ export class LedgerStore {
 
     return this.db.prepare("SELECT * FROM ledger_events WHERE id = ?").get(id) as LedgerEvent;
   }
+}
+
+function issueLifecycleEventType(
+  previousStatus: LedgerIssueStatus,
+  nextStatus: LedgerIssueStatus,
+): "issue.closed" | "issue.reopened" | null {
+  if (previousStatus === nextStatus) return null;
+  return nextStatus === "closed" ? "issue.closed" : "issue.reopened";
 }
 
 function normalizeActor(input: LedgerActorInput): {

@@ -346,15 +346,17 @@ function buildTimeline(
     `SELECT * FROM ledger_events
      WHERE entity_type = 'issue'
        AND entity_id = ?
-       AND event_type = 'issue.updated'
+       AND event_type IN ('issue.updated', 'issue.closed', 'issue.reopened')
      ORDER BY occurred_at, observed_at`,
   ).all(issue.id) as LedgerEvent[];
   for (const event of events) {
     const payload = parseJsonObject(event.payload_json);
     const patch = parsePatch(payload);
-    const status = typeof patch.status === "string" ? patch.status as LedgerIssueStatus : null;
+    const status = lifecycleStatusForEvent(event.event_type)
+      ?? (typeof patch.status === "string" ? patch.status as LedgerIssueStatus : null);
     const resolution = typeof patch.resolution === "string" ? patch.resolution as LedgerIssueResolution : null;
     if (!status && !("resolution" in patch)) continue;
+    if (isNoopStateEvent(payload, status, resolution)) continue;
     entries.push({
       id: event.id,
       kind: "state",
@@ -385,6 +387,24 @@ function parsePatch(payload: Record<string, unknown>): Record<string, unknown> {
     return patch as Record<string, unknown>;
   }
   return payload;
+}
+
+function isNoopStateEvent(
+  payload: Record<string, unknown>,
+  status: LedgerIssueStatus | null,
+  resolution: LedgerIssueResolution | null
+): boolean {
+  if (status && payload.previous_status === status) {
+    const previousResolution = payload.previous_resolution;
+    return previousResolution === undefined || previousResolution === resolution;
+  }
+  return false;
+}
+
+function lifecycleStatusForEvent(eventType: string): LedgerIssueStatus | null {
+  if (eventType === "issue.closed") return "closed";
+  if (eventType === "issue.reopened") return "open";
+  return null;
 }
 
 function listWorkUnits(db: Db, issueId: string): LedgerIssueDetailWorkUnit[] {
