@@ -17041,6 +17041,7 @@ function IssuesView({
   });
   return /* @__PURE__ */ u3("div", { className: "issues-view", children: [
     /* @__PURE__ */ u3("div", { className: "issues-tree", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
+      /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle issues-tree__resize-handle", onMouseDown: handleMouseDown }),
       /* @__PURE__ */ u3(
         "div",
         {
@@ -17243,7 +17244,6 @@ function IssuesView({
         item.issue.id
       )) })
     ] }),
-    /* @__PURE__ */ u3("div", { className: "sidebar-drag-handle", onMouseDown: handleMouseDown }),
     /* @__PURE__ */ u3("div", { className: "issues-detail", children: !selectedIssueId ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Select an issue to view details" }) }) : visibleLedgerIssueDetail ? /* @__PURE__ */ u3("div", { className: "issues-detail__content", children: /* @__PURE__ */ u3(
       LedgerIssueDetail,
       {

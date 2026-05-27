@@ -550,6 +550,7 @@ export function IssuesView({
     <div className="issues-view">
       {/* Left sidebar panel */}
       <div className="issues-tree" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
+        <div className="sidebar-drag-handle issues-tree__resize-handle" onMouseDown={handleMouseDown} />
         <div
           className="issues-filter"
           onBlur={(event) => {
@@ -758,9 +759,6 @@ export function IssuesView({
           </div>
         )}
       </div>
-
-      {/* Drag handle */}
-      <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
 
       {/* Right detail panel */}
       <div className="issues-detail">
