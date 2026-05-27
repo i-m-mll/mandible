@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 
+import { ArtifactRebuildError, rebuildArtifactsForRequest } from "./auth-artifacts.js";
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
@@ -22,6 +23,7 @@ import type {
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
+const REBUILD_ON_APPROVAL_SETTING = "auth_rebuild_artifacts_on_approval";
 
 // Bug: dd21c1e — valid auth request types
 const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
@@ -721,6 +723,11 @@ export class AuthQueue {
       );
     }
 
+    if (this.shouldRebuildArtifactsBeforeApproval(request)) {
+      this.appendOutput(id, "[artifact-rebuild] auto rebuild before approval is enabled\n");
+      this.rebuildArtifacts(id);
+    }
+
     const now = this.now();
     this.db
       .prepare(
@@ -734,6 +741,16 @@ export class AuthQueue {
     }
     this.executeInBackground(executing);
     return executing;
+  }
+
+  private shouldRebuildArtifactsBeforeApproval(request: AuthRequest): boolean {
+    if (request.repo !== "mandible" || request.type !== "merge") {
+      return false;
+    }
+    const row = this.db
+      .prepare("SELECT value FROM settings WHERE key = ?")
+      .get(REBUILD_ON_APPROVAL_SETTING) as { value: string } | undefined;
+    return row?.value === "true";
   }
 
   autoApprovePending(approval: AuthApprovalContext): AuthRequest[] {
@@ -794,6 +811,58 @@ export class AuthQueue {
       .run(now, now, id);
 
     return this.requireRequest(id);
+  }
+
+  rebuildArtifacts(id: string): AuthRequest {
+    this.expireStale();
+    const request = this.requireRequest(id);
+    if (request.status !== "pending") {
+      throw new AuthQueueError(
+        "invalid_status",
+        `Request is ${request.status}, cannot rebuild artifacts.`,
+        request.status
+      );
+    }
+
+    try {
+      const result = rebuildArtifactsForRequest(request);
+      this.appendOutput(
+        id,
+        `${result.output}[artifact-rebuild] ${result.committed
+          ? `committed ${result.commit_sha?.slice(0, 12) ?? "generated artifacts"}`
+          : "no artifact commit needed"}\n`
+      );
+      const now = this.now();
+      this.db
+        .prepare(
+          "UPDATE auth_requests SET files_changed = ?, additions = ?, deletions = ?, " +
+            "diff_summary = ?, commit_message = ?, updated_at = ? WHERE id = ?"
+        )
+        .run(
+          result.files_changed,
+          result.additions,
+          result.deletions,
+          result.diff_summary,
+          result.commit_message,
+          now,
+          id
+        );
+      const updated = this.requireRequest(id);
+      this.broadcast({
+        event: "auth:updated",
+        data: { request: updated }
+      });
+      return updated;
+    } catch (error) {
+      if (error instanceof ArtifactRebuildError) {
+        if (error.output) {
+          this.appendOutput(id, `${error.output}\n`);
+        }
+        throw new AuthQueueError("invalid_command", error.message, request.status);
+      }
+      const message = error instanceof Error ? error.message : "Artifact rebuild failed.";
+      throw new AuthQueueError("invalid_command", message, request.status);
+    }
   }
 
   appendOutput(id: string, chunk: string): AuthRequest {
@@ -1420,6 +1489,12 @@ export class AuthQueue {
 
       CREATE INDEX IF NOT EXISTS idx_auth_requests_queue
         ON auth_requests(status, skipped_at, created_at);
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
   }
 }

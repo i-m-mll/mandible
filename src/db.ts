@@ -1429,6 +1429,22 @@ const MIGRATIONS: Migration[] = [
     name: "ledger_event_hash_id_support",
     // Bug: 614f8ee — SHA-256 event IDs and first-class issue lifecycle events.
     statements: []
+  },
+  {
+    version: 62,
+    name: "preapproval_artifact_rebuild",
+    // Bug: 03abda9 — generated Mandible artifacts should be rebuilt before
+    // approval, not committed by a protected-branch post-merge hook.
+    statements: [
+      `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('auth_rebuild_artifacts_on_approval', 'false', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `UPDATE auth_hooks
+       SET enabled = 0,
+           label = 'Deprecated: post-merge artifact commit disabled',
+           updated_at = CAST(strftime('%s','now') * 1000 AS INTEGER)
+       WHERE id = 'builtin-mandible-rebuild'
+         AND command = 'bash cli/post-merge-build-dist.sh'`
+    ]
   }
 ];
 

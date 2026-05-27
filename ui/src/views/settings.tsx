@@ -1323,6 +1323,13 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             max={480}
             suffix="min"
           />
+          <ToggleRow
+            title="Rebuild artifacts on approval"
+            desc="For Mandible self-merges, run the generated-artifact rebuild before approving."
+            settingKey="auth_rebuild_artifacts_on_approval"
+            settings={settings}
+            onSave={onSave}
+          />
           <DelegatedSigningSection />
         </div>
       </div>

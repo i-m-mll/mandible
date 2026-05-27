@@ -152,6 +152,42 @@ describe("auth queue", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("runs mandatory artifact rebuild before approving Mandible self-merges", () => {
+    const calls: string[] = [];
+    const queue = createQueue({
+      executor: async () => {
+        calls.push("called");
+        return {
+          exit_code: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+          output: "",
+          started_at: Date.now(),
+          finished_at: Date.now(),
+        };
+      },
+    });
+
+    (queue as unknown as { db: InstanceType<typeof Database> }).db
+      .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+      .run("auth_rebuild_artifacts_on_approval", "true", Date.now());
+
+    const request = queue.submit({
+      command: "mandible auth merge feature/test --into main",
+      title: "Self merge",
+      repo: "mandible",
+      base_branch: "main",
+      head_branch: "feature/test",
+      cwd: "/tmp/not-a-git-repo",
+      execution_mode: "daemon",
+    });
+
+    expect(() => queue.approve(request.id)).toThrow(/failed|worktree|git/i);
+    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    expect(calls).toHaveLength(0);
+  });
+
   it("auto-approves new requests while a lease is active and passes scoped env", async () => {
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
     const queue = createQueue({
