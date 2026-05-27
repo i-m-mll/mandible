@@ -8617,6 +8617,12 @@ tr:hover .work-actions__trigger {
   justify-content: space-between;
   gap: 16px;
 }
+.graph-primary-controls {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .graph-mode-strip {
   display: flex;
   flex-wrap: wrap;
@@ -8662,10 +8668,9 @@ tr:hover .work-actions__trigger {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 172px minmax(360px, 1fr) 320px;
+  grid-template-columns: minmax(360px, 1fr) 320px;
   gap: 12px;
 }
-.graph-layer-rail,
 .graph-detail-pane {
   min-height: 0;
   overflow-y: auto;
@@ -8673,10 +8678,6 @@ tr:hover .work-actions__trigger {
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 8px;
 }
-.graph-layer-rail {
-  padding: 12px;
-}
-.graph-layer-rail__title,
 .graph-detail-pane__section-title {
   font-size: 11px;
   text-transform: uppercase;
@@ -8684,21 +8685,40 @@ tr:hover .work-actions__trigger {
   color: var(--text-muted);
   margin-bottom: 8px;
 }
-.graph-layer-rail__empty {
+.graph-layer-strip {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.graph-layer-strip__empty {
   color: var(--text-muted);
   font-size: 12px;
 }
 .graph-layer-chip {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  min-height: 30px;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 0;
+  gap: 7px;
+  max-width: 180px;
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
   color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
 }
+.graph-layer-chip:hover:not(.graph-layer-chip--disabled) {
+  background: rgba(255, 255, 255, 0.07);
+}
+.graph-layer-chip input {
+  margin: 0;
+  flex: 0 0 auto;
+}
 .graph-layer-chip span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
