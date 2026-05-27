@@ -12,6 +12,14 @@ import type {
 } from '../../api';
 
 type EntityType = 'issue' | 'session' | 'auth_request' | 'conversation';
+type RenderTimelineEntry =
+  | LedgerIssueTimelineEntry
+  | {
+      id: string;
+      kind: 'auth';
+      auth: LedgerIssueDetailAuthRequest;
+      created_at: number;
+    };
 
 export type LedgerIssueDetailProps = {
   detail: LedgerIssueDetailProjection;
@@ -39,6 +47,7 @@ export function LedgerIssueDetail({
   const [commentText, setCommentText] = useState('');
   const [showComposer, setShowComposer] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [authEvidenceOpen, setAuthEvidenceOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement>(null);
   const busy = actionInFlight || localBusy;
@@ -51,11 +60,14 @@ export function LedgerIssueDetail({
   const historicalSessions = detail.sessions.filter((session) => session.status !== 'active' && session.status !== 'idle');
   const primaryWorkUnit = detail.work_units[0] ?? null;
   const timeline = detail.timeline ?? fallbackTimeline(detail);
+  const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
+  const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
   const hasIssueActions = Boolean(
     liveSession ||
     onStartAgent ||
     onSetStatus ||
     onAddComment ||
+    detail.auth_requests.length > 0 ||
     (detail.labels.includes('umbrella') && onShowChildren)
   );
   const syncTone = detail.sync.state === 'clean'
@@ -103,19 +115,39 @@ export function LedgerIssueDetail({
           <div className="ledger-issue-detail__eyebrow">
             <span>{detail.project.repo_name ?? detail.project.display_name}</span>
             <code>{detail.display_id}</code>
+            <CopyIssueRefButton detail={detail} />
             <MetadataDisclosure label="Issue metadata">
               <MetadataRows rows={issueMetadataRows(detail)} />
             </MetadataDisclosure>
           </div>
-          <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
+          <div className="ledger-issue-detail__title-row">
+            <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
+            {hasIssueActions && (
+              <IssueActionsMenu
+                menuRef={actionMenuRef}
+                open={actionsOpen}
+                busy={busy}
+                detail={detail}
+                liveSession={liveSession}
+                primaryWorkUnit={primaryWorkUnit}
+                onToggle={() => setActionsOpen((prev) => !prev)}
+                onClose={() => setActionsOpen(false)}
+                onStartAgent={onStartAgent}
+                onSetStatus={onSetStatus}
+                onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
+                onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
+                onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
+              />
+            )}
+          </div>
           <div className="ledger-issue-detail__meta">
             <span className="ledger-issue-detail__byline-author">{detail.author.display}</span>
             <time>{formatRelativeTime(detail.created_at)}</time>
-            {detail.labels.length > 0 && (
+            {displayLabels.length > 0 && (
               <>
                 <span className="ledger-issue-detail__meta-separator" aria-hidden="true" />
                 <span className="ledger-issue-detail__label-row">
-                  {detail.labels.map((label) => (
+                  {displayLabels.map((label) => (
                     <span key={label} className="ledger-label">{displayLabel(label)}</span>
                   ))}
                 </span>
@@ -133,29 +165,13 @@ export function LedgerIssueDetail({
           {detail.sync.state !== 'clean' && (
             <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
           )}
-          {hasIssueActions && (
-            <IssueActionsMenu
-              menuRef={actionMenuRef}
-              open={actionsOpen}
-              busy={busy}
-              detail={detail}
-              liveSession={liveSession}
-              primaryWorkUnit={primaryWorkUnit}
-              onToggle={() => setActionsOpen((prev) => !prev)}
-              onClose={() => setActionsOpen(false)}
-              onStartAgent={onStartAgent}
-              onSetStatus={onSetStatus}
-              onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
-              onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
-            />
-          )}
         </div>
       </header>
 
       <section className="ledger-issue-detail__section">
         <div className="ledger-comment-list ledger-timeline-list">
-          {timeline.map((entry) => (
-            <TimelineEntryCard key={entry.id} entry={entry} detail={detail} />
+          {timelineEntries.map((entry) => (
+            <TimelineEntryCard key={entry.id} entry={entry} detail={detail} onOpenEntity={onOpenEntity} />
           ))}
         </div>
         {onAddComment && (
@@ -194,11 +210,12 @@ export function LedgerIssueDetail({
         </section>
       )}
 
-      {detail.auth_requests.length > 0 && (
-        <section className="ledger-issue-detail__section">
-          <SectionTitle title="Auth Evidence" count={detail.auth_requests.length} />
-          <AuthEvidenceShelf authRequests={detail.auth_requests} onOpenEntity={onOpenEntity} />
-        </section>
+      {authEvidenceOpen && (
+        <AuthEvidenceModal
+          authRequests={detail.auth_requests}
+          onOpenEntity={onOpenEntity}
+          onClose={() => setAuthEvidenceOpen(false)}
+        />
       )}
 
       {(activeSessions.length > 0 || historicalSessions.length > 0) && (
@@ -230,6 +247,7 @@ function IssueActionsMenu({
   onStartAgent,
   onSetStatus,
   onAddComment,
+  onShowAuthEvidence,
   onShowChildren,
 }: {
   menuRef: { current: HTMLDivElement | null };
@@ -243,6 +261,7 @@ function IssueActionsMenu({
   onStartAgent?: () => Promise<void> | void;
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
   onAddComment?: () => void;
+  onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
 }): JSX.Element {
   const closeAfter = (callback: () => void) => {
@@ -260,7 +279,7 @@ function IssueActionsMenu({
         title="Issue actions"
         onClick={onToggle}
       >
-        ...
+        <HorizontalDotsIcon />
       </button>
       {open && (
         <div className="ledger-issue-actions-menu__dropdown" role="menu">
@@ -307,6 +326,17 @@ function IssueActionsMenu({
               Show Children
             </button>
           )}
+          {onShowAuthEvidence && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(onShowAuthEvidence)}
+            >
+              Auth Evidence
+            </button>
+          )}
           {onSetStatus && (
             <button
               type="button"
@@ -321,6 +351,32 @@ function IssueActionsMenu({
         </div>
       )}
     </div>
+  );
+}
+
+function CopyIssueRefButton({ detail }: { detail: LedgerIssueDetailProjection }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const project = detail.project.repo_id ?? detail.project.repo_name ?? detail.project.display_name;
+  const value = `${project}/${detail.display_id}`;
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="ledger-copy-ref-button"
+      title={copied ? 'Copied' : `Copy ${value}`}
+      aria-label={copied ? 'Copied issue reference' : `Copy ${value}`}
+      onClick={() => void handleCopy()}
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </button>
   );
 }
 
@@ -350,6 +406,33 @@ function fallbackTimeline(detail: LedgerIssueDetailProjection): LedgerIssueTimel
   ];
 }
 
+function buildTimelineEntries(
+  timeline: LedgerIssueTimelineEntry[],
+  authRequests: LedgerIssueDetailAuthRequest[],
+): RenderTimelineEntry[] {
+  const authEntries = authRequests
+    .filter((auth) => auth.status === 'completed')
+    .map((auth) => ({
+      id: `auth:${auth.id}:${auth.link_type}`,
+      kind: 'auth' as const,
+      auth,
+      created_at: auth.resolved_at ?? auth.approved_at ?? auth.link_created_at ?? auth.created_at ?? 0,
+    }))
+    .filter((entry) => entry.created_at > 0);
+  return [...timeline, ...authEntries].sort((a, b) => {
+    const timeDelta = a.created_at - b.created_at;
+    if (timeDelta !== 0) return timeDelta;
+    return timelineRank(a) - timelineRank(b);
+  });
+}
+
+function timelineRank(entry: RenderTimelineEntry): number {
+  if (entry.kind === 'body') return 0;
+  if (entry.kind === 'comment') return 1;
+  if (entry.kind === 'auth') return 2;
+  return 3;
+}
+
 function StatusPill({
   status,
   resolution,
@@ -376,20 +459,40 @@ function StatusPill({
 function TimelineEntryCard({
   entry,
   detail,
+  onOpenEntity,
 }: {
-  entry: LedgerIssueTimelineEntry;
+  entry: RenderTimelineEntry;
   detail: LedgerIssueDetailProjection;
+  onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
 }): JSX.Element {
+  if (entry.kind === 'auth') {
+    return (
+      <button
+        type="button"
+        className="ledger-timeline-event ledger-timeline-event--auth"
+        disabled={!onOpenEntity}
+        onClick={() => onOpenEntity?.('auth_request', entry.auth.id)}
+      >
+        <span className="ledger-timeline-event__dot" aria-hidden="true" />
+        <span className="ledger-timeline-event__text">
+          <strong>{authEvidenceLinkLabel(entry.auth)}</strong>
+          <span>{entry.auth.title || entry.auth.id}</span>
+        </span>
+        <time>{formatRelativeTime(entry.created_at)}</time>
+      </button>
+    );
+  }
   if (entry.kind === 'state') {
     return (
-      <div className="ledger-comment-card ledger-timeline-card ledger-timeline-card--state">
-        <div className="ledger-comment-card__header">
-          <span>{stateEntryLabel(entry)}</span>
-          <time>{formatRelativeTime(entry.created_at)}</time>
-          <MetadataDisclosure label="Timeline metadata">
-            <MetadataRows rows={stateMetadataRows(entry)} />
-          </MetadataDisclosure>
-        </div>
+      <div className="ledger-timeline-event ledger-timeline-event--state">
+        <span className="ledger-timeline-event__dot" aria-hidden="true" />
+        <span className="ledger-timeline-event__text">
+          <strong>{stateEntryLabel(entry)}</strong>
+        </span>
+        <time>{formatRelativeTime(entry.created_at)}</time>
+        <MetadataDisclosure label="Timeline metadata">
+          <MetadataRows rows={stateMetadataRows(entry)} />
+        </MetadataDisclosure>
       </div>
     );
   }
@@ -447,7 +550,9 @@ function MetadataDisclosure({
       open={open}
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
-      <summary aria-label={label} title={label}>i</summary>
+      <summary aria-label={label} title={label}>
+        <MetadataIcon />
+      </summary>
       <div className="ledger-metadata-popover__panel">{children}</div>
     </details>
   );
@@ -512,11 +617,55 @@ function AuthEvidenceShelf({
           disabled={!onOpenEntity}
           onClick={() => onOpenEntity?.('auth_request', auth.id)}
         >
-          <span>{auth.link_type.replace(/_/g, ' ')}</span>
+          <span>{authEvidenceLinkLabel(auth)}</span>
           <strong>{auth.title || auth.id}</strong>
           <code>{auth.status}{auth.head_branch ? ` · ${auth.head_branch}` : ''}</code>
         </button>
       ))}
+    </div>
+  );
+}
+
+function AuthEvidenceModal({
+  authRequests,
+  onOpenEntity,
+  onClose,
+}: {
+  authRequests: LedgerIssueDetailAuthRequest[];
+  onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
+  onClose: () => void;
+}): JSX.Element {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => document.removeEventListener('keydown', closeOnEscape, true);
+  }, [onClose]);
+
+  return (
+    <div className="ledger-issue-modal" role="presentation" onClick={onClose}>
+      <div
+        className="ledger-issue-modal__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Auth evidence"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="ledger-issue-modal__header">
+          <h3>Auth Evidence</h3>
+          <button type="button" className="ledger-icon-button" aria-label="Close auth evidence" onClick={onClose}>
+            <CloseIcon />
+          </button>
+        </div>
+        <AuthEvidenceShelf
+          authRequests={authRequests}
+          onOpenEntity={onOpenEntity ? (type, id, repoId) => {
+            onClose();
+            onOpenEntity(type, id, repoId);
+          } : undefined}
+        />
+      </div>
     </div>
   );
 }
@@ -856,6 +1005,16 @@ function displayLabel(label: string): string {
   return label;
 }
 
+function isMetadataLabel(label: string): boolean {
+  return label === 'merged';
+}
+
+function authEvidenceLinkLabel(auth: LedgerIssueDetailAuthRequest): string {
+  if (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') return 'resolved by';
+  if (auth.link_type === 'references') return 'referenced by';
+  return `${auth.link_type.replace(/_/g, ' ')} by`;
+}
+
 function syncLabel(state: string): string {
   if (state === 'clean') return 'synced';
   if (state === 'pending') return 'pending sync';
@@ -871,4 +1030,50 @@ function safeJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function MetadataIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 17v-5" />
+      <path d="M12 8h.01" />
+    </svg>
+  );
+}
+
+function CopyIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="9" y="9" width="10" height="10" rx="2" />
+      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
+    </svg>
+  );
+}
+
+function CheckIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function HorizontalDotsIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="5" cy="12" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="19" cy="12" r="1.5" />
+    </svg>
+  );
+}
+
+function CloseIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m18 6-12 12" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
 }

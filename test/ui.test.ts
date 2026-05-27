@@ -187,7 +187,8 @@ describe('LedgerIssueDetail', () => {
 
     render(h(LedgerIssueDetail, { detail }));
 
-    expect(screen.getByText('Auth Evidence')).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Auth Evidence' })).toBeNull();
+    expect(screen.getByText('resolved by')).toBeTruthy();
     expect(screen.getByText('Merge feature/x')).toBeTruthy();
     expect(screen.queryByText('Timeline')).toBeNull();
     expect(document.body.innerHTML).not.toContain('onerror');
@@ -220,7 +221,7 @@ describe('LedgerIssueDetail', () => {
       updated_at: Date.now(),
       closed_at: null,
       aliases: [],
-      labels: ['feature'],
+      labels: ['feature', 'merged'],
       comments: [
         {
           id: 'com_1',
@@ -373,6 +374,9 @@ describe('LedgerIssueDetail', () => {
 
     expect(document.querySelector('.ledger-issue-detail__actions')).toBeNull();
     expect(screen.getByText('Add Comment')).toBeTruthy();
+    const visibleLabels = Array.from(document.querySelectorAll('.ledger-label')).map((node) => node.textContent);
+    expect(visibleLabels).toContain('feature');
+    expect(visibleLabels).not.toContain('merged');
     expect(screen.queryByText('Start Agent')).toBeNull();
     expect(screen.queryByText('Close Issue')).toBeNull();
 
