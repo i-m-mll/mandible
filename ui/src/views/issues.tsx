@@ -43,6 +43,7 @@ export type IssuesViewProps = {
   initialRepoId?: string;
   initialIssueId?: string;
   initialCommentId?: string;
+  defaultFilter?: string;
 };
 
 // --- Helpers ---
@@ -83,7 +84,85 @@ const LABEL_INTERNAL_NAMES: Record<string, string> = {
   umbrella: 'umbrella',
   feature: 'feature',
   deferred: 'deferred',
+  coordination: 'coordination',
 };
+
+const KIND_FILTERS = [
+  { key: 'umbrella', label: 'umbrella', labels: ['umbrella'] },
+  { key: 'feature', label: 'feature', labels: ['feature'] },
+  { key: 'bug', label: 'bug', labels: ['error', 'bug'] },
+  { key: 'deferred', label: 'deferred', labels: ['deferred'] },
+  { key: 'coordination', label: 'coordination', labels: ['coordination'] },
+] as const;
+
+const PRIORITY_FILTERS = [
+  { key: 'important', label: 'important', labels: ['important'] },
+  { key: 'user-action-required', label: 'user action', labels: ['user-action-required'] },
+] as const;
+
+type ParsedIssueFilter = {
+  text: string;
+  status: StatusFilter | null;
+  kinds: string[];
+  priorities: string[];
+};
+
+function parseIssueFilter(value: string): ParsedIssueFilter {
+  const textParts: string[] = [];
+  let status: StatusFilter | null = null;
+  const kinds = new Set<string>();
+  const priorities = new Set<string>();
+
+  for (const token of value.trim().split(/\s+/).filter(Boolean)) {
+    const match = token.match(/^([a-z]+):(.+)$/i);
+    if (!match) {
+      textParts.push(token);
+      continue;
+    }
+    const key = match[1].toLowerCase();
+    const values = match[2].split(',').map((part) => part.trim().toLowerCase()).filter(Boolean);
+    if (key === 'status') {
+      const next = values[0];
+      if (next === 'all' || next === 'open' || next === 'merged' || next === 'closed') {
+        status = next;
+      }
+      continue;
+    }
+    if (key === 'kind') {
+      values.forEach((kind) => kinds.add(kind));
+      continue;
+    }
+    if (key === 'priority') {
+      values.forEach((priority) => priorities.add(priority));
+      continue;
+    }
+    textParts.push(token);
+  }
+
+  return {
+    text: textParts.join(' '),
+    status,
+    kinds: [...kinds],
+    priorities: [...priorities],
+  };
+}
+
+function formatIssueFilter(parsed: ParsedIssueFilter): string {
+  const tokens = [parsed.text.trim()].filter(Boolean);
+  if (parsed.status) tokens.push(`status:${parsed.status}`);
+  if (parsed.kinds.length > 0) tokens.push(`kind:${parsed.kinds.join(',')}`);
+  if (parsed.priorities.length > 0) tokens.push(`priority:${parsed.priorities.join(',')}`);
+  return tokens.join(' ');
+}
+
+function issueHasAnyLabel(issue: { labels: string[] }, labelGroups: readonly { key: string; labels: readonly string[] }[], selected: string[]): boolean {
+  if (selected.length === 0) return true;
+  return selected.some((key) => {
+    const option = labelGroups.find((candidate) => candidate.key === key);
+    const labels = option?.labels ?? [key];
+    return labels.some((label) => issue.labels.includes(label));
+  });
+}
 
 function ledgerDetailMatchesSelection(
   detail: LedgerIssueDetailProjection | null,
@@ -119,21 +198,32 @@ type ListItem = { kind: 'issue'; issue: IssueSummary; repo: IssueRepoSummary };
 
 type StatusFilter = 'all' | 'open' | 'merged' | 'closed';
 
+const DEFAULT_ISSUES_FILTER = 'status:open';
+
+function normalizeIssueDefaultFilter(value: string | null | undefined): string {
+  return value?.trim() || DEFAULT_ISSUES_FILTER;
+}
+
 export function IssuesView({
   repos,
   onRescan,
   initialRepoId,
   initialIssueId,
   initialCommentId,
+  defaultFilter,
 }: IssuesViewProps): JSX.Element {
+  const normalizedDefaultFilter = useMemo(
+    () => normalizeIssueDefaultFilter(defaultFilter),
+    [defaultFilter],
+  );
   // Local state
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
-  const [filter, setFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('open');
-  const [repoFilter, setRepoFilter] = useState<string | null>(initialRepoId ?? null);
+  const [filter, setFilter] = useState(normalizedDefaultFilter);
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
+  const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [repoInput, setRepoInput] = useState('');
-  const [labelFilter, setLabelFilter] = useState<string | null>(null);
+  const [repoMenuOpen, setRepoMenuOpen] = useState(false);
   const [parentFilter, setParentFilter] = useState<string | null>(null);
   type SortField = 'created_at';
   const [sortField] = useState<SortField>('created_at');
@@ -144,6 +234,16 @@ export function IssuesView({
   // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
   const lastScrolledCommentRef = useRef<string | null>(null);
+  const filterEditedRef = useRef(false);
+
+  useEffect(() => {
+    if (!filterEditedRef.current) setFilter(normalizedDefaultFilter);
+  }, [normalizedDefaultFilter]);
+
+  const setIssueFilter = useCallback((nextFilter: string) => {
+    filterEditedRef.current = true;
+    setFilter(nextFilter);
+  }, []);
 
   const resolveRepoId = useCallback((rawRepoId: string | null | undefined): string | null => {
     if (!rawRepoId) return null;
@@ -168,9 +268,8 @@ export function IssuesView({
     return rawIssueId;
   }, [repos]);
 
-  // Deep-link: auto-select issue from URL params.
-  // When initialRepoId is present, set repoFilter to narrow the list.
-  // When initialIssueId is present, select it.
+  // Deep-link: auto-select issue from URL params without treating the route repo
+  // as a sidebar filter. The repo filter is user-controlled through the field.
   useEffect(() => {
     if (!initialIssueId) return;
     const deepLinkKey = `${initialRepoId ?? ''}:${initialIssueId}:${initialCommentId ?? ''}`;
@@ -182,7 +281,6 @@ export function IssuesView({
       const canonicalIssueId = resolveIssueId(canonicalRepoId, initialIssueId);
       setSelectedRepoId(canonicalRepoId);
       setSelectedIssueId(canonicalIssueId);
-      setRepoFilter(canonicalRepoId);
     } else {
       const found = repos
         .flatMap((repo) => repo.issues.map((issue) => ({ repo, issue })))
@@ -190,7 +288,6 @@ export function IssuesView({
       if (found) {
         setSelectedRepoId(found.repo.repo_id);
         setSelectedIssueId(found.issue.id);
-        setRepoFilter(found.repo.repo_id);
       }
     }
   }, [initialRepoId, initialIssueId, initialCommentId, resolveRepoId, resolveIssueId, repos]);
@@ -216,7 +313,32 @@ export function IssuesView({
     }
   }, [repoFilter, repos]);
 
-  const normalizedFilter = useMemo(() => filter.trim().toLowerCase(), [filter]);
+  const parsedFilter = useMemo(() => parseIssueFilter(filter), [filter]);
+  const normalizedFilter = useMemo(() => parsedFilter.text.trim().toLowerCase(), [parsedFilter.text]);
+  const selectedStatus = parsedFilter.status;
+  const selectedKinds = parsedFilter.kinds;
+  const selectedPriorities = parsedFilter.priorities;
+
+  const updateStructuredFilter = useCallback((next: Partial<ParsedIssueFilter>) => {
+    setFilter((current) => {
+      filterEditedRef.current = true;
+      return formatIssueFilter({ ...parseIssueFilter(current), ...next });
+    });
+  }, []);
+
+  const toggleMultiFilter = useCallback((field: 'kinds' | 'priorities', key: string) => {
+    setFilter((current) => {
+      filterEditedRef.current = true;
+      const parsed = parseIssueFilter(current);
+      const values = new Set(parsed[field]);
+      if (values.has(key)) {
+        values.delete(key);
+      } else {
+        values.add(key);
+      }
+      return formatIssueFilter({ ...parsed, [field]: [...values] });
+    });
+  }, []);
 
   // Filter issues within repos — three-state aware, plus repo/label/parent filters
   const filteredRepos = useMemo(() => {
@@ -224,8 +346,8 @@ export function IssuesView({
       .filter((repo) => !repoFilter || repo.repo_id === repoFilter)
       .map((repo) => {
         let issues = repo.issues;
-        if (statusFilter !== 'all') {
-          issues = issues.filter((issue) => getVisualState(issue) === statusFilter);
+        if (selectedStatus && selectedStatus !== 'all') {
+          issues = issues.filter((issue) => getVisualState(issue) === selectedStatus);
         }
         if (normalizedFilter) {
           issues = issues.filter(
@@ -234,9 +356,11 @@ export function IssuesView({
               issue.id.toLowerCase().includes(normalizedFilter),
           );
         }
-        if (labelFilter) {
-          const internalLabel = LABEL_INTERNAL_NAMES[labelFilter] ?? labelFilter;
-          issues = issues.filter((issue) => issue.labels.includes(internalLabel));
+        if (selectedKinds.length > 0) {
+          issues = issues.filter((issue) => issueHasAnyLabel(issue, KIND_FILTERS, selectedKinds));
+        }
+        if (selectedPriorities.length > 0) {
+          issues = issues.filter((issue) => issueHasAnyLabel(issue, PRIORITY_FILTERS, selectedPriorities));
         }
         if (parentFilter) {
           issues = issues.filter((issue) => issue.parent_id === parentFilter);
@@ -244,7 +368,7 @@ export function IssuesView({
         return { ...repo, issues };
       })
       .filter((repo) => repo.issues.length > 0);
-  }, [repos, statusFilter, normalizedFilter, repoFilter, labelFilter, parentFilter]);
+  }, [repos, selectedStatus, normalizedFilter, repoFilter, selectedKinds, selectedPriorities, parentFilter]);
 
   // Build flat list items: all issues sorted by created_at descending (newest first)
   const items = useMemo<ListItem[]>(() => {
@@ -262,6 +386,23 @@ export function IssuesView({
     });
     return all;
   }, [filteredRepos, sortField]);
+
+  const repoOptions = useMemo(() => {
+    const normalized = repoInput.trim().toLowerCase();
+    return repos
+      .filter((repo) => {
+        if (!normalized) return true;
+        return (
+          repo.repo_name.toLowerCase().includes(normalized) ||
+          repo.repo_id.toLowerCase().includes(normalized)
+        );
+      })
+      .slice(0, 12);
+  }, [repos, repoInput]);
+
+  const showRepoLabels = useMemo(() => {
+    return new Set(items.map((item) => item.repo.repo_id)).size > 1;
+  }, [items]);
 
   // Total issue count for badge
   const totalOpen = useMemo(
@@ -400,8 +541,8 @@ export function IssuesView({
   }, [selectedRepoId, selectIssue]);
 
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 280,
-    minWidth: 190,
+    defaultWidth: 420,
+    minWidth: 280,
     storageKey: 'sidebar-width:issues',
   });
 
@@ -409,27 +550,123 @@ export function IssuesView({
     <div className="issues-view">
       {/* Left sidebar panel */}
       <div className="issues-tree" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-        <div className="issues-filter">
+        <div className="sidebar-drag-handle issues-tree__resize-handle" onMouseDown={handleMouseDown} />
+        <div
+          className="issues-filter"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setFilterMenuOpen(false);
+            }
+          }}
+        >
           <input
-            type="search"
+            type="text"
             className="issues-filter__input"
             placeholder="Filter issues..."
             value={filter}
-            onInput={(e) => setFilter(e.currentTarget.value)}
+            onInput={(e) => setIssueFilter(e.currentTarget.value)}
           />
+          {filter && (
+            <button
+              type="button"
+              className="issues-filter__clear"
+              aria-label="Clear issue filter"
+              title="Clear issue filter"
+              onClick={() => setIssueFilter('')}
+            >
+              <ClearIcon />
+            </button>
+          )}
+          <button
+            type="button"
+            className={`issues-filter__advanced-trigger${filterMenuOpen ? ' issues-filter__advanced-trigger--active' : ''}`}
+            aria-label="Advanced issue filters"
+            title="Advanced issue filters"
+            onClick={() => setFilterMenuOpen((prev) => !prev)}
+          >
+            <FilterIcon />
+          </button>
+          {filterMenuOpen && (
+            <div className="issues-filter-menu">
+              <div className="issues-filter-menu__header">
+                <span>Filters</span>
+                <button
+                  type="button"
+                  className="issues-filter-menu__clear"
+                  onClick={() => setIssueFilter(parsedFilter.text)}
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="issues-filter-menu__section">
+                <span className="issues-filter-menu__label">Status</span>
+                <div className="issues-filter-menu__options issues-filter-menu__options--segmented">
+                  {(['all', 'open', 'merged', 'closed'] as const).map((status) => (
+                    <button
+                      key={status}
+                      type="button"
+                      className={`issues-filter-menu__option${selectedStatus === status ? ' issues-filter-menu__option--active' : ''}`}
+                      onClick={() => updateStructuredFilter({ status })}
+                    >
+                      {status}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="issues-filter-menu__section">
+                <span className="issues-filter-menu__label">Kind</span>
+                <div className="issues-filter-menu__options">
+                  {KIND_FILTERS.map((kind) => (
+                    <button
+                      key={kind.key}
+                      type="button"
+                      className={`issues-filter-menu__option${selectedKinds.includes(kind.key) ? ' issues-filter-menu__option--active' : ''}`}
+                      onClick={() => toggleMultiFilter('kinds', kind.key)}
+                    >
+                      {kind.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="issues-filter-menu__section">
+                <span className="issues-filter-menu__label">Priority</span>
+                <div className="issues-filter-menu__options">
+                  {PRIORITY_FILTERS.map((priority) => (
+                    <button
+                      key={priority.key}
+                      type="button"
+                      className={`issues-filter-menu__option${selectedPriorities.includes(priority.key) ? ' issues-filter-menu__option--active' : ''}`}
+                      onClick={() => toggleMultiFilter('priorities', priority.key)}
+                    >
+                      {priority.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Repo filter */}
-        <div className="issues-repo-filter">
+        <div
+          className="issues-repo-filter"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setRepoMenuOpen(false);
+            }
+          }}
+        >
           <input
             type="search"
-            list="issues-repo-list"
             className="issues-filter__input issues-repo-filter__input"
             placeholder="Filter by repo..."
             value={repoInput}
+            onFocus={() => setRepoMenuOpen(true)}
+            onClick={() => setRepoMenuOpen(true)}
             onInput={(e) => {
               const val = e.currentTarget.value;
               setRepoInput(val);
+              setRepoMenuOpen(true);
               if (!val) {
                 setRepoFilter(null);
               }
@@ -443,72 +680,32 @@ export function IssuesView({
               if (matched) {
                 setRepoFilter(matched.repo_id);
                 setRepoInput(matched.repo_name);
+                setRepoMenuOpen(false);
               }
             }}
           />
-          {repoInput && (
-            <button
-              type="button"
-              className="issues-repo-filter__clear"
-              onClick={() => {
-                setRepoInput('');
-                setRepoFilter(null);
-              }}
-              aria-label="Clear repo filter"
-            >
-              ×
-            </button>
+          {repoMenuOpen && repoOptions.length > 0 && (
+            <div className="issues-repo-filter__menu" role="listbox">
+              {repoOptions.map((repo) => (
+                <button
+                  key={repo.repo_id}
+                  type="button"
+                  className="issues-repo-filter__option"
+                  role="option"
+                  aria-selected={repoFilter === repo.repo_id}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setRepoFilter(repo.repo_id);
+                    setRepoInput(repo.repo_name);
+                    setRepoMenuOpen(false);
+                  }}
+                >
+                  <span className="issues-repo-filter__option-name">{repo.repo_name}</span>
+                  <span className="issues-repo-filter__option-count">{repo.issues.length}</span>
+                </button>
+              ))}
+            </div>
           )}
-          <datalist id="issues-repo-list">
-            {repos.map((r) => (
-              <option key={r.repo_id} value={r.repo_name} />
-            ))}
-          </datalist>
-        </div>
-
-        <div className="issues-status-filters">
-          <button
-            type="button"
-            className={`issues-status-pill${statusFilter === 'all' ? ' issues-status-pill--active' : ''}`}
-            onClick={() => setStatusFilter('all')}
-          >
-            All
-          </button>
-          <button
-            type="button"
-            className={`issues-status-pill${statusFilter === 'open' ? ' issues-status-pill--active' : ''}`}
-            onClick={() => setStatusFilter('open')}
-          >
-            Open
-          </button>
-          <button
-            type="button"
-            className={`issues-status-pill${statusFilter === 'merged' ? ' issues-status-pill--active issues-status-pill--merged' : ''}`}
-            onClick={() => setStatusFilter('merged')}
-          >
-            Merged
-          </button>
-          <button
-            type="button"
-            className={`issues-status-pill${statusFilter === 'closed' ? ' issues-status-pill--active' : ''}`}
-            onClick={() => setStatusFilter('closed')}
-          >
-            Closed
-          </button>
-        </div>
-
-        {/* Label filter pills */}
-        <div className="issues-label-filters">
-          {(['umbrella', 'feature', 'bug', 'deferred'] as const).map((lbl) => (
-            <button
-              key={lbl}
-              type="button"
-              className={`issues-label-pill${labelFilter === lbl ? ' issues-label-pill--active' : ''}`}
-              onClick={() => setLabelFilter((prev) => prev === lbl ? null : lbl)}
-            >
-              {lbl}
-            </button>
-          ))}
         </div>
 
         {/* Parent filter indicator */}
@@ -554,7 +751,7 @@ export function IssuesView({
                   className="issues-item__title"
                   dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.issue.title) }}
                 />
-                {filteredRepos.length > 1 && (
+                {showRepoLabels && (
                   <span className="issues-item__repo">{item.repo.repo_name}</span>
                 )}
               </button>
@@ -562,9 +759,6 @@ export function IssuesView({
           </div>
         )}
       </div>
-
-      {/* Drag handle */}
-      <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
 
       {/* Right detail panel */}
       <div className="issues-detail">
@@ -602,5 +796,24 @@ export function IssuesView({
         )}
       </div>
     </div>
+  );
+}
+
+function FilterIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 6h16" />
+      <path d="M7 12h10" />
+      <path d="M10 18h4" />
+    </svg>
+  );
+}
+
+function ClearIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M18 6L6 18" />
+      <path d="M6 6l12 12" />
+    </svg>
   );
 }
