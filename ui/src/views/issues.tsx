@@ -83,7 +83,85 @@ const LABEL_INTERNAL_NAMES: Record<string, string> = {
   umbrella: 'umbrella',
   feature: 'feature',
   deferred: 'deferred',
+  coordination: 'coordination',
 };
+
+const KIND_FILTERS = [
+  { key: 'umbrella', label: 'umbrella', labels: ['umbrella'] },
+  { key: 'feature', label: 'feature', labels: ['feature'] },
+  { key: 'bug', label: 'bug', labels: ['error', 'bug'] },
+  { key: 'deferred', label: 'deferred', labels: ['deferred'] },
+  { key: 'coordination', label: 'coordination', labels: ['coordination'] },
+] as const;
+
+const PRIORITY_FILTERS = [
+  { key: 'important', label: 'important', labels: ['important'] },
+  { key: 'user-action-required', label: 'user action', labels: ['user-action-required'] },
+] as const;
+
+type ParsedIssueFilter = {
+  text: string;
+  status: StatusFilter | null;
+  kinds: string[];
+  priorities: string[];
+};
+
+function parseIssueFilter(value: string): ParsedIssueFilter {
+  const textParts: string[] = [];
+  let status: StatusFilter | null = null;
+  const kinds = new Set<string>();
+  const priorities = new Set<string>();
+
+  for (const token of value.trim().split(/\s+/).filter(Boolean)) {
+    const match = token.match(/^([a-z]+):(.+)$/i);
+    if (!match) {
+      textParts.push(token);
+      continue;
+    }
+    const key = match[1].toLowerCase();
+    const values = match[2].split(',').map((part) => part.trim().toLowerCase()).filter(Boolean);
+    if (key === 'status') {
+      const next = values[0];
+      if (next === 'all' || next === 'open' || next === 'merged' || next === 'closed') {
+        status = next;
+      }
+      continue;
+    }
+    if (key === 'kind') {
+      values.forEach((kind) => kinds.add(kind));
+      continue;
+    }
+    if (key === 'priority') {
+      values.forEach((priority) => priorities.add(priority));
+      continue;
+    }
+    textParts.push(token);
+  }
+
+  return {
+    text: textParts.join(' '),
+    status,
+    kinds: [...kinds],
+    priorities: [...priorities],
+  };
+}
+
+function formatIssueFilter(parsed: ParsedIssueFilter): string {
+  const tokens = [parsed.text.trim()].filter(Boolean);
+  if (parsed.status) tokens.push(`status:${parsed.status}`);
+  if (parsed.kinds.length > 0) tokens.push(`kind:${parsed.kinds.join(',')}`);
+  if (parsed.priorities.length > 0) tokens.push(`priority:${parsed.priorities.join(',')}`);
+  return tokens.join(' ');
+}
+
+function issueHasAnyLabel(issue: { labels: string[] }, labelGroups: readonly { key: string; labels: readonly string[] }[], selected: string[]): boolean {
+  if (selected.length === 0) return true;
+  return selected.some((key) => {
+    const option = labelGroups.find((candidate) => candidate.key === key);
+    const labels = option?.labels ?? [key];
+    return labels.some((label) => issue.labels.includes(label));
+  });
+}
 
 function ledgerDetailMatchesSelection(
   detail: LedgerIssueDetailProjection | null,
@@ -129,12 +207,11 @@ export function IssuesView({
   // Local state
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
-  const [filter, setFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('open');
+  const [filter, setFilter] = useState('status:open');
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [repoInput, setRepoInput] = useState('');
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
-  const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const [parentFilter, setParentFilter] = useState<string | null>(null);
   type SortField = 'created_at';
   const [sortField] = useState<SortField>('created_at');
@@ -214,7 +291,28 @@ export function IssuesView({
     }
   }, [repoFilter, repos]);
 
-  const normalizedFilter = useMemo(() => filter.trim().toLowerCase(), [filter]);
+  const parsedFilter = useMemo(() => parseIssueFilter(filter), [filter]);
+  const normalizedFilter = useMemo(() => parsedFilter.text.trim().toLowerCase(), [parsedFilter.text]);
+  const selectedStatus = parsedFilter.status;
+  const selectedKinds = parsedFilter.kinds;
+  const selectedPriorities = parsedFilter.priorities;
+
+  const updateStructuredFilter = useCallback((next: Partial<ParsedIssueFilter>) => {
+    setFilter((current) => formatIssueFilter({ ...parseIssueFilter(current), ...next }));
+  }, []);
+
+  const toggleMultiFilter = useCallback((field: 'kinds' | 'priorities', key: string) => {
+    setFilter((current) => {
+      const parsed = parseIssueFilter(current);
+      const values = new Set(parsed[field]);
+      if (values.has(key)) {
+        values.delete(key);
+      } else {
+        values.add(key);
+      }
+      return formatIssueFilter({ ...parsed, [field]: [...values] });
+    });
+  }, []);
 
   // Filter issues within repos — three-state aware, plus repo/label/parent filters
   const filteredRepos = useMemo(() => {
@@ -222,8 +320,8 @@ export function IssuesView({
       .filter((repo) => !repoFilter || repo.repo_id === repoFilter)
       .map((repo) => {
         let issues = repo.issues;
-        if (statusFilter !== 'all') {
-          issues = issues.filter((issue) => getVisualState(issue) === statusFilter);
+        if (selectedStatus && selectedStatus !== 'all') {
+          issues = issues.filter((issue) => getVisualState(issue) === selectedStatus);
         }
         if (normalizedFilter) {
           issues = issues.filter(
@@ -232,9 +330,11 @@ export function IssuesView({
               issue.id.toLowerCase().includes(normalizedFilter),
           );
         }
-        if (labelFilter) {
-          const internalLabel = LABEL_INTERNAL_NAMES[labelFilter] ?? labelFilter;
-          issues = issues.filter((issue) => issue.labels.includes(internalLabel));
+        if (selectedKinds.length > 0) {
+          issues = issues.filter((issue) => issueHasAnyLabel(issue, KIND_FILTERS, selectedKinds));
+        }
+        if (selectedPriorities.length > 0) {
+          issues = issues.filter((issue) => issueHasAnyLabel(issue, PRIORITY_FILTERS, selectedPriorities));
         }
         if (parentFilter) {
           issues = issues.filter((issue) => issue.parent_id === parentFilter);
@@ -242,7 +342,7 @@ export function IssuesView({
         return { ...repo, issues };
       })
       .filter((repo) => repo.issues.length > 0);
-  }, [repos, statusFilter, normalizedFilter, repoFilter, labelFilter, parentFilter]);
+  }, [repos, selectedStatus, normalizedFilter, repoFilter, selectedKinds, selectedPriorities, parentFilter]);
 
   // Build flat list items: all issues sorted by created_at descending (newest first)
   const items = useMemo<ListItem[]>(() => {
@@ -424,7 +524,14 @@ export function IssuesView({
     <div className="issues-view">
       {/* Left sidebar panel */}
       <div className="issues-tree" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-        <div className="issues-filter">
+        <div
+          className="issues-filter"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setFilterMenuOpen(false);
+            }
+          }}
+        >
           <input
             type="search"
             className="issues-filter__input"
@@ -432,6 +539,74 @@ export function IssuesView({
             value={filter}
             onInput={(e) => setFilter(e.currentTarget.value)}
           />
+          <button
+            type="button"
+            className={`issues-filter__advanced-trigger${filterMenuOpen ? ' issues-filter__advanced-trigger--active' : ''}`}
+            aria-label="Advanced issue filters"
+            title="Advanced issue filters"
+            onClick={() => setFilterMenuOpen((prev) => !prev)}
+          >
+            <FilterIcon />
+          </button>
+          {filterMenuOpen && (
+            <div className="issues-filter-menu">
+              <div className="issues-filter-menu__header">
+                <span>Filters</span>
+                <button
+                  type="button"
+                  className="issues-filter-menu__clear"
+                  onClick={() => setFilter(parsedFilter.text)}
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="issues-filter-menu__section">
+                <span className="issues-filter-menu__label">Status</span>
+                <div className="issues-filter-menu__options issues-filter-menu__options--segmented">
+                  {(['all', 'open', 'merged', 'closed'] as const).map((status) => (
+                    <button
+                      key={status}
+                      type="button"
+                      className={`issues-filter-menu__option${selectedStatus === status ? ' issues-filter-menu__option--active' : ''}`}
+                      onClick={() => updateStructuredFilter({ status })}
+                    >
+                      {status}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="issues-filter-menu__section">
+                <span className="issues-filter-menu__label">Kind</span>
+                <div className="issues-filter-menu__options">
+                  {KIND_FILTERS.map((kind) => (
+                    <button
+                      key={kind.key}
+                      type="button"
+                      className={`issues-filter-menu__option${selectedKinds.includes(kind.key) ? ' issues-filter-menu__option--active' : ''}`}
+                      onClick={() => toggleMultiFilter('kinds', kind.key)}
+                    >
+                      {kind.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="issues-filter-menu__section">
+                <span className="issues-filter-menu__label">Priority</span>
+                <div className="issues-filter-menu__options">
+                  {PRIORITY_FILTERS.map((priority) => (
+                    <button
+                      key={priority.key}
+                      type="button"
+                      className={`issues-filter-menu__option${selectedPriorities.includes(priority.key) ? ' issues-filter-menu__option--active' : ''}`}
+                      onClick={() => toggleMultiFilter('priorities', priority.key)}
+                    >
+                      {priority.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Repo filter */}
@@ -471,20 +646,6 @@ export function IssuesView({
               }
             }}
           />
-          {repoInput && (
-            <button
-              type="button"
-              className="issues-repo-filter__clear"
-              onClick={() => {
-                setRepoInput('');
-                setRepoFilter(null);
-                setRepoMenuOpen(false);
-              }}
-              aria-label="Clear repo filter"
-            >
-              ×
-            </button>
-          )}
           {repoMenuOpen && repoOptions.length > 0 && (
             <div className="issues-repo-filter__menu" role="listbox">
               {repoOptions.map((repo) => (
@@ -507,51 +668,6 @@ export function IssuesView({
               ))}
             </div>
           )}
-        </div>
-
-        <div className="issues-status-filters">
-          <button
-            type="button"
-            className={`issues-status-pill${statusFilter === 'all' ? ' issues-status-pill--active' : ''}`}
-            onClick={() => setStatusFilter('all')}
-          >
-            All
-          </button>
-          <button
-            type="button"
-            className={`issues-status-pill${statusFilter === 'open' ? ' issues-status-pill--active' : ''}`}
-            onClick={() => setStatusFilter('open')}
-          >
-            Open
-          </button>
-          <button
-            type="button"
-            className={`issues-status-pill${statusFilter === 'merged' ? ' issues-status-pill--active issues-status-pill--merged' : ''}`}
-            onClick={() => setStatusFilter('merged')}
-          >
-            Merged
-          </button>
-          <button
-            type="button"
-            className={`issues-status-pill${statusFilter === 'closed' ? ' issues-status-pill--active' : ''}`}
-            onClick={() => setStatusFilter('closed')}
-          >
-            Closed
-          </button>
-        </div>
-
-        {/* Label filter pills */}
-        <div className="issues-label-filters">
-          {(['umbrella', 'feature', 'bug', 'deferred'] as const).map((lbl) => (
-            <button
-              key={lbl}
-              type="button"
-              className={`issues-label-pill${labelFilter === lbl ? ' issues-label-pill--active' : ''}`}
-              onClick={() => setLabelFilter((prev) => prev === lbl ? null : lbl)}
-            >
-              {lbl}
-            </button>
-          ))}
         </div>
 
         {/* Parent filter indicator */}
@@ -645,5 +761,15 @@ export function IssuesView({
         )}
       </div>
     </div>
+  );
+}
+
+function FilterIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 6h16" />
+      <path d="M7 12h10" />
+      <path d="M10 18h4" />
+    </svg>
   );
 }

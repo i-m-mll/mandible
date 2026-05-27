@@ -16616,12 +16616,73 @@ function renderInlineMarkdown3(src) {
   const stripped = html4.replace(/^<p>([\s\S]*?)<\/p>\n?$/, "$1").trim();
   return sanitizeInlineHtml3(stripped);
 }
-var LABEL_INTERNAL_NAMES = {
-  bug: "error",
-  umbrella: "umbrella",
-  feature: "feature",
-  deferred: "deferred"
-};
+var KIND_FILTERS = [
+  { key: "umbrella", label: "umbrella", labels: ["umbrella"] },
+  { key: "feature", label: "feature", labels: ["feature"] },
+  { key: "bug", label: "bug", labels: ["error", "bug"] },
+  { key: "deferred", label: "deferred", labels: ["deferred"] },
+  { key: "coordination", label: "coordination", labels: ["coordination"] }
+];
+var PRIORITY_FILTERS = [
+  { key: "important", label: "important", labels: ["important"] },
+  { key: "user-action-required", label: "user action", labels: ["user-action-required"] }
+];
+function parseIssueFilter(value) {
+  const textParts = [];
+  let status = null;
+  const kinds = /* @__PURE__ */ new Set();
+  const priorities = /* @__PURE__ */ new Set();
+  for (const token of value.trim().split(/\s+/).filter(Boolean)) {
+    const match = token.match(/^([a-z]+):(.+)$/i);
+    if (!match) {
+      textParts.push(token);
+      continue;
+    }
+    const key2 = match[1].toLowerCase();
+    const values = match[2].split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
+    if (key2 === "status") {
+      const next = values[0];
+      if (next === "all" || next === "open" || next === "merged" || next === "closed") {
+        status = next;
+      }
+      continue;
+    }
+    if (key2 === "kind") {
+      values.forEach((kind) => kinds.add(kind));
+      continue;
+    }
+    if (key2 === "priority") {
+      values.forEach((priority) => priorities.add(priority));
+      continue;
+    }
+    textParts.push(token);
+  }
+  return {
+    text: textParts.join(" "),
+    status,
+    kinds: [...kinds],
+    priorities: [...priorities]
+  };
+}
+function formatIssueFilter(parsed) {
+  const tokens = [parsed.text.trim()].filter(Boolean);
+  if (parsed.status)
+    tokens.push(`status:${parsed.status}`);
+  if (parsed.kinds.length > 0)
+    tokens.push(`kind:${parsed.kinds.join(",")}`);
+  if (parsed.priorities.length > 0)
+    tokens.push(`priority:${parsed.priorities.join(",")}`);
+  return tokens.join(" ");
+}
+function issueHasAnyLabel(issue, labelGroups, selected2) {
+  if (selected2.length === 0)
+    return true;
+  return selected2.some((key2) => {
+    const option = labelGroups.find((candidate) => candidate.key === key2);
+    const labels = option?.labels ?? [key2];
+    return labels.some((label) => issue.labels.includes(label));
+  });
+}
 function ledgerDetailMatchesSelection(detail, repoId, issueId) {
   if (!detail || !repoId || !issueId)
     return false;
@@ -16652,12 +16713,11 @@ function IssuesView({
 }) {
   const [selectedRepoId, setSelectedRepoId] = d2(null);
   const [selectedIssueId, setSelectedIssueId] = d2(null);
-  const [filter2, setFilter] = d2("");
-  const [statusFilter, setStatusFilter] = d2("open");
+  const [filter2, setFilter] = d2("status:open");
+  const [filterMenuOpen, setFilterMenuOpen] = d2(false);
   const [repoFilter, setRepoFilter] = d2(null);
   const [repoInput, setRepoInput] = d2("");
   const [repoMenuOpen, setRepoMenuOpen] = d2(false);
-  const [labelFilter, setLabelFilter] = d2(null);
   const [parentFilter, setParentFilter] = d2(null);
   const [sortField] = d2("created_at");
   const [ledgerIssueDetail, setLedgerIssueDetail] = d2(null);
@@ -16735,28 +16795,49 @@ function IssuesView({
       setRepoInput("");
     }
   }, [repoFilter, repos]);
-  const normalizedFilter = T2(() => filter2.trim().toLowerCase(), [filter2]);
+  const parsedFilter = T2(() => parseIssueFilter(filter2), [filter2]);
+  const normalizedFilter = T2(() => parsedFilter.text.trim().toLowerCase(), [parsedFilter.text]);
+  const selectedStatus = parsedFilter.status;
+  const selectedKinds = parsedFilter.kinds;
+  const selectedPriorities = parsedFilter.priorities;
+  const updateStructuredFilter = q2((next) => {
+    setFilter((current) => formatIssueFilter({ ...parseIssueFilter(current), ...next }));
+  }, []);
+  const toggleMultiFilter = q2((field, key2) => {
+    setFilter((current) => {
+      const parsed = parseIssueFilter(current);
+      const values = new Set(parsed[field]);
+      if (values.has(key2)) {
+        values.delete(key2);
+      } else {
+        values.add(key2);
+      }
+      return formatIssueFilter({ ...parsed, [field]: [...values] });
+    });
+  }, []);
   const filteredRepos = T2(() => {
     return repos.filter((repo) => !repoFilter || repo.repo_id === repoFilter).map((repo) => {
       let issues = repo.issues;
-      if (statusFilter !== "all") {
-        issues = issues.filter((issue) => getVisualState(issue) === statusFilter);
+      if (selectedStatus && selectedStatus !== "all") {
+        issues = issues.filter((issue) => getVisualState(issue) === selectedStatus);
       }
       if (normalizedFilter) {
         issues = issues.filter(
           (issue) => issue.title.toLowerCase().includes(normalizedFilter) || issue.id.toLowerCase().includes(normalizedFilter)
         );
       }
-      if (labelFilter) {
-        const internalLabel = LABEL_INTERNAL_NAMES[labelFilter] ?? labelFilter;
-        issues = issues.filter((issue) => issue.labels.includes(internalLabel));
+      if (selectedKinds.length > 0) {
+        issues = issues.filter((issue) => issueHasAnyLabel(issue, KIND_FILTERS, selectedKinds));
+      }
+      if (selectedPriorities.length > 0) {
+        issues = issues.filter((issue) => issueHasAnyLabel(issue, PRIORITY_FILTERS, selectedPriorities));
       }
       if (parentFilter) {
         issues = issues.filter((issue) => issue.parent_id === parentFilter);
       }
       return { ...repo, issues };
     }).filter((repo) => repo.issues.length > 0);
-  }, [repos, statusFilter, normalizedFilter, repoFilter, labelFilter, parentFilter]);
+  }, [repos, selectedStatus, normalizedFilter, repoFilter, selectedKinds, selectedPriorities, parentFilter]);
   const items = T2(() => {
     const all = [];
     for (const repo of filteredRepos) {
@@ -16912,16 +16993,93 @@ function IssuesView({
   });
   return /* @__PURE__ */ u3("div", { className: "issues-view", children: [
     /* @__PURE__ */ u3("div", { className: "issues-tree", style: { ...sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}, flexShrink: 0 }, children: [
-      /* @__PURE__ */ u3("div", { className: "issues-filter", children: /* @__PURE__ */ u3(
-        "input",
+      /* @__PURE__ */ u3(
+        "div",
         {
-          type: "search",
-          className: "issues-filter__input",
-          placeholder: "Filter issues...",
-          value: filter2,
-          onInput: (e3) => setFilter(e3.currentTarget.value)
+          className: "issues-filter",
+          onBlur: (event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)) {
+              setFilterMenuOpen(false);
+            }
+          },
+          children: [
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "search",
+                className: "issues-filter__input",
+                placeholder: "Filter issues...",
+                value: filter2,
+                onInput: (e3) => setFilter(e3.currentTarget.value)
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                type: "button",
+                className: `issues-filter__advanced-trigger${filterMenuOpen ? " issues-filter__advanced-trigger--active" : ""}`,
+                "aria-label": "Advanced issue filters",
+                title: "Advanced issue filters",
+                onClick: () => setFilterMenuOpen((prev) => !prev),
+                children: /* @__PURE__ */ u3(FilterIcon, {})
+              }
+            ),
+            filterMenuOpen && /* @__PURE__ */ u3("div", { className: "issues-filter-menu", children: [
+              /* @__PURE__ */ u3("div", { className: "issues-filter-menu__header", children: [
+                /* @__PURE__ */ u3("span", { children: "Filters" }),
+                /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: "issues-filter-menu__clear",
+                    onClick: () => setFilter(parsedFilter.text),
+                    children: "Clear"
+                  }
+                )
+              ] }),
+              /* @__PURE__ */ u3("div", { className: "issues-filter-menu__section", children: [
+                /* @__PURE__ */ u3("span", { className: "issues-filter-menu__label", children: "Status" }),
+                /* @__PURE__ */ u3("div", { className: "issues-filter-menu__options issues-filter-menu__options--segmented", children: ["all", "open", "merged", "closed"].map((status) => /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: `issues-filter-menu__option${selectedStatus === status ? " issues-filter-menu__option--active" : ""}`,
+                    onClick: () => updateStructuredFilter({ status }),
+                    children: status
+                  },
+                  status
+                )) })
+              ] }),
+              /* @__PURE__ */ u3("div", { className: "issues-filter-menu__section", children: [
+                /* @__PURE__ */ u3("span", { className: "issues-filter-menu__label", children: "Kind" }),
+                /* @__PURE__ */ u3("div", { className: "issues-filter-menu__options", children: KIND_FILTERS.map((kind) => /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: `issues-filter-menu__option${selectedKinds.includes(kind.key) ? " issues-filter-menu__option--active" : ""}`,
+                    onClick: () => toggleMultiFilter("kinds", kind.key),
+                    children: kind.label
+                  },
+                  kind.key
+                )) })
+              ] }),
+              /* @__PURE__ */ u3("div", { className: "issues-filter-menu__section", children: [
+                /* @__PURE__ */ u3("span", { className: "issues-filter-menu__label", children: "Priority" }),
+                /* @__PURE__ */ u3("div", { className: "issues-filter-menu__options", children: PRIORITY_FILTERS.map((priority) => /* @__PURE__ */ u3(
+                  "button",
+                  {
+                    type: "button",
+                    className: `issues-filter-menu__option${selectedPriorities.includes(priority.key) ? " issues-filter-menu__option--active" : ""}`,
+                    onClick: () => toggleMultiFilter("priorities", priority.key),
+                    children: priority.label
+                  },
+                  priority.key
+                )) })
+              ] })
+            ] })
+          ]
         }
-      ) }),
+      ),
       /* @__PURE__ */ u3(
         "div",
         {
@@ -16962,20 +17120,6 @@ function IssuesView({
                 }
               }
             ),
-            repoInput && /* @__PURE__ */ u3(
-              "button",
-              {
-                type: "button",
-                className: "issues-repo-filter__clear",
-                onClick: () => {
-                  setRepoInput("");
-                  setRepoFilter(null);
-                  setRepoMenuOpen(false);
-                },
-                "aria-label": "Clear repo filter",
-                children: "\xD7"
-              }
-            ),
             repoMenuOpen && repoOptions.length > 0 && /* @__PURE__ */ u3("div", { className: "issues-repo-filter__menu", role: "listbox", children: repoOptions.map((repo) => /* @__PURE__ */ u3(
               "button",
               {
@@ -16999,54 +17143,6 @@ function IssuesView({
           ]
         }
       ),
-      /* @__PURE__ */ u3("div", { className: "issues-status-filters", children: [
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: `issues-status-pill${statusFilter === "all" ? " issues-status-pill--active" : ""}`,
-            onClick: () => setStatusFilter("all"),
-            children: "All"
-          }
-        ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: `issues-status-pill${statusFilter === "open" ? " issues-status-pill--active" : ""}`,
-            onClick: () => setStatusFilter("open"),
-            children: "Open"
-          }
-        ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: `issues-status-pill${statusFilter === "merged" ? " issues-status-pill--active issues-status-pill--merged" : ""}`,
-            onClick: () => setStatusFilter("merged"),
-            children: "Merged"
-          }
-        ),
-        /* @__PURE__ */ u3(
-          "button",
-          {
-            type: "button",
-            className: `issues-status-pill${statusFilter === "closed" ? " issues-status-pill--active" : ""}`,
-            onClick: () => setStatusFilter("closed"),
-            children: "Closed"
-          }
-        )
-      ] }),
-      /* @__PURE__ */ u3("div", { className: "issues-label-filters", children: ["umbrella", "feature", "bug", "deferred"].map((lbl) => /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: `issues-label-pill${labelFilter === lbl ? " issues-label-pill--active" : ""}`,
-          onClick: () => setLabelFilter((prev) => prev === lbl ? null : lbl),
-          children: lbl
-        },
-        lbl
-      )) }),
       parentFilter && /* @__PURE__ */ u3("div", { className: "issues-parent-filter", children: [
         /* @__PURE__ */ u3("span", { className: "issues-parent-filter__label", children: [
           "Children of ",
@@ -17109,6 +17205,13 @@ function IssuesView({
         }
       }
     ) }) : detailLoading ? /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Loading..." }) }) : /* @__PURE__ */ u3("div", { className: "issues-detail__empty", children: /* @__PURE__ */ u3("p", { className: "text-muted", children: "Failed to load issue detail." }) }) })
+  ] });
+}
+function FilterIcon() {
+  return /* @__PURE__ */ u3("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("path", { d: "M4 6h16" }),
+    /* @__PURE__ */ u3("path", { d: "M7 12h10" }),
+    /* @__PURE__ */ u3("path", { d: "M10 18h4" })
   ] });
 }
 
