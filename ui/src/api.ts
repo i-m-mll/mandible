@@ -171,7 +171,7 @@ export async function approveAuthRequest(requestId: string): Promise<void> {
   // (e.g. invalid_command: "Auth request has no command set")
   // Bug: 737df04 — wrap in AbortController so the fetch does not hang indefinitely
   // if Mandible is mid-startup-scan and the event loop is saturated.
-  const APPROVE_TIMEOUT_MS = 5 * 60_000;
+  const APPROVE_TIMEOUT_MS = 10_000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), APPROVE_TIMEOUT_MS);
 
@@ -203,10 +203,6 @@ export async function approveAuthRequest(requestId: string): Promise<void> {
     }
     throw new Error(message);
   }
-}
-
-export async function rebuildAuthArtifacts(requestId: string): Promise<void> {
-  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/rebuild-artifacts`);
 }
 
 export async function rejectAuthRequest(requestId: string): Promise<void> {
