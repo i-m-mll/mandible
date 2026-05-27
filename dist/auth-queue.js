@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ArtifactRebuildError, rebuildArtifactsForRequest } from "./auth-artifacts.js";
 import { executeAuthCommand } from "./auth-executor.js";
 import { AuthHookManager } from "./auth-hooks.js";
 import { getDb, resolvePrefix } from "./db.js";
@@ -6,6 +7,7 @@ import { applyAuthRequestLedgerCompletion, syncAuthRequestLedgerLinks, } from ".
 import { broadcast as defaultBroadcast } from "./sse.js";
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
+const REBUILD_ON_APPROVAL_SETTING = "auth_rebuild_artifacts_on_approval";
 // Bug: dd21c1e — valid auth request types
 const VALID_AUTH_REQUEST_TYPES = [
     "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
@@ -574,6 +576,10 @@ export class AuthQueue {
         if (!request.command || !request.command.trim()) {
             throw new AuthQueueError("invalid_command", "Auth request has no command set — update the request with a valid command before approving");
         }
+        if (this.shouldRebuildArtifactsBeforeApproval(request)) {
+            this.appendOutput(id, "[artifact-rebuild] auto rebuild before approval is enabled\n");
+            this.rebuildArtifacts(id);
+        }
         const now = this.now();
         this.db
             .prepare("UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ? WHERE id = ?")
@@ -584,6 +590,15 @@ export class AuthQueue {
         }
         this.executeInBackground(executing);
         return executing;
+    }
+    shouldRebuildArtifactsBeforeApproval(request) {
+        if (request.repo !== "mandible" || request.type !== "merge") {
+            return false;
+        }
+        const row = this.db
+            .prepare("SELECT value FROM settings WHERE key = ?")
+            .get(REBUILD_ON_APPROVAL_SETTING);
+        return row?.value === "true";
     }
     autoApprovePending(approval) {
         const approved = [];
@@ -625,6 +640,40 @@ export class AuthQueue {
             .prepare("UPDATE auth_requests SET skipped_at = ?, updated_at = ? WHERE id = ?")
             .run(now, now, id);
         return this.requireRequest(id);
+    }
+    rebuildArtifacts(id) {
+        this.expireStale();
+        const request = this.requireRequest(id);
+        if (request.status !== "pending") {
+            throw new AuthQueueError("invalid_status", `Request is ${request.status}, cannot rebuild artifacts.`, request.status);
+        }
+        try {
+            const result = rebuildArtifactsForRequest(request);
+            this.appendOutput(id, `${result.output}[artifact-rebuild] ${result.committed
+                ? `committed ${result.commit_sha?.slice(0, 12) ?? "generated artifacts"}`
+                : "no artifact commit needed"}\n`);
+            const now = this.now();
+            this.db
+                .prepare("UPDATE auth_requests SET files_changed = ?, additions = ?, deletions = ?, " +
+                "diff_summary = ?, commit_message = ?, updated_at = ? WHERE id = ?")
+                .run(result.files_changed, result.additions, result.deletions, result.diff_summary, result.commit_message, now, id);
+            const updated = this.requireRequest(id);
+            this.broadcast({
+                event: "auth:updated",
+                data: { request: updated }
+            });
+            return updated;
+        }
+        catch (error) {
+            if (error instanceof ArtifactRebuildError) {
+                if (error.output) {
+                    this.appendOutput(id, `${error.output}\n`);
+                }
+                throw new AuthQueueError("invalid_command", error.message, request.status);
+            }
+            const message = error instanceof Error ? error.message : "Artifact rebuild failed.";
+            throw new AuthQueueError("invalid_command", message, request.status);
+        }
     }
     appendOutput(id, chunk) {
         this.expireStale();
@@ -1135,6 +1184,12 @@ export class AuthQueue {
 
       CREATE INDEX IF NOT EXISTS idx_auth_requests_queue
         ON auth_requests(status, skipped_at, created_at);
+
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
     }
 }

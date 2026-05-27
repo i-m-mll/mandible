@@ -690,6 +690,7 @@ __export(api_exports, {
   patchSession: () => patchSession,
   pushRepo: () => pushRepo,
   pushRepos: () => pushRepos,
+  rebuildAuthArtifacts: () => rebuildAuthArtifacts,
   rejectAuthRequest: () => rejectAuthRequest,
   removeSessionPreset: () => removeSessionPreset,
   reorderPresetNode: () => reorderPresetNode,
@@ -872,7 +873,7 @@ async function getAuthHistory(limit) {
   return normalizeList(payload);
 }
 async function approveAuthRequest(requestId) {
-  const APPROVE_TIMEOUT_MS = 1e4;
+  const APPROVE_TIMEOUT_MS = 5 * 6e4;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), APPROVE_TIMEOUT_MS);
   const path = `/api/auth/request/${encodeURIComponent(requestId)}/approve`;
@@ -903,6 +904,9 @@ async function approveAuthRequest(requestId) {
     }
     throw new Error(message);
   }
+}
+async function rebuildAuthArtifacts(requestId) {
+  await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/rebuild-artifacts`);
 }
 async function rejectAuthRequest(requestId) {
   await apiPost(`/api/auth/request/${encodeURIComponent(requestId)}/reject`);
@@ -13270,6 +13274,7 @@ function AuthQueueView({
   const toastTimerRef = A2(null);
   const [autoApproveStatus, setAutoApproveStatus] = d2(null);
   const [autoApproveBusy, setAutoApproveBusy] = d2(false);
+  const [rebuildOnApprove, setRebuildOnApprove] = d2(false);
   const autoApproveSigningConfigured = Boolean(autoApproveStatus?.signing?.configured);
   const showToast = q2((message) => {
     setToastMessage(message);
@@ -13294,6 +13299,10 @@ function AuthQueueView({
       getAuthAutoApproveStatus().then((status) => {
         if (active)
           setAutoApproveStatus(status);
+      }).catch(() => void 0);
+      getSettings().then((settings) => {
+        if (active)
+          setRebuildOnApprove(settings.auth_rebuild_artifacts_on_approval === "true");
       }).catch(() => void 0);
     };
     load();
@@ -13345,6 +13354,13 @@ function AuthQueueView({
       showToast(message);
     }),
     [runAction, onApprove, showToast]
+  );
+  const handleRebuildArtifacts = q2(
+    (id2) => runAction(id2, rebuildAuthArtifacts, (err) => {
+      const message = err instanceof Error ? err.message : "Artifact rebuild failed. Try again.";
+      showToast(message);
+    }),
+    [runAction, showToast]
   );
   const handleReject = q2(
     (id2) => runAction(id2, onReject),
@@ -13626,7 +13642,18 @@ function AuthQueueView({
       }
       handleApprove(id2);
     };
+    const showArtifactRebuild = request.repo === "mandible" && getAuthType(request) === "merge" && status === "pending";
     return /* @__PURE__ */ u3("div", { className: "auth-actions", children: [
+      showArtifactRebuild && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "btn btn--secondary",
+          onClick: () => handleRebuildArtifacts(id2),
+          disabled: actionDisabled,
+          children: "Rebuild Artifacts"
+        }
+      ),
       /* @__PURE__ */ u3(
         "button",
         {
@@ -13634,7 +13661,7 @@ function AuthQueueView({
           className: "btn btn--success",
           onClick: handleApproveClick,
           disabled: actionDisabled,
-          children: "Approve"
+          children: showArtifactRebuild && rebuildOnApprove ? "Rebuild + Approve" : "Approve"
         }
       ),
       /* @__PURE__ */ u3(
@@ -27205,6 +27232,16 @@ function SettingsView(props) {
             min: 1,
             max: 480,
             suffix: "min"
+          }
+        ),
+        /* @__PURE__ */ u3(
+          ToggleRow,
+          {
+            title: "Rebuild artifacts on approval",
+            desc: "For Mandible self-merges, run the generated-artifact rebuild before approving.",
+            settingKey: "auth_rebuild_artifacts_on_approval",
+            settings,
+            onSave
           }
         ),
         /* @__PURE__ */ u3(DelegatedSigningSection, {})

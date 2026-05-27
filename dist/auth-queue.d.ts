@@ -82,9 +82,11 @@ export declare class AuthQueue {
     markDelivered(id: string): boolean;
     delete(id: string, reason: string): void;
     approve(id: string, approval?: AuthApprovalContext): AuthRequest;
+    private shouldRebuildArtifactsBeforeApproval;
     autoApprovePending(approval: AuthApprovalContext): AuthRequest[];
     reject(id: string, reason?: string): AuthRequest;
     skip(id: string): AuthRequest;
+    rebuildArtifacts(id: string): AuthRequest;
     appendOutput(id: string, chunk: string): AuthRequest;
     setResult(id: string, exitCode: number, output: string, error?: string): AuthRequest;
     expireStale(): AuthRequest[];

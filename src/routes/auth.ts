@@ -198,6 +198,15 @@ export function registerAuthRoutes(
     }
   });
 
+  app.post("/api/auth/request/:id/rebuild-artifacts", (req, res) => {
+    try {
+      const request = authQueue.rebuildArtifacts(req.params.id);
+      res.status(200).json({ request_id: request.id, status: request.status });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
   app.post("/api/auth/request/:id/reject", (req, res) => {
     try {
       const body = readBody<Record<string, unknown>>(req);
