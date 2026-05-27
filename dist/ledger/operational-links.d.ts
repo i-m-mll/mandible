@@ -80,6 +80,7 @@ export declare function syncAuthRequestLedgerLinks(db: Db, input: {
     issue_ids?: string[] | null;
     issues?: string[] | null;
     commit_message?: string | null;
+    merge_output?: string | null;
     recordEvent?: boolean;
 }): OperationalLinkResult[];
 export declare function applyAuthRequestLedgerCompletion(db: Db, input: {
@@ -90,6 +91,7 @@ export declare function applyAuthRequestLedgerCompletion(db: Db, input: {
     issue_ids?: string[] | null;
     issues?: string[] | null;
     commit_message?: string | null;
+    merge_output?: string | null;
     approval_source?: string | null;
     approval_lease_id?: string | null;
     resolution?: LedgerIssueResolution;

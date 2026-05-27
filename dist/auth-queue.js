@@ -918,6 +918,7 @@ export class AuthQueue {
                 issue_ids: request.issue_ids ?? null,
                 issues: request.issues ?? null,
                 commit_message: request.commit_message,
+                merge_output: request.output,
                 recordEvent,
             });
         }
@@ -935,6 +936,7 @@ export class AuthQueue {
                 issue_ids: request.issue_ids ?? null,
                 issues: request.issues ?? null,
                 commit_message: request.commit_message,
+                merge_output: request.output,
                 approval_source: request.approval_source,
                 approval_lease_id: request.approval_lease_id,
             });
