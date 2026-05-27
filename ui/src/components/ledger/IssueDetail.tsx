@@ -552,25 +552,28 @@ function MetadataDisclosure({
   children: JSX.Element;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
-  const [alignment, setAlignment] = useState<'start' | 'center' | 'end'>('start');
+  const [panelOffset, setPanelOffset] = useState(0);
   const ref = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => {
     if (!open) return undefined;
     const positionPanel = () => {
       const panel = ref.current?.querySelector<HTMLElement>('.ledger-metadata-popover__panel');
-      if (!panel) return;
-      setAlignment('start');
+      const summary = ref.current?.querySelector<HTMLElement>('summary');
+      if (!panel || !summary || !ref.current) return;
+      setPanelOffset(0);
       requestAnimationFrame(() => {
-        const bounds = panel.getBoundingClientRect();
-        const inset = 12;
-        if (bounds.right > window.innerWidth - inset) {
-          setAlignment('end');
-        } else if (bounds.left < inset) {
-          setAlignment('start');
-        } else {
-          setAlignment('center');
-        }
+        const popoverBounds = ref.current?.getBoundingClientRect();
+        const detailBounds = ref.current?.closest('.ledger-issue-detail')?.getBoundingClientRect();
+        if (!popoverBounds) return;
+        const inset = 8;
+        const panelWidth = panel.offsetWidth;
+        const minLeft = Math.max(inset, (detailBounds?.left ?? 0) + inset);
+        const maxLeft = Math.min(window.innerWidth - inset, detailBounds?.right ?? window.innerWidth) - panelWidth;
+        const summaryBounds = summary.getBoundingClientRect();
+        const preferredLeft = summaryBounds.left + (summaryBounds.width / 2) - (panelWidth / 2);
+        const clampedLeft = Math.min(Math.max(preferredLeft, minLeft), Math.max(minLeft, maxLeft));
+        setPanelOffset(Math.round(clampedLeft - popoverBounds.left));
       });
     };
     const closeOnOutsidePointer = (event: PointerEvent) => {
@@ -602,7 +605,7 @@ function MetadataDisclosure({
       <summary aria-label={label} title={label}>
         <MetadataIcon />
       </summary>
-      <div className={`ledger-metadata-popover__panel ledger-metadata-popover__panel--${alignment}`}>{children}</div>
+      <div className="ledger-metadata-popover__panel" style={{ left: `${panelOffset}px` }}>{children}</div>
     </details>
   );
 }
@@ -860,6 +863,7 @@ function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): s
   if (typeof document === 'undefined' || !html) return html;
   const container = document.createElement('div');
   container.innerHTML = html;
+  linkifyInlineCodeRefs(container, detail);
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       const parent = node.parentElement;
@@ -895,6 +899,29 @@ function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): s
     textNode.replaceWith(fragment);
   }
   return container.innerHTML;
+}
+
+function linkifyInlineCodeRefs(container: HTMLElement, detail: LedgerIssueDetailProjection): void {
+  const codeRefs = Array.from(container.querySelectorAll('code')).filter((code) => (
+    !code.closest('a, pre') && Boolean(code.textContent?.trim())
+  ));
+  for (const code of codeRefs) {
+    const text = code.textContent?.trim() ?? '';
+    REF_PATTERN.lastIndex = 0;
+    const match = REF_PATTERN.exec(text);
+    if (!match || match.index !== 0 || match[0].length !== text.length) continue;
+    const isLegacyBareIssueRef = Boolean(match[5]);
+    const isExplicitRef = Boolean(match[2]);
+    const isCanonicalRef = !match[1] && !match[2] && !match[4] && !match[5] && match[0].startsWith('iss_');
+    if (!isLegacyBareIssueRef && !isExplicitRef && !isCanonicalRef) continue;
+    const context = code.parentElement?.textContent ?? text;
+    const contextIndex = Math.max(0, context.indexOf(text));
+    match.index = contextIndex;
+    const link = refLink(match, detail, context, contextIndex);
+    if (!link) continue;
+    link.classList.add('ledger-xref--inline-code');
+    code.replaceWith(link);
+  }
 }
 
 function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection, text: string): HTMLAnchorElement | null {
@@ -955,7 +982,8 @@ function isAuthRequestContext(text: string, matchIndex: number): boolean {
 }
 
 function isCommitLikeContext(text: string, matchIndex: number): boolean {
-  return /(?:merge|commit)\s+$/i.test(text.slice(Math.max(0, matchIndex - 24), matchIndex));
+  return /(?:merge|commit(?:\s+(?:is|was|hash|sha))?|superseding\s+the\s+earlier|earlier)\s+$/i
+    .test(text.slice(Math.max(0, matchIndex - 64), matchIndex));
 }
 
 function issueRefLabel(parsed: { repo: string; issue: string }, detail: LedgerIssueDetailProjection): string {
