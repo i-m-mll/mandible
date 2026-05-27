@@ -39650,7 +39650,25 @@ function GraphView2({ onNavigate, refreshToken, initialMode, initialFocus }) {
   };
   return /* @__PURE__ */ u3("div", { className: "graph-view", children: [
     /* @__PURE__ */ u3("div", { className: "graph-topbar", children: [
-      /* @__PURE__ */ u3("div", { className: "graph-mode-strip", "aria-label": "Graph modes", children: modes.map((item) => /* @__PURE__ */ u3(ModeButton, { mode: item, current: mode, onSelect: setMode }, item.id)) }),
+      /* @__PURE__ */ u3("div", { className: "graph-primary-controls", children: [
+        /* @__PURE__ */ u3("div", { className: "graph-mode-strip", "aria-label": "Graph modes", children: modes.map((item) => /* @__PURE__ */ u3(ModeButton, { mode: item, current: mode, onSelect: setMode }, item.id)) }),
+        /* @__PURE__ */ u3("div", { className: "graph-layer-strip", "aria-label": "Graph layers", children: [
+          layers.length === 0 && /* @__PURE__ */ u3("div", { className: "graph-layer-strip__empty", children: "No layers" }),
+          layers.map((layer) => /* @__PURE__ */ u3("label", { className: `graph-layer-chip${!layer.enabled ? " graph-layer-chip--disabled" : ""}`, children: [
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "checkbox",
+                checked: layer.enabled && enabledLayers.has(layer.id),
+                disabled: !layer.enabled,
+                onChange: () => toggleLayer(layer)
+              }
+            ),
+            /* @__PURE__ */ u3("span", { children: typeLabel(layer.id) }),
+            /* @__PURE__ */ u3("em", { children: layer.count })
+          ] }, layer.id))
+        ] })
+      ] }),
       /* @__PURE__ */ u3("div", { className: "graph-toolbar", children: [
         /* @__PURE__ */ u3("div", { className: "graph-toolbar__combobox-group", children: [
           /* @__PURE__ */ u3(
@@ -39696,23 +39714,6 @@ function GraphView2({ onNavigate, refreshToken, initialMode, initialFocus }) {
       ] })
     ] }),
     /* @__PURE__ */ u3("div", { className: "graph-workspace", children: [
-      /* @__PURE__ */ u3("div", { className: "graph-layer-rail", children: [
-        /* @__PURE__ */ u3("div", { className: "graph-layer-rail__title", children: "Layers" }),
-        layers.length === 0 && /* @__PURE__ */ u3("div", { className: "graph-layer-rail__empty", children: "No layers" }),
-        layers.map((layer) => /* @__PURE__ */ u3("label", { className: `graph-layer-chip${!layer.enabled ? " graph-layer-chip--disabled" : ""}`, children: [
-          /* @__PURE__ */ u3(
-            "input",
-            {
-              type: "checkbox",
-              checked: layer.enabled && enabledLayers.has(layer.id),
-              disabled: !layer.enabled,
-              onChange: () => toggleLayer(layer)
-            }
-          ),
-          /* @__PURE__ */ u3("span", { children: typeLabel(layer.id) }),
-          /* @__PURE__ */ u3("em", { children: layer.count })
-        ] }, layer.id))
-      ] }),
       /* @__PURE__ */ u3("div", { className: "graph-canvas-wrap", children: [
         loading && /* @__PURE__ */ u3("div", { className: "graph-loading", children: "Loading graph..." }),
         error && /* @__PURE__ */ u3("div", { className: "graph-error", children: error }),
