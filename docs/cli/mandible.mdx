@@ -240,9 +240,10 @@ Inspect provider-native source logs without importing, reconciling, or mutating 
 
 ```
 mandible logs inventory [--provider codex|claude|gemini|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
+mandible logs capabilities [--provider codex|claude_code|gemini] [--json]
 mandible logs missing [--provider codex|claude|gemini|all] [--json]
 mandible logs orphans [--provider codex|claude|gemini|all] [--json]
-mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--json] [--head N]
+mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--parse] [filters] [--json] [--head N]
 ```
 
 Use `logs` commands when the provider files are the object of inspection. They treat Codex/Claude/Gemini source logs as the veridical transcript record and only compare against the DB index when needed.
@@ -250,9 +251,22 @@ Use `logs` commands when the provider files are the object of inspection. They t
 | Command | Description |
 |---|---|
 | `inventory` | List recent provider source files, optionally with lightweight parsed metadata. |
+| `capabilities` | Show the normalized roles, block types, tool metadata, source globs, and limitations emitted by each provider parser. |
 | `missing` | List source files not represented in `conversations.source_path`. |
 | `orphans` | List DB conversation rows whose `source_path` no longer exists. |
-| `inspect` | Show source-log metadata and the first raw records for a path or provider session ID. |
+| `inspect` | Show source-log metadata and the first raw records for a path or provider session ID. With `--parse`, run the provider parser and return normalized blocks without mutating the DB. |
+
+Parsed inspection filters:
+
+| Flag | Description |
+|---|---|
+| `--role user|assistant|system|tool` | Match normalized block role |
+| `--type TYPE[,TYPE...]` | Match normalized block type |
+| `--tool NAME` | Match `metadata.tool_name` |
+| `--tool-kind KIND` | Match provider-specific `metadata.tool_kind` when available |
+| `--since TIME` / `--until TIME` | Match block timestamps. Bounds accept ISO timestamps, `YYYY-MM-DD`, and `Nd` for `--since`. |
+| `--content TEXT` | Case-insensitive substring match against block content |
+| `--limit N` | Limit results after filtering |
 
 ### mandible conversations
 
@@ -261,9 +275,9 @@ Inspect DB-backed normalized conversation rows and blocks.
 ```
 mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
 mandible conversations show <id|session-id> [--json] [--blocks]
-mandible conversations blocks <id|session-id> [--type TYPE] [--limit N] [--json]
+mandible conversations blocks <id|session-id> [filters] [--json]
 mandible conversations export <id|session-id> [--format json|markdown]
 mandible conversations search "<query>" [search options...]
 ```
 
-Use `conversations` commands for Mandible's normalized SQLite index, UI/export/search surface, and conversation metadata. `mandible conversations search` is an alias to `mandible search`.
+Use `conversations` commands for Mandible's normalized SQLite index, UI/export/search surface, and conversation metadata. `mandible conversations blocks` uses the same role/type/tool/time/content filters as `mandible logs inspect --parse`. `mandible conversations search` is an alias to `mandible search`.

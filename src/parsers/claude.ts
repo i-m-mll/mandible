@@ -193,6 +193,7 @@ export class ClaudeParser implements ConversationParser {
     let position = 0;
     // Map tool_use UUIDs to block positions for parent_id linking
     const toolUseMap = new Map<string, number>();
+    const toolNameMap = new Map<string, string>();
 
     for (const rec of records) {
       // Skip non-content records
@@ -253,6 +254,8 @@ export class ClaudeParser implements ConversationParser {
                 parent_id: parentPos !== undefined ? String(parentPos) : null,
                 metadata: {
                   tool_id: block.tool_use_id || undefined,
+                  tool_name: block.tool_use_id ? toolNameMap.get(block.tool_use_id) : undefined,
+                  tool_kind: "claude_tool_result",
                   tool_output: toolOutput.length > 1000 ? undefined : toolOutput,
                   visibility: "default_hidden",
                 },
@@ -327,6 +330,7 @@ export class ClaudeParser implements ConversationParser {
           } else if (block.type === "tool_use") {
             const toolPos = position;
             toolUseMap.set(block.id || "", toolPos);
+            if (block.id && block.name) toolNameMap.set(block.id, block.name);
             blocks.push({
               type: "tool_use",
               role: "assistant",
@@ -336,6 +340,7 @@ export class ClaudeParser implements ConversationParser {
               parent_id: null,
               metadata: {
                 tool_name: block.name || undefined,
+                tool_kind: "claude_tool_use",
                 tool_id: block.id || undefined,
                 tool_input: block.input,
                 visibility: "default_hidden",

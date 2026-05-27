@@ -60,6 +60,25 @@ async function makeCodexSession(
         content: [{ type: "output_text", text: "Assistant response." }],
       },
     },
+    {
+      type: "response_item",
+      timestamp: "2026-05-16T00:00:04.000Z",
+      payload: {
+        type: "function_call",
+        name: "exec_command",
+        call_id: "call-1",
+        arguments: "{\"cmd\":\"date\"}",
+      },
+    },
+    {
+      type: "response_item",
+      timestamp: "2026-05-16T00:00:05.000Z",
+      payload: {
+        type: "function_call_output",
+        call_id: "call-1",
+        output: "today",
+      },
+    },
   ];
   await fs.writeFile(sessionPath, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`, "utf8");
   return sessionPath;
@@ -79,7 +98,7 @@ describe("CodexParser", () => {
     const result = await parser.parse(sessionPath);
 
     expect(result?.conversation.title).toBe("Find Apple Music to Spotify tool");
-    expect(result?.conversation.block_count).toBe(2);
+    expect(result?.conversation.block_count).toBe(4);
   });
 
   it("falls back to the first user_message event when session_index has no title", async () => {
@@ -89,5 +108,25 @@ describe("CodexParser", () => {
     const result = await parser.parse(sessionPath);
 
     expect(result?.conversation.title).toBe("Fallback prompt title");
+  });
+
+  it("normalizes tool names and kinds on tool calls and results", async () => {
+    const parser = new CodexParser();
+    const sessionPath = await makeCodexSession("session-tools");
+
+    const result = await parser.parse(sessionPath);
+    const toolUse = result?.blocks.find((block) => block.type === "tool_use");
+    const toolResult = result?.blocks.find((block) => block.type === "tool_result");
+
+    expect(toolUse?.metadata).toMatchObject({
+      tool_name: "exec_command",
+      tool_kind: "function_call",
+      tool_input: { cmd: "date" },
+    });
+    expect(toolResult?.metadata).toMatchObject({
+      tool_name: "exec_command",
+      tool_kind: "function_call_output",
+      tool_output: "today",
+    });
   });
 });
