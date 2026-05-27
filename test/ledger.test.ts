@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate, openDb, type Db } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
 import { LEDGER_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createLedgerId } from "../src/ledger/ids.js";
 import { normalizeRemoteIdentity, resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -97,7 +97,7 @@ describe("ledger schema", () => {
     const version = upgradeDb.prepare(
       "SELECT value FROM meta WHERE key = 'schema_version'",
     ).get() as { value: string };
-    expect(version.value).toBe("63");
+    expect(version.value).toBe(String(CURRENT_SCHEMA_VERSION));
     expect(upgradeDb.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issues'",
     ).get()).toBeTruthy();

@@ -363,15 +363,6 @@ export function applyAuthRequestLedgerCompletion(
         repoRef: input.repo_ref ?? "",
       });
     }
-    addResolutionCommentOnce(db, store, {
-      issueId,
-      message: resolutionComment({
-        mergeSha,
-        authRequestId: input.auth_request_id,
-        declared: isDeclaredClosure(db, input.auth_request_id, issueId),
-      }),
-      actorId: input.approval_lease_id ?? null,
-    });
     store.setIssueStatus(
       issueId,
       "closed",
@@ -801,60 +792,6 @@ function legacyIssueRefForAuthLink(db: Db, authRequestId: string, issueId: strin
     }
   }
   return null;
-}
-
-function isDeclaredClosure(db: Db, authRequestId: string, issueId: string): boolean {
-  if (!tableExists(db, "ledger_auth_issue_links")) return false;
-  const rows = db.prepare(
-    `SELECT metadata_json
-     FROM ledger_auth_issue_links
-     WHERE auth_request_id = ? AND issue_id = ? AND link_type IN ('resolves', 'fixed_by')`,
-  ).all(authRequestId, issueId) as Array<{ metadata_json: string }>;
-  for (const row of rows) {
-    try {
-      const metadata = JSON.parse(row.metadata_json) as { source_fields?: unknown };
-      if (
-        Array.isArray(metadata.source_fields) &&
-        metadata.source_fields.some((field) => field === "issue_closures" || field === "issues")
-      ) {
-        return true;
-      }
-    } catch {
-      // Ignore malformed metadata from older rows.
-    }
-  }
-  return false;
-}
-
-function addResolutionCommentOnce(
-  db: Db,
-  store: LedgerStore,
-  input: { issueId: string; message: string; actorId: string | null },
-): void {
-  const existing = db.prepare(
-    `SELECT 1 AS ok FROM ledger_comments
-     WHERE issue_id = ? AND body = ? AND deleted_at IS NULL
-     LIMIT 1`,
-  ).get(input.issueId, input.message) as { ok: number } | undefined;
-  if (existing) return;
-  store.addComment(input.issueId, {
-    body: input.message,
-    actor_type: "system",
-    actor_id: input.actorId,
-    author_display: "Mandible",
-    source: "auth_queue",
-  });
-}
-
-function resolutionComment(input: {
-  mergeSha: string | null;
-  authRequestId: string;
-  declared: boolean;
-}): string {
-  const mergeRef = input.mergeSha ? input.mergeSha.slice(0, 12) : "completed auth merge";
-  return input.declared
-    ? `Resolved by merge ${mergeRef} (declared in auth request ${input.authRequestId.slice(0, 8)})`
-    : `Resolved by merge ${mergeRef}`;
 }
 
 function parseStringArray(value: unknown): string[] | null {

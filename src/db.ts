@@ -1464,6 +1464,8 @@ const MIGRATIONS: Migration[] = [
   }
 ];
 
+export const CURRENT_SCHEMA_VERSION = MIGRATIONS.at(-1)?.version ?? 0;
+
 export function getDbPath(): string {
   return process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH;
 }
