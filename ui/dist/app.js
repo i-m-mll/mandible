@@ -15669,7 +15669,10 @@ function LedgerIssueDetail({
 }) {
   const [commentText, setCommentText] = d2("");
   const [showComposer, setShowComposer] = d2(false);
+  const [actionsOpen, setActionsOpen] = d2(false);
+  const [authEvidenceOpen, setAuthEvidenceOpen] = d2(false);
   const [localBusy, setLocalBusy] = d2(false);
+  const actionMenuRef = A2(null);
   const busy = actionInFlight || localBusy;
   const resolvingAuth = detail.auth_requests.find(
     (auth) => (auth.link_type === "resolves" || auth.link_type === "fixed_by") && (auth.status === "completed" || auth.status === "approved" || auth.status === "executing")
@@ -15679,7 +15682,32 @@ function LedgerIssueDetail({
   const historicalSessions = detail.sessions.filter((session) => session.status !== "active" && session.status !== "idle");
   const primaryWorkUnit = detail.work_units[0] ?? null;
   const timeline = detail.timeline ?? fallbackTimeline(detail);
+  const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
+  const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
+  const hasIssueActions = Boolean(
+    liveSession || onStartAgent || onSetStatus || onAddComment || detail.auth_requests.length > 0 || detail.labels.includes("umbrella") && onShowChildren
+  );
   const syncTone = detail.sync.state === "clean" ? "clean" : detail.sync.state === "pending" ? "pending" : detail.sync.state === "conflicted" ? "conflicted" : "failed";
+  y2(() => {
+    if (!actionsOpen)
+      return void 0;
+    const closeOnOutsidePointer = (event) => {
+      const node = actionMenuRef.current;
+      if (!node || node.contains(event.target))
+        return;
+      setActionsOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape")
+        setActionsOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [actionsOpen]);
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy)
       return;
@@ -15697,9 +15725,39 @@ function LedgerIssueDetail({
       /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__heading", children: [
         /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__eyebrow", children: [
           /* @__PURE__ */ u3("span", { children: detail.project.repo_name ?? detail.project.display_name }),
-          /* @__PURE__ */ u3("code", { children: detail.display_id })
+          /* @__PURE__ */ u3("code", { children: detail.display_id }),
+          /* @__PURE__ */ u3(CopyIssueRefButton, { detail }),
+          /* @__PURE__ */ u3(MetadataDisclosure, { label: "Issue metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: issueMetadataRows(detail) }) })
         ] }),
-        /* @__PURE__ */ u3("h2", { dangerouslySetInnerHTML: { __html: inlineMarkdown(detail.title) } })
+        /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__title-row", children: [
+          /* @__PURE__ */ u3("h2", { dangerouslySetInnerHTML: { __html: inlineMarkdown(detail.title) } }),
+          hasIssueActions && /* @__PURE__ */ u3(
+            IssueActionsMenu,
+            {
+              menuRef: actionMenuRef,
+              open: actionsOpen,
+              busy,
+              detail,
+              liveSession,
+              primaryWorkUnit,
+              onToggle: () => setActionsOpen((prev) => !prev),
+              onClose: () => setActionsOpen(false),
+              onStartAgent,
+              onSetStatus,
+              onAddComment: onAddComment ? () => setShowComposer(true) : void 0,
+              onShowAuthEvidence: detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : void 0,
+              onShowChildren: detail.labels.includes("umbrella") ? onShowChildren : void 0
+            }
+          )
+        ] }),
+        /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__meta", children: [
+          /* @__PURE__ */ u3("span", { className: "ledger-issue-detail__byline-author", children: detail.author.display }),
+          /* @__PURE__ */ u3("time", { children: formatRelativeTime3(detail.created_at) }),
+          displayLabels.length > 0 && /* @__PURE__ */ u3(k, { children: [
+            /* @__PURE__ */ u3("span", { className: "ledger-issue-detail__meta-separator", "aria-hidden": "true" }),
+            /* @__PURE__ */ u3("span", { className: "ledger-issue-detail__label-row", children: displayLabels.map((label) => /* @__PURE__ */ u3("span", { className: "ledger-label", children: displayLabel(label) }, label)) })
+          ] })
+        ] })
       ] }),
       /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__header-actions", children: [
         /* @__PURE__ */ u3(
@@ -15714,41 +15772,8 @@ function LedgerIssueDetail({
         detail.sync.state !== "clean" && /* @__PURE__ */ u3("span", { className: `ledger-sync-pill ledger-sync-pill--${syncTone}`, children: syncLabel(detail.sync.state) })
       ] })
     ] }),
-    /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__meta", children: [
-      /* @__PURE__ */ u3("span", { children: detail.author.display }),
-      /* @__PURE__ */ u3("span", { children: formatRelativeTime3(detail.created_at) }),
-      /* @__PURE__ */ u3(MetadataDisclosure, { label: "Issue metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: issueMetadataRows(detail) }) })
-    ] }),
-    detail.labels.length > 0 && /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__labels", children: [
-      detail.labels.map((label) => /* @__PURE__ */ u3("span", { className: "ledger-label", children: displayLabel(label) }, label)),
-      detail.labels.includes("umbrella") && onShowChildren && /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost btn--sm", onClick: () => onShowChildren(detail), children: "Show children" })
-    ] }),
-    (liveSession || primaryWorkUnit || onStartAgent || onSetStatus) && /* @__PURE__ */ u3("div", { className: "ledger-issue-detail__actions", children: [
-      liveSession && /* @__PURE__ */ u3("a", { className: "issue-hub__action-btn issue-hub__action-btn--primary", href: `#/console?session=${encodeURIComponent(liveSession.id)}`, children: "Open Console" }),
-      !liveSession && onStartAgent && /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: "issue-hub__action-btn issue-hub__action-btn--secondary",
-          disabled: busy,
-          onClick: () => void onStartAgent(),
-          children: primaryWorkUnit?.continuation ? "Resume Work" : "Start Agent"
-        }
-      ),
-      onSetStatus && /* @__PURE__ */ u3(
-        "button",
-        {
-          type: "button",
-          className: `btn ${detail.status === "open" ? "btn--danger" : "btn--success"}`,
-          disabled: busy,
-          onClick: () => void onSetStatus(detail.status === "open" ? "closed" : "open"),
-          children: detail.status === "open" ? "Close Issue" : "Reopen Issue"
-        }
-      )
-    ] }),
     /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
-      /* @__PURE__ */ u3(SectionTitle, { title: "Timeline", count: timeline.length }),
-      /* @__PURE__ */ u3("div", { className: "ledger-comment-list ledger-timeline-list", children: timeline.map((entry) => /* @__PURE__ */ u3(TimelineEntryCard, { entry, detail }, entry.id)) }),
+      /* @__PURE__ */ u3("div", { className: "ledger-comment-list ledger-timeline-list", children: timelineEntries.map((entry) => /* @__PURE__ */ u3(TimelineEntryCard, { entry, detail, onOpenEntity }, entry.id)) }),
       onAddComment && /* @__PURE__ */ u3("div", { className: "ledger-comment-composer", children: !showComposer ? /* @__PURE__ */ u3("button", { type: "button", className: "btn btn--ghost", onClick: () => setShowComposer(true), children: "Add Comment" }) : /* @__PURE__ */ u3(k, { children: [
         /* @__PURE__ */ u3(
           "textarea",
@@ -15770,10 +15795,14 @@ function LedgerIssueDetail({
       /* @__PURE__ */ u3(SectionTitle, { title: "Relationships", count: detail.relationships.length }),
       /* @__PURE__ */ u3(RelationshipList, { relationships: detail.relationships, onOpenEntity })
     ] }),
-    detail.auth_requests.length > 0 && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
-      /* @__PURE__ */ u3(SectionTitle, { title: "Auth Evidence", count: detail.auth_requests.length }),
-      /* @__PURE__ */ u3(AuthEvidenceShelf, { authRequests: detail.auth_requests, onOpenEntity })
-    ] }),
+    authEvidenceOpen && /* @__PURE__ */ u3(
+      AuthEvidenceModal,
+      {
+        authRequests: detail.auth_requests,
+        onOpenEntity,
+        onClose: () => setAuthEvidenceOpen(false)
+      }
+    ),
     (activeSessions.length > 0 || historicalSessions.length > 0) && /* @__PURE__ */ u3("section", { className: "ledger-issue-detail__section", children: [
       /* @__PURE__ */ u3(SectionTitle, { title: "Sessions", count: detail.sessions.length }),
       /* @__PURE__ */ u3(SessionHistory, { active: activeSessions, historical: historicalSessions, onOpenEntity })
@@ -15783,6 +15812,133 @@ function LedgerIssueDetail({
       /* @__PURE__ */ u3(SyncStatus, { detail, onResolveConflict, busy })
     ] })
   ] });
+}
+function IssueActionsMenu({
+  menuRef,
+  open,
+  busy,
+  detail,
+  liveSession,
+  primaryWorkUnit,
+  onToggle,
+  onClose,
+  onStartAgent,
+  onSetStatus,
+  onAddComment,
+  onShowAuthEvidence,
+  onShowChildren
+}) {
+  const closeAfter = (callback) => {
+    callback();
+    onClose();
+  };
+  return /* @__PURE__ */ u3("div", { className: "ledger-issue-actions-menu", ref: menuRef, children: [
+    /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: `ledger-issue-actions-menu__trigger${open ? " ledger-issue-actions-menu__trigger--active" : ""}`,
+        "aria-label": "Issue actions",
+        "aria-haspopup": "menu",
+        "aria-expanded": open,
+        title: "Issue actions",
+        onClick: onToggle,
+        children: /* @__PURE__ */ u3(HorizontalDotsIcon, {})
+      }
+    ),
+    open && /* @__PURE__ */ u3("div", { className: "ledger-issue-actions-menu__dropdown", role: "menu", children: [
+      liveSession && /* @__PURE__ */ u3(
+        "a",
+        {
+          className: "ledger-issue-actions-menu__item",
+          role: "menuitem",
+          href: `#/console?session=${encodeURIComponent(liveSession.id)}`,
+          onClick: onClose,
+          children: "Open Console"
+        }
+      ),
+      !liveSession && onStartAgent && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "ledger-issue-actions-menu__item",
+          role: "menuitem",
+          disabled: busy,
+          onClick: () => closeAfter(() => void onStartAgent()),
+          children: primaryWorkUnit?.continuation ? "Resume Work" : "Start Agent"
+        }
+      ),
+      onAddComment && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "ledger-issue-actions-menu__item",
+          role: "menuitem",
+          disabled: busy,
+          onClick: () => closeAfter(onAddComment),
+          children: "Add Comment"
+        }
+      ),
+      onShowChildren && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "ledger-issue-actions-menu__item",
+          role: "menuitem",
+          disabled: busy,
+          onClick: () => closeAfter(() => onShowChildren(detail)),
+          children: "Show Children"
+        }
+      ),
+      onShowAuthEvidence && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: "ledger-issue-actions-menu__item",
+          role: "menuitem",
+          disabled: busy,
+          onClick: () => closeAfter(onShowAuthEvidence),
+          children: "Auth Evidence"
+        }
+      ),
+      onSetStatus && /* @__PURE__ */ u3(
+        "button",
+        {
+          type: "button",
+          className: `ledger-issue-actions-menu__item${detail.status === "open" ? " ledger-issue-actions-menu__item--danger" : ""}`,
+          role: "menuitem",
+          disabled: busy,
+          onClick: () => closeAfter(() => void onSetStatus(detail.status === "open" ? "closed" : "open")),
+          children: detail.status === "open" ? "Close Issue" : "Reopen Issue"
+        }
+      )
+    ] })
+  ] });
+}
+function CopyIssueRefButton({ detail }) {
+  const [copied, setCopied] = d2(false);
+  const project = detail.project.repo_id ?? detail.project.repo_name ?? detail.project.display_name;
+  const value = `${project}/${detail.display_id}`;
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return /* @__PURE__ */ u3(
+    "button",
+    {
+      type: "button",
+      className: "ledger-copy-ref-button",
+      title: copied ? "Copied" : `Copy ${value}`,
+      "aria-label": copied ? "Copied issue reference" : `Copy ${value}`,
+      onClick: () => void handleCopy(),
+      children: copied ? /* @__PURE__ */ u3(CheckIcon, {}) : /* @__PURE__ */ u3(CopyIcon, {})
+    }
+  );
 }
 function fallbackTimeline(detail) {
   return [
@@ -15809,6 +15965,29 @@ function fallbackTimeline(detail) {
     }))
   ];
 }
+function buildTimelineEntries(timeline, authRequests) {
+  const authEntries = authRequests.filter((auth) => auth.status === "completed").map((auth) => ({
+    id: `auth:${auth.id}:${auth.link_type}`,
+    kind: "auth",
+    auth,
+    created_at: auth.resolved_at ?? auth.approved_at ?? auth.link_created_at ?? auth.created_at ?? 0
+  })).filter((entry) => entry.created_at > 0);
+  return [...timeline, ...authEntries].sort((a4, b3) => {
+    const timeDelta = a4.created_at - b3.created_at;
+    if (timeDelta !== 0)
+      return timeDelta;
+    return timelineRank(a4) - timelineRank(b3);
+  });
+}
+function timelineRank(entry) {
+  if (entry.kind === "body")
+    return 0;
+  if (entry.kind === "comment")
+    return 1;
+  if (entry.kind === "auth")
+    return 2;
+  return 3;
+}
 function StatusPill({
   status,
   resolution,
@@ -15824,14 +16003,35 @@ function StatusPill({
 }
 function TimelineEntryCard({
   entry,
-  detail
+  detail,
+  onOpenEntity
 }) {
+  if (entry.kind === "auth") {
+    return /* @__PURE__ */ u3(
+      "button",
+      {
+        type: "button",
+        className: "ledger-timeline-event ledger-timeline-event--auth",
+        disabled: !onOpenEntity,
+        onClick: () => onOpenEntity?.("auth_request", entry.auth.id),
+        children: [
+          /* @__PURE__ */ u3("span", { className: "ledger-timeline-event__dot", "aria-hidden": "true" }),
+          /* @__PURE__ */ u3("span", { className: "ledger-timeline-event__text", children: [
+            /* @__PURE__ */ u3("strong", { children: authEvidenceLinkLabel(entry.auth) }),
+            /* @__PURE__ */ u3("span", { children: entry.auth.title || entry.auth.id })
+          ] }),
+          /* @__PURE__ */ u3("time", { children: formatRelativeTime3(entry.created_at) })
+        ]
+      }
+    );
+  }
   if (entry.kind === "state") {
-    return /* @__PURE__ */ u3("div", { className: "ledger-comment-card ledger-timeline-card ledger-timeline-card--state", children: /* @__PURE__ */ u3("div", { className: "ledger-comment-card__header", children: [
-      /* @__PURE__ */ u3("span", { children: stateEntryLabel(entry) }),
+    return /* @__PURE__ */ u3("div", { className: "ledger-timeline-event ledger-timeline-event--state", children: [
+      /* @__PURE__ */ u3("span", { className: "ledger-timeline-event__dot", "aria-hidden": "true" }),
+      /* @__PURE__ */ u3("span", { className: "ledger-timeline-event__text", children: /* @__PURE__ */ u3("strong", { children: stateEntryLabel(entry) }) }),
       /* @__PURE__ */ u3("time", { children: formatRelativeTime3(entry.created_at) }),
       /* @__PURE__ */ u3(MetadataDisclosure, { label: "Timeline metadata", children: /* @__PURE__ */ u3(MetadataRows, { rows: stateMetadataRows(entry) }) })
-    ] }) });
+    ] });
   }
   const isBody = entry.kind === "body";
   return /* @__PURE__ */ u3(
@@ -15856,10 +16056,28 @@ function MetadataDisclosure({
   children: children2
 }) {
   const [open, setOpen] = d2(false);
+  const [alignment, setAlignment] = d2("start");
   const ref = A2(null);
   y2(() => {
     if (!open)
       return void 0;
+    const positionPanel = () => {
+      const panel = ref.current?.querySelector(".ledger-metadata-popover__panel");
+      if (!panel)
+        return;
+      setAlignment("start");
+      requestAnimationFrame(() => {
+        const bounds = panel.getBoundingClientRect();
+        const inset = 12;
+        if (bounds.right > window.innerWidth - inset) {
+          setAlignment("end");
+        } else if (bounds.left < inset) {
+          setAlignment("start");
+        } else {
+          setAlignment("center");
+        }
+      });
+    };
     const closeOnOutsidePointer = (event) => {
       const node = ref.current;
       if (!node || node.contains(event.target))
@@ -15872,9 +16090,12 @@ function MetadataDisclosure({
     };
     document.addEventListener("pointerdown", closeOnOutsidePointer, true);
     document.addEventListener("keydown", closeOnEscape, true);
+    window.addEventListener("resize", positionPanel);
+    positionPanel();
     return () => {
       document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
       document.removeEventListener("keydown", closeOnEscape, true);
+      window.removeEventListener("resize", positionPanel);
     };
   }, [open]);
   return /* @__PURE__ */ u3(
@@ -15885,8 +16106,8 @@ function MetadataDisclosure({
       open,
       onToggle: (event) => setOpen(event.currentTarget.open),
       children: [
-        /* @__PURE__ */ u3("summary", { "aria-label": label, title: label, children: "i" }),
-        /* @__PURE__ */ u3("div", { className: "ledger-metadata-popover__panel", children: children2 })
+        /* @__PURE__ */ u3("summary", { "aria-label": label, title: label, children: /* @__PURE__ */ u3(MetadataIcon, {}) }),
+        /* @__PURE__ */ u3("div", { className: `ledger-metadata-popover__panel ledger-metadata-popover__panel--${alignment}`, children: children2 })
       ]
     }
   );
@@ -15932,7 +16153,7 @@ function AuthEvidenceShelf({
       disabled: !onOpenEntity,
       onClick: () => onOpenEntity?.("auth_request", auth.id),
       children: [
-        /* @__PURE__ */ u3("span", { children: auth.link_type.replace(/_/g, " ") }),
+        /* @__PURE__ */ u3("span", { children: authEvidenceLinkLabel(auth) }),
         /* @__PURE__ */ u3("strong", { children: auth.title || auth.id }),
         /* @__PURE__ */ u3("code", { children: [
           auth.status,
@@ -15942,6 +16163,46 @@ function AuthEvidenceShelf({
     },
     `${auth.id}:${auth.link_type}`
   )) });
+}
+function AuthEvidenceModal({
+  authRequests,
+  onOpenEntity,
+  onClose
+}) {
+  y2(() => {
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape")
+        onClose();
+    };
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => document.removeEventListener("keydown", closeOnEscape, true);
+  }, [onClose]);
+  return /* @__PURE__ */ u3("div", { className: "ledger-issue-modal", role: "presentation", onClick: onClose, children: /* @__PURE__ */ u3(
+    "div",
+    {
+      className: "ledger-issue-modal__panel",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": "Auth evidence",
+      onClick: (event) => event.stopPropagation(),
+      children: [
+        /* @__PURE__ */ u3("div", { className: "ledger-issue-modal__header", children: [
+          /* @__PURE__ */ u3("h3", { children: "Auth Evidence" }),
+          /* @__PURE__ */ u3("button", { type: "button", className: "ledger-icon-button", "aria-label": "Close auth evidence", onClick: onClose, children: /* @__PURE__ */ u3(CloseIcon, {}) })
+        ] }),
+        /* @__PURE__ */ u3(
+          AuthEvidenceShelf,
+          {
+            authRequests,
+            onOpenEntity: onOpenEntity ? (type, id2, repoId) => {
+              onClose();
+              onOpenEntity(type, id2, repoId);
+            } : void 0
+          }
+        )
+      ]
+    }
+  ) });
 }
 function SessionHistory({
   active,
@@ -16022,7 +16283,7 @@ function MarkdownBlock({
   const html4 = T2(() => {
     if (!source)
       return "";
-    const parsed = marked.parse(source, { async: false });
+    const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
     const sanitized = sanitizeMarkdown(typeof parsed === "string" ? parsed : "");
     return linkifyLedgerRefs(sanitized, detail);
   }, [source, detail.id, detail.display_id, detail.project.repo_id]);
@@ -16030,6 +16291,15 @@ function MarkdownBlock({
     return /* @__PURE__ */ u3("div", { className: `${className} spec-panel--empty`, children: empty2 });
   }
   return /* @__PURE__ */ u3("div", { className, dangerouslySetInnerHTML: { __html: html4 } });
+}
+function normalizeMarkdownSource(source) {
+  if (!source.includes("\\n"))
+    return source;
+  const literalNewlineCount = (source.match(/\\n/g) ?? []).length;
+  const actualNewlineCount = (source.match(/\n/g) ?? []).length;
+  if (literalNewlineCount < 2 || actualNewlineCount > 0)
+    return source;
+  return source.replace(/\\n/g, "\n");
 }
 var REF_PATTERN = /\[#(\d+)\]|\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,64})\b|(?<![\w/])([0-9a-f]{7,64})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
 function linkifyLedgerRefs(html4, detail) {
@@ -16064,7 +16334,7 @@ function linkifyLedgerRefs(html4, detail) {
       if (match.index > lastIndex) {
         fragment.appendChild(document.createTextNode(text2.slice(lastIndex, match.index)));
       }
-      const link2 = refLink(match, detail);
+      const link2 = refLink(match, detail, text2);
       fragment.appendChild(link2 ?? document.createTextNode(match[0]));
       lastIndex = match.index + match[0].length;
     }
@@ -16075,7 +16345,7 @@ function linkifyLedgerRefs(html4, detail) {
   }
   return container.innerHTML;
 }
-function refLink(match, detail) {
+function refLink(match, detail, text2) {
   const ordinalCommentRef = match[1];
   const explicitType = match[2];
   const explicitRef = match[3];
@@ -16095,6 +16365,15 @@ function refLink(match, detail) {
     return null;
   const anchor = document.createElement("a");
   anchor.className = "ledger-xref";
+  if (bareIssueRef && isAuthRequestContext(text2, match.index)) {
+    anchor.textContent = match[0];
+    anchor.href = `#/auth?request=${encodeURIComponent(ref)}`;
+    anchor.title = `Open auth request ${ref}`;
+    return anchor;
+  }
+  if (bareIssueRef && isCommitLikeContext(text2, match.index)) {
+    return null;
+  }
   if (explicitType === "comment") {
     const parsed = parseCommentRef(ref, detail);
     if (!parsed)
@@ -16104,6 +16383,13 @@ function refLink(match, detail) {
     anchor.title = `Open comment ${parsed.comment}`;
     return anchor;
   }
+  const auth = detail.auth_requests.find((request) => request.id.startsWith(ref));
+  if (auth) {
+    anchor.textContent = explicitType ? auth.id.slice(0, 8) : bareIssueRef || match[0];
+    anchor.href = `#/auth?request=${encodeURIComponent(auth.id)}`;
+    anchor.title = `Open auth request ${auth.id.slice(0, 8)}`;
+    return anchor;
+  }
   const parsedIssue = parseIssueRef(ref, detail);
   if (!parsedIssue)
     return null;
@@ -16111,6 +16397,12 @@ function refLink(match, detail) {
   anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
   anchor.title = `Open issue ${parsedIssue.issue}`;
   return anchor;
+}
+function isAuthRequestContext(text2, matchIndex) {
+  return /(?:auth\s+request|auth)\s+$/i.test(text2.slice(Math.max(0, matchIndex - 32), matchIndex));
+}
+function isCommitLikeContext(text2, matchIndex) {
+  return /(?:merge|commit)\s+$/i.test(text2.slice(Math.max(0, matchIndex - 24), matchIndex));
 }
 function issueRefLabel(parsed, detail) {
   const currentRepo = detail.project.repo_id ?? detail.project.display_name;
@@ -16245,6 +16537,16 @@ function displayLabel(label) {
     return "bug";
   return label;
 }
+function isMetadataLabel(label) {
+  return label === "merged";
+}
+function authEvidenceLinkLabel(auth) {
+  if (auth.link_type === "resolves" || auth.link_type === "fixed_by")
+    return "resolved by";
+  if (auth.link_type === "references")
+    return "referenced by";
+  return `${auth.link_type.replace(/_/g, " ")} by`;
+}
 function syncLabel(state) {
   if (state === "clean")
     return "synced";
@@ -16264,6 +16566,35 @@ function safeJson(value) {
   } catch {
     return String(value);
   }
+}
+function MetadataIcon() {
+  return /* @__PURE__ */ u3("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("circle", { cx: "12", cy: "12", r: "9" }),
+    /* @__PURE__ */ u3("path", { d: "M12 17v-5" }),
+    /* @__PURE__ */ u3("path", { d: "M12 8h.01" })
+  ] });
+}
+function CopyIcon() {
+  return /* @__PURE__ */ u3("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("rect", { x: "9", y: "9", width: "10", height: "10", rx: "2" }),
+    /* @__PURE__ */ u3("path", { d: "M5 15V7a2 2 0 0 1 2-2h8" })
+  ] });
+}
+function CheckIcon() {
+  return /* @__PURE__ */ u3("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", children: /* @__PURE__ */ u3("path", { d: "M20 6 9 17l-5-5" }) });
+}
+function HorizontalDotsIcon() {
+  return /* @__PURE__ */ u3("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("circle", { cx: "5", cy: "12", r: "1.5" }),
+    /* @__PURE__ */ u3("circle", { cx: "12", cy: "12", r: "1.5" }),
+    /* @__PURE__ */ u3("circle", { cx: "19", cy: "12", r: "1.5" })
+  ] });
+}
+function CloseIcon() {
+  return /* @__PURE__ */ u3("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", children: [
+    /* @__PURE__ */ u3("path", { d: "m18 6-12 12" }),
+    /* @__PURE__ */ u3("path", { d: "m6 6 12 12" })
+  ] });
 }
 
 // ui/src/views/issues.tsx
