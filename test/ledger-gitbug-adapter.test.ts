@@ -115,6 +115,48 @@ describe("git-bug ledger import", () => {
     expect(second.conflicts).toBe(1);
     expect(store.listConflicts({ status: "open" })).toHaveLength(1);
   });
+
+  it("updates existing imported comments and reconciles removed text references", async () => {
+    const checkout = createCheckout();
+    const sourceDetail = makeDetail({
+      id: "git-source",
+      human_id: "src123",
+      title: "Source",
+      comments: [{ id: "comment-1", body: "Blocked by [issue:tar123]." }],
+    });
+    const client = new FakeGitBugClient([
+      makeDetail({ id: "git-target", human_id: "tar123", title: "Target" }),
+      sourceDetail,
+    ]);
+
+    await importGitBugCheckout({ db, client, checkout });
+    const store = new LedgerStore(db);
+    const source = store.listIssues({ project_id: checkout.project_id })
+      .find((issue) => issue.title === "Source");
+    expect(source).toBeTruthy();
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM ledger_issue_relationship_sources WHERE deleted_at IS NULL",
+    ).get()).toEqual({ count: 1 });
+
+    client.replaceDetail("src123", makeDetail({
+      id: "git-source",
+      human_id: "src123",
+      title: "Source",
+      comments: [{ id: "comment-1", body: "No blocker now." }],
+    }));
+    const second = await importGitBugCheckout({ db, client, checkout });
+    const detail = store.getIssueDetail(source!.id);
+
+    expect(second.comments).toBe(1);
+    expect(detail.comments).toHaveLength(1);
+    expect(detail.comments[0].body).toBe("No blocker now.");
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM ledger_issue_relationship_sources WHERE deleted_at IS NULL",
+    ).get()).toEqual({ count: 0 });
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM ledger_issue_relationships WHERE relationship_type = 'references' AND deleted_at IS NULL",
+    ).get()).toEqual({ count: 0 });
+  });
 });
 
 describe("git-bug ledger export", () => {

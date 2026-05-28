@@ -166,6 +166,7 @@ function importIssueDetail(
   let comments = 0;
   for (const comment of detail.comments) {
     const commentExternalId = comment.human_id || comment.id || fingerprintComment(externalId, comment);
+    const commentHash = hashGitBugPayload(comment);
     const existingCommentRef = store.findExternalRef({
       adapter: "git_bug",
       project_id: projectId,
@@ -173,6 +174,25 @@ function importIssueDetail(
       external_id: commentExternalId,
     });
     if (existingCommentRef) {
+      const patched = store.applyImportedCommentPatch(existingCommentRef.entity_id, {
+        body: comment.body,
+        author_display: comment.author_name,
+      }, "git_bug", {
+        actor_type: "external_adapter",
+        author_display: comment.author_name,
+      });
+      store.recordExternalRef({
+        entity_type: "comment",
+        entity_id: existingCommentRef.entity_id,
+        adapter: "git_bug",
+        project_id: projectId,
+        external_kind: "git_bug_comment",
+        external_id: commentExternalId,
+        remote_hash: commentHash,
+        last_imported_at: Date.now(),
+        source: "git_bug",
+      });
+      if (patched.changed) comments++;
       continue;
     }
     const ledgerComment = store.addComment(issueId, {
@@ -190,7 +210,7 @@ function importIssueDetail(
       project_id: projectId,
       external_kind: "git_bug_comment",
       external_id: commentExternalId,
-      remote_hash: hashGitBugPayload(comment),
+      remote_hash: commentHash,
       last_imported_at: Date.now(),
       source: "git_bug",
     });

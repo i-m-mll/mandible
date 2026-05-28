@@ -32,6 +32,7 @@ Usage:
   mandible issue comment <id> -m <text>                           Add a comment
   mandible issue label add <id> <label>                           Add a label
   mandible issue label rm <id> <label>                            Remove a label
+  mandible issue refs backfill [opts]                              Reanalyze issue/comment cross-references
 USAGE
 }
 
@@ -486,6 +487,28 @@ cmd_open() {
   err "${GREEN}Reopened issue ${id}${RESET}"
 }
 
+cmd_refs() {
+  local action="${1:-}"
+  shift || true
+
+  case "$action" in
+    backfill)
+      local root
+      root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+      exec node "$root/dist/cli/issue-refs-backfill.js" "$@"
+      ;;
+    ""|-h|--help)
+      cat <<'REFS_USAGE'
+Usage:
+  mandible issue refs backfill [--dry-run] [--apply] [--repo <repo>] [--issue <ref>] [--since <date>] [--until <date>] [--json]
+REFS_USAGE
+      ;;
+    *)
+      die "Unknown refs action: $action (expected backfill)" 2
+      ;;
+  esac
+}
+
 # --- Main ---
 
 if (( $# < 1 )); then
@@ -506,6 +529,7 @@ case "$subcmd" in
   open)    cmd_open "${1:-}" ;;
   comment) cmd_comment "$@" ;;
   label)   cmd_label "$@" ;;
+  refs)    cmd_refs "$@" ;;
   -h|--help) usage ;;
   *)       die "Unknown subcommand: $subcmd" 2 ;;
 esac
