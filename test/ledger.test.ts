@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
 import { LEDGER_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createLedgerId } from "../src/ledger/ids.js";
+import { runIssueReferenceBackfill } from "../src/ledger/issue-reference-backfill.js";
 import { parseIssueReferences } from "../src/ledger/issue-xrefs.js";
 import { normalizeRemoteIdentity, resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -432,6 +433,20 @@ describe("ledger store", () => {
       normalized_ref: "abcd123",
       deleted_at: null,
     });
+    const eventsAfterCreate = store.listEvents({
+      entity_type: "issue_relationship",
+      entity_id: relationship.id,
+    }).length;
+    store.reconcileTextIssueReferences({
+      source_issue_id: source.id,
+      source_entity_type: "issue_body",
+      source_entity_id: source.id,
+      body: "See [issue:abcd123].",
+    });
+    expect(store.listEvents({
+      entity_type: "issue_relationship",
+      entity_id: relationship.id,
+    })).toHaveLength(eventsAfterCreate);
 
     store.addComment(source.id, {
       body: "Also `abcd123`.",
@@ -456,6 +471,62 @@ describe("ledger store", () => {
     expect(tombstoned.deleted_at).not.toBeNull();
     expect(store.listEvents({ entity_type: "issue_relationship", entity_id: relationship.id })
       .map((event) => event.event_type)).toContain("relationship.deleted");
+  });
+
+  it("backfills issue references with repo, issue, and date scopes idempotently", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const target = store.createIssue({
+      project_id: project.project.id,
+      title: "Target",
+      aliases: [{ alias_kind: "git_bug_short", alias: "beef123" }],
+    });
+    const source = store.createIssue({
+      project_id: project.project.id,
+      title: "Source",
+      body: "Initially empty",
+    });
+    const skipped = store.createIssue({
+      project_id: project.project.id,
+      title: "Skipped",
+      body: `See [issue:${target.short_id}].`,
+    });
+    db.prepare("DELETE FROM ledger_issue_relationship_sources").run();
+    db.prepare("DELETE FROM ledger_issue_relationships WHERE relationship_type = 'references'").run();
+    db.prepare("DELETE FROM ledger_events WHERE entity_type = 'issue_relationship'").run();
+    db.prepare("UPDATE ledger_issues SET body = ?, updated_at = ? WHERE id = ?")
+      .run("See [issue:beef123].", 2000, source.id);
+    db.prepare("UPDATE ledger_issues SET updated_at = ? WHERE id = ?").run(1000, skipped.id);
+
+    const first = runIssueReferenceBackfill(db, {
+      project: project.project.display_name,
+      issue: source.short_id,
+      since: 1500,
+    });
+    const second = runIssueReferenceBackfill(db, {
+      project: project.project.display_name,
+      issue: source.short_id,
+      since: 1500,
+    });
+
+    expect(first.processed).toEqual({ issue_bodies: 1, comments: 0 });
+    expect(first.delta).toMatchObject({
+      relationship_sources: 1,
+      active_sources: 1,
+      derived_refs: 1,
+      events: 1,
+    });
+    expect(second.delta).toMatchObject({
+      relationship_sources: 0,
+      active_sources: 0,
+      derived_refs: 0,
+      events: 0,
+    });
+    expect(db.prepare(
+      `SELECT source_issue_id, target_issue_id
+       FROM ledger_issue_relationship_sources
+       WHERE deleted_at IS NULL`,
+    ).all()).toEqual([{ source_issue_id: source.id, target_issue_id: target.id }]);
   });
 
   it("does not remove manual relationships when derived text sources disappear", () => {
