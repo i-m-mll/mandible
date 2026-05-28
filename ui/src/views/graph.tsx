@@ -1035,10 +1035,27 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
   return (
     <div className="graph-view">
       <div className="graph-topbar">
-        <div className="graph-mode-strip" aria-label="Graph modes">
-          {modes.map((item) => (
-            <ModeButton key={item.id} mode={item} current={mode} onSelect={setMode} />
-          ))}
+        <div className="graph-primary-controls">
+          <div className="graph-mode-strip" aria-label="Graph modes">
+            {modes.map((item) => (
+              <ModeButton key={item.id} mode={item} current={mode} onSelect={setMode} />
+            ))}
+          </div>
+          <div className="graph-layer-strip" aria-label="Graph layers">
+            {layers.length === 0 && <div className="graph-layer-strip__empty">No layers</div>}
+            {layers.map((layer) => (
+              <label key={layer.id} className={`graph-layer-chip${!layer.enabled ? ' graph-layer-chip--disabled' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={layer.enabled && enabledLayers.has(layer.id)}
+                  disabled={!layer.enabled}
+                  onChange={() => toggleLayer(layer)}
+                />
+                <span>{typeLabel(layer.id)}</span>
+                <em>{layer.count}</em>
+              </label>
+            ))}
+          </div>
         </div>
         <div className="graph-toolbar">
           <div className="graph-toolbar__combobox-group">
@@ -1084,23 +1101,6 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
       </div>
 
       <div className="graph-workspace">
-        <div className="graph-layer-rail">
-          <div className="graph-layer-rail__title">Layers</div>
-          {layers.length === 0 && <div className="graph-layer-rail__empty">No layers</div>}
-          {layers.map((layer) => (
-            <label key={layer.id} className={`graph-layer-chip${!layer.enabled ? ' graph-layer-chip--disabled' : ''}`}>
-              <input
-                type="checkbox"
-                checked={layer.enabled && enabledLayers.has(layer.id)}
-                disabled={!layer.enabled}
-                onChange={() => toggleLayer(layer)}
-              />
-              <span>{typeLabel(layer.id)}</span>
-              <em>{layer.count}</em>
-            </label>
-          ))}
-        </div>
-
         <div className="graph-canvas-wrap">
           {loading && <div className="graph-loading">Loading graph...</div>}
           {error && <div className="graph-error">{error}</div>}

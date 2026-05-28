@@ -16,6 +16,16 @@ import {
 } from "../src/ledger/issue-migration.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
+import {
+  runGitBugSyncForRepos,
+} from "../src/ledger/sync-runner.js";
+import type {
+  GitBugClient,
+  GitBugCreateIssueInput,
+  GitBugIssueDetail,
+  GitBugIssueSummary,
+  GitBugResult,
+} from "../src/ledger/git-bug-client.js";
 import { registerIssueRoutes, type IssueServer, type RouteHandler } from "../src/routes/issues.js";
 import type { IssueRepoSummary } from "../src/types.js";
 import type { RepoInfo } from "../src/work-scanner.js";
@@ -59,7 +69,7 @@ function fakeWorkScanner(repos: RepoInfo[]) {
   };
 }
 
-type Method = "GET" | "POST" | "PUT";
+type Method = "GET" | "POST" | "PUT" | "PATCH";
 
 interface TestResponse {
   statusCode: number;
@@ -76,6 +86,7 @@ class TestIssueServer implements IssueServer {
     GET: new Map(),
     POST: new Map(),
     PUT: new Map(),
+    PATCH: new Map(),
   };
 
   get(path: string, handler: RouteHandler): void {
@@ -88,6 +99,10 @@ class TestIssueServer implements IssueServer {
 
   put(path: string, handler: RouteHandler): void {
     this.handlers.PUT.set(path, handler);
+  }
+
+  patch(path: string, handler: RouteHandler): void {
+    this.handlers.PATCH.set(path, handler);
   }
 
   async invoke(
@@ -223,7 +238,7 @@ describe("ledger legacy issue projection", () => {
 
     expect(summaries).toHaveLength(1);
     expect(summaries[0].issues[0]).toMatchObject({
-      id: "abc123",
+      id: issue.short_id,
       repo_id: "repo-1",
       repo_name: "mandible",
       title: "Projected issue",
@@ -332,6 +347,64 @@ describe("ledger reconciliation reports", () => {
   });
 });
 
+describe("ledger migration sync", () => {
+  it("seeds projects/checkouts and imports registered repo issues", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const client = new FakeGitBugClient([
+      makeDetail({
+        id: "git-1",
+        human_id: "abc123",
+        title: "Imported issue",
+        body: "Imported body",
+        labels: ["feature"],
+      }),
+    ]);
+
+    const sync = await runGitBugSyncForRepos({
+      db,
+      client,
+      repos: [repoInfo],
+      direction: "import",
+    });
+    const workScanner = fakeWorkScanner([repoInfo]);
+    const summaries = listLedgerIssueSummaries(db, workScanner);
+    const report = runIssueReconciliation(
+      db,
+      { getRepoSummaries: () => summaries },
+      workScanner,
+      "shadow",
+    );
+
+    expect(sync).toMatchObject({ total: 1, completed: 1, failed: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_projects").get()).toMatchObject({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_project_checkouts").get()).toMatchObject({ count: 1 });
+    expect(summaries).toMatchObject([{
+      repo_id: "repo-1",
+      issues: [{ id: expect.stringMatching(/^[0-9a-f]{7,64}$/), title: "Imported issue" }],
+    }]);
+    expect(report.status).toBe("clean");
+  });
+
+  it("skips missing or excluded repos without blocking other imports", async () => {
+    const active = repo("repo-1", "active");
+    const missing = { ...repo("repo-2", "missing"), exists: false };
+    const excluded = { ...repo("repo-3", "excluded"), excluded: true };
+    const client = new FakeGitBugClient([
+      makeDetail({ id: "git-1", human_id: "abc123", title: "Active issue" }),
+    ]);
+
+    const sync = await runGitBugSyncForRepos({
+      db,
+      client,
+      repos: [active, missing, excluded],
+      direction: "import",
+    });
+
+    expect(sync).toMatchObject({ total: 3, completed: 1, skipped: 2, failed: 0 });
+    expect(sync.results.map((result) => result.status)).toEqual(["completed", "skipped", "skipped"]);
+  });
+});
+
 describe("ledger issue route gate", () => {
   it("serves list, detail, context, and session routes from ledger read mode", async () => {
     const repoInfo = repo("repo-1", "mandible");
@@ -347,7 +420,7 @@ describe("ledger issue route gate", () => {
     ).run("sess-1", "codex", "idle", "2026-05-16T12:00:00.000Z", "2026-05-16T12:00:00.000Z");
     db.prepare(
       "INSERT INTO session_issues (session_id, issue_id, repo_id, created_at) VALUES (?, ?, ?, ?)",
-    ).run("sess-1", "abc123", repoInfo.id, 1);
+    ).run("sess-1", issue.short_id, repoInfo.id, 1);
     updateLedgerIssueMigrationConfig(db, { read_mode: "ledger" });
 
     const server = new TestIssueServer();
@@ -355,20 +428,20 @@ describe("ledger issue route gate", () => {
 
     const list = await server.invoke("GET", "/api/issues");
     expect(list.statusCode).toBe(200);
-    expect(list.body).toMatchObject([{ repo_id: repoInfo.id, issues: [{ id: "abc123" }] }]);
+    expect(list.body).toMatchObject([{ repo_id: repoInfo.id, issues: [{ id: issue.short_id }] }]);
 
     const detail = await server.invoke("GET", "/api/issues/:repoId/:issueId", {
       params: { repoId: "mandible", issueId: issue.id.slice(0, 10) },
     });
     expect(detail.statusCode).toBe(200);
-    expect(detail.body).toMatchObject({ id: "abc123", title: "Route issue", description: "Route body" });
+    expect(detail.body).toMatchObject({ id: issue.short_id, title: "Route issue", description: "Route body" });
 
     const context = await server.invoke("GET", "/api/issues/:repoId/:issueId/context", {
       params: { repoId: repoInfo.id, issueId: "abc123" },
     });
     expect(context.statusCode).toBe(200);
     expect(context.body).toMatchObject({
-      issue: { id: "abc123", title: "Route issue" },
+      issue: { id: issue.short_id, title: "Route issue" },
       sessions: [{ session_id: "sess-1" }],
     });
 
@@ -376,7 +449,7 @@ describe("ledger issue route gate", () => {
       params: { repoId: repoInfo.id, issueId: "abc123" },
     });
     expect(sessions.statusCode).toBe(200);
-    expect(sessions.body).toMatchObject([{ session_id: "sess-1", issue_id: "abc123" }]);
+    expect(sessions.body).toMatchObject([{ session_id: "sess-1", issue_id: issue.short_id }]);
   });
 
   it("guards dual writes and applies ledger writes only when explicitly configured", async () => {
@@ -414,4 +487,124 @@ describe("ledger issue route gate", () => {
     expect(detail.comments.map((row) => row.body)).toContain("Mandible note");
     expect(detail.labels.map((row) => row.label)).toContain("reviewed");
   });
+
+  it("creates ledger-native issues through the repo route", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
+
+    const created = await server.invoke("POST", "/api/issues/:repoId", {
+      params: { repoId: repoInfo.name },
+      body: {
+        title: "Ledger-native issue",
+        body: "Created through API",
+        root: repoInfo.root,
+        labels: ["feature"],
+      },
+    });
+    const list = await server.invoke("GET", "/api/issues", {
+      query: { repo: repoInfo.root, status: "open" },
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(created.body).toMatchObject({
+      title: "Ledger-native issue",
+      source: "mandible",
+      labels: ["feature"],
+    });
+    expect(list.body).toMatchObject([{ repo_root: repoInfo.root, issues: [{ title: "Ledger-native issue" }] }]);
+    expect(db.prepare("SELECT source FROM ledger_issues").get()).toMatchObject({ source: "mandible" });
+  });
 });
+
+class FakeGitBugClient implements GitBugClient {
+  private details = new Map<string, GitBugIssueDetail>();
+
+  constructor(details: GitBugIssueDetail[]) {
+    for (const detail of details) {
+      this.details.set(detail.id, detail);
+      this.details.set(detail.human_id, detail);
+    }
+  }
+
+  async hasGitBugRefs(): Promise<GitBugResult<boolean>> {
+    return ok(this.details.size > 0);
+  }
+
+  async listIssues(): Promise<GitBugResult<GitBugIssueSummary[]>> {
+    const unique = Array.from(new Set(this.details.values()));
+    return ok(unique.map(({ description: _description, comments: _comments, raw: _raw, ...summary }) => summary));
+  }
+
+  async getIssue(_repoRoot: string, ref: string): Promise<GitBugResult<GitBugIssueDetail>> {
+    const detail = this.details.get(ref);
+    return detail ? ok(detail) : fail("not found");
+  }
+
+  async createIssue(_repoRoot: string, _input: GitBugCreateIssueInput): Promise<GitBugResult<{ id: string }>> {
+    return fail("not implemented");
+  }
+
+  async editTitle(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+
+  async editComment(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+
+  async setStatus(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+
+  async addComment(): Promise<GitBugResult<{ id?: string }>> {
+    return fail("not implemented");
+  }
+
+  async addLabel(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+
+  async removeLabel(): Promise<GitBugResult<void>> {
+    return fail("not implemented");
+  }
+}
+
+function makeDetail(input: {
+  id: string;
+  human_id: string;
+  title: string;
+  body?: string;
+  status?: "open" | "closed";
+  labels?: string[];
+  comments?: Array<{ id: string; body: string }>;
+}): GitBugIssueDetail {
+  return {
+    id: input.id,
+    human_id: input.human_id,
+    title: input.title,
+    status: input.status ?? "open",
+    labels: input.labels ?? [],
+    author_name: "Codex",
+    created_at: "2026-05-16T12:00:00.000Z",
+    description: input.body ?? "",
+    description_comment_id: `${input.human_id}-desc`,
+    comments: (input.comments ?? []).map((comment) => ({
+      id: comment.id,
+      human_id: comment.id,
+      author_name: "Codex",
+      body: comment.body,
+      created_at: "2026-05-16T12:00:00.000Z",
+    })),
+    raw: input,
+  };
+}
+
+function ok<T>(value: T): GitBugResult<T> {
+  return { ok: true, value, stdout: "", stderr: "", exit_code: 0 };
+}
+
+function fail<T>(error: string): GitBugResult<T> {
+  return { ok: false, error, retry: "fatal", stdout: "", stderr: error, exit_code: 1 };
+}

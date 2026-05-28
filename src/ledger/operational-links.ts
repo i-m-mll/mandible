@@ -273,16 +273,19 @@ export function syncAuthRequestLedgerLinks(
     issue_ids?: string[] | null;
     issues?: string[] | null;
     commit_message?: string | null;
+    merge_output?: string | null;
     recordEvent?: boolean;
   },
 ): OperationalLinkResult[] {
   const refs = new Map<string, "references" | "resolves">();
   for (const ref of input.issue_ids ?? []) refs.set(ref, "references");
-  for (const ref of extractIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "references");
+  for (const ref of extractBugIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "references");
+  for (const ref of extractClosingIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "resolves");
   for (const ref of input.issue_references ?? []) refs.set(ref, "references");
   for (const ref of input.issue_closures ?? []) refs.set(ref, "resolves");
   // Legacy issues were documented as close-on-merge; preserve that meaning.
   for (const ref of input.issues ?? []) refs.set(ref, "resolves");
+  for (const ref of extractMergeResultIssueRefs(input.merge_output)) refs.set(ref, "resolves");
 
   const results: OperationalLinkResult[] = [];
   for (const [ref, linkType] of refs) {
@@ -308,6 +311,7 @@ export function applyAuthRequestLedgerCompletion(
     issue_ids?: string[] | null;
     issues?: string[] | null;
     commit_message?: string | null;
+    merge_output?: string | null;
     approval_source?: string | null;
     approval_lease_id?: string | null;
     resolution?: LedgerIssueResolution;
@@ -317,6 +321,8 @@ export function applyAuthRequestLedgerCompletion(
   if (!ledgerOperationalLinksAvailable(db)) return results;
 
   const store = new LedgerStore(db);
+  const mergeResult = parseMergeResult(input.merge_output);
+  const mergeSha = mergeResult?.merge_sha ?? null;
   const linked = db.prepare(
     `SELECT issue_id, link_type FROM ledger_auth_issue_links
      WHERE auth_request_id = ? AND link_type IN ('resolves', 'fixed_by')`,
@@ -339,6 +345,24 @@ export function applyAuthRequestLedgerCompletion(
         approval_lease_id: input.approval_lease_id ?? null,
       },
     });
+    if (hasActiveLabel(db, issueId, "coordination")) {
+      continue;
+    }
+    store.setLabel(
+      issueId,
+      "merged",
+      true,
+      "auth_queue",
+      { actor_type: "system", actor_id: input.approval_lease_id ?? null },
+    );
+    if (mergeSha) {
+      recordIssueResolution(db, {
+        authRequestId: input.auth_request_id,
+        issueId,
+        commitSha: mergeSha,
+        repoRef: input.repo_ref ?? "",
+      });
+    }
     store.setIssueStatus(
       issueId,
       "closed",
@@ -650,6 +674,7 @@ function sourceFieldsForAuthRef(
     issue_ids?: string[] | null;
     issues?: string[] | null;
     commit_message?: string | null;
+    merge_output?: string | null;
   },
 ): string[] {
   const fields: string[] = [];
@@ -657,11 +682,13 @@ function sourceFieldsForAuthRef(
   if ((input.issue_closures ?? []).includes(ref)) fields.push("issue_closures");
   if ((input.issue_ids ?? []).includes(ref)) fields.push("issue_ids");
   if ((input.issues ?? []).includes(ref)) fields.push("issues");
-  if (extractIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message");
+  if (extractBugIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message");
+  if (extractClosingIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message_closure");
+  if (extractMergeResultIssueRefs(input.merge_output).includes(ref)) fields.push("merge_output");
   return fields;
 }
 
-function extractIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {
+function extractBugIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {
   if (!commitMessage) return [];
   const refs: string[] = [];
   const regex = /^Bug:\s+(\S+)/gm;
@@ -670,6 +697,101 @@ function extractIssueRefsFromCommitMessage(commitMessage?: string | null): strin
     refs.push(match[1]);
   }
   return refs;
+}
+
+function extractClosingIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {
+  if (!commitMessage) return [];
+  const refs: string[] = [];
+  const regex = /^(?:Closes|Resolves):\s+(\S+)/gm;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(commitMessage)) !== null) {
+    refs.push(match[1]);
+  }
+  return refs;
+}
+
+interface MergeResult {
+  merge_sha?: string;
+  declared_issues?: string[];
+  auto_close_issues?: string[];
+}
+
+function parseMergeResult(output?: string | null): MergeResult | null {
+  if (!output) return null;
+  const prefix = "MANDIBLE_MERGE_RESULT ";
+  const lines = output.split(/\r?\n/).filter((line) => line.startsWith(prefix));
+  const line = lines.at(-1);
+  if (!line) return null;
+  try {
+    const parsed = JSON.parse(line.slice(prefix.length)) as Partial<MergeResult>;
+    return {
+      merge_sha: typeof parsed.merge_sha === "string" ? parsed.merge_sha : undefined,
+      declared_issues: stringArray(parsed.declared_issues),
+      auto_close_issues: stringArray(parsed.auto_close_issues),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractMergeResultIssueRefs(output?: string | null): string[] {
+  const result = parseMergeResult(output);
+  if (!result) return [];
+  return [...(result.declared_issues ?? []), ...(result.auto_close_issues ?? [])];
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function hasActiveLabel(db: Db, issueId: string, label: string): boolean {
+  const row = db.prepare(
+    "SELECT 1 AS ok FROM ledger_labels WHERE issue_id = ? AND label = ? AND deleted_at IS NULL LIMIT 1",
+  ).get(issueId, label) as { ok: number } | undefined;
+  return Boolean(row);
+}
+
+function recordIssueResolution(
+  db: Db,
+  input: { authRequestId: string; issueId: string; commitSha: string; repoRef: string },
+): void {
+  const now = Date.now();
+  const issue = new LedgerStore(db).getIssue(input.issueId);
+  const legacyRef = legacyIssueRefForAuthLink(db, input.authRequestId, input.issueId);
+  if (tableExists(db, "issue_resolutions")) {
+    db.prepare(
+      `INSERT OR IGNORE INTO issue_resolutions (issue_id, commit_sha, repo_id, resolved_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run(legacyRef ?? (issue.short_id || input.issueId), input.commitSha, input.repoRef, now);
+  }
+  linkCommitToLedgerIssue(db, {
+    commit_sha: input.commitSha,
+    issue_ref: input.issueId,
+    repo_ref: input.repoRef,
+    now,
+    recordEvent: true,
+  });
+}
+
+function legacyIssueRefForAuthLink(db: Db, authRequestId: string, issueId: string): string | null {
+  if (!tableExists(db, "ledger_auth_issue_links")) return null;
+  const rows = db.prepare(
+    `SELECT metadata_json
+     FROM ledger_auth_issue_links
+     WHERE auth_request_id = ? AND issue_id = ? AND link_type IN ('resolves', 'fixed_by')
+     ORDER BY created_at DESC`,
+  ).all(authRequestId, issueId) as Array<{ metadata_json: string }>;
+  for (const row of rows) {
+    try {
+      const metadata = JSON.parse(row.metadata_json) as { legacy_issue_id?: unknown };
+      if (typeof metadata.legacy_issue_id === "string" && metadata.legacy_issue_id.trim()) {
+        return metadata.legacy_issue_id;
+      }
+    } catch {
+      // Ignore malformed metadata from older rows.
+    }
+  }
+  return null;
 }
 
 function parseStringArray(value: unknown): string[] | null {

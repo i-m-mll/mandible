@@ -22,7 +22,6 @@ import type {
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
-
 // Bug: dd21c1e — valid auth request types
 const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
   "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
@@ -1100,6 +1099,7 @@ export class AuthQueue {
         issue_ids: request.issue_ids ?? null,
         issues: request.issues ?? null,
         commit_message: request.commit_message,
+        merge_output: request.output,
         recordEvent,
       });
     } catch {
@@ -1117,6 +1117,7 @@ export class AuthQueue {
         issue_ids: request.issue_ids ?? null,
         issues: request.issues ?? null,
         commit_message: request.commit_message,
+        merge_output: request.output,
         approval_source: request.approval_source,
         approval_lease_id: request.approval_lease_id,
       });
@@ -1420,6 +1421,7 @@ export class AuthQueue {
 
       CREATE INDEX IF NOT EXISTS idx_auth_requests_queue
         ON auth_requests(status, skipped_at, created_at);
+
     `);
   }
 }

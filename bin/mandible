@@ -7,9 +7,11 @@
 #   wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
 #   task <description>               Set session task status
 #   inbox [check|ack|watch|add]      Manage session inbox
-#   issue <subcommand>               Issue operations (close, comment, show)
+#   issue <subcommand>               Issue operations (close, comment, show, refs)
 #   auth request <branch> [opts]     Submit auth merge request
 #   auth merge <branch> [opts]       Execute authenticated merge
+#   logs <subcommand>                Inspect provider-native source logs
+#   conversations <subcommand>       Inspect DB-backed conversations
 #   search "<query>" [opts]          Search chat history across providers
 #   help                             Show this help
 
@@ -30,9 +32,11 @@ Commands:
   wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
   task <description>               Set session task status
   inbox [check|ack|watch|add]      Manage session inbox
-  issue <subcommand>               Issue operations (close, comment, show)
+  issue <subcommand>               Issue operations (close, comment, show, refs)
   auth request <branch> [opts]     Submit auth merge request
   auth merge <branch> [opts]       Execute authenticated merge
+  logs <subcommand>                Inspect provider-native source logs
+  conversations <subcommand>       Inspect DB-backed conversations
   search "<query>" [opts]          Search chat history across providers
   help                             Show this help
 EOF
@@ -51,6 +55,8 @@ case "${1:-}" in
       *) echo "Unknown auth subcommand: ${1:-}" >&2; usage >&2; exit 1 ;;
     esac
     ;;
+  logs)    shift; exec "$MANDIBLE_CLI_DIR/logs.sh" "$@" ;;
+  conversations) shift; exec "$MANDIBLE_CLI_DIR/conversations.sh" "$@" ;;
   search)  shift; exec "$MANDIBLE_CLI_DIR/search.sh" "$@" ;;
   help|-h|--help) usage ;;
   "") usage >&2; exit 1 ;;

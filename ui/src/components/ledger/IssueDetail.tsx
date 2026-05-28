@@ -1,16 +1,25 @@
-import { useMemo, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { sanitizeHtml, sanitizeMarkdown } from '../../sanitize';
 import type {
   LedgerIssueDetailAuthRequest,
-  LedgerIssueDetailComment,
   LedgerIssueDetailConflict,
   LedgerIssueDetailProjection,
   LedgerIssueDetailRelationship,
   LedgerIssueDetailSession,
+  LedgerIssueDetailWorkUnit,
+  LedgerIssueTimelineEntry,
 } from '../../api';
 
 type EntityType = 'issue' | 'session' | 'auth_request' | 'conversation';
+type RenderTimelineEntry =
+  | LedgerIssueTimelineEntry
+  | {
+      id: string;
+      kind: 'auth';
+      auth: LedgerIssueDetailAuthRequest;
+      created_at: number;
+    };
 
 export type LedgerIssueDetailProps = {
   detail: LedgerIssueDetailProjection;
@@ -37,7 +46,10 @@ export function LedgerIssueDetail({
 }: LedgerIssueDetailProps): JSX.Element {
   const [commentText, setCommentText] = useState('');
   const [showComposer, setShowComposer] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [authEvidenceOpen, setAuthEvidenceOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
+  const actionMenuRef = useRef<HTMLDivElement>(null);
   const busy = actionInFlight || localBusy;
   const resolvingAuth = detail.auth_requests.find((auth) =>
     (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') &&
@@ -47,6 +59,17 @@ export function LedgerIssueDetail({
   const activeSessions = detail.sessions.filter((session) => session.status === 'active' || session.status === 'idle');
   const historicalSessions = detail.sessions.filter((session) => session.status !== 'active' && session.status !== 'idle');
   const primaryWorkUnit = detail.work_units[0] ?? null;
+  const timeline = detail.timeline ?? fallbackTimeline(detail);
+  const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
+  const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
+  const hasIssueActions = Boolean(
+    liveSession ||
+    onStartAgent ||
+    onSetStatus ||
+    onAddComment ||
+    detail.auth_requests.length > 0 ||
+    (detail.labels.includes('umbrella') && onShowChildren)
+  );
   const syncTone = detail.sync.state === 'clean'
     ? 'clean'
     : detail.sync.state === 'pending'
@@ -54,6 +77,24 @@ export function LedgerIssueDetail({
       : detail.sync.state === 'conflicted'
         ? 'conflicted'
         : 'failed';
+
+  useEffect(() => {
+    if (!actionsOpen) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const node = actionMenuRef.current;
+      if (!node || node.contains(event.target as Node)) return;
+      setActionsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActionsOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [actionsOpen]);
 
   const submitComment = async () => {
     if (!onAddComment || !commentText.trim() || busy) return;
@@ -74,8 +115,45 @@ export function LedgerIssueDetail({
           <div className="ledger-issue-detail__eyebrow">
             <span>{detail.project.repo_name ?? detail.project.display_name}</span>
             <code>{detail.display_id}</code>
+            <CopyIssueRefButton detail={detail} />
+            <MetadataDisclosure label="Issue metadata">
+              <MetadataRows rows={issueMetadataRows(detail)} />
+            </MetadataDisclosure>
           </div>
-          <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
+          <div className="ledger-issue-detail__title-row">
+            <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
+            {hasIssueActions && (
+              <IssueActionsMenu
+                menuRef={actionMenuRef}
+                open={actionsOpen}
+                busy={busy}
+                detail={detail}
+                liveSession={liveSession}
+                primaryWorkUnit={primaryWorkUnit}
+                onToggle={() => setActionsOpen((prev) => !prev)}
+                onClose={() => setActionsOpen(false)}
+                onStartAgent={onStartAgent}
+                onSetStatus={onSetStatus}
+                onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
+                onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
+                onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
+              />
+            )}
+          </div>
+          <div className="ledger-issue-detail__meta">
+            <span className="ledger-issue-detail__byline-author">{detail.author.display}</span>
+            <time>{formatRelativeTime(detail.created_at)}</time>
+            {displayLabels.length > 0 && (
+              <>
+                <span className="ledger-issue-detail__meta-separator" aria-hidden="true" />
+                <span className="ledger-issue-detail__label-row">
+                  {displayLabels.map((label) => (
+                    <span key={label} className="ledger-label">{displayLabel(label)}</span>
+                  ))}
+                </span>
+              </>
+            )}
+          </div>
         </div>
         <div className="ledger-issue-detail__header-actions">
           <StatusPill
@@ -84,76 +162,18 @@ export function LedgerIssueDetail({
             linkedAuth={resolvingAuth}
             onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
           />
-          <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
+          {detail.sync.state !== 'clean' && (
+            <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
+          )}
         </div>
       </header>
 
-      <div className="ledger-issue-detail__meta">
-        <span>{detail.kind}</span>
-        <span>{detail.priority}</span>
-        <span>{detail.author.display}</span>
-        <span>{formatRelativeTime(detail.created_at)}</span>
-        {detail.source && <span>{detail.source}</span>}
-      </div>
-
-      {detail.labels.length > 0 && (
-        <div className="ledger-issue-detail__labels">
-          {detail.labels.map((label) => (
-            <span key={label} className="ledger-label">{displayLabel(label)}</span>
+      <section className="ledger-issue-detail__section">
+        <div className="ledger-comment-list ledger-timeline-list">
+          {timelineEntries.map((entry) => (
+            <TimelineEntryCard key={entry.id} entry={entry} detail={detail} onOpenEntity={onOpenEntity} />
           ))}
-          {detail.labels.includes('umbrella') && onShowChildren && (
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => onShowChildren(detail)}>
-              Show children
-            </button>
-          )}
         </div>
-      )}
-
-      {(liveSession || primaryWorkUnit || onStartAgent || onSetStatus) && (
-        <div className="ledger-issue-detail__actions">
-          {liveSession && (
-            <a className="issue-hub__action-btn issue-hub__action-btn--primary" href={`#/console?session=${encodeURIComponent(liveSession.id)}`}>
-              Open Console
-            </a>
-          )}
-          {!liveSession && onStartAgent && (
-            <button
-              type="button"
-              className="issue-hub__action-btn issue-hub__action-btn--secondary"
-              disabled={busy}
-              onClick={() => void onStartAgent()}
-            >
-              {primaryWorkUnit?.continuation ? 'Resume Work' : 'Start Agent'}
-            </button>
-          )}
-          {onSetStatus && (
-            <button
-              type="button"
-              className={`btn ${detail.status === 'open' ? 'btn--danger' : 'btn--success'}`}
-              disabled={busy}
-              onClick={() => void onSetStatus(detail.status === 'open' ? 'closed' : 'open')}
-            >
-              {detail.status === 'open' ? 'Close Issue' : 'Reopen Issue'}
-            </button>
-          )}
-        </div>
-      )}
-
-      <section className="ledger-issue-detail__section">
-        <MarkdownBlock className="ledger-issue-detail__body spec-panel" empty="No description." source={detail.body} />
-      </section>
-
-      <section className="ledger-issue-detail__section">
-        <SectionTitle title="Comments" count={detail.comments.length} />
-        {detail.comments.length === 0 ? (
-          <div className="ledger-issue-detail__empty">No comments yet.</div>
-        ) : (
-          <div className="ledger-comment-list">
-            {detail.comments.map((comment) => (
-              <CommentCard key={comment.id} comment={comment} />
-            ))}
-          </div>
-        )}
         {onAddComment && (
           <div className="ledger-comment-composer">
             {!showComposer ? (
@@ -190,32 +210,18 @@ export function LedgerIssueDetail({
         </section>
       )}
 
-      {detail.auth_requests.length > 0 && (
-        <section className="ledger-issue-detail__section">
-          <SectionTitle title="Auth Evidence" count={detail.auth_requests.length} />
-          <AuthEvidenceShelf authRequests={detail.auth_requests} onOpenEntity={onOpenEntity} />
-        </section>
+      {authEvidenceOpen && (
+        <AuthEvidenceModal
+          authRequests={detail.auth_requests}
+          onOpenEntity={onOpenEntity}
+          onClose={() => setAuthEvidenceOpen(false)}
+        />
       )}
 
       {(activeSessions.length > 0 || historicalSessions.length > 0) && (
         <section className="ledger-issue-detail__section">
           <SectionTitle title="Sessions" count={detail.sessions.length} />
           <SessionHistory active={activeSessions} historical={historicalSessions} onOpenEntity={onOpenEntity} />
-        </section>
-      )}
-
-      {detail.work_units.length > 0 && (
-        <section className="ledger-issue-detail__section">
-          <SectionTitle title="Work Units" count={detail.work_units.length} />
-          <div className="ledger-kv-list">
-            {detail.work_units.map((work) => (
-              <div key={work.id} className="ledger-kv-card">
-                <span>{work.state}</span>
-                <code>{work.branch ?? work.id}</code>
-                {work.assigned_session_id && <small>assigned {work.assigned_session_id.slice(0, 10)}</small>}
-              </div>
-            ))}
-          </div>
         </section>
       )}
 
@@ -227,6 +233,233 @@ export function LedgerIssueDetail({
       )}
     </article>
   );
+}
+
+function IssueActionsMenu({
+  menuRef,
+  open,
+  busy,
+  detail,
+  liveSession,
+  primaryWorkUnit,
+  onToggle,
+  onClose,
+  onStartAgent,
+  onSetStatus,
+  onAddComment,
+  onShowAuthEvidence,
+  onShowChildren,
+}: {
+  menuRef: { current: HTMLDivElement | null };
+  open: boolean;
+  busy: boolean;
+  detail: LedgerIssueDetailProjection;
+  liveSession: LedgerIssueDetailSession | null;
+  primaryWorkUnit: LedgerIssueDetailWorkUnit | null;
+  onToggle: () => void;
+  onClose: () => void;
+  onStartAgent?: () => Promise<void> | void;
+  onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
+  onAddComment?: () => void;
+  onShowAuthEvidence?: () => void;
+  onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
+}): JSX.Element {
+  const closeAfter = (callback: () => void) => {
+    callback();
+    onClose();
+  };
+  return (
+    <div className="ledger-issue-actions-menu" ref={menuRef}>
+      <button
+        type="button"
+        className={`ledger-issue-actions-menu__trigger${open ? ' ledger-issue-actions-menu__trigger--active' : ''}`}
+        aria-label="Issue actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Issue actions"
+        onClick={onToggle}
+      >
+        <HorizontalDotsIcon />
+      </button>
+      {open && (
+        <div className="ledger-issue-actions-menu__dropdown" role="menu">
+          {liveSession && (
+            <a
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              href={`#/console?session=${encodeURIComponent(liveSession.id)}`}
+              onClick={onClose}
+            >
+              Open Console
+            </a>
+          )}
+          {!liveSession && onStartAgent && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(() => void onStartAgent())}
+            >
+              {primaryWorkUnit?.continuation ? 'Resume Work' : 'Start Agent'}
+            </button>
+          )}
+          {onAddComment && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(onAddComment)}
+            >
+              Add Comment
+            </button>
+          )}
+          {onShowChildren && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(() => onShowChildren(detail))}
+            >
+              Show Children
+            </button>
+          )}
+          {onShowAuthEvidence && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(onShowAuthEvidence)}
+            >
+              Auth Evidence
+            </button>
+          )}
+          {onSetStatus && (
+            <button
+              type="button"
+              className={`ledger-issue-actions-menu__item${detail.status === 'open' ? ' ledger-issue-actions-menu__item--danger' : ''}`}
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(() => void onSetStatus(detail.status === 'open' ? 'closed' : 'open'))}
+            >
+              {detail.status === 'open' ? 'Close Issue' : 'Reopen Issue'}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CopyIssueRefButton({ detail }: { detail: LedgerIssueDetailProjection }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const project = detail.project.repo_id ?? detail.project.repo_name ?? detail.project.display_name;
+  const value = `${project}/${detail.display_id}`;
+  const handleCopy = async () => {
+    try {
+      await copyText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="ledger-copy-ref-button"
+      title={copied ? 'Copied' : `Copy ${value}`}
+      aria-label={copied ? 'Copied issue reference' : `Copy ${value}`}
+      onClick={() => void handleCopy()}
+    >
+      {copied ? <CheckIcon /> : <CopyIcon />}
+    </button>
+  );
+}
+
+async function copyText(value: string): Promise<void> {
+  if (copyTextWithSelection(value)) return;
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  throw new Error('copy failed');
+}
+
+function copyTextWithSelection(value: string): boolean {
+  if (!document.queryCommandSupported?.('copy')) return false;
+
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+  textarea.focus({ preventScroll: true });
+  textarea.select();
+  textarea.setSelectionRange(0, value.length);
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  return copied;
+}
+
+function fallbackTimeline(detail: LedgerIssueDetailProjection): LedgerIssueTimelineEntry[] {
+  return [
+    {
+      id: `${detail.id}:body`,
+      kind: 'body',
+      ordinal: 0,
+      body: detail.body,
+      author: detail.author,
+      source: detail.source,
+      created_at: detail.created_at,
+      updated_at: detail.updated_at,
+    },
+    ...detail.comments.map((comment) => ({
+      id: comment.id,
+      kind: 'comment' as const,
+      comment_id: comment.id,
+      ordinal: comment.ordinal ?? 0,
+      body: comment.body,
+      author: comment.author,
+      source: comment.source,
+      created_at: comment.created_at,
+      updated_at: comment.updated_at,
+    })),
+  ];
+}
+
+function buildTimelineEntries(
+  timeline: LedgerIssueTimelineEntry[],
+  authRequests: LedgerIssueDetailAuthRequest[],
+): RenderTimelineEntry[] {
+  const authEntries = authRequests
+    .filter((auth) => auth.status === 'completed')
+    .map((auth) => ({
+      id: `auth:${auth.id}:${auth.link_type}`,
+      kind: 'auth' as const,
+      auth,
+      created_at: auth.resolved_at ?? auth.approved_at ?? auth.link_created_at ?? auth.created_at ?? 0,
+    }))
+    .filter((entry) => entry.created_at > 0);
+  return [...timeline, ...authEntries].sort((a, b) => {
+    const timeDelta = a.created_at - b.created_at;
+    if (timeDelta !== 0) return timeDelta;
+    return timelineRank(a) - timelineRank(b);
+  });
+}
+
+function timelineRank(entry: RenderTimelineEntry): number {
+  if (entry.kind === 'body') return 0;
+  if (entry.kind === 'comment') return 1;
+  if (entry.kind === 'auth') return 2;
+  return 3;
 }
 
 function StatusPill({
@@ -252,17 +485,141 @@ function StatusPill({
   return <span className={`status-pill status-pill--lg ${cls}`}>{label}</span>;
 }
 
-function CommentCard({ comment }: { comment: LedgerIssueDetailComment }): JSX.Element {
-  return (
-    <div className="ledger-comment-card">
-      <div className="ledger-comment-card__header">
-        <span>{comment.author.display}</span>
-        <em>{comment.author.type.replace(/_/g, ' ')}</em>
-        <small>{comment.source}</small>
-        <time>{formatRelativeTime(comment.created_at)}</time>
+function TimelineEntryCard({
+  entry,
+  detail,
+  onOpenEntity,
+}: {
+  entry: RenderTimelineEntry;
+  detail: LedgerIssueDetailProjection;
+  onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
+}): JSX.Element {
+  if (entry.kind === 'auth') {
+    return (
+      <button
+        type="button"
+        className="ledger-timeline-event ledger-timeline-event--auth"
+        disabled={!onOpenEntity}
+        onClick={() => onOpenEntity?.('auth_request', entry.auth.id)}
+      >
+        <span className="ledger-timeline-event__dot" aria-hidden="true" />
+        <span className="ledger-timeline-event__text">
+          <strong>{authEvidenceLinkLabel(entry.auth)}</strong>
+          <span>{entry.auth.title || entry.auth.id}</span>
+        </span>
+        <time>{formatRelativeTime(entry.created_at)}</time>
+      </button>
+    );
+  }
+  if (entry.kind === 'state') {
+    return (
+      <div className="ledger-timeline-event ledger-timeline-event--state">
+        <span className="ledger-timeline-event__dot" aria-hidden="true" />
+        <span className="ledger-timeline-event__text">
+          <strong>{stateEntryLabel(entry)}</strong>
+        </span>
+        <time>{formatRelativeTime(entry.created_at)}</time>
+        <MetadataDisclosure label="Timeline metadata">
+          <MetadataRows rows={stateMetadataRows(entry)} />
+        </MetadataDisclosure>
       </div>
-      <MarkdownBlock className="ledger-comment-card__body spec-panel" source={comment.body} empty="" />
+    );
+  }
+  const isBody = entry.kind === 'body';
+  return (
+    <div
+      className="ledger-comment-card ledger-timeline-card"
+      id={entry.kind === 'comment' ? `comment-${entry.comment_id}` : 'comment-0'}
+      data-comment-ordinal={String(entry.ordinal)}
+    >
+      <div className="ledger-comment-card__header">
+        <span>{entry.author.display}</span>
+        <time>{formatRelativeTime(entry.created_at)}</time>
+        <MetadataDisclosure label={isBody ? 'Opening metadata' : 'Comment metadata'}>
+          <MetadataRows rows={isBody ? bodyMetadataRows(entry) : commentMetadataRows(entry)} />
+        </MetadataDisclosure>
+      </div>
+      <MarkdownBlock className="ledger-comment-card__body spec-panel" source={entry.body} empty={isBody ? 'No description.' : ''} detail={detail} />
     </div>
+  );
+}
+
+function MetadataDisclosure({
+  label,
+  children,
+}: {
+  label: string;
+  children: JSX.Element;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [panelOffset, setPanelOffset] = useState(0);
+  const ref = useRef<HTMLDetailsElement>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const positionPanel = () => {
+      const panel = ref.current?.querySelector<HTMLElement>('.ledger-metadata-popover__panel');
+      const summary = ref.current?.querySelector<HTMLElement>('summary');
+      if (!panel || !summary || !ref.current) return;
+      setPanelOffset(0);
+      requestAnimationFrame(() => {
+        const popoverBounds = ref.current?.getBoundingClientRect();
+        const detailBounds = ref.current?.closest('.ledger-issue-detail')?.getBoundingClientRect();
+        if (!popoverBounds) return;
+        const inset = 8;
+        const panelWidth = panel.offsetWidth;
+        const minLeft = Math.max(inset, (detailBounds?.left ?? 0) + inset);
+        const maxLeft = Math.min(window.innerWidth - inset, detailBounds?.right ?? window.innerWidth) - panelWidth;
+        const summaryBounds = summary.getBoundingClientRect();
+        const preferredLeft = summaryBounds.left + (summaryBounds.width / 2) - (panelWidth / 2);
+        const clampedLeft = Math.min(Math.max(preferredLeft, minLeft), Math.max(minLeft, maxLeft));
+        setPanelOffset(Math.round(clampedLeft - popoverBounds.left));
+      });
+    };
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const node = ref.current;
+      if (!node || node.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    window.addEventListener('resize', positionPanel);
+    positionPanel();
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+      window.removeEventListener('resize', positionPanel);
+    };
+  }, [open]);
+
+  return (
+    <details
+      ref={ref}
+      className="ledger-metadata-popover"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary aria-label={label} title={label}>
+        <MetadataIcon />
+      </summary>
+      <div className="ledger-metadata-popover__panel" style={{ left: `${panelOffset}px` }}>{children}</div>
+    </details>
+  );
+}
+
+function MetadataRows({ rows }: { rows: Array<[string, string]> }): JSX.Element {
+  return (
+    <dl className="ledger-metadata-grid">
+      {rows.map(([key, value]) => (
+        <div key={key}>
+          <dt>{key}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -312,11 +669,55 @@ function AuthEvidenceShelf({
           disabled={!onOpenEntity}
           onClick={() => onOpenEntity?.('auth_request', auth.id)}
         >
-          <span>{auth.link_type.replace(/_/g, ' ')}</span>
+          <span>{authEvidenceLinkLabel(auth)}</span>
           <strong>{auth.title || auth.id}</strong>
           <code>{auth.status}{auth.head_branch ? ` · ${auth.head_branch}` : ''}</code>
         </button>
       ))}
+    </div>
+  );
+}
+
+function AuthEvidenceModal({
+  authRequests,
+  onOpenEntity,
+  onClose,
+}: {
+  authRequests: LedgerIssueDetailAuthRequest[];
+  onOpenEntity?: LedgerIssueDetailProps['onOpenEntity'];
+  onClose: () => void;
+}): JSX.Element {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => document.removeEventListener('keydown', closeOnEscape, true);
+  }, [onClose]);
+
+  return (
+    <div className="ledger-issue-modal" role="presentation" onClick={onClose}>
+      <div
+        className="ledger-issue-modal__panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Auth evidence"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="ledger-issue-modal__header">
+          <h3>Auth Evidence</h3>
+          <button type="button" className="ledger-icon-button" aria-label="Close auth evidence" onClick={onClose}>
+            <CloseIcon />
+          </button>
+        </div>
+        <AuthEvidenceShelf
+          authRequests={authRequests}
+          onOpenEntity={onOpenEntity ? (type, id, repoId) => {
+            onClose();
+            onOpenEntity(type, id, repoId);
+          } : undefined}
+        />
+      </div>
     </div>
   );
 }
@@ -425,16 +826,257 @@ function SectionTitle({ title, count }: { title: string; count?: number }): JSX.
   );
 }
 
-function MarkdownBlock({ source, className, empty }: { source: string; className: string; empty: string }): JSX.Element {
+function MarkdownBlock({
+  source,
+  className,
+  empty,
+  detail,
+}: {
+  source: string;
+  className: string;
+  empty: string;
+  detail: LedgerIssueDetailProjection;
+}): JSX.Element {
   const html = useMemo(() => {
     if (!source) return '';
-    const parsed = marked.parse(source, { async: false });
-    return sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
-  }, [source]);
+    const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
+    const sanitized = sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
+    return linkifyLedgerRefs(sanitized, detail);
+  }, [source, detail.id, detail.display_id, detail.project.repo_id]);
   if (!html) {
     return <div className={`${className} spec-panel--empty`}>{empty}</div>;
   }
   return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+function normalizeMarkdownSource(source: string): string {
+  if (!source.includes('\\n')) return source;
+  const literalNewlineCount = (source.match(/\\n/g) ?? []).length;
+  const actualNewlineCount = (source.match(/\n/g) ?? []).length;
+  if (literalNewlineCount < 2 || actualNewlineCount > 0) return source;
+  return source.replace(/\\n/g, '\n');
+}
+
+const REF_PATTERN = /\[#(\d+)\]|\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,64})\b|(?<![\w/])([0-9a-f]{7,64})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
+
+function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): string {
+  if (typeof document === 'undefined' || !html) return html;
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  linkifyInlineCodeRefs(container, detail);
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (parent.closest('a, code, pre')) return NodeFilter.FILTER_REJECT;
+      REF_PATTERN.lastIndex = 0;
+      return REF_PATTERN.test(node.nodeValue ?? '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes: Text[] = [];
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node as Text);
+    node = walker.nextNode();
+  }
+  for (const textNode of nodes) {
+    const fragment = document.createDocumentFragment();
+    const text = textNode.nodeValue ?? '';
+    REF_PATTERN.lastIndex = 0;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = REF_PATTERN.exec(text))) {
+      if (match.index > lastIndex) {
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+      }
+      const link = refLink(match, detail, text);
+      fragment.appendChild(link ?? document.createTextNode(match[0]));
+      lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+    textNode.replaceWith(fragment);
+  }
+  return container.innerHTML;
+}
+
+function linkifyInlineCodeRefs(container: HTMLElement, detail: LedgerIssueDetailProjection): void {
+  const codeRefs = Array.from(container.querySelectorAll('code')).filter((code) => (
+    !code.closest('a, pre') && Boolean(code.textContent?.trim())
+  ));
+  for (const code of codeRefs) {
+    const text = code.textContent?.trim() ?? '';
+    REF_PATTERN.lastIndex = 0;
+    const match = REF_PATTERN.exec(text);
+    if (!match || match.index !== 0 || match[0].length !== text.length) continue;
+    const isLegacyBareIssueRef = Boolean(match[5]);
+    const isExplicitRef = Boolean(match[2]);
+    const isCanonicalRef = !match[1] && !match[2] && !match[4] && !match[5] && match[0].startsWith('iss_');
+    if (!isLegacyBareIssueRef && !isExplicitRef && !isCanonicalRef) continue;
+    const context = code.parentElement?.textContent ?? text;
+    const contextIndex = Math.max(0, context.indexOf(text));
+    match.index = contextIndex;
+    const link = refLink(match, detail, context, contextIndex);
+    if (!link) continue;
+    link.classList.add('ledger-xref--inline-code');
+    code.replaceWith(link);
+  }
+}
+
+function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection, text: string): HTMLAnchorElement | null {
+  const ordinalCommentRef = match[1];
+  const explicitType = match[2];
+  const explicitRef = match[3];
+  const hashIssueRef = match[4];
+  const bareIssueRef = match[5];
+  const canonicalIssueRef = !ordinalCommentRef && !explicitType && !hashIssueRef && !bareIssueRef ? match[0] : '';
+  if (ordinalCommentRef) {
+    const anchor = document.createElement('a');
+    anchor.className = 'ledger-xref';
+    anchor.textContent = `#${ordinalCommentRef}`;
+    anchor.href = issueHref(detail.project.repo_id ?? detail.project.display_name, detail.display_id, ordinalCommentRef);
+    anchor.title = `Open comment #${ordinalCommentRef}`;
+    return anchor;
+  }
+  const ref = explicitRef || hashIssueRef || bareIssueRef || canonicalIssueRef;
+  if (!ref) return null;
+
+  const anchor = document.createElement('a');
+  anchor.className = 'ledger-xref';
+  if (bareIssueRef && isAuthRequestContext(text, match.index)) {
+    anchor.textContent = match[0];
+    anchor.href = `#/auth?request=${encodeURIComponent(ref)}`;
+    anchor.title = `Open auth request ${ref}`;
+    return anchor;
+  }
+  if (bareIssueRef && isCommitLikeContext(text, match.index)) {
+    return null;
+  }
+  if (explicitType === 'comment') {
+    const parsed = parseCommentRef(ref, detail);
+    if (!parsed) return null;
+    anchor.textContent = commentRefLabel(parsed, detail);
+    anchor.href = issueHref(parsed.repo, parsed.issue, parsed.comment);
+    anchor.title = `Open comment ${parsed.comment}`;
+    return anchor;
+  }
+
+  const auth = detail.auth_requests.find((request) => request.id.startsWith(ref));
+  if (auth) {
+    anchor.textContent = explicitType ? auth.id.slice(0, 8) : (bareIssueRef || match[0]);
+    anchor.href = `#/auth?request=${encodeURIComponent(auth.id)}`;
+    anchor.title = `Open auth request ${auth.id.slice(0, 8)}`;
+    return anchor;
+  }
+  const parsedIssue = parseIssueRef(ref, detail);
+  if (!parsedIssue) return null;
+  anchor.textContent = explicitType ? issueRefLabel(parsedIssue, detail) : (bareIssueRef || match[0]);
+  anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
+  anchor.title = `Open issue ${parsedIssue.issue}`;
+  return anchor;
+}
+
+function isAuthRequestContext(text: string, matchIndex: number): boolean {
+  return /(?:auth\s+request|auth)\s+$/i.test(text.slice(Math.max(0, matchIndex - 32), matchIndex));
+}
+
+function isCommitLikeContext(text: string, matchIndex: number): boolean {
+  return /(?:merge|commit(?:\s+(?:is|was|hash|sha))?|superseding\s+the\s+earlier|earlier)\s+$/i
+    .test(text.slice(Math.max(0, matchIndex - 64), matchIndex));
+}
+
+function issueRefLabel(parsed: { repo: string; issue: string }, detail: LedgerIssueDetailProjection): string {
+  const currentRepo = detail.project.repo_id ?? detail.project.display_name;
+  return parsed.repo === currentRepo ? parsed.issue : `${parsed.repo}/${parsed.issue}`;
+}
+
+function commentRefLabel(parsed: { repo: string; issue: string; comment: string }, detail: LedgerIssueDetailProjection): string {
+  const issueLabel = issueRefLabel(parsed, detail);
+  return `${issueLabel}#${parsed.comment}`;
+}
+
+function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ['Reference', detail.display_id],
+    ['Kind', detail.kind],
+    ['Priority', detail.priority],
+    ['Source', detail.source || 'unknown'],
+    ['Project', detail.project.repo_name ?? detail.project.display_name],
+    ['Created', formatAbsoluteTime(detail.created_at)],
+    ['Updated', formatAbsoluteTime(detail.updated_at)],
+  ];
+  if (detail.id !== detail.display_id) rows.push(['Canonical ID', detail.id]);
+  if (detail.closed_at) rows.push(['Closed', formatAbsoluteTime(detail.closed_at)]);
+  const alternateAliases = detail.aliases
+    .map((alias) => alias.alias || alias.external_id)
+    .filter((alias) => alias && alias !== detail.id && alias !== detail.display_id);
+  if (alternateAliases.length > 0) rows.push(['Alternate refs', alternateAliases.join(', ')]);
+  if (detail.sync.state !== 'clean') rows.push(['Sync', syncLabel(detail.sync.state)]);
+  return rows.filter(([, value]) => Boolean(value));
+}
+
+function bodyMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'body' }>): Array<[string, string]> {
+  return [
+    ['Entry', '#0'],
+    ['Author type', entry.author.type.replace(/_/g, ' ')],
+    ['Source', entry.source || 'unknown'],
+    ['Created', formatAbsoluteTime(entry.created_at)],
+    ['Updated', formatAbsoluteTime(entry.updated_at)],
+  ].filter(([, value]) => Boolean(value));
+}
+
+function commentMetadataRows(comment: Extract<LedgerIssueTimelineEntry, { kind: 'comment' }>): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ['Comment', `#${comment.ordinal}`],
+    ['Comment ID', comment.comment_id],
+    ['Author type', comment.author.type.replace(/_/g, ' ')],
+    ['Source', comment.source || 'unknown'],
+    ['Created', formatAbsoluteTime(comment.created_at)],
+  ];
+  if (comment.updated_at) rows.push(['Updated', formatAbsoluteTime(comment.updated_at)]);
+  if (comment.author.id) rows.push(['Author ID', comment.author.id]);
+  return rows;
+}
+
+function stateMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state' }>): Array<[string, string]> {
+  return [
+    ['Event ID', entry.id],
+    ['Event type', entry.event_type],
+    ['Source', entry.source || 'unknown'],
+    ['Created', formatAbsoluteTime(entry.created_at)],
+  ].filter(([, value]) => Boolean(value));
+}
+
+function stateEntryLabel(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state' }>): string {
+  if (entry.status === 'closed') return entry.resolution ? `Closed: ${entry.resolution}` : 'Closed';
+  if (entry.status === 'open') return 'Reopened';
+  return 'State updated';
+}
+
+function parseIssueRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string } | null {
+  const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
+  if (scoped) return { repo: scoped[1], issue: scoped[2] };
+  return { repo: detail.project.repo_id ?? detail.project.display_name, issue: ref.replace(/^#/, '') };
+}
+
+function parseCommentRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string; comment: string } | null {
+  if (ref.startsWith('#')) {
+    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: detail.display_id, comment: ref.slice(1) };
+  }
+  const scoped = ref.match(/^([^/#]+)\/([^/#]+)#([^#]+)$/);
+  if (scoped) return { repo: scoped[1], issue: scoped[2], comment: scoped[3] };
+  const currentProject = ref.match(/^([^/#]+)#([^#]+)$/);
+  if (currentProject) {
+    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: currentProject[1], comment: currentProject[2] };
+  }
+  return null;
+}
+
+function issueHref(repo: string, issue: string, comment?: string): string {
+  const params = new URLSearchParams({ repo, issue });
+  if (comment) params.set('comment', comment);
+  return `#/issues?${params.toString()}`;
 }
 
 function inlineMarkdown(source: string): string {
@@ -460,9 +1102,26 @@ function formatRelativeTime(value?: number | string | null): string {
   return `${seconds}s ago`;
 }
 
+function formatAbsoluteTime(value?: number | string | null): string {
+  if (!value) return '';
+  const parsed = typeof value === 'number' ? value : Date.parse(value);
+  if (Number.isNaN(parsed)) return String(value);
+  return new Date(parsed).toLocaleString();
+}
+
 function displayLabel(label: string): string {
   if (label === 'error') return 'bug';
   return label;
+}
+
+function isMetadataLabel(label: string): boolean {
+  return label === 'merged';
+}
+
+function authEvidenceLinkLabel(auth: LedgerIssueDetailAuthRequest): string {
+  if (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') return 'resolved by';
+  if (auth.link_type === 'references') return 'referenced by';
+  return `${auth.link_type.replace(/_/g, ' ')} by`;
 }
 
 function syncLabel(state: string): string {
@@ -480,4 +1139,50 @@ function safeJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function MetadataIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 17v-5" />
+      <path d="M12 8h.01" />
+    </svg>
+  );
+}
+
+function CopyIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="9" y="9" width="10" height="10" rx="2" />
+      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
+    </svg>
+  );
+}
+
+function CheckIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function HorizontalDotsIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="5" cy="12" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="19" cy="12" r="1.5" />
+    </svg>
+  );
+}
+
+function CloseIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m18 6-12 12" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
 }

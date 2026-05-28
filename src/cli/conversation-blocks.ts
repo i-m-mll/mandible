@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+import Database from "better-sqlite3";
+import { getParserForFile } from "../parsers/index.js";
+import { getParserCapability, PARSER_CAPABILITIES } from "../parsers/capabilities.js";
+import { decompressContent } from "../compression.js";
+import {
+  filterBlocks,
+  makeEnvelope,
+  metadataForBlock,
+  normalizeParsedBlock,
+  parseBound,
+  parseCsv,
+  type BlockFilterOptions,
+  type ConversationLike,
+  type InspectableBlock,
+} from "../conversation-block-filters.js";
+
+interface CliArgs {
+  positional: string[];
+  role?: string;
+  type?: string;
+  tool?: string;
+  toolKind?: string;
+  since?: string;
+  until?: string;
+  content?: string;
+  limit: number;
+  json: boolean;
+}
+
+function usage(): void {
+  console.error(`Usage:
+  conversation-blocks logs <path> [--role ROLE] [--type TYPE[,TYPE...]] [--tool NAME] [--tool-kind KIND] [--since TIME] [--until TIME] [--content TEXT] [--limit N] [--json]
+  conversation-blocks conversations <db> <id|session-id> [--role ROLE] [--type TYPE[,TYPE...]] [--tool NAME] [--tool-kind KIND] [--since TIME] [--until TIME] [--content TEXT] [--limit N] [--json]
+  conversation-blocks capabilities [--provider codex|claude_code|gemini] [--json]`);
+}
+
+function parseArgs(argv: string[]): CliArgs {
+  const args: CliArgs = { positional: [], limit: 50, json: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--json": args.json = true; break;
+      case "--role": args.role = argv[++i]; break;
+      case "--type": args.type = argv[++i]; break;
+      case "--tool": args.tool = argv[++i]; break;
+      case "--tool-kind": args.toolKind = argv[++i]; break;
+      case "--since": args.since = argv[++i]; break;
+      case "--until": args.until = argv[++i]; break;
+      case "--content":
+      case "--contains": args.content = argv[++i]; break;
+      case "--limit": args.limit = Number(argv[++i]); break;
+      default: args.positional.push(arg);
+    }
+  }
+  if (!Number.isFinite(args.limit) || args.limit < 1) args.limit = 50;
+  return args;
+}
+
+function filterOptions(args: CliArgs): BlockFilterOptions {
+  return {
+    roles: parseCsv(args.role),
+    types: parseCsv(args.type),
+    tool: args.tool ?? null,
+    toolKind: args.toolKind ?? null,
+    since: parseBound(args.since),
+    until: parseBound(args.until),
+    content: args.content ?? null,
+    limit: args.limit,
+  };
+}
+
+function printHuman(blocks: InspectableBlock[]): void {
+  for (const block of blocks) {
+    const metadata = metadataForBlock(block);
+    const tool = metadata.tool_name ? `\t${metadata.tool_name}` : "\t-";
+    const text = block.content.replace(/\s+/g, " ");
+    const clipped = text.length > 220 ? `${text.slice(0, 217)}...` : text;
+    console.log(`${block.position}\t${block.timestamp ?? "-"}\t${block.type}\t${block.role}${tool}\t${clipped}`);
+  }
+}
+
+async function runLogs(args: CliArgs): Promise<void> {
+  const sourcePath = args.positional[0];
+  if (!sourcePath) throw new Error("missing source log path");
+  const parser = getParserForFile(sourcePath);
+  if (!parser) throw new Error(`no parser registered for ${sourcePath}`);
+  const parsed = await parser.parse(sourcePath);
+  if (!parsed) {
+    if (args.json) {
+      console.log(JSON.stringify(makeEnvelope("log", parser.source, {}, filterOptions(args), [], getParserCapability(parser.source)), null, 2));
+    }
+    return;
+  }
+  const conversation: ConversationLike = parsed.conversation;
+  const blocks = parsed.blocks.map((block) => normalizeParsedBlock(block, conversation));
+  const filters = filterOptions(args);
+  const filtered = filterBlocks(blocks, filters);
+  if (args.json) {
+    console.log(JSON.stringify(makeEnvelope("log", parser.source, conversation, filters, filtered, getParserCapability(parser.source)), null, 2));
+  } else {
+    printHuman(filtered);
+  }
+}
+
+function runConversations(args: CliArgs): void {
+  const dbPath = args.positional[0];
+  const ident = args.positional[1];
+  if (!dbPath || !ident) throw new Error("missing database path or conversation id");
+  const db = new Database(dbPath, { readonly: true });
+  const conversation = db.prepare(`
+    SELECT * FROM conversations
+    WHERE id = ? OR session_id = ? OR id LIKE ?
+    ORDER BY started_at DESC
+    LIMIT 1
+  `).get(ident, ident, `${ident}%`) as ConversationLike | undefined;
+  if (!conversation?.id) throw new Error(`conversation not found: ${ident}`);
+  const rows = db.prepare(`
+    SELECT id, conversation_id, type, role, content, compressed, position, timestamp, parent_id, metadata_json
+    FROM conversation_blocks
+    WHERE conversation_id = ?
+    ORDER BY position ASC
+  `).all(conversation.id) as Array<InspectableBlock & { compressed: number; content: Buffer | string }>;
+  const blocks = rows.map((row) => ({
+    ...row,
+    content: decompressContent(row.content, row.compressed === 1),
+  }));
+  const filters = filterOptions(args);
+  const filtered = filterBlocks(blocks, filters);
+  if (args.json) {
+    const provider = typeof conversation.source === "string" ? conversation.source : null;
+    console.log(JSON.stringify(makeEnvelope("database", provider, conversation, filters, filtered, provider ? getParserCapability(provider as never) : null), null, 2));
+  } else {
+    printHuman(filtered);
+  }
+}
+
+async function main(): Promise<void> {
+  const mode = process.argv[2];
+  const args = parseArgs(process.argv.slice(3));
+  if (mode === "logs") {
+    await runLogs(args);
+  } else if (mode === "conversations") {
+    runConversations(args);
+  } else if (mode === "capabilities") {
+    const provider = args.positional[0];
+    const capabilities = provider
+      ? PARSER_CAPABILITIES.filter((capability) => capability.source === provider)
+      : PARSER_CAPABILITIES;
+    if (args.json) {
+      console.log(JSON.stringify(capabilities, null, 2));
+    } else {
+      for (const capability of capabilities) {
+        console.log(`${capability.source}\troles=${capability.roles.join(",")}\ttypes=${capability.block_types.join(",")}\ttool_name=${capability.tool_metadata.tool_name}`);
+      }
+    }
+  } else {
+    usage();
+    process.exitCode = 2;
+  }
+}
+
+main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`error: ${message}`);
+  process.exitCode = 1;
+});

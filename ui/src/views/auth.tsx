@@ -1995,7 +1995,6 @@ export function AuthQueueView({
       }
       handleApprove(id);
     };
-
     return (
       <div className="auth-actions">
         <button

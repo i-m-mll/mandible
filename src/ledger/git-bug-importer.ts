@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Db } from "../db.js";
 import type { LedgerProjectCheckout } from "./types.js";
-import type { GitBugClient, GitBugIssueDetail } from "./git-bug-client.js";
+import type { GitBugClient, GitBugIssueDetail, GitBugIssueSummary } from "./git-bug-client.js";
 import { hashGitBugPayload } from "./git-bug-hash.js";
+import { isSha256Hex } from "./ids.js";
 import { parseGitBugLabel } from "./git-bug-labels.js";
 import { LedgerStore } from "./store.js";
 
@@ -56,11 +57,7 @@ export async function importGitBugCheckout(options: GitBugImportOptions): Promis
   const imported: ImportedIssue[] = [];
   for (const summary of summaries.value) {
     const detailResult = await options.client.getIssue(options.checkout.root, summary.human_id || summary.id);
-    if (!detailResult.ok) {
-      result.skipped++;
-      continue;
-    }
-    const detail = detailResult.value;
+    const detail = detailResult.ok ? detailResult.value : summaryToDetail(summary);
     const importedIssue = importIssueDetail(store, options.checkout.project_id, detail);
     result.imported++;
     if (importedIssue.created) result.created++;
@@ -79,6 +76,16 @@ export async function importGitBugCheckout(options: GitBugImportOptions): Promis
   return result;
 }
 
+function summaryToDetail(summary: GitBugIssueSummary): GitBugIssueDetail {
+  return {
+    ...summary,
+    description: "",
+    description_comment_id: "",
+    comments: [],
+    raw: summary,
+  };
+}
+
 function importIssueDetail(
   store: LedgerStore,
   projectId: string,
@@ -88,6 +95,11 @@ function importIssueDetail(
   const fullId = detail.id || externalId;
   const remoteHash = hashGitBugPayload(detail.raw ?? detail);
   const existingRef = store.findExternalRef({
+    adapter: "git_bug",
+    project_id: projectId,
+    external_kind: "git_bug_issue",
+    external_id: fullId,
+  }) ?? store.findExternalRef({
     adapter: "git_bug",
     project_id: projectId,
     external_kind: "git_bug_issue",
@@ -104,6 +116,7 @@ function importIssueDetail(
   let updated = false;
   if (!issueId) {
     const issue = store.createIssue({
+      id: isSha256Hex(fullId) ? fullId : undefined,
       project_id: projectId,
       title: detail.title,
       body: detail.description,
@@ -114,8 +127,7 @@ function importIssueDetail(
       author_display: detail.author_name,
       created_at: parseGitBugTime(detail.created_at) ?? Date.now(),
       aliases: [
-        { alias_kind: "git_bug_human", alias: externalId, external_id: externalId, source: "git_bug", is_primary: true },
-        { alias_kind: "git_bug_full", alias: fullId, external_id: fullId, source: "git_bug" },
+        ...(externalId !== fullId ? [{ alias_kind: "git_bug_legacy", alias: externalId, external_id: externalId, source: "git_bug" }] : []),
       ],
     });
     issueId = issue.id;
@@ -138,7 +150,7 @@ function importIssueDetail(
     adapter: "git_bug",
     project_id: projectId,
     external_kind: "git_bug_issue",
-    external_id: externalId,
+    external_id: fullId,
     remote_hash: remoteHash,
     last_imported_at: Date.now(),
     metadata: { full_id: fullId },
@@ -154,6 +166,7 @@ function importIssueDetail(
   let comments = 0;
   for (const comment of detail.comments) {
     const commentExternalId = comment.human_id || comment.id || fingerprintComment(externalId, comment);
+    const commentHash = hashGitBugPayload(comment);
     const existingCommentRef = store.findExternalRef({
       adapter: "git_bug",
       project_id: projectId,
@@ -161,9 +174,29 @@ function importIssueDetail(
       external_id: commentExternalId,
     });
     if (existingCommentRef) {
+      const patched = store.applyImportedCommentPatch(existingCommentRef.entity_id, {
+        body: comment.body,
+        author_display: comment.author_name,
+      }, "git_bug", {
+        actor_type: "external_adapter",
+        author_display: comment.author_name,
+      });
+      store.recordExternalRef({
+        entity_type: "comment",
+        entity_id: existingCommentRef.entity_id,
+        adapter: "git_bug",
+        project_id: projectId,
+        external_kind: "git_bug_comment",
+        external_id: commentExternalId,
+        remote_hash: commentHash,
+        last_imported_at: Date.now(),
+        source: "git_bug",
+      });
+      if (patched.changed) comments++;
       continue;
     }
     const ledgerComment = store.addComment(issueId, {
+      id: isSha256Hex(comment.id) ? comment.id : undefined,
       body: comment.body,
       source: "git_bug",
       actor_type: "external_adapter",
@@ -177,7 +210,7 @@ function importIssueDetail(
       project_id: projectId,
       external_kind: "git_bug_comment",
       external_id: commentExternalId,
-      remote_hash: hashGitBugPayload(comment),
+      remote_hash: commentHash,
       last_imported_at: Date.now(),
       source: "git_bug",
     });

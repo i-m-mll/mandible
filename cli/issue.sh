@@ -3,15 +3,10 @@
 set -u
 set -o pipefail
 
-# TODO: Add to ~/.dotfiles/bin/mandible dispatcher:
-#   issue) shift; exec "$MANDIBLE_CLI_DIR/issue.sh" "$@" ;;
-# This requires a dotfiles feature branch (see issue c934e60).
-
 # Bug: fa1ac4c — CLI wrapper for manual issue operations.
-# Enforces the resolving-commit convention when closing issues.
+# Ledger-era implementation: ordinary issue operations use the Mandible daemon API.
 
 RESET=$'\033[0m'
-DIM_WHITE=$'\033[2;37m'
 RED=$'\033[31m'
 GREEN=$'\033[32m'
 
@@ -30,12 +25,68 @@ Usage:
   mandible issue new -t <title> -m <body> [--label <label>]...   Create a new issue
   mandible issue list [--status open|closed|all]                  List issues (default: open)
   mandible issue show <id>                                        Show issue details
+  mandible issue report <id> [--json]                             Print deterministic issue context
+  mandible issue triage [opts] [--json]                           Filter issues for review
   mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
   mandible issue open <id>                                        Reopen a closed issue
   mandible issue comment <id> -m <text>                           Add a comment
   mandible issue label add <id> <label>                           Add a label
   mandible issue label rm <id> <label>                            Remove a label
+  mandible issue refs backfill [opts]                              Reanalyze issue/comment cross-references
 USAGE
+}
+
+require_tools() {
+  command -v curl >/dev/null 2>&1 || die "curl not found." 1
+  command -v jq >/dev/null 2>&1 || die "jq not found." 1
+}
+
+api_base() {
+  printf 'http://127.0.0.1:%s' "${MANDIBLE_PORT:-19420}"
+}
+
+urlencode() {
+  jq -rn --arg value "$1" '$value|@uri'
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+
+repo_ref() {
+  repo_root
+}
+
+api_get() {
+  local path="$1"
+  curl -sf --max-time 15 "$(api_base)$path"
+}
+
+api_send() {
+  local method="$1"
+  local path="$2"
+  local data="$3"
+  curl -sf --max-time 15 -X "$method" "$(api_base)$path" \
+    -H 'Content-Type: application/json' \
+    -d "$data"
+}
+
+labels_json() {
+  if (( $# == 0 )); then
+    printf '[]'
+    return
+  fi
+  printf '%s\n' "$@" | jq -R . | jq -s .
+}
+
+print_issue_detail() {
+  jq -r '
+    "\(.display_id) [\(.status)] \(.title)",
+    (if (.labels | length) > 0 then "labels: \(.labels | join(", "))" else "labels:" end),
+    "",
+    .body,
+    (.comments[]? | "\n---\n\(.id) \(.author.display) \(.source)\n\(.body)")
+  '
 }
 
 cmd_close() {
@@ -73,36 +124,25 @@ cmd_close() {
     sha=$(git rev-parse HEAD 2>/dev/null) || sha="unknown"
   fi
 
-  if ! command -v git-bug >/dev/null 2>&1; then
-    die "git-bug not found." 1
-  fi
+  require_tools
+  local message_payload status_payload resolution_payload repo_id
+  message_payload=$(jq -n --arg message "Resolved by commit ${sha:0:12}" '{message:$message}')
+  api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$message_payload" >/dev/null || true
 
-  # Record resolving commit
-  git-bug bug comment new "$id" -m "Resolved by commit ${sha:0:12}" --non-interactive 2>/dev/null || true
+  status_payload=$(jq -n '{status:"closed", resolution:"fixed"}')
+  api_send PATCH "/api/ledger/issues/$(urlencode "$id")" "$status_payload" >/dev/null \
+    || die "${RED}Failed to close issue ${id}${RESET}" 1
 
-  # Add git note linking commit to issue
   git notes append -m "closes: ${id:0:8}" "$sha" 2>/dev/null || true
-
-  # Ensure git notes get pushed with normal pushes
   if ! git config --local push.notesRef >/dev/null 2>&1; then
     git config --local push.notesRef "refs/notes/commits" 2>/dev/null || true
   fi
 
-  # Close the issue
-  if git-bug bug status close "$id" 2>/dev/null; then
-    err "${GREEN}Closed issue ${id} (resolved by ${sha:0:12})${RESET}"
-  else
-    die "${RED}Failed to close issue ${id}${RESET}" 1
-  fi
-
-  # Bug: c934e60 — record resolution in Mandible DB (non-fatal if daemon is down)
-  MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
-  repo_id=$(git rev-parse --show-toplevel 2>/dev/null | xargs basename)
-  curl -sf --max-time 5 \
-    "http://127.0.0.1:${MANDIBLE_PORT}/api/issues/resolutions" \
-    -H 'Content-Type: application/json' \
-    -d "{\"issue_id\":\"${id}\",\"commit_sha\":\"${sha}\",\"repo_id\":\"${repo_id}\"}" \
-    >/dev/null 2>&1 || true
+  repo_id=$(basename "$(repo_root)")
+  resolution_payload=$(jq -n --arg issue_id "$id" --arg commit_sha "$sha" --arg repo_id "$repo_id" \
+    '{issue_id:$issue_id, commit_sha:$commit_sha, repo_id:$repo_id}')
+  api_send POST "/api/issues/resolutions" "$resolution_payload" >/dev/null || true
+  err "${GREEN}Closed issue ${id} (resolved by ${sha:0:12})${RESET}"
 }
 
 cmd_comment() {
@@ -136,11 +176,10 @@ cmd_comment() {
     die "Usage: mandible issue comment <id> -m <text>" 2
   fi
 
-  if ! command -v git-bug >/dev/null 2>&1; then
-    die "git-bug not found." 1
-  fi
-
-  git-bug bug comment new "$id" -m "$message" --non-interactive
+  require_tools
+  local payload
+  payload=$(jq -n --arg message "$message" '{message:$message}')
+  api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$payload" >/dev/null
 }
 
 cmd_show() {
@@ -150,11 +189,162 @@ cmd_show() {
     die "Usage: mandible issue show <id>" 2
   fi
 
-  if ! command -v git-bug >/dev/null 2>&1; then
-    die "git-bug not found." 1
+  require_tools
+  api_get "/api/ledger/issues/$(urlencode "$id")" | print_issue_detail
+}
+
+cmd_report() {
+  local id=""
+  local json=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$id" ]]; then
+          id="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$id" ]]; then
+    die "Usage: mandible issue report <id> [--json]" 2
   fi
 
-  git-bug bug show "$id"
+  require_tools
+  if (( json )); then
+    api_get "/api/ledger/issues/$(urlencode "$id")" | jq '{
+      id,
+      display_id,
+      title,
+      status,
+      resolution,
+      labels,
+      priority,
+      kind,
+      project,
+      created_at,
+      updated_at,
+      closed_at,
+      author,
+      aliases,
+      body,
+      comments,
+      relationships,
+      work_units,
+      sessions,
+      auth_requests,
+      timeline,
+      conflicts
+    }'
+  else
+    api_get "/api/ledger/issues/$(urlencode "$id")" | jq -r '
+      def list_or_dash(xs): if (xs // []) | length == 0 then "-" else (xs | join(", ")) end;
+      def short(s): (s // "" | gsub("\\s+"; " ") | if length > 180 then .[0:177] + "..." else . end);
+      "\(.display_id) [\(.status)] \(.title)",
+      "labels: \(list_or_dash(.labels))",
+      "updated: \(.updated_at // "-")",
+      "created: \(.created_at // "-")",
+      "comments: \((.comments // []) | length)",
+      "relationships: \((.relationships // []) | length)",
+      "work_units: \((.work_units // []) | length)",
+      "sessions: \((.sessions // []) | length)",
+      "auth_requests: \((.auth_requests // []) | length)",
+      "",
+      "body:",
+      (.body // ""),
+      "",
+      "latest comments:",
+      (((.comments // []) | sort_by(.created_at // "") | reverse | .[0:5][])?
+        | "- \(.id // "?") \(.author.display // .author.id // "unknown") \(.created_at // ""): \(short(.body))")
+    '
+  fi
+}
+
+cmd_triage() {
+  local status="open"
+  local label=""
+  local stale_days=""
+  local limit=50
+  local json=0
+  local repo=""
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --status)
+        if (( $# < 2 )); then die "Missing value for --status." 2; fi
+        status="$2"; shift 2 ;;
+      --label)
+        if (( $# < 2 )); then die "Missing value for --label." 2; fi
+        label="$2"; shift 2 ;;
+      --repo)
+        if (( $# < 2 )); then die "Missing value for --repo." 2; fi
+        repo="$2"; shift 2 ;;
+      --stale-days)
+        if (( $# < 2 )); then die "Missing value for --stale-days." 2; fi
+        stale_days="$2"; shift 2 ;;
+      --limit)
+        if (( $# < 2 )); then die "Missing value for --limit." 2; fi
+        limit="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2 ;;
+      *)
+        die "Unexpected argument: $1" 2 ;;
+    esac
+  done
+
+  case "$status" in
+    open|closed|all|merged) ;;
+    *) die "Unknown status: $status (expected open, closed, merged, or all)" 2 ;;
+  esac
+  if [[ -n "$stale_days" && ! "$stale_days" =~ ^[0-9]+$ ]]; then
+    die "--stale-days must be an integer" 2
+  fi
+  if [[ ! "$limit" =~ ^[0-9]+$ ]]; then
+    die "--limit must be an integer" 2
+  fi
+
+  require_tools
+  local root query
+  if [[ -n "$repo" ]]; then
+    root=$(urlencode "$repo")
+  else
+    root=$(urlencode "$(repo_ref)")
+  fi
+  query="repo=${root}&status=$(urlencode "$status")"
+  api_get "/api/issues?${query}" | jq \
+    --arg label "$label" \
+    --arg stale_days "$stale_days" \
+    --argjson limit "$limit" \
+    --argjson json "$json" '
+      def epoch($s):
+        if ($s // "") == "" then 0
+        else (($s | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601?) // 0)
+        end;
+      def stale_cutoff:
+        if $stale_days == "" then null
+        else (now - (($stale_days | tonumber) * 86400))
+        end;
+      [ .[] as $repo
+        | $repo.issues[]
+        | . + {repo_name: $repo.repo_name}
+        | select($label == "" or ((.labels // []) | index($label)))
+        | select((stale_cutoff == null) or (epoch(.updated_at) <= stale_cutoff))
+      ]
+      | sort_by(.updated_at // "")
+      | .[0:$limit]
+      | if $json then .
+        else .[] | "\(.id)\t\(.status)\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
+        end
+    '
 }
 
 cmd_new() {
@@ -198,23 +388,15 @@ cmd_new() {
     die "Usage: mandible issue new -t <title> -m <body> [--label <label>]..." 2
   fi
 
-  if ! command -v git-bug >/dev/null 2>&1; then
-    die "git-bug not found." 1
-  fi
-
-  local output
-  output=$(git-bug bug new -t "$title" -m "$body" --non-interactive 2>&1) || die "${RED}Failed to create issue${RESET}: $output" 1
-
-  # Extract the issue ID from git-bug output
-  local id
-  id=$(printf '%s' "$output" | grep -oE '[0-9a-f]{7,}' | head -1)
-
-  # Apply labels
-  local label
-  for label in "${labels[@]+"${labels[@]}"}"; do
-    git-bug bug label new "$id" "$label" 2>/dev/null || err "${RED}Failed to add label: ${label}${RESET}"
-  done
-
+  require_tools
+  local root payload id label_json repo
+  root=$(repo_root)
+  repo=$(basename "$root")
+  label_json=$(labels_json "${labels[@]+"${labels[@]}"}")
+  payload=$(jq -n --arg title "$title" --arg body "$body" --arg root "$root" --argjson labels "$label_json" \
+    '{title:$title, body:$body, root:$root, labels:$labels}')
+  id=$(api_send POST "/api/issues/$(urlencode "$repo")" "$payload" | jq -r '.display_id // .id') \
+    || die "${RED}Failed to create issue${RESET}" 1
   err "${GREEN}Created issue ${id}${RESET}"
 }
 
@@ -239,16 +421,16 @@ cmd_list() {
     esac
   done
 
-  if ! command -v git-bug >/dev/null 2>&1; then
-    die "git-bug not found." 1
-  fi
-
   case "$status" in
-    open)   git-bug bug --status open ;;
-    closed) git-bug bug --status closed ;;
-    all)    git-bug bug ;;
-    *)      die "Unknown status: $status (expected open, closed, or all)" 2 ;;
+    open|closed|all|merged) ;;
+    *) die "Unknown status: $status (expected open, closed, merged, or all)" 2 ;;
   esac
+
+  require_tools
+  local root query
+  root=$(urlencode "$(repo_ref)")
+  query="repo=${root}&status=$(urlencode "$status")"
+  api_get "/api/issues?${query}" | jq -r '.[] as $repo | $repo.issues[] | "\(.id)\t\(.status)\t\($repo.repo_name)\t\(.title)"'
 }
 
 cmd_label() {
@@ -265,47 +447,30 @@ LABEL_USAGE
   shift
 
   case "$action" in
-    add) cmd_label_add "$@" ;;
-    rm)  cmd_label_rm "$@" ;;
+    add) cmd_label_set true "$@" ;;
+    rm)  cmd_label_set false "$@" ;;
     *)   die "Unknown label action: $action (expected add or rm)" 2 ;;
   esac
 }
 
-cmd_label_add() {
+cmd_label_set() {
+  local present="$1"
+  shift
   if (( $# < 2 )); then
-    die "Usage: mandible issue label add <id> <label>" 2
+    die "Usage: mandible issue label add|rm <id> <label>" 2
   fi
 
   local id="$1"
   local label="$2"
-
-  if ! command -v git-bug >/dev/null 2>&1; then
-    die "git-bug not found." 1
-  fi
-
-  if git-bug bug label new "$id" "$label" 2>/dev/null; then
+  local payload
+  require_tools
+  payload=$(jq -n --arg label "$label" --argjson present "$present" '{label:$label, present:$present}')
+  api_send POST "/api/ledger/issues/$(urlencode "$id")/labels" "$payload" >/dev/null \
+    || die "${RED}Failed to update label '${label}' on ${id}${RESET}" 1
+  if [[ "$present" == "true" ]]; then
     err "${GREEN}Added label '${label}' to ${id}${RESET}"
   else
-    die "${RED}Failed to add label '${label}' to ${id}${RESET}" 1
-  fi
-}
-
-cmd_label_rm() {
-  if (( $# < 2 )); then
-    die "Usage: mandible issue label rm <id> <label>" 2
-  fi
-
-  local id="$1"
-  local label="$2"
-
-  if ! command -v git-bug >/dev/null 2>&1; then
-    die "git-bug not found." 1
-  fi
-
-  if git-bug bug label rm "$id" "$label" 2>/dev/null; then
     err "${GREEN}Removed label '${label}' from ${id}${RESET}"
-  else
-    die "${RED}Failed to remove label '${label}' from ${id}${RESET}" 1
   fi
 }
 
@@ -316,15 +481,32 @@ cmd_open() {
     die "Usage: mandible issue open <id>" 2
   fi
 
-  if ! command -v git-bug >/dev/null 2>&1; then
-    die "git-bug not found." 1
-  fi
+  require_tools
+  api_send PATCH "/api/ledger/issues/$(urlencode "$id")" '{"status":"open","resolution":null}' >/dev/null \
+    || die "${RED}Failed to reopen issue ${id}${RESET}" 1
+  err "${GREEN}Reopened issue ${id}${RESET}"
+}
 
-  if git-bug bug status open "$id" 2>/dev/null; then
-    err "${GREEN}Reopened issue ${id}${RESET}"
-  else
-    die "${RED}Failed to reopen issue ${id}${RESET}" 1
-  fi
+cmd_refs() {
+  local action="${1:-}"
+  shift || true
+
+  case "$action" in
+    backfill)
+      local root
+      root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+      exec node "$root/dist/cli/issue-refs-backfill.js" "$@"
+      ;;
+    ""|-h|--help)
+      cat <<'REFS_USAGE'
+Usage:
+  mandible issue refs backfill [--dry-run] [--apply] [--repo <repo>] [--issue <ref>] [--since <date>] [--until <date>] [--json]
+REFS_USAGE
+      ;;
+    *)
+      die "Unknown refs action: $action (expected backfill)" 2
+      ;;
+  esac
 }
 
 # --- Main ---
@@ -341,10 +523,13 @@ case "$subcmd" in
   new)     cmd_new "$@" ;;
   list)    cmd_list "$@" ;;
   show)    cmd_show "${1:-}" ;;
+  report)  cmd_report "$@" ;;
+  triage)  cmd_triage "$@" ;;
   close)   cmd_close "$@" ;;
   open)    cmd_open "${1:-}" ;;
   comment) cmd_comment "$@" ;;
   label)   cmd_label "$@" ;;
+  refs)    cmd_refs "$@" ;;
   -h|--help) usage ;;
   *)       die "Unknown subcommand: $subcmd" 2 ;;
 esac

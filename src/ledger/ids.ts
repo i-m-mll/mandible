@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 export const LEDGER_ID_PREFIXES = [
   "prj",
@@ -24,6 +24,43 @@ export interface LedgerIdOptions {
   random?: Buffer;
 }
 
+export interface StableIssueIdInput {
+  project_id: string;
+  title: string;
+  body?: string;
+  source?: string;
+  created_at: number;
+  author_actor_id?: string | null;
+  author_actor_type?: string;
+  author_display?: string;
+  nonce: string;
+}
+
+export interface StableCommentIdInput {
+  issue_id: string;
+  ordinal: number;
+  body: string;
+  source?: string;
+  created_at: number;
+  author_actor_id?: string | null;
+  author_actor_type?: string;
+  author_display?: string;
+  nonce: string;
+}
+
+export interface StableEventIdInput {
+  entity_type: string;
+  entity_id: string;
+  event_type: string;
+  actor_id?: string | null;
+  actor_type: string;
+  source: string;
+  payload: Record<string, unknown>;
+  occurred_at: number;
+  observed_at: number;
+  occurrence: string;
+}
+
 const TIME_WIDTH = 10;
 const RANDOM_BYTES = 10;
 
@@ -47,4 +84,82 @@ export function createLedgerId(prefix: LedgerIdPrefix, options: LedgerIdOptions 
 
 export function isLedgerIdWithPrefix(value: string, prefix: LedgerIdPrefix): boolean {
   return value.startsWith(`${prefix}_`);
+}
+
+export function createCreationNonce(): string {
+  return randomBytes(16).toString("hex");
+}
+
+export function createStableIssueId(input: StableIssueIdInput): string {
+  return sha256Hex({
+    type: "mandible.issue.v1",
+    project_id: input.project_id,
+    title: input.title,
+    body: input.body ?? "",
+    source: input.source ?? "mandible",
+    created_at: input.created_at,
+    author_actor_id: input.author_actor_id ?? null,
+    author_actor_type: input.author_actor_type ?? "external_adapter",
+    author_display: input.author_display ?? "",
+    nonce: input.nonce,
+  });
+}
+
+export function createStableCommentId(input: StableCommentIdInput): string {
+  return sha256Hex({
+    type: "mandible.comment.v1",
+    issue_id: input.issue_id,
+    ordinal: input.ordinal,
+    body: input.body,
+    source: input.source ?? "mandible",
+    created_at: input.created_at,
+    author_actor_id: input.author_actor_id ?? null,
+    author_actor_type: input.author_actor_type ?? "external_adapter",
+    author_display: input.author_display ?? "",
+    nonce: input.nonce,
+  });
+}
+
+export function createStableEventId(input: StableEventIdInput): string {
+  return sha256Hex({
+    type: "mandible.event.v1",
+    entity_type: input.entity_type,
+    entity_id: input.entity_id,
+    event_type: input.event_type,
+    actor_id: input.actor_id ?? null,
+    actor_type: input.actor_type,
+    source: input.source,
+    payload: input.payload,
+    occurred_at: input.occurred_at,
+    observed_at: input.observed_at,
+    occurrence: input.occurrence,
+  });
+}
+
+export function isSha256Hex(value: string): boolean {
+  return /^[0-9a-f]{64}$/.test(value);
+}
+
+export function shortestUniquePrefix(id: string, ids: Iterable<string>, minimum = 7): string {
+  const normalized = id.toLowerCase();
+  const peers = Array.from(ids, (peer) => peer.toLowerCase()).filter((peer) => peer !== normalized);
+  for (let length = Math.min(minimum, normalized.length); length <= normalized.length; length++) {
+    const prefix = normalized.slice(0, length);
+    if (!peers.some((peer) => peer.startsWith(prefix))) return prefix;
+  }
+  return normalized;
+}
+
+function sha256Hex(record: Record<string, unknown>): string {
+  return createHash("sha256").update(stableJson(record)).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+    .join(",")}}`;
 }

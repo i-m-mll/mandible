@@ -1,7 +1,14 @@
 import type { Db } from "../db.js";
 import { broadcast } from "../sse.js";
 import { emitLedgerEvents, type LedgerBroadcaster, type LedgerSsePayload } from "./events.js";
-import { createLedgerId } from "./ids.js";
+import {
+  createCreationNonce,
+  createLedgerId,
+  createStableCommentId,
+  createStableEventId,
+  createStableIssueId,
+} from "./ids.js";
+import { parseIssueReferences, type ParsedIssueReference } from "./issue-xrefs.js";
 import type {
   LedgerActorInput,
   LedgerActorType,
@@ -16,6 +23,7 @@ import type {
   LedgerIssueDetail,
   LedgerIssueKind,
   LedgerIssueRelationship,
+  LedgerIssueRelationshipSource,
   LedgerIssueResolution,
   LedgerIssueStatus,
   LedgerLabel,
@@ -77,6 +85,11 @@ export interface AddLedgerCommentInput extends LedgerActorInput {
   created_at?: number;
 }
 
+export interface UpdateLedgerCommentPatch {
+  body?: string;
+  author_display?: string;
+}
+
 export interface UpsertRelationshipInput {
   id?: string;
   source_issue_id: string;
@@ -88,6 +101,15 @@ export interface UpsertRelationshipInput {
   source?: LedgerEventSource;
   actor?: LedgerActorInput;
   created_at?: number;
+}
+
+export interface ReconcileTextIssueReferencesInput {
+  source_issue_id: string;
+  source_entity_type: "issue_body" | "comment";
+  source_entity_id: string;
+  body: string;
+  source?: LedgerEventSource;
+  actor?: LedgerActorInput;
 }
 
 export interface RecordExternalRefInput {
@@ -152,26 +174,39 @@ export class LedgerStore {
   constructor(db: Db, options: LedgerStoreOptions = {}) {
     this.db = db;
     this.db.pragma("foreign_keys = ON");
-    this.outboxAdapters = options.outboxAdapters ?? ["git_bug"];
+    this.outboxAdapters = options.outboxAdapters ?? [];
     this.broadcaster = options.broadcaster ?? broadcast;
   }
 
   createIssue(input: CreateLedgerIssueInput): LedgerIssue {
     const emitted: LedgerSsePayload[] = [];
     const now = input.created_at ?? Date.now();
-    const id = input.id ?? createLedgerId("iss", { now });
     const source = input.source ?? "mandible";
     const actor = normalizeActor(input);
+    const nonce = createCreationNonce();
+    const id = input.id ?? createStableIssueId({
+      project_id: input.project_id,
+      title: input.title,
+      body: input.body ?? "",
+      source,
+      created_at: now,
+      author_actor_id: actor.actor_id,
+      author_actor_type: actor.actor_type,
+      author_display: input.author_display ?? "",
+      nonce,
+    });
+    const shortId = this.allocateIssueShortId(input.project_id, id);
 
     const run = this.db.transaction(() => {
       this.db.prepare(
         `INSERT INTO ledger_issues (
-          id, project_id, title, body, status, resolution, kind, priority,
+          id, short_id, project_id, title, body, status, resolution, kind, priority,
           author_actor_id, author_actor_type, author_display, source,
           created_at, updated_at, closed_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       ).run(
         id,
+        shortId,
         input.project_id,
         input.title,
         input.body ?? "",
@@ -225,7 +260,7 @@ export class LedgerStore {
         actor_id: actor.actor_id,
         actor_type: actor.actor_type,
         source,
-        payload: { issue_id: id, project_id: input.project_id, title: input.title },
+        payload: { issue_id: id, short_id: shortId, project_id: input.project_id, title: input.title, creation_nonce: nonce },
         project_id: input.project_id,
         occurred_at: now,
       });
@@ -234,6 +269,14 @@ export class LedgerStore {
     });
 
     const issue = run();
+    this.reconcileTextIssueReferences({
+      source_issue_id: issue.id,
+      source_entity_type: "issue_body",
+      source_entity_id: issue.id,
+      body: issue.body,
+      source,
+      actor,
+    });
     emitLedgerEvents(emitted, this.broadcaster);
     return issue;
   }
@@ -282,6 +325,16 @@ export class LedgerStore {
     });
 
     const issue = run();
+    if (patch.body !== undefined) {
+      this.reconcileTextIssueReferences({
+        source_issue_id: issue.id,
+        source_entity_type: "issue_body",
+        source_entity_id: issue.id,
+        body: issue.body,
+        source: "mandible",
+        actor: normalizedActor,
+      });
+    }
     emitLedgerEvents(emitted, this.broadcaster);
     return issue;
   }
@@ -337,14 +390,17 @@ export class LedgerStore {
         now,
         id,
       );
+      const eventType = issueLifecycleEventType(existing.status, next.status);
       const event = this.insertEvent({
         entity_type: "issue",
         entity_id: id,
-        event_type: "issue.updated",
+        event_type: eventType ?? "issue.updated",
         actor_id: normalizedActor.actor_id,
         actor_type: normalizedActor.actor_type,
         source,
-        payload: { issue_id: id, patch },
+        payload: eventType
+          ? { issue_id: id, previous_status: existing.status, status: next.status, resolution: next.resolution, patch }
+          : { issue_id: id, patch },
         project_id: existing.project_id,
         occurred_at: now,
       });
@@ -353,6 +409,16 @@ export class LedgerStore {
     });
 
     const issue = run();
+    if (patch.body !== undefined) {
+      this.reconcileTextIssueReferences({
+        source_issue_id: issue.id,
+        source_entity_type: "issue_body",
+        source_entity_id: issue.id,
+        body: issue.body,
+        source,
+        actor: normalizedActor,
+      });
+    }
     emitLedgerEvents(emitted, this.broadcaster);
     return { changed: true, issue };
   }
@@ -365,6 +431,9 @@ export class LedgerStore {
     source: LedgerEventSource = "mandible",
   ): LedgerIssue {
     const existing = this.requireIssue(id);
+    if (existing.status === status && existing.resolution === resolution) {
+      return existing;
+    }
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
     const normalizedActor = normalizeActor(actor);
@@ -375,18 +444,20 @@ export class LedgerStore {
          SET status = ?, resolution = ?, closed_at = ?, updated_at = ?
          WHERE id = ?`,
       ).run(status, resolution, status === "closed" ? now : null, now, id);
+      const eventType = status === "closed" ? "issue.closed" : "issue.reopened";
+      const payload = { issue_id: id, previous_status: existing.status, status, resolution };
       const event = this.insertEvent({
         entity_type: "issue",
         entity_id: id,
-        event_type: "issue.updated",
+        event_type: eventType,
         actor_id: normalizedActor.actor_id,
         actor_type: normalizedActor.actor_type,
         source,
-        payload: { issue_id: id, status, resolution },
+        payload,
         project_id: existing.project_id,
         occurred_at: now,
       });
-      emitted.push({ event, payload: { issue_id: id, status, resolution } });
+      emitted.push({ event, payload });
       return this.getIssue(id);
     });
 
@@ -422,19 +493,32 @@ export class LedgerStore {
     const issue = this.requireIssue(issueId);
     const emitted: LedgerSsePayload[] = [];
     const now = input.created_at ?? Date.now();
-    const id = input.id ?? createLedgerId("com", { now });
     const source = input.source ?? "mandible";
     const actor = normalizeActor(input);
+    const ordinal = this.nextCommentOrdinal(issueId);
+    const nonce = createCreationNonce();
+    const id = input.id ?? createStableCommentId({
+      issue_id: issueId,
+      ordinal,
+      body: input.body,
+      source,
+      created_at: now,
+      author_actor_id: actor.actor_id,
+      author_actor_type: actor.actor_type,
+      author_display: input.author_display ?? "",
+      nonce,
+    });
 
     const run = this.db.transaction(() => {
       this.db.prepare(
         `INSERT INTO ledger_comments (
-          id, issue_id, body, author_actor_id, author_actor_type,
+          id, issue_id, ordinal, body, author_actor_id, author_actor_type,
           author_display, source, created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
       ).run(
         id,
         issueId,
+        ordinal,
         input.body,
         actor.actor_id,
         actor.actor_type,
@@ -449,17 +533,81 @@ export class LedgerStore {
         actor_id: actor.actor_id,
         actor_type: actor.actor_type,
         source,
-        payload: { issue_id: issueId, comment_id: id },
+        payload: { issue_id: issueId, comment_id: id, ordinal, creation_nonce: nonce },
         project_id: issue.project_id,
         occurred_at: now,
       });
-      emitted.push({ event, payload: { issue_id: issueId, comment_id: id } });
+      emitted.push({ event, payload: { issue_id: issueId, comment_id: id, ordinal } });
       return this.getComment(id);
     });
 
     const comment = run();
+    this.reconcileTextIssueReferences({
+      source_issue_id: issueId,
+      source_entity_type: "comment",
+      source_entity_id: comment.id,
+      body: comment.body,
+      source,
+      actor,
+    });
     emitLedgerEvents(emitted, this.broadcaster);
     return comment;
+  }
+
+  applyImportedCommentPatch(
+    id: string,
+    patch: UpdateLedgerCommentPatch,
+    source: LedgerEventSource = "import",
+    actorInput: LedgerActorInput = { actor_type: "external_adapter" },
+  ): { changed: boolean; comment: LedgerComment } {
+    const existing = this.getComment(id);
+    const issue = this.requireIssue(existing.issue_id);
+    const actor = normalizeActor(actorInput);
+    const next = {
+      body: patch.body ?? existing.body,
+      author_display: patch.author_display ?? existing.author_display,
+    };
+
+    if (next.body === existing.body && next.author_display === existing.author_display) {
+      return { changed: false, comment: existing };
+    }
+
+    const emitted: LedgerSsePayload[] = [];
+    const now = Date.now();
+    const run = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE ledger_comments
+         SET body = ?, author_display = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(next.body, next.author_display, now, id);
+      const event = this.insertEvent({
+        entity_type: "comment",
+        entity_id: id,
+        event_type: "comment.updated",
+        actor_id: actor.actor_id,
+        actor_type: actor.actor_type,
+        source,
+        payload: { issue_id: existing.issue_id, comment_id: id, patch },
+        project_id: issue.project_id,
+        occurred_at: now,
+      });
+      emitted.push({ event, payload: { issue_id: existing.issue_id, comment_id: id, patch } });
+      return this.getComment(id);
+    });
+
+    const comment = run();
+    if (patch.body !== undefined) {
+      this.reconcileTextIssueReferences({
+        source_issue_id: existing.issue_id,
+        source_entity_type: "comment",
+        source_entity_id: id,
+        body: comment.body,
+        source,
+        actor,
+      });
+    }
+    emitLedgerEvents(emitted, this.broadcaster);
+    return { changed: true, comment };
   }
 
   setLabel(
@@ -615,6 +763,74 @@ export class LedgerStore {
     const relationship = run();
     emitLedgerEvents(emitted, this.broadcaster);
     return relationship;
+  }
+
+  reconcileTextIssueReferences(input: ReconcileTextIssueReferencesInput): void {
+    const sourceIssue = this.requireIssue(input.source_issue_id);
+    const source = input.source ?? "mandible";
+    const actor = normalizeActor(input.actor ?? {});
+    const emitted: LedgerSsePayload[] = [];
+    const now = Date.now();
+
+    const run = this.db.transaction(() => {
+      const desired = new Map<string, {
+        relationship: LedgerIssueRelationship;
+        ref: ParsedIssueReference;
+      }>();
+      for (const ref of parseIssueReferences(input.body)) {
+        const targetProjectId = this.resolveProjectId(ref.project, sourceIssue.project_id);
+        if (!targetProjectId) continue;
+        const resolved = this.resolveIssueRef(ref.issueRef, { project_id: targetProjectId });
+        if (!resolved.ok || resolved.id === input.source_issue_id) continue;
+        const relationship = this.ensureDerivedReferenceRelationship(
+          input.source_issue_id,
+          resolved.id,
+          source,
+          actor,
+          now,
+          emitted,
+        );
+        const key = relationshipSourceKey(resolved.id, ref.kind, ref.normalized);
+        desired.set(key, { relationship, ref });
+      }
+
+      for (const item of desired.values()) {
+        this.upsertRelationshipSource({
+          relationship: item.relationship,
+          input,
+          ref: item.ref,
+          source,
+          actor,
+          now,
+        });
+      }
+
+      const existingSources = this.db.prepare(
+        `SELECT * FROM ledger_issue_relationship_sources
+         WHERE source_entity_type = ? AND source_entity_id = ?
+           AND relationship_type = 'references' AND deleted_at IS NULL`,
+      ).all(input.source_entity_type, input.source_entity_id) as LedgerIssueRelationshipSource[];
+      const touchedRelationshipIds = new Set<string>();
+      for (const existing of existingSources) {
+        const key = relationshipSourceKey(existing.target_issue_id, existing.ref_kind, existing.normalized_ref);
+        if (desired.has(key)) continue;
+        this.db.prepare(
+          `UPDATE ledger_issue_relationship_sources
+           SET deleted_at = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(now, now, existing.id);
+        touchedRelationshipIds.add(existing.relationship_id);
+      }
+      for (const item of desired.values()) {
+        touchedRelationshipIds.add(item.relationship.id);
+      }
+      for (const relationshipId of touchedRelationshipIds) {
+        this.pruneDerivedRelationshipIfUnreferenced(relationshipId, source, actor, now, emitted);
+      }
+    });
+
+    run();
+    emitLedgerEvents(emitted, this.broadcaster);
   }
 
   recordExternalRef(input: RecordExternalRefInput): LedgerExternalRef {
@@ -875,11 +1091,15 @@ export class LedgerStore {
         "SELECT id FROM ledger_issues WHERE id = ? AND project_id = ?",
       ).all(trimmed, options.project_id) as Array<{ id: string }>);
       addRows(this.db.prepare(
+        "SELECT id FROM ledger_issues WHERE short_id = ? AND project_id = ?",
+      ).all(trimmed, options.project_id) as Array<{ id: string }>);
+      addRows(this.db.prepare(
         `SELECT issue_id FROM ledger_issue_aliases
          WHERE alias = ? AND project_id = ?`,
       ).all(trimmed, options.project_id) as Array<{ issue_id: string }>);
     } else {
       addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE id = ?").all(trimmed) as Array<{ id: string }>);
+      addRows(this.db.prepare("SELECT id FROM ledger_issues WHERE short_id = ?").all(trimmed) as Array<{ id: string }>);
       addRows(this.db.prepare("SELECT issue_id FROM ledger_issue_aliases WHERE alias = ?").all(trimmed) as Array<{ issue_id: string }>);
     }
 
@@ -898,12 +1118,19 @@ export class LedgerStore {
            WHERE id LIKE ? ESCAPE '\\' AND project_id = ?`,
         ).all(`${escaped}%`, options.project_id) as Array<{ id: string }>);
         addRows(this.db.prepare(
+          `SELECT id FROM ledger_issues
+           WHERE short_id LIKE ? ESCAPE '\\' AND project_id = ?`,
+        ).all(`${escaped}%`, options.project_id) as Array<{ id: string }>);
+        addRows(this.db.prepare(
           `SELECT issue_id FROM ledger_issue_aliases
            WHERE alias LIKE ? ESCAPE '\\' AND project_id = ?`,
         ).all(`${escaped}%`, options.project_id) as Array<{ issue_id: string }>);
       } else {
         addRows(this.db.prepare(
           "SELECT id FROM ledger_issues WHERE id LIKE ? ESCAPE '\\'",
+        ).all(`${escaped}%`) as Array<{ id: string }>);
+        addRows(this.db.prepare(
+          "SELECT id FROM ledger_issues WHERE short_id LIKE ? ESCAPE '\\'",
         ).all(`${escaped}%`) as Array<{ id: string }>);
         addRows(this.db.prepare(
           "SELECT issue_id FROM ledger_issue_aliases WHERE alias LIKE ? ESCAPE '\\'",
@@ -1085,6 +1312,31 @@ export class LedgerStore {
     return this.getIssue(id);
   }
 
+  private allocateIssueShortId(projectId: string, id: string): string {
+    for (let length = Math.min(7, id.length); length <= id.length; length++) {
+      const prefix = id.slice(0, length);
+      const row = this.db.prepare(
+        `SELECT id FROM ledger_issues
+         WHERE project_id = ? AND id != ? AND id LIKE ? ESCAPE '\\'
+         LIMIT 1`,
+      ).get(projectId, id, `${escapeLike(prefix)}%`) as { id: string } | undefined;
+      const short = this.db.prepare(
+        `SELECT id FROM ledger_issues
+         WHERE project_id = ? AND id != ? AND short_id = ?
+         LIMIT 1`,
+      ).get(projectId, id, prefix) as { id: string } | undefined;
+      if (!row && !short) return prefix;
+    }
+    return id;
+  }
+
+  private nextCommentOrdinal(issueId: string): number {
+    const row = this.db.prepare(
+      "SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal FROM ledger_comments WHERE issue_id = ?",
+    ).get(issueId) as { ordinal: number } | undefined;
+    return row?.ordinal ?? 1;
+  }
+
   private getLabel(issueId: string, label: string): LedgerLabel | null {
     return (this.db.prepare(
       "SELECT * FROM ledger_labels WHERE issue_id = ? AND label = ?",
@@ -1105,6 +1357,193 @@ export class LedgerStore {
       throw new Error(`Ledger outbox row not found: ${id}`);
     }
     return row;
+  }
+
+  private resolveProjectId(projectRef: string | undefined, fallbackProjectId: string): string | null {
+    const ref = projectRef?.trim();
+    if (!ref) return fallbackProjectId;
+    const rows = this.db.prepare(
+      `SELECT id FROM ledger_projects WHERE lower(display_name) = lower(?)
+       UNION
+       SELECT project_id AS id FROM ledger_project_checkouts
+        WHERE lower(name) = lower(?) OR work_repo_id = ?`,
+    ).all(ref, ref, ref) as Array<{ id: string }>;
+    if (rows.length === 1) return rows[0].id;
+    return null;
+  }
+
+  private ensureDerivedReferenceRelationship(
+    sourceIssueId: string,
+    targetIssueId: string,
+    source: LedgerEventSource,
+    actor: { actor_id: string | null; actor_type: LedgerActorType },
+    now: number,
+    emitted: LedgerSsePayload[],
+  ): LedgerIssueRelationship {
+    const sourceIssue = this.requireIssue(sourceIssueId);
+    let relationship = this.db.prepare(
+      `SELECT * FROM ledger_issue_relationships
+       WHERE source_issue_id = ? AND target_issue_id = ? AND relationship_type = 'references'`,
+    ).get(sourceIssueId, targetIssueId) as LedgerIssueRelationship | undefined;
+    let changed = false;
+    if (!relationship) {
+      const id = createLedgerId("rel", { now });
+      this.db.prepare(
+        `INSERT INTO ledger_issue_relationships (
+          id, source_issue_id, target_issue_id, relationship_type, provenance,
+          confidence, metadata_json, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, 'references', 'derived', 'observed', ?, ?, ?, NULL)`,
+      ).run(
+        id,
+        sourceIssueId,
+        targetIssueId,
+        jsonStringify({ derived_from: "issue_text_refs" }),
+        now,
+        now,
+      );
+      relationship = this.db.prepare("SELECT * FROM ledger_issue_relationships WHERE id = ?")
+        .get(id) as LedgerIssueRelationship;
+      changed = true;
+    } else if (relationship.deleted_at !== null) {
+      this.db.prepare(
+        `UPDATE ledger_issue_relationships
+         SET deleted_at = NULL, updated_at = ?
+         WHERE id = ?`,
+      ).run(now, relationship.id);
+      relationship = this.db.prepare("SELECT * FROM ledger_issue_relationships WHERE id = ?")
+        .get(relationship.id) as LedgerIssueRelationship;
+      changed = true;
+    }
+    if (!changed) return relationship;
+    const event = this.insertEvent({
+      entity_type: "issue_relationship",
+      entity_id: relationship.id,
+      event_type: "relationship.upserted",
+      actor_id: actor.actor_id,
+      actor_type: actor.actor_type,
+      source,
+      payload: {
+        relationship_id: relationship.id,
+        source_issue_id: sourceIssueId,
+        target_issue_id: targetIssueId,
+        relationship_type: "references",
+        provenance: relationship.provenance,
+      },
+      project_id: sourceIssue.project_id,
+      occurred_at: now,
+    });
+    emitted.push({ event, payload: { relationship_id: relationship.id } });
+    return relationship;
+  }
+
+  private upsertRelationshipSource(input: {
+    relationship: LedgerIssueRelationship;
+    input: ReconcileTextIssueReferencesInput;
+    ref: ParsedIssueReference;
+    source: LedgerEventSource;
+    actor: { actor_id: string | null; actor_type: LedgerActorType };
+    now: number;
+  }): void {
+    const existing = this.db.prepare(
+      `SELECT * FROM ledger_issue_relationship_sources
+       WHERE source_entity_type = ? AND source_entity_id = ? AND target_issue_id = ?
+         AND relationship_type = 'references' AND ref_kind = ? AND normalized_ref = ?`,
+    ).get(
+      input.input.source_entity_type,
+      input.input.source_entity_id,
+      input.relationship.target_issue_id,
+      input.ref.kind,
+      input.ref.normalized,
+    ) as LedgerIssueRelationshipSource | undefined;
+    const metadata = {
+      raw_ref: input.ref.raw,
+      project: input.ref.project ?? null,
+      comment_ref: input.ref.commentRef ?? null,
+      source: input.source,
+    };
+    if (!existing) {
+      this.db.prepare(
+        `INSERT INTO ledger_issue_relationship_sources (
+          id, relationship_id, source_entity_type, source_entity_id,
+          source_issue_id, target_issue_id, relationship_type, ref_kind,
+          raw_ref, normalized_ref, metadata_json, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'references', ?, ?, ?, ?, ?, ?, NULL)`,
+      ).run(
+        createLedgerId("xref", { now: input.now }),
+        input.relationship.id,
+        input.input.source_entity_type,
+        input.input.source_entity_id,
+        input.input.source_issue_id,
+        input.relationship.target_issue_id,
+        input.ref.kind,
+        input.ref.raw,
+        input.ref.normalized,
+        jsonStringify(metadata),
+        input.now,
+        input.now,
+      );
+      return;
+    }
+    if (
+      existing.relationship_id === input.relationship.id
+      && existing.raw_ref === input.ref.raw
+      && existing.metadata_json === jsonStringify(metadata)
+      && existing.deleted_at === null
+    ) {
+      return;
+    }
+    this.db.prepare(
+      `UPDATE ledger_issue_relationship_sources
+       SET relationship_id = ?, raw_ref = ?, metadata_json = ?,
+           updated_at = ?, deleted_at = NULL
+       WHERE id = ?`,
+    ).run(
+      input.relationship.id,
+      input.ref.raw,
+      jsonStringify(metadata),
+      input.now,
+      existing.id,
+    );
+  }
+
+  private pruneDerivedRelationshipIfUnreferenced(
+    relationshipId: string,
+    source: LedgerEventSource,
+    actor: { actor_id: string | null; actor_type: LedgerActorType },
+    now: number,
+    emitted: LedgerSsePayload[],
+  ): void {
+    const relationship = this.db.prepare("SELECT * FROM ledger_issue_relationships WHERE id = ?")
+      .get(relationshipId) as LedgerIssueRelationship | undefined;
+    if (!relationship || relationship.provenance !== "derived" || relationship.deleted_at !== null) return;
+    const liveSource = this.db.prepare(
+      `SELECT 1 AS ok FROM ledger_issue_relationship_sources
+       WHERE relationship_id = ? AND deleted_at IS NULL
+       LIMIT 1`,
+    ).get(relationshipId) as { ok: number } | undefined;
+    if (liveSource) return;
+    this.db.prepare(
+      `UPDATE ledger_issue_relationships
+       SET deleted_at = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(now, now, relationshipId);
+    const event = this.insertEvent({
+      entity_type: "issue_relationship",
+      entity_id: relationshipId,
+      event_type: "relationship.deleted",
+      actor_id: actor.actor_id,
+      actor_type: actor.actor_type,
+      source,
+      payload: {
+        relationship_id: relationshipId,
+        source_issue_id: relationship.source_issue_id,
+        target_issue_id: relationship.target_issue_id,
+        relationship_type: relationship.relationship_type,
+      },
+      project_id: this.requireIssue(relationship.source_issue_id).project_id,
+      occurred_at: now,
+    });
+    emitted.push({ event, payload: { relationship_id: relationshipId } });
   }
 
   private insertAlias(alias: LedgerIssueAlias): void {
@@ -1138,7 +1577,20 @@ export class LedgerStore {
     enqueueOutbox?: boolean;
   }): LedgerEvent {
     const observedAt = Date.now();
-    const id = createLedgerId("evt", { now: input.occurred_at });
+    const occurrence = createCreationNonce();
+    const payload = { ...input.payload, event_nonce: occurrence };
+    const id = createStableEventId({
+      entity_type: input.entity_type,
+      entity_id: input.entity_id,
+      event_type: input.event_type,
+      actor_id: input.actor_id,
+      actor_type: input.actor_type,
+      source: input.source,
+      payload,
+      occurred_at: input.occurred_at,
+      observed_at: observedAt,
+      occurrence,
+    });
     this.db.prepare(
       `INSERT INTO ledger_events (
         id, entity_type, entity_id, event_type, actor_id, actor_type,
@@ -1152,7 +1604,7 @@ export class LedgerStore {
       input.actor_id,
       input.actor_type,
       input.source,
-      jsonStringify(input.payload),
+      jsonStringify(payload),
       input.occurred_at,
       observedAt,
     );
@@ -1180,6 +1632,14 @@ export class LedgerStore {
   }
 }
 
+function issueLifecycleEventType(
+  previousStatus: LedgerIssueStatus,
+  nextStatus: LedgerIssueStatus,
+): "issue.closed" | "issue.reopened" | null {
+  if (previousStatus === nextStatus) return null;
+  return nextStatus === "closed" ? "issue.closed" : "issue.reopened";
+}
+
 function normalizeActor(input: LedgerActorInput): {
   actor_id: string | null;
   actor_type: LedgerActorType;
@@ -1192,6 +1652,10 @@ function normalizeActor(input: LedgerActorInput): {
 
 function shouldEnqueueOutbox(source: LedgerEventSource): boolean {
   return source === "mandible" || source === "auth_queue" || source === "session" || source === "work_unit";
+}
+
+function relationshipSourceKey(targetIssueId: string, refKind: string, normalizedRef: string): string {
+  return `${targetIssueId}\0${refKind}\0${normalizedRef}`;
 }
 
 function escapeLike(value: string): string {

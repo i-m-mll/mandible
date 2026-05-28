@@ -65,7 +65,7 @@ Query and manage the session inbox.
 ```
 mandible inbox                         Pretty-print pending items for current branch
 mandible inbox check                   Machine-friendly one-liner (for hooks)
-mandible inbox add "text"              Create git-bug reminder with 'reminder' label
+mandible inbox add "text"              Create Mandible reminder issue with 'reminder' label
 mandible inbox ack <type> <id>         Acknowledge an item (type: continuation|auth_result)
 mandible inbox watch <request-id>      Poll until auth request resolves (timeout: 30 min)
 ```
@@ -76,18 +76,20 @@ mandible inbox watch <request-id>      Poll until auth request resolves (timeout
 |---|---|
 | *(none)* | Pretty-print continuations, auth results, and open issues for the current branch |
 | `check` | Machine-friendly summary line for use in shell hooks |
-| `add "text"` | Create a git-bug issue with the `reminder` label |
+| `add "text"` | Create a Mandible issue with the `reminder` label |
 | `ack <type> <id>` | Acknowledge a continuation or auth result |
 | `watch <id>` | Poll `GET /api/auth/request/:id` every 5 seconds until resolved or timeout |
 
 ### mandible issue
 
-Issue management wrapper around git-bug with Mandible integration.
+Issue management wrapper around the Mandible ledger.
 
 ```
 mandible issue new -t <title> -m <body> [--label <label>]...
 mandible issue list [--status open|closed|all]
 mandible issue show <id>
+mandible issue report <id> [--json]
+mandible issue triage [--repo <repo-ref>] [--status open|closed|all] [--label <label>] [--stale-days N] [--limit N] [--json]
 mandible issue close <id> [--commit <sha>]
 mandible issue open <id>
 mandible issue comment <id> -m <text>
@@ -102,11 +104,15 @@ mandible issue label rm <id> <label>
 | `new` | Create a new issue with title, body, and optional labels |
 | `list` | List issues (default: open only) |
 | `show` | Show issue details |
-| `close` | Close an issue, recording the resolving commit SHA. Adds a git-bug comment, appends a git note, and reports the resolution to the Mandible API. |
+| `report` | Print deterministic issue context for agent handoff. This is factual metadata, comments, relationships, work units, sessions, auth requests, timeline, conflicts, and sync state; it does not synthesize remaining work. |
+| `triage` | Filter issues by status, label, stale age, and limit for deterministic review queues. |
+| `close` | Close an issue, recording the resolving commit SHA. Adds a ledger comment, appends a git note, and reports the resolution to the Mandible API. |
 | `open` | Reopen a closed issue |
 | `comment` | Add a comment to an issue |
 | `label add` | Add a label |
 | `label rm` | Remove a label |
+
+Prefer `mandible issue report <id> --json` when an agent needs issue context for a handoff or planning pass. Agents remain responsible for synthesis and decisions; the CLI output is only a deterministic fact packet.
 
 ### mandible auth request
 
@@ -227,3 +233,51 @@ mandible search "bigbuild" --title
 ```
 
 Searches the SQLite database directly, decompressing gzip-compressed blocks via Python.
+
+### mandible logs
+
+Inspect provider-native source logs without importing, reconciling, or mutating the Mandible database.
+
+```
+mandible logs inventory [--provider codex|claude|gemini|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
+mandible logs capabilities [--provider codex|claude_code|gemini] [--json]
+mandible logs missing [--provider codex|claude|gemini|all] [--json]
+mandible logs orphans [--provider codex|claude|gemini|all] [--json]
+mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--parse] [filters] [--json] [--head N]
+```
+
+Use `logs` commands when the provider files are the object of inspection. They treat Codex/Claude/Gemini source logs as the veridical transcript record and only compare against the DB index when needed.
+
+| Command | Description |
+|---|---|
+| `inventory` | List recent provider source files, optionally with lightweight parsed metadata. |
+| `capabilities` | Show the normalized roles, block types, tool metadata, source globs, and limitations emitted by each provider parser. |
+| `missing` | List source files not represented in `conversations.source_path`. |
+| `orphans` | List DB conversation rows whose `source_path` no longer exists. |
+| `inspect` | Show source-log metadata and the first raw records for a path or provider session ID. With `--parse`, run the provider parser and return normalized blocks without mutating the DB. |
+
+Parsed inspection filters:
+
+| Flag | Description |
+|---|---|
+| `--role user|assistant|system|tool` | Match normalized block role |
+| `--type TYPE[,TYPE...]` | Match normalized block type |
+| `--tool NAME` | Match `metadata.tool_name` |
+| `--tool-kind KIND` | Match provider-specific `metadata.tool_kind` when available |
+| `--since TIME` / `--until TIME` | Match block timestamps. Bounds accept ISO timestamps, `YYYY-MM-DD`, and `Nd` for `--since`. |
+| `--content TEXT` | Case-insensitive substring match against block content |
+| `--limit N` | Limit results after filtering |
+
+### mandible conversations
+
+Inspect DB-backed normalized conversation rows and blocks.
+
+```
+mandible conversations list [--provider claude|codex|gemini|all] [--since Nd] [--limit N] [--json]
+mandible conversations show <id|session-id> [--json] [--blocks]
+mandible conversations blocks <id|session-id> [filters] [--json]
+mandible conversations export <id|session-id> [--format json|markdown]
+mandible conversations search "<query>" [search options...]
+```
+
+Use `conversations` commands for Mandible's normalized SQLite index, UI/export/search surface, and conversation metadata. `mandible conversations blocks` uses the same role/type/tool/time/content filters as `mandible logs inspect --parse`. `mandible conversations search` is an alias to `mandible search`.

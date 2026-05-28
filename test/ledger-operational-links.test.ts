@@ -190,11 +190,11 @@ describe("ledger operational links", () => {
     const project = createProject("repo");
     const resolvedIssue = createIssue(project.project.id, "done123", "Resolved issue");
     const referencedIssue = createIssue(project.project.id, "note123", "Referenced issue");
-	insertAuthRequest({
-	  id: "auth_2",
-	  repo: project.checkout.root,
-	  issueClosures: ["done123"],
-	});
+    insertAuthRequest({
+      id: "auth_2",
+      repo: project.checkout.root,
+      issueClosures: ["done123"],
+    });
     linkAuthRequestToLedgerIssue(db, {
       auth_request_id: "auth_2",
       issue_ref: "note123",
@@ -202,12 +202,13 @@ describe("ledger operational links", () => {
       link_type: "references",
     });
 
-	const results = applyAuthRequestLedgerCompletion(db, {
-	  auth_request_id: "auth_2",
-	  repo_ref: project.checkout.root,
-	  issue_closures: ["done123"],
-	  approval_source: "manual",
-	  approval_lease_id: "lease_1",
+    const results = applyAuthRequestLedgerCompletion(db, {
+      auth_request_id: "auth_2",
+      repo_ref: project.checkout.root,
+      issue_closures: ["done123"],
+      merge_output: 'MANDIBLE_MERGE_RESULT {"merge_sha":"abc123def4567890","declared_issues":["done123"],"auto_close_issues":[]}',
+      approval_source: "manual",
+      approval_lease_id: "lease_1",
     });
 
     expect(results).toHaveLength(1);
@@ -222,12 +223,66 @@ describe("ledger operational links", () => {
     expect(
       new LedgerStore(db)
         .listEvents({ entity_type: "issue", entity_id: resolvedIssue.id })
-        .some((event) => event.event_type === "issue.updated" && event.source === "auth_queue"),
+        .some((event) => (
+          event.event_type === "issue.closed" &&
+          event.source === "auth_queue" &&
+          /^[0-9a-f]{64}$/.test(event.id)
+        )),
     ).toBe(true);
     expect(
       new LedgerStore(db)
         .listEvents({ entity_type: "auth_request", entity_id: "auth_2" })
         .some((event) => event.event_type === "auth_request.completed"),
     ).toBe(true);
+    expect(
+      db.prepare("SELECT commit_sha FROM issue_resolutions WHERE issue_id = ?").get("done123"),
+    ).toEqual({ commit_sha: "abc123def4567890" });
+    expect(
+      db.prepare(
+        "SELECT label FROM ledger_labels WHERE issue_id = ? AND label = 'merged' AND deleted_at IS NULL",
+      ).get(resolvedIssue.id),
+    ).toEqual({ label: "merged" });
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?")
+        .get(resolvedIssue.id),
+    ).toEqual({ count: 0 });
+    const timelineEvents = new LedgerStore(db)
+      .listEvents({ entity_type: "issue", entity_id: resolvedIssue.id })
+      .filter((event) => event.event_type === "issue.closed");
+    const completedEvent = new LedgerStore(db)
+      .listEvents({ entity_type: "auth_request", entity_id: "auth_2" })
+      .find((event) => event.event_type === "auth_request.completed");
+    expect(completedEvent).toBeDefined();
+    expect(completedEvent!.occurred_at).toBeLessThanOrEqual(timelineEvents[0].occurred_at);
+  });
+
+  it("closes merge-output trailer issues during auth completion", () => {
+    const project = createProject("repo");
+    const resolvedIssue = createIssue(project.project.id, "done789", "Trailer issue");
+    insertAuthRequest({
+      id: "auth_3",
+      repo: project.checkout.root,
+    });
+
+    applyAuthRequestLedgerCompletion(db, {
+      auth_request_id: "auth_3",
+      repo_ref: project.checkout.root,
+      merge_output: 'MANDIBLE_MERGE_RESULT {"merge_sha":"fed456abc1237890","declared_issues":[],"auto_close_issues":["done789"]}',
+      approval_source: "manual",
+    });
+
+    expect(new LedgerStore(db).getIssue(resolvedIssue.id)).toMatchObject({
+      status: "closed",
+      resolution: "merged",
+    });
+    expect(
+      db.prepare(
+        "SELECT link_type FROM ledger_auth_issue_links WHERE auth_request_id = ? AND issue_id = ?",
+      ).get("auth_3", resolvedIssue.id),
+    ).toEqual({ link_type: "resolves" });
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?")
+        .get(resolvedIssue.id),
+    ).toEqual({ count: 0 });
   });
 });

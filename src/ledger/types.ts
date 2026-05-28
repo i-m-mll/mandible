@@ -112,6 +112,7 @@ export interface LedgerProjectCheckout {
 
 export interface LedgerIssue {
   id: string;
+  short_id: string;
   project_id: string;
   title: string;
   body: string;
@@ -143,6 +144,7 @@ export interface LedgerIssueAlias {
 export interface LedgerComment {
   id: string;
   issue_id: string;
+  ordinal: number;
   body: string;
   author_actor_id: string | null;
   author_actor_type: LedgerActorType;
@@ -168,6 +170,23 @@ export interface LedgerIssueRelationship {
   relationship_type: LedgerRelationshipType;
   provenance: LedgerRelationshipProvenance;
   confidence: string;
+  metadata_json: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+}
+
+export interface LedgerIssueRelationshipSource {
+  id: string;
+  relationship_id: string;
+  source_entity_type: "issue_body" | "comment";
+  source_entity_id: string;
+  source_issue_id: string;
+  target_issue_id: string;
+  relationship_type: LedgerRelationshipType;
+  ref_kind: "issue" | "comment" | "deprecated_iss_alias";
+  raw_ref: string;
+  normalized_ref: string;
   metadata_json: string;
   created_at: number;
   updated_at: number;

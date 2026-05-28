@@ -28,7 +28,7 @@ The daemon performs several initialization steps:
 
 3. **Conversation ingestion** --- Sets up file watchers on `~/.claude/projects/`, `~/.codex/sessions/`, and `~/.gemini/tmp/` to detect new and changed conversation transcripts. Existing transcripts are indexed on first run.
 
-4. **Issue scanning** --- After a 2-second delay (to avoid blocking startup), scans all registered repositories for git-bug issues. Rescans every 5 minutes thereafter.
+4. **Issue ledger setup** --- After startup, Mandible prepares the local issue ledger and compatibility scanner for registered repositories.
 
 5. **Reaper timer** --- Starts the periodic dead-session reaper, which checks PIDs and marks vanished sessions as dead.
 
@@ -82,7 +82,7 @@ The embedded terminal manager. Includes:
 
 ### Issues
 
-Aggregated git-bug issues from all registered repositories. Grouped by repo with open/closed counts. Click through to see issue details, comments, labels, and linked sessions.
+Aggregated Mandible ledger issues from all registered repositories. Grouped by repo with open/closed counts. Click through to see issue details, comments, labels, and linked sessions.
 
 ### Additional tabs (overflow menu)
 
@@ -99,7 +99,7 @@ Mandible discovers repositories automatically from the working directories of tr
 
 You can also register repos manually by adding an agent session in any git directory --- the repo will be picked up on the next work scan.
 
-Once a repo is registered, Mandible tracks its branches, worktrees, ahead/behind counts, and dirty state. If the repo uses git-bug, its issues are indexed and appear in the Issues tab.
+Once a repo is registered, Mandible tracks its branches, worktrees, ahead/behind counts, dirty state, and ledger issues. Legacy git-bug issues can be imported into the ledger when needed.
 
 ## Process lifecycle
 

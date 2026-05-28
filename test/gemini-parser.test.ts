@@ -99,6 +99,14 @@ async function makeGeminiJsonlSession(options: {
       timestamp: "2026-05-16T00:00:01.000Z",
       model: "gemini-3.1-pro-preview",
       content: [{ text: "Done from JSONL." }],
+      toolCalls: [
+        {
+          id: "tool-1",
+          name: "read_file",
+          args: { path: "README.md" },
+          result: "contents",
+        },
+      ],
       tokens: { input: 4, output: 5, cached: 0 },
     },
     {
@@ -165,6 +173,11 @@ describe("GeminiParser", () => {
     expect(result?.conversation.project_path).toBe("/workspace/mandible");
     expect(result?.conversation.model).toBe("gemini-3.1-pro-preview");
     expect(result?.conversation.ended_at).toBe("2026-05-16T00:00:02.000Z");
-    expect(result?.blocks.map((block) => block.type)).toEqual(["user_message", "assistant_message"]);
+    expect(result?.blocks.map((block) => block.type)).toEqual(["user_message", "tool_use", "tool_result", "assistant_message"]);
+    expect(result?.blocks.find((block) => block.type === "tool_use")?.metadata).toMatchObject({
+      tool_name: "read_file",
+      tool_kind: "gemini_tool_call",
+      tool_input: { path: "README.md" },
+    });
   });
 });

@@ -3,9 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { migrate, openDb, type Db } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
 import { LEDGER_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createLedgerId } from "../src/ledger/ids.js";
+import { runIssueReferenceBackfill } from "../src/ledger/issue-reference-backfill.js";
+import { parseIssueReferences } from "../src/ledger/issue-xrefs.js";
 import { normalizeRemoteIdentity, resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { LedgerEventSource } from "../src/ledger/types.js";
@@ -61,6 +63,7 @@ describe("ledger schema", () => {
       "ledger_events",
       "ledger_external_refs",
       "ledger_issue_aliases",
+      "ledger_issue_relationship_sources",
       "ledger_issue_relationships",
       "ledger_issues",
       "ledger_labels",
@@ -97,7 +100,7 @@ describe("ledger schema", () => {
     const version = upgradeDb.prepare(
       "SELECT value FROM meta WHERE key = 'schema_version'",
     ).get() as { value: string };
-    expect(version.value).toBe("60");
+    expect(version.value).toBe(String(CURRENT_SCHEMA_VERSION));
     expect(upgradeDb.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issues'",
     ).get()).toBeTruthy();
@@ -112,6 +115,33 @@ describe("ledger schema", () => {
         ) VALUES ('com_missing', 'iss_missing', 'bad', 'system', '', 'system', 1)`,
       ).run();
     }).toThrow();
+  });
+
+  it("migrates legacy event IDs and outbox references to SHA-256", () => {
+    const project = createProject();
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
+    const issue = createIssue(store, project.project.id);
+    const event = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
+    const outbox = store.listOutbox({ status: "pending" })[0];
+    db.pragma("foreign_keys = OFF");
+    db.prepare("UPDATE ledger_events SET id = 'evt_00legacy00_00112233445566778899', event_type = 'issue.updated', payload_json = ? WHERE id = ?")
+      .run(JSON.stringify({ issue_id: issue.id, patch: { status: "closed", resolution: "merged" } }), event.id);
+    db.prepare("UPDATE ledger_outbox SET event_id = 'evt_00legacy00_00112233445566778899' WHERE id = ?")
+      .run(outbox.id);
+    db.pragma("foreign_keys = ON");
+    db.prepare("UPDATE meta SET value = '60' WHERE key = 'schema_version'").run();
+
+    migrate(db);
+
+    const migrated = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
+    const migratedOutbox = store.listOutbox({ status: "pending" })[0];
+    expect(migrated.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(migrated.event_type).toBe("issue.closed");
+    expect(JSON.parse(migrated.payload_json)).toMatchObject({
+      legacy_event_id: "evt_00legacy00_00112233445566778899",
+    });
+    expect(migratedOutbox.event_id).toBe(migrated.id);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 });
 
@@ -161,7 +191,7 @@ describe("ledger IDs and project identity", () => {
 });
 
 describe("ledger store", () => {
-  it("writes issue current state, alias, event, outbox, and SSE atomically", () => {
+  it("writes issue current state, alias, event, and SSE atomically without default outbox", () => {
     const project = createProject();
     const broadcasts: string[] = [];
     const store = new LedgerStore(db, {
@@ -169,17 +199,34 @@ describe("ledger store", () => {
     });
 
     const issue = createIssue(store, project.project.id);
+    const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
 
-    expect(issue.id).toMatch(/^iss_/);
+    expect(issue.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(issue.short_id).toBe(issue.id.slice(0, 7));
     expect(store.listAliases(issue.id).map((alias) => alias.alias_kind)).toContain("canonical");
-    expect(store.listEvents({ entity_type: "issue", entity_id: issue.id })).toHaveLength(1);
-    expect(store.listOutbox({ status: "pending" })).toHaveLength(1);
+    expect(events).toHaveLength(1);
+    expect(events[0].id).toMatch(/^[0-9a-f]{64}$/);
+    expect(events[0].id).not.toMatch(/^evt_/);
+    expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
     expect(broadcasts).toEqual(["ledger:issue:created", "ledger:event:created"]);
+  });
+
+  it("enqueues outbox rows only when an adapter is explicitly configured", () => {
+    const project = createProject();
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
+
+    const issue = createIssue(store, project.project.id);
+    const event = store.listEvents({ entity_type: "issue", entity_id: issue.id })[0];
+    const outbox = store.listOutbox({ status: "pending" })[0];
+
+    expect(store.listOutbox({ status: "pending" })).toHaveLength(1);
+    expect(outbox.event_id).toBe(event.id);
+    expect(outbox.event_id).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it("does not enqueue outbox rows for imported adapter-sourced events", () => {
     const project = createProject();
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
 
     store.createIssue({
       project_id: project.project.id,
@@ -191,7 +238,7 @@ describe("ledger store", () => {
     expect(store.listOutbox()).toHaveLength(0);
   });
 
-  it("writes comments with event and outbox rows in one transaction", () => {
+  it("writes comments with events without default outbox rows", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
@@ -202,9 +249,56 @@ describe("ledger store", () => {
       author_display: "Mandible User",
     });
 
-    expect(comment.id).toMatch(/^com_/);
-    expect(store.listEvents({ entity_type: "comment", entity_id: comment.id })).toHaveLength(1);
-    expect(store.listOutbox({ status: "pending" })).toHaveLength(2);
+    expect(comment.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(comment.ordinal).toBe(1);
+    const events = store.listEvents({ entity_type: "comment", entity_id: comment.id });
+    expect(events).toHaveLength(1);
+    expect(events[0].id).toMatch(/^[0-9a-f]{64}$/);
+    expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
+  });
+
+  it("records issue close and reopen as lifecycle events", () => {
+    const project = createProject();
+    const broadcasts: string[] = [];
+    const store = new LedgerStore(db, {
+      broadcaster: (type) => broadcasts.push(type),
+    });
+    const issue = createIssue(store, project.project.id);
+
+    const closed = store.setIssueStatus(issue.id, "closed", "merged");
+    const reopened = store.setIssueStatus(issue.id, "open", null);
+    const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
+
+    expect(closed).toMatchObject({ status: "closed", resolution: "merged" });
+    expect(closed.closed_at).not.toBeNull();
+    expect(reopened).toMatchObject({ status: "open", resolution: null, closed_at: null });
+    expect(events.map((event) => event.event_type)).toEqual([
+      "issue.created",
+      "issue.closed",
+      "issue.reopened",
+    ]);
+    expect(events.every((event) => /^[0-9a-f]{64}$/.test(event.id))).toBe(true);
+    expect(broadcasts).toContain("ledger:issue:closed");
+    expect(broadcasts).toContain("ledger:issue:reopened");
+  });
+
+  it("does not emit lifecycle events when status and resolution are unchanged", () => {
+    const project = createProject();
+    const broadcasts: string[] = [];
+    const store = new LedgerStore(db, {
+      broadcaster: (type) => broadcasts.push(type),
+    });
+    const issue = createIssue(store, project.project.id);
+
+    store.setIssueStatus(issue.id, "closed", "merged");
+    store.setIssueStatus(issue.id, "closed", "merged");
+
+    const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
+    expect(events.map((event) => event.event_type)).toEqual([
+      "issue.created",
+      "issue.closed",
+    ]);
+    expect(broadcasts.filter((event) => event === "ledger:issue:closed")).toHaveLength(1);
   });
 
   it("sets labels idempotently and records only state-changing events", () => {
@@ -247,7 +341,7 @@ describe("ledger store", () => {
 
   it("upserts relationships, external refs, conflicts, and outbox status", () => {
     const project = createProject();
-    const store = new LedgerStore(db);
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
     const parent = createIssue(store, project.project.id, "Parent");
     const child = createIssue(store, project.project.id, "Child");
 
@@ -286,6 +380,182 @@ describe("ledger store", () => {
     expect(conflict.id).toMatch(/^cnf_/);
     expect(outbox.status).toBe("processing");
     expect(store.listConflicts({ status: "open" })).toHaveLength(1);
+  });
+
+  it("parses issue references while skipping code blocks, links, and commit contexts", () => {
+    const refs = parseIssueReferences([
+      "See [issue:abc1234], [issue:mandible/def4567], [comment:mandible/ghi7890#com_1], and #feedbee.",
+      "Legacy inline `020a65b` should count, but commit `7714da1` should not.",
+      "Current commit is f026c06, superseding the earlier 7714da1.",
+      "Skip [`abc1234`](#/issues?repo=x&issue=abc1234), `#badcafe`, and ```#deadbee```.",
+      "Deprecated alias iss_legacy_alias is compatibility only.",
+    ].join("\n"));
+
+    expect(refs.map((ref) => [ref.kind, ref.project ?? "", ref.issueRef, ref.commentRef ?? ""]))
+      .toEqual([
+        ["issue", "", "abc1234", ""],
+        ["issue", "mandible", "def4567", ""],
+        ["comment", "mandible", "ghi7890", "com_1"],
+        ["issue", "", "feedbee", ""],
+        ["issue", "", "020a65b", ""],
+        ["deprecated_iss_alias", "", "iss_legacy_alias", ""],
+      ]);
+  });
+
+  it("reconciles text issue references with source-level provenance", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const target = store.createIssue({
+      project_id: project.project.id,
+      title: "Target",
+      aliases: [{ alias_kind: "git_bug_short", alias: "abcd123" }],
+    });
+    const source = store.createIssue({
+      project_id: project.project.id,
+      title: "Source",
+      body: "See [issue:abcd123].",
+    });
+
+    const relationship = db.prepare(
+      `SELECT * FROM ledger_issue_relationships
+       WHERE source_issue_id = ? AND target_issue_id = ? AND relationship_type = 'references'`,
+    ).get(source.id, target.id) as { id: string; provenance: string; deleted_at: number | null };
+    expect(relationship).toMatchObject({ provenance: "derived", deleted_at: null });
+    expect(db.prepare(
+      `SELECT source_entity_type, source_entity_id, target_issue_id, ref_kind, normalized_ref, deleted_at
+       FROM ledger_issue_relationship_sources
+       WHERE relationship_id = ?`,
+    ).get(relationship.id)).toEqual({
+      source_entity_type: "issue_body",
+      source_entity_id: source.id,
+      target_issue_id: target.id,
+      ref_kind: "issue",
+      normalized_ref: "abcd123",
+      deleted_at: null,
+    });
+    const eventsAfterCreate = store.listEvents({
+      entity_type: "issue_relationship",
+      entity_id: relationship.id,
+    }).length;
+    store.reconcileTextIssueReferences({
+      source_issue_id: source.id,
+      source_entity_type: "issue_body",
+      source_entity_id: source.id,
+      body: "See [issue:abcd123].",
+    });
+    expect(store.listEvents({
+      entity_type: "issue_relationship",
+      entity_id: relationship.id,
+    })).toHaveLength(eventsAfterCreate);
+
+    store.addComment(source.id, {
+      body: "Also `abcd123`.",
+      actor_type: "agent",
+      author_display: "Codex",
+    });
+    store.updateIssue(source.id, { body: "No reference now." });
+    expect(db.prepare(
+      "SELECT deleted_at FROM ledger_issue_relationships WHERE id = ?",
+    ).get(relationship.id)).toEqual({ deleted_at: null });
+
+    const comment = store.getIssueDetail(source.id).comments[0];
+    store.reconcileTextIssueReferences({
+      source_issue_id: source.id,
+      source_entity_type: "comment",
+      source_entity_id: comment.id,
+      body: "Comment edited away.",
+    });
+    const tombstoned = db.prepare(
+      "SELECT deleted_at FROM ledger_issue_relationships WHERE id = ?",
+    ).get(relationship.id) as { deleted_at: number | null };
+    expect(tombstoned.deleted_at).not.toBeNull();
+    expect(store.listEvents({ entity_type: "issue_relationship", entity_id: relationship.id })
+      .map((event) => event.event_type)).toContain("relationship.deleted");
+  });
+
+  it("backfills issue references with repo, issue, and date scopes idempotently", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const target = store.createIssue({
+      project_id: project.project.id,
+      title: "Target",
+      aliases: [{ alias_kind: "git_bug_short", alias: "beef123" }],
+    });
+    const source = store.createIssue({
+      project_id: project.project.id,
+      title: "Source",
+      body: "Initially empty",
+    });
+    const skipped = store.createIssue({
+      project_id: project.project.id,
+      title: "Skipped",
+      body: `See [issue:${target.short_id}].`,
+    });
+    db.prepare("DELETE FROM ledger_issue_relationship_sources").run();
+    db.prepare("DELETE FROM ledger_issue_relationships WHERE relationship_type = 'references'").run();
+    db.prepare("DELETE FROM ledger_events WHERE entity_type = 'issue_relationship'").run();
+    db.prepare("UPDATE ledger_issues SET body = ?, updated_at = ? WHERE id = ?")
+      .run("See [issue:beef123].", 2000, source.id);
+    db.prepare("UPDATE ledger_issues SET updated_at = ? WHERE id = ?").run(1000, skipped.id);
+
+    const first = runIssueReferenceBackfill(db, {
+      project: project.project.display_name,
+      issue: source.short_id,
+      since: 1500,
+    });
+    const second = runIssueReferenceBackfill(db, {
+      project: project.project.display_name,
+      issue: source.short_id,
+      since: 1500,
+    });
+
+    expect(first.processed).toEqual({ issue_bodies: 1, comments: 0 });
+    expect(first.delta).toMatchObject({
+      relationship_sources: 1,
+      active_sources: 1,
+      derived_refs: 1,
+      events: 1,
+    });
+    expect(second.delta).toMatchObject({
+      relationship_sources: 0,
+      active_sources: 0,
+      derived_refs: 0,
+      events: 0,
+    });
+    expect(db.prepare(
+      `SELECT source_issue_id, target_issue_id
+       FROM ledger_issue_relationship_sources
+       WHERE deleted_at IS NULL`,
+    ).all()).toEqual([{ source_issue_id: source.id, target_issue_id: target.id }]);
+  });
+
+  it("does not remove manual relationships when derived text sources disappear", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const target = createIssue(store, project.project.id, "Manual target");
+    const source = store.createIssue({
+      project_id: project.project.id,
+      title: "Manual source",
+      body: "No refs yet.",
+    });
+    const relationship = store.upsertIssueRelationship({
+      source_issue_id: source.id,
+      target_issue_id: target.id,
+      relationship_type: "references",
+      provenance: "manual",
+    });
+
+    store.updateIssue(source.id, { body: `See [issue:${target.short_id}].` });
+    store.updateIssue(source.id, { body: "Removed derived ref." });
+
+    expect(db.prepare(
+      "SELECT provenance, deleted_at FROM ledger_issue_relationships WHERE id = ?",
+    ).get(relationship.id)).toEqual({ provenance: "manual", deleted_at: null });
+    const sources = db.prepare(
+      "SELECT deleted_at FROM ledger_issue_relationship_sources WHERE relationship_id = ?",
+    ).all(relationship.id) as Array<{ deleted_at: number | null }>;
+    expect(sources).toHaveLength(1);
+    expect(sources[0].deleted_at).not.toBeNull();
   });
 });
 

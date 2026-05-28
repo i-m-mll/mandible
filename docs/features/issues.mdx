@@ -1,11 +1,11 @@
 ---
 title: Issue Tracking
-description: Browse and manage git-bug issues across all your repositories.
+description: Browse and manage Mandible ledger issues across all your repositories.
 ---
 
 # Issue Tracking
 
-The Issues tab is Mandible's interface to [git-bug](https://github.com/git-bug/git-bug), a distributed issue tracker that stores issues as git refs inside your repositories. No external service required — issues live alongside your code.
+The Issues tab is Mandible's interface to its local issue ledger. Issues are stored in Mandible's SQLite database, linked to registered repositories, sessions, work units, and auth requests. Legacy git-bug data can be imported or exported through compatibility paths, but normal issue reads and writes use the Mandible ledger.
 
 ## Layout
 

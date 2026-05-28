@@ -5,7 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { openDb, migrate } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION, openDb, migrate } from "../src/db.js";
 import { startDaemon } from "../src/index.js";
 import { autoStartDaemon, checkHealth, stopDaemon, waitForHealth } from "../src/lifecycle.js";
 import type { SSEEvent } from "../src/types.js";
@@ -196,7 +196,7 @@ describe.sequential("mandible daemon", () => {
     const versionRow = db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe("60");
+    expect(versionRow?.value).toBe(String(CURRENT_SCHEMA_VERSION));
 
     db.close();
   });
@@ -208,7 +208,7 @@ describe.sequential("mandible daemon", () => {
     const versionRow = db
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string } | undefined;
-    expect(versionRow?.value).toBe("60");
+    expect(versionRow?.value).toBe(String(CURRENT_SCHEMA_VERSION));
     db.close();
   });
 

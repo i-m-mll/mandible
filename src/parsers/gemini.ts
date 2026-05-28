@@ -371,6 +371,7 @@ export class GeminiParser implements ConversationParser {
               parent_id: null,
               metadata: {
                 tool_name: tc.name || undefined,
+                tool_kind: "gemini_tool_call",
                 tool_id: tc.id || undefined,
                 tool_input: tc.args,
                 visibility: "default_hidden",
@@ -392,6 +393,8 @@ export class GeminiParser implements ConversationParser {
                 parent_id: String(toolPos),
                 metadata: {
                   tool_id: tc.id || undefined,
+                  tool_name: tc.name || undefined,
+                  tool_kind: "gemini_tool_result",
                   tool_output: resultStr.length > 1000 ? undefined : resultStr,
                   visibility: "default_hidden",
                 },

@@ -347,23 +347,20 @@ cleanup_merged_worktrees() {
   done
 }
 
-# Bug: 49e81d9 — skip auto-close for issues with the `coordination` label.
-# Returns 0 (true) if the issue has the coordination label, 1 otherwise.
-# Used by auto_close_issues and close_declared_issues to guard closures.
-has_coordination_label() {
-  local id="$1"
-  local labels
-  labels=$(git-bug bug show "$id" 2>/dev/null | grep -Ei '^labels:' | sed 's/^[Ll]abels:[[:space:]]*//')
-  [[ "$labels" == *coordination* ]]
+urlencode() {
+  jq -rn --arg value "$1" '$value|@uri'
+}
+
+current_repo_id() {
+  local root
+  root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  basename "$root"
 }
 
 # Bug: 670e375 — auto-close issues referenced in explicit closure trailers after merge
 # Bug: 7b83c1f — Bug: trailers are reference/work-tracking links only.
-# Bug: 49e81d9 — coordination-labeled issues are skipped (project-spanning, never auto-close)
-auto_close_issues() {
-  local target="$1"
-  local base_commit="$2"  # commit before merge (ORIG_HEAD)
-
+collect_auto_close_issues() {
+  local base_commit="$1"  # commit before merge (ORIG_HEAD)
   # Check if auto-close is enabled via Mandible setting
   local setting
   setting=$(curl -sf --max-time 2 "${MANDIBLE_BASE}/api/settings/auto_close_issues_on_merge" 2>/dev/null) || setting=""
@@ -381,55 +378,12 @@ auto_close_issues() {
     | grep -oE '^(Closes|Resolves): [a-f0-9]+' \
     | awk '{print $2}' \
     | sort -u)
-
-  if [[ -z "$issue_ids" ]]; then
-    return 0
-  fi
-
-  # Close each referenced issue via git-bug
-  if ! command -v git-bug >/dev/null 2>&1; then
-    err "${DIM_WHITE}[auto-close] git-bug not found, skipping issue closure${RESET}"
-    return 0
-  fi
-
-  local id
-  local closed=0
-  for id in $issue_ids; do
-    # Bug: 49e81d9 — coordination issues are project-spanning and must never auto-close
-    if has_coordination_label "$id"; then
-      err "${DIM_WHITE}[auto-close] skipping coordination issue ${id}${RESET}"
-      continue
-    fi
-    if git-bug bug status close "$id" 2>/dev/null; then
-      # Bug: e32ee8b — mark as "merged" (closed + merged label = three-state lifecycle)
-      git-bug bug label new "$id" merged 2>/dev/null || true
-
-      # Bug: fa1ac4c — record resolving commit SHA for traceability
-      local merge_sha
-      merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-      git-bug bug comment new "$id" -m "Resolved by merge ${merge_sha:0:12}" --non-interactive 2>/dev/null || true
-      git notes append -m "closes: ${id:0:8}" HEAD 2>/dev/null || true
-
-      err "${DIM_WHITE}[auto-close] merged issue ${id}${RESET}"
-      closed=$((closed + 1))
-    fi
-  done
-
-  if [[ "$closed" -gt 0 ]]; then
-    # Bug: fa1ac4c — ensure git notes get pushed with normal pushes
-    if ! git config --local push.notesRef >/dev/null 2>&1; then
-      git config --local push.notesRef "refs/notes/commits" 2>/dev/null || true
-    fi
-    err "${GREEN}[auto-close] merged ${closed} issue(s)${RESET}"
-  fi
+  printf "%s" "$issue_ids"
 }
 
-# Bug: 297677f — close issues declared in the auth request's issues field.
+# Bug: 297677f — include issues declared in the auth request's issues field.
 # Bug: 7b83c1f — prefer issue_closures; issues remains legacy close-on-merge.
-# These are issue IDs explicitly listed by the submitter (e.g., umbrella issues
-# in bigbuild workflows) that should be closed on merge, independent of Bug: trailers.
-# Bug: 49e81d9 — coordination-labeled issues are skipped (project-spanning, never auto-close)
-close_declared_issues() {
+collect_declared_issues() {
   # Requires MANDIBLE_AUTH_REQUEST_ID to be set by the executor
   local request_id="${MANDIBLE_AUTH_REQUEST_ID:-}"
   if [[ -z "$request_id" ]]; then
@@ -452,38 +406,32 @@ close_declared_issues() {
   # Parse the JSON array into individual IDs
   local ids
   ids=$(printf '%s' "$issues_json" | jq -r '.[]' 2>/dev/null) || return 0
+  printf "%s" "$ids"
+}
+
+issue_ids_to_json() {
+  local ids="$1"
   if [[ -z "$ids" ]]; then
+    printf "[]"
     return 0
   fi
+  printf "%s\n" "$ids" | jq -R 'select(length > 0)' | jq -sc .
+}
 
-  if ! command -v git-bug >/dev/null 2>&1; then
-    err "${DIM_WHITE}[issues] git-bug not found, skipping declared issue closure${RESET}"
-    return 0
-  fi
-
-  local id
-  local closed=0
-  for id in $ids; do
-    # Bug: 49e81d9 — coordination issues are project-spanning and must never auto-close
-    if has_coordination_label "$id"; then
-      err "${DIM_WHITE}[issues] skipping coordination issue ${id}${RESET}"
-      continue
-    fi
-    if git-bug bug status close "$id" 2>/dev/null; then
-      git-bug bug label new "$id" merged 2>/dev/null || true
-
-      local merge_sha
-      merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-      git-bug bug comment new "$id" -m "Resolved by merge ${merge_sha:0:12} (declared in auth request ${request_id:0:8})" --non-interactive 2>/dev/null || true
-
-      err "${DIM_WHITE}[issues] merged declared issue ${id}${RESET}"
-      closed=$((closed + 1))
-    fi
-  done
-
-  if [[ "$closed" -gt 0 ]]; then
-    err "${GREEN}[issues] merged ${closed} declared issue(s)${RESET}"
-  fi
+record_auth_merge_result() {
+  local pre_merge_head="$1"
+  local merge_sha
+  merge_sha=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+  local auto_ids
+  local declared_ids
+  auto_ids=$(collect_auto_close_issues "$pre_merge_head")
+  declared_ids=$(collect_declared_issues)
+  err "MANDIBLE_MERGE_RESULT $(jq -nc \
+    --arg merge_sha "$merge_sha" \
+    --arg repo_id "$(current_repo_id)" \
+    --argjson auto_close_issues "$(issue_ids_to_json "$auto_ids")" \
+    --argjson declared_issues "$(issue_ids_to_json "$declared_ids")" \
+    '{merge_sha:$merge_sha, repo_id:$repo_id, auto_close_issues:$auto_close_issues, declared_issues:$declared_issues}')"
 }
 
 # Bug: 4afab83 — post-merge build/restart logic has been moved to the auth_hooks
@@ -593,8 +541,7 @@ main() {
     if git commit -S --no-edit; then
       verify_merge_not_empty
       if [[ ${#sources[@]} -gt 0 ]]; then
-        auto_close_issues "$target" "$pre_merge_head"
-        close_declared_issues
+        record_auth_merge_result "$pre_merge_head"
         cleanup_merged_worktrees "${sources[0]}"
       fi
       # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
@@ -721,8 +668,7 @@ main() {
     pre_merge_head=$(git rev-parse HEAD)
     if git merge --no-ff --no-edit -S "$source"; then
       verify_merge_not_empty
-      auto_close_issues "$target" "$pre_merge_head"
-      close_declared_issues
+      record_auth_merge_result "$pre_merge_head"
       cleanup_merged_worktrees "$source"
       # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
@@ -735,8 +681,7 @@ main() {
         err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
         if git -c commit.gpgsign=true merge --continue; then
           verify_merge_not_empty
-          auto_close_issues "$target" "$pre_merge_head"
-          close_declared_issues
+          record_auth_merge_result "$pre_merge_head"
           cleanup_merged_worktrees "$source"
           # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
           exit 0
@@ -783,9 +728,8 @@ main() {
     exit 1
   done
 
-  # Auto-close issues from all merged commits (hierarchical)
-  auto_close_issues "$target" "$pre_merge_head"
-  close_declared_issues
+  # Record issue-closure evidence from all merged commits (hierarchical)
+  record_auth_merge_result "$pre_merge_head"
 
   for source in "${succeeded[@]}"; do
     cleanup_merged_worktrees "$source"

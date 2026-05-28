@@ -131,10 +131,12 @@ describe("ledger graph projection", () => {
 
     expect(projection).not.toBeNull();
     expect(projection?.nodes.map((node) => node.type)).toEqual(["issue", "issue"]);
+    const parentNode = findNode(projection?.nodes ?? [], "Umbrella parent");
+    const childNode = findNode(projection?.nodes ?? [], "Child issue");
     expect(projection?.edges).toEqual([
       expect.objectContaining({
-        source: expect.stringContaining("par1234"),
-        target: expect.stringContaining("chi1234"),
+        source: parentNode.id,
+        target: childNode.id,
         type: "umbrella_child",
         edge_class: "semantic",
         provenance: "ledger_issue_relationships",
@@ -146,8 +148,6 @@ describe("ledger graph projection", () => {
       }),
     ]);
 
-    const parentNode = findNode(projection?.nodes ?? [], "Umbrella parent");
-    const childNode = findNode(projection?.nodes ?? [], "Child issue");
     expect(parentNode.summary).toMatchObject({ children: 1, auth_evidence: 0 });
     expect(parentNode.detail?.layout).toMatchObject({ role: "umbrella_parent", rank: 0 });
     expect(childNode.summary).toMatchObject({
@@ -181,5 +181,32 @@ describe("ledger graph projection", () => {
     expect(countLedgerGraphIssues(db, "all")).toBe(2);
     expect(countLedgerGraphIssues(db, "open")).toBe(1);
     expect(getLedgerGraphFilterOptions(db).repos).toEqual(expect.arrayContaining(["alpha", "beta"]));
+  });
+
+  it("projects derived text reference relationships as issue graph edges", () => {
+    const checkout = createProject("repo");
+    const store = new LedgerStore(db);
+    const source = createIssue(store, checkout.project.id, "src1234", "Source issue");
+    const target = createIssue(store, checkout.project.id, "tar1234", "Target issue");
+
+    store.updateIssue(source.id, { body: "See [issue:tar1234] for follow-up." });
+
+    const projection = buildLedgerIssueProjection(db, { mode: "issue", status: "all" });
+    const sourceNode = findNode(projection?.nodes ?? [], "Source issue");
+    const targetNode = findNode(projection?.nodes ?? [], "Target issue");
+
+    expect(projection?.edges).toEqual([
+      expect.objectContaining({
+        source: sourceNode.id,
+        target: targetNode.id,
+        type: "references",
+        edge_class: "semantic",
+        provenance: "ledger_issue_relationships",
+        metadata: expect.objectContaining({
+          relationship_type: "references",
+          label_default_visible: false,
+        }),
+      }),
+    ]);
   });
 });

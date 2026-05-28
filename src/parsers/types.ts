@@ -15,6 +15,7 @@ export type ConversationSource = "claude_code" | "codex" | "gemini";
 
 export interface BlockMetadata {
   tool_name?: string;
+  tool_kind?: string;
   tool_id?: string;
   tool_input?: unknown;
   tool_output?: unknown;
