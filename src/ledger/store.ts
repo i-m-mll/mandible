@@ -8,6 +8,7 @@ import {
   createStableEventId,
   createStableIssueId,
 } from "./ids.js";
+import { parseIssueReferences, type ParsedIssueReference } from "./issue-xrefs.js";
 import type {
   LedgerActorInput,
   LedgerActorType,
@@ -22,6 +23,7 @@ import type {
   LedgerIssueDetail,
   LedgerIssueKind,
   LedgerIssueRelationship,
+  LedgerIssueRelationshipSource,
   LedgerIssueResolution,
   LedgerIssueStatus,
   LedgerLabel,
@@ -94,6 +96,15 @@ export interface UpsertRelationshipInput {
   source?: LedgerEventSource;
   actor?: LedgerActorInput;
   created_at?: number;
+}
+
+export interface ReconcileTextIssueReferencesInput {
+  source_issue_id: string;
+  source_entity_type: "issue_body" | "comment";
+  source_entity_id: string;
+  body: string;
+  source?: LedgerEventSource;
+  actor?: LedgerActorInput;
 }
 
 export interface RecordExternalRefInput {
@@ -253,6 +264,14 @@ export class LedgerStore {
     });
 
     const issue = run();
+    this.reconcileTextIssueReferences({
+      source_issue_id: issue.id,
+      source_entity_type: "issue_body",
+      source_entity_id: issue.id,
+      body: issue.body,
+      source,
+      actor,
+    });
     emitLedgerEvents(emitted, this.broadcaster);
     return issue;
   }
@@ -301,6 +320,16 @@ export class LedgerStore {
     });
 
     const issue = run();
+    if (patch.body !== undefined) {
+      this.reconcileTextIssueReferences({
+        source_issue_id: issue.id,
+        source_entity_type: "issue_body",
+        source_entity_id: issue.id,
+        body: issue.body,
+        source: "mandible",
+        actor: normalizedActor,
+      });
+    }
     emitLedgerEvents(emitted, this.broadcaster);
     return issue;
   }
@@ -375,6 +404,16 @@ export class LedgerStore {
     });
 
     const issue = run();
+    if (patch.body !== undefined) {
+      this.reconcileTextIssueReferences({
+        source_issue_id: issue.id,
+        source_entity_type: "issue_body",
+        source_entity_id: issue.id,
+        body: issue.body,
+        source,
+        actor: normalizedActor,
+      });
+    }
     emitLedgerEvents(emitted, this.broadcaster);
     return { changed: true, issue };
   }
@@ -498,6 +537,14 @@ export class LedgerStore {
     });
 
     const comment = run();
+    this.reconcileTextIssueReferences({
+      source_issue_id: issueId,
+      source_entity_type: "comment",
+      source_entity_id: comment.id,
+      body: comment.body,
+      source,
+      actor,
+    });
     emitLedgerEvents(emitted, this.broadcaster);
     return comment;
   }
@@ -655,6 +702,74 @@ export class LedgerStore {
     const relationship = run();
     emitLedgerEvents(emitted, this.broadcaster);
     return relationship;
+  }
+
+  reconcileTextIssueReferences(input: ReconcileTextIssueReferencesInput): void {
+    const sourceIssue = this.requireIssue(input.source_issue_id);
+    const source = input.source ?? "mandible";
+    const actor = normalizeActor(input.actor ?? {});
+    const emitted: LedgerSsePayload[] = [];
+    const now = Date.now();
+
+    const run = this.db.transaction(() => {
+      const desired = new Map<string, {
+        relationship: LedgerIssueRelationship;
+        ref: ParsedIssueReference;
+      }>();
+      for (const ref of parseIssueReferences(input.body)) {
+        const targetProjectId = this.resolveProjectId(ref.project, sourceIssue.project_id);
+        if (!targetProjectId) continue;
+        const resolved = this.resolveIssueRef(ref.issueRef, { project_id: targetProjectId });
+        if (!resolved.ok || resolved.id === input.source_issue_id) continue;
+        const relationship = this.ensureDerivedReferenceRelationship(
+          input.source_issue_id,
+          resolved.id,
+          source,
+          actor,
+          now,
+          emitted,
+        );
+        const key = relationshipSourceKey(resolved.id, ref.kind, ref.normalized);
+        desired.set(key, { relationship, ref });
+      }
+
+      for (const item of desired.values()) {
+        this.upsertRelationshipSource({
+          relationship: item.relationship,
+          input,
+          ref: item.ref,
+          source,
+          actor,
+          now,
+        });
+      }
+
+      const existingSources = this.db.prepare(
+        `SELECT * FROM ledger_issue_relationship_sources
+         WHERE source_entity_type = ? AND source_entity_id = ?
+           AND relationship_type = 'references' AND deleted_at IS NULL`,
+      ).all(input.source_entity_type, input.source_entity_id) as LedgerIssueRelationshipSource[];
+      const touchedRelationshipIds = new Set<string>();
+      for (const existing of existingSources) {
+        const key = relationshipSourceKey(existing.target_issue_id, existing.ref_kind, existing.normalized_ref);
+        if (desired.has(key)) continue;
+        this.db.prepare(
+          `UPDATE ledger_issue_relationship_sources
+           SET deleted_at = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(now, now, existing.id);
+        touchedRelationshipIds.add(existing.relationship_id);
+      }
+      for (const item of desired.values()) {
+        touchedRelationshipIds.add(item.relationship.id);
+      }
+      for (const relationshipId of touchedRelationshipIds) {
+        this.pruneDerivedRelationshipIfUnreferenced(relationshipId, source, actor, now, emitted);
+      }
+    });
+
+    run();
+    emitLedgerEvents(emitted, this.broadcaster);
   }
 
   recordExternalRef(input: RecordExternalRefInput): LedgerExternalRef {
@@ -1183,6 +1298,181 @@ export class LedgerStore {
     return row;
   }
 
+  private resolveProjectId(projectRef: string | undefined, fallbackProjectId: string): string | null {
+    const ref = projectRef?.trim();
+    if (!ref) return fallbackProjectId;
+    const rows = this.db.prepare(
+      `SELECT id FROM ledger_projects WHERE lower(display_name) = lower(?)
+       UNION
+       SELECT project_id AS id FROM ledger_project_checkouts
+        WHERE lower(name) = lower(?) OR work_repo_id = ?`,
+    ).all(ref, ref, ref) as Array<{ id: string }>;
+    if (rows.length === 1) return rows[0].id;
+    return null;
+  }
+
+  private ensureDerivedReferenceRelationship(
+    sourceIssueId: string,
+    targetIssueId: string,
+    source: LedgerEventSource,
+    actor: { actor_id: string | null; actor_type: LedgerActorType },
+    now: number,
+    emitted: LedgerSsePayload[],
+  ): LedgerIssueRelationship {
+    const sourceIssue = this.requireIssue(sourceIssueId);
+    let relationship = this.db.prepare(
+      `SELECT * FROM ledger_issue_relationships
+       WHERE source_issue_id = ? AND target_issue_id = ? AND relationship_type = 'references'`,
+    ).get(sourceIssueId, targetIssueId) as LedgerIssueRelationship | undefined;
+    if (!relationship) {
+      const id = createLedgerId("rel", { now });
+      this.db.prepare(
+        `INSERT INTO ledger_issue_relationships (
+          id, source_issue_id, target_issue_id, relationship_type, provenance,
+          confidence, metadata_json, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, 'references', 'derived', 'observed', ?, ?, ?, NULL)`,
+      ).run(
+        id,
+        sourceIssueId,
+        targetIssueId,
+        jsonStringify({ derived_from: "issue_text_refs" }),
+        now,
+        now,
+      );
+      relationship = this.db.prepare("SELECT * FROM ledger_issue_relationships WHERE id = ?")
+        .get(id) as LedgerIssueRelationship;
+    } else if (relationship.deleted_at !== null) {
+      this.db.prepare(
+        `UPDATE ledger_issue_relationships
+         SET deleted_at = NULL, updated_at = ?
+         WHERE id = ?`,
+      ).run(now, relationship.id);
+      relationship = this.db.prepare("SELECT * FROM ledger_issue_relationships WHERE id = ?")
+        .get(relationship.id) as LedgerIssueRelationship;
+    }
+    const event = this.insertEvent({
+      entity_type: "issue_relationship",
+      entity_id: relationship.id,
+      event_type: "relationship.upserted",
+      actor_id: actor.actor_id,
+      actor_type: actor.actor_type,
+      source,
+      payload: {
+        relationship_id: relationship.id,
+        source_issue_id: sourceIssueId,
+        target_issue_id: targetIssueId,
+        relationship_type: "references",
+        provenance: relationship.provenance,
+      },
+      project_id: sourceIssue.project_id,
+      occurred_at: now,
+    });
+    emitted.push({ event, payload: { relationship_id: relationship.id } });
+    return relationship;
+  }
+
+  private upsertRelationshipSource(input: {
+    relationship: LedgerIssueRelationship;
+    input: ReconcileTextIssueReferencesInput;
+    ref: ParsedIssueReference;
+    source: LedgerEventSource;
+    actor: { actor_id: string | null; actor_type: LedgerActorType };
+    now: number;
+  }): void {
+    const existing = this.db.prepare(
+      `SELECT * FROM ledger_issue_relationship_sources
+       WHERE source_entity_type = ? AND source_entity_id = ? AND target_issue_id = ?
+         AND relationship_type = 'references' AND ref_kind = ? AND normalized_ref = ?`,
+    ).get(
+      input.input.source_entity_type,
+      input.input.source_entity_id,
+      input.relationship.target_issue_id,
+      input.ref.kind,
+      input.ref.normalized,
+    ) as LedgerIssueRelationshipSource | undefined;
+    const metadata = {
+      raw_ref: input.ref.raw,
+      project: input.ref.project ?? null,
+      comment_ref: input.ref.commentRef ?? null,
+      source: input.source,
+    };
+    if (!existing) {
+      this.db.prepare(
+        `INSERT INTO ledger_issue_relationship_sources (
+          id, relationship_id, source_entity_type, source_entity_id,
+          source_issue_id, target_issue_id, relationship_type, ref_kind,
+          raw_ref, normalized_ref, metadata_json, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'references', ?, ?, ?, ?, ?, ?, NULL)`,
+      ).run(
+        createLedgerId("xref", { now: input.now }),
+        input.relationship.id,
+        input.input.source_entity_type,
+        input.input.source_entity_id,
+        input.input.source_issue_id,
+        input.relationship.target_issue_id,
+        input.ref.kind,
+        input.ref.raw,
+        input.ref.normalized,
+        jsonStringify(metadata),
+        input.now,
+        input.now,
+      );
+      return;
+    }
+    this.db.prepare(
+      `UPDATE ledger_issue_relationship_sources
+       SET relationship_id = ?, raw_ref = ?, metadata_json = ?,
+           updated_at = ?, deleted_at = NULL
+       WHERE id = ?`,
+    ).run(
+      input.relationship.id,
+      input.ref.raw,
+      jsonStringify(metadata),
+      input.now,
+      existing.id,
+    );
+  }
+
+  private pruneDerivedRelationshipIfUnreferenced(
+    relationshipId: string,
+    source: LedgerEventSource,
+    actor: { actor_id: string | null; actor_type: LedgerActorType },
+    now: number,
+    emitted: LedgerSsePayload[],
+  ): void {
+    const relationship = this.db.prepare("SELECT * FROM ledger_issue_relationships WHERE id = ?")
+      .get(relationshipId) as LedgerIssueRelationship | undefined;
+    if (!relationship || relationship.provenance !== "derived" || relationship.deleted_at !== null) return;
+    const liveSource = this.db.prepare(
+      `SELECT 1 AS ok FROM ledger_issue_relationship_sources
+       WHERE relationship_id = ? AND deleted_at IS NULL
+       LIMIT 1`,
+    ).get(relationshipId) as { ok: number } | undefined;
+    if (liveSource) return;
+    this.db.prepare(
+      `UPDATE ledger_issue_relationships
+       SET deleted_at = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(now, now, relationshipId);
+    const event = this.insertEvent({
+      entity_type: "issue_relationship",
+      entity_id: relationshipId,
+      event_type: "relationship.deleted",
+      actor_id: actor.actor_id,
+      actor_type: actor.actor_type,
+      source,
+      payload: {
+        relationship_id: relationshipId,
+        source_issue_id: relationship.source_issue_id,
+        target_issue_id: relationship.target_issue_id,
+        relationship_type: relationship.relationship_type,
+      },
+      project_id: this.requireIssue(relationship.source_issue_id).project_id,
+      occurred_at: now,
+    });
+    emitted.push({ event, payload: { relationship_id: relationshipId } });
+  }
+
   private insertAlias(alias: LedgerIssueAlias): void {
     this.db.prepare(
       `INSERT INTO ledger_issue_aliases (
@@ -1289,6 +1579,10 @@ function normalizeActor(input: LedgerActorInput): {
 
 function shouldEnqueueOutbox(source: LedgerEventSource): boolean {
   return source === "mandible" || source === "auth_queue" || source === "session" || source === "work_unit";
+}
+
+function relationshipSourceKey(targetIssueId: string, refKind: string, normalizedRef: string): string {
+  return `${targetIssueId}\0${refKind}\0${normalizedRef}`;
 }
 
 function escapeLike(value: string): string {

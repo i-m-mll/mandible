@@ -8608,6 +8608,13 @@ tr:hover .work-actions__trigger {
   gap: 16px;
 }
 
+.graph-primary-controls {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .graph-mode-strip {
   display: flex;
   flex-wrap: wrap;
@@ -8659,11 +8666,10 @@ tr:hover .work-actions__trigger {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 172px minmax(360px, 1fr) 320px;
+  grid-template-columns: minmax(360px, 1fr) 320px;
   gap: 12px;
 }
 
-.graph-layer-rail,
 .graph-detail-pane {
   min-height: 0;
   overflow-y: auto;
@@ -8672,11 +8678,6 @@ tr:hover .work-actions__trigger {
   border-radius: 8px;
 }
 
-.graph-layer-rail {
-  padding: 12px;
-}
-
-.graph-layer-rail__title,
 .graph-detail-pane__section-title {
   font-size: 11px;
   text-transform: uppercase;
@@ -8685,23 +8686,45 @@ tr:hover .work-actions__trigger {
   margin-bottom: 8px;
 }
 
-.graph-layer-rail__empty {
+.graph-layer-strip {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.graph-layer-strip__empty {
   color: var(--text-muted);
   font-size: 12px;
 }
 
 .graph-layer-chip {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  min-height: 30px;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 0;
+  gap: 7px;
+  max-width: 180px;
+  padding: 6px 9px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.035);
   color: var(--text-muted);
   font-size: 12px;
   cursor: pointer;
 }
 
+.graph-layer-chip:hover:not(.graph-layer-chip--disabled) {
+  background: rgba(255,255,255,0.07);
+}
+
+.graph-layer-chip input {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
 .graph-layer-chip span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -10313,6 +10336,8 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   border-radius: 6px;
   background: var(--bg-secondary);
   box-shadow: 0 14px 40px rgba(0,0,0,0.35);
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .ledger-metadata-popover__panel--center {
@@ -10349,11 +10374,15 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 
 .ledger-metadata-grid dt {
   color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .ledger-metadata-grid dd {
   color: var(--text-primary);
   font-family: var(--font-mono);
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .ledger-label {
@@ -10686,6 +10715,14 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 .ledger-xref:hover {
   color: var(--text-primary);
   text-decoration-color: currentColor;
+}
+
+.ledger-xref--inline-code {
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: rgba(255,255,255,0.08);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
 }
 
 .ledger-comment-composer {

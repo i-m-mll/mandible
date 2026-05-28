@@ -176,6 +176,23 @@ export interface LedgerIssueRelationship {
   deleted_at: number | null;
 }
 
+export interface LedgerIssueRelationshipSource {
+  id: string;
+  relationship_id: string;
+  source_entity_type: "issue_body" | "comment";
+  source_entity_id: string;
+  source_issue_id: string;
+  target_issue_id: string;
+  relationship_type: LedgerRelationshipType;
+  ref_kind: "issue" | "comment" | "deprecated_iss_alias";
+  raw_ref: string;
+  normalized_ref: string;
+  metadata_json: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+}
+
 export interface LedgerEvent {
   id: string;
   entity_type: string;

@@ -243,10 +243,9 @@ describe("ledger operational links", () => {
       ).get(resolvedIssue.id),
     ).toEqual({ label: "merged" });
     expect(
-      db.prepare("SELECT body FROM ledger_comments WHERE issue_id = ?").get(resolvedIssue.id),
-    ).toEqual({
-      body: "Resolved by merge abc123def456 (declared in auth request auth_2)",
-    });
+      db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?")
+        .get(resolvedIssue.id),
+    ).toEqual({ count: 0 });
     const timelineEvents = new LedgerStore(db)
       .listEvents({ entity_type: "issue", entity_id: resolvedIssue.id })
       .filter((event) => event.event_type === "issue.closed");
@@ -282,7 +281,8 @@ describe("ledger operational links", () => {
       ).get("auth_3", resolvedIssue.id),
     ).toEqual({ link_type: "resolves" });
     expect(
-      db.prepare("SELECT body FROM ledger_comments WHERE issue_id = ?").get(resolvedIssue.id),
-    ).toEqual({ body: "Resolved by merge fed456abc123" });
+      db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?")
+        .get(resolvedIssue.id),
+    ).toEqual({ count: 0 });
   });
 });
