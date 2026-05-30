@@ -2,10 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import {
   getArtifact,
+  getArtifactContent,
+  getArtifactKnowledgeBackrefs,
   getArtifacts,
   resolveArtifact,
+  type ArtifactContentResult,
   type ArtifactRecord,
   type ArtifactResolveResult,
+  type KnowledgeBackrefRecord,
 } from '../api';
 import { artifactDetailHref } from '../artifact-links';
 import { sanitizeMarkdown } from '../sanitize';
@@ -52,9 +56,15 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
   const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(initialArtifactId ?? null);
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
+  const [artifactContent, setArtifactContent] = useState<ArtifactContentResult | null>(null);
+  const [knowledgeBackrefs, setKnowledgeBackrefs] = useState<KnowledgeBackrefRecord[]>([]);
   const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [contentLoading, setContentLoading] = useState(false);
+  const [contentError, setContentError] = useState<string | null>(null);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -124,6 +134,61 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setDetailLoading(false));
   }, [selectedId, initialRef]);
+
+  useEffect(() => {
+    if (!selectedArtifact) {
+      setArtifactContent(null);
+      setKnowledgeBackrefs([]);
+      setContentError(null);
+      setKnowledgeError(null);
+      setContentLoading(false);
+      setKnowledgeLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setContentLoading(true);
+    setContentError(null);
+    setArtifactContent(null);
+    getArtifactContent(selectedArtifact.id)
+      .then((content) => {
+        if (!cancelled) setArtifactContent(content);
+      })
+      .catch((err) => {
+        if (!cancelled) setContentError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setContentLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedArtifact?.id]);
+
+  useEffect(() => {
+    if (!selectedArtifact) {
+      setKnowledgeBackrefs([]);
+      setKnowledgeError(null);
+      setKnowledgeLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setKnowledgeLoading(true);
+    setKnowledgeError(null);
+    setKnowledgeBackrefs([]);
+    getArtifactKnowledgeBackrefs(selectedArtifact.id)
+      .then((backrefs) => {
+        if (!cancelled) setKnowledgeBackrefs(backrefs);
+      })
+      .catch((err) => {
+        if (!cancelled) setKnowledgeError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setKnowledgeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedArtifact?.id]);
 
   const facetOptions = useMemo(() => buildFacetOptions(artifacts), [artifacts]);
 
@@ -221,7 +286,16 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
           <UnresolvedArtifact resolution={resolution} />
         )}
         {!detailLoading && selectedArtifact && (
-          <ArtifactDetail artifact={selectedArtifact} resolution={resolution} />
+          <ArtifactDetail
+            artifact={selectedArtifact}
+            resolution={resolution}
+            content={artifactContent}
+            contentLoading={contentLoading}
+            contentError={contentError}
+            knowledgeBackrefs={knowledgeBackrefs}
+            knowledgeLoading={knowledgeLoading}
+            knowledgeError={knowledgeError}
+          />
         )}
       </main>
     </div>
@@ -245,8 +319,26 @@ function FacetSelect({ label, value, options, onChange }: {
   );
 }
 
-function ArtifactDetail({ artifact, resolution }: { artifact: ArtifactRecord; resolution: ArtifactResolveResult | null }): JSX.Element {
-  const preview = artifactPreview(artifact);
+function ArtifactDetail({
+  artifact,
+  resolution,
+  content,
+  contentLoading,
+  contentError,
+  knowledgeBackrefs,
+  knowledgeLoading,
+  knowledgeError,
+}: {
+  artifact: ArtifactRecord;
+  resolution: ArtifactResolveResult | null;
+  content: ArtifactContentResult | null;
+  contentLoading: boolean;
+  contentError: string | null;
+  knowledgeBackrefs: KnowledgeBackrefRecord[];
+  knowledgeLoading: boolean;
+  knowledgeError: string | null;
+}): JSX.Element {
+  const preview = content ? artifactPreview(content) : null;
   const locatorRows = [
     ['URI', artifact.uri],
     ['Content hash', artifact.content_hash],
@@ -310,12 +402,41 @@ function ArtifactDetail({ artifact, resolution }: { artifact: ArtifactRecord; re
           </div>
         </section>
       )}
+      {(knowledgeLoading || knowledgeError || knowledgeBackrefs.length > 0) && (
+        <section className="artifact-detail__section">
+          <h3>Knowledge Backrefs</h3>
+          {knowledgeLoading && <div className="artifacts-empty">Loading knowledge references...</div>}
+          {!knowledgeLoading && knowledgeError && <div className="artifacts-error">{knowledgeError}</div>}
+          {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
+            <div className="artifact-detail__list">
+              {knowledgeBackrefs.map((backref) => (
+                <div key={backref.id} className="artifact-detail__list-item">
+                  <code>{backref.external_ref || backref.external_id}</code>
+                  <span>{backref.ref_type}</span>
+                  <span>{backref.provider_id}</span>
+                  <span>{backref.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
       <section className="artifact-detail__section">
         <h3>Preview</h3>
-        {preview.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
-        {preview.kind === 'markdown' && <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />}
-        {preview.kind === 'image' && <img className="artifact-preview__image" src={artifact.uri} alt={artifactTitle(artifact)} />}
-        {preview.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
+        {contentLoading && <div className="artifacts-empty">Loading preview...</div>}
+        {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
+        {!contentLoading && !contentError && preview?.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+        {!contentLoading && !contentError && preview?.kind === 'text' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+        {!contentLoading && !contentError && preview?.kind === 'markdown' && <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />}
+        {!contentLoading && !contentError && preview?.kind === 'binary' && (
+          <div className="artifacts-empty">
+            Binary artifact available ({formatBytes(content?.download.size_bytes ?? 0) || content?.download.media_type}).
+          </div>
+        )}
+        {!contentLoading && !contentError && preview?.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
+        {!contentLoading && !contentError && content?.preview?.truncated && (
+          <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
+        )}
       </section>
     </article>
   );
@@ -403,16 +524,22 @@ function artifactTitle(artifact: ArtifactRecord): string {
   return metadataTitle || logicalName || filename || artifact.role || artifact.content_hash.slice(0, 12);
 }
 
-function artifactPreview(artifact: ArtifactRecord): { kind: 'json' | 'markdown' | 'image' | 'empty'; value: string } {
-  if (artifact.media_type?.includes('json')) {
-    return { kind: 'json', value: JSON.stringify(artifact.metadata, null, 2) };
+function artifactPreview(content: ArtifactContentResult): { kind: 'json' | 'markdown' | 'text' | 'binary' | 'empty'; value: string } {
+  if (content.kind === 'json' && content.preview) {
+    return { kind: 'json', value: content.preview.text };
   }
-  if (artifact.media_type?.includes('markdown') && typeof artifact.metadata.preview === 'string') {
-    const parsed = marked.parse(artifact.metadata.preview, { async: false });
+  if (content.kind === 'markdown' && content.preview) {
+    const parsed = marked.parse(content.preview.text, { async: false });
     return { kind: 'markdown', value: sanitizeMarkdown(typeof parsed === 'string' ? parsed : '') };
   }
-  if (artifact.media_type?.startsWith('image/') && artifact.uri.startsWith('file://')) {
-    return { kind: 'image', value: artifact.uri };
+  if (content.kind === 'text' && content.preview) {
+    return { kind: 'text', value: content.preview.text };
+  }
+  if (content.kind === 'binary' && content.download.available) {
+    return { kind: 'binary', value: content.download.media_type };
+  }
+  if (content.reason) {
+    return { kind: 'empty', value: content.reason };
   }
   return { kind: 'empty', value: 'No inline preview is available for this artifact.' };
 }

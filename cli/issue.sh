@@ -32,6 +32,7 @@ Usage:
   mandible issue comment <id> -m <text>                           Add a comment
   mandible issue label add <id> <label>                           Add a label
   mandible issue label rm <id> <label>                            Remove a label
+  mandible issue markdown <audit|normalize|export> [opts]          Audit, normalize, or export ledger Markdown
   mandible issue refs backfill [opts]                              Reanalyze issue/comment cross-references
 USAGE
 }
@@ -509,6 +510,12 @@ REFS_USAGE
   esac
 }
 
+cmd_markdown() {
+  local root
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+  exec node "$root/dist/cli/issue-markdown-tools.js" "$@"
+}
+
 # --- Main ---
 
 if (( $# < 1 )); then
@@ -529,6 +536,7 @@ case "$subcmd" in
   open)    cmd_open "${1:-}" ;;
   comment) cmd_comment "$@" ;;
   label)   cmd_label "$@" ;;
+  markdown) cmd_markdown "$@" ;;
   refs)    cmd_refs "$@" ;;
   -h|--help) usage ;;
   *)       die "Unknown subcommand: $subcmd" 2 ;;

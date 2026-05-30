@@ -333,6 +333,10 @@ function hashBuffer(buffer: Buffer): string {
   return crypto.createHash("sha256").update(buffer).digest("hex");
 }
 
+function hashString(value: string): string {
+  return hashBuffer(Buffer.from(value, "utf8"));
+}
+
 function isSha256(value: string | undefined): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
 }
@@ -432,6 +436,10 @@ function repoLocatorUri(locator: JsonRecord): string | undefined {
 
 function artifactRegistryId(prefix: string, parts: unknown[]): string {
   return `${prefix}:${hashBuffer(Buffer.from(stableJsonStringify(parts), "utf8")).slice(0, 32)}`;
+}
+
+function referenceArtifactId(normalizedRef: string): string {
+  return `artifact:ref:${hashString(normalizedRef)}`;
 }
 
 function uriSizeBytes(uri: string | undefined): number | undefined {
@@ -1275,6 +1283,218 @@ function getArtifactLink(db: Db, id: string): ArtifactLinkRecord | null {
       WHERE id = ?`
   ).get(id) as Record<string, unknown> | undefined;
   return row ? artifactLinkFromRow(row) : null;
+}
+
+function materializeReferenceArtifact(
+  db: Db,
+  ref: string,
+  now = Date.now(),
+): { artifact: ArtifactRecord; alias: ArtifactAliasRecord } {
+  const normalized = normalizeRef(ref);
+  const id = referenceArtifactId(normalized.normalizedRef);
+  const identityHash = hashString(normalized.normalizedRef);
+  const repoId = asString(normalized.locator.repo_id) ?? null;
+  const custodyMode: ArtifactCustodyMode = normalized.scheme === "repo" ? "link" : "external";
+  const availability: ArtifactAvailability = normalized.scheme === "repo" ? "unchecked" : "remote_only";
+  const role = normalized.scheme === "repo" ? "repo_artifact" : "external_reference";
+  const metadata = {
+    title: normalized.normalizedRef,
+    source_ref: ref,
+    normalized_ref: normalized.normalizedRef,
+    scheme: normalized.scheme,
+    identity_kind: "reference",
+    locator: normalized.locator,
+  };
+  const reference = {
+    owner_system: normalized.scheme,
+    identity_kind: "reference",
+    normalized_ref: normalized.normalizedRef,
+    locator: normalized.locator,
+    content_identity: null,
+  };
+  const repoLocator = normalized.scheme === "repo" ? normalized.locator : {};
+
+  db.prepare(
+    `INSERT INTO artifacts (
+      id, algorithm, content_hash, uri, media_type, role, size_bytes,
+      provider_id, manifest_id, metadata_json, pinned, custody_mode, home_repo_id,
+      repo_locator_json, availability, retention_json, reference_json, created_at
+    ) VALUES (
+      @id, 'ref-sha256', @content_hash, @uri, @media_type, @role, 0,
+      NULL, NULL, @metadata_json, 0, @custody_mode, @home_repo_id,
+      @repo_locator_json, @availability, @retention_json, @reference_json, @created_at
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      uri = excluded.uri,
+      metadata_json = excluded.metadata_json,
+      custody_mode = excluded.custody_mode,
+      home_repo_id = COALESCE(excluded.home_repo_id, artifacts.home_repo_id),
+      repo_locator_json = CASE
+        WHEN excluded.repo_locator_json != '{}' THEN excluded.repo_locator_json
+        ELSE artifacts.repo_locator_json
+      END,
+      availability = excluded.availability,
+      reference_json = excluded.reference_json`
+  ).run({
+    id,
+    content_hash: identityHash,
+    uri: normalized.normalizedRef,
+    media_type: null,
+    role,
+    metadata_json: jsonStringify(metadata),
+    custody_mode: custodyMode,
+    home_repo_id: repoId,
+    repo_locator_json: jsonStringify(repoLocator),
+    availability,
+    retention_json: jsonStringify({ pinned: false }),
+    reference_json: jsonStringify(reference),
+    created_at: now,
+  });
+
+  upsertGraphEntity(db, {
+    id,
+    entity_type: "artifact",
+    repo_id: repoId,
+    external_id: normalized.normalizedRef,
+    title: normalized.normalizedRef,
+    status: availability,
+    summary: {
+      role,
+      media_type: null,
+      size_bytes: 0,
+      custody_mode: custodyMode,
+      home_repo_id: repoId,
+      availability,
+      scheme: normalized.scheme,
+      identity_kind: "reference",
+    },
+    detail: {
+      uri: normalized.normalizedRef,
+      content_hash: null,
+      metadata,
+      artifact_id: id,
+      custody: {
+        mode: custodyMode,
+        home_repo_id: repoId,
+        repo_locator: repoLocator,
+        availability,
+        retention: { pinned: false },
+        reference,
+      },
+    },
+    visual: { icon: "artifact", shape: "document" },
+    created_at: now,
+    updated_at: now,
+    observed_at: now,
+    source: "artifact_references",
+  });
+
+  const alias = registerArtifactAlias(db, {
+    artifactId: id,
+    ref,
+    locator: normalized.locator,
+    source: "artifact_resolver",
+    now,
+  });
+  return { artifact: getArtifact(db, id) as ArtifactRecord, alias };
+}
+
+function materializeHashArtifact(
+  db: Db,
+  ref: string,
+  hash: string,
+  now = Date.now(),
+): { artifact: ArtifactRecord; alias: ArtifactAliasRecord } {
+  const id = `artifact:sha256:${hash}`;
+  const normalizedRef = `artifact://sha256/${hash}`;
+  const metadata = {
+    title: normalizedRef,
+    source_ref: ref,
+    normalized_ref: normalizedRef,
+    scheme: "artifact",
+    identity_kind: "content_hash",
+  };
+  const reference = {
+    owner_system: "artifact",
+    identity_kind: "content_hash",
+    normalized_ref: normalizedRef,
+    content_identity: {
+      algorithm: "sha256",
+      hash,
+      artifact_uri: id,
+    },
+  };
+
+  db.prepare(
+    `INSERT INTO artifacts (
+      id, algorithm, content_hash, uri, media_type, role, size_bytes,
+      provider_id, manifest_id, metadata_json, pinned, custody_mode, home_repo_id,
+      repo_locator_json, availability, retention_json, reference_json, created_at
+    ) VALUES (
+      @id, 'sha256', @content_hash, @uri, NULL, 'content_reference', 0,
+      NULL, NULL, @metadata_json, 0, 'external', NULL,
+      '{}', 'remote_only', @retention_json, @reference_json, @created_at
+    )
+    ON CONFLICT(algorithm, content_hash) DO UPDATE SET
+      uri = COALESCE(artifacts.uri, excluded.uri),
+      reference_json = CASE
+        WHEN artifacts.reference_json = '{}' THEN excluded.reference_json
+        ELSE artifacts.reference_json
+      END`
+  ).run({
+    id,
+    content_hash: hash,
+    uri: normalizedRef,
+    metadata_json: jsonStringify(metadata),
+    retention_json: jsonStringify({ pinned: false }),
+    reference_json: jsonStringify(reference),
+    created_at: now,
+  });
+
+  upsertGraphEntity(db, {
+    id,
+    entity_type: "artifact",
+    external_id: hash,
+    title: normalizedRef,
+    status: "remote_only",
+    summary: {
+      role: "content_reference",
+      media_type: null,
+      size_bytes: 0,
+      custody_mode: "external",
+      availability: "remote_only",
+      scheme: "artifact",
+      identity_kind: "content_hash",
+    },
+    detail: {
+      uri: normalizedRef,
+      content_hash: hash,
+      metadata,
+      artifact_id: id,
+      custody: {
+        mode: "external",
+        home_repo_id: null,
+        repo_locator: {},
+        availability: "remote_only",
+        retention: { pinned: false },
+        reference,
+      },
+    },
+    visual: { icon: "artifact", shape: "document" },
+    created_at: now,
+    updated_at: now,
+    observed_at: now,
+    source: "artifact_references",
+  });
+
+  const alias = registerArtifactAlias(db, {
+    artifactId: id,
+    ref,
+    locator: { algorithm: "sha256", hash },
+    source: "artifact_resolver",
+    now,
+  });
+  return { artifact: getArtifact(db, id) as ArtifactRecord, alias };
 }
 
 export function registerProvider(db: Db, input: ProviderInput, now = Date.now()): ProviderRecord {
@@ -2179,16 +2399,27 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
   const normalized = normalizeRef(ref);
   const hash = artifactHashFromRef(normalized.normalizedRef);
   if (hash) {
-    const artifact = getArtifact(db, `artifact:sha256:${hash}`);
+    let artifact = getArtifact(db, `artifact:sha256:${hash}`);
+    if (!artifact) {
+      const materialized = materializeHashArtifact(db, ref, hash, now);
+      artifact = materialized.artifact;
+      return {
+        status: materialized.alias.resolution_status,
+        ref,
+        scheme: normalized.scheme,
+        normalized_ref: normalized.normalizedRef,
+        artifact,
+        alias: materialized.alias,
+      };
+    }
     const alias = registerArtifactAlias(db, {
-      artifactId: artifact?.id ?? null,
+      artifactId: artifact.id,
       ref,
-      resolutionStatus: artifact ? "resolved" : "unresolved",
       source: "artifact_resolver",
       now,
     });
     return {
-      status: artifact ? "resolved" : alias.resolution_status,
+      status: alias.resolution_status,
       ref,
       scheme: normalized.scheme,
       normalized_ref: normalized.normalizedRef,
@@ -2200,21 +2431,20 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
   const existing = tableExists(db, "artifact_aliases")
     ? getArtifactAlias(db, normalized.scheme, normalized.normalizedRef)
     : null;
-  const artifact = existing?.artifact_id ? getArtifact(db, existing.artifact_id) : null;
-  const alias = existing ?? registerArtifactAlias(db, {
-    artifactId: null,
-    ref,
-    resolutionStatus: "unresolved",
-    source: "artifact_resolver",
-    now,
-  });
+  let artifact = existing?.artifact_id ? getArtifact(db, existing.artifact_id) : null;
+  let alias = existing;
+  if (!artifact) {
+    const materialized = materializeReferenceArtifact(db, ref, now);
+    artifact = materialized.artifact;
+    alias = materialized.alias;
+  }
   return {
-    status: artifact ? "resolved" : alias.resolution_status,
+    status: alias?.resolution_status ?? "resolved",
     ref,
     scheme: normalized.scheme,
     normalized_ref: normalized.normalizedRef,
     artifact,
-    alias,
+    alias: alias as ArtifactAliasRecord,
   };
 }
 

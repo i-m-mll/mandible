@@ -7,7 +7,7 @@
 #   wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
 #   task <description>               Set session task status
 #   inbox [check|ack|watch|add]      Manage session inbox
-#   issue <subcommand>               Issue operations (close, comment, show, refs)
+#   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
 #   auth request <branch> [opts]     Submit auth merge request
 #   auth merge <branch> [opts]       Execute authenticated merge
 #   logs <subcommand>                Inspect provider-native source logs
@@ -32,7 +32,7 @@ Commands:
   wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
   task <description>               Set session task status
   inbox [check|ack|watch|add]      Manage session inbox
-  issue <subcommand>               Issue operations (close, comment, show, refs)
+  issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
   auth request <branch> [opts]     Submit auth merge request
   auth merge <branch> [opts]       Execute authenticated merge
   logs <subcommand>                Inspect provider-native source logs

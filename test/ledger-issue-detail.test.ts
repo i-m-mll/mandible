@@ -56,6 +56,20 @@ function insertAuthRequest(id: string, repoRoot: string): void {
   ).run(id, repoRoot, now, now, now, now + 60_000);
 }
 
+function insertArtifact(id: string, hash: string, uri: string): void {
+  db.prepare(
+    `INSERT INTO artifacts (
+      id, algorithm, content_hash, uri, media_type, role, size_bytes,
+      provider_id, manifest_id, metadata_json, pinned, custody_mode, home_repo_id,
+      repo_locator_json, availability, retention_json, reference_json, created_at
+    ) VALUES (
+      ?, 'sha256', ?, ?, 'text/markdown', 'report', 42,
+      'provider_1', 'manifest_1', '{}', 1, 'managed', 'repo',
+      '{}', 'present', '{}', '{}', 1000
+    )`,
+  ).run(id, hash, uri);
+}
+
 describe("ledger issue detail projection", () => {
   it("projects comments, relationships, operational evidence, sync, and conflicts", () => {
     const checkout = createProject("repo");
@@ -168,6 +182,49 @@ describe("ledger issue detail projection", () => {
       { id: "auth_1", status: "completed", link_type: "resolves" },
     ]);
     expect(projection.conflicts[0].remote_value).toEqual({ target_ref: "missing" });
+  });
+
+  it("projects associated artifacts from explicit links and markdown refs", () => {
+    const checkout = createProject("repo");
+    const store = new LedgerStore(db);
+    const linkedHash = "b".repeat(64);
+    const linkedId = `artifact:sha256:${linkedHash}`;
+    insertArtifact(linkedId, linkedHash, `artifact://sha256/${linkedHash}`);
+    const issue = store.createIssue({
+      project_id: checkout.project.id,
+      title: "Artifacts",
+      body: "See repo://repo@main/results/summary.md for the generated report.",
+      kind: "feature",
+      aliases: [{ alias_kind: "git_bug_human", alias: "art1234", is_primary: true }],
+    });
+    store.addComment(issue.id, {
+      body: "Follow-up feedbax://runs/demo is also relevant.",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "session",
+    });
+    db.prepare(
+      `INSERT INTO artifact_links (
+        id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+        provider_id, source, metadata_json, created_at, updated_at
+      ) VALUES (
+        'link_1', ?, 'issue', ?, 'produced_by', 'report', 'repo',
+        'provider_1', 'artifact_registry', '{"path":"results/report.md"}', 2000, 2000
+      )`,
+    ).run(linkedId, issue.id);
+
+    const artifacts = buildLedgerIssueDetailProjection(db, issue.id).associated_artifacts;
+
+    expect(artifacts).toHaveLength(3);
+    expect(artifacts[0]).toMatchObject({
+      id: linkedId,
+      uri: `artifact://sha256/${linkedHash}`,
+      links: [{ id: "link_1", link_type: "produced_by", role: "report" }],
+    });
+    expect(artifacts.map((artifact) => artifact.refs).flat().sort()).toEqual([
+      "feedbax://runs/demo",
+      "repo://repo@main/results/summary.md",
+    ]);
   });
 
   it("resolves conflicts without applying remote values implicitly", () => {

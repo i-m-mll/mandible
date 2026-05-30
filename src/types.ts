@@ -580,6 +580,34 @@ export interface ArtifactResolveResult {
   alias: ArtifactAliasRecord;
 }
 
+export type KnowledgeBackrefSourceType = "artifact" | "document";
+export type KnowledgeBackrefRefType = "document" | "entity" | "claim";
+
+export interface KnowledgeBackrefRecord {
+  id: string;
+  source_type: KnowledgeBackrefSourceType;
+  source_id: string;
+  provider_id: string;
+  ref_type: KnowledgeBackrefRefType;
+  external_id: string;
+  external_ref: string;
+  status: "offered" | "indexed" | "returned";
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface KnowledgeBackrefInput {
+  source_type?: KnowledgeBackrefSourceType | string;
+  source_id?: string;
+  provider_id?: string;
+  ref_type?: KnowledgeBackrefRefType | string;
+  external_id?: string;
+  external_ref?: string;
+  status?: "offered" | "indexed" | "returned" | string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface ProviderManifestRecord {
   id: string;
   provider_id: string;

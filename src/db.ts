@@ -1582,6 +1582,35 @@ const MIGRATIONS: Migration[] = [
         ON artifact_links(role)
         WHERE role IS NOT NULL`
     ]
+  },
+  {
+    version: 67,
+    name: "knowledge_backrefs",
+    // Bug: c9531c — keep HumbleB KG ids as typed external references from
+    // artifacts/documents; Mandible does not own document chunks, entities, or claims.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS knowledge_backrefs (
+        id            TEXT PRIMARY KEY,
+        source_type   TEXT NOT NULL CHECK(source_type IN ('artifact','document')),
+        source_id     TEXT NOT NULL,
+        provider_id   TEXT NOT NULL DEFAULT 'humbleb',
+        ref_type      TEXT NOT NULL CHECK(ref_type IN ('document','entity','claim')),
+        external_id   TEXT NOT NULL,
+        external_ref  TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'returned'
+          CHECK(status IN ('offered','indexed','returned')),
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        UNIQUE(source_type, source_id, provider_id, ref_type, external_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_knowledge_backrefs_source
+        ON knowledge_backrefs(source_type, source_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_knowledge_backrefs_provider
+        ON knowledge_backrefs(provider_id, ref_type)`,
+      `CREATE INDEX IF NOT EXISTS idx_knowledge_backrefs_external_ref
+        ON knowledge_backrefs(external_ref)`
+    ]
   }
 ];
 

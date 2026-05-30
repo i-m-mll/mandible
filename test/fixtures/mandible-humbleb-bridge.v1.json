@@ -37,11 +37,34 @@
     }
   ],
   "humbleb_return_refs": {
-    "document_refs": [
-      "humbleb:document:doc_0000000000000001"
-    ],
-    "claim_refs": [
-      "humbleb:claim:claim_0000000000000001"
+    "knowledge_backrefs": [
+      {
+        "source_type": "artifact",
+        "source_id": "artifact:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "provider_id": "humbleb",
+        "ref_type": "document",
+        "external_id": "doc_0000000000000001",
+        "external_ref": "humbleb:document:doc_0000000000000001",
+        "status": "indexed"
+      },
+      {
+        "source_type": "artifact",
+        "source_id": "artifact:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "provider_id": "humbleb",
+        "ref_type": "entity",
+        "external_id": "ent_0000000000000001",
+        "external_ref": "humbleb:entity:ent_0000000000000001",
+        "status": "returned"
+      },
+      {
+        "source_type": "artifact",
+        "source_id": "artifact:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "provider_id": "humbleb",
+        "ref_type": "claim",
+        "external_id": "claim_0000000000000001",
+        "external_ref": "humbleb:claim:claim_0000000000000001",
+        "status": "returned"
+      }
     ],
     "ownership_note": "Mandible stores typed references only; HumbleB owns document chunks, claims, entities, and confidence."
   }

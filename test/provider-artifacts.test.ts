@@ -1,8 +1,10 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getArtifactContent } from "../src/artifact-content.js";
 import {
   getArtifact,
   getArtifactRoot,
@@ -17,6 +19,7 @@ import {
   registerProvider,
   resolveArtifactRef,
 } from "../src/provider-artifacts.js";
+import { discoverRepoArtifacts, scanRepoArtifacts } from "../src/repo-artifact-scanner.js";
 
 let tempDir = "";
 let db: Database.Database;
@@ -232,6 +235,24 @@ function createLedgerIssue(projectName: string, alias: string, title = `Issue ${
   return issueId;
 }
 
+function createLedgerCheckout(repoId: string, root: string): void {
+  const projectId = `prj_${repoId}`;
+  db.prepare(
+    `INSERT OR IGNORE INTO ledger_projects (
+      id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
+    ) VALUES (?, ?, '', '', 'remote', 1, 1)`,
+  ).run(projectId, repoId);
+  db.prepare(
+    `INSERT OR REPLACE INTO ledger_project_checkouts (
+      id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'main', '', 1, 1)`,
+  ).run(`checkout_${repoId}`, projectId, repoId, root, repoId);
+}
+
+function sha256(text: string | Buffer): string {
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
 beforeEach(() => {
   savedEnv = {
     HOME: process.env.HOME,
@@ -314,7 +335,22 @@ describe("provider/artifact substrate", () => {
       home_repo_id: "rlrmp",
       availability: "unchecked",
     });
-    expect(fixture.humbleb_return_refs.claim_refs).toEqual(["humbleb:claim:claim_0000000000000001"]);
+    expect(fixture.humbleb_return_refs.knowledge_backrefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ref_type: "document",
+          external_ref: "humbleb:document:doc_0000000000000001",
+        }),
+        expect.objectContaining({
+          ref_type: "entity",
+          external_ref: "humbleb:entity:ent_0000000000000001",
+        }),
+        expect.objectContaining({
+          ref_type: "claim",
+          external_ref: "humbleb:claim:claim_0000000000000001",
+        }),
+      ])
+    );
   });
 
   it("registers providers and mirrors them into graph entities", () => {
@@ -475,7 +511,7 @@ describe("provider/artifact substrate", () => {
     expect(linkedToAuth.map((item) => item.id)).toEqual([first.id]);
   });
 
-  it("records unknown scheme refs as unresolved aliases instead of failing", () => {
+  it("materializes unknown scheme refs as external artifact records instead of failing", () => {
     const resolution = resolveArtifactRef(db, "zotero://library/items/ABC123", 1000);
     const row = db.prepare(
       "SELECT scheme, normalized_ref, resolution_status, artifact_id FROM artifact_aliases WHERE alias = ?"
@@ -487,16 +523,44 @@ describe("provider/artifact substrate", () => {
     };
 
     expect(resolution).toMatchObject({
-      status: "unresolved",
+      status: "resolved",
       scheme: "zotero",
-      artifact: null,
+      artifact: {
+        algorithm: "ref-sha256",
+        uri: "zotero://library/items/ABC123",
+        custody_mode: "external",
+        availability: "remote_only",
+      },
     });
     expect(row).toMatchObject({
       scheme: "zotero",
       normalized_ref: "zotero://library/items/ABC123",
-      resolution_status: "unresolved",
-      artifact_id: null,
+      resolution_status: "resolved",
+      artifact_id: resolution.artifact?.id,
     });
+    expect(listArtifacts(db, { scheme: "zotero" }).map((item) => item.id)).toEqual([
+      resolution.artifact?.id,
+    ]);
+  });
+
+  it("materializes missing content-hash refs as external hash records", () => {
+    const hash = "a".repeat(64);
+    const resolution = resolveArtifactRef(db, `artifact://sha256/${hash}`, 1000);
+
+    expect(resolution).toMatchObject({
+      status: "resolved",
+      scheme: "artifact",
+      artifact: {
+        id: `artifact:sha256:${hash}`,
+        algorithm: "sha256",
+        content_hash: hash,
+        custody_mode: "external",
+        availability: "remote_only",
+      },
+    });
+    expect(getIndexedGraph(db, { mode: "artifact-lineage", limit: 20 }).nodes.map((node) => node.id)).toContain(
+      `artifact:sha256:${hash}`,
+    );
   });
 
   it("ingests provider manifests into lineage graph nodes and edges", () => {
@@ -818,5 +882,203 @@ describe("provider/artifact substrate", () => {
       target: "model:feedbax:feedbax-model:baseline",
       metadata: expect.objectContaining({ ledger_issue_id: issueId }),
     }));
+  });
+
+  it("serves managed JSON previews from registered artifact storage", () => {
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      json: { accuracy: 0.95 },
+      filename: "metrics.json",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      media_type: "application/json",
+      source: { kind: "managed_file" },
+      download: { available: true, filename: "metrics.json" },
+    });
+    expect(content?.preview?.text).toContain('"accuracy": 0.95');
+  });
+
+  it("returns binary download metadata without inline preview", () => {
+    const payload = Buffer.from([0, 1, 2, 3, 4]);
+    const artifact = ingestArtifact(db, {
+      media_type: "application/octet-stream",
+      content_base64: payload.toString("base64"),
+      filename: "model.bin",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "binary",
+      preview: null,
+      download: {
+        available: true,
+        media_type: "application/octet-stream",
+        size_bytes: payload.length,
+        filename: "model.bin",
+      },
+    });
+  });
+
+  it("does not serve registered link file URIs outside managed storage", () => {
+    const outsidePath = path.join(tempDir, "outside.txt");
+    fs.writeFileSync(outsidePath, "not managed", "utf8");
+    const artifact = ingestArtifact(db, {
+      sha256: sha256("not managed"),
+      media_type: "text/plain",
+      uri: `file://${outsidePath}`,
+      custody_mode: "link",
+      availability: "present",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "unavailable",
+      kind: "unavailable",
+      download: { available: false },
+      reason: "local file URI is not managed by Mandible",
+    });
+  });
+
+  it("serves repo locator previews only under a registered checkout", () => {
+    const repoRoot = path.join(tempDir, "repo");
+    const reportPath = path.join(repoRoot, "results", "report.md");
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    fs.writeFileSync(reportPath, "# Report\n\nReady.\n", "utf8");
+    createLedgerCheckout("rlrmp", repoRoot);
+
+    const artifact = ingestArtifact(db, {
+      sha256: sha256("# Report\n\nReady.\n"),
+      media_type: "text/markdown",
+      uri: "repo://rlrmp@main/results/report.md",
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", ref: "main", path: "results/report.md" },
+      availability: "present",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "markdown",
+      source: { kind: "repo_locator", locator: "repo://rlrmp/results/report.md" },
+      download: { available: true },
+    });
+    expect(content?.preview?.text).toContain("# Report");
+  });
+
+  it("rejects repo locator traversal outside the registered checkout", () => {
+    const repoRoot = path.join(tempDir, "repo");
+    const outsidePath = path.join(tempDir, "outside.txt");
+    fs.mkdirSync(repoRoot, { recursive: true });
+    fs.writeFileSync(outsidePath, "outside", "utf8");
+    createLedgerCheckout("rlrmp", repoRoot);
+
+    const artifact = ingestArtifact(db, {
+      sha256: sha256("outside"),
+      media_type: "text/plain",
+      uri: "repo://rlrmp/../outside.txt",
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", path: "../outside.txt" },
+      availability: "present",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "unavailable",
+      kind: "unavailable",
+      download: { available: false },
+      reason: "artifact repo locator path is outside the registered checkout",
+    });
+  });
+
+  it("scans repo-owned artifacts with repo locators, hashes, and inferred issue links", () => {
+    const repoRoot = path.join(tempDir, "repo");
+    fs.mkdirSync(path.join(repoRoot, "docs"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "results", "issue-5423f64"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "docs", "report.md"), "# Report\n\nDone.\n");
+    fs.writeFileSync(path.join(repoRoot, "results", "issue-5423f64", "metrics.json"), '{"loss":0.1}\n');
+    const issueId = createLedgerIssue("mandible", "5423f64", "Repo artifact discovery and indexing");
+
+    const result = scanRepoArtifacts(db, {
+      roots: [{ root: repoRoot, repo_id: "mandible", name: "mandible", default_branch: "main" }],
+      now: 2000,
+    });
+
+    expect(result.scanned_repos).toEqual([{ repo_id: "mandible", root: repoRoot, exists: true }]);
+    expect(result.discovered).toBe(2);
+    expect(result.ingested).toBe(2);
+
+    const report = result.artifacts.find((artifact) => artifact.repo_locator.path === "docs/report.md");
+    expect(report).toMatchObject({
+      custody_mode: "link",
+      home_repo_id: "mandible",
+      availability: "present",
+      media_type: "text/markdown",
+      role: "report",
+      repo_locator: { repo_id: "mandible", ref: "main", path: "docs/report.md", root: repoRoot },
+    });
+    expect(report?.content_hash).toBe(
+      crypto.createHash("sha256").update("# Report\n\nDone.\n").digest("hex"),
+    );
+    expect(report?.aliases?.map((alias) => alias.normalized_ref)).toContain("repo://mandible@main/docs/report.md");
+
+    const metrics = result.artifacts.find(
+      (artifact) => artifact.repo_locator.path === "results/issue-5423f64/metrics.json",
+    );
+    expect(metrics?.links).toContainEqual(expect.objectContaining({
+      entity_type: "issue",
+      entity_id: issueId,
+      link_type: "references",
+      role: "repo_path_inferred",
+      repo_id: "mandible",
+      source: "repo_artifact_scanner",
+    }));
+  });
+
+  it("uses configured repo roots and skips dependency, build, and bulk directories", () => {
+    const repoRoot = path.join(tempDir, "configured-repo");
+    fs.mkdirSync(path.join(repoRoot, "reports"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "node_modules", "pkg", "reports"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "dist", "reports"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "data", "reports"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "src"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "reports", "summary.md"), "summary\n");
+    fs.writeFileSync(path.join(repoRoot, "node_modules", "pkg", "reports", "ignored.md"), "ignored\n");
+    fs.writeFileSync(path.join(repoRoot, "dist", "reports", "ignored.md"), "ignored\n");
+    fs.writeFileSync(path.join(repoRoot, "data", "reports", "ignored.md"), "ignored\n");
+    fs.writeFileSync(path.join(repoRoot, "src", "index.ts"), "export {};\n");
+    db.prepare(
+      `INSERT INTO ledger_projects (
+        id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
+      ) VALUES ('prj_configured', 'Configured', '', '', 'remote', 1, 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO ledger_project_checkouts (
+        id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at
+      ) VALUES ('checkout_configured', 'prj_configured', 'configured', ?, 'Configured', 'develop', '', 1, 1)`,
+    ).run(repoRoot);
+
+    const result = discoverRepoArtifacts(db);
+
+    expect(result.artifacts.map((artifact) => artifact.relative_path)).toEqual(["reports/summary.md"]);
+    expect(result.artifacts[0]).toMatchObject({
+      repo_id: "configured",
+      repo_name: "Configured",
+      default_branch: "develop",
+      role: "report",
+    });
+    expect(result.skipped.map((entry) => entry.reason)).toContain("excluded_dir");
   });
 });
