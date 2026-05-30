@@ -174,6 +174,13 @@ function createLedgerIssue(input: {
   return { project, issue, store };
 }
 
+function setMarkdownBodyEscapePolicy(value: "allow" | "warn" | "reject"): void {
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES ('ledger.markdown_body_escape_policy', ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ).run(value, Date.now());
+}
+
 function summary(repoInfo: RepoInfo, issues: IssueRepoSummary["issues"]): IssueRepoSummary {
   return {
     repo_id: repoInfo.id,
@@ -515,6 +522,117 @@ describe("ledger issue route gate", () => {
     });
     expect(list.body).toMatchObject([{ repo_root: repoInfo.root, issues: [{ title: "Ledger-native issue" }] }]);
     expect(db.prepare("SELECT source FROM ledger_issues").get()).toMatchObject({ source: "mandible" });
+  });
+
+  it("warns by default on likely escaped Markdown and preserves the body exactly", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
+
+    const escapedBody = "Created through API.\\n\\nDetails:\\n- item";
+    const created = await server.invoke("POST", "/api/issues/:repoId", {
+      params: { repoId: repoInfo.name },
+      body: {
+        title: "Escaped Markdown issue",
+        body: escapedBody,
+        root: repoInfo.root,
+        labels: ["feature"],
+      },
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(created.body).toMatchObject({
+      title: "Escaped Markdown issue",
+      body: escapedBody,
+      markdown_body_warnings: [{ code: "literal_escaped_newlines" }],
+    });
+    expect(db.prepare("SELECT body FROM ledger_issues").get()).toMatchObject({ body: escapedBody });
+
+    const issueId = (created.body as { id: string }).id;
+    const escapedComment = "Escaped comment.\\n\\nDetails:\\n- item";
+    const comment = await server.invoke("POST", "/api/ledger/issues/:issueId/comments", {
+      params: { issueId },
+      body: { body: escapedComment },
+    });
+    expect(comment.statusCode).toBe(200);
+    expect(comment.body).toMatchObject({
+      markdown_body_warnings: [{ code: "literal_escaped_newlines" }],
+      comments: [{ body: escapedComment }],
+    });
+  });
+
+  it("accepts real Markdown with newlines even when the policy rejects escaped bodies", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
+    setMarkdownBodyEscapePolicy("reject");
+
+    const realMarkdown = "Created through API.\n\nDetails:\n- item";
+    const created = await server.invoke("POST", "/api/issues/:repoId", {
+      params: { repoId: repoInfo.name },
+      body: {
+        title: "Real Markdown issue",
+        body: realMarkdown,
+        root: repoInfo.root,
+        labels: ["feature"],
+      },
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(created.body).toMatchObject({ title: "Real Markdown issue", body: realMarkdown });
+    expect((created.body as Record<string, unknown>).markdown_body_warnings).toBeUndefined();
+  });
+
+  it("rejects likely escaped Markdown issue and comment writes when configured", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Writable" });
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
+    setMarkdownBodyEscapePolicy("reject");
+
+    const rejectedIssue = await server.invoke("POST", "/api/issues/:repoId", {
+      params: { repoId: repoInfo.name },
+      body: {
+        title: "Rejected issue",
+        body: "Bad escaped body.\\n\\nDetails:\\n- item",
+        root: repoInfo.root,
+        labels: ["feature"],
+      },
+    });
+    const rejectedComment = await server.invoke("POST", "/api/ledger/issues/:issueId/comments", {
+      params: { issueId: issue.short_id },
+      body: { body: "Bad escaped comment.\\n\\nDetails:\\n- item" },
+    });
+
+    expect(rejectedIssue.statusCode).toBe(422);
+    expect(rejectedIssue.body).toMatchObject({
+      error: "markdown body contains likely accidental escaped newlines",
+      markdown_body_warnings: [{ code: "literal_escaped_newlines" }],
+    });
+    expect(rejectedComment.statusCode).toBe(422);
+    expect(new LedgerStore(db).getIssueDetail(issue.id).comments).toHaveLength(0);
+  });
+
+  it("allows likely escaped Markdown comment writes when configured", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Writable" });
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
+    setMarkdownBodyEscapePolicy("allow");
+
+    const escapedBody = "Allowed escaped comment.\\n\\nDetails:\\n- item";
+    const comment = await server.invoke("POST", "/api/ledger/issues/:issueId/comments", {
+      params: { issueId: issue.short_id },
+      body: { body: escapedBody },
+    });
+
+    expect(comment.statusCode).toBe(200);
+    expect((comment.body as Record<string, unknown>).markdown_body_warnings).toBeUndefined();
+    expect(new LedgerStore(db).getIssueDetail(issue.id).comments.map((row) => row.body)).toEqual([escapedBody]);
   });
 });
 
