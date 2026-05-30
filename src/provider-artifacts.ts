@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import type { Db } from "./db.js";
 import type {
+  ArtifactAliasRecord,
+  ArtifactLinkRecord,
   ArtifactRecord,
+  ArtifactResolveResult,
   GraphAction,
   GraphEdge,
   GraphMode,
@@ -79,11 +82,40 @@ interface ArtifactInput {
   availability?: ArtifactAvailability | string;
   retention?: JsonRecord;
   reference?: JsonRecord;
+  link?: ArtifactLinkInput;
+  links?: ArtifactLinkInput[];
   metadata?: JsonRecord;
   pinned?: boolean;
   content?: string;
   content_base64?: string;
   json?: unknown;
+}
+
+interface ArtifactLinkInput {
+  entity_type?: string;
+  entity_id?: string;
+  link_type?: string;
+  role?: string;
+  repo_id?: string;
+  provider_id?: string;
+  source?: string;
+  metadata?: JsonRecord;
+}
+
+export interface ArtifactListOptions {
+  q?: string;
+  hashPrefix?: string;
+  repo?: string;
+  provider?: string;
+  role?: string;
+  custody?: string;
+  availability?: string;
+  scheme?: string;
+  location?: string;
+  linkedEntityType?: string;
+  linkedEntityId?: string;
+  limit?: number;
+  offset?: number;
 }
 
 interface ManifestEntityInput {
@@ -338,6 +370,68 @@ function hashFromArtifactRef(input: ArtifactInput): string | undefined {
   if (!ref) return undefined;
   const match = /(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])([a-f0-9]{64})/i.exec(ref);
   return match?.[1]?.toLowerCase();
+}
+
+function artifactHashFromRef(ref: string): string | undefined {
+  const match = /^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])([a-f0-9]{64})$/i.exec(ref.trim());
+  return match?.[1]?.toLowerCase();
+}
+
+function schemeFromRef(ref: string): string {
+  const trimmed = ref.trim();
+  const schemeMatch = /^([a-z][a-z0-9+.-]*):/i.exec(trimmed);
+  return schemeMatch ? schemeMatch[1].toLowerCase() : "unknown";
+}
+
+function normalizeRef(ref: string): {
+  scheme: string;
+  alias: string;
+  normalizedRef: string;
+  locator: JsonRecord;
+} {
+  const alias = ref.trim();
+  const artifactHash = artifactHashFromRef(alias);
+  if (artifactHash) {
+    return {
+      scheme: "artifact",
+      alias,
+      normalizedRef: `artifact://sha256/${artifactHash}`,
+      locator: { algorithm: "sha256", hash: artifactHash },
+    };
+  }
+
+  const repoMatch = /^repo:\/\/([^/@\s]+)(?:@([^/\s]+))?\/(.+)$/i.exec(alias);
+  if (repoMatch) {
+    const repoId = repoMatch[1];
+    const refName = repoMatch[2];
+    const repoPath = repoMatch[3].replace(/^\/+/, "");
+    return {
+      scheme: "repo",
+      alias,
+      normalizedRef: `repo://${repoId}${refName ? `@${refName}` : ""}/${repoPath}`,
+      locator: { repo_id: repoId, ref: refName ?? null, path: repoPath },
+    };
+  }
+
+  const scheme = schemeFromRef(alias);
+  return {
+    scheme,
+    alias,
+    normalizedRef: scheme === "unknown" ? alias : alias.replace(/^([a-z][a-z0-9+.-]*):/i, `${scheme}:`),
+    locator: scheme === "unknown" ? { raw_ref: alias } : { uri: alias },
+  };
+}
+
+function repoLocatorUri(locator: JsonRecord): string | undefined {
+  const repoId = asString(locator.repo_id) ?? asString(locator.repo);
+  const repoPath = asString(locator.path) ?? asString(locator.relative_path);
+  if (!repoId || !repoPath) return undefined;
+  const ref = asString(locator.ref) ?? asString(locator.commit) ?? asString(locator.branch);
+  return `repo://${repoId}${ref ? `@${ref}` : ""}/${repoPath.replace(/^\/+/, "")}`;
+}
+
+function artifactRegistryId(prefix: string, parts: unknown[]): string {
+  return `${prefix}:${hashBuffer(Buffer.from(stableJsonStringify(parts), "utf8")).slice(0, 32)}`;
 }
 
 function uriSizeBytes(uri: string | undefined): number | undefined {
@@ -1052,6 +1146,137 @@ function upsertGraphEdge(db: Db, edge: {
   });
 }
 
+function artifactAliasTablesExist(db: Db): boolean {
+  return tableExists(db, "artifact_aliases") && tableExists(db, "artifact_links");
+}
+
+export function registerArtifactAlias(db: Db, args: {
+  artifactId?: string | null;
+  ref: string;
+  locator?: JsonRecord;
+  resolutionStatus?: "resolved" | "unresolved" | "ambiguous" | "unsupported";
+  source?: string;
+  now?: number;
+}): ArtifactAliasRecord {
+  if (!tableExists(db, "artifact_aliases")) {
+    throw new Error("artifact_aliases table is missing; run database migrations");
+  }
+  const now = args.now ?? Date.now();
+  const normalized = normalizeRef(args.ref);
+  const artifactId = args.artifactId ?? null;
+  const status = artifactId ? "resolved" : (args.resolutionStatus ?? "unresolved");
+  const id = artifactRegistryId("artifact_alias", [normalized.scheme, normalized.normalizedRef]);
+  db.prepare(
+    `INSERT INTO artifact_aliases (
+      id, artifact_id, scheme, alias, normalized_ref, locator_json,
+      resolution_status, source, created_at, updated_at
+    ) VALUES (
+      @id, @artifact_id, @scheme, @alias, @normalized_ref, @locator_json,
+      @resolution_status, @source, @created_at, @updated_at
+    )
+    ON CONFLICT(scheme, normalized_ref) DO UPDATE SET
+      artifact_id = CASE
+        WHEN artifact_aliases.artifact_id IS NULL THEN excluded.artifact_id
+        WHEN excluded.artifact_id IS NULL THEN artifact_aliases.artifact_id
+        WHEN artifact_aliases.artifact_id = excluded.artifact_id THEN artifact_aliases.artifact_id
+        ELSE NULL
+      END,
+      alias = excluded.alias,
+      locator_json = CASE
+        WHEN excluded.locator_json != '{}' THEN excluded.locator_json
+        ELSE artifact_aliases.locator_json
+      END,
+      resolution_status = CASE
+        WHEN artifact_aliases.artifact_id IS NOT NULL
+         AND excluded.artifact_id IS NOT NULL
+         AND artifact_aliases.artifact_id != excluded.artifact_id THEN 'ambiguous'
+        WHEN COALESCE(excluded.artifact_id, artifact_aliases.artifact_id) IS NOT NULL THEN 'resolved'
+        ELSE excluded.resolution_status
+      END,
+      source = excluded.source,
+      updated_at = excluded.updated_at`
+  ).run({
+    id,
+    artifact_id: artifactId,
+    scheme: normalized.scheme,
+    alias: normalized.alias,
+    normalized_ref: normalized.normalizedRef,
+    locator_json: jsonStringify({ ...normalized.locator, ...(args.locator ?? {}) }),
+    resolution_status: status,
+    source: args.source ?? "artifact_registry",
+    created_at: now,
+    updated_at: now,
+  });
+  return getArtifactAlias(db, normalized.scheme, normalized.normalizedRef) as ArtifactAliasRecord;
+}
+
+export function registerArtifactLink(
+  db: Db,
+  artifactId: string,
+  input: ArtifactLinkInput,
+  now = Date.now(),
+): ArtifactLinkRecord | null {
+  if (!tableExists(db, "artifact_links")) {
+    throw new Error("artifact_links table is missing; run database migrations");
+  }
+  const entityType = asString(input.entity_type);
+  const entityId = asString(input.entity_id);
+  if (!entityType || !entityId) return null;
+  const linkType = asString(input.link_type) ?? "references";
+  const role = asString(input.role) ?? null;
+  const id = artifactRegistryId("artifact_link", [artifactId, entityType, entityId, linkType, role ?? ""]);
+  db.prepare(
+    `INSERT INTO artifact_links (
+      id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+      provider_id, source, metadata_json, created_at, updated_at
+    ) VALUES (
+      @id, @artifact_id, @entity_type, @entity_id, @link_type, @role, @repo_id,
+      @provider_id, @source, @metadata_json, @created_at, @updated_at
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      role = excluded.role,
+      repo_id = COALESCE(excluded.repo_id, artifact_links.repo_id),
+      provider_id = COALESCE(excluded.provider_id, artifact_links.provider_id),
+      source = excluded.source,
+      metadata_json = excluded.metadata_json,
+      updated_at = excluded.updated_at`
+  ).run({
+    id,
+    artifact_id: artifactId,
+    entity_type: entityType,
+    entity_id: entityId,
+    link_type: linkType,
+    role,
+    repo_id: asString(input.repo_id) ?? null,
+    provider_id: asString(input.provider_id) ?? null,
+    source: asString(input.source) ?? "artifact_registry",
+    metadata_json: jsonStringify(input.metadata ?? {}),
+    created_at: now,
+    updated_at: now,
+  });
+  return getArtifactLink(db, id);
+}
+
+function getArtifactAlias(db: Db, scheme: string, normalizedRef: string): ArtifactAliasRecord | null {
+  const row = db.prepare(
+    `SELECT id, artifact_id, scheme, alias, normalized_ref, locator_json,
+            resolution_status, source, created_at, updated_at
+       FROM artifact_aliases
+      WHERE scheme = ? AND normalized_ref = ?`
+  ).get(scheme, normalizedRef) as Record<string, unknown> | undefined;
+  return row ? artifactAliasFromRow(row) : null;
+}
+
+function getArtifactLink(db: Db, id: string): ArtifactLinkRecord | null {
+  const row = db.prepare(
+    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+            provider_id, source, metadata_json, created_at, updated_at
+       FROM artifact_links
+      WHERE id = ?`
+  ).get(id) as Record<string, unknown> | undefined;
+  return row ? artifactLinkFromRow(row) : null;
+}
+
 export function registerProvider(db: Db, input: ProviderInput, now = Date.now()): ProviderRecord {
   const id = assertProviderId(input.id ?? input.provider_id);
   const displayName = input.display_name ?? input.name ?? id;
@@ -1198,14 +1423,26 @@ export function ingestArtifact(
       role = COALESCE(excluded.role, artifacts.role),
       provider_id = COALESCE(excluded.provider_id, artifacts.provider_id),
       manifest_id = COALESCE(excluded.manifest_id, artifacts.manifest_id),
-      metadata_json = excluded.metadata_json,
+      metadata_json = CASE
+        WHEN artifacts.metadata_json = '{}' THEN excluded.metadata_json
+        ELSE artifacts.metadata_json
+      END,
       uri = COALESCE(excluded.uri, artifacts.uri),
-      custody_mode = excluded.custody_mode,
+      custody_mode = artifacts.custody_mode,
       home_repo_id = COALESCE(excluded.home_repo_id, artifacts.home_repo_id),
-      repo_locator_json = excluded.repo_locator_json,
-      availability = excluded.availability,
-      retention_json = excluded.retention_json,
-      reference_json = excluded.reference_json,
+      repo_locator_json = CASE
+        WHEN artifacts.repo_locator_json = '{}' THEN excluded.repo_locator_json
+        ELSE artifacts.repo_locator_json
+      END,
+      availability = artifacts.availability,
+      retention_json = CASE
+        WHEN artifacts.retention_json = '{}' THEN excluded.retention_json
+        ELSE artifacts.retention_json
+      END,
+      reference_json = CASE
+        WHEN artifacts.reference_json = '{}' THEN excluded.reference_json
+        ELSE artifacts.reference_json
+      END,
       size_bytes = CASE
         WHEN artifacts.size_bytes = 0 THEN excluded.size_bytes
         ELSE artifacts.size_bytes
@@ -1271,6 +1508,67 @@ export function ingestArtifact(
     observed_at: now,
     source: "artifacts",
   });
+
+  if (artifactAliasTablesExist(db)) {
+    registerArtifactAlias(db, {
+      artifactId: id,
+      ref: `artifact://sha256/${hash}`,
+      source: "artifact_identity",
+      now,
+    });
+    registerArtifactAlias(db, {
+      artifactId: id,
+      ref: id,
+      source: "artifact_identity",
+      now,
+    });
+    if (input.artifact_id && input.artifact_id !== id && input.artifact_id !== `artifact://sha256/${hash}`) {
+      registerArtifactAlias(db, {
+        artifactId: id,
+        ref: input.artifact_id,
+        source: "artifact_input",
+        now,
+      });
+    }
+    if (uri) {
+      registerArtifactAlias(db, {
+        artifactId: id,
+        ref: uri,
+        source: "artifact_input",
+        now,
+      });
+    }
+    const repoUri = repoLocatorUri(repoLocator);
+    if (repoUri) {
+      registerArtifactAlias(db, {
+        artifactId: id,
+        ref: repoUri,
+        locator: repoLocator,
+        source: "repo_locator",
+        now,
+      });
+    }
+    if (input.manifest_id) {
+      registerArtifactLink(db, id, {
+        entity_type: "provider_manifest",
+        entity_id: input.manifest_id,
+        link_type: "manifest_references_artifact",
+        role: input.role,
+        repo_id: homeRepoId ?? undefined,
+        provider_id: input.provider_id,
+        source: "provider_manifest",
+        metadata: { artifact_ref: input.artifact_id ?? null },
+      }, now);
+    }
+    const links = [input.link, ...(input.links ?? [])].filter((link): link is ArtifactLinkInput => Boolean(link));
+    for (const link of links) {
+      registerArtifactLink(db, id, {
+        ...link,
+        repo_id: link.repo_id ?? homeRepoId ?? undefined,
+        provider_id: link.provider_id ?? input.provider_id,
+      }, now);
+    }
+  }
 
   return getArtifact(db, id) as ArtifactRecord;
 }
@@ -1369,6 +1667,17 @@ export function ingestProviderManifest(
       observed_at: now,
       source: "provider_manifests",
     });
+    if (artifactAliasTablesExist(db)) {
+      registerArtifactLink(db, artifact.id, {
+        entity_type: "provider_manifest",
+        entity_id: manifestId,
+        link_type: "manifest_content",
+        role: "provider_manifest",
+        provider_id: provider.id,
+        source: "provider_manifests",
+        metadata: { content_hash: artifact.content_hash },
+      }, now);
+    }
 
     const idMap = new Map<string, string>();
     idMap.set("provider", `provider:${provider.id}`);
@@ -1443,6 +1752,18 @@ export function ingestProviderManifest(
             observed_at: now,
             source: "provider_manifest",
           });
+          if (artifactAliasTablesExist(db)) {
+            registerArtifactLink(db, artifactRecord.id, {
+              entity_type: nativeSubjectType(manifest) ?? "provider_entity",
+              entity_id: nativeSubjectId,
+              link_type: "produced_by",
+              role: asString(ref.role),
+              repo_id: artifactRecord.home_repo_id ?? undefined,
+              provider_id: provider.id,
+              source: "provider_manifest",
+              metadata: { manifest_id: manifestId },
+            }, now);
+          }
         }
         continue;
       }
@@ -1534,6 +1855,18 @@ export function ingestProviderManifest(
           observed_at: now,
           source: "provider_manifest",
         });
+        if (artifactAliasTablesExist(db)) {
+          registerArtifactLink(db, artifactRecord.id, {
+            entity_type: nativeSubjectType(manifest) ?? "provider_entity",
+            entity_id: nativeSubjectId,
+            link_type: "referenced_by",
+            role,
+            repo_id: artifactRecord.home_repo_id ?? undefined,
+            provider_id: provider.id,
+            source: "provider_manifest",
+            metadata: { manifest_id: manifestId, store_field: field },
+          }, now);
+        }
       }
     }
 
@@ -1715,14 +2048,174 @@ export function getProviderHealth(db: Db, id: string): {
 }
 
 export function getArtifact(db: Db, id: string): ArtifactRecord | null {
+  const artifactHash = artifactHashFromRef(id);
+  const lookupId = artifactHash ? `artifact:sha256:${artifactHash}` : id;
   const row = db.prepare(
     `SELECT id, algorithm, content_hash, uri, media_type, role, size_bytes,
             provider_id, manifest_id, metadata_json, pinned, custody_mode,
             home_repo_id, repo_locator_json, availability, retention_json,
             reference_json, created_at
        FROM artifacts WHERE id = ?`
-  ).get(id) as Record<string, unknown> | undefined;
-  return row ? artifactFromRow(row) : null;
+  ).get(lookupId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  const artifact = artifactFromRow(row);
+  if (artifactAliasTablesExist(db)) {
+    artifact.aliases = listArtifactAliases(db, artifact.id);
+    artifact.links = listArtifactLinks(db, artifact.id);
+  }
+  return artifact;
+}
+
+export function listArtifacts(db: Db, options: ArtifactListOptions = {}): ArtifactRecord[] {
+  const where: string[] = [];
+  const bindings: Record<string, unknown> = {};
+  const hasAliases = tableExists(db, "artifact_aliases");
+  const hasLinks = tableExists(db, "artifact_links");
+
+  const q = asString(options.q);
+  const hashPrefix = asString(options.hashPrefix);
+  if (q) {
+    const like = `%${escapeLike(q)}%`;
+    bindings.q = like;
+    where.push(`(
+      a.id LIKE @q ESCAPE '\\'
+      OR a.content_hash LIKE @q ESCAPE '\\'
+      OR a.uri LIKE @q ESCAPE '\\'
+      OR a.provider_id LIKE @q ESCAPE '\\'
+      OR a.home_repo_id LIKE @q ESCAPE '\\'
+      OR a.role LIKE @q ESCAPE '\\'
+      ${hasAliases ? `OR EXISTS (
+        SELECT 1 FROM artifact_aliases aa
+         WHERE aa.artifact_id = a.id
+           AND (aa.alias LIKE @q ESCAPE '\\' OR aa.normalized_ref LIKE @q ESCAPE '\\')
+      )` : ""}
+    )`);
+  }
+  if (hashPrefix) {
+    bindings.hashPrefix = `${escapeLike(hashPrefix.toLowerCase())}%`;
+    where.push("lower(a.content_hash) LIKE @hashPrefix ESCAPE '\\'");
+  }
+  if (asString(options.repo)) {
+    bindings.repo = options.repo;
+    where.push(`(a.home_repo_id = @repo${hasLinks ? " OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.artifact_id = a.id AND al.repo_id = @repo)" : ""})`);
+  }
+  if (asString(options.provider)) {
+    bindings.provider = options.provider;
+    where.push(`(a.provider_id = @provider${hasLinks ? " OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.artifact_id = a.id AND al.provider_id = @provider)" : ""})`);
+  }
+  if (asString(options.role)) {
+    bindings.role = options.role;
+    where.push(`(a.role = @role${hasLinks ? " OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.artifact_id = a.id AND al.role = @role)" : ""})`);
+  }
+  if (asString(options.custody)) {
+    bindings.custody = options.custody;
+    where.push("a.custody_mode = @custody");
+  }
+  if (asString(options.availability)) {
+    bindings.availability = options.availability;
+    where.push("a.availability = @availability");
+  }
+  if (asString(options.scheme) && hasAliases) {
+    bindings.scheme = options.scheme?.toLowerCase();
+    where.push("EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.artifact_id = a.id AND aa.scheme = @scheme)");
+  }
+  if (asString(options.location)) {
+    const like = `%${escapeLike(options.location!.trim())}%`;
+    bindings.location = like;
+    where.push(`(
+      a.uri LIKE @location ESCAPE '\\'
+      OR a.repo_locator_json LIKE @location ESCAPE '\\'
+      OR a.reference_json LIKE @location ESCAPE '\\'
+      ${hasAliases ? `OR EXISTS (
+        SELECT 1 FROM artifact_aliases aa
+         WHERE aa.artifact_id = a.id
+           AND (aa.alias LIKE @location ESCAPE '\\' OR aa.normalized_ref LIKE @location ESCAPE '\\')
+      )` : ""}
+    )`);
+  }
+  if ((asString(options.linkedEntityType) || asString(options.linkedEntityId)) && hasLinks) {
+    if (asString(options.linkedEntityType) && asString(options.linkedEntityId)) {
+      bindings.linkedEntityType = options.linkedEntityType;
+      bindings.linkedEntityId = options.linkedEntityId;
+      where.push(`EXISTS (
+        SELECT 1 FROM artifact_links al
+         WHERE al.artifact_id = a.id
+           AND al.entity_type = @linkedEntityType
+           AND al.entity_id = @linkedEntityId
+      )`);
+    } else if (asString(options.linkedEntityType)) {
+      bindings.linkedEntityType = options.linkedEntityType;
+      where.push("EXISTS (SELECT 1 FROM artifact_links al WHERE al.artifact_id = a.id AND al.entity_type = @linkedEntityType)");
+    } else if (asString(options.linkedEntityId)) {
+      bindings.linkedEntityId = options.linkedEntityId;
+      where.push("EXISTS (SELECT 1 FROM artifact_links al WHERE al.artifact_id = a.id AND al.entity_id = @linkedEntityId)");
+    }
+  }
+
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  const offset = Math.max(options.offset ?? 0, 0);
+  bindings.limit = limit;
+  bindings.offset = offset;
+  const sql = `
+    SELECT a.id, a.algorithm, a.content_hash, a.uri, a.media_type, a.role, a.size_bytes,
+           a.provider_id, a.manifest_id, a.metadata_json, a.pinned, a.custody_mode,
+           a.home_repo_id, a.repo_locator_json, a.availability, a.retention_json,
+           a.reference_json, a.created_at
+      FROM artifacts a
+     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+     ORDER BY a.created_at DESC, a.id
+     LIMIT @limit OFFSET @offset`;
+  return (db.prepare(sql).all(bindings) as Array<Record<string, unknown>>).map((row) => {
+    const artifact = artifactFromRow(row);
+    if (artifactAliasTablesExist(db)) {
+      artifact.aliases = listArtifactAliases(db, artifact.id);
+      artifact.links = listArtifactLinks(db, artifact.id);
+    }
+    return artifact;
+  });
+}
+
+export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
+  const normalized = normalizeRef(ref);
+  const hash = artifactHashFromRef(normalized.normalizedRef);
+  if (hash) {
+    const artifact = getArtifact(db, `artifact:sha256:${hash}`);
+    const alias = registerArtifactAlias(db, {
+      artifactId: artifact?.id ?? null,
+      ref,
+      resolutionStatus: artifact ? "resolved" : "unresolved",
+      source: "artifact_resolver",
+      now,
+    });
+    return {
+      status: artifact ? "resolved" : alias.resolution_status,
+      ref,
+      scheme: normalized.scheme,
+      normalized_ref: normalized.normalizedRef,
+      artifact,
+      alias,
+    };
+  }
+
+  const existing = tableExists(db, "artifact_aliases")
+    ? getArtifactAlias(db, normalized.scheme, normalized.normalizedRef)
+    : null;
+  const artifact = existing?.artifact_id ? getArtifact(db, existing.artifact_id) : null;
+  const alias = existing ?? registerArtifactAlias(db, {
+    artifactId: null,
+    ref,
+    resolutionStatus: "unresolved",
+    source: "artifact_resolver",
+    now,
+  });
+  return {
+    status: artifact ? "resolved" : alias.resolution_status,
+    ref,
+    scheme: normalized.scheme,
+    normalized_ref: normalized.normalizedRef,
+    artifact,
+    alias,
+  };
 }
 
 export function getProviderManifest(db: Db, id: string): ProviderManifestRecord | null {
@@ -1798,6 +2291,64 @@ function artifactFromRow(row: Record<string, unknown>): ArtifactRecord {
     reference: parseJsonRecord(row.reference_json as string),
     created_at: Number(row.created_at),
   };
+}
+
+function artifactAliasFromRow(row: Record<string, unknown>): ArtifactAliasRecord {
+  const status = String(row.resolution_status);
+  return {
+    id: String(row.id),
+    artifact_id: row.artifact_id === null || row.artifact_id === undefined ? null : String(row.artifact_id),
+    scheme: String(row.scheme),
+    alias: String(row.alias),
+    normalized_ref: String(row.normalized_ref),
+    locator: parseJsonRecord(row.locator_json as string),
+    resolution_status:
+      status === "resolved" || status === "unresolved" || status === "ambiguous" || status === "unsupported"
+        ? status
+        : "unresolved",
+    source: String(row.source),
+    created_at: Number(row.created_at),
+    updated_at: Number(row.updated_at),
+  };
+}
+
+function artifactLinkFromRow(row: Record<string, unknown>): ArtifactLinkRecord {
+  return {
+    id: String(row.id),
+    artifact_id: String(row.artifact_id),
+    entity_type: String(row.entity_type),
+    entity_id: String(row.entity_id),
+    link_type: String(row.link_type),
+    role: row.role === null || row.role === undefined ? null : String(row.role),
+    repo_id: row.repo_id === null || row.repo_id === undefined ? null : String(row.repo_id),
+    provider_id: row.provider_id === null || row.provider_id === undefined ? null : String(row.provider_id),
+    source: String(row.source),
+    metadata: parseJsonRecord(row.metadata_json as string),
+    created_at: Number(row.created_at),
+    updated_at: Number(row.updated_at),
+  };
+}
+
+function listArtifactAliases(db: Db, artifactId: string): ArtifactAliasRecord[] {
+  const rows = db.prepare(
+    `SELECT id, artifact_id, scheme, alias, normalized_ref, locator_json,
+            resolution_status, source, created_at, updated_at
+       FROM artifact_aliases
+      WHERE artifact_id = ?
+      ORDER BY scheme, normalized_ref`
+  ).all(artifactId) as Array<Record<string, unknown>>;
+  return rows.map(artifactAliasFromRow);
+}
+
+function listArtifactLinks(db: Db, artifactId: string): ArtifactLinkRecord[] {
+  const rows = db.prepare(
+    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+            provider_id, source, metadata_json, created_at, updated_at
+       FROM artifact_links
+      WHERE artifact_id = ?
+      ORDER BY entity_type, entity_id, link_type, role`
+  ).all(artifactId) as Array<Record<string, unknown>>;
+  return rows.map(artifactLinkFromRow);
 }
 
 function manifestFromRow(row: Record<string, unknown>): ProviderManifestRecord {
