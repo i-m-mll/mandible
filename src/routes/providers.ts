@@ -1,5 +1,6 @@
 import { getDb } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import { getArtifactContent } from "../artifact-content.js";
 import {
   getArtifact,
   getProviderCapabilities,
@@ -158,6 +159,15 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { artifact });
+  });
+
+  app.get("/api/artifacts/:id/content", (req, res) => {
+    const content = getArtifactContent(getDb(), req.params.id);
+    if (!content) {
+      sendJson(res, 404, { error: "artifact not found" });
+      return;
+    }
+    sendJson(res, 200, { content });
   });
 
   app.post("/api/provider-manifests/ingest", (req, res) => {

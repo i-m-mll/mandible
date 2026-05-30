@@ -1666,6 +1666,31 @@ export type ArtifactResolveResult = {
   alias: ArtifactAliasRecord;
 };
 
+export type ArtifactContentResult = {
+  artifact_id: string;
+  status: 'available' | 'unavailable';
+  kind: 'text' | 'markdown' | 'json' | 'binary' | 'unavailable';
+  media_type: string;
+  size_bytes: number;
+  source: {
+    kind: 'managed_file' | 'repo_locator';
+    locator: string;
+  } | null;
+  preview: {
+    encoding: 'utf-8';
+    text: string;
+    truncated: boolean;
+  } | null;
+  download: {
+    available: boolean;
+    media_type: string;
+    size_bytes: number;
+    filename: string | null;
+    reason?: string;
+  };
+  reason?: string;
+};
+
 export type ArtifactQueryParams = {
   q?: string;
   hash?: string;
@@ -1691,6 +1716,12 @@ export async function getArtifact(id: string): Promise<ArtifactRecord> {
   const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}`);
   const payload = (await parseMaybeJson(response)) as { artifact: ArtifactRecord };
   return payload.artifact;
+}
+
+export async function getArtifactContent(id: string): Promise<ArtifactContentResult> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/content`);
+  const payload = (await parseMaybeJson(response)) as { content: ArtifactContentResult };
+  return payload.content;
 }
 
 export async function resolveArtifact(ref: string): Promise<ArtifactResolveResult> {
