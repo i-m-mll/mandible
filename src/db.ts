@@ -1527,6 +1527,61 @@ const MIGRATIONS: Migration[] = [
     // Guarded DDL below handles fresh DBs, older DBs, and tests that rewind
     // schema_version on an already-current database.
     statements: []
+  },
+  {
+    version: 66,
+    name: "artifact_aliases_and_links",
+    // Bug: e16807c — artifact rows remain content/custody identity records;
+    // aliases and links carry URI locators and contextual references.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS artifact_aliases (
+        id                TEXT PRIMARY KEY,
+        artifact_id       TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        scheme            TEXT NOT NULL,
+        alias             TEXT NOT NULL,
+        normalized_ref    TEXT NOT NULL,
+        locator_json      TEXT NOT NULL DEFAULT '{}',
+        resolution_status TEXT NOT NULL DEFAULT 'resolved'
+          CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),
+        source            TEXT NOT NULL DEFAULT 'artifact_registry',
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_aliases_scheme_ref
+        ON artifact_aliases(scheme, normalized_ref)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_aliases_artifact
+        ON artifact_aliases(artifact_id)
+        WHERE artifact_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_aliases_status
+        ON artifact_aliases(resolution_status, scheme)`,
+      `CREATE TABLE IF NOT EXISTS artifact_links (
+        id            TEXT PRIMARY KEY,
+        artifact_id   TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        entity_type   TEXT NOT NULL,
+        entity_id     TEXT NOT NULL,
+        link_type     TEXT NOT NULL DEFAULT 'references',
+        role          TEXT,
+        repo_id       TEXT,
+        provider_id   TEXT,
+        source        TEXT NOT NULL DEFAULT 'artifact_registry',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_links_artifact
+        ON artifact_links(artifact_id, link_type)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_links_entity
+        ON artifact_links(entity_type, entity_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_links_repo
+        ON artifact_links(repo_id)
+        WHERE repo_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_links_provider
+        ON artifact_links(provider_id)
+        WHERE provider_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_links_role
+        ON artifact_links(role)
+        WHERE role IS NOT NULL`
+    ]
   }
 ];
 

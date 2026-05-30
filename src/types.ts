@@ -537,6 +537,47 @@ export interface ArtifactRecord {
   retention: Record<string, unknown>;
   reference: Record<string, unknown>;
   created_at: number;
+  aliases?: ArtifactAliasRecord[];
+  links?: ArtifactLinkRecord[];
+}
+
+export type ArtifactAliasResolutionStatus = "resolved" | "unresolved" | "ambiguous" | "unsupported";
+
+export interface ArtifactAliasRecord {
+  id: string;
+  artifact_id: string | null;
+  scheme: string;
+  alias: string;
+  normalized_ref: string;
+  locator: Record<string, unknown>;
+  resolution_status: ArtifactAliasResolutionStatus;
+  source: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ArtifactLinkRecord {
+  id: string;
+  artifact_id: string;
+  entity_type: string;
+  entity_id: string;
+  link_type: string;
+  role: string | null;
+  repo_id: string | null;
+  provider_id: string | null;
+  source: string;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ArtifactResolveResult {
+  status: ArtifactAliasResolutionStatus;
+  ref: string;
+  scheme: string;
+  normalized_ref: string;
+  artifact: ArtifactRecord | null;
+  alias: ArtifactAliasRecord;
 }
 
 export interface ProviderManifestRecord {

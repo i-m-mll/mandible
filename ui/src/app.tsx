@@ -41,6 +41,7 @@ import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
 import { AuthQueueView } from './views/auth';
 import type { AuthRequest } from './views/auth';
+import { ArtifactsView } from './views/artifacts';
 import { InboxView } from './views/inbox';
 import { IssuesView } from './views/issues';
 import type { IssueRepoSummary } from './views/issues';
@@ -65,6 +66,7 @@ import {
   IssuesIcon,
   InboxIcon,
   AuthIcon,
+  ArtifactsIcon,
   SettingsIcon,
   PresetsIcon,
   GraphIcon,
@@ -106,7 +108,7 @@ function setLastSeenCommit(hash: string): void {
 
 
 type Route = {
-  tab: 'sessions' | 'auth' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'switchboard' | 'inbox' | 'console' | 'logs' | 'graph' | 'presets';
+  tab: 'sessions' | 'auth' | 'artifacts' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'switchboard' | 'inbox' | 'console' | 'logs' | 'graph' | 'presets';
   params: Record<string, string>;
 };
 
@@ -133,7 +135,7 @@ function parseRouteFromHash(hashValue: string): Route {
   }
   // Support legacy history routes as aliases for the unified Chat workspace.
   const normalizedPath = (path === 'conversations' || path === 'chats' || path === 'chat-history') ? 'console' : path;
-  const tab = ['sessions', 'auth', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph', 'presets'].includes(normalizedPath)
+  const tab = ['sessions', 'auth', 'artifacts', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph', 'presets'].includes(normalizedPath)
     ? (normalizedPath as Route['tab'])
     : 'graph';
   return { tab, params };
@@ -927,6 +929,14 @@ function App(): JSX.Element {
       case 'auth_request':
         navigateToHash(`#/auth?request=${encodeURIComponent(id.replace(/^auth_request:/, ''))}`);
         break;
+      case 'artifact':
+      case 'report': {
+        const key = id.startsWith('artifact:') ? 'artifact' : 'ref';
+        const params = new URLSearchParams({ [key]: id });
+        if (repoId) params.set('repo', repoId);
+        navigateToHash(`#/artifacts?${params.toString()}`);
+        break;
+      }
       default:
         break;
     }
@@ -963,6 +973,13 @@ function App(): JSX.Element {
       label: 'Issues',
       title: 'Issues',
       icon: IssuesIcon,
+    },
+    {
+      tab: 'artifacts',
+      href: '#/artifacts',
+      label: 'Artifacts',
+      title: 'Artifacts',
+      icon: ArtifactsIcon,
     },
     {
       tab: 'inbox',
@@ -1186,6 +1203,13 @@ function App(): JSX.Element {
             initialIssueId={route.params.issue}
             initialCommentId={route.params.comment}
             defaultFilter={state.settings['issues.default_filter']}
+          />
+        )}
+        {route.tab === 'artifacts' && (
+          <ArtifactsView
+            initialArtifactId={route.params.artifact}
+            initialRef={route.params.ref}
+            initialRepo={route.params.repo}
           />
         )}
         {route.tab === 'review' && (

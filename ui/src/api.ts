@@ -1602,6 +1602,104 @@ export async function getGraph(
   return (await parseMaybeJson(response)) as { nodes: GraphNode[]; edges: GraphEdge[] };
 }
 
+// ── Artifact API ──
+
+export type ArtifactAliasResolutionStatus = 'resolved' | 'unresolved' | 'ambiguous' | 'unsupported';
+
+export type ArtifactAliasRecord = {
+  id: string;
+  artifact_id: string | null;
+  scheme: string;
+  alias: string;
+  normalized_ref: string;
+  locator: Record<string, unknown>;
+  resolution_status: ArtifactAliasResolutionStatus;
+  source: string;
+  created_at: number;
+  updated_at: number;
+};
+
+export type ArtifactLinkRecord = {
+  id: string;
+  artifact_id: string;
+  entity_type: string;
+  entity_id: string;
+  link_type: string;
+  role: string | null;
+  repo_id: string | null;
+  provider_id: string | null;
+  source: string;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+export type ArtifactRecord = {
+  id: string;
+  algorithm: string;
+  content_hash: string;
+  uri: string;
+  media_type: string | null;
+  role: string | null;
+  size_bytes: number;
+  provider_id: string | null;
+  manifest_id: string | null;
+  metadata: Record<string, unknown>;
+  pinned: boolean;
+  custody_mode: 'link' | 'copy' | 'managed' | 'external';
+  home_repo_id: string | null;
+  repo_locator: Record<string, unknown>;
+  availability: 'present' | 'missing' | 'stale' | 'unchecked' | 'remote_only' | 'pinned';
+  retention: Record<string, unknown>;
+  reference: Record<string, unknown>;
+  created_at: number;
+  aliases?: ArtifactAliasRecord[];
+  links?: ArtifactLinkRecord[];
+};
+
+export type ArtifactResolveResult = {
+  status: ArtifactAliasResolutionStatus;
+  ref: string;
+  scheme: string;
+  normalized_ref: string;
+  artifact: ArtifactRecord | null;
+  alias: ArtifactAliasRecord;
+};
+
+export type ArtifactQueryParams = {
+  q?: string;
+  hash?: string;
+  repo?: string;
+  provider?: string;
+  role?: string;
+  custody?: string;
+  availability?: string;
+  scheme?: string;
+  location?: string;
+  linked_entity?: string;
+  limit?: number;
+};
+
+export async function getArtifacts(params: ArtifactQueryParams = {}): Promise<ArtifactRecord[]> {
+  const query = buildQuery(params);
+  const response = await apiGet(`/api/artifacts${query}`);
+  const payload = (await parseMaybeJson(response)) as { artifacts?: ArtifactRecord[] };
+  return payload.artifacts ?? [];
+}
+
+export async function getArtifact(id: string): Promise<ArtifactRecord> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}`);
+  const payload = (await parseMaybeJson(response)) as { artifact: ArtifactRecord };
+  return payload.artifact;
+}
+
+export async function resolveArtifact(ref: string): Promise<ArtifactResolveResult> {
+  const query = buildQuery({ ref });
+  const response = await apiGet(`/api/artifacts/resolve${query}`);
+  const payload = (await parseMaybeJson(response)) as { resolution: ArtifactResolveResult };
+  return payload.resolution;
+}
+
 // ── Presets API — Bug: e20c88e, Bug: 11f4f47 ──
 
 export async function fetchPresets(): Promise<Preset[]> {

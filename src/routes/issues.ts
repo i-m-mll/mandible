@@ -16,6 +16,11 @@ import {
 import {
   buildLedgerIssueDetailProjection,
 } from "../ledger/issue-detail.js";
+import {
+  evaluateMarkdownBodyPolicy,
+  getMarkdownBodyEscapePolicy,
+  type MarkdownBodyPolicyWarning,
+} from "../ledger/markdown-body.js";
 import { resolveProjectForCheckout } from "../ledger/projects.js";
 import {
   findLedgerIssueAcrossRepos,
@@ -138,6 +143,32 @@ function sendJson(res: unknown, status: number, payload: unknown): void {
   }
 }
 
+function applyMarkdownBodyPolicy(
+  res: unknown,
+  db: Db,
+  body: string,
+): { ok: true; warnings: MarkdownBodyPolicyWarning[] } | { ok: false } {
+  const result = evaluateMarkdownBodyPolicy(body, getMarkdownBodyEscapePolicy(db));
+  if (result.action === "reject") {
+    sendJson(res, 422, {
+      error: "markdown body contains likely accidental escaped newlines",
+      markdown_body_warnings: [result.warning],
+    });
+    return { ok: false };
+  }
+  return {
+    ok: true,
+    warnings: result.action === "warn" ? [result.warning] : [],
+  };
+}
+
+function withMarkdownBodyWarnings<T extends object>(
+  payload: T,
+  warnings: MarkdownBodyPolicyWarning[],
+): T & { markdown_body_warnings?: MarkdownBodyPolicyWarning[] } {
+  return warnings.length > 0 ? { ...payload, markdown_body_warnings: warnings } : payload;
+}
+
 function filterIssueSummaries(
   summaries: IssueRepoSummary[],
   filters: { repo?: string; status?: string; label?: string },
@@ -193,9 +224,14 @@ function resolveLedgerIssueId(db: Db, issueRef: string): { ok: true; issue_id: s
   return { ok: false, status: 404, error: "ledger issue not found" };
 }
 
-function sendLedgerIssueProjection(res: unknown, db: Db, issueId: string): void {
+function sendLedgerIssueProjection(
+  res: unknown,
+  db: Db,
+  issueId: string,
+  warnings: MarkdownBodyPolicyWarning[] = [],
+): void {
   try {
-    sendJson(res, 200, buildLedgerIssueDetailProjection(db, issueId));
+    sendJson(res, 200, withMarkdownBodyWarnings(buildLedgerIssueDetailProjection(db, issueId), warnings));
   } catch (error) {
     sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
   }
@@ -450,6 +486,8 @@ export function registerIssueRoutes(
       return;
     }
     if (ledgerWriteUnavailable(res, config.write_mode)) return;
+    const markdownPolicy = applyMarkdownBodyPolicy(res, db, issueBody);
+    if (!markdownPolicy.ok) return;
 
     const repo = workScanner.getRepoById(root) ?? workScanner.getRepoById(repoRef);
     const { project } = resolveProjectForCheckout(db, {
@@ -469,7 +507,7 @@ export function registerIssueRoutes(
       author_display: "Mandible",
       source: "mandible",
     });
-    sendLedgerIssueProjection(res, db, issue.id);
+    sendLedgerIssueProjection(res, db, issue.id, markdownPolicy.warnings);
   });
 
   server.post("/api/ledger/issues/:issueId/comments", (req, res) => {
@@ -494,13 +532,15 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    const markdownPolicy = applyMarkdownBodyPolicy(res, db, message);
+    if (!markdownPolicy.ok) return;
     new LedgerStore(db).addComment(resolved.issue_id, {
-      body: message.trim(),
+      body: message,
       actor_type: "mandible_user",
       author_display: "Mandible",
       source: "mandible",
     });
-    sendLedgerIssueProjection(res, db, resolved.issue_id);
+    sendLedgerIssueProjection(res, db, resolved.issue_id, markdownPolicy.warnings);
   });
 
   server.patch?.("/api/ledger/issues/:issueId", (req, res) => {
@@ -517,6 +557,7 @@ export function registerIssueRoutes(
       return;
     }
 
+    let markdownWarnings: MarkdownBodyPolicyWarning[] = [];
     const patch: {
       title?: string;
       body?: string;
@@ -524,7 +565,12 @@ export function registerIssueRoutes(
       priority?: LedgerPriority;
     } = {};
     if (typeof body.title === "string") patch.title = body.title;
-    if (typeof body.body === "string") patch.body = body.body;
+    if (typeof body.body === "string") {
+      const markdownPolicy = applyMarkdownBodyPolicy(res, db, body.body);
+      if (!markdownPolicy.ok) return;
+      markdownWarnings = markdownPolicy.warnings;
+      patch.body = body.body;
+    }
     const kind = enumValue(body.kind, LEDGER_ISSUE_KINDS);
     const priority = enumValue(body.priority, LEDGER_PRIORITIES);
     if (body.kind !== undefined && !kind) {
@@ -564,7 +610,7 @@ export function registerIssueRoutes(
         "mandible",
       );
     }
-    sendLedgerIssueProjection(res, db, resolved.issue_id);
+    sendLedgerIssueProjection(res, db, resolved.issue_id, markdownWarnings);
   });
 
   server.post("/api/ledger/issues/:issueId/labels", (req, res) => {
@@ -805,12 +851,14 @@ export function registerIssueRoutes(
         sendJson(res, resolved.status, { error: resolved.error });
         return;
       }
+      const markdownPolicy = applyMarkdownBodyPolicy(res, db, message);
+      if (!markdownPolicy.ok) return;
       new LedgerStore(db).addComment(resolved.issue_id, {
         body: message,
         actor_type: "mandible_user",
         author_display: "Mandible",
       });
-      sendJson(res, 200, { ok: true, source: "ledger" });
+      sendJson(res, 200, withMarkdownBodyWarnings({ ok: true, source: "ledger" }, markdownPolicy.warnings));
       return;
     }
     const ok = issueScanner.addComment(repoId, issueId, message);

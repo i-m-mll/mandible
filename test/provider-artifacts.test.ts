@@ -12,8 +12,10 @@ import {
   getProviderHealth,
   ingestArtifact,
   ingestProviderManifest,
+  listArtifacts,
   listProviders,
   registerProvider,
+  resolveArtifactRef,
 } from "../src/provider-artifacts.js";
 
 let tempDir = "";
@@ -57,6 +59,52 @@ function createSchema(database: Database.Database): void {
       created_at INTEGER NOT NULL,
       UNIQUE(algorithm, content_hash)
     );
+    CREATE TABLE artifact_aliases (
+      id TEXT PRIMARY KEY,
+      artifact_id TEXT,
+      scheme TEXT NOT NULL,
+      alias TEXT NOT NULL,
+      normalized_ref TEXT NOT NULL,
+      locator_json TEXT NOT NULL DEFAULT '{}',
+      resolution_status TEXT NOT NULL DEFAULT 'resolved',
+      source TEXT NOT NULL DEFAULT 'artifact_registry',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_artifact_aliases_scheme_ref
+      ON artifact_aliases(scheme, normalized_ref);
+    CREATE INDEX idx_artifact_aliases_artifact
+      ON artifact_aliases(artifact_id)
+      WHERE artifact_id IS NOT NULL;
+    CREATE INDEX idx_artifact_aliases_status
+      ON artifact_aliases(resolution_status, scheme);
+    CREATE TABLE artifact_links (
+      id TEXT PRIMARY KEY,
+      artifact_id TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      link_type TEXT NOT NULL DEFAULT 'references',
+      role TEXT,
+      repo_id TEXT,
+      provider_id TEXT,
+      source TEXT NOT NULL DEFAULT 'artifact_registry',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_artifact_links_artifact
+      ON artifact_links(artifact_id, link_type);
+    CREATE INDEX idx_artifact_links_entity
+      ON artifact_links(entity_type, entity_id);
+    CREATE INDEX idx_artifact_links_repo
+      ON artifact_links(repo_id)
+      WHERE repo_id IS NOT NULL;
+    CREATE INDEX idx_artifact_links_provider
+      ON artifact_links(provider_id)
+      WHERE provider_id IS NOT NULL;
+    CREATE INDEX idx_artifact_links_role
+      ON artifact_links(role)
+      WHERE role IS NOT NULL;
     CREATE TABLE provider_manifests (
       id TEXT PRIMARY KEY,
       provider_id TEXT NOT NULL,
@@ -335,6 +383,120 @@ describe("provider/artifact substrate", () => {
     });
     expect(artifact.repo_locator).toMatchObject({ repo_id: "rlrmp", path: "results/b41c940/report.md" });
     expect(artifact.reference).toMatchObject({ owner_system: "repo", document_role: "report" });
+  });
+
+  it("lists managed artifacts with aliases and filterable custody metadata", () => {
+    const artifact = ingestArtifact(db, {
+      provider_id: "mandible",
+      role: "metrics",
+      media_type: "application/json",
+      json: { accuracy: 0.95 },
+      metadata: { title: "metrics.json" },
+    }, 1000, tempDir);
+
+    const byHash = listArtifacts(db, { hashPrefix: artifact.content_hash.slice(0, 12) });
+    const byQuery = listArtifacts(db, { q: "metrics", provider: "mandible", custody: "managed", availability: "present" });
+    const detail = getArtifact(db, artifact.id);
+
+    expect(byHash.map((item) => item.id)).toContain(artifact.id);
+    expect(byQuery.map((item) => item.id)).toContain(artifact.id);
+    expect(detail?.aliases?.map((alias) => alias.normalized_ref)).toContain(`artifact://sha256/${artifact.content_hash}`);
+    expect(detail?.aliases?.some((alias) => alias.scheme === "file")).toBe(true);
+  });
+
+  it("resolves repo and provider aliases without requiring issue association", () => {
+    const hash = "f".repeat(64);
+    const artifact = ingestArtifact(db, {
+      provider_id: "feedbax",
+      role: "model_parameters",
+      media_type: "application/x-equinox",
+      sha256: hash,
+      uri: "feedbax://models/baseline/parameters",
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: {
+        repo_id: "rlrmp",
+        ref: "main",
+        path: "_artifacts/b41c940/model.params.eqx",
+      },
+      availability: "unchecked",
+    }, 1000, tempDir);
+
+    const repoResolution = resolveArtifactRef(db, "repo://rlrmp@main/_artifacts/b41c940/model.params.eqx", 2000);
+    const providerResolution = resolveArtifactRef(db, "feedbax://models/baseline/parameters", 2000);
+    const repoList = listArtifacts(db, { repo: "rlrmp", scheme: "repo" });
+    const providerList = listArtifacts(db, { provider: "feedbax", scheme: "feedbax" });
+
+    expect(repoResolution).toMatchObject({ status: "resolved", artifact: { id: artifact.id } });
+    expect(providerResolution).toMatchObject({ status: "resolved", artifact: { id: artifact.id } });
+    expect(repoList.map((item) => item.id)).toEqual([artifact.id]);
+    expect(providerList.map((item) => item.id)).toEqual([artifact.id]);
+  });
+
+  it("keeps multiple contextual links for one content artifact", () => {
+    const payload = { rows: [1, 2, 3] };
+    const first = ingestArtifact(db, {
+      role: "report",
+      media_type: "application/json",
+      json: payload,
+      metadata: { title: "first context" },
+      link: {
+        entity_type: "issue",
+        entity_id: "mandible/e16807c",
+        link_type: "references",
+        repo_id: "mandible",
+        metadata: { comment: "issue mention" },
+      },
+    }, 1000, tempDir);
+    const second = ingestArtifact(db, {
+      role: "report",
+      media_type: "application/json",
+      json: payload,
+      metadata: { title: "second context should not overwrite" },
+      link: {
+        entity_type: "auth_request",
+        entity_id: "auth-1",
+        link_type: "references",
+        repo_id: "mandible",
+      },
+    }, 2000, tempDir);
+
+    const detail = getArtifact(db, first.id);
+    const linkedToIssue = listArtifacts(db, { linkedEntityType: "issue", linkedEntityId: "mandible/e16807c" });
+    const linkedToAuth = listArtifacts(db, { linkedEntityType: "auth_request", linkedEntityId: "auth-1" });
+
+    expect(second.id).toBe(first.id);
+    expect(detail?.metadata).toMatchObject({ title: "first context" });
+    expect(detail?.links?.map((link) => `${link.entity_type}:${link.entity_id}`).sort()).toEqual([
+      "auth_request:auth-1",
+      "issue:mandible/e16807c",
+    ]);
+    expect(linkedToIssue.map((item) => item.id)).toEqual([first.id]);
+    expect(linkedToAuth.map((item) => item.id)).toEqual([first.id]);
+  });
+
+  it("records unknown scheme refs as unresolved aliases instead of failing", () => {
+    const resolution = resolveArtifactRef(db, "zotero://library/items/ABC123", 1000);
+    const row = db.prepare(
+      "SELECT scheme, normalized_ref, resolution_status, artifact_id FROM artifact_aliases WHERE alias = ?"
+    ).get("zotero://library/items/ABC123") as {
+      scheme: string;
+      normalized_ref: string;
+      resolution_status: string;
+      artifact_id: string | null;
+    };
+
+    expect(resolution).toMatchObject({
+      status: "unresolved",
+      scheme: "zotero",
+      artifact: null,
+    });
+    expect(row).toMatchObject({
+      scheme: "zotero",
+      normalized_ref: "zotero://library/items/ABC123",
+      resolution_status: "unresolved",
+      artifact_id: null,
+    });
   });
 
   it("ingests provider manifests into lineage graph nodes and edges", () => {

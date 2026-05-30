@@ -3,6 +3,7 @@ import {
   capGraphNodesForDisplay,
   parseQueryParams,
   repoCandidatesFromCwd,
+  sessionIdsFromGraphNodeIds,
 } from "../src/routes/graph.js";
 import type { GraphEdge, GraphNode } from "../src/types.js";
 
@@ -79,5 +80,16 @@ describe("graph filters", () => {
 
     expect(candidates).toContain("HumbleB");
     expect(candidates).toContain("feature__graph");
+  });
+
+  it("extracts fetched session ids for scoped session issue link queries", () => {
+    const ids = sessionIdsFromGraphNodeIds(new Set([
+      "session:sess-1",
+      "issue:mandible:abc123",
+      "session:sess-2",
+      "session:sess-1",
+    ]));
+
+    expect(ids).toEqual(["sess-1", "sess-2"]);
   });
 });

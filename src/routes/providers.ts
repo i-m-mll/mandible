@@ -8,8 +8,10 @@ import {
   ingestArtifact,
   ingestProviderManifest,
   ingestProviderManifestFile,
+  listArtifacts,
   listProviders,
   registerProvider,
+  resolveArtifactRef,
 } from "../provider-artifacts.js";
 
 function sendJson(res: ResponseLike, code: number, payload: unknown): void {
@@ -25,6 +27,30 @@ function bodyRecord(req: RequestLike): Record<string, unknown> {
 function handleError(res: ResponseLike, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   sendJson(res, 400, { error: message });
+}
+
+function queryString(req: RequestLike, key: string): string | undefined {
+  const value = req.query?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function queryNumber(req: RequestLike, key: string): number | undefined {
+  const value = queryString(req, key);
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function linkedEntityQuery(req: RequestLike): { type?: string; id?: string } {
+  const type = queryString(req, "entity_type") ?? queryString(req, "linked_entity_type");
+  const id = queryString(req, "entity_id") ?? queryString(req, "linked_entity_id");
+  const combined = queryString(req, "linked_entity");
+  if (!combined || type || id) return { type, id };
+  const colon = combined.indexOf(":");
+  if (colon > 0 && colon < combined.length - 1) {
+    return { type: combined.slice(0, colon), id: combined.slice(colon + 1) };
+  }
+  return { id: combined };
 }
 
 export function registerProviderRoutes(app: RouteRegistrar): void {
@@ -87,6 +113,39 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     try {
       const artifact = ingestArtifact(getDb(), bodyRecord(req));
       sendJson(res, 200, { artifact });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/artifacts", (req, res) => {
+    const linked = linkedEntityQuery(req);
+    const artifacts = listArtifacts(getDb(), {
+      q: queryString(req, "q"),
+      hashPrefix: queryString(req, "hash") ?? queryString(req, "hash_prefix"),
+      repo: queryString(req, "repo"),
+      provider: queryString(req, "provider"),
+      role: queryString(req, "role"),
+      custody: queryString(req, "custody"),
+      availability: queryString(req, "availability"),
+      scheme: queryString(req, "scheme"),
+      location: queryString(req, "location"),
+      linkedEntityType: linked.type,
+      linkedEntityId: linked.id,
+      limit: queryNumber(req, "limit"),
+      offset: queryNumber(req, "offset"),
+    });
+    sendJson(res, 200, { artifacts });
+  });
+
+  app.get("/api/artifacts/resolve", (req, res) => {
+    try {
+      const ref = queryString(req, "ref") ?? queryString(req, "uri");
+      if (!ref) {
+        sendJson(res, 400, { error: "ref query parameter required" });
+        return;
+      }
+      sendJson(res, 200, { resolution: resolveArtifactRef(getDb(), ref) });
     } catch (error) {
       handleError(res, error);
     }

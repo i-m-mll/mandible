@@ -8,6 +8,11 @@ import { ReviewView } from '../ui/src/views/review';
 import { SessionsView } from '../ui/src/views/sessions';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
+import {
+  resolveIssueIdDeepLink,
+  resolveIssueRepoDeepLink,
+  type IssueRepoSummary,
+} from '../ui/src/views/issues';
 
 afterEach(() => {
   cleanup();
@@ -99,6 +104,46 @@ describe('WorkOverviewView', () => {
 
     expect(screen.getByText('Repo One')).toBeTruthy();
     expect(screen.getAllByText('main').length).toBeGreaterThan(0);
+  });
+});
+
+describe('issue deep links', () => {
+  const repos: IssueRepoSummary[] = [
+    {
+      repo_id: 'mandible',
+      repo_name: 'mandible',
+      repo_root: '/Users/mll/Main/10 Projects/05 Utils/mandible',
+      open_count: 1,
+      merged_count: 0,
+      closed_count: 0,
+      issues: [
+        {
+          id: '4c26383',
+          repo_id: 'mandible',
+          repo_name: 'mandible',
+          title: 'Daemon reload toast link',
+          status: 'open',
+          labels: ['error'],
+          author: 'MLL',
+          created_at: '2026-05-30T12:00:00.000Z',
+          description: '',
+        },
+      ],
+    },
+  ];
+
+  it('resolves repo paths and full issue ids to Issues tab route values', () => {
+    const repoId = resolveIssueRepoDeepLink(
+      repos,
+      '/Users/mll/Main/10 Projects/05 Utils/mandible',
+    );
+    const issueId = resolveIssueIdDeepLink(
+      repos[0],
+      '4c2638313a4cd447fa61cc4faa1ff63526a92221c7629db1dca75b565af41c6a',
+    );
+
+    expect(repoId).toBe('mandible');
+    expect(issueId).toBe('4c26383');
   });
 });
 
@@ -210,7 +255,7 @@ describe('LedgerIssueDetail', () => {
         default_branch: 'main',
       },
       title: 'Refs',
-      body: 'See [issue:def456], #789abcd, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, and `#deadbee` in code.',
+      body: 'See [issue:def456], #789abcd, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, <feedbax://runs/demo>, repo://mandible@main/results/report.md, and `#deadbee` in code.',
       status: 'open',
       resolution: null,
       kind: 'feature',
@@ -286,6 +331,22 @@ describe('LedgerIssueDetail', () => {
     expect(issueLinks).toContainEqual({
       text: 'abc123#com_1',
       href: '#/issues?repo=mandible&issue=abc123&comment=com_1',
+    });
+    const artifactLinks = Array.from(document.querySelectorAll('a.artifact-xref')).map((node) => ({
+      text: node.textContent,
+      href: (node as HTMLAnchorElement).getAttribute('href'),
+    }));
+    expect(artifactLinks).toContainEqual({
+      text: 'artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      href: '#/artifacts?ref=artifact%3A%2F%2Fsha256%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    });
+    expect(artifactLinks).toContainEqual({
+      text: 'feedbax://runs/demo',
+      href: '#/artifacts?ref=feedbax%3A%2F%2Fruns%2Fdemo',
+    });
+    expect(artifactLinks).toContainEqual({
+      text: 'repo://mandible@main/results/report.md',
+      href: '#/artifacts?ref=repo%3A%2F%2Fmandible%40main%2Fresults%2Freport.md',
     });
     const codeBlocks = Array.from(document.querySelectorAll('code'));
     expect(codeBlocks.some((node) => node.innerHTML.includes('#deadbee'))).toBe(true);
