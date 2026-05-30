@@ -1,4 +1,8 @@
 import { getDb } from "../db.js";
+import {
+  createKnowledgeBackref,
+  listKnowledgeBackrefs,
+} from "../knowledge-backrefs.js";
 import { scanRepoArtifacts, type RepoArtifactRoot } from "../repo-artifact-scanner.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { getArtifactContent } from "../artifact-content.js";
@@ -181,6 +185,28 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   });
 
+  app.get("/api/knowledge-backrefs", (req, res) => {
+    const backrefs = listKnowledgeBackrefs(getDb(), {
+      sourceType: queryString(req, "source_type"),
+      sourceId: queryString(req, "source_id"),
+      providerId: queryString(req, "provider") ?? queryString(req, "provider_id"),
+      refType: queryString(req, "ref_type"),
+      externalRef: queryString(req, "external_ref"),
+      limit: queryNumber(req, "limit"),
+      offset: queryNumber(req, "offset"),
+    });
+    sendJson(res, 200, { backrefs });
+  });
+
+  app.post("/api/knowledge-backrefs", (req, res) => {
+    try {
+      const backref = createKnowledgeBackref(getDb(), bodyRecord(req));
+      sendJson(res, 200, { backref });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.get("/api/artifacts/:id/content", (req, res) => {
     const content = getArtifactContent(getDb(), req.params.id);
     if (!content) {
@@ -188,6 +214,31 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { content });
+  });
+
+  app.get("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
+    const backrefs = listKnowledgeBackrefs(getDb(), {
+      sourceType: "artifact",
+      sourceId: req.params.id,
+      providerId: queryString(req, "provider") ?? queryString(req, "provider_id"),
+      refType: queryString(req, "ref_type"),
+      limit: queryNumber(req, "limit"),
+      offset: queryNumber(req, "offset"),
+    });
+    sendJson(res, 200, { backrefs });
+  });
+
+  app.post("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
+    try {
+      const backref = createKnowledgeBackref(getDb(), {
+        ...bodyRecord(req),
+        source_type: "artifact",
+        source_id: req.params.id,
+      });
+      sendJson(res, 200, { backref });
+    } catch (error) {
+      handleError(res, error);
+    }
   });
 
   app.get("/api/artifacts/:id", (req, res) => {

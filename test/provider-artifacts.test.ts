@@ -335,7 +335,22 @@ describe("provider/artifact substrate", () => {
       home_repo_id: "rlrmp",
       availability: "unchecked",
     });
-    expect(fixture.humbleb_return_refs.claim_refs).toEqual(["humbleb:claim:claim_0000000000000001"]);
+    expect(fixture.humbleb_return_refs.knowledge_backrefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ref_type: "document",
+          external_ref: "humbleb:document:doc_0000000000000001",
+        }),
+        expect.objectContaining({
+          ref_type: "entity",
+          external_ref: "humbleb:entity:ent_0000000000000001",
+        }),
+        expect.objectContaining({
+          ref_type: "claim",
+          external_ref: "humbleb:claim:claim_0000000000000001",
+        }),
+      ])
+    );
   });
 
   it("registers providers and mirrors them into graph entities", () => {
