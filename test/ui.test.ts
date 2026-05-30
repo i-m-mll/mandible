@@ -8,6 +8,11 @@ import { ReviewView } from '../ui/src/views/review';
 import { SessionsView } from '../ui/src/views/sessions';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
+import {
+  resolveIssueIdDeepLink,
+  resolveIssueRepoDeepLink,
+  type IssueRepoSummary,
+} from '../ui/src/views/issues';
 
 afterEach(() => {
   cleanup();
@@ -99,6 +104,46 @@ describe('WorkOverviewView', () => {
 
     expect(screen.getByText('Repo One')).toBeTruthy();
     expect(screen.getAllByText('main').length).toBeGreaterThan(0);
+  });
+});
+
+describe('issue deep links', () => {
+  const repos: IssueRepoSummary[] = [
+    {
+      repo_id: 'mandible',
+      repo_name: 'mandible',
+      repo_root: '/Users/mll/Main/10 Projects/05 Utils/mandible',
+      open_count: 1,
+      merged_count: 0,
+      closed_count: 0,
+      issues: [
+        {
+          id: '4c26383',
+          repo_id: 'mandible',
+          repo_name: 'mandible',
+          title: 'Daemon reload toast link',
+          status: 'open',
+          labels: ['error'],
+          author: 'MLL',
+          created_at: '2026-05-30T12:00:00.000Z',
+          description: '',
+        },
+      ],
+    },
+  ];
+
+  it('resolves repo paths and full issue ids to Issues tab route values', () => {
+    const repoId = resolveIssueRepoDeepLink(
+      repos,
+      '/Users/mll/Main/10 Projects/05 Utils/mandible',
+    );
+    const issueId = resolveIssueIdDeepLink(
+      repos[0],
+      '4c2638313a4cd447fa61cc4faa1ff63526a92221c7629db1dca75b565af41c6a',
+    );
+
+    expect(repoId).toBe('mandible');
+    expect(issueId).toBe('4c26383');
   });
 });
 

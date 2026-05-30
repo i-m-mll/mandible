@@ -37,6 +37,55 @@ export type IssueRepoSummary = {
   issues: IssueSummary[];
 };
 
+function pathBasename(value: string): string {
+  const normalized = value.trim().replace(/[\\/]+$/, '');
+  const parts = normalized.split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] ?? normalized;
+}
+
+export function resolveIssueRepoDeepLink(
+  repos: IssueRepoSummary[],
+  rawRepoId: string | null | undefined,
+): string | null {
+  if (!rawRepoId) return null;
+  const trimmed = rawRepoId.trim();
+  if (!trimmed) return null;
+  const basename = pathBasename(trimmed);
+
+  const repoMatches = (repo: IssueRepoSummary, value: string, ignoreCase: boolean): boolean => {
+    const candidates = [repo.repo_id, repo.repo_name, repo.repo_root, pathBasename(repo.repo_root)]
+      .filter(Boolean);
+    return candidates.some((candidate) => (
+      ignoreCase
+        ? candidate.toLowerCase() === value.toLowerCase()
+        : candidate === value
+    ));
+  };
+
+  const exact = repos.find((repo) => repoMatches(repo, trimmed, false));
+  if (exact) return exact.repo_id;
+  const basenameMatch = repos.find((repo) => repoMatches(repo, basename, false));
+  if (basenameMatch) return basenameMatch.repo_id;
+  const insensitive = repos.find((repo) => (
+    repoMatches(repo, trimmed, true) || repoMatches(repo, basename, true)
+  ));
+  if (insensitive) return insensitive.repo_id;
+  return trimmed;
+}
+
+export function resolveIssueIdDeepLink(
+  repo: IssueRepoSummary | undefined,
+  rawIssueId: string,
+): string {
+  if (!repo) return rawIssueId;
+  const exact = repo.issues.find((issue) => issue.id === rawIssueId);
+  if (exact) return exact.id;
+  const matches = repo.issues.filter((issue) => (
+    issue.id.startsWith(rawIssueId) || rawIssueId.startsWith(issue.id)
+  ));
+  return matches.length === 1 ? matches[0].id : rawIssueId;
+}
+
 export type IssuesViewProps = {
   repos: IssueRepoSummary[];
   onRescan: () => Promise<void>;
@@ -246,26 +295,12 @@ export function IssuesView({
   }, []);
 
   const resolveRepoId = useCallback((rawRepoId: string | null | undefined): string | null => {
-    if (!rawRepoId) return null;
-    const trimmed = rawRepoId.trim();
-    if (!trimmed) return null;
-    const exact = repos.find((repo) => repo.repo_id === trimmed);
-    if (exact) return exact.repo_id;
-    const byName = repos.find((repo) => repo.repo_name === trimmed);
-    if (byName) return byName.repo_id;
-    const byNameInsensitive = repos.find((repo) => repo.repo_name.toLowerCase() === trimmed.toLowerCase());
-    if (byNameInsensitive) return byNameInsensitive.repo_id;
-    return trimmed;
+    return resolveIssueRepoDeepLink(repos, rawRepoId);
   }, [repos]);
 
   const resolveIssueId = useCallback((repoId: string, rawIssueId: string): string => {
     const repo = repos.find((r) => r.repo_id === repoId);
-    if (!repo) return rawIssueId;
-    const exact = repo.issues.find((issue) => issue.id === rawIssueId);
-    if (exact) return exact.id;
-    const byPrefix = repo.issues.filter((issue) => issue.id.startsWith(rawIssueId));
-    if (byPrefix.length === 1) return byPrefix[0].id;
-    return rawIssueId;
+    return resolveIssueIdDeepLink(repo, rawIssueId);
   }, [repos]);
 
   // Deep-link: auto-select issue from URL params without treating the route repo

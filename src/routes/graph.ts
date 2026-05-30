@@ -582,11 +582,20 @@ function addSessionIssueEdges(
     repo_id: string;
   }
 
+  const sessionIds = sessionIdsFromGraphNodeIds(sessionNodeIds);
+  if (sessionIds.length === 0) return;
+  const placeholders = sessionIds.map((_, index) => `:session${index}`);
+  const bindings = Object.fromEntries(
+    sessionIds.map((id, index) => [`session${index}`, id]),
+  );
+
   let rows: SessionIssueRow[];
   try {
     rows = getDb().prepare(
-      `SELECT session_id, issue_id, repo_id FROM session_issues`
-    ).all() as SessionIssueRow[];
+      `SELECT session_id, issue_id, repo_id
+         FROM session_issues
+        WHERE session_id IN (${placeholders.join(", ")})`
+    ).all(bindings) as SessionIssueRow[];
   } catch {
     rows = [];
   }
@@ -609,8 +618,9 @@ function addSessionIssueEdges(
   if (tableExists("ledger_session_issue_links")) {
     const ledgerRows = getDb().prepare(
       `SELECT session_id, issue_id AS ledger_issue_id, metadata_json
-       FROM ledger_session_issue_links`
-    ).all() as Array<{ session_id: string; ledger_issue_id: string; metadata_json: string }>;
+         FROM ledger_session_issue_links
+        WHERE session_id IN (${placeholders.join(", ")})`
+    ).all(bindings) as Array<{ session_id: string; ledger_issue_id: string; metadata_json: string }>;
     for (const row of ledgerRows) {
       const sessionNodeId = `session:${row.session_id}`;
       const issueNodeId = issueNodeIdByLedgerId.get(row.ledger_issue_id)
@@ -627,6 +637,17 @@ function addSessionIssueEdges(
       }
     }
   }
+}
+
+export function sessionIdsFromGraphNodeIds(sessionNodeIds: Set<string>): string[] {
+  const ids = new Set<string>();
+  for (const nodeId of sessionNodeIds) {
+    if (nodeId.startsWith("session:")) {
+      const sessionId = nodeId.slice("session:".length);
+      if (sessionId) ids.add(sessionId);
+    }
+  }
+  return Array.from(ids);
 }
 
 function addWorkUnits(
