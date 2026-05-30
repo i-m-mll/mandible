@@ -3397,6 +3397,11 @@ tr:hover .work-actions__trigger {
   background: rgba(0, 0, 0, 0.16);
 }
 
+.artifact-detail__hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .artifact-preview__image {
   max-width: min(100%, 960px);
   max-height: 70vh;

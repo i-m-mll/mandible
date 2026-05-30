@@ -1,8 +1,10 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getArtifactContent } from "../src/artifact-content.js";
 import {
   getArtifact,
   getArtifactRoot,
@@ -230,6 +232,24 @@ function createLedgerIssue(projectName: string, alias: string, title = `Issue ${
     ) VALUES (?, 'git_bug_short', ?, ?, ?, 'git_bug', 1, 1)`,
   ).run(issueId, projectId, alias, alias);
   return issueId;
+}
+
+function createLedgerCheckout(repoId: string, root: string): void {
+  const projectId = `prj_${repoId}`;
+  db.prepare(
+    `INSERT OR IGNORE INTO ledger_projects (
+      id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
+    ) VALUES (?, ?, '', '', 'remote', 1, 1)`,
+  ).run(projectId, repoId);
+  db.prepare(
+    `INSERT OR REPLACE INTO ledger_project_checkouts (
+      id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'main', '', 1, 1)`,
+  ).run(`checkout_${repoId}`, projectId, repoId, root, repoId);
+}
+
+function sha256(text: string | Buffer): string {
+  return crypto.createHash("sha256").update(text).digest("hex");
 }
 
 beforeEach(() => {
@@ -846,5 +866,124 @@ describe("provider/artifact substrate", () => {
       target: "model:feedbax:feedbax-model:baseline",
       metadata: expect.objectContaining({ ledger_issue_id: issueId }),
     }));
+  });
+
+  it("serves managed JSON previews from registered artifact storage", () => {
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      json: { accuracy: 0.95 },
+      filename: "metrics.json",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      media_type: "application/json",
+      source: { kind: "managed_file" },
+      download: { available: true, filename: "metrics.json" },
+    });
+    expect(content?.preview?.text).toContain('"accuracy": 0.95');
+  });
+
+  it("returns binary download metadata without inline preview", () => {
+    const payload = Buffer.from([0, 1, 2, 3, 4]);
+    const artifact = ingestArtifact(db, {
+      media_type: "application/octet-stream",
+      content_base64: payload.toString("base64"),
+      filename: "model.bin",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "binary",
+      preview: null,
+      download: {
+        available: true,
+        media_type: "application/octet-stream",
+        size_bytes: payload.length,
+        filename: "model.bin",
+      },
+    });
+  });
+
+  it("does not serve registered link file URIs outside managed storage", () => {
+    const outsidePath = path.join(tempDir, "outside.txt");
+    fs.writeFileSync(outsidePath, "not managed", "utf8");
+    const artifact = ingestArtifact(db, {
+      sha256: sha256("not managed"),
+      media_type: "text/plain",
+      uri: `file://${outsidePath}`,
+      custody_mode: "link",
+      availability: "present",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "unavailable",
+      kind: "unavailable",
+      download: { available: false },
+      reason: "local file URI is not managed by Mandible",
+    });
+  });
+
+  it("serves repo locator previews only under a registered checkout", () => {
+    const repoRoot = path.join(tempDir, "repo");
+    const reportPath = path.join(repoRoot, "results", "report.md");
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    fs.writeFileSync(reportPath, "# Report\n\nReady.\n", "utf8");
+    createLedgerCheckout("rlrmp", repoRoot);
+
+    const artifact = ingestArtifact(db, {
+      sha256: sha256("# Report\n\nReady.\n"),
+      media_type: "text/markdown",
+      uri: "repo://rlrmp@main/results/report.md",
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", ref: "main", path: "results/report.md" },
+      availability: "present",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "markdown",
+      source: { kind: "repo_locator", locator: "repo://rlrmp/results/report.md" },
+      download: { available: true },
+    });
+    expect(content?.preview?.text).toContain("# Report");
+  });
+
+  it("rejects repo locator traversal outside the registered checkout", () => {
+    const repoRoot = path.join(tempDir, "repo");
+    const outsidePath = path.join(tempDir, "outside.txt");
+    fs.mkdirSync(repoRoot, { recursive: true });
+    fs.writeFileSync(outsidePath, "outside", "utf8");
+    createLedgerCheckout("rlrmp", repoRoot);
+
+    const artifact = ingestArtifact(db, {
+      sha256: sha256("outside"),
+      media_type: "text/plain",
+      uri: "repo://rlrmp/../outside.txt",
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", path: "../outside.txt" },
+      availability: "present",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "unavailable",
+      kind: "unavailable",
+      download: { available: false },
+      reason: "artifact repo locator path is outside the registered checkout",
+    });
   });
 });
