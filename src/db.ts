@@ -1517,6 +1517,16 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_target
         ON ledger_issue_relationship_sources(target_issue_id)`
     ]
+  },
+  {
+    version: 65,
+    name: "artifact_reference_custody",
+    // Bug: e16807c — artifacts/documents may be links, copies, managed CAS
+    // content, or external/provider-owned references whose source home differs
+    // from the issue repo that mentions them.
+    // Guarded DDL below handles fresh DBs, older DBs, and tests that rewind
+    // schema_version on an already-current database.
+    statements: []
   }
 ];
 
@@ -1614,6 +1624,9 @@ export function migrate(db: Db): void {
   }
   if (pending.some((m) => m.version === 61)) {
     migrateLedgerEventHashIds(db);
+  }
+  if (pending.some((m) => m.version === 65)) {
+    ensureArtifactCustodyColumns(db);
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
   if (pending.some((m) => m.version === 26)) {
@@ -1763,6 +1776,86 @@ function ensureLedgerHashIdColumns(db: Db): void {
         WHERE ordinal > 0`
     );
   }
+}
+
+function ensureArtifactCustodyColumns(db: Db): void {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'artifacts'")
+    .get();
+  if (!table) {
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS artifacts (
+        id                 TEXT PRIMARY KEY,
+        algorithm          TEXT NOT NULL DEFAULT 'sha256',
+        content_hash       TEXT NOT NULL,
+        uri                TEXT NOT NULL,
+        media_type         TEXT,
+        role               TEXT,
+        size_bytes         INTEGER NOT NULL DEFAULT 0,
+        provider_id        TEXT,
+        manifest_id        TEXT,
+        metadata_json      TEXT NOT NULL DEFAULT '{}',
+        pinned             INTEGER NOT NULL DEFAULT 1,
+        custody_mode       TEXT NOT NULL DEFAULT 'managed'
+          CHECK(custody_mode IN ('link','copy','managed','external')),
+        home_repo_id       TEXT,
+        repo_locator_json  TEXT NOT NULL DEFAULT '{}',
+        availability       TEXT NOT NULL DEFAULT 'unchecked'
+          CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned')),
+        retention_json     TEXT NOT NULL DEFAULT '{}',
+        reference_json     TEXT NOT NULL DEFAULT '{}',
+        created_at         INTEGER NOT NULL,
+        UNIQUE(algorithm, content_hash)
+      )`
+    );
+  }
+
+  const columns = db
+    .prepare("PRAGMA table_info(artifacts)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+
+  if (!names.has("custody_mode")) {
+    db.exec(
+      `ALTER TABLE artifacts ADD COLUMN custody_mode TEXT NOT NULL DEFAULT 'managed'
+        CHECK(custody_mode IN ('link','copy','managed','external'))`
+    );
+  }
+  if (!names.has("home_repo_id")) {
+    db.exec("ALTER TABLE artifacts ADD COLUMN home_repo_id TEXT");
+  }
+  if (!names.has("repo_locator_json")) {
+    db.exec("ALTER TABLE artifacts ADD COLUMN repo_locator_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!names.has("availability")) {
+    db.exec(
+      `ALTER TABLE artifacts ADD COLUMN availability TEXT NOT NULL DEFAULT 'unchecked'
+        CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned'))`
+    );
+  }
+  if (!names.has("retention_json")) {
+    db.exec("ALTER TABLE artifacts ADD COLUMN retention_json TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!names.has("reference_json")) {
+    db.exec("ALTER TABLE artifacts ADD COLUMN reference_json TEXT NOT NULL DEFAULT '{}'");
+  }
+
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_artifacts_provider
+      ON artifacts(provider_id)`
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_artifacts_role
+      ON artifacts(role)`
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_artifacts_home_repo
+      ON artifacts(home_repo_id)`
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_artifacts_custody
+      ON artifacts(custody_mode, availability)`
+  );
 }
 
 function migrateLedgerEventHashIds(db: Db): void {
