@@ -3,11 +3,13 @@ import { marked } from 'marked';
 import {
   getArtifact,
   getArtifactContent,
+  getArtifactKnowledgeBackrefs,
   getArtifacts,
   resolveArtifact,
   type ArtifactContentResult,
   type ArtifactRecord,
   type ArtifactResolveResult,
+  type KnowledgeBackrefRecord,
 } from '../api';
 import { artifactDetailHref } from '../artifact-links';
 import { sanitizeMarkdown } from '../sanitize';
@@ -55,11 +57,14 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
   const [selectedId, setSelectedId] = useState<string | null>(initialArtifactId ?? null);
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
   const [artifactContent, setArtifactContent] = useState<ArtifactContentResult | null>(null);
+  const [knowledgeBackrefs, setKnowledgeBackrefs] = useState<KnowledgeBackrefRecord[]>([]);
   const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [contentLoading, setContentLoading] = useState(false);
   const [contentError, setContentError] = useState<string | null>(null);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -133,8 +138,11 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
   useEffect(() => {
     if (!selectedArtifact) {
       setArtifactContent(null);
+      setKnowledgeBackrefs([]);
       setContentError(null);
+      setKnowledgeError(null);
       setContentLoading(false);
+      setKnowledgeLoading(false);
       return;
     }
     let cancelled = false;
@@ -150,6 +158,32 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
       })
       .finally(() => {
         if (!cancelled) setContentLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedArtifact?.id]);
+
+  useEffect(() => {
+    if (!selectedArtifact) {
+      setKnowledgeBackrefs([]);
+      setKnowledgeError(null);
+      setKnowledgeLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setKnowledgeLoading(true);
+    setKnowledgeError(null);
+    setKnowledgeBackrefs([]);
+    getArtifactKnowledgeBackrefs(selectedArtifact.id)
+      .then((backrefs) => {
+        if (!cancelled) setKnowledgeBackrefs(backrefs);
+      })
+      .catch((err) => {
+        if (!cancelled) setKnowledgeError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setKnowledgeLoading(false);
       });
     return () => {
       cancelled = true;
@@ -258,6 +292,9 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
             content={artifactContent}
             contentLoading={contentLoading}
             contentError={contentError}
+            knowledgeBackrefs={knowledgeBackrefs}
+            knowledgeLoading={knowledgeLoading}
+            knowledgeError={knowledgeError}
           />
         )}
       </main>
@@ -288,12 +325,18 @@ function ArtifactDetail({
   content,
   contentLoading,
   contentError,
+  knowledgeBackrefs,
+  knowledgeLoading,
+  knowledgeError,
 }: {
   artifact: ArtifactRecord;
   resolution: ArtifactResolveResult | null;
   content: ArtifactContentResult | null;
   contentLoading: boolean;
   contentError: string | null;
+  knowledgeBackrefs: KnowledgeBackrefRecord[];
+  knowledgeLoading: boolean;
+  knowledgeError: string | null;
 }): JSX.Element {
   const preview = content ? artifactPreview(content) : null;
   const locatorRows = [
@@ -357,6 +400,25 @@ function ArtifactDetail({
               </a>
             ))}
           </div>
+        </section>
+      )}
+      {(knowledgeLoading || knowledgeError || knowledgeBackrefs.length > 0) && (
+        <section className="artifact-detail__section">
+          <h3>Knowledge Backrefs</h3>
+          {knowledgeLoading && <div className="artifacts-empty">Loading knowledge references...</div>}
+          {!knowledgeLoading && knowledgeError && <div className="artifacts-error">{knowledgeError}</div>}
+          {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
+            <div className="artifact-detail__list">
+              {knowledgeBackrefs.map((backref) => (
+                <div key={backref.id} className="artifact-detail__list-item">
+                  <code>{backref.external_ref || backref.external_id}</code>
+                  <span>{backref.ref_type}</span>
+                  <span>{backref.provider_id}</span>
+                  <span>{backref.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
       <section className="artifact-detail__section">

@@ -1722,6 +1722,20 @@ export type ArtifactContentResult = {
   reason?: string;
 };
 
+export type KnowledgeBackrefRecord = {
+  id: string;
+  source_type: 'artifact' | 'document';
+  source_id: string;
+  provider_id: string;
+  ref_type: 'document' | 'entity' | 'claim';
+  external_id: string;
+  external_ref: string;
+  status: 'offered' | 'indexed' | 'returned';
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
 export type ArtifactQueryParams = {
   q?: string;
   hash?: string;
@@ -1753,6 +1767,12 @@ export async function getArtifactContent(id: string): Promise<ArtifactContentRes
   const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/content`);
   const payload = (await parseMaybeJson(response)) as { content: ArtifactContentResult };
   return payload.content;
+}
+
+export async function getArtifactKnowledgeBackrefs(id: string): Promise<KnowledgeBackrefRecord[]> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/knowledge-backrefs`);
+  const payload = (await parseMaybeJson(response)) as { backrefs?: KnowledgeBackrefRecord[] };
+  return payload.backrefs ?? [];
 }
 
 export async function resolveArtifact(ref: string): Promise<ArtifactResolveResult> {

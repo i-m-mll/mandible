@@ -7,6 +7,7 @@ import { AuthQueueView } from '../ui/src/views/auth';
 import { ReviewView } from '../ui/src/views/review';
 import { SessionsView } from '../ui/src/views/sessions';
 import { WorkOverviewView } from '../ui/src/views/work';
+import { ArtifactsView } from '../ui/src/views/artifacts';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
 import {
   resolveIssueIdDeepLink,
@@ -607,6 +608,101 @@ describe('LedgerIssueDetail', () => {
     expect(screen.getByText('Start Agent')).toBeTruthy();
     expect(screen.getByText('Close Issue')).toBeTruthy();
     expect(screen.getAllByText('Add Comment')).toHaveLength(2);
+  });
+});
+
+describe('ArtifactsView', () => {
+  it('renders HumbleB knowledge backrefs in artifact detail', async () => {
+    const artifact = {
+      id: 'artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      algorithm: 'sha256',
+      content_hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      uri: 'artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      media_type: 'text/markdown',
+      role: 'report',
+      size_bytes: 42,
+      provider_id: 'feedbax',
+      manifest_id: null,
+      metadata: { title: 'Demo Report' },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: {},
+      availability: 'present',
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      aliases: [],
+      links: [],
+    };
+    const mockFetch = vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ artifacts: [artifact] }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.endsWith('/content')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({
+            content: {
+              artifact_id: artifact.id,
+              status: 'unavailable',
+              kind: 'unavailable',
+              media_type: 'text/markdown',
+              size_bytes: 0,
+              source: null,
+              preview: null,
+              download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+              reason: 'No inline preview is available.',
+            },
+          }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({
+            backrefs: [
+              {
+                id: 'kb_1',
+                source_type: 'artifact',
+                source_id: artifact.id,
+                provider_id: 'humbleb',
+                ref_type: 'claim',
+                external_id: 'claim_1',
+                external_ref: 'humbleb://claims/claim_1',
+                status: 'indexed',
+                metadata: {},
+                created_at: Date.now(),
+                updated_at: Date.now(),
+              },
+            ],
+          }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      if (url.includes(encodeURIComponent(artifact.id))) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ artifact }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    render(h(ArtifactsView, { initialArtifactId: artifact.id }));
+
+    await waitFor(() => expect(screen.getByText('humbleb://claims/claim_1')).toBeTruthy());
+    expect(screen.getByText('Knowledge Backrefs')).toBeTruthy();
+    expect(screen.getByText('claim')).toBeTruthy();
+    expect(screen.getByText('indexed')).toBeTruthy();
   });
 });
 
