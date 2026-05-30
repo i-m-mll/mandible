@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { getDb } from "./db.js";
+import {
+  buildGitFetchArgs,
+  buildGitReadTransportPlan,
+  readGitReadTransportPolicy,
+} from "./git-read-transport.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,6 +53,7 @@ export type RuntimePatchInput = {
 };
 
 const REPO_URL = "git@github.com:i-m-mll/mandible.git";
+const RUNTIME_BRANCH = "main";
 
 /**
  * Compute the platform-specific Zone 2 runtime path.
@@ -142,12 +148,17 @@ export class RuntimeManager {
     const parent = path.dirname(this.zone2);
     fs.mkdirSync(parent, { recursive: true });
 
+    const cloneUrl = this.resolveReadRemote(REPO_URL);
+    if (!cloneUrl) {
+      throw new Error("Git read transport is disabled");
+    }
+
     // Clone shallow
     await execFileAsync("git", [
       "clone",
       "--depth", "1",
-      "--branch", "main",
-      REPO_URL,
+      "--branch", RUNTIME_BRANCH,
+      cloneUrl,
       this.zone2,
     ], { timeout: 120_000 });
 
@@ -239,13 +250,14 @@ export class RuntimeManager {
     }
 
     try {
-      await execFileAsync("git", ["fetch", "origin", "main"], {
-        cwd: this.zone2,
-        timeout: 30_000,
-      });
+      const fetchArgs = await this.buildRuntimeFetchArgs();
+      if (!fetchArgs) {
+        return { available: false, behindBy: 0 };
+      }
+      await execFileAsync("git", fetchArgs, { cwd: this.zone2, timeout: 30_000 });
 
       const { stdout } = await execFileAsync(
-        "git", ["rev-list", "--count", "HEAD..origin/main"],
+        "git", ["rev-list", "--count", `HEAD..origin/${RUNTIME_BRANCH}`],
         { cwd: this.zone2 }
       );
       const behindBy = parseInt(stdout.trim(), 10) || 0;
@@ -263,12 +275,13 @@ export class RuntimeManager {
       throw new Error("Zone 2 runtime is not available");
     }
 
-    await execFileAsync("git", ["fetch", "origin", "main"], {
-      cwd: this.zone2,
-      timeout: 30_000,
-    });
+    const fetchArgs = await this.buildRuntimeFetchArgs();
+    if (!fetchArgs) {
+      throw new Error("Git read transport is disabled");
+    }
+    await execFileAsync("git", fetchArgs, { cwd: this.zone2, timeout: 30_000 });
 
-    await execFileAsync("git", ["rebase", "origin/main"], {
+    await execFileAsync("git", ["rebase", `origin/${RUNTIME_BRANCH}`], {
       cwd: this.zone2,
       timeout: 60_000,
     });
@@ -339,17 +352,18 @@ export class RuntimeManager {
       throw new Error("Zone 2 runtime is not available");
     }
 
-    await execFileAsync("git", ["fetch", "origin", "main"], {
-      cwd: this.zone2,
-      timeout: 30_000,
-    });
+    const fetchArgs = await this.buildRuntimeFetchArgs();
+    if (!fetchArgs) {
+      throw new Error("Git read transport is disabled");
+    }
+    await execFileAsync("git", fetchArgs, { cwd: this.zone2, timeout: 30_000 });
 
-    await execFileAsync("git", ["checkout", "main"], {
+    await execFileAsync("git", ["checkout", RUNTIME_BRANCH], {
       cwd: this.zone2,
       timeout: 10_000,
     });
 
-    await execFileAsync("git", ["reset", "--hard", "origin/main"], {
+    await execFileAsync("git", ["reset", "--hard", `origin/${RUNTIME_BRANCH}`], {
       cwd: this.zone2,
       timeout: 10_000,
     });
@@ -394,6 +408,35 @@ export class RuntimeManager {
       patch.source,
       patch.session_id ?? null,
     );
+  }
+
+  private resolveReadRemote(remoteUrl: string): string | null {
+    const policy = readGitReadTransportPolicy(getDb(), this.zone2);
+    const plan = buildGitReadTransportPlan({ policy, remoteName: remoteUrl, remoteUrl });
+    return plan.networkReadsDisabled ? null : plan.readRemote;
+  }
+
+  private async buildRuntimeFetchArgs(): Promise<string[] | null> {
+    const policy = readGitReadTransportPolicy(getDb(), this.zone2);
+    const remoteUrl = await this.readRuntimeRemoteUrl();
+    return buildGitFetchArgs({
+      policy,
+      remoteUrl,
+      branch: RUNTIME_BRANCH,
+      remoteTrackingRef: `refs/remotes/origin/${RUNTIME_BRANCH}`,
+    });
+  }
+
+  private async readRuntimeRemoteUrl(): Promise<string | null> {
+    try {
+      const { stdout } = await execFileAsync("git", ["remote", "get-url", "origin"], {
+        cwd: this.zone2,
+        timeout: 5_000,
+      });
+      return stdout.trim();
+    } catch {
+      return null;
+    }
   }
 }
 
