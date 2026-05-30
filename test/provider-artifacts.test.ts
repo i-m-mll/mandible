@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   getArtifact,
+  getArtifactRoot,
   getIndexedGraph,
   getIndexedGraphCount,
   getProviderCapabilities,
@@ -17,6 +18,7 @@ import {
 
 let tempDir = "";
 let db: Database.Database;
+let savedEnv: Record<string, string | undefined>;
 
 function createSchema(database: Database.Database): void {
   database.exec(`
@@ -46,6 +48,12 @@ function createSchema(database: Database.Database): void {
       manifest_id TEXT,
       metadata_json TEXT NOT NULL DEFAULT '{}',
       pinned INTEGER NOT NULL DEFAULT 1,
+      custody_mode TEXT NOT NULL DEFAULT 'managed',
+      home_repo_id TEXT,
+      repo_locator_json TEXT NOT NULL DEFAULT '{}',
+      availability TEXT NOT NULL DEFAULT 'unchecked',
+      retention_json TEXT NOT NULL DEFAULT '{}',
+      reference_json TEXT NOT NULL DEFAULT '{}',
       created_at INTEGER NOT NULL,
       UNIQUE(algorithm, content_hash)
     );
@@ -91,11 +99,102 @@ function createSchema(database: Database.Database): void {
       observed_at INTEGER NOT NULL,
       source TEXT NOT NULL
     );
+    CREATE TABLE settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE ledger_projects (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      remote_identity TEXT NOT NULL DEFAULT '',
+      upstream_identity TEXT NOT NULL DEFAULT '',
+      namespace_policy TEXT NOT NULL DEFAULT 'remote',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE ledger_project_checkouts (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      work_repo_id TEXT,
+      root TEXT NOT NULL,
+      name TEXT NOT NULL,
+      default_branch TEXT NOT NULL DEFAULT '',
+      remote_url TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE ledger_issues (
+      id TEXT PRIMARY KEY,
+      short_id TEXT NOT NULL DEFAULT '',
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      resolution TEXT,
+      kind TEXT NOT NULL DEFAULT 'unknown',
+      priority TEXT NOT NULL DEFAULT 'unknown',
+      author_actor_id TEXT,
+      author_actor_type TEXT NOT NULL DEFAULT 'external_adapter',
+      author_display TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'mandible',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      closed_at INTEGER,
+      deleted_at INTEGER
+    );
+    CREATE TABLE ledger_issue_aliases (
+      issue_id TEXT NOT NULL,
+      alias_kind TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      alias TEXT NOT NULL,
+      external_id TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (alias_kind, project_id, alias)
+    );
   `);
 }
 
+function createLedgerIssue(projectName: string, alias: string, title = `Issue ${alias}`): string {
+  const projectId = `prj_${projectName}`;
+  const issueId = `${alias}_${projectName}`;
+  db.prepare(
+    `INSERT OR IGNORE INTO ledger_projects (
+      id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
+    ) VALUES (?, ?, '', '', 'remote', 1, 1)`,
+  ).run(projectId, projectName);
+  db.prepare(
+    `INSERT OR IGNORE INTO ledger_project_checkouts (
+      id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'main', '', 1, 1)`,
+  ).run(`checkout_${projectName}`, projectId, projectName, `/tmp/${projectName}`, projectName);
+  db.prepare(
+    `INSERT INTO ledger_issues (
+      id, short_id, project_id, title, body, status, kind, priority,
+      author_actor_type, author_display, source, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, '', 'open', 'feature', 'normal', 'agent', 'Codex', 'mandible', 1, 1)`,
+  ).run(issueId, alias, projectId, title);
+  db.prepare(
+    `INSERT INTO ledger_issue_aliases (
+      issue_id, alias_kind, project_id, alias, external_id, source, is_primary, created_at
+    ) VALUES (?, 'git_bug_short', ?, ?, ?, 'git_bug', 1, 1)`,
+  ).run(issueId, projectId, alias, alias);
+  return issueId;
+}
+
 beforeEach(() => {
+  savedEnv = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    MANDIBLE_HOME: process.env.MANDIBLE_HOME,
+    MANDIBLE_ARTIFACT_DIR: process.env.MANDIBLE_ARTIFACT_DIR,
+  };
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-provider-test-"));
+  process.env.HOME = path.join(tempDir, "home");
+  delete process.env.MANDIBLE_ARTIFACT_DIR;
+  delete process.env.MANDIBLE_HOME;
   db = new Database(":memory:");
   createSchema(db);
 });
@@ -103,9 +202,73 @@ beforeEach(() => {
 afterEach(() => {
   db.close();
   fs.rmSync(tempDir, { recursive: true, force: true });
+  for (const [key, value] of Object.entries(savedEnv)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 });
 
 describe("provider/artifact substrate", () => {
+  it("defaults the artifact root to non-cache local app data under HOME", () => {
+    expect(getArtifactRoot()).toBe(path.join(process.env.HOME!, ".mandible", "artifacts"));
+    expect(getArtifactRoot()).not.toContain(`${path.sep}.cache${path.sep}`);
+  });
+
+  it("uses MANDIBLE_HOME/artifacts when no artifact-specific override is set", () => {
+    process.env.MANDIBLE_HOME = path.join(tempDir, "mandible-home");
+
+    expect(getArtifactRoot()).toBe(path.join(tempDir, "mandible-home", "artifacts"));
+  });
+
+  it("uses artifact_root from settings when no environment override is set", () => {
+    const configuredRoot = path.join(tempDir, "settings-root");
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('artifact_root', ?, 1000)"
+    ).run(configuredRoot);
+
+    const artifact = ingestArtifact(db, {
+      media_type: "application/json",
+      json: { configured: true },
+    }, 1000);
+
+    expect(getArtifactRoot(db)).toBe(configuredRoot);
+    expect(artifact.uri.startsWith(`file://${configuredRoot}${path.sep}`)).toBe(true);
+    expect(fs.existsSync(artifact.uri.replace("file://", ""))).toBe(true);
+  });
+
+  it("lets MANDIBLE_ARTIFACT_DIR override settings and MANDIBLE_HOME", () => {
+    const envRoot = path.join(tempDir, "env-root");
+    process.env.MANDIBLE_HOME = path.join(tempDir, "mandible-home");
+    process.env.MANDIBLE_ARTIFACT_DIR = envRoot;
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('artifact_root', ?, 1000)"
+    ).run(path.join(tempDir, "settings-root"));
+
+    expect(getArtifactRoot(db)).toBe(envRoot);
+  });
+
+  it("ships a static Mandible-HumbleB bridge contract fixture", () => {
+    const fixturePath = path.join(process.cwd(), "test/fixtures/mandible-humbleb-bridge.v1.json");
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8")) as {
+      schema_version: string;
+      issue: { id: string; repo_id: string };
+      references: Array<Record<string, unknown>>;
+      humbleb_return_refs: Record<string, unknown>;
+    };
+
+    expect(fixture.schema_version).toBe("mandible.humbleb_bridge.v1");
+    expect(fixture.issue).toMatchObject({ repo_id: "mandible" });
+    expect(fixture.references[0]).toMatchObject({
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      availability: "unchecked",
+    });
+    expect(fixture.humbleb_return_refs.claim_refs).toEqual(["humbleb:claim:claim_0000000000000001"]);
+  });
+
   it("registers providers and mirrors them into graph entities", () => {
     const provider = registerProvider(db, {
       id: "Feedbax",
@@ -139,7 +302,39 @@ describe("provider/artifact substrate", () => {
 
     expect(first.id).toBe(second.id);
     expect(first.id).toMatch(/^artifact:sha256:/);
+    expect(first.custody_mode).toBe("managed");
+    expect(first.availability).toBe("present");
+    expect(first.retention).toMatchObject({ pinned: true });
     expect(fs.existsSync(first.uri.replace("file://", ""))).toBe(true);
+  });
+
+  it("stores explicit artifact custody and cross-repo reference metadata", () => {
+    const artifact = ingestArtifact(db, {
+      provider_id: "mandible",
+      role: "document_snapshot",
+      media_type: "text/markdown",
+      sha256: "e".repeat(64),
+      uri: "file:///tmp/rlrmp/results/b41c940/report.md",
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      availability: "unchecked",
+      repo_locator: {
+        repo_id: "rlrmp",
+        ref: "main",
+        path: "results/b41c940/report.md",
+      },
+      retention: { pin_reason: "bridge-fixture" },
+      reference: { owner_system: "repo", document_role: "report" },
+    }, 1000, tempDir);
+
+    expect(artifact).toMatchObject({
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      availability: "unchecked",
+      pinned: true,
+    });
+    expect(artifact.repo_locator).toMatchObject({ repo_id: "rlrmp", path: "results/b41c940/report.md" });
+    expect(artifact.reference).toMatchObject({ owner_system: "repo", document_role: "report" });
   });
 
   it("ingests provider manifests into lineage graph nodes and edges", () => {
@@ -316,5 +511,150 @@ describe("provider/artifact substrate", () => {
     expect(getProviderCapabilities(db, "feedbax")?.actions).toContainEqual(
       expect.objectContaining({ id: "feedbax.start_training_run", requires_auth: true }),
     );
+  });
+
+  it("resolves native provider issue refs to canonical ledger issue graph nodes", () => {
+    const issueId = createLedgerIssue("rlrmp", "b41c940", "Migrate RLRMP Feedbax models");
+
+    ingestProviderManifest(db, {
+      manifest: {
+        kind: "TrainingRunManifest",
+        schema_version: "feedbax.manifest.v1",
+        id: "run-with-ledger-issue",
+        status: "completed",
+        provenance: {
+          issues: ["rlrmp/b41c940"],
+        },
+      },
+    }, 1000, tempDir);
+
+    const graph = getIndexedGraph(db, { mode: "provider-lineage", limit: 100 });
+    const issueNode = graph.nodes.find((node) => node.id === "issue:rlrmp:b41c940");
+    expect(issueNode).toMatchObject({
+      type: "issue",
+      label: "Migrate RLRMP Feedbax models",
+      repo_id: "rlrmp",
+      detail: expect.objectContaining({ ledger_issue_id: issueId }),
+    });
+    expect(graph.edges).toContainEqual(expect.objectContaining({
+      source: "issue:rlrmp:b41c940",
+      target: "run:feedbax:run-with-ledger-issue",
+      type: "requested_by",
+      metadata: expect.objectContaining({
+        issue_ref: "rlrmp/b41c940",
+        ledger_issue_id: issueId,
+        resolution_status: "resolved",
+      }),
+    }));
+  });
+
+  it("keeps provider-scoped issue refs when ledger resolution is unresolved or ambiguous", () => {
+    createLedgerIssue("alpha", "dupe123", "Alpha duplicate");
+    createLedgerIssue("beta", "dupe123", "Beta duplicate");
+
+    ingestProviderManifest(db, {
+      manifest: {
+        kind: "TrainingRunManifest",
+        schema_version: "feedbax.manifest.v1",
+        id: "run-with-ambiguous-issues",
+        status: "completed",
+        provenance: {
+          issues: ["dupe123", "missing123"],
+        },
+      },
+    }, 1000, tempDir);
+
+    const graph = getIndexedGraph(db, { mode: "provider-lineage", limit: 100 });
+    expect(graph.nodes.find((node) => node.id === "issue:feedbax:dupe123")?.detail?.resolution).toMatchObject({
+      resolution_status: "ambiguous",
+      candidate_count: 2,
+    });
+    expect(graph.nodes.find((node) => node.id === "issue:feedbax:missing123")?.detail?.resolution).toMatchObject({
+      resolution_status: "unresolved",
+      candidate_count: 0,
+    });
+  });
+
+  it("normalizes Feedbax model artifact manifests and role-addressed stores", () => {
+    const issueId = createLedgerIssue("rlrmp", "b41c940", "Migrate RLRMP Feedbax models");
+    const parameterHash = "1".repeat(64);
+    const graphHash = "2".repeat(64);
+    const parentHash = "3".repeat(64);
+
+    const manifest = ingestProviderManifest(db, {
+      manifest: {
+        kind: "ModelArtifactManifest",
+        schema_version: "feedbax.manifest.v1",
+        id: "feedbax-model:baseline",
+        status: "available",
+        feedbax_version: "0.1.0",
+        provider_version: "feedbax-provider.v1",
+        provenance: {
+          issues: ["rlrmp/b41c940"],
+          parents: [
+            { kind: "TrainingRunManifest", id: "feedbax-training-run:stub-job", role: "checkpoint" },
+          ],
+        },
+        graph_spec: {
+          kind: "GraphSpec",
+          id: "feedbax-graph:baseline",
+          sha256: graphHash,
+        },
+        parameter_store: {
+          artifact_id: `artifact://sha256/${parameterHash}`,
+          sha256: parameterHash,
+          logical_name: "model.params.eqx",
+          media_type: "application/x-equinox",
+          size_bytes: 64,
+          storage_backend: "feedbax-local",
+          uri: "/tmp/feedbax/model.params.eqx",
+          array_roles: ["parameter"],
+          custody_mode: "link",
+          home_repo_id: "rlrmp",
+          repo_locator: { repo_id: "rlrmp", path: "_artifacts/b41c940/model.params.eqx" },
+        },
+        state_store: {
+          artifact_id: `artifact://sha256/${parentHash}`,
+          sha256: parentHash,
+          logical_name: "model.state.eqx",
+          storage_backend: "feedbax-local",
+        },
+        validation_records: [{ validator: "feedbax", status: "passed" }],
+        migration_records: [{ from: "legacy-equinox", to: "graph-spec" }],
+      },
+    }, 1000, tempDir);
+
+    expect(manifest.manifest_type).toBe("ModelArtifactManifest");
+    const graph = getIndexedGraph(db, { mode: "provider-lineage", limit: 200 });
+    const nodeIds = new Set(graph.nodes.map((node) => node.id));
+    const edgeTypes = graph.edges.map((edge) => edge.type);
+
+    expect(nodeIds).toContain("model:feedbax:feedbax-model:baseline");
+    expect(nodeIds).toContain(`artifact:sha256:${parameterHash}`);
+    expect(nodeIds).toContain("provider_spec:feedbax:feedbax-graph:baseline");
+    expect(nodeIds).toContain("issue:rlrmp:b41c940");
+    expect(edgeTypes).toContain("model_references_store");
+    expect(edgeTypes).toContain("model_used_spec");
+    expect(edgeTypes).toContain("derived_from");
+    expect(edgeTypes).toContain("requested_by");
+
+    const parameterArtifact = getArtifact(db, `artifact:sha256:${parameterHash}`);
+    expect(parameterArtifact).toMatchObject({
+      role: "parameter_store",
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      manifest_id: manifest.id,
+    });
+    expect(parameterArtifact?.metadata).toMatchObject({ store_field: "parameter_store" });
+    expect(parameterArtifact?.repo_locator).toMatchObject({ repo_id: "rlrmp" });
+    expect(graph.nodes.find((node) => node.id === "model:feedbax:feedbax-model:baseline")?.detail).toMatchObject({
+      validation_records: [{ validator: "feedbax", status: "passed" }],
+      migration_records: [{ from: "legacy-equinox", to: "graph-spec" }],
+    });
+    expect(graph.edges).toContainEqual(expect.objectContaining({
+      source: "issue:rlrmp:b41c940",
+      target: "model:feedbax:feedbax-model:baseline",
+      metadata: expect.objectContaining({ ledger_issue_id: issueId }),
+    }));
   });
 });

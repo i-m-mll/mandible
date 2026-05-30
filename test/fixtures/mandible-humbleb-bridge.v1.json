@@ -1,0 +1,48 @@
+{
+  "schema_version": "mandible.humbleb_bridge.v1",
+  "source_system": "mandible",
+  "issue": {
+    "id": "a8fbc09a842806a5fc5265d70c206e25be6c0858c74f1f0fba1ae96afd77b354",
+    "display_id": "a8fbc09",
+    "repo_id": "mandible",
+    "title": "Mandible-HumbleB document and knowledge boundary",
+    "kind": "umbrella",
+    "status": "open"
+  },
+  "references": [
+    {
+      "id": "artifact:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "role": "report",
+      "media_type": "text/markdown",
+      "custody_mode": "link",
+      "home_repo_id": "rlrmp",
+      "repo_locator": {
+        "repo_id": "rlrmp",
+        "ref": "main",
+        "path": "results/b41c940/report.md"
+      },
+      "content_identity": {
+        "algorithm": "sha256",
+        "hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "availability": "unchecked"
+    }
+  ],
+  "provenance_edges": [
+    {
+      "source": "issue:mandible:a8fbc09",
+      "target": "artifact:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "type": "references_artifact",
+      "edge_class": "provenance"
+    }
+  ],
+  "humbleb_return_refs": {
+    "document_refs": [
+      "humbleb:document:doc_0000000000000001"
+    ],
+    "claim_refs": [
+      "humbleb:claim:claim_0000000000000001"
+    ],
+    "ownership_note": "Mandible stores typed references only; HumbleB owns document chunks, claims, entities, and confidence."
+  }
+}

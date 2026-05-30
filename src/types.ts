@@ -530,6 +530,12 @@ export interface ArtifactRecord {
   manifest_id: string | null;
   metadata: Record<string, unknown>;
   pinned: boolean;
+  custody_mode: "link" | "copy" | "managed" | "external";
+  home_repo_id: string | null;
+  repo_locator: Record<string, unknown>;
+  availability: "present" | "missing" | "stale" | "unchecked" | "remote_only" | "pinned";
+  retention: Record<string, unknown>;
+  reference: Record<string, unknown>;
   created_at: number;
 }
 

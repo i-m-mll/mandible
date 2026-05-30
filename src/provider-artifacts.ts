@@ -13,7 +13,7 @@ import type {
   ProviderRecord,
 } from "./types.js";
 
-const DEFAULT_ARTIFACT_ROOT = path.join(os.homedir(), ".cache", "mandible", "artifacts");
+const ARTIFACT_ROOT_SETTING = "artifact_root";
 
 const MODE_ENTITY_TYPES: Record<GraphMode, string[] | null> = {
   activity: null,
@@ -44,6 +44,8 @@ const MODE_ENTITY_TYPES: Record<GraphMode, string[] | null> = {
 };
 
 type JsonRecord = Record<string, unknown>;
+type ArtifactCustodyMode = "link" | "copy" | "managed" | "external";
+type ArtifactAvailability = "present" | "missing" | "stale" | "unchecked" | "remote_only" | "pinned";
 
 interface ProviderInput {
   id?: string;
@@ -71,6 +73,12 @@ interface ArtifactInput {
   size_bytes?: number;
   storage_backend?: string;
   uri?: string;
+  custody_mode?: ArtifactCustodyMode | string;
+  home_repo_id?: string;
+  repo_locator?: JsonRecord;
+  availability?: ArtifactAvailability | string;
+  retention?: JsonRecord;
+  reference?: JsonRecord;
   metadata?: JsonRecord;
   pinned?: boolean;
   content?: string;
@@ -163,10 +171,6 @@ export interface IndexedGraphResult {
   edges: GraphEdge[];
 }
 
-export function getArtifactRoot(): string {
-  return process.env.MANDIBLE_ARTIFACT_DIR ?? DEFAULT_ARTIFACT_ROOT;
-}
-
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
@@ -179,6 +183,33 @@ function asArray<T>(value: unknown): T[] {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function userHome(): string {
+  return process.env.HOME || process.env.USERPROFILE || os.homedir();
+}
+
+function expandHomePath(value: string): string {
+  if (value === "~") return userHome();
+  if (value.startsWith("~/")) return path.join(userHome(), value.slice(2));
+  return value;
+}
+
+function normalizeArtifactRoot(value: string): string {
+  return path.resolve(expandHomePath(value));
+}
+
+function asCustodyMode(value: unknown, fallback: ArtifactCustodyMode): ArtifactCustodyMode {
+  return value === "link" || value === "copy" || value === "managed" || value === "external"
+    ? value
+    : fallback;
+}
+
+function asAvailability(value: unknown, fallback: ArtifactAvailability): ArtifactAvailability {
+  return value === "present" || value === "missing" || value === "stale" || value === "unchecked"
+    || value === "remote_only" || value === "pinned"
+    ? value
+    : fallback;
 }
 
 function jsonStringify(value: unknown): string {
@@ -202,6 +233,34 @@ function parseJsonArray<T>(value: string | null | undefined): T[] {
   } catch {
     return [];
   }
+}
+
+function tableExists(db: Db, table: string): boolean {
+  const row = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+  ).get(table) as { name: string } | undefined;
+  return Boolean(row);
+}
+
+function artifactRootFromSettings(db?: Db): string | undefined {
+  if (!db || !tableExists(db, "settings")) return undefined;
+  const row = db.prepare(
+    "SELECT value FROM settings WHERE key = ?"
+  ).get(ARTIFACT_ROOT_SETTING) as { value: string } | undefined;
+  return asString(row?.value);
+}
+
+export function getArtifactRoot(db?: Db): string {
+  const envOverride = asString(process.env.MANDIBLE_ARTIFACT_DIR);
+  if (envOverride) return normalizeArtifactRoot(envOverride);
+
+  const settingOverride = artifactRootFromSettings(db);
+  if (settingOverride) return normalizeArtifactRoot(settingOverride);
+
+  const mandibleHome = asString(process.env.MANDIBLE_HOME);
+  if (mandibleHome) return path.join(normalizeArtifactRoot(mandibleHome), "artifacts");
+
+  return path.join(normalizeArtifactRoot(userHome()), ".mandible", "artifacts");
 }
 
 function normalizeIdentifier(value: string): string {
@@ -443,6 +502,7 @@ function providerInputFromManifest(
 
 const MANIFEST_KIND_TYPES: Record<string, string> = {
   GraphSpecManifest: "provider_spec",
+  ModelArtifactManifest: "model",
   TrainingRunSetManifest: "run",
   TrainingRunManifest: "run",
   EvaluationRunManifest: "run",
@@ -458,6 +518,8 @@ const SPEC_FIELD_KINDS: Array<[field: string, fallbackKind: string]> = [
   ["analysis_spec", "AnalysisRunSpec"],
   ["report_spec", "ReportSpec"],
 ];
+
+const MODEL_STORE_FIELDS = ["parameter_store", "state_store", "optimizer_store"] as const;
 
 function isNativeProviderManifest(manifest: JsonRecord): boolean {
   return asString(manifest.kind) === "experiment_provider" && (
@@ -481,6 +543,7 @@ function nativeSubjectTitle(manifest: JsonRecord, type: string): string {
   if (kind === "AnalysisRunManifest") return `Analysis ${name}`;
   if (kind === "ReportManifest") return `Report ${name}`;
   if (kind === "GraphSpecManifest") return `Graph spec ${name}`;
+  if (kind === "ModelArtifactManifest") return `Model ${name}`;
   return name;
 }
 
@@ -493,8 +556,183 @@ function isNativeArtifactRef(item: JsonRecord): boolean {
   );
 }
 
+function modelStoreRefs(manifest: JsonRecord): Array<{ field: string; ref: JsonRecord }> {
+  const refs: Array<{ field: string; ref: JsonRecord }> = [];
+  for (const field of MODEL_STORE_FIELDS) {
+    const raw = manifest[field];
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        const ref = asRecord(item);
+        if (Object.keys(ref).length > 0) refs.push({ field, ref });
+      }
+      continue;
+    }
+    const ref = asRecord(raw);
+    if (Object.keys(ref).length > 0) refs.push({ field, ref });
+  }
+  return refs;
+}
+
 function entityTypeForParentKind(kind: string): string {
   return MANIFEST_KIND_TYPES[kind] ?? (kind.endsWith("Spec") ? "provider_spec" : "provider_manifest");
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+function splitProviderIssueRef(rawRef: string): { projectRef?: string; issueRef: string } {
+  const trimmed = rawRef.trim();
+  const slash = trimmed.indexOf("/");
+  if (slash > 0 && slash < trimmed.length - 1 && !trimmed.includes("://")) {
+    return { projectRef: trimmed.slice(0, slash), issueRef: trimmed.slice(slash + 1) };
+  }
+  return { issueRef: trimmed };
+}
+
+function projectIdForRef(db: Db, projectRef: string | undefined): string | null {
+  const ref = projectRef?.trim();
+  if (!ref || !tableExists(db, "ledger_projects")) return null;
+  const checkoutPredicate = tableExists(db, "ledger_project_checkouts")
+    ? `UNION
+       SELECT project_id AS id FROM ledger_project_checkouts
+        WHERE lower(name) = lower(@ref) OR work_repo_id = @ref OR root = @ref`
+    : "";
+  const rows = db.prepare(
+    `SELECT id FROM ledger_projects
+      WHERE lower(display_name) = lower(@ref)
+         OR id = @ref
+         OR remote_identity = @ref
+     ${checkoutPredicate}`
+  ).all({ ref }) as Array<{ id: string }>;
+  const ids = Array.from(new Set(rows.map((row) => row.id)));
+  return ids.length === 1 ? ids[0] : null;
+}
+
+function issueMatches(db: Db, issueRef: string, projectId: string | null): string[] {
+  if (!tableExists(db, "ledger_issues") || !tableExists(db, "ledger_issue_aliases")) return [];
+  const trimmed = issueRef.trim();
+  if (!trimmed) return [];
+  const matches = new Set<string>();
+  const addRows = (rows: Array<{ id?: string; issue_id?: string }>) => {
+    for (const row of rows) {
+      const id = row.id ?? row.issue_id;
+      if (id) matches.add(id);
+    }
+  };
+
+  if (projectId) {
+    addRows(db.prepare(
+      "SELECT id FROM ledger_issues WHERE id = ? AND project_id = ?",
+    ).all(trimmed, projectId) as Array<{ id: string }>);
+    addRows(db.prepare(
+      "SELECT id FROM ledger_issues WHERE short_id = ? AND project_id = ?",
+    ).all(trimmed, projectId) as Array<{ id: string }>);
+    addRows(db.prepare(
+      "SELECT issue_id FROM ledger_issue_aliases WHERE alias = ? AND project_id = ?",
+    ).all(trimmed, projectId) as Array<{ issue_id: string }>);
+  } else {
+    addRows(db.prepare("SELECT id FROM ledger_issues WHERE id = ?").all(trimmed) as Array<{ id: string }>);
+    addRows(db.prepare("SELECT id FROM ledger_issues WHERE short_id = ?").all(trimmed) as Array<{ id: string }>);
+    addRows(db.prepare("SELECT issue_id FROM ledger_issue_aliases WHERE alias = ?").all(trimmed) as Array<{ issue_id: string }>);
+  }
+
+  if (matches.size === 0 && trimmed.length >= 4) {
+    const like = `${escapeLike(trimmed)}%`;
+    if (projectId) {
+      addRows(db.prepare(
+        "SELECT id FROM ledger_issues WHERE id LIKE ? ESCAPE '\\' AND project_id = ?",
+      ).all(like, projectId) as Array<{ id: string }>);
+      addRows(db.prepare(
+        "SELECT id FROM ledger_issues WHERE short_id LIKE ? ESCAPE '\\' AND project_id = ?",
+      ).all(like, projectId) as Array<{ id: string }>);
+      addRows(db.prepare(
+        "SELECT issue_id FROM ledger_issue_aliases WHERE alias LIKE ? ESCAPE '\\' AND project_id = ?",
+      ).all(like, projectId) as Array<{ issue_id: string }>);
+    } else {
+      addRows(db.prepare("SELECT id FROM ledger_issues WHERE id LIKE ? ESCAPE '\\'").all(like) as Array<{ id: string }>);
+      addRows(db.prepare("SELECT id FROM ledger_issues WHERE short_id LIKE ? ESCAPE '\\'").all(like) as Array<{ id: string }>);
+      addRows(db.prepare("SELECT issue_id FROM ledger_issue_aliases WHERE alias LIKE ? ESCAPE '\\'").all(like) as Array<{ issue_id: string }>);
+    }
+  }
+
+  return Array.from(matches).sort();
+}
+
+function ledgerIssueGraphInfo(db: Db, issueId: string, providerId: string, rawRef: string, now: number): {
+  nodeId: string;
+  metadata: JsonRecord;
+} | null {
+  if (!tableExists(db, "ledger_issues") || !tableExists(db, "ledger_projects")) return null;
+  const row = db.prepare(
+    `SELECT i.id, i.short_id, i.project_id, i.title, i.status, i.kind, i.priority,
+            p.display_name, c.work_repo_id, c.root, c.name AS checkout_name
+       FROM ledger_issues i
+       JOIN ledger_projects p ON p.id = i.project_id
+       LEFT JOIN ledger_project_checkouts c ON c.project_id = i.project_id
+      WHERE i.id = ?
+      ORDER BY c.updated_at DESC
+      LIMIT 1`
+  ).get(issueId) as {
+    id: string;
+    short_id: string;
+    project_id: string;
+    title: string;
+    status: string;
+    kind: string;
+    priority: string;
+    display_name: string;
+    work_repo_id: string | null;
+    root: string | null;
+    checkout_name: string | null;
+  } | undefined;
+  if (!row) return null;
+  const displayId = row.short_id || row.id.slice(0, 7);
+  const repoId = row.work_repo_id ?? (row.root ? path.basename(row.root) : row.project_id);
+  const nodeId = `issue:${repoId}:${displayId}`;
+  upsertGraphEntity(db, {
+    id: nodeId,
+    entity_type: "issue",
+    provider_id: providerId,
+    repo_id: repoId,
+    external_id: row.id,
+    title: row.title,
+    status: row.status,
+    labels: [row.kind],
+    summary: {
+      issue_id: displayId,
+      ledger_issue_id: row.id,
+      kind: row.kind,
+      priority: row.priority,
+      reference_source: "provider_provenance",
+      provider_reference: rawRef,
+      resolution_status: "resolved",
+    },
+    detail: {
+      ledger_issue_id: row.id,
+      project_id: row.project_id,
+      repo_root: row.root,
+      repo_name: row.checkout_name ?? row.display_name,
+      display_id: displayId,
+      provider_reference: rawRef,
+    },
+    visual: { icon: "issue", shape: "document" },
+    created_at: null,
+    updated_at: now,
+    observed_at: now,
+    source: "provider_manifest",
+  });
+  return {
+    nodeId,
+    metadata: {
+      issue_ref: rawRef,
+      ledger_issue_id: row.id,
+      project_id: row.project_id,
+      display_id: displayId,
+      resolution_status: "resolved",
+      resolution_source: "ledger",
+    },
+  };
 }
 
 function upsertNativeReferenceNode(db: Db, args: {
@@ -564,10 +802,46 @@ function upsertNativeIssueRef(db: Db, args: {
   providerId: string;
   issueId: string;
   sourceId: string;
+  provenance?: JsonRecord;
   now: number;
   source: string;
 }): void {
-  const nodeId = graphEntityId(args.providerId, "issue", args.issueId);
+  const { projectRef, issueRef } = splitProviderIssueRef(args.issueId);
+  const provenance = args.provenance ?? {};
+  const projectHint = projectRef
+    ?? asString(provenance.issue_project)
+    ?? asString(provenance.project)
+    ?? asString(provenance.repo_id)
+    ?? asString(provenance.source_repo_id);
+  const projectId = projectIdForRef(db, projectHint);
+  const matches = issueMatches(db, issueRef, projectId);
+  const resolved = matches.length === 1
+    ? ledgerIssueGraphInfo(db, matches[0], args.providerId, args.issueId, args.now)
+    : null;
+  const nodeId = resolved?.nodeId ?? graphEntityId(args.providerId, "issue", args.issueId);
+  const resolutionMetadata = resolved?.metadata ?? {
+    issue_ref: args.issueId,
+    issue_ref_normalized: issueRef,
+    project_ref: projectHint ?? null,
+    resolution_status: matches.length > 1 ? "ambiguous" : "unresolved",
+    resolution_source: "provider_fallback",
+    candidate_count: matches.length,
+  };
+  if (resolved) {
+    upsertGraphEdge(db, {
+      id: `requested_by:${nodeId}:${args.sourceId}`,
+      source_id: nodeId,
+      target_id: args.sourceId,
+      edge_type: "requested_by",
+      edge_class: "provenance",
+      provenance: "provider_manifest",
+      metadata: resolutionMetadata,
+      observed_at: args.now,
+      source: args.source,
+    });
+    return;
+  }
+
   upsertGraphEntity(db, {
     id: nodeId,
     entity_type: "issue",
@@ -575,8 +849,16 @@ function upsertNativeIssueRef(db: Db, args: {
     external_id: args.issueId,
     title: `Issue ${args.issueId}`,
     status: "referenced",
-    summary: { issue_id: args.issueId, reference_source: "provider_provenance" },
-    detail: { provider_id: args.providerId, note: "Provider manifest provenance issue reference" },
+    summary: {
+      issue_id: args.issueId,
+      reference_source: "provider_provenance",
+      resolution_status: resolutionMetadata.resolution_status,
+    },
+    detail: {
+      provider_id: args.providerId,
+      note: "Provider manifest provenance issue reference",
+      resolution: resolutionMetadata,
+    },
     visual: { icon: "issue", shape: "document" },
     created_at: null,
     updated_at: args.now,
@@ -590,6 +872,7 @@ function upsertNativeIssueRef(db: Db, args: {
     edge_type: "requested_by",
     edge_class: "provenance",
     provenance: "provider_manifest",
+    metadata: resolutionMetadata,
     observed_at: args.now,
     source: args.source,
   });
@@ -635,6 +918,8 @@ function upsertNativeManifestSubject(db: Db, args: {
       provenance: asRecord(args.manifest.provenance),
       metadata: asRecord(args.manifest.metadata),
       summary_metrics: summaryMetrics,
+      validation_records: asArray<JsonRecord>(args.manifest.validation_records),
+      migration_records: asArray<JsonRecord>(args.manifest.migration_records),
     },
     actions: defaultActionsForType(subjectType, nodeId),
     visual: { icon: subjectType, shape: subjectType === "run" ? "circle" : "document" },
@@ -845,7 +1130,7 @@ export function ingestArtifact(
   db: Db,
   input: ArtifactInput,
   now = Date.now(),
-  artifactRoot = getArtifactRoot(),
+  artifactRoot = getArtifactRoot(db),
 ): ArtifactRecord {
   const bytes = hasInlineArtifactContent(input) ? contentBuffer(input) : null;
   const declaredHash = hashFromArtifactRef(input);
@@ -868,20 +1153,45 @@ export function ingestArtifact(
     uri = `file://${filePath}`;
     sizeBytes = bytes.byteLength;
   }
+  const defaultCustody: ArtifactCustodyMode = bytes ? "managed" : (input.storage_backend === "external" ? "external" : "link");
+  const custodyMode = asCustodyMode(input.custody_mode, defaultCustody);
+  const availability = asAvailability(input.availability, bytes ? "present" : "unchecked");
+  const repoLocator = input.repo_locator ?? asRecord(input.metadata?.repo_locator);
+  const homeRepoId = input.home_repo_id ?? asString(input.metadata?.home_repo_id) ?? asString(input.metadata?.repo_id) ?? null;
+  const retention = {
+    ...(input.retention ?? {}),
+    pinned: input.pinned !== false,
+  };
+  const reference = {
+    ...(input.reference ?? {}),
+    artifact_id: input.artifact_id,
+    logical_name: input.logical_name,
+    storage_backend: input.storage_backend,
+    uri,
+    content_identity: {
+      algorithm: "sha256",
+      hash,
+      artifact_uri: id,
+    },
+  };
   const metadata = {
     ...(input.metadata ?? {}),
     filename: input.filename,
     logical_name: input.logical_name,
     artifact_id: input.artifact_id,
     storage_backend: input.storage_backend,
+    custody_mode: custodyMode,
+    availability,
   };
   db.prepare(
     `INSERT INTO artifacts (
       id, algorithm, content_hash, uri, media_type, role, size_bytes,
-      provider_id, manifest_id, metadata_json, pinned, created_at
+      provider_id, manifest_id, metadata_json, pinned, custody_mode, home_repo_id,
+      repo_locator_json, availability, retention_json, reference_json, created_at
     ) VALUES (
       @id, 'sha256', @content_hash, @uri, @media_type, @role, @size_bytes,
-      @provider_id, @manifest_id, @metadata_json, @pinned, @created_at
+      @provider_id, @manifest_id, @metadata_json, @pinned, @custody_mode, @home_repo_id,
+      @repo_locator_json, @availability, @retention_json, @reference_json, @created_at
     )
     ON CONFLICT(algorithm, content_hash) DO UPDATE SET
       media_type = COALESCE(excluded.media_type, artifacts.media_type),
@@ -890,6 +1200,12 @@ export function ingestArtifact(
       manifest_id = COALESCE(excluded.manifest_id, artifacts.manifest_id),
       metadata_json = excluded.metadata_json,
       uri = COALESCE(excluded.uri, artifacts.uri),
+      custody_mode = excluded.custody_mode,
+      home_repo_id = COALESCE(excluded.home_repo_id, artifacts.home_repo_id),
+      repo_locator_json = excluded.repo_locator_json,
+      availability = excluded.availability,
+      retention_json = excluded.retention_json,
+      reference_json = excluded.reference_json,
       size_bytes = CASE
         WHEN artifacts.size_bytes = 0 THEN excluded.size_bytes
         ELSE artifacts.size_bytes
@@ -906,6 +1222,12 @@ export function ingestArtifact(
     manifest_id: input.manifest_id ?? null,
     metadata_json: jsonStringify(metadata),
     pinned: input.pinned === false ? 0 : 1,
+    custody_mode: custodyMode,
+    home_repo_id: homeRepoId,
+    repo_locator_json: jsonStringify(repoLocator),
+    availability,
+    retention_json: jsonStringify(retention),
+    reference_json: jsonStringify(reference),
     created_at: now,
   });
 
@@ -925,8 +1247,24 @@ export function ingestArtifact(
       media_type: input.media_type ?? null,
       size_bytes: sizeBytes,
       storage_backend: input.storage_backend ?? null,
+      custody_mode: custodyMode,
+      home_repo_id: homeRepoId,
+      availability,
     },
-    detail: { uri, content_hash: hash, metadata, artifact_id: input.artifact_id ?? null },
+    detail: {
+      uri,
+      content_hash: hash,
+      metadata,
+      artifact_id: input.artifact_id ?? null,
+      custody: {
+        mode: custodyMode,
+        home_repo_id: homeRepoId,
+        repo_locator: repoLocator,
+        availability,
+        retention,
+        reference,
+      },
+    },
     visual: { icon: "artifact", shape: "document" },
     created_at: now,
     updated_at: now,
@@ -941,7 +1279,7 @@ export function ingestProviderManifest(
   db: Db,
   input: ManifestInput,
   now = Date.now(),
-  artifactRoot = getArtifactRoot(),
+  artifactRoot = getArtifactRoot(db),
 ): ProviderManifestRecord {
   const rawManifest = input.manifest ?? asRecord(input);
   const manifest = asRecord(rawManifest);
@@ -1063,6 +1401,16 @@ export function ingestProviderManifest(
           size_bytes: typeof ref.size_bytes === "number" ? ref.size_bytes : undefined,
           storage_backend: asString(ref.storage_backend),
           logical_name: asString(ref.logical_name),
+          custody_mode: asString(ref.custody_mode),
+          home_repo_id: asString(ref.home_repo_id),
+          repo_locator: asRecord(ref.repo_locator),
+          availability: asString(ref.availability),
+          retention: asRecord(ref.retention),
+          reference: {
+            provider_manifest_id: manifestId,
+            provider_artifact_ref: asString(ref.artifact_id) ?? asString(ref.logical_name),
+            source_field: "artifacts",
+          },
           metadata: asRecord(ref.metadata),
         }, now, artifactRoot);
         const refKeys = [
@@ -1131,6 +1479,64 @@ export function ingestProviderManifest(
       });
     }
 
+    for (const { field, ref } of modelStoreRefs(manifest)) {
+      const role = asString(ref.role) ?? field;
+      const artifactRecord = ingestArtifact(db, {
+        provider_id: provider.id,
+        manifest_id: manifestId,
+        artifact_id: asString(ref.artifact_id),
+        sha256: asString(ref.sha256),
+        uri: asString(ref.uri),
+        role,
+        media_type: asString(ref.media_type),
+        size_bytes: typeof ref.size_bytes === "number" ? ref.size_bytes : undefined,
+        storage_backend: asString(ref.storage_backend),
+        logical_name: asString(ref.logical_name) ?? field,
+        custody_mode: asString(ref.custody_mode),
+        home_repo_id: asString(ref.home_repo_id),
+        repo_locator: asRecord(ref.repo_locator),
+        availability: asString(ref.availability),
+        retention: asRecord(ref.retention),
+        reference: {
+          provider_manifest_id: manifestId,
+          provider_artifact_ref: asString(ref.artifact_id) ?? asString(ref.logical_name) ?? field,
+          source_field: field,
+        },
+        metadata: {
+          ...asRecord(ref.metadata),
+          store_field: field,
+          array_roles: Array.isArray(ref.array_roles) ? ref.array_roles : asArray<string>(ref.roles),
+        },
+      }, now, artifactRoot);
+      idMap.set(field, artifactRecord.id);
+      if (asString(ref.artifact_id)) idMap.set(asString(ref.artifact_id)!, artifactRecord.id);
+      if (asString(ref.sha256)) idMap.set(asString(ref.sha256)!, artifactRecord.id);
+      upsertGraphEdge(db, {
+        id: `manifest_references_artifact:${manifestId}:${artifactRecord.id}`,
+        source_id: manifestId,
+        target_id: artifactRecord.id,
+        edge_type: "manifest_references_artifact",
+        edge_class: "provenance",
+        provenance: "provider_manifest",
+        metadata: { role, store_field: field },
+        observed_at: now,
+        source: "provider_manifest",
+      });
+      if (nativeSubjectId) {
+        upsertGraphEdge(db, {
+          id: `model_references_store:${nativeSubjectId}:${artifactRecord.id}`,
+          source_id: nativeSubjectId,
+          target_id: artifactRecord.id,
+          edge_type: "model_references_store",
+          edge_class: "provenance",
+          provenance: "provider_manifest",
+          metadata: { role, store_field: field },
+          observed_at: now,
+          source: "provider_manifest",
+        });
+      }
+    }
+
     const entities = asArray<ManifestEntityInput>(manifest.entities);
     for (const item of entities) {
       const type = normalizeIdentifier(item.type ?? "artifact");
@@ -1190,6 +1596,7 @@ export function ingestProviderManifest(
     }
 
     if (nativeSubjectId) {
+      const subjectType = nativeSubjectType(manifest);
       for (const [field, fallbackKind] of SPEC_FIELD_KINDS) {
         const ref = asRecord(manifest[field]);
         if (Object.keys(ref).length === 0) continue;
@@ -1199,7 +1606,7 @@ export function ingestProviderManifest(
           fallbackKind,
           sourceId: nativeSubjectId,
           manifestId,
-          edgeType: "run_used_spec",
+          edgeType: subjectType === "model" ? "model_used_spec" : "run_used_spec",
           now,
           source: "provider_manifest",
           idMap,
@@ -1225,6 +1632,7 @@ export function ingestProviderManifest(
             providerId: provider.id,
             issueId: issueId.trim(),
             sourceId: nativeSubjectId,
+            provenance,
             now,
             source: "provider_manifest",
           });
@@ -1251,7 +1659,7 @@ export function ingestProviderManifestFile(
   db: Db,
   filePath: string,
   now = Date.now(),
-  artifactRoot = getArtifactRoot(),
+  artifactRoot = getArtifactRoot(db),
 ): ProviderManifestRecord {
   const resolved = path.resolve(filePath);
   const manifest = JSON.parse(fs.readFileSync(resolved, "utf8")) as JsonRecord;
@@ -1309,7 +1717,9 @@ export function getProviderHealth(db: Db, id: string): {
 export function getArtifact(db: Db, id: string): ArtifactRecord | null {
   const row = db.prepare(
     `SELECT id, algorithm, content_hash, uri, media_type, role, size_bytes,
-            provider_id, manifest_id, metadata_json, pinned, created_at
+            provider_id, manifest_id, metadata_json, pinned, custody_mode,
+            home_repo_id, repo_locator_json, availability, retention_json,
+            reference_json, created_at
        FROM artifacts WHERE id = ?`
   ).get(id) as Record<string, unknown> | undefined;
   return row ? artifactFromRow(row) : null;
@@ -1340,7 +1750,9 @@ export function getProviderDetail(db: Db, id: string): {
   ).all(id) as Array<Record<string, unknown>>).map(manifestFromRow);
   const artifacts = (db.prepare(
     `SELECT id, algorithm, content_hash, uri, media_type, role, size_bytes,
-            provider_id, manifest_id, metadata_json, pinned, created_at
+            provider_id, manifest_id, metadata_json, pinned, custody_mode,
+            home_repo_id, repo_locator_json, availability, retention_json,
+            reference_json, created_at
        FROM artifacts
       WHERE provider_id = ?
       ORDER BY created_at DESC`
@@ -1378,6 +1790,12 @@ function artifactFromRow(row: Record<string, unknown>): ArtifactRecord {
     manifest_id: row.manifest_id === null ? null : String(row.manifest_id),
     metadata: parseJsonRecord(row.metadata_json as string),
     pinned: Number(row.pinned) !== 0,
+    custody_mode: asCustodyMode(row.custody_mode, "managed"),
+    home_repo_id: row.home_repo_id === null || row.home_repo_id === undefined ? null : String(row.home_repo_id),
+    repo_locator: parseJsonRecord(row.repo_locator_json as string),
+    availability: asAvailability(row.availability, "unchecked"),
+    retention: parseJsonRecord(row.retention_json as string),
+    reference: parseJsonRecord(row.reference_json as string),
     created_at: Number(row.created_at),
   };
 }
