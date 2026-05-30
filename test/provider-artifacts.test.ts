@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,7 @@ import {
   registerProvider,
   resolveArtifactRef,
 } from "../src/provider-artifacts.js";
+import { discoverRepoArtifacts, scanRepoArtifacts } from "../src/repo-artifact-scanner.js";
 
 let tempDir = "";
 let db: Database.Database;
@@ -846,5 +848,84 @@ describe("provider/artifact substrate", () => {
       target: "model:feedbax:feedbax-model:baseline",
       metadata: expect.objectContaining({ ledger_issue_id: issueId }),
     }));
+  });
+
+  it("scans repo-owned artifacts with repo locators, hashes, and inferred issue links", () => {
+    const repoRoot = path.join(tempDir, "repo");
+    fs.mkdirSync(path.join(repoRoot, "docs"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "results", "issue-5423f64"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "docs", "report.md"), "# Report\n\nDone.\n");
+    fs.writeFileSync(path.join(repoRoot, "results", "issue-5423f64", "metrics.json"), '{"loss":0.1}\n');
+    const issueId = createLedgerIssue("mandible", "5423f64", "Repo artifact discovery and indexing");
+
+    const result = scanRepoArtifacts(db, {
+      roots: [{ root: repoRoot, repo_id: "mandible", name: "mandible", default_branch: "main" }],
+      now: 2000,
+    });
+
+    expect(result.scanned_repos).toEqual([{ repo_id: "mandible", root: repoRoot, exists: true }]);
+    expect(result.discovered).toBe(2);
+    expect(result.ingested).toBe(2);
+
+    const report = result.artifacts.find((artifact) => artifact.repo_locator.path === "docs/report.md");
+    expect(report).toMatchObject({
+      custody_mode: "link",
+      home_repo_id: "mandible",
+      availability: "present",
+      media_type: "text/markdown",
+      role: "report",
+      repo_locator: { repo_id: "mandible", ref: "main", path: "docs/report.md", root: repoRoot },
+    });
+    expect(report?.content_hash).toBe(
+      crypto.createHash("sha256").update("# Report\n\nDone.\n").digest("hex"),
+    );
+    expect(report?.aliases?.map((alias) => alias.normalized_ref)).toContain("repo://mandible@main/docs/report.md");
+
+    const metrics = result.artifacts.find(
+      (artifact) => artifact.repo_locator.path === "results/issue-5423f64/metrics.json",
+    );
+    expect(metrics?.links).toContainEqual(expect.objectContaining({
+      entity_type: "issue",
+      entity_id: issueId,
+      link_type: "references",
+      role: "repo_path_inferred",
+      repo_id: "mandible",
+      source: "repo_artifact_scanner",
+    }));
+  });
+
+  it("uses configured repo roots and skips dependency, build, and bulk directories", () => {
+    const repoRoot = path.join(tempDir, "configured-repo");
+    fs.mkdirSync(path.join(repoRoot, "reports"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "node_modules", "pkg", "reports"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "dist", "reports"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "data", "reports"), { recursive: true });
+    fs.mkdirSync(path.join(repoRoot, "src"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "reports", "summary.md"), "summary\n");
+    fs.writeFileSync(path.join(repoRoot, "node_modules", "pkg", "reports", "ignored.md"), "ignored\n");
+    fs.writeFileSync(path.join(repoRoot, "dist", "reports", "ignored.md"), "ignored\n");
+    fs.writeFileSync(path.join(repoRoot, "data", "reports", "ignored.md"), "ignored\n");
+    fs.writeFileSync(path.join(repoRoot, "src", "index.ts"), "export {};\n");
+    db.prepare(
+      `INSERT INTO ledger_projects (
+        id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
+      ) VALUES ('prj_configured', 'Configured', '', '', 'remote', 1, 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO ledger_project_checkouts (
+        id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at
+      ) VALUES ('checkout_configured', 'prj_configured', 'configured', ?, 'Configured', 'develop', '', 1, 1)`,
+    ).run(repoRoot);
+
+    const result = discoverRepoArtifacts(db);
+
+    expect(result.artifacts.map((artifact) => artifact.relative_path)).toEqual(["reports/summary.md"]);
+    expect(result.artifacts[0]).toMatchObject({
+      repo_id: "configured",
+      repo_name: "Configured",
+      default_branch: "develop",
+      role: "report",
+    });
+    expect(result.skipped.map((entry) => entry.reason)).toContain("excluded_dir");
   });
 });
