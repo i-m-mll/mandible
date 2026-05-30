@@ -57,6 +57,7 @@ const AUTO_RESUME_POLICIES = ['manual'];
 const AUTO_RESUME_LABELS: Record<string, string> = {
   manual: 'Manual (user clicks Resume)',
 };
+const MARKDOWN_BODY_ESCAPE_POLICIES = ['warn', 'reject', 'allow'];
 const DESKTOP_DAEMON_MODES: DesktopDaemonLaunchMode[] = ['on_demand', 'manual'];
 
 function Toggle(props: {
@@ -1260,6 +1261,14 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
 
         <div className="settings-view__section-body">
+          <SelectInput
+            label="Escaped Markdown writes"
+            desc="Warn, reject, or allow issue and comment bodies that look like Markdown accidentally submitted with literal \\n escapes."
+            settingKey="ledger.markdown_body_escape_policy"
+            settings={settings}
+            onSave={onSave}
+            options={MARKDOWN_BODY_ESCAPE_POLICIES}
+          />
           <div className="settings-view__text-row">
             <div className="settings-view__text-info">
               <span className="settings-view__text-label">Default filter</span>

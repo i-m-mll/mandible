@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { sanitizeHtml, sanitizeMarkdown } from '../../sanitize';
+import { linkifyArtifactRefs } from '../../artifact-links';
 import type {
   LedgerIssueDetailAuthRequest,
   LedgerIssueDetailConflict,
@@ -841,7 +842,7 @@ function MarkdownBlock({
     if (!source) return '';
     const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
     const sanitized = sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
-    return linkifyLedgerRefs(sanitized, detail);
+    return linkifyArtifactRefs(linkifyLedgerRefs(sanitized, detail));
   }, [source, detail.id, detail.display_id, detail.project.repo_id]);
   if (!html) {
     return <div className={`${className} spec-panel--empty`}>{empty}</div>;

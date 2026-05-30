@@ -255,7 +255,7 @@ describe('LedgerIssueDetail', () => {
         default_branch: 'main',
       },
       title: 'Refs',
-      body: 'See [issue:def456], #789abcd, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, and `#deadbee` in code.',
+      body: 'See [issue:def456], #789abcd, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, <feedbax://runs/demo>, repo://mandible@main/results/report.md, and `#deadbee` in code.',
       status: 'open',
       resolution: null,
       kind: 'feature',
@@ -331,6 +331,22 @@ describe('LedgerIssueDetail', () => {
     expect(issueLinks).toContainEqual({
       text: 'abc123#com_1',
       href: '#/issues?repo=mandible&issue=abc123&comment=com_1',
+    });
+    const artifactLinks = Array.from(document.querySelectorAll('a.artifact-xref')).map((node) => ({
+      text: node.textContent,
+      href: (node as HTMLAnchorElement).getAttribute('href'),
+    }));
+    expect(artifactLinks).toContainEqual({
+      text: 'artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      href: '#/artifacts?ref=artifact%3A%2F%2Fsha256%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    });
+    expect(artifactLinks).toContainEqual({
+      text: 'feedbax://runs/demo',
+      href: '#/artifacts?ref=feedbax%3A%2F%2Fruns%2Fdemo',
+    });
+    expect(artifactLinks).toContainEqual({
+      text: 'repo://mandible@main/results/report.md',
+      href: '#/artifacts?ref=repo%3A%2F%2Fmandible%40main%2Fresults%2Freport.md',
     });
     const codeBlocks = Array.from(document.querySelectorAll('code'));
     expect(codeBlocks.some((node) => node.innerHTML.includes('#deadbee'))).toBe(true);

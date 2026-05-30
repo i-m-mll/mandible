@@ -809,11 +809,12 @@ function DetailPane({
   const detailEntries = firstEntries(node.detail, 8);
   const summaryEntries = firstEntries(node.summary, 8);
   const annotations = nodeAnnotations(node).slice(0, 12);
-  const canNavigate = node.type === 'issue' || node.type === 'session' || node.type === 'auth_request';
+  const canNavigate = node.type === 'issue' || node.type === 'session' || node.type === 'auth_request' || node.type === 'artifact' || node.type === 'report';
   const navigateAnnotation = (annotation: GraphAnnotation) => {
     if (!annotation.target) return;
     if (annotation.target.startsWith('auth_request:')) onNavigate('auth_request', annotation.target);
     if (annotation.target.startsWith('session:')) onNavigate('session', annotation.target);
+    if (annotation.target.startsWith('artifact:')) onNavigate('artifact', annotation.target);
   };
   return (
     <aside className="graph-detail-pane">
@@ -878,18 +879,21 @@ function DetailPane({
               Open
             </button>
           )}
-          {(node.actions ?? []).map((action) => (
+          {(node.actions ?? []).map((action) => {
+            const opensNode = action.kind === 'navigate' || (action.kind === 'preview' && (node.type === 'artifact' || node.type === 'report'));
+            return (
             <button
               key={action.id}
               type="button"
               className="btn"
-              disabled={action.disabled || action.kind !== 'navigate'}
-              onClick={() => action.kind === 'navigate' && onNavigate(node.type, action.target ?? node.id, node.repo_id ?? node.repo)}
+              disabled={action.disabled || !opensNode}
+              onClick={() => opensNode && onNavigate(node.type, action.target ?? node.id, node.repo_id ?? node.repo)}
               title={action.description}
             >
               {action.label}{action.requires_auth ? ' *' : ''}
             </button>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -1125,7 +1129,7 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
               onNodeClick={(_event, node) => setSelectedNodeId((node.data as { node: GraphNode }).node.id)}
               onNodeDoubleClick={(_event, node) => {
                 const graphNode = (node.data as { node: GraphNode }).node;
-                if (graphNode && (graphNode.type === 'issue' || graphNode.type === 'session' || graphNode.type === 'auth_request')) {
+                if (graphNode && (graphNode.type === 'issue' || graphNode.type === 'session' || graphNode.type === 'auth_request' || graphNode.type === 'artifact' || graphNode.type === 'report')) {
                   onNavigate(graphNode.type, graphNode.id, graphNode.repo_id ?? graphNode.repo);
                 }
               }}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
+import { linkifyArtifactRefs } from '../artifact-links';
 import {
   disableAuthAutoApprove,
   enableAuthAutoApprove,
@@ -279,7 +280,7 @@ function stripAnsi(text: string): string {
 
 function renderMarkdown(src: string): string {
   const result = marked.parse(src, { async: false });
-  return typeof result === 'string' ? result : '';
+  return linkifyArtifactRefs(sanitizeInlineHtml(typeof result === 'string' ? result : ''));
 }
 
 /**
@@ -308,7 +309,7 @@ function renderInlineMarkdown(src: string): string {
   const result = marked.parse(src, { async: false });
   const html = typeof result === 'string' ? result : '';
   const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
-  return sanitizeInlineHtml(stripped);
+  return linkifyArtifactRefs(sanitizeInlineHtml(stripped));
 }
 
 type DiffFileSection = { filename: string; hunks: string };

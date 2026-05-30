@@ -60,6 +60,19 @@ export function IssuesIcon(props: IconProps): JSX.Element {
   );
 }
 
+/** Artifacts — Package icon */
+export function ArtifactsIcon(props: IconProps): JSX.Element {
+  const { size, className } = { ...defaults, ...props };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="m21 8-9-5-9 5 9 5 9-5Z" />
+      <path d="M3 8v8l9 5 9-5V8" />
+      <path d="M12 13v8" />
+      <path d="m7.5 5.5 9 5" />
+    </svg>
+  );
+}
+
 /** Inbox — Custom agent-inbox SVG adapted from agent-inbox.svg */
 export function InboxIcon(props: IconProps): JSX.Element {
   const { size, className } = { ...defaults, ...props };
