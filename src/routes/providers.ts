@@ -1,4 +1,5 @@
 import { getDb } from "../db.js";
+import { scanRepoArtifacts, type RepoArtifactRoot } from "../repo-artifact-scanner.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { getArtifactContent } from "../artifact-content.js";
 import {
@@ -40,6 +41,19 @@ function queryNumber(req: RequestLike, key: string): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function bodyStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
+}
+
+function bodyRepoRoots(value: unknown): Array<string | RepoArtifactRoot> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string | RepoArtifactRoot => {
+    if (typeof item === "string") return Boolean(item.trim());
+    return Boolean(item && typeof item === "object" && typeof (item as RepoArtifactRoot).root === "string");
+  });
 }
 
 function linkedEntityQuery(req: RequestLike): { type?: string; id?: string } {
@@ -119,6 +133,21 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   });
 
+  app.post("/api/artifacts/scan-repos", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const result = scanRepoArtifacts(getDb(), {
+        roots: bodyRepoRoots(body.roots) ?? bodyRepoRoots(body.repo_roots),
+        repoIds: bodyStringArray(body.repo_ids),
+        maxDepth: typeof body.max_depth === "number" ? body.max_depth : undefined,
+        maxFileBytes: typeof body.max_file_bytes === "number" ? body.max_file_bytes : undefined,
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.get("/api/artifacts", (req, res) => {
     const linked = linkedEntityQuery(req);
     const artifacts = listArtifacts(getDb(), {
@@ -152,15 +181,6 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   });
 
-  app.get("/api/artifacts/:id", (req, res) => {
-    const artifact = getArtifact(getDb(), req.params.id);
-    if (!artifact) {
-      sendJson(res, 404, { error: "artifact not found" });
-      return;
-    }
-    sendJson(res, 200, { artifact });
-  });
-
   app.get("/api/artifacts/:id/content", (req, res) => {
     const content = getArtifactContent(getDb(), req.params.id);
     if (!content) {
@@ -168,6 +188,15 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { content });
+  });
+
+  app.get("/api/artifacts/:id", (req, res) => {
+    const artifact = getArtifact(getDb(), req.params.id);
+    if (!artifact) {
+      sendJson(res, 404, { error: "artifact not found" });
+      return;
+    }
+    sendJson(res, 200, { artifact });
   });
 
   app.post("/api/provider-manifests/ingest", (req, res) => {
