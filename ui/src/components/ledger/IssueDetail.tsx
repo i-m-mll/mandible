@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { sanitizeHtml, sanitizeMarkdown } from '../../sanitize';
-import { linkifyArtifactRefs } from '../../artifact-links';
+import { artifactDetailHref, linkifyArtifactRefs } from '../../artifact-links';
 import type {
+  LedgerIssueDetailAssociatedArtifact,
   LedgerIssueDetailAuthRequest,
   LedgerIssueDetailConflict,
   LedgerIssueDetailProjection,
@@ -61,6 +62,7 @@ export function LedgerIssueDetail({
   const historicalSessions = detail.sessions.filter((session) => session.status !== 'active' && session.status !== 'idle');
   const primaryWorkUnit = detail.work_units[0] ?? null;
   const timeline = detail.timeline ?? fallbackTimeline(detail);
+  const associatedArtifacts = detail.associated_artifacts ?? [];
   const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
   const hasIssueActions = Boolean(
@@ -211,6 +213,13 @@ export function LedgerIssueDetail({
         </section>
       )}
 
+      {associatedArtifacts.length > 0 && (
+        <section className="ledger-issue-detail__section">
+          <SectionTitle title="Associated Artifacts" count={associatedArtifacts.length} />
+          <AssociatedArtifactList artifacts={associatedArtifacts} />
+        </section>
+      )}
+
       {authEvidenceOpen && (
         <AuthEvidenceModal
           authRequests={detail.auth_requests}
@@ -234,6 +243,51 @@ export function LedgerIssueDetail({
       )}
     </article>
   );
+}
+
+function AssociatedArtifactList({
+  artifacts,
+}: {
+  artifacts: LedgerIssueDetailAssociatedArtifact[];
+}): JSX.Element {
+  return (
+    <div className="ledger-evidence-list">
+      {artifacts.map((artifact) => (
+        <a
+          key={artifact.id}
+          className="ledger-evidence-row"
+          href={artifactDetailHref(artifact.id)}
+          title={artifact.uri}
+        >
+          <span>{artifactSourceLabel(artifact)}</span>
+          <strong>{artifactTitle(artifact)}</strong>
+          <code>{artifactMetaLabel(artifact)}</code>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function artifactSourceLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
+  if (artifact.links.length > 0 && artifact.refs.length > 0) return 'linked + referenced';
+  if (artifact.links.length > 0) return artifact.links[0].link_type.replace(/_/g, ' ');
+  return 'referenced';
+}
+
+function artifactTitle(artifact: LedgerIssueDetailAssociatedArtifact): string {
+  const ref = artifact.refs[0];
+  if (ref) return ref;
+  return artifact.uri || artifact.id;
+}
+
+function artifactMetaLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
+  const parts = [
+    artifact.role,
+    artifact.media_type,
+    artifact.provider_id,
+    artifact.availability === 'unchecked' ? null : artifact.availability,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : artifact.id;
 }
 
 function IssueActionsMenu({

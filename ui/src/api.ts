@@ -750,6 +750,36 @@ export type LedgerIssueDetailConflict = {
   resolved_at: number | null;
 };
 
+export type LedgerIssueDetailArtifactLink = {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  link_type: string;
+  role: string | null;
+  repo_id: string | null;
+  provider_id: string | null;
+  source: string;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+export type LedgerIssueDetailAssociatedArtifact = {
+  id: string;
+  algorithm: string;
+  content_hash: string;
+  uri: string;
+  media_type: string | null;
+  role: string | null;
+  provider_id: string | null;
+  manifest_id: string | null;
+  custody_mode: 'link' | 'copy' | 'managed' | 'external';
+  availability: 'present' | 'missing' | 'stale' | 'unchecked' | 'remote_only' | 'pinned';
+  created_at: number;
+  refs: string[];
+  links: LedgerIssueDetailArtifactLink[];
+};
+
 export type LedgerIssueDetailProjection = {
   id: string;
   display_id: string;
@@ -782,6 +812,7 @@ export type LedgerIssueDetailProjection = {
   work_units: LedgerIssueDetailWorkUnit[];
   sessions: LedgerIssueDetailSession[];
   auth_requests: LedgerIssueDetailAuthRequest[];
+  associated_artifacts?: LedgerIssueDetailAssociatedArtifact[];
   conflicts: LedgerIssueDetailConflict[];
   sync: {
     state: 'clean' | 'pending' | 'failed' | 'conflicted';

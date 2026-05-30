@@ -405,6 +405,84 @@ describe('LedgerIssueDetail', () => {
     expect(screen.getByText(/abc1234/)).toBeTruthy();
   });
 
+  it('renders associated artifacts as compact links into the artifacts view', () => {
+    const detail = {
+      id: 'iss_1',
+      display_id: 'abc123',
+      project: {
+        id: 'proj_1',
+        display_name: 'Mandible',
+        remote_identity: '',
+        upstream_identity: '',
+        repo_id: 'mandible',
+        repo_name: 'mandible',
+        repo_root: '/repo',
+        default_branch: 'main',
+      },
+      title: 'Artifacts',
+      body: 'Body',
+      status: 'open',
+      resolution: null,
+      kind: 'feature',
+      priority: 'normal',
+      source: 'mandible',
+      author: { id: null, type: 'agent', display: 'Codex' },
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      closed_at: null,
+      aliases: [],
+      labels: ['feature'],
+      comments: [],
+      relationships: [],
+      work_units: [],
+      sessions: [],
+      auth_requests: [],
+      associated_artifacts: [
+        {
+          id: 'artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          algorithm: 'sha256',
+          content_hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          uri: 'artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          media_type: 'text/markdown',
+          role: 'report',
+          provider_id: 'provider_1',
+          manifest_id: 'manifest_1',
+          custody_mode: 'managed',
+          availability: 'present',
+          created_at: Date.now(),
+          refs: ['repo://mandible@main/results/report.md'],
+          links: [
+            {
+              id: 'link_1',
+              entity_type: 'issue',
+              entity_id: 'iss_1',
+              link_type: 'produced_by',
+              role: 'report',
+              repo_id: 'mandible',
+              provider_id: 'provider_1',
+              source: 'artifact_registry',
+              metadata: {},
+              created_at: Date.now(),
+              updated_at: Date.now(),
+            },
+          ],
+        },
+      ],
+      conflicts: [],
+      sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
+    } as const;
+
+    render(h(LedgerIssueDetail, { detail }));
+
+    expect(screen.getByText('Associated Artifacts')).toBeTruthy();
+    const link = screen.getByText('repo://mandible@main/results/report.md').closest('a') as HTMLAnchorElement | null;
+    expect(link?.getAttribute('href')).toBe(
+      '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+    expect(screen.getByText('linked + referenced')).toBeTruthy();
+    expect(screen.getByText('report · text/markdown · provider_1 · present')).toBeTruthy();
+  });
+
   it('keeps issue and comment provenance behind metadata controls', () => {
     const now = Date.now();
     const detail = {

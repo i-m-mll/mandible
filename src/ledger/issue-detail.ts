@@ -1,6 +1,7 @@
 import type { Db } from "../db.js";
+import { resolveArtifactRef } from "../provider-artifacts.js";
+import type { ArtifactRecord, WorkUnit } from "../types.js";
 import { mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
-import type { WorkUnit } from "../types.js";
 import { LedgerStore } from "./store.js";
 import type {
   LedgerActorType,
@@ -163,6 +164,36 @@ export interface LedgerIssueDetailAuthRequest {
   metadata: Record<string, unknown>;
 }
 
+export interface LedgerIssueDetailArtifactLink {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  link_type: string;
+  role: string | null;
+  repo_id: string | null;
+  provider_id: string | null;
+  source: string;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface LedgerIssueDetailAssociatedArtifact {
+  id: string;
+  algorithm: string;
+  content_hash: string;
+  uri: string;
+  media_type: string | null;
+  role: string | null;
+  provider_id: string | null;
+  manifest_id: string | null;
+  custody_mode: ArtifactRecord["custody_mode"];
+  availability: ArtifactRecord["availability"];
+  created_at: number;
+  refs: string[];
+  links: LedgerIssueDetailArtifactLink[];
+}
+
 export interface LedgerIssueDetailConflict {
   id: string;
   adapter: string;
@@ -220,6 +251,7 @@ export interface LedgerIssueDetailProjection {
   work_units: LedgerIssueDetailWorkUnit[];
   sessions: LedgerIssueDetailSession[];
   auth_requests: LedgerIssueDetailAuthRequest[];
+  associated_artifacts: LedgerIssueDetailAssociatedArtifact[];
   conflicts: LedgerIssueDetailConflict[];
   sync: LedgerIssueDetailSyncSummary;
 }
@@ -256,6 +288,7 @@ export function buildLedgerIssueDetailProjection(
   const timeline = buildTimeline(db, detail, comments, author);
   const conflicts = listIssueConflicts(db, detail.id, comments.map((comment) => comment.id), relationships.map((rel) => rel.id));
   const sync = buildSyncSummary(db, detail, comments.map((comment) => comment.id), relationships.map((rel) => rel.id), conflicts.length);
+  const associatedArtifacts = listAssociatedArtifacts(db, detail.id, detail.body, comments);
 
   return {
     id: detail.id,
@@ -280,8 +313,152 @@ export function buildLedgerIssueDetailProjection(
     work_units: listWorkUnits(db, detail.id),
     sessions: listSessions(db, detail.id),
     auth_requests: listAuthRequests(db, detail.id),
+    associated_artifacts: associatedArtifacts,
     conflicts,
     sync,
+  };
+}
+
+function listAssociatedArtifacts(
+  db: Db,
+  issueId: string,
+  issueBody: string,
+  comments: LedgerIssueDetailComment[],
+): LedgerIssueDetailAssociatedArtifact[] {
+  if (!tableExists(db, "artifacts")) return [];
+  const artifacts = new Map<string, LedgerIssueDetailAssociatedArtifact>();
+
+  for (const row of listExplicitArtifactRows(db, issueId, comments.map((comment) => comment.id))) {
+    const artifact = artifactFromIssueDetailRow(row);
+    if (!artifact) continue;
+    upsertAssociatedArtifact(artifacts, artifact, {
+      link: artifactLinkFromIssueDetailRow(row),
+    });
+  }
+
+  if (tableExists(db, "artifact_aliases")) {
+    const refs = extractArtifactRefs([issueBody, ...comments.map((comment) => comment.body)]);
+    for (const ref of refs) {
+      try {
+        const resolution = resolveArtifactRef(db, ref);
+        if (!resolution.artifact) continue;
+        upsertAssociatedArtifact(artifacts, resolution.artifact, { ref });
+      } catch {
+        // A malformed or temporarily unsupported ref should not break issue detail.
+      }
+    }
+  }
+
+  return Array.from(artifacts.values()).sort((a, b) => {
+    const linkPriority = Number(b.links.length > 0) - Number(a.links.length > 0);
+    if (linkPriority !== 0) return linkPriority;
+    if (a.created_at !== b.created_at) return b.created_at - a.created_at;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+function listExplicitArtifactRows(
+  db: Db,
+  issueId: string,
+  commentIds: string[],
+): Array<Record<string, unknown>> {
+  if (!tableExists(db, "artifact_links")) return [];
+  const groups: string[] = ["(l.entity_type = 'issue' AND l.entity_id = ?)"];
+  const params: string[] = [issueId];
+  const uniqueCommentIds = Array.from(new Set(commentIds.filter(Boolean)));
+  if (uniqueCommentIds.length > 0) {
+    groups.push(`(l.entity_type = 'comment' AND l.entity_id IN (${uniqueCommentIds.map(() => "?").join(", ")}))`);
+    params.push(...uniqueCommentIds);
+  }
+  return db.prepare(
+    `SELECT
+        a.id AS artifact_id, a.algorithm, a.content_hash, a.uri, a.media_type,
+        a.role AS artifact_role, a.provider_id AS artifact_provider_id,
+        a.manifest_id, a.custody_mode, a.availability,
+        a.created_at AS artifact_created_at,
+        l.id AS link_id, l.entity_type, l.entity_id, l.link_type,
+        l.role AS link_role, l.repo_id AS link_repo_id,
+        l.provider_id AS link_provider_id, l.source AS link_source,
+        l.metadata_json AS link_metadata_json,
+        l.created_at AS link_created_at, l.updated_at AS link_updated_at
+       FROM artifact_links l
+       JOIN artifacts a ON a.id = l.artifact_id
+      WHERE ${groups.join(" OR ")}
+      ORDER BY l.created_at DESC, a.created_at DESC`,
+  ).all(...params) as Array<Record<string, unknown>>;
+}
+
+function upsertAssociatedArtifact(
+  artifacts: Map<string, LedgerIssueDetailAssociatedArtifact>,
+  artifact: Pick<
+    ArtifactRecord,
+    "id" | "algorithm" | "content_hash" | "uri" | "media_type" | "role" | "provider_id" |
+    "manifest_id" | "custody_mode" | "availability" | "created_at"
+  >,
+  source: { ref?: string; link?: LedgerIssueDetailArtifactLink },
+): void {
+  let entry = artifacts.get(artifact.id);
+  if (!entry) {
+    entry = {
+      id: artifact.id,
+      algorithm: artifact.algorithm,
+      content_hash: artifact.content_hash,
+      uri: artifact.uri,
+      media_type: artifact.media_type,
+      role: artifact.role,
+      provider_id: artifact.provider_id,
+      manifest_id: artifact.manifest_id,
+      custody_mode: artifact.custody_mode,
+      availability: artifact.availability,
+      created_at: artifact.created_at,
+      refs: [],
+      links: [],
+    };
+    artifacts.set(artifact.id, entry);
+  }
+  if (source.ref && !entry.refs.includes(source.ref)) entry.refs.push(source.ref);
+  if (source.link && !entry.links.some((link) => link.id === source.link?.id)) {
+    entry.links.push(source.link);
+  }
+}
+
+function artifactFromIssueDetailRow(
+  row: Record<string, unknown>,
+): Pick<
+  ArtifactRecord,
+  "id" | "algorithm" | "content_hash" | "uri" | "media_type" | "role" | "provider_id" |
+  "manifest_id" | "custody_mode" | "availability" | "created_at"
+> | null {
+  const id = stringOr(row.artifact_id, "");
+  if (!id) return null;
+  return {
+    id,
+    algorithm: stringOr(row.algorithm, "sha256"),
+    content_hash: stringOr(row.content_hash, ""),
+    uri: stringOr(row.uri, id),
+    media_type: nullableString(row.media_type),
+    role: nullableString(row.artifact_role),
+    provider_id: nullableString(row.artifact_provider_id),
+    manifest_id: nullableString(row.manifest_id),
+    custody_mode: artifactCustodyMode(row.custody_mode),
+    availability: artifactAvailability(row.availability),
+    created_at: Number(row.artifact_created_at ?? 0),
+  };
+}
+
+function artifactLinkFromIssueDetailRow(row: Record<string, unknown>): LedgerIssueDetailArtifactLink {
+  return {
+    id: stringOr(row.link_id, ""),
+    entity_type: stringOr(row.entity_type, ""),
+    entity_id: stringOr(row.entity_id, ""),
+    link_type: stringOr(row.link_type, "references"),
+    role: nullableString(row.link_role),
+    repo_id: nullableString(row.link_repo_id),
+    provider_id: nullableString(row.link_provider_id),
+    source: stringOr(row.link_source, "artifact_registry"),
+    metadata: parseJsonObject(stringOr(row.link_metadata_json, "{}")),
+    created_at: Number(row.link_created_at ?? 0),
+    updated_at: Number(row.link_updated_at ?? 0),
   };
 }
 
@@ -755,6 +932,53 @@ function mapConflict(row: LedgerConflict): LedgerIssueDetailConflict {
     created_at: row.created_at,
     resolved_at: row.resolved_at,
   };
+}
+
+const ARTIFACT_REF_PATTERN = /\b(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"')\]]+|artifact:sha256:[0-9a-f]{7,64})/gi;
+const DIRECT_NAV_SCHEMES = new Set(["http", "https", "mailto"]);
+
+function extractArtifactRefs(sources: string[]): string[] {
+  const refs: string[] = [];
+  const seen = new Set<string>();
+  for (const source of sources) {
+    ARTIFACT_REF_PATTERN.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = ARTIFACT_REF_PATTERN.exec(source))) {
+      const ref = trimTrailingPunctuation(match[0]);
+      if (!isArtifactLikeRef(ref) || seen.has(ref)) continue;
+      seen.add(ref);
+      refs.push(ref);
+    }
+  }
+  return refs;
+}
+
+function isArtifactLikeRef(ref: string): boolean {
+  if (/^artifact:sha256:[0-9a-f]{7,64}$/i.test(ref)) return true;
+  const scheme = schemeForRef(ref);
+  return Boolean(scheme && !DIRECT_NAV_SCHEMES.has(scheme));
+}
+
+function trimTrailingPunctuation(value: string): string {
+  return value.replace(/[.,;:!?]+$/g, "");
+}
+
+function schemeForRef(ref: string): string | null {
+  const match = ref.match(/^([a-z][a-z0-9+.-]*):/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
+function artifactCustodyMode(value: unknown): ArtifactRecord["custody_mode"] {
+  return value === "link" || value === "copy" || value === "managed" || value === "external"
+    ? value
+    : "managed";
+}
+
+function artifactAvailability(value: unknown): ArtifactRecord["availability"] {
+  return value === "present" || value === "missing" || value === "stale" ||
+    value === "unchecked" || value === "remote_only" || value === "pinned"
+    ? value
+    : "unchecked";
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {
