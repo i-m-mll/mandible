@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   getArtifact,
+  getArtifactRoot,
   getIndexedGraph,
   getIndexedGraphCount,
   getProviderCapabilities,
@@ -17,6 +18,7 @@ import {
 
 let tempDir = "";
 let db: Database.Database;
+let savedEnv: Record<string, string | undefined>;
 
 function createSchema(database: Database.Database): void {
   database.exec(`
@@ -96,6 +98,11 @@ function createSchema(database: Database.Database): void {
       created_at INTEGER,
       observed_at INTEGER NOT NULL,
       source TEXT NOT NULL
+    );
+    CREATE TABLE settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
     );
     CREATE TABLE ledger_projects (
       id TEXT PRIMARY KEY,
@@ -178,7 +185,16 @@ function createLedgerIssue(projectName: string, alias: string, title = `Issue ${
 }
 
 beforeEach(() => {
+  savedEnv = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    MANDIBLE_HOME: process.env.MANDIBLE_HOME,
+    MANDIBLE_ARTIFACT_DIR: process.env.MANDIBLE_ARTIFACT_DIR,
+  };
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-provider-test-"));
+  process.env.HOME = path.join(tempDir, "home");
+  delete process.env.MANDIBLE_ARTIFACT_DIR;
+  delete process.env.MANDIBLE_HOME;
   db = new Database(":memory:");
   createSchema(db);
 });
@@ -186,9 +202,54 @@ beforeEach(() => {
 afterEach(() => {
   db.close();
   fs.rmSync(tempDir, { recursive: true, force: true });
+  for (const [key, value] of Object.entries(savedEnv)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
 });
 
 describe("provider/artifact substrate", () => {
+  it("defaults the artifact root to non-cache local app data under HOME", () => {
+    expect(getArtifactRoot()).toBe(path.join(process.env.HOME!, ".mandible", "artifacts"));
+    expect(getArtifactRoot()).not.toContain(`${path.sep}.cache${path.sep}`);
+  });
+
+  it("uses MANDIBLE_HOME/artifacts when no artifact-specific override is set", () => {
+    process.env.MANDIBLE_HOME = path.join(tempDir, "mandible-home");
+
+    expect(getArtifactRoot()).toBe(path.join(tempDir, "mandible-home", "artifacts"));
+  });
+
+  it("uses artifact_root from settings when no environment override is set", () => {
+    const configuredRoot = path.join(tempDir, "settings-root");
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('artifact_root', ?, 1000)"
+    ).run(configuredRoot);
+
+    const artifact = ingestArtifact(db, {
+      media_type: "application/json",
+      json: { configured: true },
+    }, 1000);
+
+    expect(getArtifactRoot(db)).toBe(configuredRoot);
+    expect(artifact.uri.startsWith(`file://${configuredRoot}${path.sep}`)).toBe(true);
+    expect(fs.existsSync(artifact.uri.replace("file://", ""))).toBe(true);
+  });
+
+  it("lets MANDIBLE_ARTIFACT_DIR override settings and MANDIBLE_HOME", () => {
+    const envRoot = path.join(tempDir, "env-root");
+    process.env.MANDIBLE_HOME = path.join(tempDir, "mandible-home");
+    process.env.MANDIBLE_ARTIFACT_DIR = envRoot;
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('artifact_root', ?, 1000)"
+    ).run(path.join(tempDir, "settings-root"));
+
+    expect(getArtifactRoot(db)).toBe(envRoot);
+  });
+
   it("ships a static Mandible-HumbleB bridge contract fixture", () => {
     const fixturePath = path.join(process.cwd(), "test/fixtures/mandible-humbleb-bridge.v1.json");
     const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8")) as {

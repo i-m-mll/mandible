@@ -13,7 +13,7 @@ import type {
   ProviderRecord,
 } from "./types.js";
 
-const DEFAULT_ARTIFACT_ROOT = path.join(os.homedir(), ".cache", "mandible", "artifacts");
+const ARTIFACT_ROOT_SETTING = "artifact_root";
 
 const MODE_ENTITY_TYPES: Record<GraphMode, string[] | null> = {
   activity: null,
@@ -171,10 +171,6 @@ export interface IndexedGraphResult {
   edges: GraphEdge[];
 }
 
-export function getArtifactRoot(): string {
-  return process.env.MANDIBLE_ARTIFACT_DIR ?? DEFAULT_ARTIFACT_ROOT;
-}
-
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
@@ -187,6 +183,20 @@ function asArray<T>(value: unknown): T[] {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function userHome(): string {
+  return process.env.HOME || process.env.USERPROFILE || os.homedir();
+}
+
+function expandHomePath(value: string): string {
+  if (value === "~") return userHome();
+  if (value.startsWith("~/")) return path.join(userHome(), value.slice(2));
+  return value;
+}
+
+function normalizeArtifactRoot(value: string): string {
+  return path.resolve(expandHomePath(value));
 }
 
 function asCustodyMode(value: unknown, fallback: ArtifactCustodyMode): ArtifactCustodyMode {
@@ -230,6 +240,27 @@ function tableExists(db: Db, table: string): boolean {
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
   ).get(table) as { name: string } | undefined;
   return Boolean(row);
+}
+
+function artifactRootFromSettings(db?: Db): string | undefined {
+  if (!db || !tableExists(db, "settings")) return undefined;
+  const row = db.prepare(
+    "SELECT value FROM settings WHERE key = ?"
+  ).get(ARTIFACT_ROOT_SETTING) as { value: string } | undefined;
+  return asString(row?.value);
+}
+
+export function getArtifactRoot(db?: Db): string {
+  const envOverride = asString(process.env.MANDIBLE_ARTIFACT_DIR);
+  if (envOverride) return normalizeArtifactRoot(envOverride);
+
+  const settingOverride = artifactRootFromSettings(db);
+  if (settingOverride) return normalizeArtifactRoot(settingOverride);
+
+  const mandibleHome = asString(process.env.MANDIBLE_HOME);
+  if (mandibleHome) return path.join(normalizeArtifactRoot(mandibleHome), "artifacts");
+
+  return path.join(normalizeArtifactRoot(userHome()), ".mandible", "artifacts");
 }
 
 function normalizeIdentifier(value: string): string {
@@ -1099,7 +1130,7 @@ export function ingestArtifact(
   db: Db,
   input: ArtifactInput,
   now = Date.now(),
-  artifactRoot = getArtifactRoot(),
+  artifactRoot = getArtifactRoot(db),
 ): ArtifactRecord {
   const bytes = hasInlineArtifactContent(input) ? contentBuffer(input) : null;
   const declaredHash = hashFromArtifactRef(input);
@@ -1248,7 +1279,7 @@ export function ingestProviderManifest(
   db: Db,
   input: ManifestInput,
   now = Date.now(),
-  artifactRoot = getArtifactRoot(),
+  artifactRoot = getArtifactRoot(db),
 ): ProviderManifestRecord {
   const rawManifest = input.manifest ?? asRecord(input);
   const manifest = asRecord(rawManifest);
@@ -1628,7 +1659,7 @@ export function ingestProviderManifestFile(
   db: Db,
   filePath: string,
   now = Date.now(),
-  artifactRoot = getArtifactRoot(),
+  artifactRoot = getArtifactRoot(db),
 ): ProviderManifestRecord {
   const resolved = path.resolve(filePath);
   const manifest = JSON.parse(fs.readFileSync(resolved, "utf8")) as JsonRecord;

@@ -34,6 +34,26 @@ Availability uses `present`, `missing`, `stale`, `unchecked`, `remote_only`, or
 `pinned`. A path alone is not durable identity; audited references should carry
 repo/ref/path and/or a content hash.
 
+## Mandible-Managed Storage
+
+Mandible-managed artifacts use content-addressed storage under
+`sha256/<first-two-hex>/<hash>`. New installs default to
+`~/.mandible/artifacts`, not a cache directory, because managed CAS content is
+custody state rather than disposable build output.
+
+The artifact root is configurable without code changes. Resolution order is:
+
+1. `MANDIBLE_ARTIFACT_DIR`
+2. Database setting `artifact_root` through the generic settings API
+3. `MANDIBLE_HOME/artifacts`
+4. `~/.mandible/artifacts`
+
+`MANDIBLE_ARTIFACT_DIR` remains the strongest override for scripts, tests, and
+backward-compatible one-off runs. Existing `artifact://sha256/...` and stored
+`file://...` database URIs remain valid; moving or copying older cache-backed
+artifacts is out of scope for this slice and should be handled by a future
+migration tool if needed.
+
 ## Examples
 
 - Repo-local RLRMP report: `custody_mode=link`, `home_repo_id=rlrmp`,
