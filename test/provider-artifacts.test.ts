@@ -475,7 +475,7 @@ describe("provider/artifact substrate", () => {
     expect(linkedToAuth.map((item) => item.id)).toEqual([first.id]);
   });
 
-  it("records unknown scheme refs as unresolved aliases instead of failing", () => {
+  it("materializes unknown scheme refs as external artifact records instead of failing", () => {
     const resolution = resolveArtifactRef(db, "zotero://library/items/ABC123", 1000);
     const row = db.prepare(
       "SELECT scheme, normalized_ref, resolution_status, artifact_id FROM artifact_aliases WHERE alias = ?"
@@ -487,16 +487,44 @@ describe("provider/artifact substrate", () => {
     };
 
     expect(resolution).toMatchObject({
-      status: "unresolved",
+      status: "resolved",
       scheme: "zotero",
-      artifact: null,
+      artifact: {
+        algorithm: "ref-sha256",
+        uri: "zotero://library/items/ABC123",
+        custody_mode: "external",
+        availability: "remote_only",
+      },
     });
     expect(row).toMatchObject({
       scheme: "zotero",
       normalized_ref: "zotero://library/items/ABC123",
-      resolution_status: "unresolved",
-      artifact_id: null,
+      resolution_status: "resolved",
+      artifact_id: resolution.artifact?.id,
     });
+    expect(listArtifacts(db, { scheme: "zotero" }).map((item) => item.id)).toEqual([
+      resolution.artifact?.id,
+    ]);
+  });
+
+  it("materializes missing content-hash refs as external hash records", () => {
+    const hash = "a".repeat(64);
+    const resolution = resolveArtifactRef(db, `artifact://sha256/${hash}`, 1000);
+
+    expect(resolution).toMatchObject({
+      status: "resolved",
+      scheme: "artifact",
+      artifact: {
+        id: `artifact:sha256:${hash}`,
+        algorithm: "sha256",
+        content_hash: hash,
+        custody_mode: "external",
+        availability: "remote_only",
+      },
+    });
+    expect(getIndexedGraph(db, { mode: "artifact-lineage", limit: 20 }).nodes.map((node) => node.id)).toContain(
+      `artifact:sha256:${hash}`,
+    );
   });
 
   it("ingests provider manifests into lineage graph nodes and edges", () => {
