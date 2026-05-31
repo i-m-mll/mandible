@@ -3,12 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { broadcast } from "../sse.js";
+import type { RouteRegistrar } from "../server.js";
 import type { WorkScanner } from "../work-scanner.js";
-
-export interface SystemServer {
-  get(path: string, handler: (req: any, res: any) => void | Promise<void>): void;
-  post(path: string, handler: (req: any, res: any) => void | Promise<void>): void;
-}
+import { queryNumber, queryString, readBody, sendJson } from "./http.js";
 
 const LOG_FILE_PATH = path.join(os.homedir(), ".cache", "mandible", "launchd-stderr.log");
 
@@ -26,21 +23,6 @@ type LogEntry = {
   time?: string;
   [key: string]: unknown;
 };
-
-function sendJson(res: any, status: number, payload: unknown): void {
-  if (typeof res.status === "function") {
-    res.status(status);
-  } else if (typeof res.code === "function") {
-    res.code(status);
-  }
-  if (typeof res.json === "function") {
-    res.json(payload);
-    return;
-  }
-  if (typeof res.end === "function") {
-    res.end(JSON.stringify(payload));
-  }
-}
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -100,22 +82,19 @@ async function tailFile(filePath: string, tailLines: number): Promise<string> {
   }
 }
 
-export function registerSystemRoutes(server: SystemServer, workScanner: WorkScanner): void {
+export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkScanner): void {
   // GET /api/system/logs — tail the structured NDJSON daemon log.
   // Query params:
   //   level  = debug | info | warn | error  (minimum level to include; default: info)
   //   limit  = N                             (max entries to return; default 200, max 1000)
   //   offset = N                             (skip first N results after filtering; default 0)
   // Bug: af91bdd — logs viewer tab
-  server.get("/api/system/logs", async (_req, res) => {
-    const query = _req.query as Record<string, string> | undefined;
-    const rawLevel = query?.level ?? "info";
-    const rawLimit = Number(query?.limit ?? "200");
-    const rawOffset = Number(query?.offset ?? "0");
+  server.get("/api/system/logs", async (req, res) => {
+    const rawLevel = queryString(req, "level") ?? "info";
 
     const minLevelIndex = LEVEL_ORDER[rawLevel] ?? LEVEL_ORDER.info;
-    const limit = Math.min(Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 200), 1000);
-    const offset = Math.max(0, Number.isFinite(rawOffset) ? rawOffset : 0);
+    const limit = queryNumber(req, "limit", { defaultValue: 200, min: 1, max: 1000 });
+    const offset = queryNumber(req, "offset", { defaultValue: 0, min: 0 });
 
     // Tail more than we need since some lines will be filtered out by level.
     const tailCount = (limit + offset) * 4;
@@ -177,7 +156,7 @@ export function registerSystemRoutes(server: SystemServer, workScanner: WorkScan
   });
 
   server.post("/api/system/open-path", (req, res) => {
-    const body = req.body as { path?: string } | undefined;
+    const body = readBody<{ path?: string }>(req);
     if (!body || typeof body.path !== "string" || !body.path.trim()) {
       sendJson(res, 400, { error: "missing or invalid path" });
       return;

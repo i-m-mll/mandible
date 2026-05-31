@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
 import { linkWorkUnitToLedgerIssue } from "../ledger/operational-links.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { WorkUnit, WorkUnitState } from "../types.js";
+import { readBody, sendJson } from "./http.js";
 import {
   mapWorkUnitRow as mapRow,
   computeLiveness,
@@ -51,14 +52,6 @@ interface PatchInput {
 }
 
 const VALID_STATES: Set<string> = new Set(["open", "committed", "resolved", "abandoned"]);
-
-function readBody<T>(req: RequestLike): T {
-  return (req.body ?? {}) as T;
-}
-
-function sendJson(res: ResponseLike, code: number, payload: unknown): void {
-  res.status(code).json(payload);
-}
 
 function linkLedgerIssue(
   db: ReturnType<typeof getDb>,

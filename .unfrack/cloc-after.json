@@ -1,0 +1,74 @@
+{"header" : {
+  "cloc_url"           : "github.com/AlDanial/cloc",
+  "cloc_version"       : "2.04",
+  "elapsed_seconds"    : 0.361491918563843,
+  "n_files"            : 293,
+  "n_lines"            : 118748,
+  "files_per_second"   : 810.529876197643,
+  "lines_per_second"   : 328494.203886409,
+  "report_file"        : ".unfrack/cloc-after.json"},
+"TypeScript" :{
+  "nFiles": 200,
+  "blank": 7286,
+  "comment": 3795,
+  "code": 72593},
+"CSS" :{
+  "nFiles": 2,
+  "blank": 1872,
+  "comment": 235,
+  "code": 11051},
+"JSON" :{
+  "nFiles": 18,
+  "blank": 0,
+  "comment": 0,
+  "code": 9211},
+"Markdown" :{
+  "nFiles": 39,
+  "blank": 2020,
+  "comment": 6,
+  "code": 4841},
+"Bourne Shell" :{
+  "nFiles": 15,
+  "blank": 487,
+  "comment": 263,
+  "code": 2945},
+"JavaScript" :{
+  "nFiles": 9,
+  "blank": 126,
+  "comment": 19,
+  "code": 1159},
+"Rust" :{
+  "nFiles": 3,
+  "blank": 56,
+  "comment": 16,
+  "code": 411},
+"Bourne Again Shell" :{
+  "nFiles": 1,
+  "blank": 23,
+  "comment": 19,
+  "code": 133},
+"HTML" :{
+  "nFiles": 2,
+  "blank": 0,
+  "comment": 0,
+  "code": 67},
+"zsh" :{
+  "nFiles": 1,
+  "blank": 6,
+  "comment": 16,
+  "code": 42},
+"SVG" :{
+  "nFiles": 2,
+  "blank": 0,
+  "comment": 4,
+  "code": 29},
+"TOML" :{
+  "nFiles": 1,
+  "blank": 3,
+  "comment": 0,
+  "code": 14},
+"SUM": {
+  "blank": 11879,
+  "comment": 4373,
+  "code": 102496,
+  "nFiles": 293} }

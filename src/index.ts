@@ -42,6 +42,7 @@ import type { Logger, LogLevel, StartupCommitInfo } from "./types.js";
 const DEFAULT_PORT = 19420;
 const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 const DOTFILES_ROOT = resolveDotfilesRoot();
+const STARTUP_DISCOVERY_DELAY_MS = 1_000;
 
 let startupInfo: StartupCommitInfo | null = null;
 
@@ -218,17 +219,24 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     issueRescanTimer.unref();
   }
 
-  // Startup reconciliation: discover sessions if none are tracked yet
-  try {
-    const activeSessions = sessionRegistry.listSessions({ status: "active" });
-    if (activeSessions.length === 0) {
-      const result = sessionDiscovery.discoverSessions();
-      if (result.discovered > 0 || result.dead_reaped > 0) {
-        logger("info", "startup_discovery", { ...result });
+  // Startup reconciliation can shell out to inspect many local processes and
+  // worktrees. Run it after the daemon is healthy so startup callers are not
+  // blocked by machine-size-dependent discovery latency.
+  const startupDiscoveryTimer = setTimeout(() => {
+    try {
+      const activeSessions = sessionRegistry.listSessions({ status: "active" });
+      if (activeSessions.length === 0) {
+        const result = sessionDiscovery.discoverSessions();
+        if (result.discovered > 0 || result.dead_reaped > 0) {
+          logger("info", "startup_discovery", { ...result });
+        }
       }
+    } catch (error) {
+      logger("warn", "startup_discovery_failed", { error: String(error) });
     }
-  } catch (error) {
-    logger("warn", "startup_discovery_failed", { error: String(error) });
+  }, STARTUP_DISCOVERY_DELAY_MS);
+  if (typeof startupDiscoveryTimer === "object" && "unref" in startupDiscoveryTimer) {
+    startupDiscoveryTimer.unref();
   }
 
   // Bug: 73e0adf — clear stale channel_connected_at on daemon startup.
@@ -333,6 +341,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     navEnricher.stop();
     authQueue.dispose();
     clearTimeout(issueStartupTimer);
+    clearTimeout(startupDiscoveryTimer);
     clearInterval(issueRescanTimer);
     clearInterval(channelPruneTimer);
     // Bug: 737df04 — destroy all open connections (including SSE streams) before
