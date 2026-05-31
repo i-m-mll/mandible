@@ -18,6 +18,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -113,8 +114,64 @@ describe('WorkOverviewView', () => {
       }),
     );
 
-    expect(screen.getByText('Repo One')).toBeTruthy();
+    expect(screen.getAllByText('Repo One').length).toBeGreaterThan(0);
     expect(screen.getAllByText('main').length).toBeGreaterThan(0);
+  });
+
+  it('uses a sidebar/detail layout with advanced work filters', async () => {
+    const onRescan = vi.fn();
+    render(
+      h(WorkOverviewView, {
+        repos: [
+          { id: 'old', name: 'Zeta Repo', path: '/repo/zeta' },
+          { id: 'new', name: 'Alpha Repo', path: '/repo/alpha' },
+        ],
+        branchesByRepo: {
+          old: [
+            {
+              name: 'legacy',
+              status: 'clean',
+              last_commit_message: 'Older work',
+              last_commit_date: '2024-01-01T10:00:00Z',
+            },
+          ],
+          new: [
+            {
+              name: 'feature/work',
+              status: 'dirty',
+              last_commit_message: 'Fresh work',
+              last_commit_date: '2024-01-03T10:00:00Z',
+            },
+          ],
+        },
+        onRescan,
+      }),
+    );
+
+    expect(screen.queryByText('Rescan')).toBeNull();
+    expect(screen.getByLabelText('Repositories')).toBeTruthy();
+    expect(screen.getByLabelText('Repository details')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Search repos...')).toBeTruthy();
+    expect(screen.getAllByText('Alpha Repo').length).toBeGreaterThan(0);
+    expect(screen.getByText('feature/work')).toBeTruthy();
+    expect(screen.getAllByText('\u2191 Push').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByLabelText('Advanced filters'));
+    expect(screen.getByText('Show excluded')).toBeTruthy();
+    expect(screen.getByText('Refresh now')).toBeTruthy();
+    fireEvent.click(screen.getByText('Refresh now'));
+    expect(onRescan).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByDisplayValue('Last activity'), { target: { value: 'name' } });
+    fireEvent.click(screen.getByTitle('Reverse sort direction'));
+    await waitFor(() => {
+      const repoNames = Array.from(document.querySelectorAll('.work-repo-item__name'))
+        .map((node) => node.textContent ?? '');
+      expect(repoNames[0]).toContain('Alpha Repo');
+    });
+
+    fireEvent.click(screen.getByText('Zeta Repo'));
+    expect(screen.getByText('legacy')).toBeTruthy();
   });
 });
 
