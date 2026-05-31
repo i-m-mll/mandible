@@ -153,6 +153,8 @@ function formatRelativeTime(value?: string): string {
 }
 
 type BranchSortKey = 'recency' | 'name' | 'ahead';
+type RepoSortKey = 'name' | 'activity';
+type SortDirection = 'asc' | 'desc';
 
 function sortBranches(branches: WorkBranch[], sortKey: BranchSortKey): WorkBranch[] {
   // Separate pinned (protected) from non-pinned
@@ -191,6 +193,15 @@ function sortBranches(branches: WorkBranch[], sortKey: BranchSortKey): WorkBranc
   return [...pinned, ...rest];
 }
 
+function getRepoActivity(repo: WorkRepo, branches: WorkBranch[]): number {
+  const branchActivity = branches.reduce(
+    (latest, branch) => Math.max(latest, getBranchTimestamp(branch)),
+    0,
+  );
+  const repoScanned = repo.last_scanned_at ? Date.parse(repo.last_scanned_at) : 0;
+  return Math.max(branchActivity, Number.isNaN(repoScanned) ? 0 : repoScanned);
+}
+
 function useDebounce(value: string, delayMs: number): string {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -202,6 +213,14 @@ function useDebounce(value: string, delayMs: number): string {
 
 function copyToClipboard(text: string): void {
   void navigator.clipboard.writeText(text);
+}
+
+function WorkFilterIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4 6h16M7 12h10M10 18h4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 // --- Context menu component ---
@@ -491,13 +510,16 @@ export function WorkOverviewView({
 }: WorkOverviewProps): JSX.Element {
   const [repos, setRepos] = useState<WorkRepo[]>(initialRepos);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [repoToggles, setRepoToggles] = useState<Record<string, boolean>>({});
+  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
 
   // Outer-level filters
   const [repoFilterInput, setRepoFilterInput] = useState('');
   const [globalBranchFilterInput, setGlobalBranchFilterInput] = useState('');
   const repoFilter = useDebounce(repoFilterInput, 300).toLowerCase();
   const globalBranchFilter = useDebounce(globalBranchFilterInput, 300).toLowerCase();
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
+  const [repoSortKey, setRepoSortKey] = useState<RepoSortKey>('activity');
+  const [repoSortDirection, setRepoSortDirection] = useState<SortDirection>('desc');
 
   // Per-project filters and sorts
   const [perRepoFilters, setPerRepoFilters] = useState<Record<string, string>>({});
@@ -537,6 +559,25 @@ export function WorkOverviewView({
   useEffect(() => {
     void fetchRepos(showExcluded);
   }, [showExcluded]);
+
+  useEffect(() => {
+    const refresh = () => {
+      void onRescan();
+    };
+    const interval = window.setInterval(refresh, 60_000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refresh();
+      }
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [onRescan]);
 
   // Bug: b5abaea — Subscribe to push SSE events forwarded via window CustomEvents
   useEffect(() => {
@@ -615,9 +656,47 @@ export function WorkOverviewView({
           return true;
         });
         const sorted = sortBranches(filtered, sortKey);
-        return { repo, repoId, repoTitle, branches: sorted, sortKey };
+        return {
+          repo,
+          repoId,
+          repoTitle,
+          branches: sorted,
+          sortKey,
+          activity: getRepoActivity(repo, branches),
+          totalBranches: branches.length,
+        };
+      })
+      .sort((a, b) => {
+        const direction = repoSortDirection === 'asc' ? 1 : -1;
+        if (repoSortKey === 'name') {
+          return direction * a.repoTitle.localeCompare(b.repoTitle);
+        }
+        const delta = a.activity - b.activity;
+        if (delta !== 0) {
+          return direction * delta;
+        }
+        return a.repoTitle.localeCompare(b.repoTitle);
       });
-  }, [repos, branchesByRepo, repoFilter, globalBranchFilter, perRepoFilters, perRepoSorts]);
+  }, [
+    repos,
+    branchesByRepo,
+    repoFilter,
+    globalBranchFilter,
+    perRepoFilters,
+    perRepoSorts,
+    repoSortDirection,
+    repoSortKey,
+  ]);
+
+  useEffect(() => {
+    if (repoRows.length === 0) {
+      setSelectedRepoId(null);
+      return;
+    }
+    if (!selectedRepoId || !repoRows.some((row) => row.repoId === selectedRepoId)) {
+      setSelectedRepoId(repoRows[0].repoId);
+    }
+  }, [repoRows, selectedRepoId]);
 
   const repoTitleCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -693,6 +772,7 @@ export function WorkOverviewView({
   };
 
   const hasActiveFilters = Boolean(globalBranchFilter || repoFilter);
+  const selectedRepo = repoRows.find((row) => row.repoId === selectedRepoId) ?? repoRows[0] ?? null;
 
   return (
     <div className="view work-view">
@@ -701,122 +781,173 @@ export function WorkOverviewView({
           <h2>Work Overview</h2>
           <p className="text-muted">Branch and worktree status across repos.</p>
         </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <div className="work-push-actions">
-            <button
-              type="button"
-              className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
-              disabled={pushState.active || pushState.authPending}
-              onClick={() => pushRepos('current').catch(() => {})}
-              title="Push current branches + git-bug refs + notes for all repos"
-            >
-              {pushState.authPending
-                ? 'Authenticating\u2026'
-                : pushState.active
-                  ? `Pushing\u2026 (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
-                  : '\u2191 Push'}
-            </button>
-            <button
-              type="button"
-              className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
-              disabled={pushState.active || pushState.authPending}
-              onClick={() => pushRepos('all_ahead').catch(() => {})}
-              title="Push all ahead branches + git-bug refs + notes for all repos"
-            >
-              {pushState.authPending
-                ? 'Authenticating\u2026'
-                : '\u2191\u2191 Push All'}
-            </button>
-          </div>
-          {pushState.authPending && (
-            <div
-              role="status"
-              aria-live="polite"
-              style={{
-              display: 'flex', alignItems: 'center', gap: '8px',
-              padding: '8px 12px',
-              background: 'rgba(245,194,92,0.12)',
-              border: '1px solid rgba(245,194,92,0.3)',
-              borderRadius: '8px',
-              fontSize: '0.9em',
-              color: 'var(--accent-yellow, #f5c25c)',
-              marginTop: '8px',
-            }}>
-              <span aria-hidden="true">{'🔐'}</span>
-              <span>Please authenticate via your security key or check your SSH agent…</span>
-            </div>
-          )}
-          <label style={{ fontSize: '0.85em', color: 'var(--text-muted, #888)', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={showExcluded}
-              onChange={(e) => setShowExcluded(e.currentTarget.checked)}
-              style={{ marginRight: '4px' }}
-            />
-            Show excluded
-          </label>
-          <button type="button" className="btn btn--sm" onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}>
-            + Add repo
-          </button>
-          <button type="button" className="btn" onClick={onRescan}>
-            Rescan
-          </button>
-        </div>
       </div>
-      {addingRepo && (
-        <div className="repo-add-form">
-          <input
-            type="text"
-            className="repo-add-form__input"
-            placeholder="Absolute path to git repo..."
-            value={addPath}
-            onInput={(e) => setAddPath(e.currentTarget.value)}
-          />
-          <button
-            type="button"
-            className="btn btn--sm"
-            onClick={() => void handleAddRepo()}
-          >
-            Add
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            onClick={() => { setAddingRepo(false); setAddPath(''); setAddError(null); }}
-          >
-            Cancel
-          </button>
-          {addError && <span className="repo-add-form__error">{addError}</span>}
+      {pushState.authPending && (
+        <div className="work-auth-status" role="status" aria-live="polite">
+          <span aria-hidden="true">!</span>
+          <span>Please authenticate via your security key or check your SSH agent...</span>
         </div>
       )}
-      <div className="work-toolbar">
-        <input
-          type="search"
-          className="work-search"
-          placeholder="Filter repos..."
-          value={repoFilterInput}
-          onInput={(event) => setRepoFilterInput(event.currentTarget.value)}
-        />
-        <input
-          type="search"
-          className="work-search"
-          placeholder="Filter branches (all repos)..."
-          value={globalBranchFilterInput}
-          onInput={(event) => setGlobalBranchFilterInput(event.currentTarget.value)}
-        />
-      </div>
-      <div className="work-table">
-        {repoRows.length === 0 ? (
-          <div className="empty-state">
-            {hasActiveFilters
-              ? 'No repositories match these filters.'
-              : 'No repositories found. Register a session or hit Rescan to discover worktrees.'}
+      <div className="work-shell">
+        <aside className="work-sidebar" aria-label="Repositories">
+          <div className="work-sidebar__search-row">
+            <input
+              type="search"
+              className="work-search"
+              placeholder="Search repos..."
+              value={repoFilterInput}
+              onInput={(event) => setRepoFilterInput(event.currentTarget.value)}
+            />
+            <button
+              type="button"
+              className={`work-filter-button${advancedFiltersOpen ? ' work-filter-button--active' : ''}`}
+              onClick={() => setAdvancedFiltersOpen((open) => !open)}
+              title="Advanced filters"
+              aria-label="Advanced filters"
+              aria-expanded={advancedFiltersOpen}
+            >
+              <WorkFilterIcon />
+            </button>
           </div>
-        ) : (
-          repoRows.map(({ repo, repoId, repoTitle, branches, sortKey }) => {
+          {advancedFiltersOpen ? (
+            <div className="work-filter-panel">
+              <label className="work-filter-panel__field">
+                <span>Branch filter</span>
+                <input
+                  type="search"
+                  className="work-search"
+                  placeholder="Any branch..."
+                  value={globalBranchFilterInput}
+                  onInput={(event) => setGlobalBranchFilterInput(event.currentTarget.value)}
+                />
+              </label>
+              <label className="work-filter-panel__check">
+                <input
+                  type="checkbox"
+                  checked={showExcluded}
+                  onChange={(e) => setShowExcluded(e.currentTarget.checked)}
+                />
+                Show excluded
+              </label>
+              <div className="work-filter-panel__sort">
+                <label>
+                  <span>Sort</span>
+                  <select
+                    className="work-sort"
+                    value={repoSortKey}
+                    onChange={(event) => setRepoSortKey(event.currentTarget.value as RepoSortKey)}
+                  >
+                    <option value="activity">Last activity</option>
+                    <option value="name">A-Z</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="work-filter-panel__direction"
+                  onClick={() => setRepoSortDirection((direction) => direction === 'asc' ? 'desc' : 'asc')}
+                  title="Reverse sort direction"
+                >
+                  {repoSortDirection === 'asc' ? '\u2191' : '\u2193'}
+                </button>
+              </div>
+              <button type="button" className="work-refresh-action" onClick={onRescan}>
+                Refresh now
+              </button>
+            </div>
+          ) : null}
+          <div className="work-repo-list" role="list">
+            {repoRows.length === 0 ? (
+              <div className="empty-state">
+                {hasActiveFilters
+                  ? 'No repositories match these filters.'
+                  : 'No repositories found. Register a session or add a repo.'}
+              </div>
+            ) : (
+              repoRows.map(({ repo, repoId, repoTitle, branches, activity, totalBranches }) => {
+                const repoPath = getRepoPath(repo);
+                const isExcluded = Boolean(repo.excluded);
+                const selected = selectedRepo?.repoId === repoId;
+                return (
+                  <button
+                    key={repoId}
+                    type="button"
+                    className={`work-repo-item${selected ? ' work-repo-item--active' : ''}${isExcluded ? ' work-repo-item--excluded' : ''}`}
+                    onClick={() => setSelectedRepoId(repoId)}
+                  >
+                    <span className="work-repo-item__main">
+                      <span className="work-repo-item__name">
+                        {repoTitle}
+                        {isExcluded ? (
+                          <span className="work-badge-excluded" title="Excluded from scans">excluded</span>
+                        ) : null}
+                      </span>
+                      {repoPath ? <span className="work-repo-item__path">{repoPath}</span> : null}
+                    </span>
+                    <span className="work-repo-item__meta">
+                      <span>{totalBranches} {totalBranches === 1 ? 'branch' : 'branches'}</span>
+                      <span>{activity ? formatRelativeTime(new Date(activity).toISOString()) : '\u2014'}</span>
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+          {addingRepo ? (
+            <div className="repo-add-form">
+              <input
+                type="text"
+                className="repo-add-form__input"
+                placeholder="Absolute path to git repo..."
+                value={addPath}
+                onInput={(e) => setAddPath(e.currentTarget.value)}
+              />
+              <div className="repo-add-form__actions">
+                <button type="button" className="btn btn--sm" onClick={() => void handleAddRepo()}>
+                  Add
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--sm btn--ghost"
+                  onClick={() => { setAddingRepo(false); setAddPath(''); setAddError(null); }}
+                >
+                  Cancel
+                </button>
+              </div>
+              {addError && <span className="repo-add-form__error">{addError}</span>}
+            </div>
+          ) : null}
+          <div className="work-sidebar__footer">
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => { setAddingRepo((v) => !v); setAddError(null); }}
+            >
+              + Add repo
+            </button>
+            <div className="work-push-actions">
+              <button
+                type="button"
+                className={`btn btn--ghost btn--sm${(pushState.active || pushState.authPending) ? ' btn--disabled' : ''}`}
+                disabled={pushState.active || pushState.authPending}
+                onClick={() => pushRepos('all_ahead').catch(() => {})}
+                title="Push all ahead branches + git-bug refs + notes for all repos"
+              >
+                {pushState.authPending
+                  ? 'Authenticating...'
+                  : pushState.active
+                    ? `Pushing... (${pushState.completedCount ?? 0}/${pushState.repoCount ?? '?'})`
+                    : '\u2191\u2191 Push All'}
+              </button>
+            </div>
+          </div>
+        </aside>
+        <section className="work-detail" aria-label="Repository details">
+          {selectedRepo === null ? (
+            <div className="empty-state">Select a repository to inspect branch and worktree status.</div>
+          ) : (() => {
+            const { repo, repoId, repoTitle, branches, sortKey } = selectedRepo;
             const repoPath = getRepoPath(repo);
             const showPath = repoPath && (repoTitleCounts.get(repoTitle) ?? 0) > 1;
-            const isOpen = repoToggles[repoId] ?? (branches.length > 0);
             const branchCount = branches.length;
             const defaultBranch =
               repo.default_branch ||
@@ -828,16 +959,11 @@ export function WorkOverviewView({
             const currentEditName = editName[repoId] ?? repo.name ?? repoTitle;
 
             return (
-              <details
+              <div
                 key={repoId}
-                className={`repo-card repo-card--collapsible${isExcluded ? ' repo-card--excluded' : ''}`}
-                open={isOpen}
-                onToggle={(event) => {
-                  const nextOpen = event.currentTarget.open;
-                  setRepoToggles((prev) => ({ ...prev, [repoId]: nextOpen }));
-                }}
+                className={`repo-card work-detail-card${isExcluded ? ' repo-card--excluded' : ''}`}
               >
-                <summary className="repo-card__summary">
+                <div className="repo-card__summary work-detail-card__header">
                   <div className="repo-card__title">
                     <h3>
                       {repoTitle}
@@ -865,21 +991,17 @@ export function WorkOverviewView({
                       className="work-repo-push-btn"
                       disabled={pushState.active}
                       onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
                         pushRepo(repoId, 'all_ahead').catch(() => {});
                       }}
                       title="Push this repo"
                     >
-                      {'\u2191'}
+                      {'\u2191 Push'}
                     </button>
                     {isExcluded && (
                       <button
                         type="button"
                         className="btn btn--xs"
                         onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
                           void handleUpdateRepo(repoId, { excluded: false });
                         }}
                         title="Include this repo in scans"
@@ -892,15 +1014,13 @@ export function WorkOverviewView({
                       className={`repo-card__gear${isSettingsOpen ? ' repo-card__gear--active' : ''}`}
                       title="Repo settings"
                       onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
                         setSettingsOpenFor((prev) => prev === repoId ? null : repoId);
                       }}
                     >
                       &#9881;
                     </button>
                   </div>
-                </summary>
+                </div>
                 {isSettingsOpen && (
                   <div className="repo-settings-strip">
                     <div className="repo-settings-strip__row">
@@ -1014,10 +1134,10 @@ export function WorkOverviewView({
                     onToggle={toggleBranch}
                   />
                 </div>
-              </details>
+              </div>
             );
-          })
-        )}
+          })()}
+        </section>
       </div>
     </div>
   );
