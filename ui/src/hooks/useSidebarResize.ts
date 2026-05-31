@@ -7,6 +7,8 @@ export type SidebarResizeOptions = {
   defaultWidth?: number;
   /** Minimum allowed width in pixels (default: 190) */
   minWidth?: number;
+  /** Viewport width at or below which CSS should own the sidebar width (default: 700) */
+  mobileBreakpoint?: number;
   /** localStorage key to persist width across sessions */
   storageKey?: string;
 };
@@ -30,8 +32,13 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
   const {
     defaultWidth = 280,
     minWidth = 190,
+    mobileBreakpoint = 700,
     storageKey,
   } = options;
+
+  const isSmallViewport = useCallback(() => (
+    typeof window !== 'undefined' && window.innerWidth <= mobileBreakpoint
+  ), [mobileBreakpoint]);
 
   const [width, setWidth] = useState<number>(() => {
     if (storageKey && typeof localStorage !== 'undefined' && typeof localStorage.getItem === 'function') {
@@ -45,6 +52,7 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
     }
     return defaultWidth;
   });
+  const [isMobile, setIsMobile] = useState<boolean>(isSmallViewport);
 
   // Keep a ref so event handlers always see fresh value without re-registering
   const dragging = useRef(false);
@@ -56,6 +64,20 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
   useEffect(() => {
     latestWidth.current = width;
   }, [width]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const updateViewportMode = () => {
+      setIsMobile(isSmallViewport());
+    };
+
+    updateViewportMode();
+    window.addEventListener('resize', updateViewportMode);
+    return () => {
+      window.removeEventListener('resize', updateViewportMode);
+    };
+  }, [isSmallViewport]);
 
   // Persist on change
   useEffect(() => {
@@ -98,7 +120,7 @@ export function useSidebarResize(options: SidebarResizeOptions = {}): SidebarRes
   // Bug: d472f7f — on small screens the inline width overrides CSS media queries
   // (e.g. width: 100%). Return null on mobile so the inline style is omitted and
   // CSS takes over. Mobile breakpoint matches the app's @media (max-width: 700px).
-  const effectiveWidth = typeof window !== 'undefined' && window.innerWidth <= 700 ? null : width;
+  const effectiveWidth = isMobile ? null : width;
 
   return { width: effectiveWidth, handleMouseDown };
 }
