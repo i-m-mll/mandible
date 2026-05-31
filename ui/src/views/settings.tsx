@@ -23,6 +23,7 @@ import {
   type DesktopDaemonStatus,
   type RuntimeStatus,
 } from '../api';
+import { AuthHooksPanel } from './auth';
 
 export type SettingsViewProps = {
   settings: Record<string, string>;
@@ -1359,7 +1360,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </div>
 
-      <div className="settings-view__section">
+      <div className="settings-view__section" id="auth-settings">
         <div className="settings-view__section-header">
           <h3 className="settings-view__section-title">Auth</h3>
           <p className="settings-view__section-desc">
@@ -1378,6 +1379,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             suffix="min"
           />
           <DelegatedSigningSection />
+        </div>
+      </div>
+
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Auth Hooks</h3>
+          <p className="settings-view__section-desc">
+            Repo-specific post-auth hook configuration.
+          </p>
+        </div>
+        <div className="settings-view__section-body">
+          <AuthHooksPanel />
         </div>
       </div>
 
