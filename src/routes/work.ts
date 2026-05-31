@@ -1,61 +1,7 @@
 import { WorkScanner, type BranchData } from "../work-scanner.js";
 import { startPushSession, pushSingleRepo, getPushStatus, type PushScope } from "../push-manager.js";
-
-export interface RouteHandler<Request = any, Response = any> {
-  (req: Request, res: Response): void | Promise<void>;
-}
-
-export interface WorkServer {
-  get(path: string, handler: RouteHandler): void;
-  post(path: string, handler: RouteHandler): void;
-  put(path: string, handler: RouteHandler): void;
-  delete(path: string, handler: RouteHandler): void;
-}
-
-function getParam(req: any, key: string): string | undefined {
-  if (!req) {
-    return undefined;
-  }
-  if (req.params && typeof req.params[key] === "string") {
-    return req.params[key];
-  }
-  if (typeof req.param === "function") {
-    const value = req.param(key);
-    return typeof value === "string" ? value : undefined;
-  }
-  return undefined;
-}
-
-function getQueryParam(req: any, key: string): string | undefined {
-  if (!req || !req.query) {
-    return undefined;
-  }
-  const value = req.query[key];
-  if (Array.isArray(value)) {
-    return typeof value[0] === "string" ? value[0] : undefined;
-  }
-  return typeof value === "string" ? value : undefined;
-}
-
-function sendJson(res: any, status: number, payload: unknown): void {
-  if (typeof res.status === "function") {
-    res.status(status);
-  } else if (typeof res.code === "function") {
-    res.code(status);
-  }
-
-  if (typeof res.json === "function") {
-    res.json(payload);
-    return;
-  }
-  if (typeof res.send === "function") {
-    res.send(payload);
-    return;
-  }
-  if (typeof res.end === "function") {
-    res.end(JSON.stringify(payload));
-  }
-}
+import type { RouteRegistrar } from "../server.js";
+import { queryString, sendJson } from "./http.js";
 
 type BranchSort = "recency" | "name" | "activity";
 
@@ -101,7 +47,7 @@ export function filterAndSortBranches(
   return sorted;
 }
 
-export function registerWorkRoutes(server: WorkServer, scanner?: WorkScanner): WorkScanner {
+export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner): WorkScanner {
   const workScanner = scanner ?? new WorkScanner();
   const resolveRepo = (repoId: string) => {
     const repo = workScanner.getRepoById(repoId);
@@ -131,14 +77,14 @@ export function registerWorkRoutes(server: WorkServer, scanner?: WorkScanner): W
 
   server.get("/api/work/repos", (req, res) => {
     ensureScan();
-    const includeExcluded = getQueryParam(req, "include_excluded") === "true";
+    const includeExcluded = queryString(req, "include_excluded") === "true";
     const repos = workScanner.getRepos();
     const filtered = includeExcluded ? repos : repos.filter((r) => !r.excluded);
     sendJson(res, 200, filtered);
   });
 
   server.put("/api/work/repos/:id", (req, res) => {
-    const id = getParam(req, "id");
+    const id = req.params.id;
     if (!id) { sendJson(res, 400, { error: "missing repo id" }); return; }
     const body = req.body as { name?: string; excluded?: boolean } | undefined;
     const updated = workScanner.updateRepo(id, body ?? {});
@@ -159,7 +105,7 @@ export function registerWorkRoutes(server: WorkServer, scanner?: WorkScanner): W
   });
 
   server.delete("/api/work/repos/:id", (req, res) => {
-    const id = getParam(req, "id");
+    const id = req.params.id;
     const ok = workScanner.removeRepo(id ?? "");
     if (!ok) { sendJson(res, 404, { error: "repo not found" }); return; }
     sendJson(res, 200, { ok: true });
@@ -167,7 +113,7 @@ export function registerWorkRoutes(server: WorkServer, scanner?: WorkScanner): W
 
   server.get("/api/work/repos/:id/branches", (req, res) => {
     ensureScan();
-    const repoId = getParam(req, "id");
+    const repoId = req.params.id;
     if (!repoId) {
       sendJson(res, 400, { error: "missing repo id" });
       return;
@@ -177,15 +123,15 @@ export function registerWorkRoutes(server: WorkServer, scanner?: WorkScanner): W
       sendJson(res, 404, { error: "repo not found" });
       return;
     }
-    const sort = getQueryParam(req, "sort");
-    const filter = getQueryParam(req, "filter");
+    const sort = queryString(req, "sort");
+    const filter = queryString(req, "filter");
     const branches = workScanner.getBranches(repo.root);
     sendJson(res, 200, filterAndSortBranches(branches, { sort, filter }));
   });
 
   server.get("/api/work/repos/:id/worktrees", (req, res) => {
     ensureScan();
-    const repoId = getParam(req, "id");
+    const repoId = req.params.id;
     if (!repoId) {
       sendJson(res, 400, { error: "missing repo id" });
       return;
@@ -200,8 +146,8 @@ export function registerWorkRoutes(server: WorkServer, scanner?: WorkScanner): W
 
   server.get("/api/work/repos/:id/branch/:name", (req, res) => {
     ensureScan();
-    const repoId = getParam(req, "id");
-    const branchName = getParam(req, "name");
+    const repoId = req.params.id;
+    const branchName = req.params.name;
     if (!repoId || !branchName) {
       sendJson(res, 400, { error: "missing repo id or branch" });
       return;
@@ -248,7 +194,7 @@ export function registerWorkRoutes(server: WorkServer, scanner?: WorkScanner): W
   });
 
   server.post("/api/work/repos/:id/push", async (req, res) => {
-    const repoId = getParam(req, "id");
+    const repoId = req.params.id;
     if (!repoId) {
       sendJson(res, 400, { error: "missing repo id" });
       return;
