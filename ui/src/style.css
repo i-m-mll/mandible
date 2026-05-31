@@ -4060,6 +4060,17 @@ tr:hover .work-actions__trigger {
     flex-wrap: wrap;
   }
 
+  .starred-chat-card__header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .starred-chat-card__actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 700px) {
   .issues-view {
     flex-direction: column;
     height: auto;
@@ -4073,17 +4084,12 @@ tr:hover .work-actions__trigger {
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   }
 
+  .issues-tree__resize-handle {
+    display: none;
+  }
+
   .issues-detail {
     min-height: 50vh;
-  }
-
-  .starred-chat-card__header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .starred-chat-card__actions {
-    justify-content: flex-start;
   }
 }
 
