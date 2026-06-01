@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
+import { parseRouteFromHash } from '../ui/src/routing';
 import { AuthQueueView } from '../ui/src/views/auth';
 import { ReviewView } from '../ui/src/views/review';
 import { SessionsView } from '../ui/src/views/sessions';
+import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { ArtifactsView } from '../ui/src/views/artifacts';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
@@ -73,6 +75,31 @@ describe('SessionsView', () => {
     fireEvent.click(screen.getByLabelText('Actions'));
     fireEvent.click(screen.getByText('Go to'));
     expect(onNavigate).toHaveBeenCalledWith('s1');
+  });
+});
+
+describe('App routing', () => {
+  it('routes legacy monitor hashes into console', () => {
+    expect(parseRouteFromHash('#/sessions?session=s1')).toEqual({
+      tab: 'console',
+      params: { session: 's1' },
+    });
+  });
+});
+
+describe('SettingsView', () => {
+  it('renders a close button when an onClose handler is supplied', () => {
+    const onClose = vi.fn();
+    render(
+      h(SettingsView, {
+        settings: {},
+        onSave: async () => undefined,
+        onClose,
+      }),
+    );
+
+    fireEvent.click(screen.getByLabelText('Close settings'));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });
 

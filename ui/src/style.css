@@ -4776,6 +4776,24 @@ tr:hover .work-actions__trigger {
   max-width: 640px;
 }
 
+.settings-view__close {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.settings-view__close:hover,
+.settings-view__close:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
 .settings-view__section {
   background: var(--bg-card);
   padding: 20px;
