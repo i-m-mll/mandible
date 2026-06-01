@@ -2878,6 +2878,7 @@ tr:last-child td {
 }
 
 .work-view {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: calc(100% + 76px);
@@ -2887,11 +2888,15 @@ tr:last-child td {
 }
 
 .work-auth-status {
+  position: absolute;
+  z-index: 40;
+  top: 12px;
+  left: 12px;
   display: flex;
   align-items: center;
   gap: 8px;
   width: fit-content;
-  margin: 12px 12px 0;
+  margin: 0;
   padding: 8px 12px;
   background: rgba(245, 194, 92, 0.12);
   border: 1px solid rgba(245, 194, 92, 0.3);
@@ -2901,9 +2906,13 @@ tr:last-child td {
 }
 
 .work-push-message {
+  position: absolute;
+  z-index: 40;
+  top: 12px;
+  left: 12px;
   width: fit-content;
   max-width: min(680px, calc(100% - 24px));
-  margin: 12px 12px 0;
+  margin: 0;
   padding: 8px 12px;
   border: 1px solid rgba(77, 163, 255, 0.22);
   border-radius: 8px;
@@ -3821,9 +3830,15 @@ tr:hover .work-actions__trigger {
 }
 
 .artifacts-filter__clear:hover,
-.artifacts-filter__advanced-trigger:hover {
+.artifacts-filter__advanced-trigger:hover,
+.artifacts-filter__advanced-trigger--active {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-primary);
+}
+
+.artifacts-filter__advanced-trigger svg {
+  width: 15px;
+  height: 15px;
 }
 
 .artifacts-advanced {
@@ -6295,6 +6310,13 @@ tr:hover .work-actions__trigger {
   min-width: 0;
 }
 
+.conv-detail__title-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
 .conv-detail__title {
   margin: 0;
   font-size: 14px;
@@ -6323,13 +6345,58 @@ tr:hover .work-actions__trigger {
 
 .conv-actions {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.conv-actions__trigger,
+.conv-info-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.conv-actions__trigger {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+}
+
+.conv-info-button {
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+}
+
+.conv-actions__trigger:hover,
+.conv-actions__trigger[aria-expanded="true"],
+.conv-info-button:hover {
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.06);
+}
+
+.conv-actions__trigger svg,
+.conv-info-button svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .conv-actions__menu {
   position: absolute;
   z-index: 30;
   top: calc(100% + 6px);
-  right: 0;
+  left: 0;
   min-width: 180px;
   padding: 6px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -6354,6 +6421,53 @@ tr:hover .work-actions__trigger {
 
 .conv-actions__menu button:hover {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.instruction-message-block {
+  color: var(--text-primary);
+}
+
+.instruction-message-block__summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  list-style: none;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.instruction-message-block__summary::-webkit-details-marker {
+  display: none;
+}
+
+.instruction-message-block__summary::before {
+  content: '\25B8';
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.instruction-message-block[open] .instruction-message-block__summary::before {
+  content: '\25BE';
+}
+
+.instruction-message-block__label {
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.instruction-message-block__path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.instruction-message-block__body {
+  margin-top: 12px;
 }
 
 .chat-live-detail {
@@ -10277,6 +10391,7 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 }
 
 .work-repo-push-btn {
+  min-width: 74px;
   opacity: 1;
   background: none;
   border: none;
@@ -10286,6 +10401,12 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   padding: 6px 8px;
   border-radius: 6px;
   transition: opacity 0.15s, color 0.15s;
+}
+
+.work-repo-push-btn__label {
+  display: inline-block;
+  min-width: 58px;
+  text-align: left;
 }
 
 .work-repo-push-btn:hover {
@@ -10299,9 +10420,12 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 
 .work-push-spinner {
   display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(77, 163, 255, 0.24);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
   animation: work-push-spin 1s linear infinite;
-  color: var(--accent-blue);
-  font-size: 12px;
 }
 
 .work-push-done { color: var(--accent-green); font-size: 11px; }

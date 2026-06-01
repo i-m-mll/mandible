@@ -10,6 +10,7 @@ import { SessionsView } from '../ui/src/views/sessions';
 import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { ArtifactsView } from '../ui/src/views/artifacts';
+import { getInstructionMessageMeta } from '../ui/src/views/conversations';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
 import { useSidebarResize } from '../ui/src/hooks/useSidebarResize';
 import {
@@ -851,9 +852,27 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: artifact.id }));
 
     await waitFor(() => expect(screen.getByText('humbleb://claims/claim_1')).toBeTruthy());
+    const filterButton = screen.getByLabelText('Artifact filters');
+    expect(filterButton.textContent).not.toContain('⋯');
+    expect(filterButton.querySelector('svg')).toBeTruthy();
     expect(screen.getByText('Knowledge Backrefs')).toBeTruthy();
     expect(screen.getByText('claim')).toBeTruthy();
     expect(screen.getByText('indexed')).toBeTruthy();
+  });
+});
+
+describe('conversation instruction message labels', () => {
+  it('recognizes project AGENTS.md and CLAUDE.md instruction messages', () => {
+    expect(getInstructionMessageMeta('AGENTS.md instructions for /Users/me/repo\n# Agent Instructions')).toEqual({
+      filename: 'AGENTS.md',
+      scope: 'Project',
+      path: '/Users/me/repo',
+    });
+    expect(getInstructionMessageMeta('# CLAUDE.md instructions for /Users/me/repo\n# Rules')).toEqual({
+      filename: 'CLAUDE.md',
+      scope: 'Project',
+      path: '/Users/me/repo',
+    });
   });
 });
 

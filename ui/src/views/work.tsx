@@ -789,7 +789,7 @@ export function WorkOverviewView({
       return { ...prev, message: `Pushing ${repoTitle}...`, repoProgress: nextProgress };
     });
     try {
-      const result = await pushRepo(repoId, 'all_ahead') as PushRepoResult;
+      const result = await pushRepo(repoId, 'current') as PushRepoResult;
       const branchCount = countPushed(result.branches_pushed);
       const refCount = countPushed(result.refs_pushed);
       const nextStatus = result.error ? 'error' : 'done';
@@ -797,7 +797,9 @@ export function WorkOverviewView({
         ? `Push failed for ${repoTitle}: ${result.error}`
         : result.skipped
           ? `Nothing to push for ${repoTitle}.`
-          : `Pushed ${repoTitle}: ${branchCount} branch${branchCount === 1 ? '' : 'es'}, ${refCount} ref${refCount === 1 ? '' : 's'}.`;
+          : refCount > 0
+            ? `Pushed ${repoTitle}: ${branchCount} branch${branchCount === 1 ? '' : 'es'}, ${refCount} ref${refCount === 1 ? '' : 's'}.`
+            : `Pushed ${repoTitle}.`;
       setPushState((prev) => {
         const nextProgress = new Map(prev.repoProgress);
         nextProgress.set(repoId, nextStatus);
@@ -1015,7 +1017,7 @@ export function WorkOverviewView({
                   </div>
                   <div className="repo-card__header-actions">
                     {pushState.repoProgress.get(repoId) === 'pushing' && (
-                      <span className="work-push-spinner">{'\u27F3'}</span>
+                      <span className="work-push-spinner" aria-label="Pushing" />
                     )}
                     {pushState.repoProgress.get(repoId) === 'done' && (
                       <span className="work-push-done" title="Push complete">{'\u2713'}</span>
@@ -1030,7 +1032,9 @@ export function WorkOverviewView({
                       onClick={() => void handlePushRepo(repoId, repoTitle)}
                       title="Push this repo"
                     >
-                      {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : '\u2191 Push'}
+                      <span className="work-repo-push-btn__label">
+                        {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : '\u2191 Push'}
+                      </span>
                     </button>
                     {isExcluded && (
                       <button

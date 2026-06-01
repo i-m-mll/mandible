@@ -357,6 +357,42 @@ async function pushRepo(
   return result;
 }
 
+async function pushRepoLikeCli(
+  repo: RepoInfo,
+  scanner: WorkScanner
+): Promise<PushRepoResult> {
+  const result: PushRepoResult = {
+    repoId: repo.id,
+    repoName: repo.name,
+    repoRoot: repo.root,
+    branches_pushed: [],
+    refs_pushed: [],
+    skipped: false,
+    error: null,
+  };
+
+  try {
+    const remoteOutput = await runGitAsync(["remote"], repo.root, process.env);
+    if (!remoteOutput.trim()) {
+      result.skipped = true;
+      return result;
+    }
+
+    await runGitAsync(["push"], repo.root, process.env, 120_000);
+    result.branches_pushed.push("HEAD");
+  } catch (err) {
+    result.error = err instanceof Error ? err.message : String(err);
+  }
+
+  try {
+    await scanner.scanAllAsync();
+  } catch {
+    // Non-fatal; the next scheduled scan will catch up.
+  }
+
+  return result;
+}
+
 // --- Push session state ---
 
 let activePushSession: {
@@ -541,6 +577,10 @@ export async function pushSingleRepo(
   scope: PushScope,
   scanner: WorkScanner
 ): Promise<PushRepoResult> {
+  if (scope === "current") {
+    return pushRepoLikeCli(repo, scanner);
+  }
+
   const socketPath = path.join(os.tmpdir(), `mandible-ssh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const gitSshEnv = buildControlMasterEnv(socketPath);
 
