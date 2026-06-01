@@ -28,6 +28,7 @@ import { AuthHooksPanel } from './auth';
 export type SettingsViewProps = {
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
+  onClose?: () => void;
 };
 
 type FeedbackState = {
@@ -973,7 +974,7 @@ function RuntimeSection(): JSX.Element {
 }
 
 export function SettingsView(props: SettingsViewProps): JSX.Element {
-  const { settings, onSave } = props;
+  const { settings, onSave, onClose } = props;
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
@@ -1038,6 +1039,17 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           <h2>Settings</h2>
           <div className="text-muted">Mandible configuration.</div>
         </div>
+        {onClose && (
+          <button
+            type="button"
+            className="settings-view__close"
+            aria-label="Close settings"
+            title="Close settings"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        )}
       </div>
 
       {/* ── Section 1: Notifications ── */}
