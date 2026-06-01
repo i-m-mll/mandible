@@ -2900,6 +2900,18 @@ tr:last-child td {
   color: var(--accent-yellow, #f5c25c);
 }
 
+.work-push-message {
+  width: fit-content;
+  max-width: min(680px, calc(100% - 24px));
+  margin: 12px 12px 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(77, 163, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(77, 163, 255, 0.08);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 .work-shell {
   display: grid;
   grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
@@ -3366,7 +3378,7 @@ tr:last-child td {
 }
 
 .branch-name {
-  margin-left: 6px;
+  margin-left: 0;
 }
 
 .branch-count {
@@ -3476,6 +3488,10 @@ tr:last-child td {
   font-size: 11px;
 }
 
+.branch-scroll-region .tree-toggle {
+  margin-right: 5px;
+}
+
 /* Sticky column headers: position: sticky on thead doesn't work with
    border-collapse: collapse, so we apply it to individual th cells.
    Bug: d05e0d1 */
@@ -3528,6 +3544,31 @@ tr:last-child td {
   width: 40px;
   text-align: center;
   padding: 0 4px;
+}
+
+.work-col-status {
+  width: 28px;
+  text-align: center;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+.work-status-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+
+.work-status-dot--clean {
+  background: var(--accent-green);
+  box-shadow: 0 0 0 3px rgba(43, 217, 164, 0.12);
+}
+
+.work-status-dot--dirty {
+  background: var(--accent-yellow, #f5c25c);
+  box-shadow: 0 0 0 3px rgba(245, 194, 92, 0.14);
 }
 
 .work-actions {

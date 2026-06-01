@@ -50,8 +50,8 @@ export type WorkOverviewProps = {
 type PushRepoResult = {
   repoId: string;
   repoName: string;
-  branches_pushed: number;
-  refs_pushed: number;
+  branches_pushed: number | string[];
+  refs_pushed: number | string[];
   skipped: boolean;
   error?: string;
 };
@@ -59,6 +59,7 @@ type PushRepoResult = {
 type PushState = {
   active: boolean;
   authPending: boolean;
+  message?: string | null;
   sessionId?: string;
   repoCount?: number;
   completedCount?: number;
@@ -96,6 +97,19 @@ function isDirty(branch: WorkBranch): boolean {
     return branch.dirty;
   }
   return branch.status ? branch.status.toLowerCase() === 'dirty' : false;
+}
+
+function getBranchStatus(branch: WorkBranch): 'dirty' | 'clean' {
+  return isDirty(branch) ? 'dirty' : 'clean';
+}
+
+function formatBranchStatus(status: 'dirty' | 'clean'): string {
+  return status === 'dirty' ? 'Dirty' : 'Clean';
+}
+
+function countPushed(value: number | string[] | undefined): number {
+  if (Array.isArray(value)) return value.length;
+  return value ?? 0;
 }
 
 function isProtectedBranch(branch: WorkBranch): boolean {
@@ -328,7 +342,8 @@ type BranchRowProps = {
 function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, onToggle }: BranchRowProps): JSX.Element {
   const anchorRef = useRef<HTMLElement>(null);
   const branchName = getBranchName(branch);
-  const dirty = isDirty(branch);
+  const status = getBranchStatus(branch);
+  const statusLabel = formatBranchStatus(status);
   const ahead = branch.ahead ?? 0;
   const behind = branch.behind ?? 0;
   const aheadDefault = branch.ahead_default ?? 0;
@@ -350,27 +365,25 @@ function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, on
   return (
     <>
       <tr key={expandKey} className={isPinned ? 'work-row--pinned' : ''}>
+        <td className="work-col-status">
+          <span className={`work-status-dot work-status-dot--${status}`} title={statusLabel} aria-label={statusLabel} />
+        </td>
         <td>
-          <button
-            type="button"
-            className={`tree-toggle ${diffStat ? '' : 'tree-toggle--empty'}`}
-            onClick={() => diffStat && onToggle(repoId, branchName)}
-          >
-            {diffStat ? (isExpanded ? '\u25BE' : '\u25B8') : ''}
-          </button>
+          {diffStat ? (
+            <button
+              type="button"
+              className="tree-toggle"
+              onClick={() => onToggle(repoId, branchName)}
+            >
+              {isExpanded ? '\u25BE' : '\u25B8'}
+            </button>
+          ) : null}
           <span className="branch-name">{branchName}</span>
           {isPinned ? (
             <span className="work-badge-default" title="Protected branch">
               default
             </span>
           ) : null}
-        </td>
-        <td>
-          <span
-            className={`status-pill ${dirty ? 'status-pill--dirty' : 'status-pill--clean'}`}
-          >
-            {dirty ? 'Dirty' : 'Clean'}
-          </span>
         </td>
         <td>
           {isPinned ? (
@@ -462,8 +475,8 @@ function BranchTableScroller({
         <table>
           <thead>
             <tr>
+              <th className="work-col-status"></th>
               <th>Branch</th>
-              <th>Status</th>
               <th>vs {defaultBranch}</th>
               <th>vs upstream</th>
               <th>Last Commit</th>
@@ -769,6 +782,37 @@ export function WorkOverviewView({
     }
   };
 
+  const handlePushRepo = async (repoId: string, repoTitle: string) => {
+    setPushState((prev) => {
+      const nextProgress = new Map(prev.repoProgress);
+      nextProgress.set(repoId, 'pushing');
+      return { ...prev, message: `Pushing ${repoTitle}...`, repoProgress: nextProgress };
+    });
+    try {
+      const result = await pushRepo(repoId, 'all_ahead') as PushRepoResult;
+      const branchCount = countPushed(result.branches_pushed);
+      const refCount = countPushed(result.refs_pushed);
+      const nextStatus = result.error ? 'error' : 'done';
+      const message = result.error
+        ? `Push failed for ${repoTitle}: ${result.error}`
+        : result.skipped
+          ? `Nothing to push for ${repoTitle}.`
+          : `Pushed ${repoTitle}: ${branchCount} branch${branchCount === 1 ? '' : 'es'}, ${refCount} ref${refCount === 1 ? '' : 's'}.`;
+      setPushState((prev) => {
+        const nextProgress = new Map(prev.repoProgress);
+        nextProgress.set(repoId, nextStatus);
+        return { ...prev, message, repoProgress: nextProgress };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setPushState((prev) => {
+        const nextProgress = new Map(prev.repoProgress);
+        nextProgress.set(repoId, 'error');
+        return { ...prev, message: `Push failed for ${repoTitle}: ${message}`, repoProgress: nextProgress };
+      });
+    }
+  };
+
   const hasActiveFilters = Boolean(globalBranchFilter || repoFilter);
   const selectedRepo = repoRows.find((row) => row.repoId === selectedRepoId) ?? repoRows[0] ?? null;
 
@@ -778,6 +822,11 @@ export function WorkOverviewView({
         <div className="work-auth-status" role="status" aria-live="polite">
           <span aria-hidden="true">!</span>
           <span>Please authenticate via your security key or check your SSH agent...</span>
+        </div>
+      )}
+      {pushState.message && (
+        <div className="work-push-message" role="status" aria-live="polite">
+          {pushState.message}
         </div>
       )}
       <div className="work-shell">
@@ -977,13 +1026,11 @@ export function WorkOverviewView({
                     <button
                       type="button"
                       className="work-repo-push-btn"
-                      disabled={pushState.active}
-                      onClick={(e) => {
-                        pushRepo(repoId, 'all_ahead').catch(() => {});
-                      }}
+                      disabled={pushState.active || pushState.repoProgress.get(repoId) === 'pushing'}
+                      onClick={() => void handlePushRepo(repoId, repoTitle)}
                       title="Push this repo"
                     >
-                      {'\u2191 Push'}
+                      {pushState.repoProgress.get(repoId) === 'pushing' ? 'Pushing...' : '\u2191 Push'}
                     </button>
                     {isExcluded && (
                       <button
