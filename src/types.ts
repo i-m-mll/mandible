@@ -473,6 +473,9 @@ export interface GraphPayload {
     branches: string[];
   };
   truncated?: boolean;
+  limit?: number;
+  displayed_count?: number;
+  available_count?: number;
 }
 
 export interface GraphQueryParams {
@@ -482,7 +485,7 @@ export interface GraphQueryParams {
   branch?: string;     // filter by branch name (sessions and auth_requests)
   branches?: string[]; // multi-select branch filter values
   since?: string;      // ISO timestamp or relative like "3d", "1w", "2h"
-  limit?: number;      // max nodes to return (default 50)
+  limit?: number;      // max nodes to return (default 120)
   status?: "open" | "all"; // issue filter only (default 'open')
 }
 

@@ -892,34 +892,40 @@ function graphFilterOptions(issueScanner: IssueScanner): GraphPayload["filters"]
   };
 }
 
-function modeDescriptors(
+function graphModeCounts(
   issueScanner: IssueScanner,
-  activeMode: GraphMode,
-  activeCount: number,
-): GraphModeDescriptor[] {
+): Record<GraphMode, number> {
   const db = getDb();
   const issueCount = countLedgerGraphIssues(db, "all")
     ?? issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
-  let workCount = 0;
-  try {
-    workCount = (db.prepare("SELECT COUNT(*) AS count FROM work_units").get() as { count: number }).count;
-  } catch {
-    workCount = 0;
-  }
-  const counts: Record<GraphMode, number> = {
-    activity: activeCount,
+  const sessionCount = countTableRows("sessions");
+  const authCount = countTableRows("auth_requests");
+  const workCount = countTableRows("work_units");
+  return {
+    activity: issueCount + sessionCount + authCount,
     issue: issueCount,
     work: workCount,
     provenance: getIndexedGraphCount(db, "provenance"),
     "provider-lineage": getIndexedGraphCount(db, "provider-lineage"),
     "artifact-lineage": getIndexedGraphCount(db, "artifact-lineage"),
   };
-  counts[activeMode] = activeCount;
+}
+
+function modeDescriptors(counts: Record<GraphMode, number>): GraphModeDescriptor[] {
   return GRAPH_MODES.map((mode) => ({
     ...mode,
     count: counts[mode.id],
     available: mode.id === "activity" || counts[mode.id] > 0,
   }));
+}
+
+function countTableRows(table: string): number {
+  if (!tableExists(table)) return 0;
+  try {
+    return (getDb().prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+  } catch {
+    return 0;
+  }
 }
 
 export function registerGraphRoutes(
@@ -952,15 +958,19 @@ export function registerGraphRoutes(
       truncated = operational.truncated;
     }
 
+    const counts = graphModeCounts(issueScanner);
     const payload: GraphPayload = {
       version: 1,
       mode,
       nodes,
       edges,
-      modes: modeDescriptors(issueScanner, mode, nodes.length),
+      modes: modeDescriptors(counts),
       layers: graphLayers(nodes, mode),
       filters: graphFilterOptions(issueScanner),
       truncated,
+      limit: params.limit,
+      displayed_count: nodes.length,
+      available_count: counts[mode],
     };
 
     res.json(payload);

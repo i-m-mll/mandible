@@ -132,6 +132,9 @@ export interface GraphPayload {
     branches: string[]
   }
   truncated?: boolean
+  limit?: number
+  displayed_count?: number
+  available_count?: number
 }
 
 // Internal simulation types — exported so GraphCanvas.tsx can reference them

@@ -75,6 +75,12 @@ describe("graph filters", () => {
     expect(params.branch).toBe("main");
   });
 
+  it("parses graph display limits within the supported range", () => {
+    expect(parseQueryParams({ limit: "250" }).limit).toBe(250);
+    expect(parseQueryParams({ limit: "0" }).limit).toBe(120);
+    expect(parseQueryParams({ limit: "5000" }).limit).toBe(1000);
+  });
+
   it("recovers the root repo from worktree session cwd values", () => {
     const candidates = repoCandidatesFromCwd("/tmp/HumbleB/worktrees/feature__graph");
 

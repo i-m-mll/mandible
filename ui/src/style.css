@@ -9833,6 +9833,12 @@ tr:hover .work-actions__trigger {
   color: var(--text-muted);
 }
 
+.graph-display-summary {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .graph-canvas-wrap {
   min-height: 0;
   position: relative;
@@ -9875,6 +9881,15 @@ tr:hover .work-actions__trigger {
   gap: 8px;
   align-items: flex-start;
   flex-wrap: wrap;
+}
+
+.graph-size-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .graph-token-select {

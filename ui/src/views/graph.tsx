@@ -41,6 +41,7 @@ type GraphFetchParams = {
   branches?: string[]
   since?: string
   status?: string
+  limit?: number
 }
 
 type ReactFlowNode = {
@@ -91,6 +92,7 @@ async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
   if (params.repos && params.repos.length > 0) q.set('repo', params.repos.join(','));
   if (params.branches && params.branches.length > 0) q.set('branch', params.branches.join(','));
   if (params.status) q.set('status', params.status);
+  if (params.limit) q.set('limit', String(params.limit));
   const r = await fetch(`/api/graph?${q.toString()}`);
   if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
   return r.json() as Promise<GraphPayload>;
@@ -133,6 +135,7 @@ const FLOW_GROUP_GAP = 86;
 const FLOW_SINGLETON_GRID_COLUMNS = 4;
 const FLOW_MAX_RANK = 7;
 const FLOW_FORCE_TICKS = 180;
+const GRAPH_SIZE_OPTIONS = [120, 250, 500, 1000] as const;
 
 const MODE_LABELS: Record<GraphMode, string> = {
   activity: 'Activity',
@@ -921,6 +924,7 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
   const [mode, setMode] = useState<GraphMode>(routeMode);
   const [sinceFilter, setSinceFilter] = useState<'1d' | '3d' | '7d' | 'all'>('all');
   const [statusFilter, setStatusFilter] = useState<'open' | 'all'>('all');
+  const [graphLimit, setGraphLimit] = useState<number>(120);
   const [repoFilters, setRepoFilters] = useState<string[]>([]);
   const [branchFilters, setBranchFilters] = useState<string[]>([]);
   const [enabledLayers, setEnabledLayers] = useState<Set<string>>(new Set());
@@ -940,6 +944,7 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
       status: statusFilter === 'all' ? 'all' : undefined,
       repos: repoFilters,
       branches: branchFilters,
+      limit: graphLimit,
     })
       .then((data) => {
         if (!active) return;
@@ -961,7 +966,7 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     return () => {
       active = false;
     };
-  }, [mode, sinceFilter, statusFilter, repoFilters, branchFilters, refreshToken, initialFocus]);
+  }, [mode, sinceFilter, statusFilter, graphLimit, repoFilters, branchFilters, refreshToken, initialFocus]);
 
   const rawModes = payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
     id: id as GraphMode,
@@ -970,9 +975,15 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     count: id === mode ? payload.nodes.length : 0,
     available: id === mode,
   }));
-  const modes = rawModes.map((item) => (
-    item.id === mode ? { ...item, count: payload.nodes.length } : item
-  ));
+  const modes = rawModes;
+  const activeModeTotal = payload.mode === mode && payload.available_count != null
+    ? payload.available_count
+    : modes.find((item) => item.id === mode)?.count ?? payload.nodes.length;
+  const displayedCount = payload.displayed_count ?? payload.nodes.length;
+  const modeLabel = MODE_LABELS[mode].toLowerCase();
+  const graphDisplaySummary = displayedCount < activeModeTotal || payload.truncated
+    ? `Showing ${displayedCount.toLocaleString()} of ${activeModeTotal.toLocaleString()} ${modeLabel} nodes`
+    : `Showing ${displayedCount.toLocaleString()} ${modeLabel} nodes`;
 
   const layers = payload.layers ?? [];
   const repos = useMemo(() => {
@@ -1060,6 +1071,9 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
               </label>
             ))}
           </div>
+          <div className="graph-display-summary" aria-live="polite">
+            {graphDisplaySummary}
+          </div>
         </div>
         <div className="graph-toolbar">
           <div className="graph-toolbar__combobox-group">
@@ -1100,6 +1114,21 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
                 {value}
               </button>
             ))}
+          </div>
+          <div className="graph-size-control" aria-label="Graph size">
+            <span>Graph size</span>
+            <div className="graph-toolbar__toggle-group">
+              {GRAPH_SIZE_OPTIONS.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`graph-toolbar__toggle${graphLimit === value ? ' graph-toolbar__toggle--active' : ''}`}
+                  onClick={() => setGraphLimit(value)}
+                >
+                  {value.toLocaleString()}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
