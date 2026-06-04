@@ -183,6 +183,34 @@ describe("ledger graph projection", () => {
     expect(getLedgerGraphFilterOptions(db).repos).toEqual(expect.arrayContaining(["alpha", "beta"]));
   });
 
+  it("applies issue since filters before deriving visible relationship edges", () => {
+    const checkout = createProject("repo");
+    const store = new LedgerStore(db);
+    const oldIssue = createIssue(store, checkout.project.id, "old1111", "Old issue");
+    const recentIssue = createIssue(store, checkout.project.id, "new1111", "Recent issue");
+    const now = Date.parse("2026-06-01T12:00:00.000Z");
+    const old = Date.parse("2026-05-01T12:00:00.000Z");
+    db.prepare("UPDATE ledger_issues SET created_at = ?, updated_at = ? WHERE id = ?")
+      .run(old, old, oldIssue.id);
+    db.prepare("UPDATE ledger_issues SET created_at = ?, updated_at = ? WHERE id = ?")
+      .run(now, now, recentIssue.id);
+    store.upsertIssueRelationship({
+      source_issue_id: oldIssue.id,
+      target_issue_id: recentIssue.id,
+      relationship_type: "parent_child",
+      provenance: "manual",
+    });
+
+    const projection = buildLedgerIssueProjection(db, {
+      mode: "issue",
+      status: "all",
+      since: "2026-05-15T00:00:00.000Z",
+    });
+
+    expect(projection?.nodes.map((node) => node.label)).toEqual(["Recent issue"]);
+    expect(projection?.edges).toEqual([]);
+  });
+
   it("projects derived text reference relationships as issue graph edges", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
