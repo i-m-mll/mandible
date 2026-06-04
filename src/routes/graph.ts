@@ -248,7 +248,7 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value))));
 }
 
-function isIssueReferenceEdge(edge: GraphEdge): boolean {
+function isWeakIssueReferenceEdge(edge: GraphEdge): boolean {
   if (edge.edge_class !== "semantic") return false;
   return edge.type === "references"
     || edge.type === "curated_related"
@@ -256,8 +256,8 @@ function isIssueReferenceEdge(edge: GraphEdge): boolean {
 }
 
 export function graphEdgesForMode(mode: GraphMode, edges: GraphEdge[]): GraphEdge[] {
-  if (mode === "activity" || mode === "work") {
-    return edges.filter((edge) => !isIssueReferenceEdge(edge));
+  if (mode === "activity" || mode === "issue" || mode === "work") {
+    return edges.filter((edge) => !isWeakIssueReferenceEdge(edge));
   }
   return edges;
 }

@@ -103,12 +103,19 @@ describe("graph filters", () => {
 });
 
 describe("graph edge perspectives", () => {
-  it("keeps issue references out of operational perspectives", () => {
-    const references: GraphEdge = {
+  it("keeps weak issue relationships out of default operational perspectives", () => {
+    const reference: GraphEdge = {
       id: "ref:a:b",
       source: "issue:a",
       target: "issue:b",
       type: "references",
+      edge_class: "semantic",
+    };
+    const related: GraphEdge = {
+      id: "related:a:b",
+      source: "issue:a",
+      target: "issue:b",
+      type: "related",
       edge_class: "semantic",
     };
     const auth: GraphEdge = {
@@ -119,9 +126,44 @@ describe("graph edge perspectives", () => {
       edge_class: "lifecycle",
     };
 
-    expect(graphEdgesForMode("activity", [references, auth])).toEqual([auth]);
-    expect(graphEdgesForMode("work", [references, auth])).toEqual([auth]);
-    expect(graphEdgesForMode("issue", [references, auth])).toEqual([references, auth]);
+    for (const mode of ["activity", "issue", "work"] as const) {
+      expect(graphEdgesForMode(mode, [reference, related, auth])).toEqual([auth]);
+    }
+  });
+
+  it("keeps structural issue relationships in issue perspective defaults", () => {
+    const structuralEdges: GraphEdge[] = [
+      {
+        id: "umbrella:a:b",
+        source: "issue:a",
+        target: "issue:b",
+        type: "umbrella_child",
+        edge_class: "semantic",
+      },
+      {
+        id: "blocks:a:b",
+        source: "issue:a",
+        target: "issue:b",
+        type: "blocks",
+        edge_class: "semantic",
+      },
+      {
+        id: "implements:a:b",
+        source: "issue:a",
+        target: "issue:b",
+        type: "implements",
+        edge_class: "semantic",
+      },
+    ];
+    const reference: GraphEdge = {
+      id: "ref:a:b",
+      source: "issue:a",
+      target: "issue:b",
+      type: "references",
+      edge_class: "semantic",
+    };
+
+    expect(graphEdgesForMode("issue", [...structuralEdges, reference])).toEqual(structuralEdges);
   });
 });
 
