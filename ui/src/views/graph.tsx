@@ -19,7 +19,6 @@ import {
 import '@xyflow/react/dist/style.css';
 import type {
   GraphEdge,
-  GraphLayerDescriptor,
   GraphMode,
   GraphModeDescriptor,
   GraphNode,
@@ -113,6 +112,30 @@ type GraphAnnotation = {
   link_type?: string
 }
 
+type GraphSpecState = {
+  preset: GraphMode
+  since: '1d' | '3d' | '7d' | 'all'
+  status: 'open' | 'all'
+  limit: number
+  repos: string[]
+  branches: string[]
+}
+
+type GraphLegendKind = 'node' | 'edge'
+
+type GraphLegendItem = {
+  id: string
+  kind: GraphLegendKind
+  label: string
+  description: string
+  count: number
+  enabled: boolean
+  visible: boolean
+  color: string
+  dash?: string
+  width?: number
+}
+
 async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
   const q = new URLSearchParams();
   q.set('mode', params.mode);
@@ -165,6 +188,7 @@ const FLOW_PACK_ROW_GAP = 112;
 const FLOW_MAX_RANK = 7;
 const FLOW_FORCE_TICKS = 180;
 const GRAPH_SIZE_OPTIONS = [120, 250, 500, 1000] as const;
+const DEFAULT_GRAPH_PRESET: GraphMode = 'issue';
 
 const MODE_LABELS: Record<GraphMode, string> = {
   activity: 'Activity',
@@ -176,18 +200,18 @@ const MODE_LABELS: Record<GraphMode, string> = {
 };
 
 const MODE_SUMMARIES: Record<GraphMode, string> = {
-  activity: 'What changed recently or needs attention now.',
-  issue: 'How issues relate to other issues.',
-  work: 'How work moves through repos, branches, sessions, issues, and auth.',
-  provenance: 'Evidence for which session, action, commit, or run produced or justified an object.',
-  'provider-lineage': 'What a provider or tool produced from the request and spec to outputs.',
-  'artifact-lineage': 'Where an artifact came from and what reused or derived from it.',
+  issue: 'Open issues with structural relationships first.',
+  work: 'Issues with work, auth, session, and branch context.',
+  activity: 'Recent operational and ledger activity.',
+  provenance: 'Evidence, commits, sessions, and provider context.',
+  'provider-lineage': 'Provider, manifest, run, and artifact flow.',
+  'artifact-lineage': 'Artifact origins, derivatives, and reports.',
 };
 
 const GRAPH_MODES = new Set<GraphMode>(Object.keys(MODE_LABELS) as GraphMode[]);
 
 function coerceGraphMode(value: string | undefined): GraphMode {
-  return value && GRAPH_MODES.has(value as GraphMode) ? value as GraphMode : 'activity';
+  return value && GRAPH_MODES.has(value as GraphMode) ? value as GraphMode : DEFAULT_GRAPH_PRESET;
 }
 
 function typeLabel(type: string): string {
@@ -230,6 +254,8 @@ function nodeColor(node: GraphNode): string {
 }
 
 function edgeColor(edge: GraphEdge): string {
+  if (isHierarchyEdge(edge)) return 'rgba(125,211,252,0.74)';
+  if (isDependencyEdge(edge)) return 'rgba(245,194,92,0.68)';
   if (isWeakReferenceEdge(edge)) return 'rgba(154,164,178,0.28)';
   if (edge.edge_class === 'semantic') return 'rgba(168,85,247,0.62)';
   if (edge.edge_class === 'provider') return 'rgba(125,211,252,0.62)';
@@ -314,6 +340,191 @@ function isWeakReferenceEdge(edge: GraphEdge): boolean {
     || edge.type === 'curated_related'
     || edge.type === 'references'
     || edge.confidence === 'weak';
+}
+
+function isDependencyEdge(edge: GraphEdge): boolean {
+  return edge.type === 'blocks'
+    || edge.type === 'blocked_by'
+    || edge.type === 'implements'
+    || edge.type === 'implemented_by'
+    || edge.type.includes('block')
+    || edge.type.includes('depend');
+}
+
+function isOperationalEdge(edge: GraphEdge): boolean {
+  return edge.type.includes('auth')
+    || edge.type.includes('session')
+    || edge.type.includes('work_unit')
+    || edge.type.includes('branch')
+    || edge.type.includes('commit');
+}
+
+function edgeFamilyId(edge: GraphEdge): string {
+  if (isHierarchyEdge(edge)) return 'hierarchy';
+  if (isDependencyEdge(edge)) return 'dependency';
+  if (isWeakReferenceEdge(edge)) return 'weak_refs';
+  if (isOperationalEdge(edge)) return 'operational';
+  if (
+    edge.edge_class === 'provider'
+    || edge.edge_class === 'provenance'
+    || isProvenanceLikeEdge(edge)
+    || edge.type.includes('artifact')
+    || edge.type.includes('provider')
+    || edge.type.includes('manifest')
+    || edge.type === 'produced'
+    || edge.type === 'derived_from'
+  ) {
+    return 'provenance';
+  }
+  if (edge.edge_class === 'semantic') return 'semantic';
+  return 'other';
+}
+
+function edgeFamilyMeta(id: string): Omit<GraphLegendItem, 'count' | 'enabled' | 'visible'> {
+  if (id === 'hierarchy') {
+    return {
+      id,
+      kind: 'edge',
+      label: 'Parent-child',
+      description: 'Umbrella, parent, and child issue structure.',
+      color: 'rgba(125,211,252,0.74)',
+      width: 2,
+    };
+  }
+  if (id === 'dependency') {
+    return {
+      id,
+      kind: 'edge',
+      label: 'Blockers',
+      description: 'Blocking, dependency, and implementation relationships.',
+      color: 'rgba(245,194,92,0.68)',
+      width: 1.8,
+    };
+  }
+  if (id === 'weak_refs') {
+    return {
+      id,
+      kind: 'edge',
+      label: 'Weak refs',
+      description: 'Cross references and related links; optional overlay.',
+      color: 'rgba(154,164,178,0.34)',
+      dash: '4 7',
+      width: 1.1,
+    };
+  }
+  if (id === 'operational') {
+    return {
+      id,
+      kind: 'edge',
+      label: 'Work/auth/session',
+      description: 'Operational links for auth requests, sessions, work, branches, and commits.',
+      color: 'rgba(77,163,255,0.56)',
+      width: 1.5,
+    };
+  }
+  if (id === 'provenance') {
+    return {
+      id,
+      kind: 'edge',
+      label: 'Provider/provenance',
+      description: 'Provider, artifact, lineage, commit, and evidence links.',
+      color: 'rgba(50,210,150,0.56)',
+      width: 1.5,
+    };
+  }
+  if (id === 'semantic') {
+    return {
+      id,
+      kind: 'edge',
+      label: 'Semantic',
+      description: 'Other typed ledger relationships.',
+      color: 'rgba(168,85,247,0.56)',
+      width: 1.4,
+    };
+  }
+  return {
+    id,
+    kind: 'edge',
+    label: typeLabel(id),
+    description: 'Other graph relationships.',
+    color: 'rgba(154,164,178,0.46)',
+    width: 1.4,
+  };
+}
+
+function defaultEdgeFamilyVisible(id: string, preset: GraphMode): boolean {
+  if (preset === 'issue') return id === 'hierarchy' || id === 'dependency' || id === 'semantic';
+  if (id === 'weak_refs') return false;
+  return true;
+}
+
+function buildDefaultNodeFamilySet(payload: GraphPayload): Set<string> {
+  const layerIds = (payload.layers ?? [])
+    .filter((layer) => layer.enabled)
+    .map((layer) => layer.id);
+  if (layerIds.length > 0) return new Set(layerIds);
+  return new Set(payload.nodes.map((node) => node.type));
+}
+
+function buildDefaultEdgeFamilySet(payload: GraphPayload, preset: GraphMode): Set<string> {
+  return new Set(
+    Array.from(new Set(payload.edges.map(edgeFamilyId)))
+      .filter((id) => defaultEdgeFamilyVisible(id, preset)),
+  );
+}
+
+function buildNodeLegend(payload: GraphPayload, visibleFamilies: Set<string> | null): GraphLegendItem[] {
+  const layerById = new Map((payload.layers ?? []).map((layer) => [layer.id, layer]));
+  const counts = new Map<string, { count: number; sample?: GraphNode }>();
+  for (const node of payload.nodes) {
+    const current = counts.get(node.type) ?? { count: 0, sample: node };
+    current.count += 1;
+    if (!current.sample) current.sample = node;
+    counts.set(node.type, current);
+  }
+
+  return Array.from(counts.entries())
+    .map(([id, entry]): GraphLegendItem => {
+      const layer = layerById.get(id);
+      const enabled = layer?.enabled ?? entry.count > 0;
+      return {
+        id,
+        kind: 'node',
+        label: layer?.label ?? typeLabel(id),
+        description: `${typeLabel(id)} nodes in the current graph spec.`,
+        count: layer?.count ?? entry.count,
+        enabled,
+        visible: enabled && (visibleFamilies?.has(id) ?? true),
+        color: entry.sample ? nodeColor(entry.sample) : 'rgba(154,164,178,0.64)',
+      };
+    })
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+function buildEdgeLegend(payload: GraphPayload, visibleFamilies: Set<string> | null, preset: GraphMode): GraphLegendItem[] {
+  const counts = new Map<string, number>();
+  for (const edge of payload.edges) {
+    const familyId = edgeFamilyId(edge);
+    counts.set(familyId, (counts.get(familyId) ?? 0) + 1);
+  }
+  const order = ['hierarchy', 'dependency', 'weak_refs', 'operational', 'provenance', 'semantic', 'other'];
+  return Array.from(counts.entries())
+    .map(([id, count]): GraphLegendItem => {
+      const meta = edgeFamilyMeta(id);
+      const enabled = count > 0;
+      return {
+        ...meta,
+        count,
+        enabled,
+        visible: enabled && (visibleFamilies?.has(id) ?? defaultEdgeFamilyVisible(id, preset)),
+      };
+    })
+    .sort((a, b) => {
+      const aOrder = order.indexOf(a.id);
+      const bOrder = order.indexOf(b.id);
+      return (aOrder === -1 ? order.length : aOrder) - (bOrder === -1 ? order.length : bOrder)
+        || a.label.localeCompare(b.label);
+    });
 }
 
 function linkDistance(edge: GraphEdge): number {
@@ -653,20 +864,11 @@ function ManualGraphEdges({ nodes, edges }: { nodes: ReactFlowNode[]; edges: Gra
       const repeatIndex = group.findIndex((item) => item.id === edge.id);
       const repeatOffset = (repeatIndex - (group.length - 1) / 2) * 18;
       const degreeOffset = Math.min(24, Math.max(0, ((incidentCounts.get(edge.source) ?? 1) - 2) * 3));
-      const sourceEndpoint = edgeEndpoint(source, target, repeatOffset + degreeOffset);
-      const targetEndpoint = edgeEndpoint(target, source, repeatOffset - degreeOffset);
-      const sourceNormal = sideNormal(sourceEndpoint.side);
-      const targetNormal = sideNormal(targetEndpoint.side);
-      const dx = targetEndpoint.x - sourceEndpoint.x;
-      const dy = targetEndpoint.y - sourceEndpoint.y;
-      const spread = Math.max(38, Math.min(180, Math.hypot(dx, dy) * 0.36));
-      const sourceControlX = sourceEndpoint.x + sourceNormal.x * spread;
-      const sourceControlY = sourceEndpoint.y + sourceNormal.y * spread;
-      const targetControlX = targetEndpoint.x + targetNormal.x * spread;
-      const targetControlY = targetEndpoint.y + targetNormal.y * spread;
       return {
         edge,
-        d: `M ${sourceEndpoint.x} ${sourceEndpoint.y} C ${sourceControlX} ${sourceControlY}, ${targetControlX} ${targetControlY}, ${targetEndpoint.x} ${targetEndpoint.y}`,
+        d: isHierarchyEdge(edge)
+          ? orthogonalEdgePath(source, target, repeatOffset + degreeOffset)
+          : curvedEdgePath(source, target, repeatOffset + degreeOffset, repeatOffset - degreeOffset),
       };
     })
     .filter((item): item is { edge: GraphEdge; d: string } => item !== null);
@@ -695,6 +897,50 @@ function ManualGraphEdges({ nodes, edges }: { nodes: ReactFlowNode[]; edges: Gra
       ))}
     </svg>
   );
+}
+
+function curvedEdgePath(
+  source: ReactFlowNode,
+  target: ReactFlowNode,
+  sourceOffset: number,
+  targetOffset: number,
+): string {
+  const sourceEndpoint = edgeEndpoint(source, target, sourceOffset);
+  const targetEndpoint = edgeEndpoint(target, source, targetOffset);
+  const sourceNormal = sideNormal(sourceEndpoint.side);
+  const targetNormal = sideNormal(targetEndpoint.side);
+  const dx = targetEndpoint.x - sourceEndpoint.x;
+  const dy = targetEndpoint.y - sourceEndpoint.y;
+  const spread = Math.max(38, Math.min(180, Math.hypot(dx, dy) * 0.36));
+  const sourceControlX = sourceEndpoint.x + sourceNormal.x * spread;
+  const sourceControlY = sourceEndpoint.y + sourceNormal.y * spread;
+  const targetControlX = targetEndpoint.x + targetNormal.x * spread;
+  const targetControlY = targetEndpoint.y + targetNormal.y * spread;
+  return `M ${sourceEndpoint.x} ${sourceEndpoint.y} C ${sourceControlX} ${sourceControlY}, ${targetControlX} ${targetControlY}, ${targetEndpoint.x} ${targetEndpoint.y}`;
+}
+
+function orthogonalEdgePath(source: ReactFlowNode, target: ReactFlowNode, offset: number): string {
+  const sourceCenterX = source.position.x + FLOW_NODE_WIDTH / 2;
+  const sourceCenterY = source.position.y + FLOW_NODE_HEIGHT / 2;
+  const targetCenterX = target.position.x + FLOW_NODE_WIDTH / 2;
+  const targetCenterY = target.position.y + FLOW_NODE_HEIGHT / 2;
+  const horizontal = Math.abs(targetCenterX - sourceCenterX) >= Math.abs(targetCenterY - sourceCenterY);
+  if (horizontal) {
+    const sourceRight = targetCenterX >= sourceCenterX;
+    const startX = source.position.x + (sourceRight ? FLOW_NODE_WIDTH : 0);
+    const endX = target.position.x + (sourceRight ? 0 : FLOW_NODE_WIDTH);
+    const startY = sourceCenterY + offset;
+    const endY = targetCenterY - offset;
+    const trunkX = startX + (endX - startX) / 2;
+    return `M ${startX} ${startY} L ${trunkX} ${startY} L ${trunkX} ${endY} L ${endX} ${endY}`;
+  }
+  const sourceBelow = targetCenterY >= sourceCenterY;
+  const startX = sourceCenterX + offset;
+  const endX = targetCenterX - offset;
+  const startY = source.position.y + (sourceBelow ? FLOW_NODE_HEIGHT : 0);
+  const endY = target.position.y + (sourceBelow ? 0 : FLOW_NODE_HEIGHT);
+  const trunkY = startY + (endY - startY) / 2;
+  return `M ${startX} ${startY} L ${startX} ${trunkY} L ${endX} ${trunkY} L ${endX} ${endY}`;
 }
 
 function edgeEndpoint(source: ReactFlowNode, target: ReactFlowNode, offset: number): EdgeEndpoint {
@@ -917,26 +1163,65 @@ function TokenMultiSelect({
   );
 }
 
-function ModeButton({
-  mode,
+function LensButton({
+  lens,
   current,
   onSelect,
 }: {
-  mode: GraphModeDescriptor
+  lens: GraphModeDescriptor
   current: GraphMode
   onSelect: (mode: GraphMode) => void
 }): JSX.Element {
-  const disabled = !mode.available && mode.id !== current;
+  const disabled = !lens.available && lens.id !== current;
   return (
     <button
       type="button"
-      className={`graph-mode-btn${mode.id === current ? ' graph-mode-btn--active' : ''}`}
+      className={`graph-lens-btn${lens.id === current ? ' graph-lens-btn--active' : ''}`}
       disabled={disabled}
-      title={mode.summary ?? mode.description}
-      onClick={() => onSelect(mode.id)}
+      title={lens.summary ?? lens.description}
+      onClick={() => onSelect(lens.id)}
     >
-      <span>{mode.label}</span>
-      <span className="graph-mode-btn__count">{mode.count}</span>
+      <span>{lens.label}</span>
+      <span className="graph-lens-btn__count">{lens.count}</span>
+    </button>
+  );
+}
+
+function LegendButton({
+  item,
+  onToggle,
+}: {
+  item: GraphLegendItem
+  onToggle: (item: GraphLegendItem) => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      className={[
+        'graph-legend-btn',
+        item.visible ? 'graph-legend-btn--active' : '',
+        !item.enabled ? 'graph-legend-btn--disabled' : '',
+      ].filter(Boolean).join(' ')}
+      disabled={!item.enabled}
+      title={item.description}
+      onClick={() => onToggle(item)}
+    >
+      <span
+        className={`graph-legend-btn__swatch graph-legend-btn__swatch--${item.kind}`}
+        style={{ borderColor: item.color, background: item.kind === 'node' ? item.color : 'transparent' }}
+      >
+        {item.kind === 'edge' && (
+          <span
+            style={{
+              borderTopColor: item.color,
+              height: `${item.width ?? 1.5}px`,
+              borderTopStyle: item.dash ? 'dashed' : 'solid',
+            }}
+          />
+        )}
+      </span>
+      <span className="graph-legend-btn__label">{item.label}</span>
+      <span className="graph-legend-btn__count">{item.count.toLocaleString()}</span>
     </button>
   );
 }
@@ -1142,20 +1427,25 @@ function DetailPane({
 
 export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus }: GraphViewProps): JSX.Element {
   const routeMode = coerceGraphMode(initialMode);
-  const [payload, setPayload] = useState<GraphPayload>({ nodes: [], edges: [], mode: 'activity' });
+  const [payload, setPayload] = useState<GraphPayload>({ nodes: [], edges: [], mode: DEFAULT_GRAPH_PRESET });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<GraphMode>(routeMode);
-  const [sinceFilter, setSinceFilter] = useState<'1d' | '3d' | '7d' | 'all'>('all');
-  const [statusFilter, setStatusFilter] = useState<'open' | 'all'>('all');
-  const [graphLimit, setGraphLimit] = useState<number>(120);
-  const [repoFilters, setRepoFilters] = useState<string[]>([]);
-  const [branchFilters, setBranchFilters] = useState<string[]>([]);
-  const [enabledLayers, setEnabledLayers] = useState<Set<string>>(new Set());
+  const [spec, setSpec] = useState<GraphSpecState>({
+    preset: routeMode,
+    since: 'all',
+    status: 'open',
+    limit: 120,
+    repos: [],
+    branches: [],
+  });
+  const [visibleNodeFamilies, setVisibleNodeFamilies] = useState<Set<string> | null>(null);
+  const [visibleEdgeFamilies, setVisibleEdgeFamilies] = useState<Set<string> | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   useEffect(() => {
-    setMode(routeMode);
+    setSpec((current) => ({ ...current, preset: routeMode }));
+    setVisibleNodeFamilies(null);
+    setVisibleEdgeFamilies(null);
   }, [routeMode]);
 
   useEffect(() => {
@@ -1163,17 +1453,18 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     setLoading(true);
     setError(null);
     getGraph({
-      mode,
-      since: sinceFilter === 'all' ? undefined : sinceFilter,
-      status: statusFilter === 'all' ? 'all' : undefined,
-      repos: repoFilters,
-      branches: branchFilters,
-      limit: graphLimit,
+      mode: spec.preset,
+      since: spec.since === 'all' ? undefined : spec.since,
+      status: spec.status === 'all' ? 'all' : undefined,
+      repos: spec.repos,
+      branches: spec.branches,
+      limit: spec.limit,
     })
       .then((data) => {
         if (!active) return;
         setPayload(data);
-        setEnabledLayers(new Set((data.layers ?? []).filter((layer) => layer.enabled).map((layer) => layer.id)));
+        setVisibleNodeFamilies(buildDefaultNodeFamilySet(data));
+        setVisibleEdgeFamilies(buildDefaultEdgeFamilySet(data, spec.preset));
         if (initialFocus && data.nodes.some((node) => node.id === initialFocus)) {
           setSelectedNodeId(initialFocus);
         } else if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
@@ -1190,171 +1481,236 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     return () => {
       active = false;
     };
-  }, [mode, sinceFilter, statusFilter, graphLimit, repoFilters, branchFilters, refreshToken, initialFocus]);
+  }, [spec, refreshToken, initialFocus]);
 
-  const rawModes = payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
+  const lenses = (payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
     id: id as GraphMode,
     label,
     kind: 'perspective' as const,
     description: MODE_SUMMARIES[id as GraphMode],
     summary: MODE_SUMMARIES[id as GraphMode],
-    count: id === mode ? payload.nodes.length : 0,
-    available: id === mode,
+    count: id === spec.preset ? payload.nodes.length : 0,
+    available: id === spec.preset,
+  }))).map((mode) => ({
+    ...mode,
+    label: MODE_LABELS[mode.id] ?? mode.label,
+    summary: MODE_SUMMARIES[mode.id] ?? mode.summary,
+    description: MODE_SUMMARIES[mode.id] ?? mode.description,
   }));
-  const modes = rawModes;
-  const activeModeDescriptor = modes.find((item) => item.id === mode);
-  const activeModeSummary = activeModeDescriptor?.summary
-    ?? activeModeDescriptor?.description
-    ?? MODE_SUMMARIES[mode];
-  const activeModeTotal = payload.mode === mode && payload.available_count != null
+  const activeLensDescriptor = lenses.find((item) => item.id === spec.preset);
+  const activeLensSummary = activeLensDescriptor?.summary
+    ?? activeLensDescriptor?.description
+    ?? MODE_SUMMARIES[spec.preset];
+  const activeLensTotal = payload.mode === spec.preset && payload.available_count != null
     ? payload.available_count
-    : modes.find((item) => item.id === mode)?.count ?? payload.nodes.length;
+    : lenses.find((item) => item.id === spec.preset)?.count ?? payload.nodes.length;
   const displayedCount = payload.displayed_count ?? payload.nodes.length;
-  const modeLabel = MODE_LABELS[mode].toLowerCase();
-  const graphDisplaySummary = displayedCount < activeModeTotal || payload.truncated
-    ? `Showing ${displayedCount.toLocaleString()} of ${activeModeTotal.toLocaleString()} ${modeLabel} nodes`
-    : `Showing ${displayedCount.toLocaleString()} ${modeLabel} nodes`;
 
-  const layers = payload.layers ?? [];
   const repos = useMemo(() => {
     const seen = new Set<string>(payload.filters?.repos ?? []);
-    repoFilters.forEach((repo) => seen.add(repo));
+    spec.repos.forEach((repo) => seen.add(repo));
     if (seen.size === 0) {
       payload.nodes.forEach((node) => (node.repo || node.repo_id) && seen.add(node.repo || node.repo_id || ''));
     }
     return Array.from(seen).filter(Boolean).sort();
-  }, [payload.filters?.repos, payload.nodes, repoFilters]);
+  }, [payload.filters?.repos, payload.nodes, spec.repos]);
 
   const branches = useMemo(() => {
     const seen = new Set<string>(payload.filters?.branches ?? []);
-    branchFilters.forEach((branch) => seen.add(branch));
+    spec.branches.forEach((branch) => seen.add(branch));
     if (seen.size === 0) {
       payload.nodes.forEach((node) => {
         if (node.branch) seen.add(node.branch);
       });
     }
     return Array.from(seen).sort();
-  }, [payload.filters?.branches, payload.nodes, branchFilters]);
+  }, [payload.filters?.branches, payload.nodes, spec.branches]);
 
+  const nodeLegend = useMemo(
+    () => buildNodeLegend(payload, visibleNodeFamilies),
+    [payload, visibleNodeFamilies],
+  );
+  const edgeLegend = useMemo(
+    () => buildEdgeLegend(payload, visibleEdgeFamilies, spec.preset),
+    [payload, visibleEdgeFamilies, spec.preset],
+  );
+  const visibleNodeFamilyIds = useMemo(
+    () => new Set(nodeLegend.filter((item) => item.visible).map((item) => item.id)),
+    [nodeLegend],
+  );
+  const visibleEdgeFamilyIds = useMemo(
+    () => new Set(edgeLegend.filter((item) => item.visible).map((item) => item.id)),
+    [edgeLegend],
+  );
   const visibleNodes = useMemo(() => {
-    if (layers.length === 0) return payload.nodes;
-    return payload.nodes.filter((node) => enabledLayers.has(node.type));
-  }, [payload.nodes, enabledLayers, layers.length]);
+    if (nodeLegend.length === 0) return payload.nodes;
+    return payload.nodes.filter((node) => visibleNodeFamilyIds.has(node.type));
+  }, [payload.nodes, nodeLegend.length, visibleNodeFamilyIds]);
   const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
   const visibleEdges = useMemo(
-    () => payload.edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)),
-    [payload.edges, visibleNodeIds],
+    () => payload.edges.filter((edge) => (
+      visibleNodeIds.has(edge.source)
+      && visibleNodeIds.has(edge.target)
+      && visibleEdgeFamilyIds.has(edgeFamilyId(edge))
+    )),
+    [payload.edges, visibleNodeIds, visibleEdgeFamilyIds],
   );
   const flowNodes = useMemo(
-    () => layoutNodes(visibleNodes, visibleEdges, mode).map((node) => ({
+    () => layoutNodes(visibleNodes, visibleEdges, spec.preset).map((node) => ({
       ...node,
       selected: (node.data as { node: GraphNode }).node.id === selectedNodeId,
     })),
-    [visibleNodes, visibleEdges, mode, selectedNodeId],
+    [visibleNodes, visibleEdges, spec.preset, selectedNodeId],
   );
   const flowEdgeList = useMemo(() => flowEdges(visibleEdges), [visibleEdges]);
   const flowSignature = useMemo(
     () => [
-      mode,
+      spec.preset,
       selectedNodeId ?? '',
       flowNodes.map((node) => node.id).join(','),
       flowEdgeList.map((edge) => edge.id).join(','),
     ].join(':'),
-    [flowEdgeList, flowNodes, mode, selectedNodeId],
+    [flowEdgeList, flowNodes, spec.preset, selectedNodeId],
   );
   const selectedNode = useMemo(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
     [visibleNodes, selectedNodeId],
   );
 
-  const toggleLayer = (layer: GraphLayerDescriptor) => {
-    if (!layer.enabled) return;
-    setEnabledLayers((prev) => {
-      const next = new Set(prev);
-      if (next.has(layer.id)) next.delete(layer.id);
-      else next.add(layer.id);
+  const updateSpec = (patch: Partial<GraphSpecState>) => {
+    setSpec((current) => ({ ...current, ...patch }));
+  };
+
+  const selectPreset = (preset: GraphMode) => {
+    setSpec((current) => ({
+      ...current,
+      preset,
+      status: preset === 'issue' ? 'open' : current.status,
+    }));
+    setVisibleNodeFamilies(null);
+    setVisibleEdgeFamilies(null);
+  };
+
+  const toggleLegendItem = (item: GraphLegendItem) => {
+    if (!item.enabled) return;
+    if (item.kind === 'node') {
+      const fallback = new Set(nodeLegend.filter((legendItem) => legendItem.visible).map((legendItem) => legendItem.id));
+      setVisibleNodeFamilies((prev) => {
+        const next = new Set(prev ?? fallback);
+        if (next.has(item.id)) next.delete(item.id);
+        else next.add(item.id);
+        return next;
+      });
+      return;
+    }
+    const fallback = new Set(edgeLegend.filter((legendItem) => legendItem.visible).map((legendItem) => legendItem.id));
+    setVisibleEdgeFamilies((prev) => {
+      const next = new Set(prev ?? fallback);
+      if (next.has(item.id)) next.delete(item.id);
+      else next.add(item.id);
       return next;
     });
   };
+
+  const graphDisplaySummary = `Displayed ${visibleNodes.length.toLocaleString()} nodes and ${visibleEdges.length.toLocaleString()} edges`;
+  const graphAvailableSummary = `Available from query: ${displayedCount.toLocaleString()}${payload.truncated || displayedCount < activeLensTotal ? ` of ${activeLensTotal.toLocaleString()}` : ''} nodes, ${payload.edges.length.toLocaleString()} edges`;
 
   return (
     <div className="graph-view">
       <div className="graph-topbar">
         <div className="graph-primary-controls">
-          <div className="graph-mode-strip" aria-label="Graph perspectives">
-            {modes.map((item) => (
-              <ModeButton key={item.id} mode={item} current={mode} onSelect={setMode} />
-            ))}
+          <div className="graph-spec-row">
+            <span className="graph-spec-row__label">Lens</span>
+            <div className="graph-lens-strip" aria-label="Graph lens presets">
+              {lenses.map((item) => (
+                <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
+              ))}
+            </div>
           </div>
-          <div className="graph-layer-strip" aria-label="Graph layers within the selected perspective">
-            {layers.length === 0 && <div className="graph-layer-strip__empty">No layers</div>}
-            {layers.map((layer) => (
-              <label key={layer.id} className={`graph-layer-chip${!layer.enabled ? ' graph-layer-chip--disabled' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={layer.enabled && enabledLayers.has(layer.id)}
-                  disabled={!layer.enabled}
-                  onChange={() => toggleLayer(layer)}
-                />
-                <span>{typeLabel(layer.id)}</span>
-                <em>{layer.count}</em>
-              </label>
-            ))}
+          <div className="graph-legend-grid">
+            <div className="graph-spec-row graph-spec-row--legend">
+              <span className="graph-spec-row__label">Nodes</span>
+              <div className="graph-legend-strip" aria-label="Visible node families">
+                {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
+                {nodeLegend.map((item) => (
+                  <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+                ))}
+              </div>
+            </div>
+            <div className="graph-spec-row graph-spec-row--legend">
+              <span className="graph-spec-row__label">Edges</span>
+              <div className="graph-legend-strip" aria-label="Visible edge families">
+                {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
+                {edgeLegend.map((item) => (
+                  <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+                ))}
+              </div>
+            </div>
           </div>
           <div className="graph-display-summary" aria-live="polite">
-            <strong>{activeModeSummary}</strong>
+            <strong>{activeLensSummary}</strong>
             <span>{graphDisplaySummary}</span>
+            <span>{graphAvailableSummary}</span>
           </div>
         </div>
-        <div className="graph-toolbar">
-          <div className="graph-toolbar__combobox-group">
-            <TokenMultiSelect
-              placeholder="All repos"
-              options={repos}
-              selected={repoFilters}
-              onChange={setRepoFilters}
-            />
-            <TokenMultiSelect
-              placeholder="All branches"
-              options={branches}
-              selected={branchFilters}
-              onChange={setBranchFilters}
-              disabled={branches.length === 0}
-            />
+        <div className="graph-toolbar" aria-label="Graph spec controls">
+          <div className="graph-control-group graph-control-group--scope">
+            <span className="graph-control-group__label">Scope</span>
+            <div className="graph-toolbar__combobox-group">
+              <TokenMultiSelect
+                placeholder="All repos"
+                options={repos}
+                selected={spec.repos}
+                onChange={(repos) => updateSpec({ repos })}
+              />
+              <TokenMultiSelect
+                placeholder="All branches"
+                options={branches}
+                selected={spec.branches}
+                onChange={(branches) => updateSpec({ branches })}
+                disabled={branches.length === 0}
+              />
+            </div>
           </div>
-          <div className="graph-toolbar__toggle-group">
-            {(['1d', '3d', '7d', 'all'] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={`graph-toolbar__toggle${sinceFilter === value ? ' graph-toolbar__toggle--active' : ''}`}
-                onClick={() => setSinceFilter(value)}
-              >
-                {value}
-              </button>
-            ))}
+          <div className="graph-control-group">
+            <span className="graph-control-group__label">Time</span>
+            <div className="graph-toolbar__toggle-group">
+              {(['1d', '3d', '7d', 'all'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`graph-toolbar__toggle${spec.since === value ? ' graph-toolbar__toggle--active' : ''}`}
+                  onClick={() => updateSpec({ since: value })}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="graph-toolbar__toggle-group">
-            {(['open', 'all'] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={`graph-toolbar__toggle${statusFilter === value ? ' graph-toolbar__toggle--active' : ''}`}
-                onClick={() => setStatusFilter(value)}
-              >
-                {value}
-              </button>
-            ))}
+          <div className="graph-control-group">
+            <span className="graph-control-group__label">Status</span>
+            <div className="graph-toolbar__toggle-group">
+              {(['open', 'all'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`graph-toolbar__toggle${spec.status === value ? ' graph-toolbar__toggle--active' : ''}`}
+                  onClick={() => updateSpec({ status: value })}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="graph-size-control" aria-label="Graph size">
-            <span>Graph size</span>
+          <div className="graph-control-group" aria-label="Graph size">
+            <span className="graph-control-group__label">Size</span>
             <div className="graph-toolbar__toggle-group">
               {GRAPH_SIZE_OPTIONS.map((value) => (
                 <button
                   key={value}
                   type="button"
-                  className={`graph-toolbar__toggle${graphLimit === value ? ' graph-toolbar__toggle--active' : ''}`}
-                  onClick={() => setGraphLimit(value)}
+                  className={`graph-toolbar__toggle${spec.limit === value ? ' graph-toolbar__toggle--active' : ''}`}
+                  onClick={() => updateSpec({ limit: value })}
                 >
                   {value.toLocaleString()}
                 </button>
@@ -1371,7 +1727,7 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
           {!loading && !error && flowNodes.length === 0 && (
             <div className="graph-empty">
               <h3>No graph data</h3>
-              <p>{MODE_LABELS[mode]} has no visible nodes yet.</p>
+              <p>{MODE_LABELS[spec.preset]} has no visible nodes for the current spec.</p>
             </div>
           )}
           {!loading && !error && flowNodes.length > 0 && (
