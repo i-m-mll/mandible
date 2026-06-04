@@ -146,6 +146,15 @@ const MODE_LABELS: Record<GraphMode, string> = {
   'artifact-lineage': 'Artifact Lineage',
 };
 
+const MODE_SUMMARIES: Record<GraphMode, string> = {
+  activity: 'What changed recently or needs attention now.',
+  issue: 'How issues relate to other issues.',
+  work: 'How work moves through repos, branches, sessions, issues, and auth.',
+  provenance: 'Evidence for which session, action, commit, or run produced or justified an object.',
+  'provider-lineage': 'What a provider or tool produced from the request and spec to outputs.',
+  'artifact-lineage': 'Where an artifact came from and what reused or derived from it.',
+};
+
 const GRAPH_MODES = new Set<GraphMode>(Object.keys(MODE_LABELS) as GraphMode[]);
 
 function coerceGraphMode(value: string | undefined): GraphMode {
@@ -708,7 +717,7 @@ function ModeButton({
       type="button"
       className={`graph-mode-btn${mode.id === current ? ' graph-mode-btn--active' : ''}`}
       disabled={disabled}
-      title={mode.description}
+      title={mode.summary ?? mode.description}
       onClick={() => onSelect(mode.id)}
     >
       <span>{mode.label}</span>
@@ -971,11 +980,17 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
   const rawModes = payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
     id: id as GraphMode,
     label,
-    description: label,
+    kind: 'perspective' as const,
+    description: MODE_SUMMARIES[id as GraphMode],
+    summary: MODE_SUMMARIES[id as GraphMode],
     count: id === mode ? payload.nodes.length : 0,
     available: id === mode,
   }));
   const modes = rawModes;
+  const activeModeDescriptor = modes.find((item) => item.id === mode);
+  const activeModeSummary = activeModeDescriptor?.summary
+    ?? activeModeDescriptor?.description
+    ?? MODE_SUMMARIES[mode];
   const activeModeTotal = payload.mode === mode && payload.available_count != null
     ? payload.available_count
     : modes.find((item) => item.id === mode)?.count ?? payload.nodes.length;
@@ -1051,12 +1066,12 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     <div className="graph-view">
       <div className="graph-topbar">
         <div className="graph-primary-controls">
-          <div className="graph-mode-strip" aria-label="Graph modes">
+          <div className="graph-mode-strip" aria-label="Graph perspectives">
             {modes.map((item) => (
               <ModeButton key={item.id} mode={item} current={mode} onSelect={setMode} />
             ))}
           </div>
-          <div className="graph-layer-strip" aria-label="Graph layers">
+          <div className="graph-layer-strip" aria-label="Graph layers within the selected perspective">
             {layers.length === 0 && <div className="graph-layer-strip__empty">No layers</div>}
             {layers.map((layer) => (
               <label key={layer.id} className={`graph-layer-chip${!layer.enabled ? ' graph-layer-chip--disabled' : ''}`}>
@@ -1072,7 +1087,8 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
             ))}
           </div>
           <div className="graph-display-summary" aria-live="polite">
-            {graphDisplaySummary}
+            <strong>{activeModeSummary}</strong>
+            <span>{graphDisplaySummary}</span>
           </div>
         </div>
         <div className="graph-toolbar">

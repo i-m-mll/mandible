@@ -108,7 +108,9 @@ export interface GraphEdge {
 export interface GraphModeDescriptor {
   id: GraphMode
   label: string
+  kind?: 'perspective'
   description: string
+  summary?: string
   count: number
   available: boolean
 }

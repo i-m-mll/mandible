@@ -23,36 +23,48 @@ import { extractBugRefs } from "../utils/bug-refs.js";
 // Bug: 7a141c3 — graph API implementation
 // Bug: 50c4afb — typed graph modes for the React Flow graph workspace
 
-const GRAPH_MODES: Array<Omit<GraphModeDescriptor, "count" | "available">> = [
+export const GRAPH_PERSPECTIVES: Array<Omit<GraphModeDescriptor, "count" | "available">> = [
   {
     id: "activity",
     label: "Activity",
-    description: "Recent issues, sessions, and auth requests.",
+    kind: "perspective",
+    description: "What changed recently or needs attention now.",
+    summary: "What changed recently or needs attention now.",
   },
   {
     id: "issue",
     label: "Issues",
-    description: "Issue-centered relationships and umbrella/child links.",
+    kind: "perspective",
+    description: "How issues relate to other issues.",
+    summary: "How issues relate to other issues.",
   },
   {
     id: "work",
     label: "Work",
-    description: "Repos, work units, branches, sessions, and auth requests.",
+    kind: "perspective",
+    description: "How work moves through repos, branches, sessions, issues, and auth.",
+    summary: "How work moves through repos, branches, sessions, issues, and auth.",
   },
   {
     id: "provider-lineage",
     label: "Provider Lineage",
-    description: "Providers, manifests, runs, analyses, and provider artifacts.",
+    kind: "perspective",
+    description: "What a provider or tool produced from the request and spec to outputs.",
+    summary: "What a provider or tool produced from the request and spec to outputs.",
   },
   {
     id: "artifact-lineage",
     label: "Artifact Lineage",
-    description: "Artifact ancestors and descendants.",
+    kind: "perspective",
+    description: "Where an artifact came from and what reused or derived from it.",
+    summary: "Where an artifact came from and what reused or derived from it.",
   },
   {
     id: "provenance",
     label: "Provenance",
-    description: "Observed provenance edges across provider and artifact records.",
+    kind: "perspective",
+    description: "Evidence for which session, action, commit, or run produced or justified an object.",
+    summary: "Evidence for which session, action, commit, or run produced or justified an object.",
   },
 ];
 
@@ -113,7 +125,7 @@ function queryValues(
 }
 
 function parseGraphMode(value: string | undefined): GraphMode {
-  return GRAPH_MODES.some((mode) => mode.id === value) ? (value as GraphMode) : "activity";
+  return GRAPH_PERSPECTIVES.some((mode) => mode.id === value) ? (value as GraphMode) : "activity";
 }
 
 export function parseQueryParams(query: Record<string, string | string[] | undefined>): GraphQueryParams {
@@ -912,7 +924,7 @@ function graphModeCounts(
 }
 
 function modeDescriptors(counts: Record<GraphMode, number>): GraphModeDescriptor[] {
-  return GRAPH_MODES.map((mode) => ({
+  return GRAPH_PERSPECTIVES.map((mode) => ({
     ...mode,
     count: counts[mode.id],
     available: mode.id === "activity" || counts[mode.id] > 0,
