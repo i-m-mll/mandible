@@ -390,7 +390,7 @@ export function normalizeGraphSpec(query: Record<string, string | string[] | und
   const issueStatus = normalizeIssueStatus(firstQueryValue(query, "status"));
   const limitValue = firstQueryValue(query, "limit");
   const includeIsolatesValue = firstQueryValue(query, "include_isolates");
-  const since = firstQueryValue(query, "since") ?? base.filters.since;
+  const since = firstQueryValue(query, "since") ?? firstQueryValue(query, "time") ?? base.filters.since;
 
   return mergeSpec(base, {
     preset,
@@ -495,6 +495,13 @@ function issueNodeIdFromOperationalMetadata(
 }
 
 function nodeCreatedMs(node: GraphNode): number {
+  const graphActivityAt = node.detail?.graph_activity_at ?? node.summary?.graph_activity_at;
+  if (typeof graphActivityAt === "string") {
+    const ms = new Date(graphActivityAt).getTime();
+    if (!Number.isNaN(ms)) return ms;
+  }
+  const updatedMs = node.updated_at ? new Date(node.updated_at).getTime() : NaN;
+  if (!Number.isNaN(updatedMs)) return updatedMs;
   return node.created_at ? new Date(node.created_at).getTime() : 0;
 }
 
@@ -986,8 +993,53 @@ function nodeTypeAllowed(node: GraphNode, spec: GraphSpec): boolean {
   return spec.node_types.length === 0 || spec.node_types.includes(node.type);
 }
 
+const LEGEND_LABELS: Record<string, string> = {
+  issue: "Issues",
+  auth_request: "Auth requests",
+  work_unit: "Work units",
+  provider_spec: "Provider specs",
+  provider_manifest: "Provider manifests",
+  umbrella_child: "Parent/child hierarchy",
+  parent_child: "Parent/child hierarchy",
+  parent: "Parent/child hierarchy",
+  session_parent: "Session lineage",
+  session_issue: "Session evidence",
+  auth_issue: "Auth evidence",
+  auth_request_references_issue: "Auth references",
+  issue_has_work_unit: "Issue work units",
+  references: "Text references",
+  related: "Related issues",
+  curated_related: "Curated related issues",
+  blocks: "Blocking dependencies",
+  implements: "Implementation links",
+};
+
+const LEGEND_DESCRIPTIONS: Record<string, string> = {
+  issue: "Canonical ledger issue nodes. The Issues lens intentionally shows only this node family.",
+  auth_request: "Protected-branch auth request nodes, shown in operational lenses.",
+  work_unit: "Work-unit nodes linked to issues or sessions.",
+  session: "Agent or terminal session nodes, shown in operational lenses.",
+  parent_child: "Structural parent-to-child issue relationships, including umbrella and parent labels.",
+  umbrella_child: "Structural parent-to-child issue relationships, including umbrella and parent labels.",
+  parent: "Legacy parent issue relationships grouped with the parent/child hierarchy.",
+  references: "Derived or explicit text references between issues; weak overlay, hidden by default in issue structure.",
+  related: "Related issue links; weak overlay, hidden by default in issue structure.",
+  curated_related: "Curated related issue links; weak overlay, hidden by default in issue structure.",
+  blocks: "Planning or dependency edges where one issue blocks another.",
+  implements: "Edges showing implementation or work satisfying an issue.",
+  auth_issue: "Auth requests attached to issue evidence.",
+  auth_request_references_issue: "Auth requests that reference an issue without necessarily resolving it.",
+  session_issue: "Sessions linked to issue work or discussion.",
+  session_parent: "Parent-child session lineage.",
+  issue_has_work_unit: "Issue-to-work-unit operational links.",
+};
+
 function labelForLegendId(id: string): string {
-  return id.replace(/_/g, " ");
+  return LEGEND_LABELS[id] ?? id.replace(/_/g, " ");
+}
+
+function descriptionForLegendId(id: string, kind: "node" | "edge"): string {
+  return LEGEND_DESCRIPTIONS[id] ?? `${labelForLegendId(id)} ${kind === "node" ? "nodes" : "edges"}`;
 }
 
 const NODE_COLORS: Record<string, string> = {
@@ -1033,7 +1085,7 @@ function graphNodeLegend(candidateNodes: GraphNode[], spec: GraphSpec): GraphLeg
     return {
       id,
       label: labelForLegendId(id),
-      description: `${labelForLegendId(id)} nodes`,
+      description: descriptionForLegendId(id, "node"),
       count,
       enabled: count > 0,
       visible: spec.node_types.includes(id),
@@ -1057,7 +1109,7 @@ function graphEdgeLegend(endpointEligibleEdges: GraphEdge[], spec: GraphSpec): G
     return {
       id,
       label: labelForLegendId(id),
-      description: `${labelForLegendId(id)} edges`,
+      description: descriptionForLegendId(id, "edge"),
       count,
       enabled: count > 0,
       visible: spec.edge_types.includes(id),
@@ -1452,8 +1504,14 @@ export function registerGraphRoutes(
         date_filter: spec.filters.since
           ? {
               since: spec.filters.since,
-              issue_time_field: "updated_at",
-              issue_time_fallback: "created_at",
+              issue_time_field: "graph_activity_at",
+              issue_time_components: [
+                "issue.updated_at",
+                "issue.created_at",
+                "comments.created_at/updated_at",
+                "auth_links.created_at/auth.updated_at/resolved_at",
+                "session_links.created_at/last_seen_at",
+              ],
               relationship_time_semantics: "endpoint_eligibility",
             }
           : undefined,

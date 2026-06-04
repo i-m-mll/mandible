@@ -105,6 +105,17 @@ describe("graph filters", () => {
     });
   });
 
+  it("accepts legacy time as an alias for since filters", () => {
+    const params = parseQueryParams({
+      mode: "issue",
+      status: "all",
+      time: "3d",
+    });
+
+    expect(params.since).toBe("3d");
+    expect(params.spec?.filters.since).toBe("3d");
+  });
+
   it("parses comma-separated and repeated multi-select filters", () => {
     const params = parseQueryParams({
       repo: ["HumbleB,mandible", "feedbax"],
@@ -252,6 +263,14 @@ describe("graph spec selection", () => {
       hidden_edges: 1,
       dropped_by_limit: 1,
       isolated_visible: 0,
+    });
+    expect(selected.nodeLegend.find((item) => item.id === "issue")).toMatchObject({
+      label: "Issues",
+      description: expect.stringContaining("Issues lens intentionally shows only this node family"),
+    });
+    expect(selected.edgeLegend.find((item) => item.id === "parent_child")).toMatchObject({
+      label: "Parent/child hierarchy",
+      description: expect.stringContaining("Structural parent-to-child issue relationships"),
     });
   });
 
