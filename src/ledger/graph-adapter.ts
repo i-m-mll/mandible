@@ -92,6 +92,26 @@ function toIso(ms: number | null | undefined): string | undefined {
   return typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
 }
 
+function parseSince(since: string | undefined): number | null {
+  if (!since) return null;
+  if (/^\d{4}-/.test(since)) {
+    const ms = new Date(since).getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
+  const relMatch = /^(\d+)(d|h|w|m)$/.exec(since);
+  if (!relMatch) return null;
+  const n = Number(relMatch[1]);
+  const unit = relMatch[2];
+  const unitMs = unit === "h"
+    ? 60 * 60 * 1_000
+    : unit === "d"
+      ? 24 * 60 * 60 * 1_000
+      : unit === "w"
+        ? 7 * 24 * 60 * 60 * 1_000
+        : 30 * 24 * 60 * 60 * 1_000;
+  return Date.now() - (n * unitMs);
+}
+
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value))));
 }
@@ -478,8 +498,10 @@ export function buildLedgerIssueProjection(
       WHERE deleted_at IS NULL
       ORDER BY updated_at DESC, created_at DESC`,
   ).all() as IssueRow[];
+  const sinceMs = parseSince(params.since);
   const visibleIssues = issueRows.filter((issue) => {
     if (params.status === "open" && issue.status !== "open") return false;
+    if (sinceMs !== null && Math.max(issue.updated_at, issue.created_at) < sinceMs) return false;
     const project = projectInfos.get(issue.project_id);
     if (!project) return activeRepoFilters(params).length === 0;
     return matchesRepoFilter(project, params);
@@ -616,6 +638,7 @@ export function buildLedgerIssueProjection(
         relationship_type: rel.relationship_type,
         relationship_label: relationshipDisplay(rel.relationship_type),
         relationship_provenance: rel.provenance,
+        relationship_created_at: toIso(rel.created_at),
         source_ledger_issue_id: rel.source_issue_id,
         target_ledger_issue_id: rel.target_issue_id,
         label_default_visible: false,
