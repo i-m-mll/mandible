@@ -21,6 +21,9 @@
 #   --closes-issue <id>     Issue ID to close on successful merge (repeatable)
 #   --type <type>           Auth request type (default: merge; options: merge, commit, force-push, branch-delete, config-change, preset-promote, data-delete)
 #   --handoff <text>        Post-merge handoff note for next session
+#   --dirty-policy <policy> Protected-root dirty policy: block, allow-untracked, stash, branch-off
+#   --dirty-branch-prefix <prefix>
+#                           Branch prefix for --dirty-policy branch-off (default from mandible.toml or shelve/protected-root)
 #   --timeout <seconds>     SSE listen timeout (default: 14400 / 4 hours)
 #   --force / -f             Skip CWD validation checks
 #   --no-watch              Submit only, don't poll
@@ -59,6 +62,8 @@ target_override=""
 timeout=14400
 no_watch=0
 force=false
+dirty_policy=""
+dirty_branch_prefix=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -68,6 +73,8 @@ while [[ $# -gt 0 ]]; do
     --diff-summary)   diff_summary="$2"; shift 2 ;;
     --spec)           spec_content="$2"; shift 2 ;;
     --handoff)        post_merge_handoff="$2"; shift 2 ;;
+    --dirty-policy)   dirty_policy="$2"; shift 2 ;;
+    --dirty-branch-prefix) dirty_branch_prefix="$2"; shift 2 ;;
     --depends-on)     depends_on_id="$2"; shift 2 ;;
     --issue|--ref-issue|--references-issue) ISSUE_REFERENCES+=("$2"); shift 2 ;;
     --closes-issue|--close-issue) ISSUE_CLOSURES+=("$2"); shift 2 ;;
@@ -109,6 +116,217 @@ if ! echo "$valid_types" | grep -qw "$auth_type"; then
   echo "Error: invalid --type '$auth_type'. Must be one of: $valid_types" >&2
   exit 2
 fi
+
+# --- Repo config helpers ---
+
+read_mandible_toml_value() {
+  local repo_root="$1"
+  local section="$2"
+  local key="$3"
+  local config_file=""
+
+  for candidate in "$repo_root/mandible.toml" "$repo_root/.mandible.toml"; do
+    if [[ -f "$candidate" ]]; then
+      config_file="$candidate"
+      break
+    fi
+  done
+  [[ -n "$config_file" ]] || return 1
+
+  awk -v section="$section" -v key="$key" '
+    function trim(value) {
+      gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", value)
+      return value
+    }
+    BEGIN { in_section = 0 }
+    /^[ \t]*#/ { next }
+    /^[ \t]*\[/ {
+      current = $0
+      sub(/^[ \t]*\[/, "", current)
+      sub(/\][ \t]*$/, "", current)
+      in_section = (trim(current) == section)
+      next
+    }
+    in_section {
+      split($0, parts, "=")
+      candidate = trim(parts[1])
+      if (candidate == key) {
+        value = substr($0, index($0, "=") + 1)
+        value = trim(value)
+        sub(/[ \t]*#.*/, "", value)
+        value = trim(value)
+        if ((substr(value, 1, 1) == "\"" && substr(value, length(value), 1) == "\"") ||
+            (substr(value, 1, 1) == "'"'"'" && substr(value, length(value), 1) == "'"'"'")) {
+          value = substr(value, 2, length(value) - 2)
+        }
+        print value
+        exit 0
+      }
+    }
+  ' "$config_file"
+}
+
+normalize_dirty_policy() {
+  case "$1" in
+    ""|block) echo "block" ;;
+    allow-untracked|allow_untracked) echo "allow-untracked" ;;
+    stash) echo "stash" ;;
+    branch-off|branch_off) echo "branch-off" ;;
+    *)
+      echo "Error: invalid --dirty-policy '$1'. Must be one of: block, allow-untracked, stash, branch-off" >&2
+      exit 2
+      ;;
+  esac
+}
+
+truthy_config_value() {
+  case "$1" in
+    true|True|TRUE|1|yes|Yes|YES|on|On|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+safe_branch_component() {
+  printf '%s' "$1" | tr '/: .' '____' | tr -cd 'A-Za-z0-9._-'
+}
+
+git_status_for_json() {
+  local status="$1"
+  if [[ -z "$status" ]]; then
+    printf '[]'
+  else
+    printf '%s\n' "$status" | jq -R '{
+      status: .[0:2],
+      path: (.[3:] | sub("^\""; "") | sub("\"$"; ""))
+    }' | jq -sc .
+  fi
+}
+
+build_dirty_action_json() {
+  local policy="$1"
+  local action="$2"
+  local status="$3"
+  local branch_name="${4:-}"
+  local worktree_path="${5:-}"
+  local stash_ref="${6:-}"
+  local message="$7"
+
+  jq -nc \
+    --arg policy "$policy" \
+    --arg action "$action" \
+    --arg branch "$branch_name" \
+    --arg worktree "$worktree_path" \
+    --arg stash "$stash_ref" \
+    --arg message "$message" \
+    --argjson files "$(git_status_for_json "$status")" \
+    '{
+      policy: $policy,
+      action: $action,
+      branch: (if $branch == "" then null else $branch end),
+      worktree: (if $worktree == "" then null else $worktree end),
+      stash: (if $stash == "" then null else $stash end),
+      files: $files,
+      message: $message
+    }'
+}
+
+append_dirty_action_to_spec() {
+  local action_json="$1"
+  [[ "$action_json" != "null" ]] || return 0
+  local pretty
+  pretty=$(printf '%s' "$action_json" | jq .)
+  if [[ -n "$spec_content" ]]; then
+    spec_content="${spec_content}
+
+Protected-root dirty action:
+\`\`\`json
+${pretty}
+\`\`\`"
+  else
+    spec_content="Protected-root dirty action:
+\`\`\`json
+${pretty}
+\`\`\`"
+  fi
+}
+
+ensure_clean_with_dirty_policy() {
+  local target="$1"
+  local base="$2"
+  local source="$3"
+  local policy="$4"
+  local branch_prefix="$5"
+  local include_untracked="$6"
+  local status tracked_status stash_args stash_ref timestamp shelve_branch safe_branch shelve_root message
+
+  status=$(git -C "$target" status --porcelain=v1 2>/dev/null || true)
+  if [[ -z "$status" ]]; then
+    printf 'null'
+    return 0
+  fi
+
+  tracked_status=$(printf '%s\n' "$status" | grep -v '^??' || true)
+  case "$policy" in
+    block)
+      echo "Error: protected branch worktree is dirty; auth request will not modify it." >&2
+      echo "$status" >&2
+      echo "Move, commit, stash, or explicitly request --dirty-policy stash or --dirty-policy branch-off." >&2
+      exit 1
+      ;;
+    allow-untracked)
+      if [[ -n "$tracked_status" ]]; then
+        echo "Error: protected branch worktree has tracked/staged changes; auth request will not modify it." >&2
+        echo "$status" >&2
+        exit 1
+      fi
+      message="Protected branch worktree has untracked files; continuing because dirty policy is allow-untracked."
+      echo "Warning: $message" >&2
+      echo "$status" >&2
+      build_dirty_action_json "$policy" "allowed-untracked" "$status" "" "" "" "$message"
+      return 0
+      ;;
+    stash|branch-off)
+      stash_args=(push)
+      if truthy_config_value "$include_untracked"; then
+        stash_args+=(-u)
+      fi
+      stash_args+=(-m "mandible protected-root dirty state before auth request ${source}")
+      git -C "$target" stash "${stash_args[@]}" >/dev/null
+      stash_ref=$(git -C "$target" rev-parse -q --verify refs/stash 2>/dev/null || true)
+      if [[ -z "$stash_ref" ]]; then
+        echo "Error: dirty policy ${policy} could not create a stash for protected-root changes." >&2
+        exit 1
+      fi
+      if [[ "$policy" == "stash" ]]; then
+        message="Protected-root changes were preserved in stash ${stash_ref} before auth request submission."
+        echo "Warning: $message" >&2
+        build_dirty_action_json "$policy" "stashed" "$status" "" "" "$stash_ref" "$message"
+        return 0
+      fi
+
+      timestamp=$(date +%Y%m%d-%H%M%S)
+      shelve_branch="${branch_prefix}-${timestamp}"
+      while git -C "$target" rev-parse --verify "refs/heads/${shelve_branch}" >/dev/null 2>&1; do
+        sleep 1
+        timestamp=$(date +%Y%m%d-%H%M%S)
+        shelve_branch="${branch_prefix}-${timestamp}"
+      done
+      safe_branch=$(safe_branch_component "$shelve_branch")
+      shelve_root="${target}/worktrees/${safe_branch}"
+      mkdir -p "$(dirname "$shelve_root")"
+      git -C "$target" branch "$shelve_branch" "$base"
+      git -C "$target" worktree add "$shelve_root" "$shelve_branch" >/dev/null
+      if ! git -C "$shelve_root" stash apply --index "$stash_ref" >/dev/null 2>&1; then
+        git -C "$shelve_root" stash apply "$stash_ref" >/dev/null
+      fi
+      git -C "$target" stash drop "$stash_ref" >/dev/null
+      message="Protected-root changes were moved to branch ${shelve_branch} at ${shelve_root} before auth request submission."
+      echo "Warning: $message" >&2
+      build_dirty_action_json "$policy" "branched-off" "$status" "$shelve_branch" "$shelve_root" "" "$message"
+      return 0
+      ;;
+  esac
+}
 
 # --- Auto-detect protected branch ---
 
@@ -185,6 +403,30 @@ if [[ -z "$repo" ]]; then
   repo=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")" 2>/dev/null) || repo=""
 fi
 
+# --- Resolve protected-root dirty policy ---
+
+configured_dirty_policy=$(read_mandible_toml_value "$target_cwd" "auth.protected_root_dirty" "default_policy" || true)
+configured_allow_untracked=$(read_mandible_toml_value "$target_cwd" "auth.protected_root_dirty" "allow_untracked" || true)
+configured_branch_prefix=$(read_mandible_toml_value "$target_cwd" "auth.protected_root_dirty" "branch_prefix" || true)
+configured_include_untracked=$(read_mandible_toml_value "$target_cwd" "auth.protected_root_dirty" "include_untracked" || true)
+
+if [[ -z "$dirty_policy" ]]; then
+  if [[ -n "$configured_dirty_policy" ]]; then
+    dirty_policy="$configured_dirty_policy"
+  elif truthy_config_value "$configured_allow_untracked"; then
+    dirty_policy="allow-untracked"
+  else
+    dirty_policy="block"
+  fi
+fi
+dirty_policy=$(normalize_dirty_policy "$dirty_policy")
+if [[ -z "$dirty_branch_prefix" ]]; then
+  dirty_branch_prefix="${configured_branch_prefix:-shelve/protected-root}"
+fi
+if [[ -z "$configured_include_untracked" ]]; then
+  configured_include_untracked="true"
+fi
+
 # --- Verify branch has unique commits ---
 
 unique_commits=$(git log --oneline "${base_branch}..${branch}" 2>/dev/null | wc -l | tr -d ' ')
@@ -193,31 +435,14 @@ if [[ "$unique_commits" -eq 0 ]]; then
   exit 1
 fi
 
-# --- Verify protected branch worktree is clean ---
+# --- Verify or preserve protected branch worktree dirtiness ---
 
-wt_status=$(git -C "$target_cwd" status --short 2>/dev/null)
-if [[ -n "$wt_status" ]]; then
-  echo "Warning: protected branch worktree is dirty, attempting auto-fix..." >&2
-  git -C "$target_cwd" checkout HEAD -- . 2>/dev/null || true
-  # Re-check
-  wt_status=$(git -C "$target_cwd" status --short 2>/dev/null)
-  if [[ -n "$wt_status" ]]; then
-    # Check if only untracked files remain
-    # Bug: fee554b — untracked files alone don't block a merge; pre-auth-check
-    # removes the specific conflicting ones, so a purely untracked dirty state
-    # here is non-fatal. Only tracked dirty files actually prevent the merge.
-    tracked_dirty=$(git -C "$target_cwd" status --short 2>/dev/null | grep -v '^??' || true)
-    if [[ -z "$tracked_dirty" ]]; then
-      echo "Warning: protected branch worktree has untracked files (non-blocking):" >&2
-      echo "$wt_status" >&2
-      # Untracked files don't prevent merge — continue
-    else
-      echo "Error: protected branch worktree still dirty after auto-fix:" >&2
-      echo "$wt_status" >&2
-      exit 1
-    fi
-  fi
-fi
+# Bug: 350817b — never destructively auto-fix protected-root dirtiness.
+# Policy is explicit via --dirty-policy or repo-local mandible.toml /
+# .mandible.toml [auth.protected_root_dirty].
+protected_root_dirty_action_json=$(ensure_clean_with_dirty_policy \
+  "$target_cwd" "$base_branch" "$branch" "$dirty_policy" "$dirty_branch_prefix" "$configured_include_untracked")
+append_dirty_action_to_spec "$protected_root_dirty_action_json"
 
 # --- Pre-flight: check for merge conflicts ---
 # Run a dry-run merge to catch conflicts before submitting the request.
@@ -337,6 +562,7 @@ payload=$(jq -nc \
   --arg conversation_id "$conversation_id" \
   --argjson issue_references "$issue_references_json" \
   --argjson issue_closures "$issue_closures_json" \
+  --argjson protected_root_dirty_action "$protected_root_dirty_action_json" \
   '{
     command: $command,
     cwd: $cwd,
@@ -359,7 +585,8 @@ payload=$(jq -nc \
     depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
     target_session_id: (if $target_session_id == "" then null else $target_session_id end),
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
-    conversation_id: (if $conversation_id == "" then null else $conversation_id end)
+    conversation_id: (if $conversation_id == "" then null else $conversation_id end),
+    protected_root_dirty_action: $protected_root_dirty_action
   }')
 
 # Bug: de8d29c — use -w to capture HTTP status separately so we can distinguish
