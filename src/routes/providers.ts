@@ -5,8 +5,11 @@ import {
 } from "../knowledge-backrefs.js";
 import { scanRepoArtifacts, type RepoArtifactRoot } from "../repo-artifact-scanner.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-import { getArtifactContent } from "../artifact-content.js";
+import { checkArtifactMaterialization, getArtifactContent } from "../artifact-content.js";
 import {
+  addArtifactBundleMembers,
+  createArtifactBundle,
+  getArtifactBundle,
   getArtifact,
   getProviderCapabilities,
   getProviderDetail,
@@ -16,8 +19,11 @@ import {
   ingestProviderManifestFile,
   listArtifacts,
   listProviders,
+  registerLocalArtifactPath,
   registerProvider,
+  resolveAndLinkArtifact,
   resolveArtifactRef,
+  snapshotArtifactBytes,
 } from "../provider-artifacts.js";
 
 function sendJson(res: ResponseLike, code: number, payload: unknown): void {
@@ -58,6 +64,14 @@ function bodyRepoRoots(value: unknown): Array<string | RepoArtifactRoot> | undef
     if (typeof item === "string") return Boolean(item.trim());
     return Boolean(item && typeof item === "object" && typeof (item as RepoArtifactRoot).root === "string");
   });
+}
+
+function bodyBoolean(body: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = body[key];
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
 }
 
 function linkedEntityQuery(req: RequestLike): { type?: string; id?: string } {
@@ -130,7 +144,18 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.post("/api/artifacts/ingest", (req, res) => {
     try {
-      const artifact = ingestArtifact(getDb(), bodyRecord(req));
+      const body = bodyRecord(req);
+      const localPath = typeof body.path === "string" && body.path.trim()
+        ? body.path
+        : typeof body.local_path === "string" && body.local_path.trim()
+          ? body.local_path
+          : undefined;
+      if (localPath) {
+        const result = registerLocalArtifactPath(getDb(), { ...body, path: localPath });
+        sendJson(res, 200, result);
+        return;
+      }
+      const artifact = ingestArtifact(getDb(), body);
       sendJson(res, 200, { artifact });
     } catch (error) {
       handleError(res, error);
@@ -145,6 +170,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         repoIds: bodyStringArray(body.repo_ids),
         maxDepth: typeof body.max_depth === "number" ? body.max_depth : undefined,
         maxFileBytes: typeof body.max_file_bytes === "number" ? body.max_file_bytes : undefined,
+        register: bodyBoolean(body, "register"),
+        discoveryOnly: bodyBoolean(body, "discovery_only"),
+        dryRun: bodyBoolean(body, "dry_run", "dryRun"),
       });
       sendJson(res, 200, result);
     } catch (error) {
@@ -185,6 +213,76 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   });
 
+  app.post("/api/artifacts/link", (req, res) => {
+    try {
+      const result = resolveAndLinkArtifact(getDb(), bodyRecord(req));
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/artifacts/check", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const refs = bodyStringArray(body.refs)
+        ?? bodyStringArray(body.artifact_refs)
+        ?? (typeof body.ref === "string" && body.ref.trim() ? [body.ref] : undefined);
+      if (!refs?.length) {
+        sendJson(res, 400, { error: "ref or refs is required" });
+        return;
+      }
+      const checks = refs.map((ref) => {
+        const resolution = resolveArtifactRef(getDb(), ref);
+        const check = resolution.artifact
+          ? checkArtifactMaterialization(getDb(), resolution.artifact.id, { ref })
+          : null;
+        return { ref, resolution, check };
+      });
+      sendJson(res, 200, { checks });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/artifacts/snapshot", (req, res) => {
+    try {
+      const artifact = snapshotArtifactBytes(getDb(), bodyRecord(req));
+      sendJson(res, 200, { artifact });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/artifacts/bundles", (req, res) => {
+    try {
+      const result = createArtifactBundle(getDb(), bodyRecord(req) as unknown as Parameters<typeof createArtifactBundle>[1]);
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/artifacts/bundles/:id/members", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const members = Array.isArray(body.members) ? body.members : [];
+      const result = addArtifactBundleMembers(getDb(), req.params.id, members as Parameters<typeof addArtifactBundleMembers>[2]);
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/artifacts/bundles/:id", (req, res) => {
+    const bundle = getArtifactBundle(getDb(), req.params.id);
+    if (!bundle) {
+      sendJson(res, 404, { error: "bundle not found" });
+      return;
+    }
+    sendJson(res, 200, bundle);
+  });
+
   app.get("/api/knowledge-backrefs", (req, res) => {
     const backrefs = listKnowledgeBackrefs(getDb(), {
       sourceType: queryString(req, "source_type"),
@@ -214,6 +312,15 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { content });
+  });
+
+  app.get("/api/artifacts/:id/check", (req, res) => {
+    const check = checkArtifactMaterialization(getDb(), req.params.id);
+    if (!check) {
+      sendJson(res, 404, { error: "artifact not found" });
+      return;
+    }
+    sendJson(res, 200, { check });
   });
 
   app.get("/api/artifacts/:id/knowledge-backrefs", (req, res) => {

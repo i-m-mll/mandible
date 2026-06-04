@@ -381,6 +381,7 @@ export type GraphNodeType =
   | "model"
   | "dataset"
   | "analysis"
+  | "artifact_bundle"
   | "artifact"
   | "report"
   | "curated_topic"
@@ -398,6 +399,7 @@ export type GraphEdgeType =
   | "provider_emitted_manifest"
   | "manifest_declares"
   | "manifest_references_artifact"
+  | "bundle_contains"
   | "produced"
   | "derived_from"
   | "validated_by"
@@ -539,6 +541,54 @@ export interface ArtifactRecord {
   created_at: number;
   aliases?: ArtifactAliasRecord[];
   links?: ArtifactLinkRecord[];
+}
+
+export type ArtifactRecoverability =
+  | "repo_commit"
+  | "repo_worktree"
+  | "local_only"
+  | "mandible_cas"
+  | "provider_store"
+  | "external_remote"
+  | "regenerable";
+
+export interface ArtifactGitState {
+  inside_worktree: boolean;
+  repo_root: string | null;
+  repo_id: string | null;
+  relative_path: string | null;
+  commit: string | null;
+  branch: string | null;
+  tracked: boolean;
+  ignored: boolean;
+  staged: boolean;
+  dirty: boolean;
+  status: string | null;
+}
+
+export interface ArtifactMaterializationCheck {
+  artifact_id: string;
+  ref?: string;
+  materializable: boolean;
+  hash_matches: boolean | null;
+  expected_sha256: string | null;
+  actual_sha256: string | null;
+  source: string | null;
+  recoverability: ArtifactRecoverability | null;
+  reasons: string[];
+  warnings: string[];
+}
+
+export interface ArtifactBundleMemberRecord {
+  artifact: ArtifactRecord;
+  link: ArtifactLinkRecord;
+  order: number;
+  role: string | null;
+}
+
+export interface ArtifactBundleRecord {
+  bundle: ArtifactRecord;
+  members: ArtifactBundleMemberRecord[];
 }
 
 export type ArtifactAliasResolutionStatus = "resolved" | "unresolved" | "ambiguous" | "unsupported";

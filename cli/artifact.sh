@@ -1,0 +1,940 @@
+#!/usr/bin/env zsh
+# mandible artifact: custody-aware artifact CLI over the Mandible daemon API.
+
+set -euo pipefail
+
+RESET=$'\033[0m'
+RED=$'\033[31m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+
+err() {
+  printf "%b\n" "$*" >&2
+}
+
+die() {
+  err "$1"
+  exit "${2:-1}"
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  mandible artifact ingest <path...> [--issue <id>] [--role <role>] [--managed|--copy|--link] [--allow-local-only] [--allow-dirty-link] [--dry-run] [--json]
+  mandible artifact ref <uri...> [--issue <id>] [--role <role>] [--json]
+  mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--json]
+  mandible artifact resolve <ref> [--json]
+  mandible artifact list [--repo <repo>] [--issue <id>] [--role <role>] [--custody <mode>] [--json]
+  mandible artifact show <ref> [--json]
+  mandible artifact content <ref> [--output <path>] [--json]
+  mandible artifact check <ref...> [--json]
+  mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--json]
+  mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--json]
+  mandible artifact scan-repos [--repo <repo>] [--max-depth N] [--register] [--dry-run] [--json]
+  mandible artifact bundle create --name <name> <path-or-ref...> [--issue <id>] [--role <role>] [--allow-local-only] [--allow-dirty-link] [--json]
+  mandible artifact bundle create --manifest <bundle.json> [--issue <id>] [--json]
+  mandible artifact bundle add <bundle-ref> <path-or-ref...> [--allow-local-only] [--allow-dirty-link] [--json]
+  mandible artifact bundle show <bundle-ref> [--json]
+  mandible artifact bundle check <bundle-ref> [--json]
+
+Custody:
+  link       Repo/local/provider remains authoritative; refs carry repo/path/hash metadata.
+  copy       Mandible stores a byte snapshot, preserving the source metadata.
+  managed    Mandible-owned content-addressed storage.
+
+Recoverability:
+  repo_commit   bytes are recoverable from a commit-pinned repo locator.
+  repo_worktree bytes are observed in a worktree but not proven committed.
+  local_only    bytes are observed locally only.
+  mandible_cas  bytes are stored in Mandible artifact storage.
+EOF
+}
+
+require_tools() {
+  command -v curl >/dev/null 2>&1 || die "curl not found." 1
+  command -v jq >/dev/null 2>&1 || die "jq not found." 1
+}
+
+api_base() {
+  printf 'http://127.0.0.1:%s' "${MANDIBLE_PORT:-19420}"
+}
+
+urlencode() {
+  jq -rn --arg value "$1" '$value|@uri'
+}
+
+api_get() {
+  local endpoint="$1"
+  curl -sf --max-time 15 "$(api_base)$endpoint"
+}
+
+api_post() {
+  local endpoint="$1"
+  local payload="$2"
+  curl -sf --max-time 30 -X POST "$(api_base)$endpoint" \
+    -H 'Content-Type: application/json' \
+    -d "$payload"
+}
+
+json_quote() {
+  jq -Rn --arg value "$1" '$value'
+}
+
+python_path() {
+  python3 - "$@" <<'PY'
+import os
+import sys
+
+cmd = sys.argv[1]
+if cmd == "abs":
+    print(os.path.abspath(os.path.expanduser(sys.argv[2])))
+elif cmd == "rel":
+    print(os.path.relpath(sys.argv[2], sys.argv[3]).replace(os.sep, "/"))
+PY
+}
+
+stable_hash() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+media_type_for() {
+  local file_path="$1"
+  if command -v file >/dev/null 2>&1; then
+    file -b --mime-type "$file_path" 2>/dev/null || printf 'application/octet-stream'
+  else
+    printf 'application/octet-stream'
+  fi
+}
+
+infer_role() {
+  local file_path="$1"
+  local lower
+  lower="$(printf '%s' "$file_path" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    *manifest*) printf 'manifest' ;;
+    *config*) printf 'config' ;;
+    *report*) printf 'report' ;;
+    *result*|*metric*|*eval*) printf 'result' ;;
+    *.md|*.txt|*.pdf|*.json|*.jsonl|*.csv|*.tsv|*.yaml|*.yml) printf 'document' ;;
+    *) printf 'artifact' ;;
+  esac
+}
+
+repo_id_for_root() {
+  local repo_root="$1"
+  local common_dir parent
+  common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$common_dir" && "$(basename "$common_dir")" == ".git" ]]; then
+    parent="$(dirname "$common_dir")"
+    basename "$parent"
+    return
+  fi
+  basename "$repo_root"
+}
+
+is_uri_like() {
+  [[ "$1" =~ '^[A-Za-z][A-Za-z0-9+.-]*:' ]]
+}
+
+issue_json=""
+issue_id=""
+issue_repo=""
+
+resolve_issue() {
+  local ref="$1"
+  [[ -n "$ref" ]] || return 0
+  issue_json="$(api_get "/api/ledger/issues/$(urlencode "$ref")")" \
+    || die "${RED}Unable to resolve issue '${ref}'. Use a longer or project-scoped issue ref if it is ambiguous.${RESET}" 1
+  issue_id="$(printf '%s' "$issue_json" | jq -r '.id')"
+  issue_repo="$(printf '%s' "$issue_json" | jq -r '.project.repo_id // .project.repo_name // empty')"
+}
+
+issue_link_json() {
+  local relation="${1:-references}"
+  local role="${2:-}"
+  if [[ -z "$issue_id" ]]; then
+    printf '[]'
+    return
+  fi
+  jq -n \
+    --arg entity_id "$issue_id" \
+    --arg link_type "$relation" \
+    --arg role "$role" \
+    --arg repo_id "$issue_repo" \
+    '[{
+      entity_type:"issue",
+      entity_id:$entity_id,
+      link_type:$link_type,
+      role:(if $role == "" then null else $role end),
+      repo_id:(if $repo_id == "" then null else $repo_id end),
+      source:"artifact_cli"
+    }]'
+}
+
+classify_path() {
+  local input="$1"
+  local role_override="${2:-}"
+  local abs dir root rel repo_id branch commit git_status tracked ignored index_status worktree_status staged dirty untracked
+  local sha size media filename role warnings repo_locator uri canonical_ref recoverability availability git_json
+
+  abs="$(python_path abs "$input")"
+  if [[ ! -e "$abs" ]]; then
+    jq -n --arg input "$input" '{input:$input, ok:false, error:"path_missing", warnings:[{code:"path_missing", message:"path does not exist"}]}'
+    return
+  fi
+  if [[ -d "$abs" ]]; then
+    jq -n --arg input "$input" '{input:$input, ok:false, error:"path_is_directory", warnings:[{code:"path_is_directory", message:"directories must be bundled through an explicit manifest"}]}'
+    return
+  fi
+
+  dir="$(dirname "$abs")"
+  root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
+  sha="$(stable_hash "$abs")"
+  size="$(wc -c < "$abs" | tr -d ' ')"
+  media="$(media_type_for "$abs")"
+  filename="$(basename "$abs")"
+  role="${role_override:-$(infer_role "$input")}"
+  availability="present"
+  warnings='[]'
+
+  if [[ -n "$root" ]]; then
+    rel="$(python_path rel "$abs" "$root")"
+    repo_id="$(repo_id_for_root "$root")"
+    branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
+    commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
+    git_status="$(git -C "$root" status --porcelain=v1 -- "$rel" 2>/dev/null | head -n 1 || true)"
+    if git -C "$root" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then tracked=true; else tracked=false; fi
+    if git -C "$root" check-ignore -q -- "$rel" >/dev/null 2>&1; then ignored=true; else ignored=false; fi
+    index_status="$(printf '%s' "$git_status" | cut -c1)"
+    worktree_status="$(printf '%s' "$git_status" | cut -c2)"
+    [[ "$index_status" != " " && "$index_status" != "?" && -n "$index_status" ]] && staged=true || staged=false
+    [[ "$worktree_status" != " " && -n "$worktree_status" ]] && dirty=true || dirty=false
+    [[ "$git_status" == \?\?* ]] && untracked=true || untracked=false
+
+    if [[ "$tracked" == true && "$staged" == false && "$dirty" == false ]]; then
+      recoverability="repo_commit"
+      uri="repo://${repo_id}@${commit}/${rel}"
+      repo_locator="$(jq -n --arg repo_id "$repo_id" --arg ref "$commit" --arg path "$rel" \
+        '{repo_id:$repo_id, ref:$ref, path:$path}')"
+    elif [[ "$tracked" == true ]]; then
+      recoverability="repo_worktree"
+      uri="repo://${repo_id}@${branch}/${rel}"
+      repo_locator="$(jq -n --arg repo_id "$repo_id" --arg ref "$branch" --arg path "$rel" \
+        '{repo_id:$repo_id, ref:$ref, path:$path}')"
+      [[ "$dirty" == true ]] && warnings="$(printf '%s' "$warnings" | jq '. + [{code:"tracked_dirty", message:"tracked file has worktree changes"}]')"
+      [[ "$staged" == true ]] && warnings="$(printf '%s' "$warnings" | jq '. + [{code:"tracked_staged", message:"tracked file has staged changes"}]')"
+      warnings="$(printf '%s' "$warnings" | jq '. + [{code:"mutable_ref", message:"repo locator uses a mutable worktree ref"}]')"
+    else
+      recoverability="local_only"
+      uri="file://${abs}"
+      canonical_ref="artifact://sha256/${sha}"
+      repo_locator="$(jq -n --arg repo_id "$repo_id" --arg ref "$branch" --arg path "$rel" \
+        '{repo_id:$repo_id, ref:$ref, path:$path, local_only:true}')"
+      if [[ "$ignored" == true ]]; then
+        warnings="$(printf '%s' "$warnings" | jq '. + [{code:"ignored_local_only", message:"ignored file is local-only unless copied or managed"}]')"
+      else
+        warnings="$(printf '%s' "$warnings" | jq '. + [{code:"untracked_local_only", message:"untracked file is local-only unless copied or managed"}]')"
+      fi
+      warnings="$(printf '%s' "$warnings" | jq '. + [{code:"mutable_ref", message:"repo locator uses a mutable worktree ref"}]')"
+    fi
+    git_json="$(jq -n \
+      --arg repo_id "$repo_id" --arg relative_path "$rel" --arg branch "$branch" --arg commit "$commit" --arg status "$git_status" \
+      --argjson tracked "$tracked" --argjson ignored "$ignored" --argjson staged "$staged" --argjson dirty "$dirty" --argjson untracked "$untracked" \
+      '{repo_id:$repo_id, relative_path:$relative_path, branch:$branch, commit:$commit, status:$status, tracked:$tracked, ignored:$ignored, staged:$staged, dirty:$dirty, untracked:$untracked}')"
+  else
+    rel="$filename"
+    repo_id=""
+    uri=""
+    canonical_ref="artifact://sha256/${sha}"
+    repo_locator='{}'
+    recoverability="local_only"
+    warnings="$(jq -n '[{code:"outside_repo", message:"outside-repo paths require --copy or --managed for durable registration"}]')"
+    git_json="$(jq -n '{repo_id:null, relative_path:null, tracked:false, ignored:false, staged:false, dirty:false, untracked:false}')"
+  fi
+
+  jq -n \
+    --arg input "$input" \
+    --arg filename "$filename" \
+    --arg sha256 "$sha" \
+    --arg media_type "$media" \
+    --arg role "$role" \
+    --arg uri "$uri" \
+    --arg recoverability "$recoverability" \
+    --arg availability "$availability" \
+    --argjson size_bytes "$size" \
+    --argjson warnings "$warnings" \
+    --argjson repo_locator "$repo_locator" \
+    --argjson git "$git_json" \
+    '{
+      input:$input,
+      ok:true,
+      filename:$filename,
+      logical_name:$filename,
+      sha256:$sha256,
+      media_type:$media_type,
+      role:$role,
+      size_bytes:$size_bytes,
+      uri:$uri,
+      canonical_ref:(if $recoverability == "local_only" then "artifact://sha256/" + $sha256 else $uri end),
+      recoverability:$recoverability,
+      availability:$availability,
+      custody_mode:"link",
+      repo_locator:$repo_locator,
+      git:$git,
+      warnings:$warnings
+    }'
+}
+
+payload_for_path() {
+  local input="$1" mode="$2" role_override="$3" allow_local="$4" allow_dirty="$5" relation="$6"
+  local classified ok recoverability tracked dirty staged untracked ignored repo_id uri content_b64 links
+  classified="$(classify_path "$input" "$role_override")"
+  ok="$(printf '%s' "$classified" | jq -r '.ok')"
+  if [[ "$ok" != "true" ]]; then
+    printf '%s' "$classified" | jq '{input, status:"failed", error, warnings}'
+    return 1
+  fi
+
+  recoverability="$(printf '%s' "$classified" | jq -r '.recoverability')"
+  tracked="$(printf '%s' "$classified" | jq -r '.git.tracked')"
+  dirty="$(printf '%s' "$classified" | jq -r '.git.dirty')"
+  staged="$(printf '%s' "$classified" | jq -r '.git.staged')"
+  untracked="$(printf '%s' "$classified" | jq -r '.git.untracked')"
+  ignored="$(printf '%s' "$classified" | jq -r '.git.ignored')"
+  repo_id="$(printf '%s' "$classified" | jq -r '.git.repo_id // empty')"
+
+  if [[ "$mode" == "link" && -z "$repo_id" ]]; then
+    printf '%s' "$classified" | jq '{input, status:"failed", error:"outside_repo_requires_copy_or_managed", warnings}'
+    return 1
+  fi
+  if [[ "$mode" == "link" && -n "$issue_id" && "$tracked" == "true" && ( "$dirty" == "true" || "$staged" == "true" ) && "$allow_dirty" != "1" ]]; then
+    printf '%s' "$classified" | jq '{input, status:"failed", error:"dirty_link_requires_override", warnings}'
+    return 1
+  fi
+  if [[ "$mode" == "link" && -n "$issue_id" && ( "$untracked" == "true" || "$ignored" == "true" ) && "$allow_local" != "1" ]]; then
+    printf '%s' "$classified" | jq '{input, status:"failed", error:"local_only_issue_link_requires_override", warnings}'
+    return 1
+  fi
+
+  links="$(issue_link_json "$relation" "$(printf '%s' "$classified" | jq -r '.role')")"
+  if [[ "$mode" == "managed" || "$mode" == "copy" ]]; then
+    content_b64="$(base64 < "$(python_path abs "$input")" | tr -d '\n')"
+    classified="$(printf '%s' "$classified" | jq \
+      --arg custody "$mode" \
+      '.custody_mode=$custody | .recoverability="mandible_cas" | .canonical_ref=("artifact://sha256/" + .sha256) | .warnings=(.warnings + [{code:"snapshot_custody", message:"bytes will be stored in Mandible artifact storage"}])')"
+    printf '%s' "$classified" | jq \
+      --arg content_base64 "$content_b64" \
+      --argjson links "$links" \
+      '{
+        canonical_ref:.canonical_ref,
+        content_base64:$content_base64,
+        sha256,
+        filename,
+        logical_name,
+        media_type,
+        role,
+        size_bytes,
+        custody_mode,
+        availability,
+        home_repo_id:(.git.repo_id // null),
+        repo_locator,
+        reference:{owner_system:"artifact_cli", recoverability:.recoverability, git:.git, source_uri:.uri, preferred_ref:.canonical_ref},
+        metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref},
+        links:$links
+      }'
+    return 0
+  fi
+
+  uri="$(printf '%s' "$classified" | jq -r '.uri')"
+  printf '%s' "$classified" | jq \
+    --argjson links "$links" \
+    '{
+      canonical_ref:.canonical_ref,
+      sha256,
+      uri,
+      filename,
+      logical_name,
+      media_type,
+      role,
+      size_bytes,
+      custody_mode:"link",
+      availability,
+      home_repo_id:(.git.repo_id // null),
+      repo_locator,
+      reference:{owner_system:"repo", recoverability:.recoverability, git:.git, preferred_ref:.canonical_ref, content_identity:{algorithm:"sha256", hash:.sha256}},
+      metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref},
+      links:$links
+    }'
+}
+
+print_batch_human() {
+  jq -r '
+    (.registered[]? | "registered \(.artifact.id) \(.artifact.custody_mode) \(.artifact.metadata.recoverability // .artifact.reference.recoverability // "-")"),
+    (.linked[]? | "linked \(.artifact.id) \(.link.link_type) issue:\(.link.entity_id[0:8])"),
+    (.failed[]? | "failed \(.input // .ref // "-") \(.error)")
+  '
+}
+
+cmd_ingest_like() {
+  local mode="$1"
+  shift
+  local issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 relation="references"
+  local paths=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --issue) issue="$2"; shift 2 ;;
+      --role) role="$2"; shift 2 ;;
+      --managed) mode="managed"; shift ;;
+      --copy) mode="copy"; shift ;;
+      --link) mode="link"; shift ;;
+      --allow-local-only) allow_local=1; shift ;;
+      --allow-dirty-link) allow_dirty=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) paths+=("$1"); shift ;;
+    esac
+  done
+  (( ${#paths[@]} > 0 )) || die "No paths supplied." 2
+  require_tools
+  [[ -n "$issue" ]] && resolve_issue "$issue"
+
+  local registered='[]' failed='[]' planned='[]' payload response result
+  for path_arg in "${paths[@]}"; do
+    if payload="$(payload_for_path "$path_arg" "$mode" "$role" "$allow_local" "$allow_dirty" "$relation")"; then
+      planned="$(printf '%s' "$planned" | jq --argjson payload "$payload" '. + [$payload]')"
+      if (( dry_run )); then
+        registered="$(printf '%s' "$registered" | jq --argjson payload "$payload" '. + [{input:($payload.metadata.git.relative_path // $payload.filename), planned_payload:($payload | if has("content_base64") then .content_base64="<base64 omitted in dry-run>" else . end)}]')"
+      else
+        response="$(api_post "/api/artifacts/ingest" "$payload")" || {
+          failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" '. + [{input:$input, error:"api_ingest_failed"}]')"
+          continue
+        }
+        registered="$(printf '%s' "$registered" | jq --argjson artifact "$(printf '%s' "$response" | jq '.artifact')" '. + [{artifact:$artifact}]')"
+      fi
+    else
+      failed="$(printf '%s' "$failed" | jq --argjson item "$payload" '. + [$item]')"
+    fi
+  done
+  result="$(jq -n --arg command "ingest" --arg custody "$mode" --argjson dry_run "$dry_run" --argjson registered "$registered" --argjson failed "$failed" \
+    '{command:$command, dry_run:$dry_run, custody_mode:$custody, registered:$registered, failed:$failed}')"
+  if (( json )); then
+    printf '%s\n' "$result" | jq .
+  else
+    printf '%s\n' "$result" | print_batch_human
+  fi
+  [[ "$(printf '%s' "$failed" | jq 'length')" == "0" ]]
+}
+
+cmd_ref() {
+  local issue="" role="" json=0
+  local refs=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --issue) issue="$2"; shift 2 ;;
+      --role) role="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) refs+=("$1"); shift ;;
+    esac
+  done
+  (( ${#refs[@]} > 0 )) || die "No refs supplied." 2
+  require_tools
+  [[ -n "$issue" ]] && resolve_issue "$issue"
+
+  local registered='[]' failed='[]' ref response artifact link_payload link_response result
+  for ref in "${refs[@]}"; do
+    if [[ -e "$ref" ]]; then
+      if response="$(payload_for_path "$ref" "link" "$role" 1 1 "references")"; then
+        response="$(api_post "/api/artifacts/ingest" "$response")" || {
+          failed="$(printf '%s' "$failed" | jq --arg ref "$ref" '. + [{ref:$ref, error:"api_ingest_failed"}]')"
+          continue
+        }
+        registered="$(printf '%s' "$registered" | jq --argjson artifact "$(printf '%s' "$response" | jq '.artifact')" '. + [{artifact:$artifact}]')"
+      else
+        failed="$(printf '%s' "$failed" | jq --argjson item "$response" '. + [$item]')"
+      fi
+      continue
+    fi
+    response="$(api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")")" || {
+      failed="$(printf '%s' "$failed" | jq --arg ref "$ref" '. + [{ref:$ref, error:"api_resolve_failed"}]')"
+      continue
+    }
+    artifact="$(printf '%s' "$response" | jq '.resolution.artifact')"
+    if [[ -n "$issue_id" ]]; then
+      link_payload="$(jq -n --arg ref "$ref" --arg entity_id "$issue_id" --arg repo_id "$issue_repo" --arg role "$role" \
+        '{ref:$ref, entity_type:"issue", entity_id:$entity_id, link_type:"references", role:(if $role == "" then null else $role end), repo_id:(if $repo_id == "" then null else $repo_id end), source:"artifact_cli"}')"
+      link_response="$(api_post "/api/artifacts/link" "$link_payload")" || {
+        failed="$(printf '%s' "$failed" | jq --arg ref "$ref" '. + [{ref:$ref, error:"api_link_failed"}]')"
+        continue
+      }
+      registered="$(printf '%s' "$registered" | jq --argjson artifact "$artifact" --argjson link "$(printf '%s' "$link_response" | jq '.link')" '. + [{artifact:$artifact, link:$link}]')"
+    else
+      registered="$(printf '%s' "$registered" | jq --argjson artifact "$artifact" '. + [{artifact:$artifact}]')"
+    fi
+  done
+  result="$(jq -n --arg command "ref" --argjson registered "$registered" --argjson failed "$failed" '{command:$command, registered:$registered, failed:$failed}')"
+  if (( json )); then printf '%s\n' "$result" | jq .; else printf '%s\n' "$result" | print_batch_human; fi
+  [[ "$(printf '%s' "$failed" | jq 'length')" == "0" ]]
+}
+
+cmd_link() {
+  local ref="" issue="" role="" relation="references" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --issue) issue="$2"; shift 2 ;;
+      --role) role="$2"; shift 2 ;;
+      --relation) relation="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" && -n "$issue" ]] || die "Usage: mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff]" 2
+  case "$relation" in references|output|evidence|handoff) ;; *) die "Unknown relation: $relation" 2 ;; esac
+  require_tools
+  resolve_issue "$issue"
+  local payload response
+  payload="$(jq -n --arg ref "$ref" --arg entity_id "$issue_id" --arg repo_id "$issue_repo" --arg link_type "$relation" --arg role "$role" \
+    '{ref:$ref, entity_type:"issue", entity_id:$entity_id, link_type:$link_type, role:(if $role == "" then null else $role end), repo_id:(if $repo_id == "" then null else $repo_id end), source:"artifact_cli"}')"
+  response="$(api_post "/api/artifacts/link" "$payload")" || die "${RED}Failed to link artifact ref.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '"linked \(.resolution.artifact.id) \(.link.link_type) issue:\(.link.entity_id[0:8])"'
+  fi
+}
+
+cmd_resolve() {
+  local ref="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" ]] || die "Usage: mandible artifact resolve <ref> [--json]" 2
+  require_tools
+  local response
+  response="$(api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '.resolution | "\(.status) \(.artifact.id) \(.normalized_ref)"'
+  fi
+}
+
+cmd_list() {
+  local repo="" issue="" role="" custody="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --repo) repo="$2"; shift 2 ;;
+      --issue) issue="$2"; shift 2 ;;
+      --role) role="$2"; shift 2 ;;
+      --custody) custody="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) die "Unexpected argument: $1" 2 ;;
+    esac
+  done
+  require_tools
+  [[ -n "$issue" ]] && resolve_issue "$issue"
+  local query="" sep="?"
+  for pair in "repo:$repo" "role:$role" "custody:$custody"; do
+    local key="${pair%%:*}" value="${pair#*:}"
+    if [[ -n "$value" ]]; then
+      query+="${sep}${key}=$(urlencode "$value")"; sep="&"
+    fi
+  done
+  if [[ -n "$issue_id" ]]; then
+    query+="${sep}linked_entity_type=issue&linked_entity_id=$(urlencode "$issue_id")"
+  fi
+  local response
+  response="$(api_get "/api/artifacts${query}")" || die "${RED}Failed to list artifacts.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '.artifacts[]? | "\(.id) \(.custody_mode) \(.availability) \(.role // "-") \(.uri)"'
+  fi
+}
+
+artifact_id_for_ref() {
+  local ref="$1"
+  api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")" | jq -r '.resolution.artifact.id'
+}
+
+cmd_show() {
+  local ref="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" ]] || die "Usage: mandible artifact show <ref> [--json]" 2
+  require_tools
+  local id response
+  id="$(artifact_id_for_ref "$ref")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
+  response="$(api_get "/api/artifacts/$(urlencode "$id")")" || die "${RED}Failed to show artifact.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '.artifact | "\(.id)\nrole: \(.role // "-")\ncustody: \(.custody_mode)\navailability: \(.availability)\nuri: \(.uri)"'
+  fi
+}
+
+cmd_content() {
+  local ref="" output="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --output) output="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" ]] || die "Usage: mandible artifact content <ref> [--output <path>] [--json]" 2
+  require_tools
+  local id response
+  id="$(artifact_id_for_ref "$ref")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
+  response="$(api_get "/api/artifacts/$(urlencode "$id")/content")" || die "${RED}Failed to fetch artifact content.${RESET}" 1
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$response" | jq -er '.content.preview.text' > "$output" \
+      || die "${RED}Artifact has no text preview to write.${RESET}" 1
+  fi
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  elif [[ -z "$output" ]]; then
+    printf '%s\n' "$response" | jq -r '.content.preview.text // .content.reason // "binary content available; use --json for metadata"'
+  else
+    err "${GREEN}wrote artifact preview to ${output}${RESET}"
+  fi
+}
+
+cmd_check() {
+  local json=0 refs=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) refs+=("$1"); shift ;;
+    esac
+  done
+  (( ${#refs[@]} > 0 )) || die "Usage: mandible artifact check <ref...> [--json]" 2
+  require_tools
+  local refs_json result
+  refs_json="$(printf '%s\n' "${refs[@]}" | jq -R . | jq -s .)"
+  result="$(api_post "/api/artifacts/check" "$(jq -n --argjson refs "$refs_json" '{refs:$refs}')")" \
+    || die "${RED}Failed to check artifacts.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$result" | jq .
+  else
+    printf '%s\n' "$result" | jq -r '.checks[] | .check as $c | "\($c.materializable // false) \($c.artifact_id // .ref) \((($c.reasons // []) + ($c.warnings // [])) | join(","))"'
+  fi
+}
+
+cmd_scan_repos() {
+  local repo="" max_depth="" register=0 dry_run=0 json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --repo) repo="$2"; shift 2 ;;
+      --max-depth) max_depth="$2"; shift 2 ;;
+      --register) register=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) die "Unexpected argument: $1" 2 ;;
+    esac
+  done
+  require_tools
+  local payload result
+  payload="$(jq -n --arg repo "$repo" --arg max_depth "$max_depth" --argjson register "$register" --argjson dry_run "$dry_run" '{
+    repo_ids:(if $repo == "" then null else [$repo] end),
+    max_depth:(if $max_depth == "" then null else ($max_depth|tonumber) end),
+    register:$register,
+    dry_run:(if $dry_run == 1 then true else false end),
+    discovery_only:(if $register == 1 then false else true end)
+  } | with_entries(select(.value != null))')"
+  result="$(api_post "/api/artifacts/scan-repos" "$payload")" || die "${RED}Failed to scan repos.${RESET}" 1
+  if (( json )); then printf '%s\n' "$result" | jq .; else printf '%s\n' "$result" | jq -r 'if .warning then .warning else "scanned \(.scanned_repos|length) repos, ingested \(.ingested) artifacts" end'; fi
+}
+
+cmd_snapshot() {
+  local from_path="" issue="" role="" json=0
+  local args=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --from) from_path="$2"; shift 2 ;;
+      --issue) issue="$2"; shift 2 ;;
+      --role) role="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+
+  if [[ -z "$from_path" ]]; then
+    local forwarded=("${args[@]}")
+    [[ -n "$issue" ]] && forwarded+=(--issue "$issue")
+    [[ -n "$role" ]] && forwarded+=(--role "$role")
+    (( json )) && forwarded+=(--json)
+    cmd_ingest_like "copy" "${forwarded[@]}"
+    return
+  fi
+
+  [[ ${#args[@]} -eq 1 ]] || die "Usage: mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--json]" 2
+  [[ -f "$from_path" ]] || die "Snapshot source path not found or not a regular file." 2
+  require_tools
+  [[ -n "$issue" ]] && resolve_issue "$issue"
+
+  local ref="${args[1]}" payload response artifact link_response result
+  payload="$(jq -n --arg ref "$ref" --arg path "$from_path" --arg role "$role" \
+    '{ref:$ref, path:$path, custody_mode:"copy"} + (if $role == "" then {} else {role:$role} end)')"
+  response="$(api_post "/api/artifacts/snapshot" "$payload")" || die "${RED}Failed to snapshot artifact bytes.${RESET}" 1
+  artifact="$(printf '%s' "$response" | jq '.artifact')"
+  if [[ -n "$issue_id" ]]; then
+    link_response="$(api_post "/api/artifacts/link" "$(jq -n --arg ref "$(printf '%s' "$artifact" | jq -r '.id')" --arg entity_id "$issue_id" --arg repo_id "$issue_repo" --arg role "$role" \
+      '{ref:$ref, entity_type:"issue", entity_id:$entity_id, link_type:"references", role:(if $role == "" then null else $role end), repo_id:(if $repo_id == "" then null else $repo_id end), source:"artifact_cli"}')")" \
+      || die "${RED}Snapshot succeeded but issue link failed.${RESET}" 1
+    result="$(jq -n --argjson artifact "$artifact" --argjson link "$(printf '%s' "$link_response" | jq '.link')" '{artifact:$artifact, link:$link}')"
+  else
+    result="$(jq -n --argjson artifact "$artifact" '{artifact:$artifact}')"
+  fi
+  if (( json )); then
+    printf '%s\n' "$result" | jq .
+  else
+    printf '%s\n' "$result" | jq -r '"snapshotted \(.artifact.id) \(.artifact.custody_mode) \(.artifact.availability)"'
+  fi
+}
+
+bundle_create() {
+  local name="" manifest="" issue="" role="run_packet" json=0 dry_run=0 allow_local=0 allow_dirty=0
+  local members=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --manifest) manifest="$2"; shift 2 ;;
+      --issue) issue="$2"; shift 2 ;;
+      --role) role="$2"; shift 2 ;;
+      --allow-local-only) allow_local=1; shift ;;
+      --allow-dirty-link) allow_dirty=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) members+=("$1"); shift ;;
+    esac
+  done
+  require_tools
+  [[ -n "$issue" ]] && resolve_issue "$issue"
+  if [[ -n "$manifest" ]]; then
+    [[ -f "$manifest" ]] || die "Bundle manifest not found." 2
+    name="${name:-$(jq -r '.name // empty' "$manifest")}"
+    role="${role:-$(jq -r '.role // "run_packet"' "$manifest")}"
+    members=()
+    while IFS= read -r member; do
+      [[ -n "$member" ]] && members+=("$member")
+    done < <(jq -r '.members[]? | .path // .ref // .uri // empty' "$manifest")
+  fi
+  [[ -n "$name" ]] || die "bundle create requires --name or manifest.name" 2
+
+  local member_results='[]' failed='[]' member payload response artifact bundle_manifest bundle_payload bundle_response bundle_id link_payload bundle_links bundle_artifact encoded_ref members_payload
+  members_payload='[]'
+  if [[ -n "$manifest" ]]; then
+    members_payload="$(jq '.members // []' "$manifest")"
+  else
+    for member in "${members[@]}"; do
+      if [[ -e "$member" ]]; then
+        members_payload="$(printf '%s' "$members_payload" | jq --arg path "$member" --argjson allow_local "$allow_local" --argjson allow_dirty "$allow_dirty" '. + [{path:$path, allow_local_only:($allow_local == 1), allow_dirty_link:($allow_dirty == 1)}]')"
+      else
+        members_payload="$(printf '%s' "$members_payload" | jq --arg ref "$member" '. + [{ref:$ref}]')"
+      fi
+    done
+  fi
+
+  if (( ! dry_run )); then
+    payload="$(jq -n --arg name "$name" --arg role "$role" --arg issue "$issue" --argjson members "$members_payload" \
+      '{name:$name, role:$role, members:$members} + (if $issue == "" then {} else {issue:$issue} end)')"
+    bundle_response="$(api_post "/api/artifacts/bundles" "$payload")" || die "${RED}Failed to create bundle.${RESET}" 1
+    if (( json )); then
+      printf '%s\n' "$bundle_response" | jq .
+    else
+      printf '%s\n' "$bundle_response" | jq -r '"bundle \(.bundle.id) members=\(.members|length)"'
+    fi
+    return
+  fi
+
+  for member in "${members[@]}"; do
+    if [[ -e "$member" ]]; then
+      if ! payload=$(payload_for_path "$member" "link" "" "$allow_local" "$allow_dirty" "references"); then
+        failed="$(printf '%s' "$failed" | jq --argjson item "$payload" '. + [$item]')"
+        continue
+      fi
+      if (( dry_run )); then
+        artifact="$(printf '%s' "$payload" | jq '{id:("artifact://sha256/" + .sha256), role, custody_mode, recoverability:.metadata.recoverability, uri}')"
+      else
+        if ! response=$(api_post "/api/artifacts/ingest" "$payload"); then
+          failed="$(printf '%s' "$failed" | jq --arg ref "$member" '. + [{ref:$ref, error:"api_ingest_failed"}]')"
+          continue
+        fi
+        artifact="$(printf '%s' "$response" | jq '.artifact')"
+      fi
+    else
+      encoded_ref="$(urlencode "$member")"
+      if ! response=$(api_get "/api/artifacts/resolve?ref=${encoded_ref}"); then
+        failed="$(printf '%s' "$failed" | jq --arg ref "$member" '. + [{ref:$ref, error:"api_resolve_failed"}]')"
+        continue
+      fi
+      artifact="$(printf '%s' "$response" | jq '.resolution.artifact')"
+    fi
+    member_results="$(printf '%s' "$member_results" | jq --arg input "$member" --argjson artifact "$artifact" '. + [{input:$input, artifact:$artifact}]')"
+  done
+
+  bundle_manifest="$(
+    jq -n \
+      --arg name "$name" \
+      --arg role "$role" \
+      --argjson members "$member_results" \
+      '{
+        schema_version:"mandible.artifact_bundle.v1",
+        name:$name,
+        role:$role,
+        members:($members | map({
+          input,
+          artifact_id:.artifact.id,
+          ref:(.artifact.uri // .artifact.id),
+          role:.artifact.role,
+          custody_mode:.artifact.custody_mode,
+          recoverability:(.artifact.metadata.recoverability // .artifact.reference.recoverability // null)
+        }))
+      }'
+  )"
+  bundle_links="$(issue_link_json "references" "$role")"
+  bundle_payload="$(
+    jq -n \
+      --arg name "$name" \
+      --arg role "$role" \
+      --argjson manifest "$bundle_manifest" \
+      --argjson links "$bundle_links" \
+      '{
+        json:$manifest,
+        filename:($name + ".bundle.json"),
+        logical_name:$name,
+        media_type:"application/json",
+        role:$role,
+        custody_mode:"managed",
+        availability:"present",
+        metadata:{title:$name, recoverability:"mandible_cas", bundle:true, source:"artifact_cli"},
+        reference:{owner_system:"artifact_cli", identity_kind:"bundle_manifest", recoverability:"mandible_cas"},
+        links:$links
+      }'
+  )"
+  if (( dry_run )); then
+    bundle_response="$(jq -n --argjson planned_payload "$bundle_payload" --argjson members "$member_results" --argjson failed "$failed" '{command:"bundle create", dry_run:true, planned_payload:$planned_payload, members:$members, failed:$failed}')"
+  else
+    bundle_response="$(api_post "/api/artifacts/ingest" "$bundle_payload")" || die "${RED}Failed to create bundle manifest artifact.${RESET}" 1
+    bundle_id="$(printf '%s' "$bundle_response" | jq -r '.artifact.id')"
+    for artifact_id in $(printf '%s' "$member_results" | jq -r '.[].artifact.id'); do
+      link_payload="$(jq -n --arg ref "$artifact_id" --arg bundle_id "$bundle_id" \
+        '{ref:$ref, entity_type:"artifact", entity_id:$bundle_id, link_type:"bundle_contains", source:"artifact_cli"}')"
+      api_post "/api/artifacts/link" "$link_payload" >/dev/null || true
+    done
+    bundle_artifact="$(printf '%s' "$bundle_response" | jq '.artifact')"
+    bundle_response="$(jq -n --argjson bundle "$bundle_artifact" --argjson members "$member_results" --argjson failed "$failed" '{command:"bundle create", bundle:$bundle, members:$members, failed:$failed}')"
+  fi
+  if (( json )); then printf '%s\n' "$bundle_response" | jq .; else printf '%s\n' "$bundle_response" | jq -r '"bundle \(.bundle.id // .planned_payload.logical_name) members=\(.members|length)"'; fi
+}
+
+bundle_add() {
+  local bundle_ref="" json=0 allow_local=0 allow_dirty=0 members=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      --allow-local-only) allow_local=1; shift ;;
+      --allow-dirty-link) allow_dirty=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) if [[ -z "$bundle_ref" ]]; then bundle_ref="$1"; else members+=("$1"); fi; shift ;;
+    esac
+  done
+  [[ -n "$bundle_ref" && ${#members[@]} -gt 0 ]] || die "Usage: mandible artifact bundle add <bundle-ref> <path-or-ref...> [--allow-local-only] [--allow-dirty-link] [--json]" 2
+  require_tools
+  local bundle_id member artifact response payload linked='[]' failed='[]' members_payload='[]'
+  bundle_id="$(artifact_id_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
+  for member in "${members[@]}"; do
+    if [[ -e "$member" ]]; then
+      members_payload="$(printf '%s' "$members_payload" | jq --arg path "$member" --argjson allow_local "$allow_local" --argjson allow_dirty "$allow_dirty" '. + [{path:$path, allow_local_only:($allow_local == 1), allow_dirty_link:($allow_dirty == 1)}]')"
+    else
+      members_payload="$(printf '%s' "$members_payload" | jq --arg ref "$member" '. + [{ref:$ref}]')"
+    fi
+  done
+  response="$(api_post "/api/artifacts/bundles/$(urlencode "$bundle_id")/members" "$(jq -n --argjson members "$members_payload" '{members:$members}')")" \
+    || die "${RED}Failed to add bundle members.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '"bundle \(.bundle.id) members=\(.members|length)"'
+  fi
+}
+
+bundle_show() {
+  local bundle_ref="$1" json="${2:-0}"
+  require_tools
+  local bundle_id result
+  bundle_id="$(artifact_id_for_ref "$bundle_ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
+  result="$(api_get "/api/artifacts/bundles/$(urlencode "$bundle_id")")" || die "${RED}Failed to show bundle.${RESET}" 1
+  if (( json )); then printf '%s\n' "$result" | jq .; else printf '%s\n' "$result" | jq -r '"bundle \(.bundle.id) members=\(.members|length)"'; fi
+}
+
+cmd_bundle() {
+  local sub="${1:-}"
+  [[ -n "$sub" ]] || die "Usage: mandible artifact bundle <create|add|show|check> ..." 2
+  shift
+  case "$sub" in
+    create) bundle_create "$@" ;;
+    add) bundle_add "$@" ;;
+    show)
+      local json=0 ref=""
+      while (( $# > 0 )); do
+        case "$1" in --json) json=1; shift ;; *) ref="$1"; shift ;; esac
+      done
+      [[ -n "$ref" ]] || die "Usage: mandible artifact bundle show <bundle-ref> [--json]" 2
+      bundle_show "$ref" "$json"
+      ;;
+    check)
+      local json=0 ref=""
+      while (( $# > 0 )); do
+        case "$1" in --json) json=1; shift ;; *) ref="$1"; shift ;; esac
+      done
+      [[ -n "$ref" ]] || die "Usage: mandible artifact bundle check <bundle-ref> [--json]" 2
+      local bundle_id refs=()
+      bundle_id="$(artifact_id_for_ref "$ref")" || die "${RED}Failed to resolve bundle ref.${RESET}" 1
+      for member_id in $(api_get "/api/artifacts/bundles/$(urlencode "$bundle_id")" | jq -r '.members[].artifact.id'); do
+        refs+=("$member_id")
+      done
+      cmd_check "${refs[@]}" $([[ "$json" == "1" ]] && printf -- "--json")
+      ;;
+    *) die "Unknown bundle subcommand: $sub" 2 ;;
+  esac
+}
+
+if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
+  usage
+  [[ $# -eq 0 ]] && exit 2 || exit 0
+fi
+
+cmd="$1"
+shift
+case "$cmd" in
+  ingest) cmd_ingest_like "link" "$@" ;;
+  snapshot) cmd_snapshot "$@" ;;
+  ref) cmd_ref "$@" ;;
+  link) cmd_link "$@" ;;
+  resolve) cmd_resolve "$@" ;;
+  list) cmd_list "$@" ;;
+  show) cmd_show "$@" ;;
+  content) cmd_content "$@" ;;
+  check) cmd_check "$@" ;;
+  scan-repos) cmd_scan_repos "$@" ;;
+  bundle) cmd_bundle "$@" ;;
+  *) die "Unknown artifact subcommand: $cmd" 2 ;;
+esac
