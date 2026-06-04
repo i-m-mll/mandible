@@ -72,7 +72,7 @@ describe("deterministic graph layout", () => {
 
     expect(positions.get("parent")).toEqual({ x: 0, y: 0 });
     expect(positions.get("child-a")?.x).toBeGreaterThan(positions.get("parent")?.x ?? 0);
-    expect(positions.get("child-a")?.y).toBe(0);
+    expect(positions.get("child-a")?.y).toBeGreaterThan(positions.get("parent")?.y ?? 0);
     expect(positions.get("child-b")?.y).toBeGreaterThan(positions.get("child-a")?.y ?? 0);
   });
 
@@ -151,6 +151,30 @@ describe("deterministic graph layout", () => {
     expect(graphHeight).toBeLessThan(18 * 148);
   });
 
+  it("limits broad child ranks to two columns", () => {
+    const children = Array.from({ length: 18 }, (_, index) => (
+      issue(`child-${index}`, `Child ${index}`, { role: "umbrella_child", rank: 1, order: index })
+    ));
+    const nodes = [
+      issue("parent", "Parent", { role: "umbrella_parent", rank: 0 }),
+      ...children,
+    ];
+    const edges = children.map((node) => (
+      edge(`parent:${node.id}`, "parent", node.id, "parent_child", { layout: "hierarchical" })
+    ));
+
+    const result = layoutGraph(nodes, edges, {
+      xStart: 0,
+      yStart: 0,
+      nodeWidth: 190,
+      nodeHeight: 118,
+    });
+    const positions = positionById(result);
+    const childXs = new Set(children.map((node) => positions.get(node.id)?.x));
+
+    expect(childXs.size).toBeLessThanOrEqual(2);
+  });
+
   it("does not let one broad component collapse unrelated issues into a single column", () => {
     const broadChildren = Array.from({ length: 18 }, (_, index) => (
       issue(`child-${index}`, `Child ${index}`, { role: "umbrella_child", rank: 1, order: index })
@@ -193,12 +217,36 @@ describe("deterministic graph layout", () => {
 
     const result = layoutGraph(nodes, edges, { xStart: 0, yStart: 0 });
 
-    for (const routed of result.edges) {
+    for (const routed of result.edges.filter((item) => !item.synthetic)) {
       expect(routed.route?.kind).toBe("orthogonal");
       expect(routed.route?.sourceSide).toBe("right");
       expect(routed.route?.targetSide).toBe("left");
+      expect(routed.route?.markerEnd).toBe(true);
       expect(routed.route?.avoidsNonEndpointNodeBoxes).toBe(true);
       expect(routeCrossesNonEndpointNodeBoxes(routed.route?.points ?? [], result.nodes, routed.edge)).toBe(false);
     }
+  });
+
+  it("renders shared hierarchy trunks once and child branches separately", () => {
+    const children = Array.from({ length: 6 }, (_, index) => (
+      issue(`child-${index}`, `Child ${index}`, { rank: 1, order: index })
+    ));
+    const nodes = [
+      issue("parent", "Parent", { rank: 0 }),
+      ...children,
+    ];
+    const edges = children.map((node) => (
+      edge(`parent:${node.id}`, "parent", node.id, "parent_child", { layout: "hierarchical" })
+    ));
+
+    const result = layoutGraph(nodes, edges, { xStart: 0, yStart: 0 });
+    const buses = result.edges.filter((item) => item.synthetic);
+    const branches = result.edges.filter((item) => !item.synthetic);
+
+    expect(buses.length).toBeGreaterThan(0);
+    expect(branches).toHaveLength(children.length);
+    expect(buses.every((item) => item.route?.markerEnd === false)).toBe(true);
+    expect(branches.every((item) => item.route?.points.length === 2)).toBe(true);
+    expect(branches.every((item) => item.route?.markerEnd === true)).toBe(true);
   });
 });

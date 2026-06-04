@@ -58,6 +58,7 @@ export interface GraphEdgeRouteDescriptor {
   points: GraphPoint[]
   path: string
   avoidsNonEndpointNodeBoxes: boolean
+  markerEnd?: boolean
 }
 
 export interface RoutedGraphEdge {
@@ -69,6 +70,7 @@ export interface RoutedGraphEdge {
   family: GraphEdgeFamily
   style: GraphEdgeStyleDescriptor
   route?: GraphEdgeRouteDescriptor
+  synthetic?: boolean
 }
 
 export interface GraphLayoutResult {
@@ -302,7 +304,7 @@ function layoutComponent(
   for (const rank of [...rankGroups.keys()].sort((a, b) => a - b)) {
     const group = rankGroups.get(rank) ?? [];
     const count = Math.max(1, group.length);
-    const maxRows = count <= 4 ? count : Math.ceil(Math.sqrt(count * 1.45));
+    const maxRows = count <= 4 ? count : Math.ceil(count / 2);
     const laneCount = Math.ceil(count / maxRows);
     const width = options.nodeWidth + Math.max(0, laneCount - 1) * (options.nodeWidth + laneGap);
     rankMetrics.set(rank, { baseX: nextRankX, width, maxRows });
@@ -316,12 +318,13 @@ function layoutComponent(
     const metrics = rankMetrics.get(rank) ?? { baseX: rank * options.columnGap, width: options.nodeWidth, maxRows: 1 };
     const lane = Math.floor(Math.max(0, orderInRank) / metrics.maxRows);
     const row = Math.max(0, orderInRank) % metrics.maxRows;
+    const yRow = componentEdges.length > 0 && rank > 0 ? row + 1 : row;
     return {
       id: node.id,
       type: 'default',
       position: {
         x: metrics.baseX + lane * (options.nodeWidth + laneGap),
-        y: row * options.rowGap,
+        y: yRow * options.rowGap,
       },
       width: options.nodeWidth,
       height: options.nodeHeight,
@@ -403,6 +406,13 @@ function pathFromPoints(points: GraphPoint[]): string {
   return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
 }
 
+function pathFromSegments(segments: GraphPoint[][]): string {
+  return segments
+    .filter((segment) => segment.length > 1)
+    .map(pathFromPoints)
+    .join(' ');
+}
+
 function routeHierarchyEdge(
   edge: GraphEdge,
   source: PositionedGraphNode,
@@ -432,6 +442,7 @@ function routeHierarchyEdge(
     points,
     path: pathFromPoints(points),
     avoidsNonEndpointNodeBoxes: !routeCrossesNonEndpointNodeBoxes(points, positionedNodes, edge),
+    markerEnd: true,
   };
 }
 
@@ -453,7 +464,114 @@ function routeLooseEdge(
     points,
     path: pathFromPoints(points),
     avoidsNonEndpointNodeBoxes: !routeCrossesNonEndpointNodeBoxes(points, positionedNodes, edge),
+    markerEnd: true,
   };
+}
+
+function hierarchyBusKey(edge: RoutedGraphEdge): string | undefined {
+  const route = edge.route;
+  if (!route || edge.family !== 'hierarchy' || route.points.length < 4) return undefined;
+  const trunk = route.points[1];
+  return `${edge.source}:${route.sourceSide}:${route.targetSide}:${Math.round(trunk.x)}`;
+}
+
+function compressHierarchyRoutes(
+  routedEdges: RoutedGraphEdge[],
+  positionedNodes: PositionedGraphNode[],
+): RoutedGraphEdge[] {
+  const output: RoutedGraphEdge[] = [];
+  const hierarchyGroups = new Map<string, RoutedGraphEdge[]>();
+
+  for (const edge of routedEdges) {
+    const key = hierarchyBusKey(edge);
+    if (!key) {
+      output.push(edge);
+      continue;
+    }
+    const group = hierarchyGroups.get(key) ?? [];
+    group.push(edge);
+    hierarchyGroups.set(key, group);
+  }
+
+  for (const group of hierarchyGroups.values()) {
+    const sorted = [...group].sort((a, b) => {
+      const aEnd = a.route?.points.at(-1);
+      const bEnd = b.route?.points.at(-1);
+      return (aEnd?.y ?? 0) - (bEnd?.y ?? 0) || a.id.localeCompare(b.id);
+    });
+    const first = sorted[0];
+    const firstRoute = first.route;
+    if (!firstRoute || firstRoute.points.length < 4) {
+      output.push(...sorted);
+      continue;
+    }
+
+    const sourcePoint = firstRoute.points[0];
+    const trunkPoint = firstRoute.points[1];
+    const branchYs = sorted
+      .map((edge) => edge.route?.points.at(-2)?.y)
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    const minY = Math.min(sourcePoint.y, ...branchYs);
+    const maxY = Math.max(sourcePoint.y, ...branchYs);
+    const busPoints = [
+      sourcePoint,
+      trunkPoint,
+      { x: trunkPoint.x, y: minY },
+      { x: trunkPoint.x, y: maxY },
+    ];
+    const busPath = pathFromSegments([
+      [sourcePoint, trunkPoint],
+      [{ x: trunkPoint.x, y: minY }, { x: trunkPoint.x, y: maxY }],
+    ]);
+    const busEdge: GraphEdge = {
+      ...first.edge,
+      id: `hierarchy-bus:${first.source}:${Math.round(trunkPoint.x)}:${Math.round(minY)}:${Math.round(maxY)}`,
+      source: first.source,
+      target: first.source,
+      type: 'hierarchy_bus',
+    };
+    output.push({
+      id: busEdge.id,
+      source: busEdge.source,
+      target: busEdge.target,
+      type: busEdge.type,
+      edge: busEdge,
+      family: first.family,
+      style: first.style,
+      synthetic: true,
+      route: {
+        kind: 'orthogonal',
+        sourceSide: firstRoute.sourceSide,
+        targetSide: firstRoute.targetSide,
+        points: busPoints,
+        path: busPath,
+        avoidsNonEndpointNodeBoxes: !routeCrossesNonEndpointNodeBoxes(busPoints, positionedNodes, busEdge),
+        markerEnd: false,
+      },
+    });
+
+    for (const edge of sorted) {
+      const route = edge.route;
+      if (!route || route.points.length < 4) {
+        output.push(edge);
+        continue;
+      }
+      const trunkToBranch = route.points[2];
+      const target = route.points[3];
+      output.push({
+        ...edge,
+        route: {
+          ...route,
+          points: [trunkToBranch, target],
+          path: pathFromPoints([trunkToBranch, target]),
+          avoidsNonEndpointNodeBoxes: !routeCrossesNonEndpointNodeBoxes([trunkToBranch, target], positionedNodes, edge.edge),
+          markerEnd: true,
+        },
+      });
+    }
+  }
+
+  return output;
 }
 
 export function routeCrossesNonEndpointNodeBoxes(
@@ -531,6 +649,6 @@ export function layoutGraph(
 
   return {
     nodes: positionedNodes,
-    edges: routedEdges,
+    edges: compressHierarchyRoutes(routedEdges, positionedNodes),
   };
 }

@@ -82,6 +82,104 @@ type GraphLegendItem = {
   width?: number
 }
 
+const NODE_LEGEND_FALLBACKS: Record<string, { label: string; description: string }> = {
+  issue: {
+    label: 'Issues',
+    description: 'Issues in the current lens. The Issues lens starts here, so other node families stay hidden unless another lens or filter includes them.',
+  },
+  auth_request: {
+    label: 'Auth requests',
+    description: 'Merge approval requests and their current review state.',
+  },
+  session: {
+    label: 'Sessions',
+    description: 'Agent sessions connected to issues, work units, or auth activity.',
+  },
+  work_unit: {
+    label: 'Work units',
+    description: 'Tracked implementation units linked to issues and sessions.',
+  },
+};
+
+const EDGE_LEGEND_FALLBACKS: Record<string, { label: string; description: string }> = {
+  umbrella_child: {
+    label: 'Umbrella children',
+    description: 'Structural issue hierarchy: an umbrella issue owns or organizes child issues.',
+  },
+  parent_child: {
+    label: 'Parent-child',
+    description: 'Canonical parent-to-child issue relationship from the ledger.',
+  },
+  parent: {
+    label: 'Parent links',
+    description: 'Legacy or imported parent relationship; shown separately until it is normalized into parent-child edges.',
+  },
+  blocks: {
+    label: 'Blocks',
+    description: 'Planning dependency: one issue blocks another.',
+  },
+  implements: {
+    label: 'Implements',
+    description: 'Implementation link between a work item and the issue or plan it realizes.',
+  },
+  references: {
+    label: 'References',
+    description: 'Lightweight cross-reference between issues; useful context, not hierarchy.',
+  },
+  related: {
+    label: 'Related',
+    description: 'Non-structural relationship between issues.',
+  },
+  curated_related: {
+    label: 'Curated related',
+    description: 'Manually curated non-structural relationship between issues.',
+  },
+  auth_issue: {
+    label: 'Auth evidence',
+    description: 'Auth requests attached to the issues they reference.',
+  },
+  auth_request_references_issue: {
+    label: 'Auth references',
+    description: 'Operational auth request references to issues.',
+  },
+  session_issue: {
+    label: 'Session evidence',
+    description: 'Agent sessions attached to the issues they worked on or discussed.',
+  },
+};
+
+function isGenericLegendDescription(
+  item: GraphPayloadLegendItem,
+  kind: GraphLegendKind,
+  description: string,
+): boolean {
+  const normalizedDescription = description.toLowerCase();
+  const normalizedLabel = item.label.toLowerCase();
+  const normalizedType = item.id.replace(/_/g, ' ').toLowerCase();
+  const noun = kind === 'node' ? 'nodes' : 'edges';
+  return normalizedDescription === normalizedLabel
+    || normalizedDescription === `${normalizedLabel} ${noun}`
+    || normalizedDescription === `${normalizedType} ${noun}`;
+}
+
+function applyLegendFallbackCopy(
+  item: GraphPayloadLegendItem,
+  kind: GraphLegendKind,
+): Pick<GraphLegendItem, 'label' | 'description'> {
+  const fallback = kind === 'node' ? NODE_LEGEND_FALLBACKS[item.id] : EDGE_LEGEND_FALLBACKS[item.id];
+  const payloadDescription = item.description?.trim();
+  const hasUsefulPayloadDescription = Boolean(
+    payloadDescription
+      && !isGenericLegendDescription(item, kind, payloadDescription),
+  );
+  return {
+    label: fallback?.label ?? item.label,
+    description: hasUsefulPayloadDescription
+      ? payloadDescription!
+      : fallback?.description ?? payloadDescription ?? item.label,
+  };
+}
+
 async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
   const q = new URLSearchParams();
   q.set('mode', params.mode);
@@ -196,11 +294,12 @@ function legendButtonFromPayload(
   kind: GraphLegendKind,
   fallbackColor: string,
 ): GraphLegendItem {
+  const copy = applyLegendFallbackCopy(item, kind);
   return {
     id: item.id,
     kind,
-    label: item.label,
-    description: item.description ?? item.label,
+    label: copy.label,
+    description: copy.description,
     count: item.count,
     enabled: item.enabled,
     visible: item.enabled && item.visible,
@@ -311,7 +410,7 @@ function ManualGraphEdges({ edges }: { edges: RoutedGraphEdge[] }): JSX.Element 
             style.family === 'provider_provenance_artifact' ? 'graph-manual-edge--provenance' : '',
           ].filter(Boolean).join(' ')}
           d={path}
-          markerEnd="url(#graph-manual-arrow)"
+          markerEnd={routed.route?.markerEnd === false ? undefined : 'url(#graph-manual-arrow)'}
           style={{
             stroke: style.stroke,
             strokeWidth: style.strokeWidth,
@@ -855,6 +954,8 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     : lenses.find((item) => item.id === spec.preset)?.count ?? payload.nodes.length);
   const displayedCount = payload.counts?.visible_nodes ?? payload.displayed_count ?? payload.nodes.length;
   const displayedEdges = payload.counts?.visible_edges ?? payload.edges.length;
+  const availableNodes = payload.counts?.available_nodes ?? displayedCount;
+  const availableEdges = payload.counts?.available_edges ?? displayedEdges;
 
   const repos = useMemo(() => {
     const seen = new Set<string>(payload.filters?.repos ?? []);
@@ -934,66 +1035,71 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     if (next.length > 0) updateSpec({ edgeTypes: next });
   };
 
-  const graphDisplaySummary = `Displayed ${displayedCount.toLocaleString()} nodes and ${displayedEdges.toLocaleString()} edges`;
-  const graphAvailableSummary = `Available from spec: ${(payload.counts?.available_nodes ?? displayedCount).toLocaleString()}${payload.truncated || displayedCount < activeLensTotal ? ` of ${activeLensTotal.toLocaleString()}` : ''} nodes, ${(payload.counts?.available_edges ?? displayedEdges).toLocaleString()} edges`;
+  const graphDisplaySummary = `Displayed ${displayedCount.toLocaleString()}/${availableNodes.toLocaleString()} nodes and ${displayedEdges.toLocaleString()}/${availableEdges.toLocaleString()} edges`;
+  const graphLimitSummary = payload.truncated || availableNodes < activeLensTotal
+    ? `Lens total ${activeLensTotal.toLocaleString()} nodes before the current filters and size limit.`
+    : '';
 
   return (
     <div className="graph-view">
       <div className="graph-topbar">
-        <div className="graph-primary-controls">
-          <div className="graph-spec-row">
-            <span className="graph-spec-row__label">Lens</span>
-            <div className="graph-lens-strip" aria-label="Graph lens presets">
-              {lenses.map((item) => (
-                <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
-              ))}
-            </div>
-          </div>
-          <div className="graph-legend-grid">
-            <div className="graph-spec-row graph-spec-row--legend">
-              <span className="graph-spec-row__label">Nodes</span>
-              <div className="graph-legend-strip" aria-label="Visible node families">
-                {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
-                {nodeLegend.map((item) => (
-                  <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
-                ))}
-              </div>
-            </div>
-            <div className="graph-spec-row graph-spec-row--legend">
-              <span className="graph-spec-row__label">Edges</span>
-              <div className="graph-legend-strip" aria-label="Visible edge families">
-                {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
-                {edgeLegend.map((item) => (
-                  <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="graph-display-summary" aria-live="polite">
-            <strong>{activeLensSummary}</strong>
-            <span>{graphDisplaySummary}</span>
-            <span>{graphAvailableSummary}</span>
+        <div className="graph-spec-row graph-spec-row--lens">
+          <span className="graph-spec-row__label">Lens</span>
+          <div className="graph-lens-strip" aria-label="Graph lens presets">
+            {lenses.map((item) => (
+              <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
+            ))}
           </div>
         </div>
-        <div className="graph-toolbar" aria-label="Graph spec controls">
-          <div className="graph-control-group graph-control-group--scope">
-            <span className="graph-control-group__label">Scope</span>
-            <div className="graph-toolbar__combobox-group">
-              <TokenMultiSelect
-                placeholder="All repos"
-                options={repos}
-                selected={spec.repos}
-                onChange={(repos) => updateSpec({ repos })}
-              />
-              <TokenMultiSelect
-                placeholder="All branches"
-                options={branches}
-                selected={spec.branches}
-                onChange={(branches) => updateSpec({ branches })}
-                disabled={branches.length === 0}
-              />
+        <div className="graph-spec-row graph-spec-row--scope">
+          <span className="graph-spec-row__label">Scope</span>
+          <div className="graph-toolbar__combobox-group">
+            <TokenMultiSelect
+              placeholder="All repos"
+              options={repos}
+              selected={spec.repos}
+              onChange={(repos) => updateSpec({ repos })}
+            />
+            <TokenMultiSelect
+              placeholder="All branches"
+              options={branches}
+              selected={spec.branches}
+              onChange={(branches) => updateSpec({ branches })}
+              disabled={branches.length === 0}
+            />
+          </div>
+        </div>
+        <div className="graph-spec-row graph-spec-row--legend">
+          <span className="graph-spec-row__label">Nodes</span>
+          <div className="graph-legend-stack">
+            <div className="graph-legend-strip" aria-label="Visible node families">
+              {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
+              {nodeLegend.map((item) => (
+                <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+              ))}
+            </div>
+            {spec.preset === 'issue' && nodeLegend.length === 1 && nodeLegend[0]?.id === 'issue' && (
+              <div className="graph-row-note">
+                Only issue nodes are shown in this lens by default; auth and session evidence stays attached to issue details.
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="graph-spec-row graph-spec-row--legend">
+          <span className="graph-spec-row__label">Edges</span>
+          <div className="graph-legend-stack">
+            <div className="graph-legend-strip" aria-label="Visible edge families">
+              {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
+              {edgeLegend.map((item) => (
+                <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+              ))}
+            </div>
+            <div className="graph-row-note">
+              Hierarchy edges place parent and umbrella issues; reference and evidence edges add context without changing the issue tree.
             </div>
           </div>
+        </div>
+        <div className="graph-toolbar" aria-label="Graph filters and size">
           <div className="graph-control-group">
             <span className="graph-control-group__label">Time</span>
             <div className="graph-toolbar__toggle-group">
@@ -1039,6 +1145,11 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
               ))}
             </div>
           </div>
+        </div>
+        <div className="graph-display-summary" aria-live="polite">
+          <strong>{activeLensSummary}</strong>
+          <span>{graphDisplaySummary}</span>
+          {graphLimitSummary && <span>{graphLimitSummary}</span>}
         </div>
       </div>
 
