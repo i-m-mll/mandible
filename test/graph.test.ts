@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   capGraphNodesForDisplay,
+  graphEdgesForMode,
   GRAPH_PERSPECTIVES,
   parseQueryParams,
   repoCandidatesFromCwd,
@@ -98,6 +99,29 @@ describe("graph filters", () => {
     ]));
 
     expect(ids).toEqual(["sess-1", "sess-2"]);
+  });
+});
+
+describe("graph edge perspectives", () => {
+  it("keeps issue references out of operational perspectives", () => {
+    const references: GraphEdge = {
+      id: "ref:a:b",
+      source: "issue:a",
+      target: "issue:b",
+      type: "references",
+      edge_class: "semantic",
+    };
+    const auth: GraphEdge = {
+      id: "auth:a:b",
+      source: "auth_request:a",
+      target: "issue:b",
+      type: "auth_issue",
+      edge_class: "lifecycle",
+    };
+
+    expect(graphEdgesForMode("activity", [references, auth])).toEqual([auth]);
+    expect(graphEdgesForMode("work", [references, auth])).toEqual([auth]);
+    expect(graphEdgesForMode("issue", [references, auth])).toEqual([references, auth]);
   });
 });
 

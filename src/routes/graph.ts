@@ -248,6 +248,20 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value))));
 }
 
+function isIssueReferenceEdge(edge: GraphEdge): boolean {
+  if (edge.edge_class !== "semantic") return false;
+  return edge.type === "references"
+    || edge.type === "curated_related"
+    || edge.type === "related";
+}
+
+export function graphEdgesForMode(mode: GraphMode, edges: GraphEdge[]): GraphEdge[] {
+  if (mode === "activity" || mode === "work") {
+    return edges.filter((edge) => !isIssueReferenceEdge(edge));
+  }
+  return edges;
+}
+
 function activeRepoFilters(params: GraphQueryParams): string[] {
   return params.repos && params.repos.length > 0 ? params.repos : params.repo ? [params.repo] : [];
 }
@@ -785,7 +799,7 @@ function buildOperationalGraph(
     addWorkUnits(params, nodes, edges, issueNodeIdByLedgerId, limit);
   }
 
-  const allEdges = Array.from(edges.values());
+  const allEdges = graphEdgesForMode(params.mode ?? "activity", Array.from(edges.values()));
   const { nodes: cappedNodes, truncated } = capGraphNodesForDisplay(
     Array.from(nodes.values()),
     allEdges,
