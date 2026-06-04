@@ -10143,8 +10143,9 @@ tr:hover .work-actions__trigger {
 }
 
 .graph-canvas-wrap .react-flow__handle {
-  width: 4px;
-  height: 4px;
+  display: none !important;
+  width: 0;
+  height: 0;
   border: 0;
   background: transparent;
   opacity: 0;
@@ -10164,11 +10165,20 @@ tr:hover .work-actions__trigger {
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
+  opacity: 0.78;
+}
+
+.graph-manual-edge--structural {
+  opacity: 0.9;
+}
+
+.graph-manual-edge--provenance {
+  opacity: 0.84;
 }
 
 .graph-manual-edge--weak {
   stroke-dasharray: 4 7;
-  opacity: 0.62;
+  opacity: 0.48;
 }
 
 .graph-manual-edges marker path {
