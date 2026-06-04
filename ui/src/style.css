@@ -9839,6 +9839,16 @@ tr:hover .work-actions__trigger {
   line-height: 1.4;
 }
 
+.graph-display-summary strong,
+.graph-display-summary span {
+  display: block;
+}
+
+.graph-display-summary strong {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
 .graph-canvas-wrap {
   min-height: 0;
   position: relative;

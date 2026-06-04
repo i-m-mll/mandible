@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   capGraphNodesForDisplay,
+  GRAPH_PERSPECTIVES,
   parseQueryParams,
   repoCandidatesFromCwd,
   sessionIdsFromGraphNodeIds,
@@ -97,5 +98,35 @@ describe("graph filters", () => {
     ]));
 
     expect(ids).toEqual(["sess-1", "sess-2"]);
+  });
+});
+
+describe("graph perspectives", () => {
+  it("describes every graph mode as a perspective", () => {
+    expect(GRAPH_PERSPECTIVES.map((mode) => mode.id)).toEqual([
+      "activity",
+      "issue",
+      "work",
+      "provider-lineage",
+      "artifact-lineage",
+      "provenance",
+    ]);
+
+    for (const mode of GRAPH_PERSPECTIVES) {
+      expect(mode.kind).toBe("perspective");
+      expect(mode.summary).toBeTruthy();
+      expect(mode.description).toBe(mode.summary);
+    }
+  });
+
+  it("exposes no-jargon summaries for each perspective", () => {
+    expect(Object.fromEntries(GRAPH_PERSPECTIVES.map((mode) => [mode.id, mode.summary]))).toEqual({
+      activity: "What changed recently or needs attention now.",
+      issue: "How issues relate to other issues.",
+      work: "How work moves through repos, branches, sessions, issues, and auth.",
+      "provider-lineage": "What a provider or tool produced from the request and spec to outputs.",
+      "artifact-lineage": "Where an artifact came from and what reused or derived from it.",
+      provenance: "Evidence for which session, action, commit, or run produced or justified an object.",
+    });
   });
 });
