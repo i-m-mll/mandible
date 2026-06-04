@@ -10142,6 +10142,15 @@ tr:hover .work-actions__trigger {
   outline-offset: 2px;
 }
 
+.graph-canvas-wrap .react-flow__handle {
+  width: 4px;
+  height: 4px;
+  border: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .graph-manual-edges {
   position: absolute;
   inset: 0;
@@ -10155,6 +10164,11 @@ tr:hover .work-actions__trigger {
   fill: none;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.graph-manual-edge--weak {
+  stroke-dasharray: 4 7;
+  opacity: 0.62;
 }
 
 .graph-manual-edges marker path {
