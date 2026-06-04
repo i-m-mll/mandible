@@ -19,6 +19,9 @@ export interface RepoArtifactScannerOptions {
   repoIds?: string[];
   maxDepth?: number;
   maxFileBytes?: number;
+  register?: boolean;
+  discoveryOnly?: boolean;
+  dryRun?: boolean;
   now?: number;
 }
 
@@ -45,6 +48,7 @@ export interface RepoArtifactScanResult {
   ingested: number;
   skipped: Array<{ path: string; reason: string }>;
   errors: Array<{ path: string; error: string }>;
+  discovered_artifacts?: DiscoveredRepoArtifact[];
   artifacts: ArtifactRecord[];
 }
 
@@ -467,6 +471,18 @@ export function discoverRepoArtifacts(
 export function scanRepoArtifacts(db: Db, options: RepoArtifactScannerOptions = {}): RepoArtifactScanResult {
   const now = options.now ?? Date.now();
   const discovered = discoverRepoArtifacts(db, options);
+  const shouldRegister = options.register !== false && !options.discoveryOnly && !options.dryRun;
+  if (!shouldRegister) {
+    return {
+      scanned_repos: discovered.scanned_repos,
+      discovered: discovered.discovered,
+      ingested: 0,
+      skipped: discovered.skipped,
+      errors: discovered.errors,
+      discovered_artifacts: discovered.artifacts,
+      artifacts: [],
+    };
+  }
   const artifacts = discovered.artifacts.map((artifact) => ingestArtifact(db, artifactInputForDiscovery(artifact, now), now));
   return {
     scanned_repos: discovered.scanned_repos,
@@ -474,6 +490,7 @@ export function scanRepoArtifacts(db: Db, options: RepoArtifactScannerOptions = 
     ingested: artifacts.length,
     skipped: discovered.skipped,
     errors: discovered.errors,
+    discovered_artifacts: discovered.artifacts,
     artifacts,
   };
 }

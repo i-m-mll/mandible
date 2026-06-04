@@ -1,12 +1,16 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { getArtifactContent } from "../src/artifact-content.js";
+import { checkArtifactMaterialization, getArtifactContent } from "../src/artifact-content.js";
 import {
+  addArtifactBundleMembers,
+  createArtifactBundle,
   getArtifact,
+  getArtifactBundle,
   getArtifactRoot,
   getIndexedGraph,
   getIndexedGraphCount,
@@ -16,8 +20,11 @@ import {
   ingestProviderManifest,
   listArtifacts,
   listProviders,
+  registerLocalArtifactPath,
   registerProvider,
+  resolveAndLinkArtifact,
   resolveArtifactRef,
+  snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
 import { discoverRepoArtifacts, scanRepoArtifacts } from "../src/repo-artifact-scanner.js";
 
@@ -251,6 +258,13 @@ function createLedgerCheckout(repoId: string, root: string): void {
 
 function sha256(text: string | Buffer): string {
   return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+function git(repo: string, args: string[]): string {
+  return execFileSync("git", ["-C", repo, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
 }
 
 beforeEach(() => {
@@ -561,6 +575,387 @@ describe("provider/artifact substrate", () => {
     expect(getIndexedGraph(db, { mode: "artifact-lineage", limit: 20 }).nodes.map((node) => node.id)).toContain(
       `artifact:sha256:${hash}`,
     );
+  });
+
+  it("scaffolds clean tracked repo artifact output with repo_commit recoverability", () => {
+    const report = "# Run report\n\nComplete.\n";
+    const commit = "1234567890abcdef1234567890abcdef12345678";
+    const repoRef = `repo://rlrmp@${commit}/results/run-1/report.md`;
+
+    const artifact = ingestArtifact(db, {
+      sha256: sha256(report),
+      uri: repoRef,
+      role: "report",
+      media_type: "text/markdown",
+      size_bytes: Buffer.byteLength(report),
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: {
+        repo_id: "rlrmp",
+        ref: commit,
+        path: "results/run-1/report.md",
+        git: { tracked: true, ignored: false, staged: false, dirty: false },
+      },
+      availability: "present",
+      reference: {
+        recoverability: "repo_commit",
+        preferred_ref: repoRef,
+        warnings: [],
+        git: { tracked: true, ignored: false, staged: false, dirty: false, commit },
+      },
+      metadata: {
+        source: "artifact_cli_contract",
+        warning_codes: [],
+      },
+    }, 1000, tempDir);
+
+    expect(artifact).toMatchObject({
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      availability: "present",
+      content_hash: sha256(report),
+      reference: expect.objectContaining({ recoverability: "repo_commit", preferred_ref: repoRef }),
+    });
+    expect(artifact.repo_locator).toMatchObject({
+      repo_id: "rlrmp",
+      ref: commit,
+      path: "results/run-1/report.md",
+    });
+    expect(artifact.aliases?.map((alias) => alias.normalized_ref)).toContain(repoRef);
+    expect(artifact.metadata.warning_codes).not.toContain("local_only");
+    expect(artifact.reference.warnings).not.toContain("local_only");
+  });
+
+  it("scaffolds ignored local repo artifacts as local_only without repo_commit claims", () => {
+    const checkpointPath = path.join(tempDir, "repo", "_artifacts", "run-1", "checkpoint.bin");
+    const checkpoint = Buffer.from("checkpoint bytes");
+    fs.mkdirSync(path.dirname(checkpointPath), { recursive: true });
+    fs.writeFileSync(checkpointPath, checkpoint);
+
+    const artifact = ingestArtifact(db, {
+      sha256: sha256(checkpoint),
+      uri: `file://${checkpointPath}`,
+      role: "model_checkpoint",
+      media_type: "application/octet-stream",
+      size_bytes: checkpoint.length,
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: {
+        repo_id: "rlrmp",
+        path: "_artifacts/run-1/checkpoint.bin",
+        git: { tracked: false, ignored: true, staged: false, dirty: false },
+      },
+      availability: "present",
+      reference: {
+        recoverability: "local_only",
+        preferred_ref: `artifact://sha256/${sha256(checkpoint)}`,
+        warnings: ["local_only"],
+        git: { tracked: false, ignored: true, staged: false, dirty: false },
+      },
+      metadata: {
+        source: "artifact_cli_contract",
+        warning_codes: ["local_only"],
+      },
+    }, 1000, tempDir);
+
+    expect(artifact).toMatchObject({
+      custody_mode: "link",
+      availability: "present",
+      content_hash: sha256(checkpoint),
+      reference: expect.objectContaining({ recoverability: "local_only" }),
+    });
+    expect(artifact.metadata.warning_codes).toContain("local_only");
+    expect(artifact.reference.warnings).toContain("local_only");
+    expect(artifact.reference).not.toMatchObject({ recoverability: "repo_commit" });
+    expect(artifact.repo_locator).not.toMatchObject({ ref: expect.any(String) });
+  });
+
+  it("registers clean tracked local paths as commit-pinned repo artifacts", () => {
+    const repoRoot = path.join(tempDir, "tracked-repo");
+    const reportPath = path.join(repoRoot, "results", "report.md");
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+    git(repoRoot, ["config", "user.email", "test@example.invalid"]);
+    git(repoRoot, ["config", "user.name", "Test User"]);
+    git(repoRoot, ["config", "commit.gpgsign", "false"]);
+    fs.writeFileSync(reportPath, "# Report\n", "utf8");
+    git(repoRoot, ["add", "results/report.md"]);
+    git(repoRoot, ["commit", "-m", "add report"]);
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    createLedgerCheckout("mandible", fs.realpathSync(repoRoot));
+
+    const registered = registerLocalArtifactPath(db, {
+      path: reportPath,
+      role: "report",
+    }, 1000, tempDir);
+    const check = checkArtifactMaterialization(db, registered.artifact.id);
+
+    expect(registered).toMatchObject({
+      recoverability: "repo_commit",
+      warnings: [],
+      artifact: {
+        custody_mode: "link",
+        availability: "present",
+        home_repo_id: "mandible",
+        repo_locator: {
+          repo_id: "mandible",
+          ref: commit,
+          commit,
+          path: "results/report.md",
+        },
+        metadata: expect.objectContaining({ recoverability: "repo_commit" }),
+      },
+    });
+    expect(registered.artifact.uri).toBe(`repo://mandible@${commit}/results/report.md`);
+    expect(check).toMatchObject({
+      materializable: true,
+      hash_matches: true,
+      recoverability: "repo_commit",
+      source: expect.stringContaining(`repo_commit:mandible@${commit}:results/report.md`),
+    });
+  });
+
+  it("links existing repo and artifact refs directly to issues", () => {
+    const issueId = createLedgerIssue(
+      "mandible",
+      "44074ed",
+      "Artifact CLI for custody-aware registration, bundles, and issue links",
+    );
+    const repoResolution = resolveArtifactRef(
+      db,
+      "repo://mandible@1234567890abcdef1234567890abcdef12345678/results/run-1/report.md",
+      1000,
+    );
+    const hash = "b".repeat(64);
+    const hashResolution = resolveArtifactRef(db, `artifact://sha256/${hash}`, 1000);
+
+    const repoLink = resolveAndLinkArtifact(db, {
+      ref: repoResolution.normalized_ref,
+      entity_type: "issue",
+      entity_id: "44074ed",
+      issue_project: "mandible",
+      link_type: "evidence",
+      role: "report",
+      repo_id: "mandible",
+      source: "artifact_cli",
+      metadata: { input_ref: repoResolution.normalized_ref },
+    }, 2000).link;
+    const hashLink = resolveAndLinkArtifact(db, {
+      ref: `artifact://sha256/${hash}`,
+      entity_type: "issue",
+      entity_id: issueId,
+      link_type: "references",
+      role: "external_hash",
+      repo_id: "mandible",
+      source: "artifact_cli",
+      metadata: { input_ref: hashResolution.normalized_ref },
+    }, 2000).link;
+
+    expect(repoLink).toMatchObject({
+      artifact_id: repoResolution.artifact?.id,
+      entity_type: "issue",
+      entity_id: issueId,
+      link_type: "evidence",
+      role: "report",
+      source: "artifact_cli",
+    });
+    expect(hashLink).toMatchObject({
+      artifact_id: hashResolution.artifact?.id,
+      entity_type: "issue",
+      entity_id: issueId,
+      link_type: "references",
+      role: "external_hash",
+    });
+    expect(listArtifacts(db, { linkedEntityType: "issue", linkedEntityId: issueId }).map((item) => item.id).sort())
+      .toEqual([hashResolution.artifact?.id, repoResolution.artifact?.id].sort());
+  });
+
+  it("distinguishes repo artifact hash mismatch from missing bytes", () => {
+    const repoRoot = path.join(tempDir, "repo");
+    const reportPath = path.join(repoRoot, "results", "report.md");
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    fs.writeFileSync(reportPath, "original\n", "utf8");
+    createLedgerCheckout("rlrmp", repoRoot);
+
+    const artifact = ingestArtifact(db, {
+      sha256: sha256("original\n"),
+      uri: "repo://rlrmp@main/results/report.md",
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", ref: "main", path: "results/report.md" },
+      availability: "present",
+    }, 1000, tempDir);
+
+    fs.writeFileSync(reportPath, "changed\n", "utf8");
+    const mismatched = getArtifactContent(db, artifact.id);
+    fs.rmSync(reportPath);
+    const missing = getArtifactContent(db, artifact.id);
+
+    expect(mismatched).toMatchObject({
+      status: "unavailable",
+      reason: "artifact bytes do not match registered sha256",
+      download: { available: false, reason: "artifact bytes do not match registered sha256" },
+    });
+    expect(missing).toMatchObject({
+      status: "unavailable",
+      reason: "artifact bytes are not available on disk",
+      download: { available: false, reason: "artifact bytes are not available on disk" },
+    });
+    expect(mismatched?.reason).not.toBe(missing?.reason);
+  });
+
+  it("promotes a hash-only external artifact when bytes are snapshotted into Mandible custody", () => {
+    const content = "external bytes\n";
+    const hash = sha256(content);
+    const external = resolveArtifactRef(db, `artifact://sha256/${hash}`, 1000);
+
+    expect(external.artifact).toMatchObject({
+      id: `artifact:sha256:${hash}`,
+      custody_mode: "external",
+      availability: "remote_only",
+    });
+
+    const snapshotted = snapshotArtifactBytes(db, {
+      ref: `artifact://sha256/${hash}`,
+      content,
+      media_type: "text/plain",
+      filename: "external.txt",
+      custody_mode: "copy",
+      reference: {
+        snapshot_of: external.artifact?.id,
+      },
+    }, 2000, tempDir);
+    const contentResult = getArtifactContent(db, snapshotted.id);
+
+    expect(snapshotted).toMatchObject({
+      id: external.artifact?.id,
+      custody_mode: "copy",
+      availability: "present",
+      uri: expect.stringMatching(/^file:\/\//),
+    });
+    expect(contentResult).toMatchObject({
+      status: "available",
+      source: { kind: "managed_file" },
+      download: { available: true, filename: "external.txt" },
+    });
+  });
+
+  it("preserves member refs and recoverability in mixed tracked/local bundle manifests", () => {
+    const commit = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
+    const runJson = '{"status":"complete"}\n';
+    const checkpoint = Buffer.from("checkpoint");
+    const tracked = ingestArtifact(db, {
+      sha256: sha256(runJson),
+      uri: `repo://rlrmp@${commit}/results/run-7/run.json`,
+      role: "run_record",
+      media_type: "application/json",
+      size_bytes: Buffer.byteLength(runJson),
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", ref: commit, path: "results/run-7/run.json" },
+      availability: "present",
+      reference: { recoverability: "repo_commit", warnings: [] },
+    }, 1000, tempDir);
+    const local = ingestArtifact(db, {
+      sha256: sha256(checkpoint),
+      uri: "file:///tmp/rlrmp/_artifacts/run-7/checkpoint.bin",
+      role: "model_checkpoint",
+      media_type: "application/octet-stream",
+      size_bytes: checkpoint.length,
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", path: "_artifacts/run-7/checkpoint.bin" },
+      availability: "present",
+      reference: { recoverability: "local_only", warnings: ["local_only"] },
+      metadata: { warning_codes: ["local_only"] },
+    }, 1000, tempDir);
+    const figure = ingestArtifact(db, {
+      sha256: sha256("figure\n"),
+      uri: "file:///tmp/rlrmp/_artifacts/run-7/figure.png",
+      role: "figure",
+      media_type: "image/png",
+      size_bytes: Buffer.byteLength("figure\n"),
+      custody_mode: "link",
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", path: "_artifacts/run-7/figure.png" },
+      availability: "present",
+      reference: { recoverability: "local_only", warnings: ["local_only"] },
+    }, 1000, tempDir);
+    const bundleResult = createArtifactBundle(db, {
+      name: "run-7 packet",
+      role: "artifact_bundle",
+      members: [
+        { ref: tracked.id, role: "run_record" },
+        { ref: local.id, role: "model_checkpoint", metadata: { warning_codes: ["local_only"] } },
+      ],
+    }, 2000, tempDir);
+    const bundle = bundleResult.bundle;
+    const appended = addArtifactBundleMembers(db, bundle.id, [
+      { ref: figure.id, role: "figure" },
+    ], 3000);
+
+    const trackedDetail = getArtifact(db, tracked.id);
+    const localDetail = getArtifact(db, local.id);
+    const figureDetail = getArtifact(db, figure.id);
+    const bundleDetail = getArtifactBundle(db, bundle.id);
+    const bundleContent = getArtifactContent(db, bundle.id);
+
+    expect(bundle).toMatchObject({
+      role: "artifact_bundle",
+      custody_mode: "managed",
+      availability: "present",
+      reference: expect.objectContaining({ identity_kind: "artifact_bundle" }),
+    });
+    expect(bundleResult.members).toHaveLength(2);
+    expect(appended.members.map((member) => member.artifact.id).sort()).toEqual([figure.id, local.id, tracked.id].sort());
+    expect(bundleDetail?.members.map((member) => member.artifact.id).sort()).toEqual([figure.id, local.id, tracked.id].sort());
+    expect(trackedDetail?.reference).toMatchObject({ recoverability: "repo_commit" });
+    expect(localDetail?.reference).toMatchObject({ recoverability: "local_only" });
+    expect(trackedDetail?.links).toContainEqual(expect.objectContaining({
+      entity_type: "artifact_bundle",
+      entity_id: bundle.id,
+      link_type: "bundle_member",
+      role: "run_record",
+    }));
+    expect(localDetail?.links).toContainEqual(expect.objectContaining({
+      entity_type: "artifact_bundle",
+      entity_id: bundle.id,
+      link_type: "bundle_member",
+      role: "model_checkpoint",
+      metadata: expect.objectContaining({ warning_codes: ["local_only"] }),
+    }));
+    expect(figureDetail?.links).toContainEqual(expect.objectContaining({
+      entity_type: "artifact_bundle",
+      entity_id: bundle.id,
+      link_type: "bundle_member",
+      role: "figure",
+    }));
+    expect(bundleContent?.preview?.text).toContain(tracked.id);
+    expect(bundleContent?.preview?.text).toContain(local.id);
+  });
+
+  it("keeps repo artifact discovery dry-run read-only and scan registration mutating", () => {
+    const repoRoot = path.join(tempDir, "repo");
+    fs.mkdirSync(path.join(repoRoot, "results"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "results", "summary.md"), "# Summary\n", "utf8");
+
+    const dryRun = scanRepoArtifacts(db, {
+      roots: [{ root: repoRoot, repo_id: "mandible", name: "Mandible", default_branch: "main" }],
+      register: false,
+      now: 1000,
+    });
+    const afterDryRun = listArtifacts(db);
+    const registered = scanRepoArtifacts(db, {
+      roots: [{ root: repoRoot, repo_id: "mandible", name: "Mandible", default_branch: "main" }],
+      now: 2000,
+    });
+
+    expect(dryRun.discovered).toBe(1);
+    expect(dryRun).toMatchObject({ ingested: 0, artifacts: [] });
+    expect(dryRun.discovered_artifacts?.[0]).toMatchObject({ relative_path: "results/summary.md" });
+    expect(afterDryRun).toEqual([]);
+    expect(registered).toMatchObject({ discovered: 1, ingested: 1 });
+    expect(listArtifacts(db).map((artifact) => artifact.repo_locator.path)).toEqual(["results/summary.md"]);
   });
 
   it("ingests provider manifests into lineage graph nodes and edges", () => {

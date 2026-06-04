@@ -1,12 +1,17 @@
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "./db.js";
 import type {
   ArtifactAliasRecord,
+  ArtifactBundleMemberRecord,
+  ArtifactBundleRecord,
+  ArtifactGitState,
   ArtifactLinkRecord,
   ArtifactRecord,
+  ArtifactRecoverability,
   ArtifactResolveResult,
   GraphAction,
   GraphEdge,
@@ -50,6 +55,16 @@ type JsonRecord = Record<string, unknown>;
 type ArtifactCustodyMode = "link" | "copy" | "managed" | "external";
 type ArtifactAvailability = "present" | "missing" | "stale" | "unchecked" | "remote_only" | "pinned";
 
+const RECOVERABILITY_VALUES = new Set<ArtifactRecoverability>([
+  "repo_commit",
+  "repo_worktree",
+  "local_only",
+  "mandible_cas",
+  "provider_store",
+  "external_remote",
+  "regenerable",
+]);
+
 interface ProviderInput {
   id?: string;
   provider_id?: string;
@@ -89,6 +104,90 @@ interface ArtifactInput {
   content?: string;
   content_base64?: string;
   json?: unknown;
+}
+
+export interface LocalArtifactPathInput {
+  path: string;
+  role?: string;
+  media_type?: string;
+  logical_name?: string;
+  filename?: string;
+  custody_mode?: ArtifactCustodyMode | string;
+  issue?: string;
+  issue_project?: string;
+  link_type?: string;
+  link_role?: string;
+  allow_dirty_link?: boolean;
+  allow_local_only?: boolean;
+  recoverability?: ArtifactRecoverability | string;
+  regenerable_from?: string;
+  metadata?: JsonRecord;
+  reference?: JsonRecord;
+  pinned?: boolean;
+}
+
+export interface LocalArtifactPathRegistration {
+  artifact: ArtifactRecord;
+  git_state: ArtifactGitState;
+  recoverability: ArtifactRecoverability;
+  warnings: string[];
+}
+
+export interface ArtifactResolveAndLinkInput {
+  ref?: string;
+  artifact_ref?: string;
+  artifact_id?: string;
+  entity_type?: string;
+  entity_id?: string;
+  issue?: string;
+  issue_project?: string;
+  link_type?: string;
+  role?: string;
+  repo_id?: string;
+  provider_id?: string;
+  source?: string;
+  metadata?: JsonRecord;
+}
+
+export interface ArtifactResolveAndLinkResult {
+  resolution: ArtifactResolveResult;
+  link: ArtifactLinkRecord | null;
+}
+
+export interface ArtifactSnapshotInput {
+  ref?: string;
+  artifact_ref?: string;
+  path?: string;
+  content?: string;
+  content_base64?: string;
+  json?: unknown;
+  custody_mode?: "copy" | "managed" | string;
+  media_type?: string;
+  role?: string;
+  filename?: string;
+  logical_name?: string;
+  metadata?: JsonRecord;
+  reference?: JsonRecord;
+}
+
+export interface ArtifactBundleMemberInput {
+  ref?: string;
+  artifact_ref?: string;
+  path?: string;
+  role?: string;
+  custody_mode?: ArtifactCustodyMode | string;
+  allow_local_only?: boolean;
+  allow_dirty_link?: boolean;
+  metadata?: JsonRecord;
+}
+
+export interface ArtifactBundleInput {
+  name: string;
+  role?: string;
+  members: ArtifactBundleMemberInput[];
+  issue?: string;
+  issue_project?: string;
+  metadata?: JsonRecord;
 }
 
 interface ArtifactLinkInput {
@@ -1265,6 +1364,565 @@ export function registerArtifactLink(
   return getArtifactLink(db, id);
 }
 
+function asRecoverability(value: unknown, fallback: ArtifactRecoverability): ArtifactRecoverability {
+  return typeof value === "string" && RECOVERABILITY_VALUES.has(value as ArtifactRecoverability)
+    ? value as ArtifactRecoverability
+    : fallback;
+}
+
+function mergeJsonRecords(...records: Array<JsonRecord | undefined>): JsonRecord {
+  return Object.assign({}, ...records.filter(Boolean));
+}
+
+function runGit(cwd: string, args: string[]): string | null {
+  try {
+    return execFileSync("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function repoInfoForRoot(db: Db, root: string): { repo_id: string | null; name: string | null } {
+  const realRoot = path.resolve(root);
+  const rootCandidates = Array.from(new Set([
+    realRoot,
+    (() => {
+      try {
+        return fs.realpathSync(realRoot);
+      } catch {
+        return realRoot;
+      }
+    })(),
+  ]));
+  if (tableExists(db, "ledger_project_checkouts")) {
+    const row = db.prepare(
+      `SELECT work_repo_id, name
+         FROM ledger_project_checkouts
+        WHERE root IN (${rootCandidates.map(() => "?").join(", ")})
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+    ).get(...rootCandidates) as { work_repo_id: string | null; name: string | null } | undefined;
+    if (row) return { repo_id: row.work_repo_id ?? row.name ?? null, name: row.name ?? null };
+  }
+  if (tableExists(db, "work_repos")) {
+    const row = db.prepare(
+      `SELECT id, name
+         FROM work_repos
+        WHERE root IN (${rootCandidates.map(() => "?").join(", ")})
+        LIMIT 1`,
+    ).get(...rootCandidates) as { id: string | null; name: string | null } | undefined;
+    if (row) return { repo_id: row.id ?? row.name ?? null, name: row.name ?? null };
+  }
+  return { repo_id: path.basename(realRoot), name: path.basename(realRoot) };
+}
+
+function mediaTypeForPath(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".csv":
+      return "text/csv";
+    case ".htm":
+    case ".html":
+      return "text/html";
+    case ".json":
+    case ".jsonl":
+      return "application/json";
+    case ".md":
+    case ".markdown":
+      return "text/markdown";
+    case ".pdf":
+      return "application/pdf";
+    case ".toml":
+      return "application/toml";
+    case ".tsv":
+      return "text/tab-separated-values";
+    case ".txt":
+    case ".log":
+      return "text/plain";
+    case ".yaml":
+    case ".yml":
+      return "application/yaml";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function classifyLocalArtifactPath(db: Db, filePath: string): ArtifactGitState {
+  const expanded = path.resolve(expandHomePath(filePath));
+  const resolved = fs.existsSync(expanded) ? fs.realpathSync(expanded) : expanded;
+  const dir = fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()
+    ? resolved
+    : path.dirname(resolved);
+  const root = runGit(dir, ["rev-parse", "--show-toplevel"]);
+  if (!root) {
+    return {
+      inside_worktree: false,
+      repo_root: null,
+      repo_id: null,
+      relative_path: null,
+      commit: null,
+      branch: null,
+      tracked: false,
+      ignored: false,
+      staged: false,
+      dirty: false,
+      status: null,
+    };
+  }
+
+  const repoRoot = path.resolve(root);
+  const relativePath = path.relative(repoRoot, resolved).split(path.sep).join("/");
+  const commit = runGit(repoRoot, ["rev-parse", "HEAD"]);
+  const branch = runGit(repoRoot, ["branch", "--show-current"]);
+  const tracked = runGit(repoRoot, ["ls-files", "--error-unmatch", "--", relativePath]) !== null;
+  const ignored = runGit(repoRoot, ["check-ignore", "--quiet", "--", relativePath]) === "";
+  const status = runGit(repoRoot, ["status", "--porcelain=v1", "--", relativePath]);
+  const staged = Boolean(status && status.length >= 2 && status[0] !== " " && status[0] !== "?");
+  const dirty = Boolean(status && status.length >= 2 && (status[1] !== " " || status.startsWith("??")));
+  const repoInfo = repoInfoForRoot(db, repoRoot);
+
+  return {
+    inside_worktree: true,
+    repo_root: repoRoot,
+    repo_id: repoInfo.repo_id,
+    relative_path: relativePath,
+    commit,
+    branch,
+    tracked,
+    ignored,
+    staged,
+    dirty,
+    status: status || null,
+  };
+}
+
+function recoverabilityForLocalPath(
+  gitState: ArtifactGitState,
+  input: LocalArtifactPathInput,
+  custodyMode: ArtifactCustodyMode,
+): { recoverability: ArtifactRecoverability; warnings: string[] } {
+  const warnings: string[] = [];
+  if (custodyMode === "copy" || custodyMode === "managed") {
+    return { recoverability: "mandible_cas", warnings };
+  }
+  if (asRecoverability(input.recoverability, "local_only") === "regenerable" || input.regenerable_from) {
+    return { recoverability: "regenerable", warnings };
+  }
+  if (!gitState.inside_worktree) {
+    warnings.push("outside_repo");
+    return { recoverability: "local_only", warnings };
+  }
+  if (gitState.tracked && !gitState.dirty && !gitState.staged && gitState.commit) {
+    return { recoverability: "repo_commit", warnings };
+  }
+  if (gitState.tracked) {
+    if (gitState.dirty) warnings.push("tracked_dirty");
+    if (gitState.staged) warnings.push("tracked_staged");
+    return { recoverability: "repo_worktree", warnings };
+  }
+  warnings.push(gitState.ignored ? "ignored_local_only" : "untracked_local_only");
+  return { recoverability: "local_only", warnings };
+}
+
+export function registerLocalArtifactPath(
+  db: Db,
+  input: LocalArtifactPathInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): LocalArtifactPathRegistration {
+  if (!input.path || typeof input.path !== "string") {
+    throw new Error("path is required");
+  }
+  const absolutePath = path.resolve(expandHomePath(input.path));
+  const stat = fs.statSync(absolutePath);
+  if (!stat.isFile()) {
+    throw new Error("artifact path must point to a regular file");
+  }
+  const gitState = classifyLocalArtifactPath(db, absolutePath);
+  const requestedCustody = asCustodyMode(input.custody_mode, "link");
+  const { recoverability, warnings } = recoverabilityForLocalPath(gitState, input, requestedCustody);
+  if (recoverability === "repo_worktree" && !input.allow_dirty_link && requestedCustody === "link") {
+    warnings.push("dirty_link_requires_override_for_issue_evidence");
+  }
+  if (recoverability === "local_only" && !input.allow_local_only && requestedCustody === "link") {
+    warnings.push("local_only_link_requires_override_for_issue_evidence");
+  }
+
+  const hash = hashBuffer(fs.readFileSync(absolutePath));
+  const repoLocator = gitState.inside_worktree && gitState.repo_id && gitState.relative_path
+    ? {
+        repo_id: gitState.repo_id,
+        ref: recoverability === "repo_commit" ? gitState.commit : gitState.branch,
+        commit: gitState.commit,
+        branch: gitState.branch,
+        path: gitState.relative_path,
+        root: gitState.repo_root,
+      }
+    : {};
+  const repoUri = repoLocatorUri(repoLocator);
+  const uri = recoverability === "repo_commit" && repoUri
+    ? repoUri
+    : `file://${absolutePath}`;
+  const metadata = mergeJsonRecords(input.metadata, {
+    filename: input.filename ?? path.basename(absolutePath),
+    logical_name: input.logical_name ?? gitState.relative_path ?? path.basename(absolutePath),
+    recoverability,
+    git_state: gitState,
+    warnings,
+    source_path: absolutePath,
+  });
+  const reference = mergeJsonRecords(input.reference, {
+    owner_system: recoverability.startsWith("repo_") ? "repo" : "local",
+    recoverability,
+    git_state: gitState,
+    regenerable_from: input.regenerable_from,
+  });
+  const artifact = ingestArtifact(db, {
+    sha256: hash,
+    uri,
+    role: input.role,
+    media_type: input.media_type ?? mediaTypeForPath(absolutePath),
+    filename: input.filename ?? path.basename(absolutePath),
+    logical_name: input.logical_name ?? gitState.relative_path ?? path.basename(absolutePath),
+    size_bytes: stat.size,
+    custody_mode: requestedCustody,
+    home_repo_id: gitState.repo_id ?? undefined,
+    repo_locator: repoLocator,
+    availability: "present",
+    retention: { recoverability },
+    reference,
+    metadata,
+    pinned: input.pinned,
+    ...(requestedCustody === "copy" || requestedCustody === "managed"
+      ? { content_base64: fs.readFileSync(absolutePath).toString("base64") }
+      : {}),
+  }, now, artifactRoot);
+
+  if (input.issue) {
+    resolveAndLinkArtifact(db, {
+      artifact_ref: artifact.id,
+      entity_type: "issue",
+      entity_id: input.issue,
+      issue_project: input.issue_project,
+      link_type: input.link_type ?? "references",
+      role: input.link_role ?? input.role,
+      repo_id: gitState.repo_id ?? undefined,
+      source: "local_artifact_path",
+      metadata: { warnings, recoverability, source_path: absolutePath },
+    }, now);
+  }
+
+  return { artifact: getArtifact(db, artifact.id) as ArtifactRecord, git_state: gitState, recoverability, warnings };
+}
+
+function resolveIssueEntity(
+  db: Db,
+  rawIssueRef: string,
+  projectRef?: string,
+): { entity_id: string; metadata: JsonRecord } {
+  const split = splitProviderIssueRef(rawIssueRef);
+  const projectId = projectIdForRef(db, projectRef ?? split.projectRef);
+  const matches = issueMatches(db, split.issueRef, projectId);
+  if (matches.length === 0) {
+    throw new Error(`issue ref not found: ${rawIssueRef}`);
+  }
+  if (matches.length > 1) {
+    throw new Error(`ambiguous issue ref ${rawIssueRef}: ${matches.join(", ")}`);
+  }
+  return {
+    entity_id: matches[0],
+    metadata: {
+      issue_ref: rawIssueRef,
+      issue_project: projectRef ?? split.projectRef ?? null,
+      ledger_issue_id: matches[0],
+      resolution_status: "resolved",
+    },
+  };
+}
+
+export function resolveAndLinkArtifact(
+  db: Db,
+  input: ArtifactResolveAndLinkInput,
+  now = Date.now(),
+): ArtifactResolveAndLinkResult {
+  const ref = asString(input.ref) ?? asString(input.artifact_ref) ?? asString(input.artifact_id);
+  if (!ref) throw new Error("artifact ref is required");
+  const resolution = resolveArtifactRef(db, ref, now);
+  if (resolution.status === "ambiguous") {
+    throw new Error(`ambiguous artifact ref: ${ref}`);
+  }
+  if (!resolution.artifact) {
+    throw new Error(`artifact ref did not resolve: ${ref}`);
+  }
+
+  const entityType = asString(input.entity_type) ?? (asString(input.issue) ? "issue" : undefined);
+  const rawEntityId = asString(input.entity_id) ?? asString(input.issue);
+  if (!entityType || !rawEntityId) {
+    throw new Error("entity_type and entity_id are required");
+  }
+  const issueResolution = entityType === "issue"
+    ? resolveIssueEntity(db, rawEntityId, asString(input.issue_project) ?? asString(input.repo_id))
+    : null;
+  const link = registerArtifactLink(db, resolution.artifact.id, {
+    entity_type: entityType,
+    entity_id: issueResolution?.entity_id ?? rawEntityId,
+    link_type: asString(input.link_type) ?? "references",
+    role: asString(input.role),
+    repo_id: asString(input.repo_id),
+    provider_id: asString(input.provider_id),
+    source: asString(input.source) ?? "artifact_link",
+    metadata: mergeJsonRecords(input.metadata, issueResolution?.metadata, {
+      artifact_ref: ref,
+      normalized_ref: resolution.normalized_ref,
+    }),
+  }, now);
+  return { resolution, link };
+}
+
+function bufferFromSnapshotInput(input: ArtifactSnapshotInput): Buffer {
+  if (typeof input.path === "string" && input.path.trim()) {
+    return fs.readFileSync(path.resolve(expandHomePath(input.path)));
+  }
+  if (typeof input.content_base64 === "string") return Buffer.from(input.content_base64, "base64");
+  if (typeof input.content === "string") return Buffer.from(input.content, "utf8");
+  if ("json" in input) return Buffer.from(stableJsonStringify(input.json), "utf8");
+  throw new Error("snapshot path, content, content_base64, or json is required");
+}
+
+export function snapshotArtifactBytes(
+  db: Db,
+  input: ArtifactSnapshotInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): ArtifactRecord {
+  const bytes = bufferFromSnapshotInput(input);
+  const hash = hashBuffer(bytes);
+  const ref = asString(input.ref) ?? asString(input.artifact_ref);
+  if (ref) {
+    const existing = resolveArtifactRef(db, ref, now).artifact;
+    if (existing?.algorithm === "sha256" && existing.content_hash.toLowerCase() !== hash) {
+      throw new Error("snapshot bytes do not match registered sha256");
+    }
+  }
+
+  const custodyMode = asCustodyMode(input.custody_mode, "copy");
+  if (custodyMode !== "copy" && custodyMode !== "managed") {
+    throw new Error("snapshot custody_mode must be copy or managed");
+  }
+  const filePath = artifactPathForHash(hash, artifactRoot);
+  ensureDir(path.dirname(filePath));
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, bytes);
+  }
+  const artifact = ingestArtifact(db, {
+    sha256: hash,
+    content_base64: bytes.toString("base64"),
+    custody_mode: custodyMode,
+    availability: "present",
+    media_type: input.media_type,
+    role: input.role,
+    filename: input.filename ?? (input.path ? path.basename(input.path) : undefined),
+    logical_name: input.logical_name,
+    metadata: mergeJsonRecords(input.metadata, {
+      recoverability: "mandible_cas",
+      snapshot_source_ref: ref ?? null,
+      snapshot_source_path: input.path ? path.resolve(expandHomePath(input.path)) : null,
+    }),
+    reference: mergeJsonRecords(input.reference, {
+      recoverability: "mandible_cas",
+      snapshot_source_ref: ref ?? null,
+      uri: `file://${filePath}`,
+    }),
+  }, now, artifactRoot);
+
+  const stored = getArtifact(db, artifact.id) as ArtifactRecord;
+  return stored;
+}
+
+function linkBundleMember(
+  db: Db,
+  bundleId: string,
+  artifact: ArtifactRecord,
+  member: ArtifactBundleMemberInput,
+  order: number,
+  now: number,
+): ArtifactBundleMemberRecord {
+  const link = registerArtifactLink(db, artifact.id, {
+    entity_type: "artifact_bundle",
+    entity_id: bundleId,
+    link_type: "bundle_member",
+    role: asString(member.role) ?? artifact.role ?? undefined,
+    repo_id: artifact.home_repo_id ?? undefined,
+    provider_id: artifact.provider_id ?? undefined,
+    source: "artifact_bundle",
+    metadata: mergeJsonRecords(member.metadata, {
+      bundle_id: bundleId,
+      order,
+      member_ref: member.ref ?? member.artifact_ref ?? member.path ?? artifact.id,
+    }),
+  }, now);
+  upsertGraphEdge(db, {
+    id: `bundle_contains:${bundleId}:${artifact.id}:${order}`,
+    source_id: bundleId,
+    target_id: artifact.id,
+    edge_type: "bundle_contains",
+    edge_class: "provenance",
+    provenance: "artifact_bundle",
+    metadata: { order, role: asString(member.role) ?? artifact.role ?? null },
+    observed_at: now,
+    source: "artifact_bundle",
+  });
+  return {
+    artifact,
+    link: link as ArtifactLinkRecord,
+    order,
+    role: link?.role ?? null,
+  };
+}
+
+function resolveBundleMemberArtifact(
+  db: Db,
+  member: ArtifactBundleMemberInput,
+  now: number,
+): ArtifactRecord {
+  if (asString(member.path)) {
+    return registerLocalArtifactPath(db, {
+      path: member.path as string,
+      role: member.role,
+      custody_mode: member.custody_mode,
+      allow_local_only: member.allow_local_only,
+      allow_dirty_link: member.allow_dirty_link,
+      metadata: member.metadata,
+    }, now).artifact;
+  }
+  const ref = asString(member.ref) ?? asString(member.artifact_ref);
+  if (!ref) throw new Error("bundle member ref or path is required");
+  const resolution = resolveArtifactRef(db, ref, now);
+  if (resolution.status === "ambiguous") throw new Error(`ambiguous artifact ref: ${ref}`);
+  if (!resolution.artifact) throw new Error(`artifact ref did not resolve: ${ref}`);
+  return resolution.artifact;
+}
+
+export function createArtifactBundle(
+  db: Db,
+  input: ArtifactBundleInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): ArtifactBundleRecord {
+  const name = asString(input.name);
+  if (!name) throw new Error("bundle name is required");
+  const memberArtifacts = input.members.map((member) => resolveBundleMemberArtifact(db, member, now));
+  const manifest = {
+    schema_version: "mandible.artifact_bundle.v1",
+    name,
+    role: input.role ?? "artifact_bundle",
+    created_at: new Date(now).toISOString(),
+    members: memberArtifacts.map((artifact, index) => ({
+      artifact_id: artifact.id,
+      ref: input.members[index].ref ?? input.members[index].artifact_ref ?? input.members[index].path ?? artifact.id,
+      role: input.members[index].role ?? artifact.role ?? null,
+      order: index,
+      recoverability: artifact.metadata.recoverability ?? artifact.reference.recoverability ?? null,
+    })),
+  };
+  const bundle = ingestArtifact(db, {
+    role: input.role ?? "artifact_bundle",
+    media_type: "application/vnd.mandible.artifact-bundle+json",
+    json: manifest,
+    logical_name: name,
+    metadata: mergeJsonRecords(input.metadata, {
+      title: name,
+      bundle: true,
+      bundle_name: name,
+      bundle_member_count: memberArtifacts.length,
+      entity_type: "artifact_bundle",
+    }),
+    reference: {
+      identity_kind: "artifact_bundle",
+      bundle_name: name,
+      recoverability: "mandible_cas",
+    },
+  }, now, artifactRoot);
+
+  upsertGraphEntity(db, {
+    id: bundle.id,
+    entity_type: "artifact_bundle",
+    external_id: bundle.content_hash,
+    title: name,
+    status: "present",
+    summary: { role: bundle.role, member_count: memberArtifacts.length },
+    detail: { artifact_id: bundle.id, manifest },
+    visual: { icon: "artifact", shape: "folder" },
+    created_at: now,
+    updated_at: now,
+    observed_at: now,
+    source: "artifact_bundle",
+  });
+
+  const members = memberArtifacts.map((artifact, index) =>
+    linkBundleMember(db, bundle.id, artifact, input.members[index], index, now)
+  );
+  if (input.issue) {
+    resolveAndLinkArtifact(db, {
+      artifact_ref: bundle.id,
+      entity_type: "issue",
+      entity_id: input.issue,
+      issue_project: input.issue_project,
+      link_type: "references",
+      role: input.role ?? "artifact_bundle",
+      source: "artifact_bundle",
+      metadata: { bundle_name: name },
+    }, now);
+  }
+  return { bundle: getArtifact(db, bundle.id) as ArtifactRecord, members };
+}
+
+export function addArtifactBundleMembers(
+  db: Db,
+  bundleRef: string,
+  members: ArtifactBundleMemberInput[],
+  now = Date.now(),
+): ArtifactBundleRecord {
+  const resolution = resolveArtifactRef(db, bundleRef, now);
+  if (!resolution.artifact) throw new Error(`bundle ref did not resolve: ${bundleRef}`);
+  const existingMembers = listArtifactBundleMembers(db, resolution.artifact.id);
+  const start = existingMembers.length;
+  const added = members.map((member, index) =>
+    linkBundleMember(db, resolution.artifact!.id, resolveBundleMemberArtifact(db, member, now), member, start + index, now)
+  );
+  return { bundle: getArtifact(db, resolution.artifact.id) as ArtifactRecord, members: [...existingMembers, ...added] };
+}
+
+export function listArtifactBundleMembers(db: Db, bundleId: string): ArtifactBundleMemberRecord[] {
+  if (!tableExists(db, "artifact_links")) return [];
+  const rows = db.prepare(
+    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+            provider_id, source, metadata_json, created_at, updated_at
+       FROM artifact_links
+      WHERE entity_type = 'artifact_bundle'
+        AND entity_id = ?
+        AND link_type = 'bundle_member'
+      ORDER BY CAST(json_extract(metadata_json, '$.order') AS INTEGER), artifact_id`,
+  ).all(bundleId) as Array<Record<string, unknown>>;
+  return rows.map((row, index) => {
+    const link = artifactLinkFromRow(row);
+    return {
+      artifact: getArtifact(db, link.artifact_id) as ArtifactRecord,
+      link,
+      order: typeof link.metadata.order === "number" ? link.metadata.order : index,
+      role: link.role,
+    };
+  }).filter((member) => Boolean(member.artifact));
+}
+
+export function getArtifactBundle(db: Db, bundleRef: string): ArtifactBundleRecord | null {
+  const artifact = getArtifact(db, bundleRef) ?? resolveArtifactRef(db, bundleRef).artifact;
+  if (!artifact) return null;
+  return { bundle: artifact, members: listArtifactBundleMembers(db, artifact.id) };
+}
+
 function getArtifactAlias(db: Db, scheme: string, normalizedRef: string): ArtifactAliasRecord | null {
   const row = db.prepare(
     `SELECT id, artifact_id, scheme, alias, normalized_ref, locator_json,
@@ -1645,26 +2303,50 @@ export function ingestArtifact(
       manifest_id = COALESCE(excluded.manifest_id, artifacts.manifest_id),
       metadata_json = CASE
         WHEN artifacts.metadata_json = '{}' THEN excluded.metadata_json
+        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
+         AND excluded.availability = 'present'
+         AND excluded.uri LIKE 'file://%'
+          THEN excluded.metadata_json
         ELSE artifacts.metadata_json
       END,
-      uri = COALESCE(excluded.uri, artifacts.uri),
-      custody_mode = artifacts.custody_mode,
+      uri = CASE
+        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
+         AND excluded.availability = 'present'
+         AND excluded.uri LIKE 'file://%' THEN excluded.uri
+        ELSE COALESCE(artifacts.uri, excluded.uri)
+      END,
+      custody_mode = CASE
+        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
+         AND excluded.availability = 'present'
+         AND excluded.uri LIKE 'file://%' THEN excluded.custody_mode
+        ELSE artifacts.custody_mode
+      END,
       home_repo_id = COALESCE(excluded.home_repo_id, artifacts.home_repo_id),
       repo_locator_json = CASE
         WHEN artifacts.repo_locator_json = '{}' THEN excluded.repo_locator_json
         ELSE artifacts.repo_locator_json
       END,
-      availability = artifacts.availability,
+      availability = CASE
+        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
+         AND excluded.availability = 'present'
+         AND excluded.uri LIKE 'file://%' THEN excluded.availability
+        ELSE artifacts.availability
+      END,
       retention_json = CASE
         WHEN artifacts.retention_json = '{}' THEN excluded.retention_json
         ELSE artifacts.retention_json
       END,
       reference_json = CASE
         WHEN artifacts.reference_json = '{}' THEN excluded.reference_json
+        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
+         AND excluded.availability = 'present'
+         AND excluded.uri LIKE 'file://%'
+          THEN excluded.reference_json
         ELSE artifacts.reference_json
       END,
       size_bytes = CASE
-        WHEN artifacts.size_bytes = 0 THEN excluded.size_bytes
+        WHEN artifacts.size_bytes = 0
+          OR (excluded.availability = 'present' AND excluded.uri LIKE 'file://%') THEN excluded.size_bytes
         ELSE artifacts.size_bytes
       END,
       pinned = MAX(artifacts.pinned, excluded.pinned)`

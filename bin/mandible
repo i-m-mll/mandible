@@ -12,6 +12,7 @@
 #   auth merge <branch> [opts]       Execute authenticated merge
 #   logs <subcommand>                Inspect provider-native source logs
 #   conversations <subcommand>       Inspect DB-backed conversations
+#   artifact <subcommand>            Register, resolve, link, and check artifacts
 #   search "<query>" [opts]          Search chat history across providers
 #   help                             Show this help
 
@@ -37,6 +38,7 @@ Commands:
   auth merge <branch> [opts]       Execute authenticated merge
   logs <subcommand>                Inspect provider-native source logs
   conversations <subcommand>       Inspect DB-backed conversations
+  artifact <subcommand>            Register, resolve, link, and check artifacts
   search "<query>" [opts]          Search chat history across providers
   help                             Show this help
 EOF
@@ -57,6 +59,7 @@ case "${1:-}" in
     ;;
   logs)    shift; exec "$MANDIBLE_CLI_DIR/logs.sh" "$@" ;;
   conversations) shift; exec "$MANDIBLE_CLI_DIR/conversations.sh" "$@" ;;
+  artifact) shift; exec "$MANDIBLE_CLI_DIR/artifact.sh" "$@" ;;
   search)  shift; exec "$MANDIBLE_CLI_DIR/search.sh" "$@" ;;
   help|-h|--help) usage ;;
   "") usage >&2; exit 1 ;;
