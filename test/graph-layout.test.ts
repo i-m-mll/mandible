@@ -123,6 +123,61 @@ describe("deterministic graph layout", () => {
     expect(new Set(parentXs).size).toBeGreaterThan(1);
   });
 
+  it("wraps broad issue child sets into bounded hierarchy lanes", () => {
+    const nodes = [
+      issue("parent", "Parent", { role: "umbrella_parent", rank: 0 }),
+      ...Array.from({ length: 18 }, (_, index) => (
+        issue(`child-${index}`, `Child ${index}`, { role: "umbrella_child", rank: 1, order: index })
+      )),
+    ];
+    const edges = nodes
+      .filter((node) => node.id !== "parent")
+      .map((node) => edge(`parent:${node.id}`, "parent", node.id, "parent_child", { layout: "hierarchical" }));
+
+    const result = layoutGraph(nodes, edges, {
+      xStart: 0,
+      yStart: 0,
+      nodeWidth: 190,
+      nodeHeight: 118,
+      columnGap: 280,
+      rowGap: 148,
+    });
+    const positions = positionById(result);
+    const childXs = new Set(nodes.slice(1).map((node) => positions.get(node.id)?.x));
+    const childYs = nodes.slice(1).map((node) => positions.get(node.id)?.y ?? 0);
+    const graphHeight = Math.max(...childYs) - Math.min(...childYs);
+
+    expect(childXs.size).toBeGreaterThan(1);
+    expect(graphHeight).toBeLessThan(18 * 148);
+  });
+
+  it("does not let one broad component collapse unrelated issues into a single column", () => {
+    const broadChildren = Array.from({ length: 18 }, (_, index) => (
+      issue(`child-${index}`, `Child ${index}`, { role: "umbrella_child", rank: 1, order: index })
+    ));
+    const singletons = Array.from({ length: 12 }, (_, index) => issue(`single-${index}`, `Single ${index}`));
+    const nodes = [
+      issue("parent", "Parent", { role: "umbrella_parent", rank: 0 }),
+      ...broadChildren,
+      ...singletons,
+    ];
+    const edges = broadChildren.map((node) => (
+      edge(`parent:${node.id}`, "parent", node.id, "parent_child", { layout: "hierarchical" })
+    ));
+
+    const result = layoutGraph(nodes, edges, {
+      xStart: 0,
+      yStart: 0,
+      availableWidth: 1500,
+      nodeWidth: 190,
+      nodeHeight: 118,
+    });
+    const positions = positionById(result);
+    const singletonXs = new Set(singletons.map((node) => positions.get(node.id)?.x));
+
+    expect(singletonXs.size).toBeGreaterThan(1);
+  });
+
   it("routes hierarchy edges orthogonally without crossing non-endpoint node boxes", () => {
     const nodes = [
       issue("parent", "Parent", { rank: 0 }),

@@ -289,14 +289,38 @@ function layoutComponent(
     if (rowDelta !== 0) return rowDelta;
     return sortGraphNodes(a, b);
   });
+  const rankGroups = new Map<number, GraphNode[]>();
+  for (const node of componentNodes) {
+    const rank = ranks.get(node.id) ?? 0;
+    const group = rankGroups.get(rank) ?? [];
+    group.push(node);
+    rankGroups.set(rank, group);
+  }
+  const rankMetrics = new Map<number, { baseX: number; width: number; maxRows: number }>();
+  const laneGap = Math.max(64, options.columnGap - options.nodeWidth);
+  let nextRankX = 0;
+  for (const rank of [...rankGroups.keys()].sort((a, b) => a - b)) {
+    const group = rankGroups.get(rank) ?? [];
+    const count = Math.max(1, group.length);
+    const maxRows = count <= 4 ? count : Math.ceil(Math.sqrt(count * 1.45));
+    const laneCount = Math.ceil(count / maxRows);
+    const width = options.nodeWidth + Math.max(0, laneCount - 1) * (options.nodeWidth + laneGap);
+    rankMetrics.set(rank, { baseX: nextRankX, width, maxRows });
+    nextRankX += width + options.columnGap;
+  }
+
   const positioned = componentNodes.map((node) => {
     const rank = ranks.get(node.id) ?? 0;
-    const row = rows.get(node.id) ?? 0;
+    const rankGroup = rankGroups.get(rank) ?? [node];
+    const orderInRank = rankGroup.findIndex((item) => item.id === node.id);
+    const metrics = rankMetrics.get(rank) ?? { baseX: rank * options.columnGap, width: options.nodeWidth, maxRows: 1 };
+    const lane = Math.floor(Math.max(0, orderInRank) / metrics.maxRows);
+    const row = Math.max(0, orderInRank) % metrics.maxRows;
     return {
       id: node.id,
       type: 'default',
       position: {
-        x: rank * options.columnGap,
+        x: metrics.baseX + lane * (options.nodeWidth + laneGap),
         y: row * options.rowGap,
       },
       width: options.nodeWidth,
@@ -313,34 +337,36 @@ function layoutComponent(
     };
   });
 
-  const maxRank = Math.max(...positioned.map((node) => node.layout.rank), 0);
-  const maxRow = Math.max(...positioned.map((node) => node.layout.row), 0);
+  const maxRight = Math.max(...positioned.map((node) => node.position.x + node.width), options.nodeWidth);
+  const maxBottom = Math.max(...positioned.map((node) => node.position.y + node.height), options.nodeHeight);
   return {
     id: componentIds[0],
     nodeIds: componentIds,
     positioned,
-    width: options.nodeWidth + maxRank * options.columnGap,
-    height: options.nodeHeight + maxRow * options.rowGap,
+    width: maxRight,
+    height: maxBottom,
     sortKey: componentSortKey(componentNodes),
   };
 }
 
 function packComponents(components: ComponentDraft[], options: ResolvedLayoutOptions): PositionedGraphNode[] {
   const sorted = [...components].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-  const widest = Math.max(...sorted.map((component) => component.width), options.nodeWidth);
-  const laneWidth = widest + options.componentGapX;
-  const columnsFromWidth = Math.max(1, Math.floor(Math.max(laneWidth, options.availableWidth) / laneWidth));
-  const columns = Math.min(options.maxComponentColumns, columnsFromWidth, sorted.length || 1);
-  const laneHeights = Array.from({ length: columns }, () => options.yStart);
   const output: PositionedGraphNode[] = [];
+  const maxRowWidth = Math.max(options.nodeWidth, options.availableWidth);
+  let cursorX = options.xStart;
+  let cursorY = options.yStart;
+  let rowHeight = 0;
 
   for (const component of sorted) {
-    const column = laneHeights.reduce(
-      (best, height, index) => (height < laneHeights[best] ? index : best),
-      0,
-    );
-    const xOffset = options.xStart + column * laneWidth;
-    const yOffset = laneHeights[column];
+    const componentWidth = Math.min(component.width, maxRowWidth);
+    if (cursorX > options.xStart && cursorX + componentWidth > options.xStart + maxRowWidth) {
+      cursorX = options.xStart;
+      cursorY += rowHeight + options.componentGapY;
+      rowHeight = 0;
+    }
+
+    const xOffset = cursorX;
+    const yOffset = cursorY;
     for (const node of component.positioned) {
       output.push({
         ...node,
@@ -350,7 +376,8 @@ function packComponents(components: ComponentDraft[], options: ResolvedLayoutOpt
         },
       });
     }
-    laneHeights[column] += component.height + options.componentGapY;
+    cursorX += componentWidth + options.componentGapX;
+    rowHeight = Math.max(rowHeight, component.height);
   }
 
   return output;
