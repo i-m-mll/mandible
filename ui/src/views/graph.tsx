@@ -74,7 +74,32 @@ type ForceLayoutNode = SimulationNodeDatum & {
   anchorY: number
 }
 
-type ForceLayoutLink = SimulationLinkDatum<ForceLayoutNode>
+type ForceLayoutLink = SimulationLinkDatum<ForceLayoutNode> & {
+  edge: GraphEdge
+}
+
+type LayoutPolicy = {
+  kind: 'hierarchy' | 'layered-dag' | 'bounded-force'
+  directedRanks: boolean
+  force: boolean
+  xStrength: number
+  yStrength: number
+  charge: number
+}
+
+type DirectedLayoutEdge = {
+  source: string
+  target: string
+  edge: GraphEdge
+}
+
+type GraphSide = 'left' | 'right' | 'top' | 'bottom'
+
+type EdgeEndpoint = {
+  x: number
+  y: number
+  side: GraphSide
+}
 
 type GraphAnnotation = {
   id: string
@@ -192,6 +217,7 @@ function nodeColor(node: GraphNode): string {
 }
 
 function edgeColor(edge: GraphEdge): string {
+  if (isWeakReferenceEdge(edge)) return 'rgba(154,164,178,0.28)';
   if (edge.edge_class === 'semantic') return 'rgba(168,85,247,0.62)';
   if (edge.edge_class === 'provider') return 'rgba(125,211,252,0.62)';
   if (edge.edge_class === 'provenance') return 'rgba(50,210,150,0.54)';
@@ -252,23 +278,101 @@ function baseRank(node: GraphNode, mode: GraphMode): number {
   return Math.min(FLOW_MAX_RANK, NODE_COLUMNS[node.type] ?? (mode === 'issue' ? 0 : 2));
 }
 
-function edgeLayoutDirection(edge: GraphEdge, nodeById: Map<string, GraphNode>): { source: string; target: string } {
+function isHierarchyEdge(edge: GraphEdge): boolean {
+  return edge.type === 'umbrella_child'
+    || edge.type === 'parent'
+    || edge.type === 'parent_child'
+    || edge.metadata?.layout === 'hierarchical';
+}
+
+function isProvenanceLikeEdge(edge: GraphEdge): boolean {
+  return edge.edge_class === 'provenance'
+    || edge.edge_class === 'lifecycle'
+    || edge.type === 'produced'
+    || edge.type === 'derived_from'
+    || edge.type === 'validated_by'
+    || edge.type.includes('lifecycle');
+}
+
+function isWeakReferenceEdge(edge: GraphEdge): boolean {
+  if (isHierarchyEdge(edge) || isProvenanceLikeEdge(edge)) return false;
+  return edge.type.includes('reference')
+    || edge.type.includes('related')
+    || edge.type === 'curated_related'
+    || edge.type === 'references'
+    || edge.confidence === 'weak';
+}
+
+function linkDistance(edge: GraphEdge): number {
+  if (isHierarchyEdge(edge)) return FLOW_COLUMN_GAP * 0.62;
+  if (isProvenanceLikeEdge(edge)) return FLOW_COLUMN_GAP * 0.72;
+  if (isWeakReferenceEdge(edge)) return FLOW_COLUMN_GAP * 1.28;
+  if (edge.edge_class === 'provider') return FLOW_COLUMN_GAP * 0.84;
+  return FLOW_COLUMN_GAP * 0.98;
+}
+
+function linkStrength(edge: GraphEdge): number {
+  if (isHierarchyEdge(edge)) return 0.82;
+  if (isProvenanceLikeEdge(edge)) return 0.68;
+  if (isWeakReferenceEdge(edge)) return 0.08;
+  if (edge.edge_class === 'provider') return 0.46;
+  return 0.28;
+}
+
+function edgeStrokeWidth(edge: GraphEdge): number {
+  if (isWeakReferenceEdge(edge)) return 1.1;
+  if (isHierarchyEdge(edge) || isProvenanceLikeEdge(edge)) return 1.8;
+  return edge.edge_class === 'semantic' ? 1.4 : 1.6;
+}
+
+function layoutPolicy(mode: GraphMode, componentEdges: GraphEdge[]): LayoutPolicy {
+  if (mode === 'issue' && componentEdges.some(isHierarchyEdge)) {
+    return {
+      kind: 'hierarchy',
+      directedRanks: true,
+      force: false,
+      xStrength: 0.76,
+      yStrength: 0.12,
+      charge: -420,
+    };
+  }
+  if (mode === 'work' || mode === 'provider-lineage' || mode === 'artifact-lineage' || mode === 'provenance') {
+    return {
+      kind: 'layered-dag',
+      directedRanks: true,
+      force: true,
+      xStrength: 0.82,
+      yStrength: 0.12,
+      charge: -560,
+    };
+  }
+  return {
+    kind: 'bounded-force',
+    directedRanks: mode !== 'activity',
+    force: true,
+    xStrength: 0.46,
+    yStrength: 0.08,
+    charge: -520,
+  };
+}
+
+function edgeLayoutDirection(edge: GraphEdge, nodeById: Map<string, GraphNode>): DirectedLayoutEdge {
   const source = nodeById.get(edge.source);
   const target = nodeById.get(edge.target);
-  if (!source || !target) return { source: edge.source, target: edge.target };
+  if (!source || !target) return { source: edge.source, target: edge.target, edge };
 
   if (edge.type === 'auth_issue' || edge.type === 'auth_request_references_issue') {
-    return { source: edge.target, target: edge.source };
+    return { source: edge.target, target: edge.source, edge };
   }
   if (edge.type === 'session_parent') {
-    return { source: edge.target, target: edge.source };
+    return { source: edge.target, target: edge.source, edge };
   }
   if (edge.type === 'session_issue') {
     if (source.type === 'session' && (target.type === 'issue' || target.type === 'work_unit')) {
-      return { source: edge.target, target: edge.source };
+      return { source: edge.target, target: edge.source, edge };
     }
   }
-  return { source: edge.source, target: edge.target };
+  return { source: edge.source, target: edge.target, edge };
 }
 
 function graphComponents(nodes: GraphNode[], edges: GraphEdge[]): string[][] {
@@ -319,22 +423,25 @@ function makeFlowNode(node: GraphNode, x: number, y: number): ReactFlowNode {
 function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): ReactFlowNode[] {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const ranks = new Map(nodes.map((node) => [node.id, baseRank(node, mode)]));
+  const rankPolicy = layoutPolicy(mode, edges);
   const directedEdges = edges
     .filter((edge) => nodeById.has(edge.source) && nodeById.has(edge.target))
     .map((edge) => edgeLayoutDirection(edge, nodeById));
 
-  for (let pass = 0; pass < Math.min(nodes.length, FLOW_MAX_RANK * 3); pass += 1) {
-    let changed = false;
-    for (const edge of directedEdges) {
-      const sourceRank = ranks.get(edge.source) ?? 0;
-      const targetRank = ranks.get(edge.target) ?? 0;
-      const nextRank = Math.min(FLOW_MAX_RANK, Math.max(targetRank, sourceRank + 1));
-      if (nextRank > targetRank) {
-        ranks.set(edge.target, nextRank);
-        changed = true;
+  if (rankPolicy.directedRanks) {
+    for (let pass = 0; pass < Math.min(nodes.length, FLOW_MAX_RANK * 3); pass += 1) {
+      let changed = false;
+      for (const edge of directedEdges) {
+        const sourceRank = ranks.get(edge.source) ?? 0;
+        const targetRank = ranks.get(edge.target) ?? 0;
+        const nextRank = Math.min(FLOW_MAX_RANK, Math.max(targetRank, sourceRank + 1));
+        if (nextRank > targetRank) {
+          ranks.set(edge.target, nextRank);
+          changed = true;
+        }
       }
+      if (!changed) break;
     }
-    if (!changed) break;
   }
 
   const incidentCounts = new Map<string, number>();
@@ -365,9 +472,7 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
   for (const component of relationshipComponents) {
     const componentIds = new Set(component);
     const componentEdges = edges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target));
-    const deterministicLayout = mode === 'issue' && componentEdges.some((edge) => (
-      edge.type === 'umbrella_child' || edge.metadata?.layout === 'hierarchical'
-    ));
+    const policy = layoutPolicy(mode, componentEdges);
     const byRank = new Map<number, GraphNode[]>();
     for (const id of component) {
       const node = nodeById.get(id);
@@ -398,18 +503,18 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
 
     const forceLinks: ForceLayoutLink[] = directedEdges
       .filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target))
-      .map((edge) => ({ source: edge.source, target: edge.target }));
+      .map((edge) => ({ source: edge.source, target: edge.target, edge: edge.edge }));
 
-    if (forceNodes.length > 1 && !deterministicLayout) {
+    if (forceNodes.length > 1 && policy.force) {
       const simulation = forceSimulation<ForceLayoutNode>(forceNodes)
         .force('link', forceLink<ForceLayoutNode, ForceLayoutLink>(forceLinks)
           .id((node) => node.id)
-          .distance(FLOW_COLUMN_GAP * 0.92)
-          .strength(0.28))
-        .force('charge', forceManyBody<ForceLayoutNode>().strength(-520))
+          .distance((link) => linkDistance(link.edge))
+          .strength((link) => linkStrength(link.edge)))
+        .force('charge', forceManyBody<ForceLayoutNode>().strength(policy.charge))
         .force('collide', forceCollide<ForceLayoutNode>(FLOW_NODE_WIDTH * 0.68).strength(0.98))
-        .force('x', forceX<ForceLayoutNode>((node) => node.anchorX).strength(0.62))
-        .force('y', forceY<ForceLayoutNode>((node) => node.anchorY).strength(0.08))
+        .force('x', forceX<ForceLayoutNode>((node) => node.anchorX).strength(policy.xStrength))
+        .force('y', forceY<ForceLayoutNode>((node) => node.anchorY).strength(policy.yStrength))
         .stop();
       for (let tick = 0; tick < FLOW_FORCE_TICKS; tick += 1) simulation.tick();
     }
@@ -455,29 +560,48 @@ function flowEdges(edges: GraphEdge[]): ReactFlowEdge[] {
     source: reactFlowId(edge.source),
     target: reactFlowId(edge.target),
     label: edgeLabel(edge),
-    style: { stroke: edgeColor(edge), strokeWidth: edge.edge_class === 'semantic' ? 1.4 : 1.8 },
+    style: { stroke: edgeColor(edge), strokeWidth: edgeStrokeWidth(edge), opacity: isWeakReferenceEdge(edge) ? 0.56 : 0.78 },
   }));
 }
 
 function ManualGraphEdges({ nodes, edges }: { nodes: ReactFlowNode[]; edges: GraphEdge[] }): JSX.Element | null {
   const nodeByOriginalId = new Map(nodes.map((node) => [node.data.node.id, node]));
+  const incidentCounts = new Map<string, number>();
+  for (const edge of edges) {
+    incidentCounts.set(edge.source, (incidentCounts.get(edge.source) ?? 0) + 1);
+    incidentCounts.set(edge.target, (incidentCounts.get(edge.target) ?? 0) + 1);
+  }
+  const edgeGroups = new Map<string, GraphEdge[]>();
+  for (const edge of edges) {
+    const groupKey = `${edge.source}->${edge.target}`;
+    const group = edgeGroups.get(groupKey) ?? [];
+    group.push(edge);
+    edgeGroups.set(groupKey, group);
+  }
+
   const visibleEdges = edges
     .map((edge) => {
       const source = nodeByOriginalId.get(edge.source);
       const target = nodeByOriginalId.get(edge.target);
       if (!source || !target) return null;
-      const sourceX = source.position.x + FLOW_NODE_WIDTH;
-      const sourceY = source.position.y + FLOW_NODE_HEIGHT / 2;
-      const targetX = target.position.x;
-      const targetY = target.position.y + FLOW_NODE_HEIGHT / 2;
-      const horizontalGap = Math.abs(targetX - sourceX);
-      const direction = targetX >= sourceX ? 1 : -1;
-      const spread = Math.max(24, horizontalGap * 0.42);
-      const sourceControlX = sourceX + direction * spread;
-      const targetControlX = targetX - direction * spread;
+      const group = edgeGroups.get(`${edge.source}->${edge.target}`) ?? [edge];
+      const repeatIndex = group.findIndex((item) => item.id === edge.id);
+      const repeatOffset = (repeatIndex - (group.length - 1) / 2) * 18;
+      const degreeOffset = Math.min(24, Math.max(0, ((incidentCounts.get(edge.source) ?? 1) - 2) * 3));
+      const sourceEndpoint = edgeEndpoint(source, target, repeatOffset + degreeOffset);
+      const targetEndpoint = edgeEndpoint(target, source, repeatOffset - degreeOffset);
+      const sourceNormal = sideNormal(sourceEndpoint.side);
+      const targetNormal = sideNormal(targetEndpoint.side);
+      const dx = targetEndpoint.x - sourceEndpoint.x;
+      const dy = targetEndpoint.y - sourceEndpoint.y;
+      const spread = Math.max(38, Math.min(180, Math.hypot(dx, dy) * 0.36));
+      const sourceControlX = sourceEndpoint.x + sourceNormal.x * spread;
+      const sourceControlY = sourceEndpoint.y + sourceNormal.y * spread;
+      const targetControlX = targetEndpoint.x + targetNormal.x * spread;
+      const targetControlY = targetEndpoint.y + targetNormal.y * spread;
       return {
         edge,
-        d: `M ${sourceX} ${sourceY} C ${sourceControlX} ${sourceY}, ${targetControlX} ${targetY}, ${targetX} ${targetY}`,
+        d: `M ${sourceEndpoint.x} ${sourceEndpoint.y} C ${sourceControlX} ${sourceControlY}, ${targetControlX} ${targetControlY}, ${targetEndpoint.x} ${targetEndpoint.y}`,
       };
     })
     .filter((item): item is { edge: GraphEdge; d: string } => item !== null);
@@ -493,14 +617,44 @@ function ManualGraphEdges({ nodes, edges }: { nodes: ReactFlowNode[]; edges: Gra
       {visibleEdges.map(({ edge, d }) => (
         <path
           key={edge.id}
-          className="graph-manual-edge"
+          className={`graph-manual-edge${isWeakReferenceEdge(edge) ? ' graph-manual-edge--weak' : ''}`}
           d={d}
           markerEnd="url(#graph-manual-arrow)"
-          style={{ stroke: edgeColor(edge), strokeWidth: edge.edge_class === 'semantic' ? 1.5 : 1.8 }}
+          style={{ stroke: edgeColor(edge), strokeWidth: edgeStrokeWidth(edge) }}
         />
       ))}
     </svg>
   );
+}
+
+function edgeEndpoint(source: ReactFlowNode, target: ReactFlowNode, offset: number): EdgeEndpoint {
+  const sourceCenterX = source.position.x + FLOW_NODE_WIDTH / 2;
+  const sourceCenterY = source.position.y + FLOW_NODE_HEIGHT / 2;
+  const targetCenterX = target.position.x + FLOW_NODE_WIDTH / 2;
+  const targetCenterY = target.position.y + FLOW_NODE_HEIGHT / 2;
+  const dx = targetCenterX - sourceCenterX;
+  const dy = targetCenterY - sourceCenterY;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const side: GraphSide = dx >= 0 ? 'right' : 'left';
+    return {
+      x: source.position.x + (side === 'right' ? FLOW_NODE_WIDTH : 0),
+      y: sourceCenterY + offset,
+      side,
+    };
+  }
+  const side: GraphSide = dy >= 0 ? 'bottom' : 'top';
+  return {
+    x: sourceCenterX + offset,
+    y: source.position.y + (side === 'bottom' ? FLOW_NODE_HEIGHT : 0),
+    side,
+  };
+}
+
+function sideNormal(side: GraphSide): { x: number; y: number } {
+  if (side === 'left') return { x: -1, y: 0 };
+  if (side === 'right') return { x: 1, y: 0 };
+  if (side === 'top') return { x: 0, y: -1 };
+  return { x: 0, y: 1 };
 }
 
 function nodeAnnotations(node: GraphNode): GraphAnnotation[] {
