@@ -24,9 +24,9 @@ interface IssueRow {
   author_actor_type: string;
   author_display: string;
   source: string;
-  created_at: number;
-  updated_at: number;
-  closed_at: number | null;
+  created_at: number | string;
+  updated_at: number | string;
+  closed_at: number | string | null;
 }
 
 interface AliasRow {
@@ -46,7 +46,7 @@ interface RelationshipRow {
   provenance: string;
   confidence: string;
   metadata_json: string;
-  created_at: number;
+  created_at: number | string;
 }
 
 interface AttachmentAnnotation {
@@ -88,15 +88,32 @@ function parseJsonObject(value: string | null | undefined): Record<string, unkno
   }
 }
 
-function toIso(ms: number | null | undefined): string | undefined {
-  return typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+function parseTimestamp(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^\d+$/.test(trimmed)) {
+    const numeric = Number(trimmed);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  const parsed = new Date(trimmed).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
-function maxTimestamp(...values: Array<number | null | undefined>): number | null {
+function toIso(value: unknown): string | undefined {
+  const ms = parseTimestamp(value);
+  return ms !== null ? new Date(ms).toISOString() : undefined;
+}
+
+function maxTimestamp(...values: unknown[]): number | null {
   let max: number | null = null;
   for (const value of values) {
-    if (typeof value !== "number" || !Number.isFinite(value)) continue;
-    max = max === null ? value : Math.max(max, value);
+    const ms = parseTimestamp(value);
+    if (ms === null) continue;
+    max = max === null ? ms : Math.max(max, ms);
   }
   return max;
 }
@@ -389,7 +406,7 @@ function relationshipDisplay(type: string): string {
 
 function mergeActivityRows(
   activityByIssue: Map<string, number>,
-  rows: Array<{ issue_id: string; activity_at: number | null }>,
+  rows: Array<{ issue_id: string; activity_at: number | string | null }>,
 ): void {
   for (const row of rows) {
     const activityAt = maxTimestamp(row.activity_at);

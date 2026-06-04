@@ -254,6 +254,34 @@ describe("ledger graph projection", () => {
     expect(projection?.edges).toEqual([]);
   });
 
+  it("accepts millisecond timestamps stored as strings for issue since filters", () => {
+    vi.useFakeTimers();
+    const checkout = createProject("repo");
+    const store = new LedgerStore(db);
+    const old = Date.parse("2026-05-20T12:00:00.000Z");
+    const recent = Date.parse("2026-06-03T12:00:00.000Z");
+    const recentIssue = createIssue(store, checkout.project.id, "new1111", "Recent string timestamp");
+    const oldIssue = createIssue(store, checkout.project.id, "old1111", "Old string timestamp");
+    db.prepare("UPDATE ledger_issues SET created_at = ?, updated_at = ? WHERE id = ?")
+      .run(String(recent), String(recent), recentIssue.id);
+    db.prepare("UPDATE ledger_issues SET created_at = ?, updated_at = ? WHERE id = ?")
+      .run(String(old), String(old), oldIssue.id);
+
+    vi.setSystemTime(new Date("2026-06-04T12:00:00.000Z"));
+    const projection = buildLedgerIssueProjection(db, {
+      mode: "issue",
+      status: "all",
+      since: "3d",
+    });
+
+    expect(projection?.nodes.map((node) => node.label)).toEqual(["Recent string timestamp"]);
+    expect(findNode(projection?.nodes ?? [], "Recent string timestamp").detail)
+      .toMatchObject({
+        issue_updated_at: "2026-06-03T12:00:00.000Z",
+        graph_activity_at: "2026-06-03T12:00:00.000Z",
+      });
+  });
+
   it("projects derived text reference relationships as issue graph edges", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
