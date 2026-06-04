@@ -3,7 +3,6 @@ import {
   Background,
   Controls,
   MiniMap,
-  Position,
   ReactFlow,
   ViewportPortal,
 } from '@xyflow/react';
@@ -50,8 +49,6 @@ type ReactFlowNode = {
   position: { x: number; y: number }
   initialWidth?: number
   initialHeight?: number
-  sourcePosition?: Position
-  targetPosition?: Position
   data: { node: GraphNode; label: JSX.Element }
 }
 
@@ -76,6 +73,12 @@ type ForceLayoutNode = SimulationNodeDatum & {
 
 type ForceLayoutLink = SimulationLinkDatum<ForceLayoutNode> & {
   edge: GraphEdge
+}
+
+type ComponentLayout = {
+  nodes: ReactFlowNode[]
+  width: number
+  height: number
 }
 
 type LayoutPolicy = {
@@ -156,8 +159,9 @@ const FLOW_X_START = 24;
 const FLOW_Y_START = 32;
 const FLOW_COLUMN_GAP = 258;
 const FLOW_ROW_GAP = 142;
-const FLOW_GROUP_GAP = 86;
 const FLOW_SINGLETON_GRID_COLUMNS = 4;
+const FLOW_PACK_COLUMN_GAP = 136;
+const FLOW_PACK_ROW_GAP = 112;
 const FLOW_MAX_RANK = 7;
 const FLOW_FORCE_TICKS = 180;
 const GRAPH_SIZE_OPTIONS = [120, 250, 500, 1000] as const;
@@ -423,10 +427,122 @@ function makeFlowNode(node: GraphNode, x: number, y: number): ReactFlowNode {
     position: { x, y },
     initialWidth: FLOW_NODE_WIDTH,
     initialHeight: FLOW_NODE_HEIGHT,
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
     data: { node, label: <MandibleFlowNodeLabel node={node} /> },
   };
+}
+
+function layoutComponent(
+  component: string[],
+  edges: GraphEdge[],
+  nodeById: Map<string, GraphNode>,
+  ranks: Map<string, number>,
+  directedEdges: DirectedLayoutEdge[],
+  mode: GraphMode,
+): ComponentLayout {
+  const componentIds = new Set(component);
+  const componentEdges = edges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target));
+  const policy = layoutPolicy(mode, componentEdges);
+  const byRank = new Map<number, GraphNode[]>();
+  for (const id of component) {
+    const node = nodeById.get(id);
+    if (!node) continue;
+    const rank = ranks.get(id) ?? baseRank(node, mode);
+    const group = byRank.get(rank) ?? [];
+    group.push(node);
+    byRank.set(rank, group);
+  }
+
+  const minRank = Math.min(...byRank.keys());
+  const forceNodes: ForceLayoutNode[] = [];
+  for (const [rank, rankNodes] of byRank.entries()) {
+    const sorted = [...rankNodes].sort(sortRankNodes);
+    sorted.forEach((node, row) => {
+      const anchorX = Math.max(0, rank - minRank) * FLOW_COLUMN_GAP;
+      const anchorY = row * FLOW_ROW_GAP;
+      forceNodes.push({
+        id: node.id,
+        node,
+        rank,
+        anchorX,
+        anchorY,
+        x: anchorX,
+        y: anchorY,
+      });
+    });
+  }
+
+  const forceLinks: ForceLayoutLink[] = directedEdges
+    .filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target))
+    .map((edge) => ({ source: edge.source, target: edge.target, edge: edge.edge }));
+
+  if (forceNodes.length > 1 && policy.force) {
+    const simulation = forceSimulation<ForceLayoutNode>(forceNodes)
+      .force('link', forceLink<ForceLayoutNode, ForceLayoutLink>(forceLinks)
+        .id((node) => node.id)
+        .distance((link) => linkDistance(link.edge))
+        .strength((link) => linkStrength(link.edge)))
+      .force('charge', forceManyBody<ForceLayoutNode>().strength(policy.charge))
+      .force('collide', forceCollide<ForceLayoutNode>(FLOW_NODE_WIDTH * 0.68).strength(0.98))
+      .force('x', forceX<ForceLayoutNode>((node) => node.anchorX).strength(policy.xStrength))
+      .force('y', forceY<ForceLayoutNode>((node) => node.anchorY).strength(policy.yStrength))
+      .stop();
+    for (let tick = 0; tick < FLOW_FORCE_TICKS; tick += 1) simulation.tick();
+  }
+
+  const minX = Math.min(...forceNodes.map((node) => node.x ?? node.anchorX));
+  const minY = Math.min(...forceNodes.map((node) => node.y ?? node.anchorY));
+  const maxX = Math.max(...forceNodes.map((node) => node.x ?? node.anchorX));
+  const maxY = Math.max(...forceNodes.map((node) => node.y ?? node.anchorY));
+
+  return {
+    nodes: forceNodes.map((item) => makeFlowNode(
+      item.node,
+      (item.x ?? item.anchorX) - minX,
+      (item.y ?? item.anchorY) - minY,
+    )),
+    width: Math.max(FLOW_NODE_WIDTH, maxX - minX + FLOW_NODE_WIDTH),
+    height: Math.max(FLOW_NODE_HEIGHT, maxY - minY + FLOW_NODE_HEIGHT),
+  };
+}
+
+function componentColumnCount(componentCount: number, nodeCount: number, mode: GraphMode): number {
+  if (componentCount <= 1) return 1;
+  if (componentCount <= 3) return componentCount;
+  const modeMultiplier = mode === 'activity' || mode === 'work' ? 1.35 : 1.12;
+  const nodeMultiplier = nodeCount >= 240 ? 1.35 : nodeCount >= 120 ? 1.2 : 1;
+  return Math.min(8, Math.max(2, Math.ceil(Math.sqrt(componentCount * modeMultiplier * nodeMultiplier))));
+}
+
+function packComponents(components: ComponentLayout[], mode: GraphMode, nodeCount: number): ReactFlowNode[] {
+  if (components.length === 0) return [];
+  const columns = componentColumnCount(components.length, nodeCount, mode);
+  const laneWidth = Math.max(
+    FLOW_COLUMN_GAP,
+    Math.max(...components.map((component) => component.width)) + FLOW_PACK_COLUMN_GAP,
+  );
+  const laneHeights = Array.from({ length: columns }, () => FLOW_Y_START);
+  const output: ReactFlowNode[] = [];
+
+  for (const component of components) {
+    const column = laneHeights.reduce(
+      (best, height, index) => (height < laneHeights[best] ? index : best),
+      0,
+    );
+    const xOffset = FLOW_X_START + column * laneWidth;
+    const yOffset = laneHeights[column];
+    for (const node of component.nodes) {
+      output.push({
+        ...node,
+        position: {
+          x: node.position.x + xOffset,
+          y: node.position.y + yOffset,
+        },
+      });
+    }
+    laneHeights[column] += component.height + FLOW_PACK_ROW_GAP;
+  }
+
+  return output;
 }
 
 function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): ReactFlowNode[] {
@@ -475,86 +591,26 @@ function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): R
     .map((id) => nodeById.get(id)!)
     .sort(sortGraphNodes);
 
-  const output: ReactFlowNode[] = [];
-  let yCursor = FLOW_Y_START;
-
-  for (const component of relationshipComponents) {
-    const componentIds = new Set(component);
-    const componentEdges = edges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target));
-    const policy = layoutPolicy(mode, componentEdges);
-    const byRank = new Map<number, GraphNode[]>();
-    for (const id of component) {
-      const node = nodeById.get(id);
-      if (!node) continue;
-      const rank = ranks.get(id) ?? baseRank(node, mode);
-      const group = byRank.get(rank) ?? [];
-      group.push(node);
-      byRank.set(rank, group);
-    }
-
-    const forceNodes: ForceLayoutNode[] = [];
-    for (const [rank, rankNodes] of byRank.entries()) {
-      const sorted = [...rankNodes].sort(sortRankNodes);
-      sorted.forEach((node, row) => {
-        const anchorX = FLOW_X_START + rank * FLOW_COLUMN_GAP;
-        const anchorY = yCursor + row * FLOW_ROW_GAP;
-        forceNodes.push({
-          id: node.id,
-          node,
-          rank,
-          anchorX,
-          anchorY,
-          x: anchorX,
-          y: anchorY,
-        });
-      });
-    }
-
-    const forceLinks: ForceLayoutLink[] = directedEdges
-      .filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target))
-      .map((edge) => ({ source: edge.source, target: edge.target, edge: edge.edge }));
-
-    if (forceNodes.length > 1 && policy.force) {
-      const simulation = forceSimulation<ForceLayoutNode>(forceNodes)
-        .force('link', forceLink<ForceLayoutNode, ForceLayoutLink>(forceLinks)
-          .id((node) => node.id)
-          .distance((link) => linkDistance(link.edge))
-          .strength((link) => linkStrength(link.edge)))
-        .force('charge', forceManyBody<ForceLayoutNode>().strength(policy.charge))
-        .force('collide', forceCollide<ForceLayoutNode>(FLOW_NODE_WIDTH * 0.68).strength(0.98))
-        .force('x', forceX<ForceLayoutNode>((node) => node.anchorX).strength(policy.xStrength))
-        .force('y', forceY<ForceLayoutNode>((node) => node.anchorY).strength(policy.yStrength))
-        .stop();
-      for (let tick = 0; tick < FLOW_FORCE_TICKS; tick += 1) simulation.tick();
-    }
-
-    const minY = Math.min(...forceNodes.map((node) => node.y ?? node.anchorY));
-    const maxY = Math.max(...forceNodes.map((node) => node.y ?? node.anchorY));
-    const yOffset = yCursor - minY;
-    for (const item of forceNodes) {
-      output.push(makeFlowNode(
-        item.node,
-        Math.max(FLOW_X_START, item.x ?? item.anchorX),
-        (item.y ?? item.anchorY) + yOffset,
-      ));
-    }
-    yCursor += Math.max(FLOW_ROW_GAP, maxY - minY + FLOW_NODE_HEIGHT) + FLOW_GROUP_GAP;
-  }
+  const packedComponents = relationshipComponents.map((component) => (
+    layoutComponent(component, edges, nodeById, ranks, directedEdges, mode)
+  ));
 
   if (singletons.length > 0) {
-    const columns = Math.min(FLOW_SINGLETON_GRID_COLUMNS, Math.max(1, Math.ceil(Math.sqrt(singletons.length))));
-    singletons.forEach((node, index) => {
-      const column = index % columns;
-      const row = Math.floor(index / columns);
-      output.push(makeFlowNode(
-        node,
-        FLOW_X_START + column * FLOW_COLUMN_GAP,
-        yCursor + row * FLOW_ROW_GAP,
-      ));
-    });
+    const singletonColumns = Math.min(
+      FLOW_SINGLETON_GRID_COLUMNS,
+      Math.max(1, Math.ceil(Math.sqrt(singletons.length))),
+    );
+    for (let index = 0; index < singletons.length; index += singletonColumns) {
+      const rowNodes = singletons.slice(index, index + singletonColumns);
+      packedComponents.push({
+        nodes: rowNodes.map((node, column) => makeFlowNode(node, column * FLOW_COLUMN_GAP, 0)),
+        width: FLOW_NODE_WIDTH + (rowNodes.length - 1) * FLOW_COLUMN_GAP,
+        height: FLOW_NODE_HEIGHT,
+      });
+    }
   }
 
-  return output;
+  return packComponents(packedComponents, mode, nodes.length);
 }
 
 function edgeLabel(edge: GraphEdge): string | undefined {
@@ -626,7 +682,12 @@ function ManualGraphEdges({ nodes, edges }: { nodes: ReactFlowNode[]; edges: Gra
       {visibleEdges.map(({ edge, d }) => (
         <path
           key={edge.id}
-          className={`graph-manual-edge${isWeakReferenceEdge(edge) ? ' graph-manual-edge--weak' : ''}`}
+          className={[
+            'graph-manual-edge',
+            isWeakReferenceEdge(edge) ? 'graph-manual-edge--weak' : '',
+            isHierarchyEdge(edge) ? 'graph-manual-edge--structural' : '',
+            isProvenanceLikeEdge(edge) ? 'graph-manual-edge--provenance' : '',
+          ].filter(Boolean).join(' ')}
           d={d}
           markerEnd="url(#graph-manual-arrow)"
           style={{ stroke: edgeColor(edge), strokeWidth: edgeStrokeWidth(edge) }}
