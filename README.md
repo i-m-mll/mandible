@@ -8,10 +8,11 @@ A local-first agent control plane for AI coding agents. Mandible runs as a daemo
 
 Agents work on feature branches freely. Protected-branch operations require explicit human authentication via hardware key (YubiKey/GPG).
 
-1. An agent finishes work and submits: `mandible auth request <branch> --title "Merge feature/x" --no-watch`
-2. The request appears in the Auth tab with diff summary, commit message, file stats, and optional spec.
-3. You review and approve — Mandible executes the operation with your hardware key.
-4. The result is delivered to the agent's next session via the inbox.
+1. An agent checks for an existing request if needed: `mandible auth list --repo <repo> --head feature/x`
+2. An agent finishes work and submits: `mandible auth request <branch> --title "Merge feature/x" --no-watch`
+3. The request appears in the Auth tab with diff summary, commit message, file stats, and optional spec.
+4. You review and approve — Mandible executes the operation with your hardware key.
+5. The result is delivered to the agent's next session via the inbox.
 
 Auth types are generalized beyond merges: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `preset-promote`, and `data-delete` are all supported. Requests support dependency chains, custom commit messages, post-action handoff notes, automatic `Bug:` trailer extraction for reference-only issue links, and explicit close-on-merge issue links.
 
@@ -253,7 +254,7 @@ Base URL: `http://localhost:19420`
 ### Auth
 
 ```
-GET    /api/auth/queue            List pending auth requests
+GET    /api/auth/queue            List active auth queue
 GET    /api/auth/request/<id>     Request details
 POST   /api/auth/request          Submit new request (prefer CLI)
 PUT    /api/auth/request/<id>     Update existing request
@@ -319,6 +320,7 @@ mandible wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
 mandible task <description>              Set session task/status
 mandible inbox [check|ack|watch|add]     Manage session inbox
 mandible issue <subcommand>              Issue operations (new, close, comment, show, list)
+mandible auth list [opts]                List active auth requests
 mandible auth request <branch> [opts]    Submit auth request
 mandible auth merge <branch> [opts]      Execute authenticated merge
 mandible search "<query>" [opts]         Search chat history across providers

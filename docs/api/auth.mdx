@@ -149,7 +149,9 @@ curl -X DELETE http://localhost:19420/api/auth/request/a1b2c3d4 \
 
 ### GET /api/auth/queue
 
-List active (non-terminal) auth requests.
+List the active auth queue: pending, approved, executing, expired, failed, and
+recently resolved auth requests. Agents should prefer `mandible auth list` when
+the CLI is available and use this endpoint as the raw API fallback.
 
 **Query params:**
 
