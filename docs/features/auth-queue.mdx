@@ -44,7 +44,7 @@ expired → pending (via retry)
 
 ## Submitting Requests
 
-Requests are typically submitted via the `mandible auth request` CLI command, which handles metadata collection (diff stats, commit messages, issue IDs, specs) and posts to the API. The raw API endpoint is:
+Requests are typically submitted via the `mandible auth request` CLI command, which handles metadata collection (diff stats, commit messages, issue IDs, specs) and posts to the API. When an agent needs to check whether a request already exists and does not know the request ID, it should run `mandible auth list --repo <repo> --head <branch> --base <branch>` first. The raw submission API endpoint is:
 
 ```
 POST /api/auth/request
@@ -81,7 +81,7 @@ For merge requests, the queue verifies that every non-merge commit in the branch
 
 ## Reviewing and Acting on Requests
 
-The dashboard displays the auth queue with all active requests. For each request, the user sees:
+The dashboard and `mandible auth list` display the auth queue with all active requests. For each request, the user sees:
 
 - Title and type
 - Repository and branch information

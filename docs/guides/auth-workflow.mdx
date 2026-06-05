@@ -6,7 +6,7 @@ This guide walks through the complete lifecycle of an authenticated operation, f
 
 The agent has been working in a feature branch worktree — say `feature/add-dark-mode`. It has made commits using the agent signing key (via `agent-commit --issue <id>`), each with a `Bug:` trailer linking to the tracking issue. The work is done, tests pass, and the agent is ready to merge into the protected branch.
 
-At this point, the agent cannot merge directly. The protected branch requires user authentication (a YubiKey signature). So it submits an auth request.
+At this point, the agent cannot merge directly. The protected branch requires user authentication (a YubiKey signature). If the agent needs to check whether a request already exists and does not know the request ID, it first runs `mandible auth list --repo <repo> --head <branch> --base <branch>`. Then it submits an auth request.
 
 ## 2. Submitting the Auth Request
 
@@ -244,11 +244,14 @@ If you need to check on a request outside the dashboard:
 # By request ID
 curl -s http://localhost:19420/api/auth/request/<id>
 
-# List all active requests
+# List the active queue
+mandible auth list
+
+# Raw API fallback for the active queue
 curl -s http://localhost:19420/api/auth/queue
 
 # List resolved history
 curl -s http://localhost:19420/api/auth/history?limit=10
 ```
 
-The queue endpoint returns pending, executing, recently resolved, and failed requests — everything the user might need to act on.
+The queue endpoint returns pending, approved, executing, expired, failed, and recently resolved requests — everything the user might need to act on.

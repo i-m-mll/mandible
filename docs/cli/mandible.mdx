@@ -114,6 +114,29 @@ mandible issue label rm <id> <label>
 
 Prefer `mandible issue report <id> --json` when an agent needs issue context for a handoff or planning pass. Agents remain responsible for synthesis and decisions; the CLI output is only a deterministic fact packet.
 
+### mandible auth list
+
+List active auth requests from the Mandible daemon.
+
+```
+mandible auth list [options]
+```
+
+The active queue includes pending, approved, executing, expired, failed, and
+recently resolved requests. Use this before submitting when a request may
+already exist but the request ID is unknown.
+
+**Options:**
+
+| Flag | Description |
+|---|---|
+| `--json` | Print raw queue JSON after client-side filters |
+| `--repo <name>` | Filter by repository name |
+| `--head <branch>` | Filter by head/source branch |
+| `--base <branch>` | Filter by base/target branch |
+| `--status <status>` | Filter by request status |
+| `--type <type>` | Filter by auth request type |
+
 ### mandible auth request
 
 Submit an auth request and optionally watch for resolution.
