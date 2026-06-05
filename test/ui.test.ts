@@ -3,12 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
+import { parseRouteFromHash } from '../ui/src/routing';
 import { AuthQueueView } from '../ui/src/views/auth';
 import { ReviewView } from '../ui/src/views/review';
 import { SessionsView } from '../ui/src/views/sessions';
+import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { ArtifactsView } from '../ui/src/views/artifacts';
+import { getInstructionMessageMeta } from '../ui/src/views/conversations';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
+import { useSidebarResize } from '../ui/src/hooks/useSidebarResize';
 import {
   resolveIssueIdDeepLink,
   resolveIssueRepoDeepLink,
@@ -17,8 +21,18 @@ import {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+
+function setViewportWidth(width: number): void {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    writable: true,
+    value: width,
+  });
+  fireEvent(window, new Event('resize'));
+}
 
 function stubFetch(): void {
   const mockFetch = vi.fn((input: RequestInfo) => {
@@ -65,6 +79,31 @@ describe('SessionsView', () => {
   });
 });
 
+describe('App routing', () => {
+  it('routes legacy monitor hashes into console', () => {
+    expect(parseRouteFromHash('#/sessions?session=s1')).toEqual({
+      tab: 'console',
+      params: { session: 's1' },
+    });
+  });
+});
+
+describe('SettingsView', () => {
+  it('renders a close button when an onClose handler is supplied', () => {
+    const onClose = vi.fn();
+    render(
+      h(SettingsView, {
+        settings: {},
+        onSave: async () => undefined,
+        onClose,
+      }),
+    );
+
+    fireEvent.click(screen.getByLabelText('Close settings'));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+});
+
 describe('AuthQueueView', () => {
   it('navigates between sidebar items', async () => {
     stubFetch();
@@ -103,8 +142,64 @@ describe('WorkOverviewView', () => {
       }),
     );
 
-    expect(screen.getByText('Repo One')).toBeTruthy();
+    expect(screen.getAllByText('Repo One').length).toBeGreaterThan(0);
     expect(screen.getAllByText('main').length).toBeGreaterThan(0);
+  });
+
+  it('uses a sidebar/detail layout with advanced work filters', async () => {
+    const onRescan = vi.fn();
+    render(
+      h(WorkOverviewView, {
+        repos: [
+          { id: 'old', name: 'Zeta Repo', path: '/repo/zeta' },
+          { id: 'new', name: 'Alpha Repo', path: '/repo/alpha' },
+        ],
+        branchesByRepo: {
+          old: [
+            {
+              name: 'legacy',
+              status: 'clean',
+              last_commit_message: 'Older work',
+              last_commit_date: '2024-01-01T10:00:00Z',
+            },
+          ],
+          new: [
+            {
+              name: 'feature/work',
+              status: 'dirty',
+              last_commit_message: 'Fresh work',
+              last_commit_date: '2024-01-03T10:00:00Z',
+            },
+          ],
+        },
+        onRescan,
+      }),
+    );
+
+    expect(screen.queryByText('Rescan')).toBeNull();
+    expect(screen.getByLabelText('Repositories')).toBeTruthy();
+    expect(screen.getByLabelText('Repository details')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Search repos...')).toBeTruthy();
+    expect(screen.getAllByText('Alpha Repo').length).toBeGreaterThan(0);
+    expect(screen.getByText('feature/work')).toBeTruthy();
+    expect(screen.getAllByText('\u2191 Push').length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByLabelText('Advanced filters'));
+    expect(screen.getByText('Show excluded')).toBeTruthy();
+    expect(screen.getByText('Refresh now')).toBeTruthy();
+    fireEvent.click(screen.getByText('Refresh now'));
+    expect(onRescan).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByDisplayValue('Last activity'), { target: { value: 'name' } });
+    fireEvent.click(screen.getByTitle('Reverse sort direction'));
+    await waitFor(() => {
+      const repoNames = Array.from(document.querySelectorAll('.work-repo-item__name'))
+        .map((node) => node.textContent ?? '');
+      expect(repoNames[0]).toContain('Alpha Repo');
+    });
+
+    fireEvent.click(screen.getByText('Zeta Repo'));
+    expect(screen.getByText('legacy')).toBeTruthy();
   });
 });
 
@@ -145,6 +240,63 @@ describe('issue deep links', () => {
 
     expect(repoId).toBe('mandible');
     expect(issueId).toBe('4c26383');
+  });
+});
+
+describe('useSidebarResize', () => {
+  function stubLocalStorage(initial: Record<string, string> = {}): void {
+    const store = new Map(Object.entries(initial));
+    const localStorageStub = {
+      getItem: vi.fn((key: string) => store.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => {
+        store.set(key, value);
+      }),
+      removeItem: vi.fn((key: string) => {
+        store.delete(key);
+      }),
+      clear: vi.fn(() => {
+        store.clear();
+      }),
+    };
+
+    vi.stubGlobal('localStorage', localStorageStub);
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: localStorageStub,
+    });
+  }
+
+  function ResizeProbe() {
+    const { width } = useSidebarResize({
+      defaultWidth: 420,
+      minWidth: 280,
+      storageKey: 'sidebar-width:test',
+    });
+
+    return h('div', {
+      'data-testid': 'sidebar',
+      'data-width': width === null ? 'auto' : String(width),
+      style: width === null ? {} : { width: `${width}px` },
+    });
+  }
+
+  it('drops and restores inline width immediately across the mobile breakpoint', async () => {
+    stubLocalStorage({ 'sidebar-width:test': '480' });
+    setViewportWidth(1024);
+
+    render(h(ResizeProbe, {}));
+    const sidebar = screen.getByTestId('sidebar');
+
+    expect(sidebar.getAttribute('data-width')).toBe('480');
+    expect((sidebar as HTMLElement).style.width).toBe('480px');
+
+    setViewportWidth(700);
+    await waitFor(() => expect(sidebar.getAttribute('data-width')).toBe('auto'));
+    expect((sidebar as HTMLElement).style.width).toBe('');
+
+    setViewportWidth(701);
+    await waitFor(() => expect(sidebar.getAttribute('data-width')).toBe('480'));
+    expect((sidebar as HTMLElement).style.width).toBe('480px');
   });
 });
 
@@ -700,9 +852,27 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: artifact.id }));
 
     await waitFor(() => expect(screen.getByText('humbleb://claims/claim_1')).toBeTruthy());
+    const filterButton = screen.getByLabelText('Artifact filters');
+    expect(filterButton.textContent).not.toContain('⋯');
+    expect(filterButton.querySelector('svg')).toBeTruthy();
     expect(screen.getByText('Knowledge Backrefs')).toBeTruthy();
     expect(screen.getByText('claim')).toBeTruthy();
     expect(screen.getByText('indexed')).toBeTruthy();
+  });
+});
+
+describe('conversation instruction message labels', () => {
+  it('recognizes project AGENTS.md and CLAUDE.md instruction messages', () => {
+    expect(getInstructionMessageMeta('AGENTS.md instructions for /Users/me/repo\n# Agent Instructions')).toEqual({
+      filename: 'AGENTS.md',
+      scope: 'Project',
+      path: '/Users/me/repo',
+    });
+    expect(getInstructionMessageMeta('# CLAUDE.md instructions for /Users/me/repo\n# Rules')).toEqual({
+      filename: 'CLAUDE.md',
+      scope: 'Project',
+      path: '/Users/me/repo',
+    });
   });
 });
 

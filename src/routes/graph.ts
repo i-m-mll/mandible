@@ -10,49 +10,66 @@ import { getIndexedGraph, getIndexedGraphCount } from "../provider-artifacts.js"
 import type { IssueScanner } from "../issue-scanner.js";
 import type { RouteRegistrar } from "../server.js";
 import type {
+  GraphDisplayCounts,
   GraphEdge,
+  GraphLegendItem,
   GraphLayerDescriptor,
   GraphMode,
   GraphModeDescriptor,
   GraphNode,
   GraphPayload,
+  GraphPreset,
+  GraphPresetDescriptor,
   GraphQueryParams,
+  GraphSpec,
 } from "../types.js";
 import { extractBugRefs } from "../utils/bug-refs.js";
 
 // Bug: 7a141c3 — graph API implementation
 // Bug: 50c4afb — typed graph modes for the React Flow graph workspace
 
-const GRAPH_MODES: Array<Omit<GraphModeDescriptor, "count" | "available">> = [
+export const GRAPH_PERSPECTIVES: Array<Omit<GraphModeDescriptor, "count" | "available">> = [
   {
     id: "activity",
     label: "Activity",
-    description: "Recent issues, sessions, and auth requests.",
+    kind: "perspective",
+    description: "What changed recently or needs attention now.",
+    summary: "What changed recently or needs attention now.",
   },
   {
     id: "issue",
     label: "Issues",
-    description: "Issue-centered relationships and umbrella/child links.",
+    kind: "perspective",
+    description: "How issues relate to other issues.",
+    summary: "How issues relate to other issues.",
   },
   {
     id: "work",
     label: "Work",
-    description: "Repos, work units, branches, sessions, and auth requests.",
+    kind: "perspective",
+    description: "How work moves through repos, branches, sessions, issues, and auth.",
+    summary: "How work moves through repos, branches, sessions, issues, and auth.",
   },
   {
     id: "provider-lineage",
     label: "Provider Lineage",
-    description: "Providers, manifests, runs, analyses, and provider artifacts.",
+    kind: "perspective",
+    description: "What a provider or tool produced from the request and spec to outputs.",
+    summary: "What a provider or tool produced from the request and spec to outputs.",
   },
   {
     id: "artifact-lineage",
     label: "Artifact Lineage",
-    description: "Artifact ancestors and descendants.",
+    kind: "perspective",
+    description: "Where an artifact came from and what reused or derived from it.",
+    summary: "Where an artifact came from and what reused or derived from it.",
   },
   {
     id: "provenance",
     label: "Provenance",
-    description: "Observed provenance edges across provider and artifact records.",
+    kind: "perspective",
+    description: "Evidence for which session, action, commit, or run produced or justified an object.",
+    summary: "Evidence for which session, action, commit, or run produced or justified an object.",
   },
 ];
 
@@ -63,6 +80,166 @@ const MODE_LAYER_ORDER: Partial<Record<GraphMode, string[]>> = {
   "provider-lineage": ["provider", "issue", "provider_spec", "provider_manifest", "run", "analysis", "artifact"],
   "artifact-lineage": ["artifact", "dataset", "model", "report"],
   provenance: ["provider", "provider_manifest", "artifact", "analysis", "report"],
+};
+
+const STRUCTURAL_ISSUE_EDGES = ["umbrella_child", "parent_child", "parent", "blocks", "implements"];
+
+const PRESET_LABELS: Record<GraphPreset, { label: string; description: string }> = {
+  activity: {
+    label: "Activity",
+    description: "Recent operational state plus issue/work/auth/session edges.",
+  },
+  issues: {
+    label: "Issues",
+    description: "Open issue nodes with structural issue relationships.",
+  },
+  work: {
+    label: "Work",
+    description: "Issues, work units, sessions, auth requests, and lifecycle edges.",
+  },
+  "provider-lineage": {
+    label: "Provider Lineage",
+    description: "Provider and tool request/output lineage.",
+  },
+  "artifact-lineage": {
+    label: "Artifact Lineage",
+    description: "Artifact derivation and reuse lineage.",
+  },
+  provenance: {
+    label: "Provenance",
+    description: "Evidence for sessions, actions, commits, and artifacts.",
+  },
+};
+
+const PRESET_SPECS: Record<GraphPreset, GraphSpec> = {
+  issues: {
+    preset: "issues",
+    node_types: ["issue"],
+    edge_types: STRUCTURAL_ISSUE_EDGES,
+    edge_classes: ["semantic"],
+    filters: {
+      repos: [],
+      branches: [],
+      status: { issue: ["open"] },
+    },
+    limit: 120,
+    include_isolates: true,
+    endpoint_policy: "strict",
+    layout: {
+      strategy: "structured",
+      primary_edge_types: ["umbrella_child", "parent_child", "parent"],
+    },
+  },
+  work: {
+    preset: "work",
+    node_types: ["issue", "work_unit", "branch", "session", "auth_request"],
+    edge_types: [
+      ...STRUCTURAL_ISSUE_EDGES,
+      "auth_issue",
+      "session_issue",
+      "session_parent",
+      "issue_has_work_unit",
+      "auth_request_references_issue",
+    ],
+    edge_classes: ["semantic", "lifecycle"],
+    filters: {
+      repos: [],
+      branches: [],
+      status: { issue: ["open", "closed"] },
+    },
+    limit: 120,
+    include_isolates: true,
+    endpoint_policy: "strict",
+    layout: {
+      strategy: "structured",
+      primary_edge_types: ["umbrella_child", "parent_child", "parent"],
+    },
+  },
+  activity: {
+    preset: "activity",
+    node_types: ["issue", "session", "auth_request"],
+    edge_types: [
+      ...STRUCTURAL_ISSUE_EDGES,
+      "auth_issue",
+      "session_issue",
+      "session_parent",
+    ],
+    edge_classes: ["semantic", "lifecycle"],
+    filters: {
+      repos: [],
+      branches: [],
+      status: { issue: ["open", "closed"] },
+    },
+    limit: 120,
+    include_isolates: true,
+    endpoint_policy: "strict",
+    layout: {
+      strategy: "structured",
+      primary_edge_types: ["umbrella_child", "parent_child", "parent"],
+    },
+  },
+  "provider-lineage": {
+    preset: "provider-lineage",
+    node_types: ["provider", "provider_spec", "provider_manifest", "run", "analysis", "artifact", "issue"],
+    edge_types: [
+      "provider_emitted_manifest",
+      "manifest_declares",
+      "manifest_references_artifact",
+      "produced",
+      "derived_from",
+      "validated_by",
+      "requested_by",
+    ],
+    edge_classes: ["provider", "provenance", "semantic"],
+    filters: {
+      repos: [],
+      branches: [],
+      status: {},
+    },
+    limit: 120,
+    include_isolates: true,
+    endpoint_policy: "strict",
+    layout: {
+      strategy: "explore",
+      primary_edge_types: ["provider_emitted_manifest", "manifest_declares", "produced"],
+    },
+  },
+  "artifact-lineage": {
+    preset: "artifact-lineage",
+    node_types: ["artifact", "dataset", "model", "report", "analysis"],
+    edge_types: ["produced", "derived_from", "validated_by", "requested_by"],
+    edge_classes: ["provider", "provenance"],
+    filters: {
+      repos: [],
+      branches: [],
+      status: {},
+    },
+    limit: 120,
+    include_isolates: true,
+    endpoint_policy: "strict",
+    layout: {
+      strategy: "explore",
+      primary_edge_types: ["derived_from", "produced"],
+    },
+  },
+  provenance: {
+    preset: "provenance",
+    node_types: ["provider", "provider_manifest", "artifact", "analysis", "report", "session", "commit"],
+    edge_types: ["requested_by", "approved_by", "produced", "validated_by", "derived_from"],
+    edge_classes: ["provenance", "provider"],
+    filters: {
+      repos: [],
+      branches: [],
+      status: {},
+    },
+    limit: 120,
+    include_isolates: true,
+    endpoint_policy: "strict",
+    layout: {
+      strategy: "explore",
+      primary_edge_types: ["requested_by", "produced", "validated_by"],
+    },
+  },
 };
 
 function parseSince(since: string): number | null {
@@ -113,22 +290,146 @@ function queryValues(
 }
 
 function parseGraphMode(value: string | undefined): GraphMode {
-  return GRAPH_MODES.some((mode) => mode.id === value) ? (value as GraphMode) : "activity";
+  return GRAPH_PERSPECTIVES.some((mode) => mode.id === value) ? (value as GraphMode) : "issue";
+}
+
+function presetFromMode(mode: GraphMode): GraphPreset {
+  return mode === "issue" ? "issues" : mode;
+}
+
+function modeFromPreset(preset: GraphPreset): GraphMode {
+  return preset === "issues" ? "issue" : preset;
+}
+
+function parsePreset(value: string | undefined): GraphPreset | undefined {
+  if (!value) return undefined;
+  if (value === "issue") return "issues";
+  return Object.prototype.hasOwnProperty.call(PRESET_SPECS, value) ? (value as GraphPreset) : undefined;
+}
+
+function uniqueList(values: string[]): string[] {
+  return Array.from(new Set(values.filter((value) => value.trim() !== "")));
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return uniqueList(value.filter((item): item is string => typeof item === "string"));
+}
+
+function parseSpecJson(value: string | undefined): Partial<GraphSpec> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Partial<GraphSpec>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function mergeSpec(base: GraphSpec, patch: Partial<GraphSpec>): GraphSpec {
+  return {
+    ...base,
+    ...patch,
+    node_types: stringList(patch.node_types).length > 0
+      ? stringList(patch.node_types)
+      : [...base.node_types],
+    edge_types: stringList(patch.edge_types).length > 0
+      ? stringList(patch.edge_types)
+      : [...base.edge_types],
+    edge_classes: stringList(patch.edge_classes).length > 0
+      ? stringList(patch.edge_classes)
+      : base.edge_classes ? [...base.edge_classes] : undefined,
+    filters: {
+      ...base.filters,
+      ...(patch.filters ?? {}),
+      repos: stringList(patch.filters?.repos).length > 0
+        ? stringList(patch.filters?.repos)
+        : [...base.filters.repos],
+      branches: stringList(patch.filters?.branches).length > 0
+        ? stringList(patch.filters?.branches)
+        : [...base.filters.branches],
+      status: {
+        ...base.filters.status,
+        ...(patch.filters?.status ?? {}),
+      },
+    },
+    limit: Math.min(Math.max(Number(patch.limit) || base.limit, 1), 1000),
+    include_isolates: typeof patch.include_isolates === "boolean"
+      ? patch.include_isolates
+      : base.include_isolates,
+    endpoint_policy: patch.endpoint_policy === "include-context" ? "include-context" : base.endpoint_policy,
+    layout: {
+      ...base.layout,
+      ...(patch.layout ?? {}),
+      primary_edge_types: stringList(patch.layout?.primary_edge_types).length > 0
+        ? stringList(patch.layout?.primary_edge_types)
+        : [...base.layout.primary_edge_types],
+    },
+  };
+}
+
+function normalizeIssueStatus(status: string | undefined): string[] | undefined {
+  if (status === undefined) return undefined;
+  return status === "all" ? ["open", "closed"] : ["open"];
+}
+
+export function normalizeGraphSpec(query: Record<string, string | string[] | undefined>): GraphSpec {
+  const explicitMode = firstQueryValue(query, "mode");
+  const explicitPreset = parsePreset(firstQueryValue(query, "preset"));
+  const mode = explicitMode ? parseGraphMode(explicitMode) : "issue";
+  const jsonSpec = parseSpecJson(firstQueryValue(query, "spec"));
+  const preset = parsePreset(jsonSpec.preset) ?? explicitPreset ?? presetFromMode(mode);
+  const base = mergeSpec(PRESET_SPECS[preset], jsonSpec);
+  const repos = queryValues(query, "repo");
+  const branches = queryValues(query, "branch");
+  const nodeTypes = queryValues(query, "node_type");
+  const edgeTypes = queryValues(query, "edge_type");
+  const edgeClasses = queryValues(query, "edge_class");
+  const issueStatus = normalizeIssueStatus(firstQueryValue(query, "status"));
+  const limitValue = firstQueryValue(query, "limit");
+  const includeIsolatesValue = firstQueryValue(query, "include_isolates");
+  const since = firstQueryValue(query, "since") ?? firstQueryValue(query, "time") ?? base.filters.since;
+
+  return mergeSpec(base, {
+    preset,
+    node_types: nodeTypes.length > 0 ? nodeTypes : base.node_types,
+    edge_types: edgeTypes.length > 0 ? edgeTypes : base.edge_types,
+    edge_classes: edgeClasses.length > 0 ? edgeClasses : base.edge_classes,
+    filters: {
+      ...base.filters,
+      repos: repos.length > 0 ? repos : base.filters.repos,
+      branches: branches.length > 0 ? branches : base.filters.branches,
+      since,
+      status: {
+        ...base.filters.status,
+        ...(issueStatus ? { issue: issueStatus } : {}),
+      },
+    },
+    limit: limitValue ? Number(limitValue) : base.limit,
+    include_isolates: includeIsolatesValue === undefined
+      ? base.include_isolates
+      : includeIsolatesValue !== "false" && includeIsolatesValue !== "0",
+  });
 }
 
 export function parseQueryParams(query: Record<string, string | string[] | undefined>): GraphQueryParams {
-  const limit = Math.min(Math.max(Number(firstQueryValue(query, "limit")) || 120, 1), 1000);
-  const status = firstQueryValue(query, "status") === "all" ? "all" : "open";
-  const repos = queryValues(query, "repo");
-  const branches = queryValues(query, "branch");
+  const spec = normalizeGraphSpec(query);
+  const repos = spec.filters.repos;
+  const branches = spec.filters.branches;
+  const issueStatuses = spec.filters.status.issue ?? [];
+  const status = issueStatuses.includes("closed") ? "all" : "open";
+  const mode = modeFromPreset(spec.preset ?? "issues");
   return {
-    mode: parseGraphMode(firstQueryValue(query, "mode")),
+    mode,
+    spec,
     repo: repos[0],
     repos,
     branch: branches[0],
     branches,
-    since: firstQueryValue(query, "since"),
-    limit,
+    since: spec.filters.since,
+    limit: spec.limit,
     status,
   };
 }
@@ -194,6 +495,13 @@ function issueNodeIdFromOperationalMetadata(
 }
 
 function nodeCreatedMs(node: GraphNode): number {
+  const graphActivityAt = node.detail?.graph_activity_at ?? node.summary?.graph_activity_at;
+  if (typeof graphActivityAt === "string") {
+    const ms = new Date(graphActivityAt).getTime();
+    if (!Number.isNaN(ms)) return ms;
+  }
+  const updatedMs = node.updated_at ? new Date(node.updated_at).getTime() : NaN;
+  if (!Number.isNaN(updatedMs)) return updatedMs;
   return node.created_at ? new Date(node.created_at).getTime() : 0;
 }
 
@@ -234,6 +542,37 @@ export function capGraphNodesForDisplay(
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => Boolean(value))));
+}
+
+function isWeakIssueReferenceEdge(edge: GraphEdge): boolean {
+  if (edge.edge_class !== "semantic") return false;
+  return edge.type === "references"
+    || edge.type === "curated_related"
+    || edge.type === "related";
+}
+
+function edgeFamilyIds(edge: GraphEdge): string[] {
+  const ids = new Set<string>([edge.type]);
+  const relationshipType = edge.metadata?.relationship_type;
+  if (typeof relationshipType === "string") ids.add(relationshipType);
+  if (edge.type === "umbrella_child") ids.add("parent_child");
+  return Array.from(ids);
+}
+
+function graphSpecForMode(mode: GraphMode): GraphSpec {
+  return PRESET_SPECS[presetFromMode(mode)];
+}
+
+function edgeMatchesSpec(edge: GraphEdge, spec: GraphSpec): boolean {
+  if (spec.edge_classes && spec.edge_classes.length > 0) {
+    if (!edge.edge_class || !spec.edge_classes.includes(edge.edge_class)) return false;
+  }
+  if (spec.edge_types.length === 0) return true;
+  return edgeFamilyIds(edge).some((family) => spec.edge_types.includes(family));
+}
+
+export function graphEdgesForMode(mode: GraphMode, edges: GraphEdge[]): GraphEdge[] {
+  return edges.filter((edge) => edgeMatchesSpec(edge, graphSpecForMode(mode)));
 }
 
 function activeRepoFilters(params: GraphQueryParams): string[] {
@@ -650,6 +989,199 @@ export function sessionIdsFromGraphNodeIds(sessionNodeIds: Set<string>): string[
   return Array.from(ids);
 }
 
+function nodeTypeAllowed(node: GraphNode, spec: GraphSpec): boolean {
+  return spec.node_types.length === 0 || spec.node_types.includes(node.type);
+}
+
+const LEGEND_LABELS: Record<string, string> = {
+  issue: "Issues",
+  auth_request: "Auth requests",
+  work_unit: "Work units",
+  provider_spec: "Provider specs",
+  provider_manifest: "Provider manifests",
+  umbrella_child: "Parent/child hierarchy",
+  parent_child: "Parent/child hierarchy",
+  parent: "Parent/child hierarchy",
+  session_parent: "Session lineage",
+  session_issue: "Session evidence",
+  auth_issue: "Auth evidence",
+  auth_request_references_issue: "Auth references",
+  issue_has_work_unit: "Issue work units",
+  references: "Text references",
+  related: "Related issues",
+  curated_related: "Curated related issues",
+  blocks: "Blocking dependencies",
+  implements: "Implementation links",
+};
+
+const LEGEND_DESCRIPTIONS: Record<string, string> = {
+  issue: "Canonical ledger issue nodes. The Issues lens intentionally shows only this node family.",
+  auth_request: "Protected-branch auth request nodes, shown in operational lenses.",
+  work_unit: "Work-unit nodes linked to issues or sessions.",
+  session: "Agent or terminal session nodes, shown in operational lenses.",
+  parent_child: "Structural parent-to-child issue relationships, including umbrella and parent labels.",
+  umbrella_child: "Structural parent-to-child issue relationships, including umbrella and parent labels.",
+  parent: "Legacy parent issue relationships grouped with the parent/child hierarchy.",
+  references: "Derived or explicit text references between issues; weak overlay, hidden by default in issue structure.",
+  related: "Related issue links; weak overlay, hidden by default in issue structure.",
+  curated_related: "Curated related issue links; weak overlay, hidden by default in issue structure.",
+  blocks: "Planning or dependency edges where one issue blocks another.",
+  implements: "Edges showing implementation or work satisfying an issue.",
+  auth_issue: "Auth requests attached to issue evidence.",
+  auth_request_references_issue: "Auth requests that reference an issue without necessarily resolving it.",
+  session_issue: "Sessions linked to issue work or discussion.",
+  session_parent: "Parent-child session lineage.",
+  issue_has_work_unit: "Issue-to-work-unit operational links.",
+};
+
+function labelForLegendId(id: string): string {
+  return LEGEND_LABELS[id] ?? id.replace(/_/g, " ");
+}
+
+function descriptionForLegendId(id: string, kind: "node" | "edge"): string {
+  return LEGEND_DESCRIPTIONS[id] ?? `${labelForLegendId(id)} ${kind === "node" ? "nodes" : "edges"}`;
+}
+
+const NODE_COLORS: Record<string, string> = {
+  issue: "#2f6fed",
+  session: "#0f9f6e",
+  auth_request: "#d97706",
+  work_unit: "#7c3aed",
+  branch: "#64748b",
+  provider: "#0f766e",
+  provider_spec: "#0891b2",
+  provider_manifest: "#0284c7",
+  artifact: "#b45309",
+  report: "#9333ea",
+  dataset: "#16a34a",
+  model: "#dc2626",
+  analysis: "#4f46e5",
+  commit: "#475569",
+};
+
+const EDGE_VISUALS: Record<string, GraphLegendItem["visual"]> = {
+  umbrella_child: { color: "#2563eb", stroke_width: 2, route: "orthogonal" },
+  parent_child: { color: "#2563eb", stroke_width: 2, route: "orthogonal" },
+  parent: { color: "#2563eb", stroke_width: 2, route: "orthogonal" },
+  blocks: { color: "#dc2626", stroke_width: 2, route: "orthogonal" },
+  implements: { color: "#7c3aed", stroke_width: 2, route: "orthogonal" },
+  references: { color: "#94a3b8", stroke_width: 1, dash: "4 4", opacity: 0.65, route: "smooth" },
+  related: { color: "#94a3b8", stroke_width: 1, dash: "4 4", opacity: 0.65, route: "smooth" },
+  auth_issue: { color: "#d97706", stroke_width: 1.5, route: "smooth" },
+  session_issue: { color: "#0f9f6e", stroke_width: 1.5, route: "smooth" },
+  session_parent: { color: "#0f9f6e", stroke_width: 1.5, dash: "5 3", route: "smooth" },
+  issue_has_work_unit: { color: "#7c3aed", stroke_width: 1.5, route: "smooth" },
+  auth_request_references_issue: { color: "#d97706", stroke_width: 1.5, dash: "5 3", route: "smooth" },
+};
+
+function graphNodeLegend(candidateNodes: GraphNode[], spec: GraphSpec): GraphLegendItem[] {
+  const counts = new Map<string, number>();
+  for (const node of candidateNodes) {
+    counts.set(node.type, (counts.get(node.type) ?? 0) + 1);
+  }
+  const ids = uniqueList([...spec.node_types, ...counts.keys()]);
+  return ids.map((id) => {
+    const count = counts.get(id) ?? 0;
+    return {
+      id,
+      label: labelForLegendId(id),
+      description: descriptionForLegendId(id, "node"),
+      count,
+      enabled: count > 0,
+      visible: spec.node_types.includes(id),
+      visual: { color: NODE_COLORS[id] ?? "#64748b" },
+    };
+  });
+}
+
+function graphEdgeLegend(endpointEligibleEdges: GraphEdge[], spec: GraphSpec): GraphLegendItem[] {
+  const counts = new Map<string, number>();
+  for (const edge of endpointEligibleEdges) {
+    const primary = edge.type === "umbrella_child"
+      && edge.metadata?.relationship_type === "parent_child"
+      ? "parent_child"
+      : edge.type;
+    counts.set(primary, (counts.get(primary) ?? 0) + 1);
+  }
+  const ids = uniqueList([...spec.edge_types, ...counts.keys()]);
+  return ids.map((id) => {
+    const count = counts.get(id) ?? 0;
+    return {
+      id,
+      label: labelForLegendId(id),
+      description: descriptionForLegendId(id, "edge"),
+      count,
+      enabled: count > 0,
+      visible: spec.edge_types.includes(id),
+      visual: EDGE_VISUALS[id] ?? { color: "#64748b", stroke_width: 1.5, route: "smooth" },
+    };
+  });
+}
+
+function countIsolatedVisible(nodes: GraphNode[], edges: GraphEdge[]): number {
+  const connected = new Set<string>();
+  for (const edge of edges) {
+    connected.add(edge.source);
+    connected.add(edge.target);
+  }
+  return nodes.filter((node) => !connected.has(node.id)).length;
+}
+
+export function selectGraphForDisplay(
+  candidateNodes: GraphNode[],
+  candidateEdges: GraphEdge[],
+  spec: GraphSpec,
+): {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  truncated: boolean;
+  counts: GraphDisplayCounts;
+  nodeLegend: GraphLegendItem[];
+  edgeLegend: GraphLegendItem[];
+} {
+  const filteredNodes = candidateNodes.filter((node) => nodeTypeAllowed(node, spec));
+  const filteredNodeIds = new Set(filteredNodes.map((node) => node.id));
+  const endpointEligibleEdges = candidateEdges.filter((edge) =>
+    filteredNodeIds.has(edge.source) && filteredNodeIds.has(edge.target)
+  );
+  const eligibleEdges = endpointEligibleEdges.filter((edge) => edgeMatchesSpec(edge, spec));
+  const nodesForCap = spec.include_isolates
+    ? filteredNodes
+    : filteredNodes.filter((node) => eligibleEdges.some((edge) =>
+        edge.source === node.id || edge.target === node.id
+      ));
+  const { nodes: cappedNodes, truncated } = capGraphNodesForDisplay(
+    nodesForCap,
+    eligibleEdges,
+    spec.limit,
+  );
+  const cappedNodeIds = new Set(cappedNodes.map((node) => node.id));
+  const visibleEdges = eligibleEdges.filter(
+    (edge) => cappedNodeIds.has(edge.source) && cappedNodeIds.has(edge.target),
+  );
+  const counts: GraphDisplayCounts = {
+    total_nodes: candidateNodes.length,
+    total_edges: candidateEdges.length,
+    available_nodes: nodesForCap.length,
+    available_edges: eligibleEdges.length,
+    visible_nodes: cappedNodes.length,
+    visible_edges: visibleEdges.length,
+    hidden_edges: endpointEligibleEdges.length - eligibleEdges.length,
+    dropped_by_filter: candidateNodes.length - filteredNodes.length,
+    dropped_by_limit: Math.max(0, nodesForCap.length - cappedNodes.length),
+    isolated_visible: countIsolatedVisible(cappedNodes, visibleEdges),
+  };
+
+  return {
+    nodes: cappedNodes,
+    edges: visibleEdges,
+    truncated,
+    counts,
+    nodeLegend: graphNodeLegend(candidateNodes, spec),
+    edgeLegend: graphEdgeLegend(endpointEligibleEdges, spec),
+  };
+}
+
 function addWorkUnits(
   params: GraphQueryParams,
   nodes: Map<string, GraphNode>,
@@ -746,10 +1278,11 @@ function addWorkUnits(
 function buildOperationalGraph(
   issueScanner: IssueScanner,
   params: GraphQueryParams,
-): { nodes: GraphNode[]; edges: GraphEdge[]; truncated: boolean } {
+): ReturnType<typeof selectGraphForDisplay> {
+  const spec = params.spec ?? graphSpecForMode(params.mode ?? "issue");
   const sinceMs = params.since ? parseSince(params.since) : null;
   const sinceIso = sinceMs !== null ? msToIso(sinceMs) : null;
-  const limit = params.limit ?? 120;
+  const limit = spec.limit;
   const edges = new Map<string, GraphEdge>();
   const ledgerProjection = ledgerGraphHasIssues(getDb()) ? getLedgerIssueNodes(params) : null;
   const {
@@ -761,30 +1294,22 @@ function buildOperationalGraph(
   for (const edge of ledgerEdges) {
     upsertEdge(edges, edge);
   }
-  const sessionRows = params.mode === "issue" ? [] : getSessionRows(params, sinceIso, limit);
-  const authRows = params.mode === "issue" ? [] : getAuthRows(params, sinceMs, limit);
+  const includeSessions = spec.node_types.includes("session");
+  const includeAuthRequests = spec.node_types.includes("auth_request");
+  const includeWorkUnits = spec.node_types.includes("work_unit");
+  const sessionRows = includeSessions ? getSessionRows(params, sinceIso, limit) : [];
+  const authRows = includeAuthRequests ? getAuthRows(params, sinceMs, limit) : [];
   const sessionNodeIds = addSessionNodesAndEdges(sessionRows, params, nodes, edges);
   addAuthNodesAndEdges(authRows, issueNodeIds, issueNodeIdByLedgerId, nodes, edges);
   if (!ledgerProjection) {
     addIssueEdges(issueScanner, nodes, edges);
   }
   addSessionIssueEdges(issueNodeIds, issueNodeIdByLedgerId, sessionNodeIds, edges);
-  if (params.mode === "work") {
+  if (includeWorkUnits) {
     addWorkUnits(params, nodes, edges, issueNodeIdByLedgerId, limit);
   }
 
-  const allEdges = Array.from(edges.values());
-  const { nodes: cappedNodes, truncated } = capGraphNodesForDisplay(
-    Array.from(nodes.values()),
-    allEdges,
-    limit,
-  );
-  const cappedNodeIds = new Set(cappedNodes.map((node) => node.id));
-  const cappedEdges = allEdges.filter(
-    (edge) => cappedNodeIds.has(edge.source) && cappedNodeIds.has(edge.target),
-  );
-
-  return { nodes: cappedNodes, edges: cappedEdges, truncated };
+  return selectGraphForDisplay(Array.from(nodes.values()), Array.from(edges.values()), spec);
 }
 
 function graphLayers(nodes: GraphNode[], mode: GraphMode): GraphLayerDescriptor[] {
@@ -892,34 +1417,49 @@ function graphFilterOptions(issueScanner: IssueScanner): GraphPayload["filters"]
   };
 }
 
-function modeDescriptors(
+function graphModeCounts(
   issueScanner: IssueScanner,
-  activeMode: GraphMode,
-  activeCount: number,
-): GraphModeDescriptor[] {
+): Record<GraphMode, number> {
   const db = getDb();
   const issueCount = countLedgerGraphIssues(db, "all")
     ?? issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
-  let workCount = 0;
-  try {
-    workCount = (db.prepare("SELECT COUNT(*) AS count FROM work_units").get() as { count: number }).count;
-  } catch {
-    workCount = 0;
-  }
-  const counts: Record<GraphMode, number> = {
-    activity: activeCount,
+  const sessionCount = countTableRows("sessions");
+  const authCount = countTableRows("auth_requests");
+  const workCount = countTableRows("work_units");
+  return {
+    activity: issueCount + sessionCount + authCount,
     issue: issueCount,
     work: workCount,
     provenance: getIndexedGraphCount(db, "provenance"),
     "provider-lineage": getIndexedGraphCount(db, "provider-lineage"),
     "artifact-lineage": getIndexedGraphCount(db, "artifact-lineage"),
   };
-  counts[activeMode] = activeCount;
-  return GRAPH_MODES.map((mode) => ({
+}
+
+function modeDescriptors(counts: Record<GraphMode, number>): GraphModeDescriptor[] {
+  return GRAPH_PERSPECTIVES.map((mode) => ({
     ...mode,
     count: counts[mode.id],
     available: mode.id === "activity" || counts[mode.id] > 0,
   }));
+}
+
+function presetDescriptors(): GraphPresetDescriptor[] {
+  return (Object.keys(PRESET_SPECS) as GraphPreset[]).map((id) => ({
+    id,
+    label: PRESET_LABELS[id].label,
+    description: PRESET_LABELS[id].description,
+    spec_patch: PRESET_SPECS[id],
+  }));
+}
+
+function countTableRows(table: string): number {
+  if (!tableExists(table)) return 0;
+  try {
+    return (getDb().prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+  } catch {
+    return 0;
+  }
 }
 
 export function registerGraphRoutes(
@@ -929,38 +1469,59 @@ export function registerGraphRoutes(
   app.get("/api/graph", (req, res) => {
     const query = req.query as Record<string, string | string[] | undefined>;
     const params = parseQueryParams(query);
-    const mode = params.mode ?? "activity";
+    const spec = params.spec ?? graphSpecForMode(params.mode ?? "issue");
+    const mode = params.mode ?? modeFromPreset(spec.preset ?? "issues");
     const providerId = firstQueryValue(query, "provider");
     const root = firstQueryValue(query, "root");
-    let nodes: GraphNode[];
-    let edges: GraphEdge[];
-    let truncated = false;
+    let selected: ReturnType<typeof selectGraphForDisplay>;
 
     if (mode === "provider-lineage" || mode === "artifact-lineage" || mode === "provenance") {
       const indexed = getIndexedGraph(getDb(), {
         mode,
         providerId,
         root,
-        limit: params.limit,
+        limit: spec.limit,
       });
-      nodes = indexed.nodes;
-      edges = indexed.edges;
+      selected = selectGraphForDisplay(indexed.nodes, indexed.edges, spec);
     } else {
-      const operational = buildOperationalGraph(issueScanner, params);
-      nodes = operational.nodes;
-      edges = operational.edges;
-      truncated = operational.truncated;
+      selected = buildOperationalGraph(issueScanner, params);
     }
 
+    const counts = graphModeCounts(issueScanner);
     const payload: GraphPayload = {
       version: 1,
       mode,
-      nodes,
-      edges,
-      modes: modeDescriptors(issueScanner, mode, nodes.length),
-      layers: graphLayers(nodes, mode),
+      spec,
+      nodes: selected.nodes,
+      edges: selected.edges,
+      modes: modeDescriptors(counts),
+      presets: presetDescriptors(),
+      node_legend: selected.nodeLegend,
+      edge_legend: selected.edgeLegend,
+      counts: selected.counts,
+      metadata: {
+        endpoint_policy: spec.endpoint_policy,
+        date_filter: spec.filters.since
+          ? {
+              since: spec.filters.since,
+              issue_time_field: "graph_activity_at",
+              issue_time_components: [
+                "issue.updated_at",
+                "issue.created_at",
+                "comments.created_at/updated_at",
+                "auth_links.created_at/auth.updated_at/resolved_at",
+                "session_links.created_at/last_seen_at",
+              ],
+              relationship_time_semantics: "endpoint_eligibility",
+            }
+          : undefined,
+      },
+      layers: graphLayers(selected.nodes, mode),
       filters: graphFilterOptions(issueScanner),
-      truncated,
+      truncated: selected.truncated,
+      limit: spec.limit,
+      displayed_count: selected.counts.visible_nodes,
+      available_count: selected.counts.available_nodes,
     };
 
     res.json(payload);

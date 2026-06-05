@@ -889,6 +889,22 @@ function AuthCard({
   );
 }
 
+function FilterIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4 6h16M7 12h10M10 18h4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ClearIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function AuthCardItem({
   leading,
   request,
@@ -1031,8 +1047,8 @@ function AuthSidebarItem({
   );
 }
 
-/** Hooks management panel — shown when the "Hooks" button in the sidebar is active. */
-function AuthHooksPanel({ onClose }: { onClose: () => void }): JSX.Element {
+/** Hooks management panel for auth hook settings. */
+export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Element {
   const [hooks, setHooks] = useState<AuthHook[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1134,13 +1150,15 @@ function AuthHooksPanel({ onClose }: { onClose: () => void }): JSX.Element {
           >
             + Add Hook
           </button>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            onClick={onClose}
-          >
-            Close
-          </button>
+          {onClose && (
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost"
+              onClick={onClose}
+            >
+              Close
+            </button>
+          )}
         </div>
       </div>
 
@@ -1308,9 +1326,6 @@ export function AuthQueueView({
     storageKey: 'sidebar-width:auth',
   });
 
-  // Hooks panel toggle
-  const [showHooksPanel, setShowHooksPanel] = useState(false);
-
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
 
@@ -1325,6 +1340,8 @@ export function AuthQueueView({
 
   // Branch autocomplete input text (separate from the committed filter value)
   const [branchInput, setBranchInput] = useState<string>('');
+  const [authSearch, setAuthSearch] = useState('');
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
 
   // Local selection state — mirrors app state via onSelectAuth
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
@@ -1534,6 +1551,7 @@ export function AuthQueueView({
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [autoApproveStatus, setAutoApproveStatus] = useState<AuthAutoApproveStatus | null>(null);
   const [autoApproveBusy, setAutoApproveBusy] = useState(false);
+  const [showAutoApproveSetupModal, setShowAutoApproveSetupModal] = useState(false);
   const autoApproveSigningConfigured = Boolean(autoApproveStatus?.signing?.configured);
 
   const showToast = useCallback((message: string) => {
@@ -1573,6 +1591,10 @@ export function AuthQueueView({
   }, []);
 
   const handleAutoApproveToggle = useCallback(async () => {
+    if (!autoApproveStatus?.enabled && !autoApproveSigningConfigured) {
+      setShowAutoApproveSetupModal(true);
+      return;
+    }
     setAutoApproveBusy(true);
     try {
       const next = autoApproveStatus?.enabled
@@ -1584,7 +1606,7 @@ export function AuthQueueView({
     } finally {
       setAutoApproveBusy(false);
     }
-  }, [autoApproveStatus?.enabled, showToast]);
+  }, [autoApproveSigningConfigured, autoApproveStatus?.enabled, showToast]);
 
   const runAction = useCallback(
     (id: string, action: (requestId: string) => void | Promise<void>, onError?: (err: unknown) => void) => {
@@ -1846,6 +1868,22 @@ export function AuthQueueView({
   // Apply type, repo, and branch filters on top of the mode-filtered list
   const filteredSidebarItems = useMemo((): AuthRequest[] => {
     let items = sidebarItems;
+    const query = authSearch.trim().toLowerCase();
+    if (query) {
+      items = items.filter((r) => {
+        const values = [
+          getAuthId(r),
+          getAuthTitle(r),
+          getAuthStatus(r),
+          getAuthType(r),
+          r.repo ?? '',
+          r.head_branch ?? r.head ?? '',
+          r.base_branch ?? r.base ?? '',
+          r.commit_message ?? '',
+        ];
+        return values.some((value) => String(value).toLowerCase().includes(query));
+      });
+    }
     if (typeFilter !== 'all') {
       items = items.filter((r) => getAuthType(r) === typeFilter);
     }
@@ -1862,7 +1900,7 @@ export function AuthQueueView({
       });
     }
     return items;
-  }, [sidebarItems, typeFilter, repoFilter, branchFilter]);
+  }, [sidebarItems, authSearch, typeFilter, repoFilter, branchFilter]);
 
   // Find the selected request from whichever list contains it
   const selectedRequest = useMemo((): AuthRequest | null => {
@@ -1904,7 +1942,27 @@ export function AuthQueueView({
       onSelectAuth?.(firstId);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterMode, typeFilter, repoFilter, branchFilter, filteredSidebarItems]);
+  }, [filterMode, authSearch, typeFilter, repoFilter, branchFilter, filteredSidebarItems]);
+
+  const clearAuthFilters = useCallback(() => {
+    setFilterMode('active');
+    setTypeFilter('all');
+    setRepoFilter(null);
+    setBranchFilter(null);
+    setBranchInput('');
+    setSortMode('newest');
+    setCustomOrder(null);
+  }, []);
+
+  const activeFilterSummary = useMemo(() => {
+    const labels: string[] = [];
+    if (filterMode !== 'active') labels.push(filterMode);
+    if (typeFilter !== 'all') labels.push(AUTH_TYPE_META[typeFilter].label);
+    if (repoFilter) labels.push(repoFilter.includes('/') ? repoFilter.split('/')[1] : repoFilter);
+    if (branchFilter) labels.push(branchFilter.split('/').pop() ?? branchFilter);
+    if (filterMode === 'active' && sortMode !== 'newest') labels.push(sortMode);
+    return labels.join(' · ');
+  }, [branchFilter, filterMode, repoFilter, sortMode, typeFilter]);
 
   // Render the action buttons for the selected request in the detail panel
   const renderDetailActions = (request: AuthRequest): JSX.Element | null => {
@@ -2035,206 +2093,207 @@ export function AuthQueueView({
           {toastMessage}
         </div>
       )}
+      {showAutoApproveSetupModal && (
+        <div className="auth-dep-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-auto-approve-setup-title">
+          <div className="auth-dep-modal">
+            <h3 className="auth-dep-modal__title" id="auth-auto-approve-setup-title">
+              Auto-approve is not configured
+            </h3>
+            <p className="auth-dep-modal__body">
+              Auto-approve needs delegated signing setup before it can create temporary approval leases.
+            </p>
+            <div className="auth-dep-modal__actions">
+              <button type="button" className="btn btn--ghost" onClick={() => setShowAutoApproveSetupModal(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn--active"
+                onClick={() => {
+                  setShowAutoApproveSetupModal(false);
+                  window.location.hash = '#/settings?section=auth';
+                }}
+              >
+                Go to Settings
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* LEFT sidebar */}
       <div className="auth-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-        <div className="auth-auto-approve">
-          <div className="auth-auto-approve__text">
-            <span className="auth-auto-approve__label">Auto-approve</span>
-            <span className="auth-auto-approve__status">
-              {autoApproveStatus?.enabled
-                ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}`
-                : autoApproveSigningConfigured
-                  ? 'Off'
-                  : 'Setup required'}
-            </span>
-          </div>
+        <div
+          className="auth-sidebar__search"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setFilterMenuOpen(false);
+            }
+          }}
+        >
+          <input
+            type="text"
+            className="auth-sidebar__search-input"
+            placeholder="Search auth requests..."
+            value={authSearch}
+            onInput={(event) => setAuthSearch(event.currentTarget.value)}
+          />
+          {authSearch && (
+            <button type="button" className="auth-sidebar__search-clear" aria-label="Clear auth search" title="Clear" onClick={() => setAuthSearch('')}>
+              <ClearIcon />
+            </button>
+          )}
           <button
             type="button"
-            className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
-            role="switch"
-            aria-checked={Boolean(autoApproveStatus?.enabled)}
-            aria-label="Toggle auth auto-approve"
-            disabled={autoApproveBusy || !autoApproveStatus || (!autoApproveStatus.enabled && !autoApproveSigningConfigured)}
-            onClick={() => void handleAutoApproveToggle()}
+            className={`auth-sidebar__advanced-trigger${filterMenuOpen ? ' auth-sidebar__advanced-trigger--active' : ''}`}
+            aria-label="Advanced auth filters"
+            title="Advanced auth filters"
+            onClick={() => setFilterMenuOpen((prev) => !prev)}
           >
-            <span className="auth-auto-approve__knob" />
+            <FilterIcon />
           </button>
-        </div>
-        <div className="auth-sidebar__header">
-          <div className="auth-sidebar__filters">
-            <button
-              type="button"
-              className={`auth-sidebar__filter-btn${filterMode === 'active' ? ' auth-sidebar__filter-btn--active' : ''}`}
-              onClick={() => setFilterMode('active')}
-            >
-              Active
-            </button>
-            <button
-              type="button"
-              className={`auth-sidebar__filter-btn${filterMode === 'all' ? ' auth-sidebar__filter-btn--active' : ''}`}
-              onClick={() => setFilterMode('all')}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              className={`auth-sidebar__filter-btn${filterMode === 'historical' ? ' auth-sidebar__filter-btn--active' : ''}`}
-              onClick={() => setFilterMode('historical')}
-            >
-              Historical
-            </button>
-          </div>
-          {filterMode === 'active' && (
-            <div className="auth-sidebar__sort">
-              <select
-                value={sortMode}
-                onChange={(event) => handleSortChange(event.currentTarget.value as SortMode)}
-              >
-                <option value="newest">Newest</option>
-                <option value="oldest">Oldest</option>
-                <option value="status">Status</option>
-              </select>
+          {activeFilterSummary && <div className="auth-sidebar__filter-summary">{activeFilterSummary}</div>}
+          {filterMenuOpen && (
+            <div className="auth-filter-menu">
+              <div className="auth-filter-menu__header">
+                <span>Filters</span>
+                <button type="button" className="auth-filter-menu__clear" onClick={clearAuthFilters}>Clear</button>
+              </div>
+              <div className="auth-filter-menu__section">
+                <span className="auth-filter-menu__label">Queue</span>
+                <div className="auth-filter-menu__options auth-filter-menu__options--segmented">
+                  {(['active', 'all', 'historical'] as AuthFilterMode[]).map((mode) => (
+                    <button key={mode} type="button" className={`auth-filter-menu__option${filterMode === mode ? ' auth-filter-menu__option--active' : ''}`} onClick={() => setFilterMode(mode)}>
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {filterMode === 'active' && (
+                <div className="auth-filter-menu__section">
+                  <span className="auth-filter-menu__label">Sort</span>
+                  <div className="auth-filter-menu__options auth-filter-menu__options--segmented">
+                    {(['newest', 'oldest', 'status'] as SortMode[]).map((mode) => (
+                      <button key={mode} type="button" className={`auth-filter-menu__option${sortMode === mode ? ' auth-filter-menu__option--active' : ''}`} onClick={() => handleSortChange(mode)}>
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div className="auth-filter-menu__section">
+                <span className="auth-filter-menu__label">Type</span>
+                <div className="auth-filter-menu__options">
+                  {AUTH_TYPE_OPTIONS.map((opt) => (
+                    <button key={opt.value} type="button" className={`auth-filter-menu__option${typeFilter === opt.value ? ' auth-filter-menu__option--active' : ''}`} onClick={() => setTypeFilter(opt.value)}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {uniqueRepos.length > 1 && (
+                <div className="auth-filter-menu__section">
+                  <span className="auth-filter-menu__label">Repo</span>
+                  <div className="auth-filter-menu__options">
+                    <button
+                      type="button"
+                      className={`auth-filter-menu__option${repoFilter === null ? ' auth-filter-menu__option--active' : ''}`}
+                      onClick={() => {
+                        setRepoFilter(null);
+                        setBranchFilter(null);
+                        setBranchInput('');
+                      }}
+                    >
+                      All repos
+                    </button>
+                    {uniqueRepos.map((repo) => {
+                      const displayName = repo.includes('/') && repo.split('/').length === 2 ? repo.split('/')[1] : repo;
+                      return (
+                        <button
+                          key={repo}
+                          type="button"
+                          className={`auth-filter-menu__option${repoFilter === repo ? ' auth-filter-menu__option--active' : ''}`}
+                          onClick={() => {
+                            setRepoFilter(repoFilter === repo ? null : repo);
+                            setBranchFilter(null);
+                            setBranchInput('');
+                          }}
+                        >
+                          {displayName}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {repoFilter && uniqueBranchesForRepo.length > 1 && (
+                <div className="auth-filter-menu__section">
+                  <span className="auth-filter-menu__label">Branch</span>
+                  <div className="auth-sidebar__branch-filter-row">
+                    <input
+                      type="text"
+                      className="auth-sidebar__branch-input"
+                      placeholder="Filter by branch..."
+                      value={branchInput}
+                      list="auth-branch-list"
+                      onInput={(e) => {
+                        const val = (e.target as HTMLInputElement).value;
+                        setBranchInput(val);
+                        setBranchFilter(uniqueBranchesForRepo.includes(val) ? val : null);
+                      }}
+                    />
+                    {branchInput && (
+                      <button type="button" className="auth-sidebar__branch-clear" onClick={() => { setBranchInput(''); setBranchFilter(null); }} aria-label="Clear branch filter">
+                        ×
+                      </button>
+                    )}
+                  </div>
+                  <datalist id="auth-branch-list">
+                    {uniqueBranchesForRepo.map((branch) => <option key={branch} value={branch} />)}
+                  </datalist>
+                  <div className="auth-sidebar__branch-tags">
+                    {uniqueBranchesForRepo.slice(0, 5).map((branch) => (
+                      <button
+                        key={branch}
+                        type="button"
+                        className={`auth-sidebar__branch-tag${branchFilter === branch ? ' auth-sidebar__branch-tag--active' : ''}`}
+                        onClick={() => {
+                          if (branchFilter === branch) {
+                            setBranchFilter(null);
+                            setBranchInput('');
+                          } else {
+                            setBranchFilter(branch);
+                            setBranchInput(branch);
+                          }
+                        }}
+                        title={branch}
+                      >
+                        {branch.split('/').pop() ?? branch}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
 
-        <div className="auth-sidebar__type-filter">
-          <select
-            value={typeFilter}
-            onChange={(event) => setTypeFilter(event.currentTarget.value as AuthRequestType | 'all')}
-          >
-            {AUTH_TYPE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-        </div>
-
-        {uniqueRepos.length > 1 && (
-          <div className="auth-sidebar__repo-filter">
-            <button
-              type="button"
-              className={`auth-sidebar__repo-btn${repoFilter === null ? ' auth-sidebar__repo-btn--active' : ''}`}
-              onClick={() => {
-                setRepoFilter(null);
-                setBranchFilter(null);
-                setBranchInput('');
-              }}
-            >
-              All repos
-            </button>
-            {uniqueRepos.map((repo) => {
-              // Display last path component (e.g. "mandible" from "mll/mandible")
-              const displayName = repo.includes('/') && repo.split('/').length === 2
-                ? repo.split('/')[1]
-                : repo;
-              return (
-                <button
-                  key={repo}
-                  type="button"
-                  className={`auth-sidebar__repo-btn${repoFilter === repo ? ' auth-sidebar__repo-btn--active' : ''}`}
-                  onClick={() => {
-                    if (repoFilter === repo) {
-                      setRepoFilter(null);
-                    } else {
-                      setRepoFilter(repo);
-                    }
-                    setBranchFilter(null);
-                    setBranchInput('');
-                  }}
-                >
-                  {displayName}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Branch autocomplete — only visible when a repo is selected and it has multiple branches */}
-        {repoFilter && uniqueBranchesForRepo.length > 1 && (
-          <div className="auth-sidebar__branch-filter">
-            <div className="auth-sidebar__branch-filter-row">
-              <input
-                type="text"
-                className="auth-sidebar__branch-input"
-                placeholder="Filter by branch…"
-                value={branchInput}
-                list="auth-branch-list"
-                onInput={(e) => {
-                  const val = (e.target as HTMLInputElement).value;
-                  setBranchInput(val);
-                  // Commit filter when typed value exactly matches a known branch
-                  if (uniqueBranchesForRepo.includes(val)) {
-                    setBranchFilter(val);
-                  } else {
-                    setBranchFilter(null);
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    setBranchInput('');
-                    setBranchFilter(null);
-                  }
-                }}
-              />
-              {branchInput && (
-                <button
-                  type="button"
-                  className="auth-sidebar__branch-clear"
-                  onClick={() => {
-                    setBranchInput('');
-                    setBranchFilter(null);
-                  }}
-                  aria-label="Clear branch filter"
-                >
-                  ×
-                </button>
-              )}
-            </div>
-            <datalist id="auth-branch-list">
-              {uniqueBranchesForRepo.map((branch) => (
-                <option key={branch} value={branch} />
-              ))}
-            </datalist>
-            {/* Tag pills for quick selection of recent branches (up to 5) */}
-            <div className="auth-sidebar__branch-tags">
-              {uniqueBranchesForRepo.slice(0, 5).map((branch) => (
-                <button
-                  key={branch}
-                  type="button"
-                  className={`auth-sidebar__branch-tag${branchFilter === branch ? ' auth-sidebar__branch-tag--active' : ''}`}
-                  onClick={() => {
-                    if (branchFilter === branch) {
-                      setBranchFilter(null);
-                      setBranchInput('');
-                    } else {
-                      setBranchFilter(branch);
-                      setBranchInput(branch);
-                    }
-                  }}
-                  title={branch}
-                >
-                  {branch.split('/').pop() ?? branch}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
         <div className="auth-sidebar__list">
           {filteredSidebarItems.length === 0 ? (
             <div className="auth-sidebar__empty">
-              {typeFilter !== 'all'
-                ? `No ${AUTH_TYPE_META[typeFilter].label.toLowerCase()} requests.`
-                : branchFilter
-                  ? `No requests for branch ${branchFilter.split('/').pop() ?? branchFilter}.`
-                  : repoFilter
-                    ? `No requests for ${repoFilter.includes('/') ? repoFilter.split('/')[1] : repoFilter}.`
-                    : filterMode === 'active'
-                      ? 'No active requests.'
-                      : filterMode === 'historical'
-                        ? 'No historical requests.'
-                        : 'No auth requests.'}
+              {authSearch
+                ? 'No requests match the search.'
+                : typeFilter !== 'all'
+                  ? `No ${AUTH_TYPE_META[typeFilter].label.toLowerCase()} requests.`
+                  : branchFilter
+                    ? `No requests for branch ${branchFilter.split('/').pop() ?? branchFilter}.`
+                    : repoFilter
+                      ? `No requests for ${repoFilter.includes('/') ? repoFilter.split('/')[1] : repoFilter}.`
+                      : filterMode === 'active'
+                        ? 'No active requests.'
+                        : filterMode === 'historical'
+                          ? 'No historical requests.'
+                          : 'No auth requests.'}
             </div>
           ) : (
             filteredSidebarItems.map((request) => (
@@ -2247,17 +2306,26 @@ export function AuthQueueView({
             ))
           )}
         </div>
-      </div>
 
-      {/* Hooks toggle in sidebar footer */}
-      <div className="auth-sidebar__footer">
-        <button
-          type="button"
-          className={`auth-sidebar__hooks-btn${showHooksPanel ? ' auth-sidebar__hooks-btn--active' : ''}`}
-          onClick={() => setShowHooksPanel((prev) => !prev)}
-        >
-          Hooks
-        </button>
+        <div className="auth-auto-approve">
+          <div className="auth-auto-approve__text">
+            <span className="auth-auto-approve__label">Auto-approve</span>
+            <span className="auth-auto-approve__status">
+              {autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
+            role="switch"
+            aria-checked={Boolean(autoApproveStatus?.enabled)}
+            aria-label="Toggle auth auto-approve"
+            disabled={autoApproveBusy || !autoApproveStatus}
+            onClick={() => void handleAutoApproveToggle()}
+          >
+            <span className="auth-auto-approve__knob" />
+          </button>
+        </div>
       </div>
 
       {/* Drag handle */}
@@ -2265,9 +2333,7 @@ export function AuthQueueView({
 
       {/* RIGHT detail panel */}
       <div className="auth-detail" style={{ position: 'relative' }}>
-        {showHooksPanel ? (
-          <AuthHooksPanel onClose={() => setShowHooksPanel(false)} />
-        ) : !selectedRequest ? (
+        {!selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">Select a request to view details</p>
           </div>

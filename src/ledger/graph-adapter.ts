@@ -24,9 +24,9 @@ interface IssueRow {
   author_actor_type: string;
   author_display: string;
   source: string;
-  created_at: number;
-  updated_at: number;
-  closed_at: number | null;
+  created_at: number | string;
+  updated_at: number | string;
+  closed_at: number | string | null;
 }
 
 interface AliasRow {
@@ -46,7 +46,7 @@ interface RelationshipRow {
   provenance: string;
   confidence: string;
   metadata_json: string;
-  created_at: number;
+  created_at: number | string;
 }
 
 interface AttachmentAnnotation {
@@ -88,8 +88,54 @@ function parseJsonObject(value: string | null | undefined): Record<string, unkno
   }
 }
 
-function toIso(ms: number | null | undefined): string | undefined {
-  return typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+function parseTimestamp(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (/^\d+$/.test(trimmed)) {
+    const numeric = Number(trimmed);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  const parsed = new Date(trimmed).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function toIso(value: unknown): string | undefined {
+  const ms = parseTimestamp(value);
+  return ms !== null ? new Date(ms).toISOString() : undefined;
+}
+
+function maxTimestamp(...values: unknown[]): number | null {
+  let max: number | null = null;
+  for (const value of values) {
+    const ms = parseTimestamp(value);
+    if (ms === null) continue;
+    max = max === null ? ms : Math.max(max, ms);
+  }
+  return max;
+}
+
+function parseSince(since: string | undefined): number | null {
+  if (!since) return null;
+  if (/^\d{4}-/.test(since)) {
+    const ms = new Date(since).getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
+  const relMatch = /^(\d+)(d|h|w|m)$/.exec(since);
+  if (!relMatch) return null;
+  const n = Number(relMatch[1]);
+  const unit = relMatch[2];
+  const unitMs = unit === "h"
+    ? 60 * 60 * 1_000
+    : unit === "d"
+      ? 24 * 60 * 60 * 1_000
+      : unit === "w"
+        ? 7 * 24 * 60 * 60 * 1_000
+        : 30 * 24 * 60 * 60 * 1_000;
+  return Date.now() - (n * unitMs);
 }
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
@@ -340,8 +386,90 @@ function relationshipEdgeType(type: string): string {
   return type === "parent_child" ? "umbrella_child" : type;
 }
 
+const RELATIONSHIP_LABELS: Record<string, string> = {
+  parent_child: "Parent/child hierarchy",
+  umbrella_child: "Parent/child hierarchy",
+  parent: "Parent/child hierarchy",
+  blocks: "Blocks",
+  duplicate_of: "Duplicate of",
+  related: "Related issue",
+  references: "Text reference",
+  fixed_by: "Fixed by",
+  caused_by: "Caused by",
+  implements: "Implements",
+  tests: "Tests",
+};
+
 function relationshipDisplay(type: string): string {
-  return type.replace(/_/g, " ");
+  return RELATIONSHIP_LABELS[type] ?? type.replace(/_/g, " ");
+}
+
+function mergeActivityRows(
+  activityByIssue: Map<string, number>,
+  rows: Array<{ issue_id: string; activity_at: number | string | null }>,
+): void {
+  for (const row of rows) {
+    const activityAt = maxTimestamp(row.activity_at);
+    if (activityAt === null) continue;
+    activityByIssue.set(row.issue_id, Math.max(activityByIssue.get(row.issue_id) ?? 0, activityAt));
+  }
+}
+
+function getIssueActivityTimes(db: Db, issues: IssueRow[]): Map<string, number> {
+  const activityByIssue = new Map<string, number>();
+  for (const issue of issues) {
+    activityByIssue.set(issue.id, maxTimestamp(issue.updated_at, issue.created_at) ?? 0);
+  }
+
+  if (tableExists(db, "ledger_comments")) {
+    mergeActivityRows(activityByIssue, db.prepare(
+      `SELECT issue_id,
+              MAX(CASE
+                WHEN updated_at IS NOT NULL AND updated_at > created_at THEN updated_at
+                ELSE created_at
+              END) AS activity_at
+         FROM ledger_comments
+        WHERE deleted_at IS NULL
+        GROUP BY issue_id`,
+    ).all() as Array<{ issue_id: string; activity_at: number | null }>);
+  }
+
+  if (tableExists(db, "ledger_auth_issue_links")) {
+    if (tableExists(db, "auth_requests")) {
+      mergeActivityRows(activityByIssue, db.prepare(
+        `SELECT l.issue_id,
+                MAX(CASE
+                  WHEN a.updated_at IS NOT NULL
+                    AND a.updated_at >= l.created_at
+                    AND (a.resolved_at IS NULL OR a.updated_at >= a.resolved_at)
+                    THEN a.updated_at
+                  WHEN a.resolved_at IS NOT NULL
+                    AND a.resolved_at >= l.created_at
+                    THEN a.resolved_at
+                  ELSE l.created_at
+                END) AS activity_at
+           FROM ledger_auth_issue_links l
+           LEFT JOIN auth_requests a ON a.id = l.auth_request_id
+          GROUP BY l.issue_id`,
+      ).all() as Array<{ issue_id: string; activity_at: number | null }>);
+    } else {
+      mergeActivityRows(activityByIssue, db.prepare(
+        `SELECT issue_id, MAX(created_at) AS activity_at
+           FROM ledger_auth_issue_links
+          GROUP BY issue_id`,
+      ).all() as Array<{ issue_id: string; activity_at: number | null }>);
+    }
+  }
+
+  if (tableExists(db, "ledger_session_issue_links")) {
+    mergeActivityRows(activityByIssue, db.prepare(
+      `SELECT issue_id, MAX(COALESCE(last_seen_at, created_at)) AS activity_at
+         FROM ledger_session_issue_links
+        GROUP BY issue_id`,
+    ).all() as Array<{ issue_id: string; activity_at: number | null }>);
+  }
+
+  return activityByIssue;
 }
 
 function numberFromMetadata(metadata: Record<string, unknown>, key: string): number | undefined {
@@ -478,8 +606,11 @@ export function buildLedgerIssueProjection(
       WHERE deleted_at IS NULL
       ORDER BY updated_at DESC, created_at DESC`,
   ).all() as IssueRow[];
+  const sinceMs = parseSince(params.since);
+  const activityByIssue = getIssueActivityTimes(db, issueRows);
   const visibleIssues = issueRows.filter((issue) => {
     if (params.status === "open" && issue.status !== "open") return false;
+    if (sinceMs !== null && (activityByIssue.get(issue.id) ?? 0) < sinceMs) return false;
     const project = projectInfos.get(issue.project_id);
     if (!project) return activeRepoFilters(params).length === 0;
     return matchesRepoFilter(project, params);
@@ -544,6 +675,7 @@ export function buildLedgerIssueProjection(
     const nodeId = issueNodeIdByLedgerId.get(issue.id)!;
     const bodyExcerpt = issue.body.trim().slice(0, 360);
     const annotations = [...authAnnotations, ...sessionSummary.live];
+    const graphActivityAt = activityByIssue.get(issue.id) ?? maxTimestamp(issue.updated_at, issue.created_at);
 
     return {
       id: nodeId,
@@ -567,6 +699,7 @@ export function buildLedgerIssueProjection(
         live_sessions: sessionSummary.live_count,
         historical_sessions: sessionSummary.historical_count,
         sync: syncState(openConflicts, outbox),
+        graph_activity_at: toIso(graphActivityAt),
       },
       detail: {
         ledger_issue_id: issue.id,
@@ -585,6 +718,16 @@ export function buildLedgerIssueProjection(
         author_actor_id: issue.author_actor_id,
         author_actor_type: issue.author_actor_type,
         closed_at: toIso(issue.closed_at),
+        issue_created_at: toIso(issue.created_at),
+        issue_updated_at: toIso(issue.updated_at),
+        graph_activity_at: toIso(graphActivityAt),
+        graph_activity_time_fields: [
+          "issue.updated_at",
+          "issue.created_at",
+          "comments.created_at/updated_at",
+          "auth_links.created_at/auth.updated_at/resolved_at",
+          "session_links.created_at/last_seen_at",
+        ],
         latest_comment_at: comments?.latest_comment_at,
         open_conflicts: openConflicts,
         outbox_pending: outbox?.pending ?? 0,
@@ -616,6 +759,7 @@ export function buildLedgerIssueProjection(
         relationship_type: rel.relationship_type,
         relationship_label: relationshipDisplay(rel.relationship_type),
         relationship_provenance: rel.provenance,
+        relationship_created_at: toIso(rel.created_at),
         source_ledger_issue_id: rel.source_issue_id,
         target_ledger_issue_id: rel.target_issue_id,
         label_default_visible: false,

@@ -29,8 +29,6 @@ import {
   syncSwitchboard,
   getWorkRepos,
   triggerWorkScan,
-  killSession,
-  navigateSession,
   rejectAuthRequest,
   retryAuthRequest,
   scanIssues,
@@ -39,6 +37,7 @@ import {
 } from './api';
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
+import { parseRouteFromHash, type Route } from './routing';
 import { AuthQueueView } from './views/auth';
 import type { AuthRequest } from './views/auth';
 import { ArtifactsView } from './views/artifacts';
@@ -46,7 +45,6 @@ import { InboxView } from './views/inbox';
 import { IssuesView } from './views/issues';
 import type { IssueRepoSummary } from './views/issues';
 import { ReviewView } from './views/review';
-import { SessionsView } from './views/sessions';
 import type { SessionRecord } from './views/sessions';
 import { ConversationsView } from './views/conversations';
 import { SettingsView } from './views/settings';
@@ -62,7 +60,6 @@ import { appReducer, initialState, loadCachedState, saveCachedState, selectBadge
 import type { BugRef, ConsoleSession } from './state';
 import {
   ChatIcon,
-  MonitorIcon,
   IssuesIcon,
   InboxIcon,
   AuthIcon,
@@ -107,11 +104,6 @@ function setLastSeenCommit(hash: string): void {
 }
 
 
-type Route = {
-  tab: 'sessions' | 'auth' | 'artifacts' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'switchboard' | 'inbox' | 'console' | 'logs' | 'graph' | 'presets';
-  params: Record<string, string>;
-};
-
 type NavItem = {
   tab: Route['tab'];
   href: string;
@@ -121,25 +113,6 @@ type NavItem = {
   badgeClass?: string;
   icon: (props: { size?: number }) => JSX.Element;
 };
-
-function parseRouteFromHash(hashValue: string): Route {
-  const hash = hashValue || '#/graph';
-  const [pathPart, queryPart] = hash.replace('#', '').split('?');
-  const path = pathPart.replace(/^\//, '') || 'graph';
-  const params: Record<string, string> = {};
-  if (queryPart) {
-    const search = new URLSearchParams(queryPart);
-    search.forEach((value, key) => {
-      params[key] = value;
-    });
-  }
-  // Support legacy history routes as aliases for the unified Chat workspace.
-  const normalizedPath = (path === 'conversations' || path === 'chats' || path === 'chat-history') ? 'console' : path;
-  const tab = ['sessions', 'auth', 'artifacts', 'chat-history', 'work', 'review', 'issues', 'settings', 'switchboard', 'inbox', 'console', 'logs', 'graph', 'presets'].includes(normalizedPath)
-    ? (normalizedPath as Route['tab'])
-    : 'graph';
-  return { tab, params };
-}
 
 function parseHashRoute(): Route {
   if (typeof window === 'undefined') {
@@ -167,8 +140,7 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
-  const [errorToast, setErrorToast] = useState<string | null>(null);
-  const errorToastTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const settingsReturnHashRef = useRef<string | null>(null);
   // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
   const [rebuilding, setRebuilding] = useState(false);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
@@ -183,6 +155,21 @@ function App(): JSX.Element {
     setRoute(parseRouteFromHash(hash));
   }, []);
 
+  const navigateToSettings = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      const currentRoute = parseHashRoute();
+      const currentHash = window.location.hash || '#/graph';
+      if (currentRoute.tab !== 'settings') {
+        settingsReturnHashRef.current = currentHash;
+      }
+    }
+    navigateToHash('#/settings');
+  }, [navigateToHash]);
+
+  const handleSettingsClose = useCallback(() => {
+    navigateToHash(settingsReturnHashRef.current ?? '#/console');
+  }, [navigateToHash]);
+
   useEffect(() => {
     const handleChange = () => setRoute(parseHashRoute());
     window.addEventListener('hashchange', handleChange);
@@ -192,6 +179,13 @@ function App(): JSX.Element {
       window.removeEventListener('popstate', handleChange);
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || route.tab === 'settings') {
+      return;
+    }
+    settingsReturnHashRef.current = window.location.hash || `#/${route.tab}`;
+  }, [route]);
 
   // Add tauri-window class to body when running inside Tauri so CSS can
   // apply the extra top padding needed for the hidden title bar traffic lights.
@@ -203,7 +197,7 @@ function App(): JSX.Element {
 
   // Keyboard shortcuts for top-level tabs (Ctrl+1–9).
   // Order matches the left app rail: chat(1), graph(2), auth(3), issues(4),
-  // inbox(5), monitor(6), projects(7), review(8), settings(9), logs(0).
+  // inbox(5), projects(6), review(7), presets(8), settings(9), logs(0).
   // Settings UI for key bindings is deferred — Bug: 9082b2c
   useEffect(() => {
     const tabRoutes: Record<string, string> = {
@@ -212,24 +206,30 @@ function App(): JSX.Element {
       '3': 'auth',
       '4': 'issues',
       '5': 'inbox',
-      '6': 'sessions',
-      '7': 'work',
-      '8': 'review',
+      '6': 'work',
+      '7': 'review',
+      '8': 'presets',
       '9': 'settings',
       '0': 'logs',
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.metaKey && !e.altKey && tabRoutes[e.key]) {
         e.preventDefault();
-        navigateToHash(`#/${tabRoutes[e.key]}`);
+        if (tabRoutes[e.key] === 'settings') {
+          navigateToSettings();
+        } else {
+          navigateToHash(`#/${tabRoutes[e.key]}`);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigateToHash]);
+  }, [navigateToHash, navigateToSettings]);
 
   useEffect(() => {
     let active = true;
+    // Bug: 73ef02f — legacy session registry data remains for backend/session
+    // integrations while the Monitor frontend route is retired.
     getSessions<SessionRecord>('?include=issues')
       .then((sessions) => {
         if (active) {
@@ -587,34 +587,6 @@ function App(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [state.daemonReload?.hash]);
 
-  const showErrorToast = (message: string) => {
-    setErrorToast(message);
-    if (errorToastTimerRef.current !== null) {
-      clearTimeout(errorToastTimerRef.current);
-    }
-    errorToastTimerRef.current = window.setTimeout(() => {
-      setErrorToast(null);
-      errorToastTimerRef.current = null;
-    }, 6_000);
-  };
-
-  const handleNavigate = async (sessionId: string) => {
-    try {
-      await navigateSession(sessionId);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Navigation failed';
-      showErrorToast(`Go to failed: ${message}`);
-    }
-  };
-
-  const handleKill = async (sessionId: string) => {
-    try {
-      await killSession(sessionId);
-    } catch {
-      return;
-    }
-  };
-
   const handleApprove = async (requestId: string) => {
     try {
       await approveAuthRequest(requestId);
@@ -700,19 +672,6 @@ function App(): JSX.Element {
       dispatch({ type: 'setIssueRepos', repos });
     } catch {
       return;
-    }
-  };
-
-  // Bug: 568eca7 — optimistic pin toggle: update local state immediately
-  const handlePinToggle = (sessionId: string, pinned: boolean) => {
-    const session = state.sessions.find(
-      (s) => (s.id || s.session_id) === sessionId,
-    );
-    if (session) {
-      dispatch({
-        type: 'upsertSession',
-        session: { ...session, pinned: pinned ? 1 : 0 },
-      });
     }
   };
 
@@ -924,7 +883,7 @@ function App(): JSX.Element {
         break;
       }
       case 'session':
-        navigateToHash(`#/sessions?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
+        navigateToHash(`#/console?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
         break;
       case 'auth_request':
         navigateToHash(`#/auth?request=${encodeURIComponent(id.replace(/^auth_request:/, ''))}`);
@@ -989,14 +948,6 @@ function App(): JSX.Element {
       badge: badges.inbox,
       icon: InboxIcon,
     },
-    {
-      tab: 'sessions',
-      href: '#/sessions',
-      label: 'Monitor',
-      title: 'Monitor',
-      badge: badges.sessions,
-      icon: MonitorIcon,
-    },
   ];
 
   const secondaryNavItems: NavItem[] = [
@@ -1053,7 +1004,11 @@ function App(): JSX.Element {
             return;
           }
           event.preventDefault();
-          navigateToHash(item.href);
+          if (item.tab === 'settings') {
+            navigateToSettings();
+          } else {
+            navigateToHash(item.href);
+          }
         }}
       >
         <span className="app-rail__icon">
@@ -1077,19 +1032,6 @@ function App(): JSX.Element {
 
   return (
     <div className="app-shell">
-      {errorToast && (
-        <div className="error-toast" role="alert" aria-live="assertive">
-          <span>{errorToast}</span>
-          <button
-            type="button"
-            className="daemon-toast__dismiss"
-            onClick={() => setErrorToast(null)}
-            aria-label="Dismiss error"
-          >
-            ×
-          </button>
-        </div>
-      )}
       {state.daemonReload && (
         <div className="daemon-toast" role="status" aria-live="polite">
           <span>Daemon reloaded</span>
@@ -1145,16 +1087,6 @@ function App(): JSX.Element {
           </nav>
         </aside>
         <main className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}`}>
-        {route.tab === 'sessions' && (
-          <SessionsView
-            sessions={state.sessions}
-            newSessionIds={state.newSessionIds}
-            onNavigate={handleNavigate}
-            onKill={handleKill}
-            onPinToggle={handlePinToggle}
-            highlightSessionId={route.params.session}
-          />
-        )}
         {route.tab === 'auth' && (
           <AuthQueueView
             queue={state.authQueue}
@@ -1249,6 +1181,7 @@ function App(): JSX.Element {
           <SettingsView
             settings={state.settings}
             onSave={handleSettingsSave}
+            onClose={handleSettingsClose}
           />
         )}
         {route.tab === 'logs' && (

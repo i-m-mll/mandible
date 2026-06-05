@@ -55,6 +55,15 @@ export type GraphEdgeType =
 
 export type GraphEdgeClass = 'provenance' | 'lifecycle' | 'semantic' | 'provider' | (string & {})
 export type GraphActionKind = 'navigate' | 'preview' | 'validate' | 'ingest' | 'compute' | 'auth_request' | (string & {})
+export type GraphPreset =
+  | 'activity'
+  | 'issues'
+  | 'work'
+  | 'provenance'
+  | 'provider-lineage'
+  | 'artifact-lineage'
+export type GraphEndpointPolicy = 'strict' | 'include-context'
+export type GraphLayoutStrategy = 'structured' | 'explore'
 
 export interface GraphAction {
   id: string
@@ -105,12 +114,81 @@ export interface GraphEdge {
   metadata?: Record<string, unknown>
 }
 
+export interface GraphSpec {
+  preset?: GraphPreset
+  node_types: GraphNodeType[]
+  edge_types: string[]
+  edge_classes?: GraphEdgeClass[]
+  filters: {
+    repos: string[]
+    branches: string[]
+    since?: string
+    until?: string
+    status: {
+      issue?: string[]
+      session?: string[]
+      auth_request?: string[]
+      work_unit?: string[]
+      artifact?: string[]
+      provider?: string[]
+      [nodeType: string]: string[] | undefined
+    }
+    search?: string
+  }
+  limit: number
+  include_isolates: boolean
+  endpoint_policy: GraphEndpointPolicy
+  layout: {
+    strategy: GraphLayoutStrategy
+    primary_edge_types: string[]
+  }
+}
+
 export interface GraphModeDescriptor {
   id: GraphMode
   label: string
+  kind?: 'perspective'
   description: string
+  summary?: string
   count: number
   available: boolean
+}
+
+export interface GraphLegendItem {
+  id: string
+  label: string
+  description?: string
+  count: number
+  enabled: boolean
+  visible: boolean
+  visual?: {
+    color?: string
+    stroke_width?: number
+    dash?: string
+    opacity?: number
+    route?: 'orthogonal' | 'smooth' | 'bezier'
+  }
+}
+
+export interface GraphPresetDescriptor {
+  id: GraphPreset
+  label: string
+  description: string
+  spec_patch: Partial<GraphSpec>
+}
+
+export interface GraphDisplayCounts {
+  total_nodes: number
+  total_edges: number
+  available_nodes: number
+  available_edges: number
+  visible_nodes: number
+  visible_edges: number
+  hidden_edges: number
+  dropped_by_filter: number
+  dropped_by_limit: number
+  isolated_visible: number
+  context_nodes?: number
 }
 
 export interface GraphLayerDescriptor {
@@ -126,12 +204,21 @@ export interface GraphPayload {
   nodes: GraphNode[]
   edges: GraphEdge[]
   modes?: GraphModeDescriptor[]
+  spec?: GraphSpec
+  presets?: GraphPresetDescriptor[]
+  node_legend?: GraphLegendItem[]
+  edge_legend?: GraphLegendItem[]
+  counts?: GraphDisplayCounts
+  metadata?: Record<string, unknown>
   layers?: GraphLayerDescriptor[]
   filters?: {
     repos: string[]
     branches: string[]
   }
   truncated?: boolean
+  limit?: number
+  displayed_count?: number
+  available_count?: number
 }
 
 // Internal simulation types — exported so GraphCanvas.tsx can reference them
