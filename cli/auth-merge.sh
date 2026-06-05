@@ -54,6 +54,35 @@ branch_exists() {
   git show-ref --verify --quiet "refs/heads/$1"
 }
 
+resolve_pre_auth_check() {
+  local script_dir=$1
+  local candidate=""
+
+  if [[ -n "${MANDIBLE_PRE_AUTH_CHECK:-}" && -x "${MANDIBLE_PRE_AUTH_CHECK:-}" ]]; then
+    printf "%s" "$MANDIBLE_PRE_AUTH_CHECK"
+    return 0
+  fi
+
+  if candidate=$(command -v pre-auth-check 2>/dev/null); then
+    if [[ -x "$candidate" ]]; then
+      printf "%s" "$candidate"
+      return 0
+    fi
+  fi
+
+  for candidate in \
+    "${HOME:-}/.dotfiles/bin/pre-auth-check" \
+    "${script_dir}/pre-auth-check" \
+    "${script_dir}/../bin/pre-auth-check"; do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      printf "%s" "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 protected_branch() {
   if branch_exists "develop"; then
     printf "%s" "develop"
@@ -558,20 +587,27 @@ main() {
   # Pre-flight: ensure working tree is clean and merge will succeed
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local pre_auth_check="${script_dir}/../../../../bin/pre-auth-check"
-  pre_auth_check="$(cd "$(dirname "$pre_auth_check")" && pwd)/$(basename "$pre_auth_check")"
-  if [[ -f "$pre_auth_check" ]]; then
+  local pre_auth_check=""
+  if pre_auth_check=$(resolve_pre_auth_check "$script_dir"); then
     if ! bash "$pre_auth_check" "$(pwd)" "${sources[0]:-}" "$target"; then
       die "Pre-auth-check failed." 1
     fi
   else
-    # Fallback: simple dirty check (pre-auth-check not found)
+    # Fallback: simple staged/index check (pre-auth-check not found).
+    # Bug: b55d384 — untracked files alone must not block auth merge. Git will
+    # refuse the actual merge if an untracked file would be overwritten; staged
+    # changes are the risky state because they can be included or disturbed.
     local status_output
     status_output=$(git status --porcelain)
+    local staged_status
+    staged_status=$(printf '%s\n' "$status_output" | grep -E '^[^ ?]' || true)
+    if [[ -n "$staged_status" ]]; then
+      err "Working tree has staged changes:"
+      printf '%s\n' "$staged_status" | head -20 >&2
+      die "Unstage or preserve staged changes before merging." 1
+    fi
     if [[ -n "$status_output" ]]; then
-      err "Working tree is dirty:"
-      echo "$status_output" | head -20
-      die "Clean up your working tree before merging." 1
+      err "${DIM_WHITE}pre-auth-check not found; proceeding with untracked/unstaged files present.${RESET}"
     fi
   fi
 
