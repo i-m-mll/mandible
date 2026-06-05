@@ -618,12 +618,17 @@ function renderConversationBlockBody(
 ): JSX.Element | null {
   if (collapsed) return null;
   const metadata = parseMetadata(block.metadata_json);
+  const instructionMeta = block.type === 'user_message' ? getInstructionMessageMeta(block.content) : null;
 
   // Bug: bce7370 — Use shared components for text and tool blocks
   if (block.type === 'assistant_message' || block.type === 'user_message') {
     return (
       <div className="block-content">
-        <TextBlock content={block.content} />
+        {instructionMeta ? (
+          <InstructionMessageBlock content={block.content} meta={instructionMeta} />
+        ) : (
+          <TextBlock content={block.content} />
+        )}
       </div>
     );
   }
@@ -814,6 +819,7 @@ function TranscriptBlockItem({
   // Bug: bce7370 — Fix 1: For thinking blocks, skip the outer collapse mechanism
   // and let the shared ThinkingBlock handle its own collapse UI ("Thinking" + "more").
   const isThinkingBlock = block.type === 'thinking';
+  const instructionMeta = block.type === 'user_message' ? getInstructionMessageMeta(block.content) : null;
   // Bug: 722e318 — Fix 2: tool_use and tool_result also manage their own collapse
   // internally (ToolUseBlock has its own expand/collapse). Suppress outer collapse
   // to prevent the "implosion" where clicking hides the rich component.
@@ -855,7 +861,9 @@ function TranscriptBlockItem({
           </div>
         ) : null}
         <div className="transcript-item__bubble">
-          {isThinkingBlock ? (
+          {instructionMeta ? (
+            <InstructionMessageBlock content={block.content} meta={instructionMeta} />
+          ) : isThinkingBlock ? (
             // Bug: bce7370 — Fix 1: Render ThinkingBlock directly, bypassing outer collapse.
             // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
             <ThinkingBlock content={block.content} defaultCollapsed={true} />
@@ -1009,6 +1017,62 @@ function ContentWithExpand({ content }: { content: string }): JSX.Element {
         </button>
       )}
     </div>
+  );
+}
+
+type InstructionMessageMeta = {
+  filename: 'AGENTS.md' | 'CLAUDE.md';
+  scope: 'Project' | 'Global';
+  path: string;
+};
+
+export function getInstructionMessageMeta(content: string): InstructionMessageMeta | null {
+  const firstLine = content.split(/\r?\n/, 1)[0]?.trim() ?? '';
+  const match = firstLine.match(/^#?\s*(AGENTS\.md|CLAUDE\.md) instructions for (.+)$/i);
+  if (!match) return null;
+  const filename = match[1].toUpperCase().startsWith('AGENTS') ? 'AGENTS.md' : 'CLAUDE.md';
+  const path = match[2].trim();
+  const scope = /\/(\.claude|\.dotfiles)(\/|$)|^~\/\.claude\//.test(path) ? 'Global' : 'Project';
+  return { filename, scope, path };
+}
+
+function InstructionMessageBlock({
+  content,
+  meta,
+}: {
+  content: string;
+  meta: InstructionMessageMeta;
+}): JSX.Element {
+  return (
+    <details className="instruction-message-block">
+      <summary className="instruction-message-block__summary">
+        <span className="instruction-message-block__label">{meta.scope} {meta.filename}</span>
+        <span className="instruction-message-block__path">{meta.path}</span>
+      </summary>
+      <div className="instruction-message-block__body">
+        <TextBlock content={content} />
+      </div>
+    </details>
+  );
+}
+
+function InfoCircleIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 17v-5" />
+      <path d="M12 8h.01" />
+    </svg>
+  );
+}
+
+function HorizontalDotsIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="5" cy="12" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="19" cy="12" r="1.5" />
+    </svg>
   );
 }
 
@@ -1877,62 +1941,57 @@ function ConversationDetail({
 
       <div className="conv-detail__header">
         <div className="conv-detail__header-left">
-          <h2 className="conv-detail__title">
-            {conversation.parent_conversation_id && (
-              <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
-            )}
-            <span>{getConversationTitle(conversation)}</span>
-          </h2>
+          <div className="conv-detail__title-row">
+            <h2 className="conv-detail__title">
+              {conversation.parent_conversation_id && (
+                <span className="conv-subagent-indicator" title="Sub-agent conversation">&#x2937; </span>
+              )}
+              <span>{getConversationTitle(conversation)}</span>
+            </h2>
+            <div className="conv-actions">
+              <button
+                type="button"
+                className="conv-actions__trigger"
+                onClick={() => setActionsOpen((prev) => !prev)}
+                title="Conversation actions"
+                aria-label="Conversation actions"
+                aria-haspopup="menu"
+                aria-expanded={actionsOpen}
+              >
+                <HorizontalDotsIcon />
+              </button>
+              {actionsOpen && (
+                <div className="conv-actions__menu">
+                  <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
+                    {conversation.starred ? 'Unstar' : 'Star'}
+                  </button>
+                  <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
+                    Show in graph
+                  </button>
+                  <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
+                    {showMessageFilters ? 'Hide message filters' : 'Message filters'}
+                  </button>
+                  <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
+                    {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
+                  </button>
+                  <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
+                    Select messages
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
         <div className="conv-detail__header-right">
           <button
             type="button"
-            className="icon-btn"
-            onClick={navigateToGraph}
-            title="Show in graph"
-            aria-label="Show in graph"
-          >
-            ⬡
-          </button>
-          <button
-            type="button"
-            className="icon-btn"
+            className="conv-info-button"
             onClick={() => setInfoOpen(true)}
             title="Conversation info"
             aria-label="Conversation info"
           >
-            i
+            <InfoCircleIcon />
           </button>
-          <div className="conv-actions">
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => setActionsOpen((prev) => !prev)}
-              title="Conversation actions"
-              aria-label="Conversation actions"
-            >
-              ⋯
-            </button>
-            {actionsOpen && (
-              <div className="conv-actions__menu">
-                <button type="button" onClick={() => { void handleStarToggle(); setActionsOpen(false); }}>
-                  {conversation.starred ? 'Unstar' : 'Star'}
-                </button>
-                <button type="button" onClick={() => { navigateToGraph(); setActionsOpen(false); }}>
-                  Show in graph
-                </button>
-                <button type="button" onClick={() => { setShowMessageFilters((prev) => !prev); setActionsOpen(false); }}>
-                  {showMessageFilters ? 'Hide message filters' : 'Message filters'}
-                </button>
-                <button type="button" onClick={() => { setRenderMode((prev) => prev === 'transcript' ? 'raw' : 'transcript'); setActionsOpen(false); }}>
-                  {renderMode === 'transcript' ? 'Inspect raw blocks' : 'Show transcript'}
-                </button>
-                <button type="button" onClick={() => { setSelectMode(true); setActionsOpen(false); }}>
-                  Select messages
-                </button>
-              </div>
-            )}
-          </div>
         </div>
       </div>
 

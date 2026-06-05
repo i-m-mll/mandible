@@ -229,11 +229,13 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
           )}
           <button
             type="button"
-            className="artifacts-filter__advanced-trigger"
+            className={`artifacts-filter__advanced-trigger${advancedOpen ? ' artifacts-filter__advanced-trigger--active' : ''}`}
             onClick={() => setAdvancedOpen((open) => !open)}
             aria-label="Artifact filters"
+            title="Artifact filters"
+            aria-expanded={advancedOpen}
           >
-            ⋯
+            <FilterIcon />
           </button>
         </div>
         {advancedOpen && (
@@ -299,6 +301,14 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
         )}
       </main>
     </div>
+  );
+}
+
+function FilterIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4 6h16M7 12h10M10 18h4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
   );
 }
 

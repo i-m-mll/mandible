@@ -3,30 +3,21 @@ import {
   Background,
   Controls,
   MiniMap,
-  Position,
   ReactFlow,
   ViewportPortal,
 } from '@xyflow/react';
-import {
-  forceCollide,
-  forceLink,
-  forceManyBody,
-  forceSimulation,
-  forceX,
-  forceY,
-  type SimulationLinkDatum,
-  type SimulationNodeDatum,
-} from 'd3-force';
 import '@xyflow/react/dist/style.css';
 import type {
   GraphEdge,
-  GraphLayerDescriptor,
+  GraphLegendItem as GraphPayloadLegendItem,
   GraphMode,
   GraphModeDescriptor,
   GraphNode,
   GraphNodeType,
   GraphPayload,
 } from '../types/graph';
+import { graphEdgeStyle } from '../graph/edgeStyles';
+import { layoutGraph, type RoutedGraphEdge } from '../graph/layout';
 import {
   addLedgerIssueComment,
   getLedgerIssueDetail,
@@ -41,6 +32,9 @@ type GraphFetchParams = {
   branches?: string[]
   since?: string
   status?: string
+  limit?: number
+  nodeTypes?: string[]
+  edgeTypes?: string[]
 }
 
 type ReactFlowNode = {
@@ -49,31 +43,9 @@ type ReactFlowNode = {
   position: { x: number; y: number }
   initialWidth?: number
   initialHeight?: number
-  sourcePosition?: Position
-  targetPosition?: Position
   data: { node: GraphNode; label: JSX.Element }
+  selected?: boolean
 }
-
-type ReactFlowEdge = {
-  id: string
-  source: string
-  target: string
-  label?: string
-  animated?: boolean
-  style?: Record<string, string | number>
-  labelStyle?: Record<string, string | number>
-  labelBgStyle?: Record<string, string | number>
-}
-
-type ForceLayoutNode = SimulationNodeDatum & {
-  id: string
-  node: GraphNode
-  rank: number
-  anchorX: number
-  anchorY: number
-}
-
-type ForceLayoutLink = SimulationLinkDatum<ForceLayoutNode>
 
 type GraphAnnotation = {
   id: string
@@ -84,6 +56,130 @@ type GraphAnnotation = {
   link_type?: string
 }
 
+type GraphSpecState = {
+  preset: GraphMode
+  since: '1d' | '3d' | '7d' | 'all'
+  status: 'open' | 'all'
+  limit: number
+  repos: string[]
+  branches: string[]
+  nodeTypes?: string[]
+  edgeTypes?: string[]
+}
+
+type GraphLegendKind = 'node' | 'edge'
+
+type GraphLegendItem = {
+  id: string
+  kind: GraphLegendKind
+  label: string
+  description: string
+  count: number
+  enabled: boolean
+  visible: boolean
+  color: string
+  dash?: string
+  width?: number
+}
+
+const NODE_LEGEND_FALLBACKS: Record<string, { label: string; description: string }> = {
+  issue: {
+    label: 'Issues',
+    description: 'Issues in the current lens. The Issues lens starts here, so other node families stay hidden unless another lens or filter includes them.',
+  },
+  auth_request: {
+    label: 'Auth requests',
+    description: 'Merge approval requests and their current review state.',
+  },
+  session: {
+    label: 'Sessions',
+    description: 'Agent sessions connected to issues, work units, or auth activity.',
+  },
+  work_unit: {
+    label: 'Work units',
+    description: 'Tracked implementation units linked to issues and sessions.',
+  },
+};
+
+const EDGE_LEGEND_FALLBACKS: Record<string, { label: string; description: string }> = {
+  umbrella_child: {
+    label: 'Umbrella children',
+    description: 'Structural issue hierarchy: an umbrella issue owns or organizes child issues.',
+  },
+  parent_child: {
+    label: 'Parent-child',
+    description: 'Canonical parent-to-child issue relationship from the ledger.',
+  },
+  parent: {
+    label: 'Parent links',
+    description: 'Legacy or imported parent relationship; shown separately until it is normalized into parent-child edges.',
+  },
+  blocks: {
+    label: 'Blocks',
+    description: 'Planning dependency: one issue blocks another.',
+  },
+  implements: {
+    label: 'Implements',
+    description: 'Implementation link between a work item and the issue or plan it realizes.',
+  },
+  references: {
+    label: 'References',
+    description: 'Lightweight cross-reference between issues; useful context, not hierarchy.',
+  },
+  related: {
+    label: 'Related',
+    description: 'Non-structural relationship between issues.',
+  },
+  curated_related: {
+    label: 'Curated related',
+    description: 'Manually curated non-structural relationship between issues.',
+  },
+  auth_issue: {
+    label: 'Auth evidence',
+    description: 'Auth requests attached to the issues they reference.',
+  },
+  auth_request_references_issue: {
+    label: 'Auth references',
+    description: 'Operational auth request references to issues.',
+  },
+  session_issue: {
+    label: 'Session evidence',
+    description: 'Agent sessions attached to the issues they worked on or discussed.',
+  },
+};
+
+function isGenericLegendDescription(
+  item: GraphPayloadLegendItem,
+  kind: GraphLegendKind,
+  description: string,
+): boolean {
+  const normalizedDescription = description.toLowerCase();
+  const normalizedLabel = item.label.toLowerCase();
+  const normalizedType = item.id.replace(/_/g, ' ').toLowerCase();
+  const noun = kind === 'node' ? 'nodes' : 'edges';
+  return normalizedDescription === normalizedLabel
+    || normalizedDescription === `${normalizedLabel} ${noun}`
+    || normalizedDescription === `${normalizedType} ${noun}`;
+}
+
+function applyLegendFallbackCopy(
+  item: GraphPayloadLegendItem,
+  kind: GraphLegendKind,
+): Pick<GraphLegendItem, 'label' | 'description'> {
+  const fallback = kind === 'node' ? NODE_LEGEND_FALLBACKS[item.id] : EDGE_LEGEND_FALLBACKS[item.id];
+  const payloadDescription = item.description?.trim();
+  const hasUsefulPayloadDescription = Boolean(
+    payloadDescription
+      && !isGenericLegendDescription(item, kind, payloadDescription),
+  );
+  return {
+    label: fallback?.label ?? item.label,
+    description: hasUsefulPayloadDescription
+      ? payloadDescription!
+      : fallback?.description ?? payloadDescription ?? item.label,
+  };
+}
+
 async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
   const q = new URLSearchParams();
   q.set('mode', params.mode);
@@ -91,6 +187,9 @@ async function getGraph(params: GraphFetchParams): Promise<GraphPayload> {
   if (params.repos && params.repos.length > 0) q.set('repo', params.repos.join(','));
   if (params.branches && params.branches.length > 0) q.set('branch', params.branches.join(','));
   if (params.status) q.set('status', params.status);
+  if (params.limit) q.set('limit', String(params.limit));
+  if (params.nodeTypes && params.nodeTypes.length > 0) q.set('node_type', params.nodeTypes.join(','));
+  if (params.edgeTypes && params.edgeTypes.length > 0) q.set('edge_type', params.edgeTypes.join(','));
   const r = await fetch(`/api/graph?${q.toString()}`);
   if (!r.ok) throw new Error(`graph fetch failed: ${r.status}`);
   return r.json() as Promise<GraphPayload>;
@@ -105,34 +204,10 @@ interface GraphViewProps {
   initialFocus?: string
 }
 
-const NODE_COLUMNS: Record<string, number> = {
-  repo: 0,
-  provider: 0,
-  issue: 1,
-  provider_manifest: 1,
-  provider_spec: 1,
-  work_unit: 2,
-  run: 2,
-  session: 3,
-  analysis: 3,
-  model: 3,
-  dataset: 3,
-  auth_request: 4,
-  artifact: 4,
-  report: 5,
-  commit: 5,
-};
-
 const FLOW_NODE_WIDTH = 190;
 const FLOW_NODE_HEIGHT = 118;
-const FLOW_X_START = 24;
-const FLOW_Y_START = 32;
-const FLOW_COLUMN_GAP = 258;
-const FLOW_ROW_GAP = 142;
-const FLOW_GROUP_GAP = 86;
-const FLOW_SINGLETON_GRID_COLUMNS = 4;
-const FLOW_MAX_RANK = 7;
-const FLOW_FORCE_TICKS = 180;
+const GRAPH_SIZE_OPTIONS = [120, 250, 500, 1000] as const;
+const DEFAULT_GRAPH_PRESET: GraphMode = 'issue';
 
 const MODE_LABELS: Record<GraphMode, string> = {
   activity: 'Activity',
@@ -143,10 +218,19 @@ const MODE_LABELS: Record<GraphMode, string> = {
   'artifact-lineage': 'Artifact Lineage',
 };
 
+const MODE_SUMMARIES: Record<GraphMode, string> = {
+  issue: 'Open issues with structural relationships first.',
+  work: 'Issues with work, auth, session, and branch context.',
+  activity: 'Recent operational and ledger activity.',
+  provenance: 'Evidence, commits, sessions, and provider context.',
+  'provider-lineage': 'Provider, manifest, run, and artifact flow.',
+  'artifact-lineage': 'Artifact origins, derivatives, and reports.',
+};
+
 const GRAPH_MODES = new Set<GraphMode>(Object.keys(MODE_LABELS) as GraphMode[]);
 
 function coerceGraphMode(value: string | undefined): GraphMode {
-  return value && GRAPH_MODES.has(value as GraphMode) ? value as GraphMode : 'activity';
+  return value && GRAPH_MODES.has(value as GraphMode) ? value as GraphMode : DEFAULT_GRAPH_PRESET;
 }
 
 function typeLabel(type: string): string {
@@ -188,15 +272,6 @@ function nodeColor(node: GraphNode): string {
   return 'rgba(230,237,243,0.76)';
 }
 
-function edgeColor(edge: GraphEdge): string {
-  if (edge.edge_class === 'semantic') return 'rgba(168,85,247,0.62)';
-  if (edge.edge_class === 'provider') return 'rgba(125,211,252,0.62)';
-  if (edge.edge_class === 'provenance') return 'rgba(50,210,150,0.54)';
-  if (edge.type.includes('auth')) return 'rgba(245,194,92,0.58)';
-  if (edge.type.includes('session')) return 'rgba(77,163,255,0.5)';
-  return 'rgba(154,164,178,0.46)';
-}
-
 function firstEntries(value: Record<string, unknown> | undefined, limit = 4): Array<[string, unknown]> {
   if (!value) return [];
   return Object.entries(value)
@@ -214,90 +289,79 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function layoutHint(node: GraphNode): Record<string, unknown> {
-  return recordValue(node.detail?.layout) ?? {};
+function legendButtonFromPayload(
+  item: GraphPayloadLegendItem,
+  kind: GraphLegendKind,
+  fallbackColor: string,
+): GraphLegendItem {
+  const copy = applyLegendFallbackCopy(item, kind);
+  return {
+    id: item.id,
+    kind,
+    label: copy.label,
+    description: copy.description,
+    count: item.count,
+    enabled: item.enabled,
+    visible: item.enabled && item.visible,
+    color: item.visual?.color ?? fallbackColor,
+    dash: item.visual?.dash,
+    width: item.visual?.stroke_width,
+  };
 }
 
-function layoutNumber(node: GraphNode, key: string): number | undefined {
-  const value = layoutHint(node)[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function layoutString(node: GraphNode, key: string): string | undefined {
-  const value = layoutHint(node)[key];
-  return typeof value === 'string' ? value : undefined;
-}
-
-function sortRankNodes(a: GraphNode, b: GraphNode): number {
-  const aGroup = layoutString(a, 'group_id') ?? '';
-  const bGroup = layoutString(b, 'group_id') ?? '';
-  if (aGroup !== bGroup) return aGroup.localeCompare(bGroup);
-  const aOrder = layoutNumber(a, 'order');
-  const bOrder = layoutNumber(b, 'order');
-  if (aOrder !== undefined || bOrder !== undefined) return (aOrder ?? 0) - (bOrder ?? 0);
-  return sortGraphNodes(a, b);
-}
-
-function sortGraphNodes(a: GraphNode, b: GraphNode): number {
-  return nodeTime(b) - nodeTime(a) || a.type.localeCompare(b.type) || a.label.localeCompare(b.label);
-}
-
-function baseRank(node: GraphNode, mode: GraphMode): number {
-  const rank = layoutNumber(node, 'rank');
-  if (rank !== undefined) return Math.max(0, Math.min(FLOW_MAX_RANK, rank));
-  if (mode === 'issue' && node.type === 'issue') return 0;
-  return Math.min(FLOW_MAX_RANK, NODE_COLUMNS[node.type] ?? (mode === 'issue' ? 0 : 2));
-}
-
-function edgeLayoutDirection(edge: GraphEdge, nodeById: Map<string, GraphNode>): { source: string; target: string } {
-  const source = nodeById.get(edge.source);
-  const target = nodeById.get(edge.target);
-  if (!source || !target) return { source: edge.source, target: edge.target };
-
-  if (edge.type === 'auth_issue' || edge.type === 'auth_request_references_issue') {
-    return { source: edge.target, target: edge.source };
+function buildNodeLegend(payload: GraphPayload): GraphLegendItem[] {
+  if (payload.node_legend && payload.node_legend.length > 0) {
+    const nodeSamples = new Map(payload.nodes.map((node) => [node.type, node]));
+    return payload.node_legend.map((item) => (
+      legendButtonFromPayload(item, 'node', nodeSamples.get(item.id) ? nodeColor(nodeSamples.get(item.id)!) : 'rgba(154,164,178,0.64)')
+    ));
   }
-  if (edge.type === 'session_parent') {
-    return { source: edge.target, target: edge.source };
+  const counts = new Map<string, { count: number; sample: GraphNode }>();
+  for (const node of payload.nodes) {
+    const current = counts.get(node.type) ?? { count: 0, sample: node };
+    current.count += 1;
+    counts.set(node.type, current);
   }
-  if (edge.type === 'session_issue') {
-    if (source.type === 'session' && (target.type === 'issue' || target.type === 'work_unit')) {
-      return { source: edge.target, target: edge.source };
-    }
-  }
-  return { source: edge.source, target: edge.target };
+  return Array.from(counts.entries()).map(([id, entry]) => ({
+    id,
+    kind: 'node' as const,
+    label: typeLabel(id),
+    description: `${typeLabel(id)} nodes`,
+    count: entry.count,
+    enabled: entry.count > 0,
+    visible: entry.count > 0,
+    color: nodeColor(entry.sample),
+  }));
 }
 
-function graphComponents(nodes: GraphNode[], edges: GraphEdge[]): string[][] {
-  const nodeIds = new Set(nodes.map((node) => node.id));
-  const adjacency = new Map<string, Set<string>>();
-  for (const node of nodes) adjacency.set(node.id, new Set());
-  for (const edge of edges) {
-    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue;
-    adjacency.get(edge.source)?.add(edge.target);
-    adjacency.get(edge.target)?.add(edge.source);
+function buildEdgeLegend(payload: GraphPayload): GraphLegendItem[] {
+  if (payload.edge_legend && payload.edge_legend.length > 0) {
+    return payload.edge_legend.map((item) => (
+      legendButtonFromPayload(item, 'edge', 'rgba(154,164,178,0.46)')
+    ));
   }
+  const counts = new Map<string, number>();
+  for (const edge of payload.edges) counts.set(edge.type, (counts.get(edge.type) ?? 0) + 1);
+  return Array.from(counts.entries()).map(([id, count]) => {
+    const sample = payload.edges.find((edge) => edge.type === id);
+    const style = sample ? graphEdgeStyle(sample) : null;
+    return {
+      id,
+      kind: 'edge' as const,
+      label: typeLabel(id),
+      description: `${typeLabel(id)} edges`,
+      count,
+      enabled: count > 0,
+      visible: count > 0,
+      color: style?.stroke ?? 'rgba(154,164,178,0.46)',
+      dash: style?.dasharray,
+      width: style?.strokeWidth,
+    };
+  });
+}
 
-  const visited = new Set<string>();
-  const components: string[][] = [];
-  for (const node of [...nodes].sort(sortGraphNodes)) {
-    if (visited.has(node.id)) continue;
-    const stack = [node.id];
-    const component: string[] = [];
-    visited.add(node.id);
-    while (stack.length > 0) {
-      const current = stack.pop();
-      if (!current) continue;
-      component.push(current);
-      for (const next of adjacency.get(current) ?? []) {
-        if (visited.has(next)) continue;
-        visited.add(next);
-        stack.push(next);
-      }
-    }
-    components.push(component);
-  }
-  return components;
+function visibleLegendIds(items: GraphLegendItem[]): string[] {
+  return items.filter((item) => item.enabled && item.visible).map((item) => item.id);
 }
 
 function makeFlowNode(node: GraphNode, x: number, y: number): ReactFlowNode {
@@ -307,179 +371,24 @@ function makeFlowNode(node: GraphNode, x: number, y: number): ReactFlowNode {
     position: { x, y },
     initialWidth: FLOW_NODE_WIDTH,
     initialHeight: FLOW_NODE_HEIGHT,
-    sourcePosition: Position.Right,
-    targetPosition: Position.Left,
     data: { node, label: <MandibleFlowNodeLabel node={node} /> },
   };
 }
 
-function layoutNodes(nodes: GraphNode[], edges: GraphEdge[], mode: GraphMode): ReactFlowNode[] {
-  const nodeById = new Map(nodes.map((node) => [node.id, node]));
-  const ranks = new Map(nodes.map((node) => [node.id, baseRank(node, mode)]));
-  const directedEdges = edges
-    .filter((edge) => nodeById.has(edge.source) && nodeById.has(edge.target))
-    .map((edge) => edgeLayoutDirection(edge, nodeById));
-
-  for (let pass = 0; pass < Math.min(nodes.length, FLOW_MAX_RANK * 3); pass += 1) {
-    let changed = false;
-    for (const edge of directedEdges) {
-      const sourceRank = ranks.get(edge.source) ?? 0;
-      const targetRank = ranks.get(edge.target) ?? 0;
-      const nextRank = Math.min(FLOW_MAX_RANK, Math.max(targetRank, sourceRank + 1));
-      if (nextRank > targetRank) {
-        ranks.set(edge.target, nextRank);
-        changed = true;
-      }
-    }
-    if (!changed) break;
-  }
-
-  const incidentCounts = new Map<string, number>();
-  for (const edge of edges) {
-    incidentCounts.set(edge.source, (incidentCounts.get(edge.source) ?? 0) + 1);
-    incidentCounts.set(edge.target, (incidentCounts.get(edge.target) ?? 0) + 1);
-  }
-
-  const components = graphComponents(nodes, edges);
-  const relationshipComponents = components
-    .filter((component) => component.some((id) => (incidentCounts.get(id) ?? 0) > 0))
-    .sort((a, b) => {
-      const aMaxDegree = Math.max(...a.map((id) => incidentCounts.get(id) ?? 0));
-      const bMaxDegree = Math.max(...b.map((id) => incidentCounts.get(id) ?? 0));
-      const newestA = Math.max(...a.map((id) => nodeTime(nodeById.get(id)!)));
-      const newestB = Math.max(...b.map((id) => nodeTime(nodeById.get(id)!)));
-      return b.length - a.length || bMaxDegree - aMaxDegree || newestB - newestA;
-    });
-  const singletons = components
-    .filter((component) => component.every((id) => (incidentCounts.get(id) ?? 0) === 0))
-    .flat()
-    .map((id) => nodeById.get(id)!)
-    .sort(sortGraphNodes);
-
-  const output: ReactFlowNode[] = [];
-  let yCursor = FLOW_Y_START;
-
-  for (const component of relationshipComponents) {
-    const componentIds = new Set(component);
-    const componentEdges = edges.filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target));
-    const deterministicLayout = mode === 'issue' && componentEdges.some((edge) => (
-      edge.type === 'umbrella_child' || edge.metadata?.layout === 'hierarchical'
-    ));
-    const byRank = new Map<number, GraphNode[]>();
-    for (const id of component) {
-      const node = nodeById.get(id);
-      if (!node) continue;
-      const rank = ranks.get(id) ?? baseRank(node, mode);
-      const group = byRank.get(rank) ?? [];
-      group.push(node);
-      byRank.set(rank, group);
-    }
-
-    const forceNodes: ForceLayoutNode[] = [];
-    for (const [rank, rankNodes] of byRank.entries()) {
-      const sorted = [...rankNodes].sort(sortRankNodes);
-      sorted.forEach((node, row) => {
-        const anchorX = FLOW_X_START + rank * FLOW_COLUMN_GAP;
-        const anchorY = yCursor + row * FLOW_ROW_GAP;
-        forceNodes.push({
-          id: node.id,
-          node,
-          rank,
-          anchorX,
-          anchorY,
-          x: anchorX,
-          y: anchorY,
-        });
-      });
-    }
-
-    const forceLinks: ForceLayoutLink[] = directedEdges
-      .filter((edge) => componentIds.has(edge.source) && componentIds.has(edge.target))
-      .map((edge) => ({ source: edge.source, target: edge.target }));
-
-    if (forceNodes.length > 1 && !deterministicLayout) {
-      const simulation = forceSimulation<ForceLayoutNode>(forceNodes)
-        .force('link', forceLink<ForceLayoutNode, ForceLayoutLink>(forceLinks)
-          .id((node) => node.id)
-          .distance(FLOW_COLUMN_GAP * 0.92)
-          .strength(0.28))
-        .force('charge', forceManyBody<ForceLayoutNode>().strength(-520))
-        .force('collide', forceCollide<ForceLayoutNode>(FLOW_NODE_WIDTH * 0.68).strength(0.98))
-        .force('x', forceX<ForceLayoutNode>((node) => node.anchorX).strength(0.62))
-        .force('y', forceY<ForceLayoutNode>((node) => node.anchorY).strength(0.08))
-        .stop();
-      for (let tick = 0; tick < FLOW_FORCE_TICKS; tick += 1) simulation.tick();
-    }
-
-    const minY = Math.min(...forceNodes.map((node) => node.y ?? node.anchorY));
-    const maxY = Math.max(...forceNodes.map((node) => node.y ?? node.anchorY));
-    const yOffset = yCursor - minY;
-    for (const item of forceNodes) {
-      output.push(makeFlowNode(
-        item.node,
-        Math.max(FLOW_X_START, item.x ?? item.anchorX),
-        (item.y ?? item.anchorY) + yOffset,
-      ));
-    }
-    yCursor += Math.max(FLOW_ROW_GAP, maxY - minY + FLOW_NODE_HEIGHT) + FLOW_GROUP_GAP;
-  }
-
-  if (singletons.length > 0) {
-    const columns = Math.min(FLOW_SINGLETON_GRID_COLUMNS, Math.max(1, Math.ceil(Math.sqrt(singletons.length))));
-    singletons.forEach((node, index) => {
-      const column = index % columns;
-      const row = Math.floor(index / columns);
-      output.push(makeFlowNode(
-        node,
-        FLOW_X_START + column * FLOW_COLUMN_GAP,
-        yCursor + row * FLOW_ROW_GAP,
-      ));
-    });
-  }
-
-  return output;
+function layoutFlow(nodes: GraphNode[], edges: GraphEdge[]): { nodes: ReactFlowNode[]; edges: RoutedGraphEdge[] } {
+  const result = layoutGraph(nodes, edges, {
+    nodeWidth: FLOW_NODE_WIDTH,
+    nodeHeight: FLOW_NODE_HEIGHT,
+    availableWidth: 1500,
+  });
+  return {
+    nodes: result.nodes.map((item) => makeFlowNode(item.node, item.position.x, item.position.y)),
+    edges: result.edges,
+  };
 }
 
-function edgeLabel(edge: GraphEdge): string | undefined {
-  if (edge.metadata?.label_default_visible !== true) return undefined;
-  const label = edge.metadata.relationship_label;
-  return typeof label === 'string' ? label : edge.type.replace(/_/g, ' ');
-}
-
-function flowEdges(edges: GraphEdge[]): ReactFlowEdge[] {
-  return edges.map((edge) => ({
-    id: reactFlowId(edge.id),
-    source: reactFlowId(edge.source),
-    target: reactFlowId(edge.target),
-    label: edgeLabel(edge),
-    style: { stroke: edgeColor(edge), strokeWidth: edge.edge_class === 'semantic' ? 1.4 : 1.8 },
-  }));
-}
-
-function ManualGraphEdges({ nodes, edges }: { nodes: ReactFlowNode[]; edges: GraphEdge[] }): JSX.Element | null {
-  const nodeByOriginalId = new Map(nodes.map((node) => [node.data.node.id, node]));
-  const visibleEdges = edges
-    .map((edge) => {
-      const source = nodeByOriginalId.get(edge.source);
-      const target = nodeByOriginalId.get(edge.target);
-      if (!source || !target) return null;
-      const sourceX = source.position.x + FLOW_NODE_WIDTH;
-      const sourceY = source.position.y + FLOW_NODE_HEIGHT / 2;
-      const targetX = target.position.x;
-      const targetY = target.position.y + FLOW_NODE_HEIGHT / 2;
-      const horizontalGap = Math.abs(targetX - sourceX);
-      const direction = targetX >= sourceX ? 1 : -1;
-      const spread = Math.max(24, horizontalGap * 0.42);
-      const sourceControlX = sourceX + direction * spread;
-      const targetControlX = targetX - direction * spread;
-      return {
-        edge,
-        d: `M ${sourceX} ${sourceY} C ${sourceControlX} ${sourceY}, ${targetControlX} ${targetY}, ${targetX} ${targetY}`,
-      };
-    })
-    .filter((item): item is { edge: GraphEdge; d: string } => item !== null);
-
-  if (visibleEdges.length === 0) return null;
+function ManualGraphEdges({ edges }: { edges: RoutedGraphEdge[] }): JSX.Element | null {
+  if (edges.length === 0) return null;
   return (
     <svg className="graph-manual-edges" aria-hidden="true">
       <defs>
@@ -487,15 +396,30 @@ function ManualGraphEdges({ nodes, edges }: { nodes: ReactFlowNode[]; edges: Gra
           <path d="M -6 -4 L 0 0 L -6 4" />
         </marker>
       </defs>
-      {visibleEdges.map(({ edge, d }) => (
+      {edges.map((routed) => {
+        const style = routed.style;
+        const path = routed.route?.path;
+        if (!path) return null;
+        return (
         <path
-          key={edge.id}
-          className="graph-manual-edge"
-          d={d}
-          markerEnd="url(#graph-manual-arrow)"
-          style={{ stroke: edgeColor(edge), strokeWidth: edge.edge_class === 'semantic' ? 1.5 : 1.8 }}
+          key={routed.id}
+          className={[
+            'graph-manual-edge',
+            style.family === 'weak_cross_reference' ? 'graph-manual-edge--weak' : '',
+            style.family === 'hierarchy' ? 'graph-manual-edge--structural' : '',
+            style.family === 'provider_provenance_artifact' ? 'graph-manual-edge--provenance' : '',
+          ].filter(Boolean).join(' ')}
+          d={path}
+          markerEnd={routed.route?.markerEnd === false ? undefined : 'url(#graph-manual-arrow)'}
+          style={{
+            stroke: style.stroke,
+            strokeWidth: style.strokeWidth,
+            opacity: style.opacity,
+            strokeDasharray: style.dasharray,
+          }}
         />
-      ))}
+        );
+      })}
     </svg>
   );
 }
@@ -690,26 +614,65 @@ function TokenMultiSelect({
   );
 }
 
-function ModeButton({
-  mode,
+function LensButton({
+  lens,
   current,
   onSelect,
 }: {
-  mode: GraphModeDescriptor
+  lens: GraphModeDescriptor
   current: GraphMode
   onSelect: (mode: GraphMode) => void
 }): JSX.Element {
-  const disabled = !mode.available && mode.id !== current;
+  const disabled = !lens.available && lens.id !== current;
   return (
     <button
       type="button"
-      className={`graph-mode-btn${mode.id === current ? ' graph-mode-btn--active' : ''}`}
+      className={`graph-lens-btn${lens.id === current ? ' graph-lens-btn--active' : ''}`}
       disabled={disabled}
-      title={mode.description}
-      onClick={() => onSelect(mode.id)}
+      title={lens.summary ?? lens.description}
+      onClick={() => onSelect(lens.id)}
     >
-      <span>{mode.label}</span>
-      <span className="graph-mode-btn__count">{mode.count}</span>
+      <span>{lens.label}</span>
+      <span className="graph-lens-btn__count">{lens.count}</span>
+    </button>
+  );
+}
+
+function LegendButton({
+  item,
+  onToggle,
+}: {
+  item: GraphLegendItem
+  onToggle: (item: GraphLegendItem) => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      className={[
+        'graph-legend-btn',
+        item.visible ? 'graph-legend-btn--active' : '',
+        !item.enabled ? 'graph-legend-btn--disabled' : '',
+      ].filter(Boolean).join(' ')}
+      disabled={!item.enabled}
+      title={item.description}
+      onClick={() => onToggle(item)}
+    >
+      <span
+        className={`graph-legend-btn__swatch graph-legend-btn__swatch--${item.kind}`}
+        style={{ borderColor: item.color, background: item.kind === 'node' ? item.color : 'transparent' }}
+      >
+        {item.kind === 'edge' && (
+          <span
+            style={{
+              borderTopColor: item.color,
+              height: `${item.width ?? 1.5}px`,
+              borderTopStyle: item.dash ? 'dashed' : 'solid',
+            }}
+          />
+        )}
+      </span>
+      <span className="graph-legend-btn__label">{item.label}</span>
+      <span className="graph-legend-btn__count">{item.count.toLocaleString()}</span>
     </button>
   );
 }
@@ -915,19 +878,21 @@ function DetailPane({
 
 export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus }: GraphViewProps): JSX.Element {
   const routeMode = coerceGraphMode(initialMode);
-  const [payload, setPayload] = useState<GraphPayload>({ nodes: [], edges: [], mode: 'activity' });
+  const [payload, setPayload] = useState<GraphPayload>({ nodes: [], edges: [], mode: DEFAULT_GRAPH_PRESET });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<GraphMode>(routeMode);
-  const [sinceFilter, setSinceFilter] = useState<'1d' | '3d' | '7d' | 'all'>('all');
-  const [statusFilter, setStatusFilter] = useState<'open' | 'all'>('all');
-  const [repoFilters, setRepoFilters] = useState<string[]>([]);
-  const [branchFilters, setBranchFilters] = useState<string[]>([]);
-  const [enabledLayers, setEnabledLayers] = useState<Set<string>>(new Set());
+  const [spec, setSpec] = useState<GraphSpecState>({
+    preset: routeMode,
+    since: 'all',
+    status: 'open',
+    limit: 120,
+    repos: [],
+    branches: [],
+  });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   useEffect(() => {
-    setMode(routeMode);
+    setSpec((current) => ({ ...current, preset: routeMode, nodeTypes: undefined, edgeTypes: undefined }));
   }, [routeMode]);
 
   useEffect(() => {
@@ -935,16 +900,18 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     setLoading(true);
     setError(null);
     getGraph({
-      mode,
-      since: sinceFilter === 'all' ? undefined : sinceFilter,
-      status: statusFilter === 'all' ? 'all' : undefined,
-      repos: repoFilters,
-      branches: branchFilters,
+      mode: spec.preset,
+      since: spec.since === 'all' ? undefined : spec.since,
+      status: spec.status === 'all' ? 'all' : undefined,
+      repos: spec.repos,
+      branches: spec.branches,
+      limit: spec.limit,
+      nodeTypes: spec.nodeTypes,
+      edgeTypes: spec.edgeTypes,
     })
       .then((data) => {
         if (!active) return;
         setPayload(data);
-        setEnabledLayers(new Set((data.layers ?? []).filter((layer) => layer.enabled).map((layer) => layer.id)));
         if (initialFocus && data.nodes.some((node) => node.id === initialFocus)) {
           setSelectedNodeId(initialFocus);
         } else if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
@@ -961,146 +928,228 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     return () => {
       active = false;
     };
-  }, [mode, sinceFilter, statusFilter, repoFilters, branchFilters, refreshToken, initialFocus]);
+  }, [spec, refreshToken, initialFocus]);
 
-  const rawModes = payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
+  const lenses = (payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
     id: id as GraphMode,
     label,
-    description: label,
-    count: id === mode ? payload.nodes.length : 0,
-    available: id === mode,
+    kind: 'perspective' as const,
+    description: MODE_SUMMARIES[id as GraphMode],
+    summary: MODE_SUMMARIES[id as GraphMode],
+    count: id === spec.preset ? payload.nodes.length : 0,
+    available: id === spec.preset,
+  }))).map((mode) => ({
+    ...mode,
+    label: MODE_LABELS[mode.id] ?? mode.label,
+    summary: MODE_SUMMARIES[mode.id] ?? mode.summary,
+    description: MODE_SUMMARIES[mode.id] ?? mode.description,
   }));
-  const modes = rawModes.map((item) => (
-    item.id === mode ? { ...item, count: payload.nodes.length } : item
-  ));
+  const activeLensDescriptor = lenses.find((item) => item.id === spec.preset);
+  const activeLensSummary = activeLensDescriptor?.summary
+    ?? activeLensDescriptor?.description
+    ?? MODE_SUMMARIES[spec.preset];
+  const activeLensTotal = payload.counts?.total_nodes
+    ?? (payload.mode === spec.preset && payload.available_count != null
+    ? payload.available_count
+    : lenses.find((item) => item.id === spec.preset)?.count ?? payload.nodes.length);
+  const displayedCount = payload.counts?.visible_nodes ?? payload.displayed_count ?? payload.nodes.length;
+  const displayedEdges = payload.counts?.visible_edges ?? payload.edges.length;
+  const availableNodes = payload.counts?.available_nodes ?? displayedCount;
+  const availableEdges = payload.counts?.available_edges ?? displayedEdges;
 
-  const layers = payload.layers ?? [];
   const repos = useMemo(() => {
     const seen = new Set<string>(payload.filters?.repos ?? []);
-    repoFilters.forEach((repo) => seen.add(repo));
+    spec.repos.forEach((repo) => seen.add(repo));
     if (seen.size === 0) {
       payload.nodes.forEach((node) => (node.repo || node.repo_id) && seen.add(node.repo || node.repo_id || ''));
     }
     return Array.from(seen).filter(Boolean).sort();
-  }, [payload.filters?.repos, payload.nodes, repoFilters]);
+  }, [payload.filters?.repos, payload.nodes, spec.repos]);
 
   const branches = useMemo(() => {
     const seen = new Set<string>(payload.filters?.branches ?? []);
-    branchFilters.forEach((branch) => seen.add(branch));
+    spec.branches.forEach((branch) => seen.add(branch));
     if (seen.size === 0) {
       payload.nodes.forEach((node) => {
         if (node.branch) seen.add(node.branch);
       });
     }
     return Array.from(seen).sort();
-  }, [payload.filters?.branches, payload.nodes, branchFilters]);
+  }, [payload.filters?.branches, payload.nodes, spec.branches]);
 
-  const visibleNodes = useMemo(() => {
-    if (layers.length === 0) return payload.nodes;
-    return payload.nodes.filter((node) => enabledLayers.has(node.type));
-  }, [payload.nodes, enabledLayers, layers.length]);
-  const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
-  const visibleEdges = useMemo(
-    () => payload.edges.filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target)),
-    [payload.edges, visibleNodeIds],
-  );
+  const nodeLegend = useMemo(() => buildNodeLegend(payload), [payload]);
+  const edgeLegend = useMemo(() => buildEdgeLegend(payload), [payload]);
+  const visibleNodes = payload.nodes;
+  const visibleEdges = payload.edges;
+  const layoutResult = useMemo(() => layoutFlow(visibleNodes, visibleEdges), [visibleNodes, visibleEdges]);
   const flowNodes = useMemo(
-    () => layoutNodes(visibleNodes, visibleEdges, mode).map((node) => ({
+    () => layoutResult.nodes.map((node) => ({
       ...node,
       selected: (node.data as { node: GraphNode }).node.id === selectedNodeId,
     })),
-    [visibleNodes, visibleEdges, mode, selectedNodeId],
+    [layoutResult.nodes, selectedNodeId],
   );
-  const flowEdgeList = useMemo(() => flowEdges(visibleEdges), [visibleEdges]);
+  const flowEdgeList = layoutResult.edges;
   const flowSignature = useMemo(
     () => [
-      mode,
+      spec.preset,
       selectedNodeId ?? '',
       flowNodes.map((node) => node.id).join(','),
       flowEdgeList.map((edge) => edge.id).join(','),
     ].join(':'),
-    [flowEdgeList, flowNodes, mode, selectedNodeId],
+    [flowEdgeList, flowNodes, spec.preset, selectedNodeId],
   );
   const selectedNode = useMemo(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
     [visibleNodes, selectedNodeId],
   );
 
-  const toggleLayer = (layer: GraphLayerDescriptor) => {
-    if (!layer.enabled) return;
-    setEnabledLayers((prev) => {
-      const next = new Set(prev);
-      if (next.has(layer.id)) next.delete(layer.id);
-      else next.add(layer.id);
-      return next;
-    });
+  const updateSpec = (patch: Partial<GraphSpecState>) => {
+    setSpec((current) => ({ ...current, ...patch }));
   };
+
+  const selectPreset = (preset: GraphMode) => {
+    setSpec((current) => ({
+      ...current,
+      preset,
+      status: preset === 'issue' ? 'open' : current.status,
+      nodeTypes: undefined,
+      edgeTypes: undefined,
+    }));
+  };
+
+  const toggleLegendItem = (item: GraphLegendItem) => {
+    if (!item.enabled) return;
+    if (item.kind === 'node') {
+      const current = new Set(spec.nodeTypes ?? payload.spec?.node_types ?? visibleLegendIds(nodeLegend));
+      if (current.has(item.id)) current.delete(item.id);
+      else current.add(item.id);
+      const next = Array.from(current);
+      if (next.length > 0) updateSpec({ nodeTypes: next });
+      return;
+    }
+    const current = new Set(spec.edgeTypes ?? payload.spec?.edge_types ?? visibleLegendIds(edgeLegend));
+    if (current.has(item.id)) current.delete(item.id);
+    else current.add(item.id);
+    const next = Array.from(current);
+    if (next.length > 0) updateSpec({ edgeTypes: next });
+  };
+
+  const graphDisplaySummary = `Displayed ${displayedCount.toLocaleString()}/${availableNodes.toLocaleString()} nodes and ${displayedEdges.toLocaleString()}/${availableEdges.toLocaleString()} edges`;
+  const graphLimitSummary = payload.truncated || availableNodes < activeLensTotal
+    ? `Lens total ${activeLensTotal.toLocaleString()} nodes before the current filters and size limit.`
+    : '';
 
   return (
     <div className="graph-view">
       <div className="graph-topbar">
-        <div className="graph-primary-controls">
-          <div className="graph-mode-strip" aria-label="Graph modes">
-            {modes.map((item) => (
-              <ModeButton key={item.id} mode={item} current={mode} onSelect={setMode} />
-            ))}
-          </div>
-          <div className="graph-layer-strip" aria-label="Graph layers">
-            {layers.length === 0 && <div className="graph-layer-strip__empty">No layers</div>}
-            {layers.map((layer) => (
-              <label key={layer.id} className={`graph-layer-chip${!layer.enabled ? ' graph-layer-chip--disabled' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={layer.enabled && enabledLayers.has(layer.id)}
-                  disabled={!layer.enabled}
-                  onChange={() => toggleLayer(layer)}
-                />
-                <span>{typeLabel(layer.id)}</span>
-                <em>{layer.count}</em>
-              </label>
+        <div className="graph-spec-row graph-spec-row--lens">
+          <span className="graph-spec-row__label">Lens</span>
+          <div className="graph-lens-strip" aria-label="Graph lens presets">
+            {lenses.map((item) => (
+              <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
             ))}
           </div>
         </div>
-        <div className="graph-toolbar">
+        <div className="graph-spec-row graph-spec-row--scope">
+          <span className="graph-spec-row__label">Scope</span>
           <div className="graph-toolbar__combobox-group">
             <TokenMultiSelect
               placeholder="All repos"
               options={repos}
-              selected={repoFilters}
-              onChange={setRepoFilters}
+              selected={spec.repos}
+              onChange={(repos) => updateSpec({ repos })}
             />
             <TokenMultiSelect
               placeholder="All branches"
               options={branches}
-              selected={branchFilters}
-              onChange={setBranchFilters}
+              selected={spec.branches}
+              onChange={(branches) => updateSpec({ branches })}
               disabled={branches.length === 0}
             />
           </div>
-          <div className="graph-toolbar__toggle-group">
-            {(['1d', '3d', '7d', 'all'] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={`graph-toolbar__toggle${sinceFilter === value ? ' graph-toolbar__toggle--active' : ''}`}
-                onClick={() => setSinceFilter(value)}
-              >
-                {value}
-              </button>
-            ))}
+        </div>
+        <div className="graph-spec-row graph-spec-row--legend">
+          <span className="graph-spec-row__label">Nodes</span>
+          <div className="graph-legend-stack">
+            <div className="graph-legend-strip" aria-label="Visible node families">
+              {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
+              {nodeLegend.map((item) => (
+                <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+              ))}
+            </div>
+            {spec.preset === 'issue' && nodeLegend.length === 1 && nodeLegend[0]?.id === 'issue' && (
+              <div className="graph-row-note">
+                Only issue nodes are shown in this lens by default; auth and session evidence stays attached to issue details.
+              </div>
+            )}
           </div>
-          <div className="graph-toolbar__toggle-group">
-            {(['open', 'all'] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={`graph-toolbar__toggle${statusFilter === value ? ' graph-toolbar__toggle--active' : ''}`}
-                onClick={() => setStatusFilter(value)}
-              >
-                {value}
-              </button>
-            ))}
+        </div>
+        <div className="graph-spec-row graph-spec-row--legend">
+          <span className="graph-spec-row__label">Edges</span>
+          <div className="graph-legend-stack">
+            <div className="graph-legend-strip" aria-label="Visible edge families">
+              {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
+              {edgeLegend.map((item) => (
+                <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+              ))}
+            </div>
+            <div className="graph-row-note">
+              Hierarchy edges place parent and umbrella issues; reference and evidence edges add context without changing the issue tree.
+            </div>
           </div>
+        </div>
+        <div className="graph-toolbar" aria-label="Graph filters and size">
+          <div className="graph-control-group">
+            <span className="graph-control-group__label">Time</span>
+            <div className="graph-toolbar__toggle-group">
+              {(['1d', '3d', '7d', 'all'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`graph-toolbar__toggle${spec.since === value ? ' graph-toolbar__toggle--active' : ''}`}
+                  onClick={() => updateSpec({ since: value })}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="graph-control-group">
+            <span className="graph-control-group__label">Status</span>
+            <div className="graph-toolbar__toggle-group">
+              {(['open', 'all'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`graph-toolbar__toggle${spec.status === value ? ' graph-toolbar__toggle--active' : ''}`}
+                  onClick={() => updateSpec({ status: value })}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="graph-control-group" aria-label="Graph size">
+            <span className="graph-control-group__label">Size</span>
+            <div className="graph-toolbar__toggle-group">
+              {GRAPH_SIZE_OPTIONS.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`graph-toolbar__toggle${spec.limit === value ? ' graph-toolbar__toggle--active' : ''}`}
+                  onClick={() => updateSpec({ limit: value })}
+                >
+                  {value.toLocaleString()}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="graph-display-summary" aria-live="polite">
+          <strong>{activeLensSummary}</strong>
+          <span>{graphDisplaySummary}</span>
+          {graphLimitSummary && <span>{graphLimitSummary}</span>}
         </div>
       </div>
 
@@ -1111,7 +1160,7 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
           {!loading && !error && flowNodes.length === 0 && (
             <div className="graph-empty">
               <h3>No graph data</h3>
-              <p>{MODE_LABELS[mode]} has no visible nodes yet.</p>
+              <p>{MODE_LABELS[spec.preset]} has no visible nodes for the current spec.</p>
             </div>
           )}
           {!loading && !error && flowNodes.length > 0 && (
@@ -1135,7 +1184,7 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
               }}
             >
               <ViewportPortal>
-                <ManualGraphEdges nodes={flowNodes} edges={visibleEdges} />
+                <ManualGraphEdges edges={flowEdgeList} />
               </ViewportPortal>
               <Background color="rgba(154,164,178,0.12)" gap={18} />
               <MiniMap

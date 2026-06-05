@@ -1,48 +1,56 @@
 ---
 title: Knowledge Graph
-description: D3 force-directed visualization of sessions, issues, and auth requests.
+description: Perspective-based graph views for issues, work, lineage, and provenance.
 ---
 
 # Knowledge Graph
 
-The Graph tab renders a force-directed network diagram of your recent activity. Nodes represent sessions, issues, and auth requests; edges represent the relationships between them (parent/child sessions, session-to-issue links, auth-request-to-issue references via `Bug:` trailers).
+The Graph tab shows the same underlying Mandible work ledger through different
+perspectives. A perspective is not a filter: it changes the question the graph is
+answering, the default node families, and the layout policy used to make the
+relationships readable.
 
-## Node types
+## Perspectives
 
-| Type | Shape | Color |
-|------|-------|-------|
-| **Session** | Small circle | Green if active, grey if ended |
-| **Issue** | Larger circle | Purple for umbrella, red for bug, blue for feature, grey for deferred, white for unlabeled |
-| **Auth request** | Medium circle | Yellow if pending, green if completed, red if failed/rejected |
+| Perspective | Summary |
+|-------------|---------|
+| **Activity** | What changed recently or needs attention now. |
+| **Issues** | How issues relate to other issues. |
+| **Work** | How work moves through repos, branches, sessions, issues, and auth. |
+| **Provider Lineage** | What a provider or tool produced from the request and spec to outputs. |
+| **Artifact Lineage** | Where an artifact came from and what reused or derived from it. |
+| **Provenance** | Evidence for which session, action, commit, or run produced or justified an object. |
 
-## Edges
+The API returns these summaries in each `GraphModeDescriptor`, with
+`kind: "perspective"` so clients can label the selector accurately.
 
-- **session_parent** — connects a subagent session to its parent.
-- **session_issue** — connects a session to the issue it worked on (from the `session_issues` table).
-- **auth_issue** — connects an auth request to issues referenced in its `Bug:` commit message trailers.
+## Controls
 
-## Toolbar
-
-The toolbar at the top provides several filters:
-
-- **Repo combobox** — narrow to a single repository. The dropdown is populated from node data.
-- **Branch combobox** — further narrow to a specific branch within the selected repo. Disabled until a repo is selected.
-- **Time range** — toggle buttons for 1d, 3d, 7d, or all. Controls the `since` parameter sent to the API.
-- **Status filter** — "open only" hides ended sessions and closed issues; "all" shows everything in the time range.
-
-Repo and branch filters are applied server-side (the API query); the status filter is applied client-side after data loads.
-
-## Interaction
-
-- **Hover** a node to see a tooltip with its label, type, status, and creation time.
-- **Click** a node to navigate to the corresponding tab (Monitor for sessions, Issues for issues, Auth for auth requests).
-- **Drag** nodes to rearrange the layout. The simulation re-settles after each interaction.
-- **Zoom and pan** with scroll wheel and mouse drag on the canvas background.
+- **Perspective buttons** choose the graph question and default structure.
+- **Layer chips** show or hide node families within the selected perspective.
+- **Repo and branch filters** narrow the source data before the graph is built.
+- **Time range** narrows recent operational data such as sessions and auth
+  requests.
+- **Status** chooses open-only or all issue data where the perspective supports
+  issue status.
+- **Graph size** caps the displayed node count. Connected nodes are preferred
+  over isolated nodes so the visible graph keeps useful relationships.
 
 ## API
 
 ```
-GET /api/graph?since=3d&repo=mandible&branch=feature/foo&status=open&limit=50
+GET /api/graph?mode=work&since=3d&repo=mandible&branch=feature/foo&status=open&limit=120
 ```
 
-Returns `{ nodes: [...], edges: [...] }`. The server assembles nodes from sessions, issues, and auth requests, then computes edges from their relationships. Results are capped at `limit` (default 50, max 500).
+Returns a `GraphPayload` with:
+
+- `modes`: perspective descriptors, counts, availability, and summaries.
+- `layers`: node-family controls for the selected perspective.
+- `filters`: available repo and branch values.
+- `nodes` and `edges`: the graph projection.
+- `displayed_count`, `available_count`, `limit`, and `truncated`: graph-size
+  metadata for the display summary.
+
+Issue and work perspectives are assembled from ledger and operational state.
+Provider lineage, artifact lineage, and provenance perspectives use the indexed
+provider/artifact graph records.

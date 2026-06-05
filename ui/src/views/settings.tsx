@@ -23,10 +23,12 @@ import {
   type DesktopDaemonStatus,
   type RuntimeStatus,
 } from '../api';
+import { AuthHooksPanel } from './auth';
 
 export type SettingsViewProps = {
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
+  onClose?: () => void;
 };
 
 type FeedbackState = {
@@ -972,7 +974,7 @@ function RuntimeSection(): JSX.Element {
 }
 
 export function SettingsView(props: SettingsViewProps): JSX.Element {
-  const { settings, onSave } = props;
+  const { settings, onSave, onClose } = props;
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
@@ -1037,6 +1039,17 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           <h2>Settings</h2>
           <div className="text-muted">Mandible configuration.</div>
         </div>
+        {onClose && (
+          <button
+            type="button"
+            className="settings-view__close"
+            aria-label="Close settings"
+            title="Close settings"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        )}
       </div>
 
       {/* ── Section 1: Notifications ── */}
@@ -1359,7 +1372,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </div>
 
-      <div className="settings-view__section">
+      <div className="settings-view__section" id="auth-settings">
         <div className="settings-view__section-header">
           <h3 className="settings-view__section-title">Auth</h3>
           <p className="settings-view__section-desc">
@@ -1378,6 +1391,18 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
             suffix="min"
           />
           <DelegatedSigningSection />
+        </div>
+      </div>
+
+      <div className="settings-view__section">
+        <div className="settings-view__section-header">
+          <h3 className="settings-view__section-title">Auth Hooks</h3>
+          <p className="settings-view__section-desc">
+            Repo-specific post-auth hook configuration.
+          </p>
+        </div>
+        <div className="settings-view__section-body">
+          <AuthHooksPanel />
         </div>
       </div>
 
