@@ -101,6 +101,16 @@ describe("ledger escaped Markdown audit and normalization", () => {
       { entity_type: "comment", entity_id: comment.id, event_type: "markdown_body.normalized" },
       { entity_type: "issue", entity_id: issue.id, event_type: "markdown_body.normalized" },
     ]);
+    expect(store.listBodyRevisions({ entity_type: "issue_body", entity_id: issue.id })
+      .map((revision) => revision.snapshot_body)).toEqual([
+        "First\\n\\nSecond with `literal\\nexample`\\n- item",
+        "First\n\nSecond with `literal\\nexample`\n- item",
+      ]);
+    expect(store.listBodyRevisions({ entity_type: "comment_body", entity_id: comment.id })
+      .map((revision) => revision.snapshot_body)).toEqual([
+        "Comment\\n\\nDetails",
+        "Comment\n\nDetails",
+      ]);
   });
 
   it("refuses apply without explicit target scope or all-matches opt-in", () => {

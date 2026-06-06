@@ -205,47 +205,25 @@ export function normalizeEscapedMarkdownBodies(
   for (const finding of audit.findings) {
     if (!finding.changed) continue;
     const now = Date.now();
-    if (finding.entity_type === "issue") {
-      db.prepare("UPDATE ledger_issues SET body = ?, updated_at = ? WHERE id = ?")
-        .run(finding.normalized_body, now, finding.entity_id);
-      store.reconcileTextIssueReferences({
-        source_issue_id: finding.issue_id,
-        source_entity_type: "issue_body",
-        source_entity_id: finding.issue_id,
-        body: finding.normalized_body,
-        source: "system",
-        actor,
-      });
-    } else {
-      db.prepare("UPDATE ledger_comments SET body = ?, updated_at = ? WHERE id = ?")
-        .run(finding.normalized_body, now, finding.entity_id);
-      store.reconcileTextIssueReferences({
-        source_issue_id: finding.issue_id,
-        source_entity_type: "comment",
-        source_entity_id: finding.entity_id,
-        body: finding.normalized_body,
-        source: "system",
-        actor,
-      });
-    }
-    const event = store.recordEvent({
+    const event = store.recordNormalizedBody({
       entity_type: finding.entity_type,
       entity_id: finding.entity_id,
-      event_type: "markdown_body.normalized",
-      source: "system",
-      project_id: finding.project_id,
+      next_body: finding.normalized_body,
       payload: {
         issue_id: finding.issue_id,
-        entity_type: finding.entity_type,
+        entity_type: finding.entity_type === "issue" ? "issue_body" : "comment_body",
         entity_id: finding.entity_id,
         literal_newline_count: finding.detection.literal_newline_count,
         actual_newline_count: finding.detection.actual_newline_count,
         reason: finding.detection.reason,
       },
-      ...actor,
+      actor,
+      occurred_at: now,
     });
-    eventIds.push(event.id);
-    normalized += 1;
+    if (event) {
+      eventIds.push(event.id);
+      normalized += 1;
+    }
   }
 
   return { ...audit, applied: true, normalized, event_ids: eventIds };

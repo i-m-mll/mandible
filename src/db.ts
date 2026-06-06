@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1611,6 +1612,46 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_knowledge_backrefs_external_ref
         ON knowledge_backrefs(external_ref)`
     ]
+  },
+  {
+    version: 68,
+    name: "ledger_body_revisions",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS ledger_body_revisions (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('issue_body','comment_body')),
+        entity_id TEXT NOT NULL,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        revision_no INTEGER NOT NULL,
+        event_id TEXT UNIQUE REFERENCES ledger_events(id) ON DELETE SET NULL,
+        actor_id TEXT,
+        actor_type TEXT NOT NULL CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),
+        source TEXT NOT NULL CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        reason TEXT NOT NULL DEFAULT 'edit'
+          CHECK(reason IN ('create','edit','import_snapshot','external_update','normalize','migration_snapshot','restore')),
+        occurred_at INTEGER NOT NULL,
+        observed_at INTEGER NOT NULL,
+        base_revision_id TEXT REFERENCES ledger_body_revisions(id) ON DELETE SET NULL,
+        base_hash TEXT,
+        new_hash TEXT NOT NULL,
+        snapshot_body TEXT NOT NULL,
+        patch_format TEXT,
+        patch_text TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        redacted_at INTEGER,
+        redacted_by_actor_id TEXT,
+        redaction_reason TEXT,
+        UNIQUE(entity_type, entity_id, revision_no)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_body_revisions_entity
+        ON ledger_body_revisions(entity_type, entity_id, revision_no)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_body_revisions_issue
+        ON ledger_body_revisions(issue_id, occurred_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_body_revisions_event
+        ON ledger_body_revisions(event_id)
+        WHERE event_id IS NOT NULL`
+    ]
   }
 ];
 
@@ -1711,6 +1752,9 @@ export function migrate(db: Db): void {
   }
   if (pending.some((m) => m.version === 65)) {
     ensureArtifactCustodyColumns(db);
+  }
+  if (pending.some((m) => m.version === 68)) {
+    backfillLedgerBodyRevisions(db);
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
   if (pending.some((m) => m.version === 26)) {
@@ -1942,6 +1986,112 @@ function ensureArtifactCustodyColumns(db: Db): void {
   );
 }
 
+function backfillLedgerBodyRevisions(db: Db): void {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_body_revisions'")
+    .get();
+  if (!table) return;
+
+  const now = Date.now();
+  const metadataJson = JSON.stringify({
+    historical_completeness: "current_only",
+    synthetic: true,
+  });
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO ledger_body_revisions (
+      id, entity_type, entity_id, issue_id, project_id, revision_no, event_id,
+      actor_id, actor_type, source, reason, occurred_at, observed_at,
+      base_revision_id, base_hash, new_hash, snapshot_body, patch_format,
+      patch_text, metadata_json, redacted_at, redacted_by_actor_id, redaction_reason
+    ) VALUES (
+      @id, @entity_type, @entity_id, @issue_id, @project_id, 1, NULL,
+      @actor_id, @actor_type, @source, 'migration_snapshot', @occurred_at, @observed_at,
+      NULL, NULL, @new_hash, @snapshot_body, NULL, NULL, @metadata_json, NULL, NULL, NULL
+    )`,
+  );
+
+  const issues = db.prepare(
+    `SELECT id, project_id, body, author_actor_id, author_actor_type, source, created_at
+     FROM ledger_issues
+     WHERE deleted_at IS NULL`,
+  ).all() as Array<{
+    id: string;
+    project_id: string;
+    body: string;
+    author_actor_id: string | null;
+    author_actor_type: string;
+    source: string;
+    created_at: number;
+  }>;
+  const comments = db.prepare(
+    `SELECT c.id, c.issue_id, i.project_id, c.body, c.author_actor_id,
+            c.author_actor_type, c.source, c.created_at
+     FROM ledger_comments c
+     JOIN ledger_issues i ON i.id = c.issue_id
+     WHERE c.deleted_at IS NULL`,
+  ).all() as Array<{
+    id: string;
+    issue_id: string;
+    project_id: string;
+    body: string;
+    author_actor_id: string | null;
+    author_actor_type: string;
+    source: string;
+    created_at: number;
+  }>;
+
+  const run = db.transaction(() => {
+    for (const issue of issues) {
+      const body = issue.body ?? "";
+      insert.run({
+        id: stableMigrationRevisionId("issue_body", issue.id),
+        entity_type: "issue_body",
+        entity_id: issue.id,
+        issue_id: issue.id,
+        project_id: issue.project_id,
+        actor_id: issue.author_actor_id,
+        actor_type: issue.author_actor_type || "external_adapter",
+        source: issue.source || "import",
+        occurred_at: issue.created_at || now,
+        observed_at: now,
+        new_hash: bodyHash(body),
+        snapshot_body: body,
+        metadata_json: metadataJson,
+      });
+    }
+    for (const comment of comments) {
+      const body = comment.body ?? "";
+      insert.run({
+        id: stableMigrationRevisionId("comment_body", comment.id),
+        entity_type: "comment_body",
+        entity_id: comment.id,
+        issue_id: comment.issue_id,
+        project_id: comment.project_id,
+        actor_id: comment.author_actor_id,
+        actor_type: comment.author_actor_type || "external_adapter",
+        source: comment.source || "import",
+        occurred_at: comment.created_at || now,
+        observed_at: now,
+        new_hash: bodyHash(body),
+        snapshot_body: body,
+        metadata_json: metadataJson,
+      });
+    }
+  });
+  run();
+}
+
+function stableMigrationRevisionId(entityType: string, entityId: string): string {
+  const hash = createHash("sha256")
+    .update(`mandible.body_revision.migration.v1:${entityType}:${entityId}`)
+    .digest("hex");
+  return `rev_${hash.slice(0, 10)}_${hash.slice(10, 30)}`;
+}
+
+function bodyHash(body: string): string {
+  return createHash("sha256").update(body).digest("hex");
+}
+
 function migrateLedgerEventHashIds(db: Db): void {
   const table = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_events'")
@@ -2010,9 +2160,16 @@ function migrateLedgerEventHashIds(db: Db): void {
         "UPDATE ledger_events SET id = ?, event_type = ?, payload_json = ? WHERE id = ?",
       );
       const updateOutbox = db.prepare("UPDATE ledger_outbox SET event_id = ? WHERE event_id = ?");
+      const hasBodyRevisions = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_body_revisions'")
+        .get();
+      const updateBodyRevision = hasBodyRevisions
+        ? db.prepare("UPDATE ledger_body_revisions SET event_id = ? WHERE event_id = ?")
+        : null;
       for (const update of updates) {
         updateEvent.run(update.nextId, update.eventType, update.payloadJson, update.oldId);
         updateOutbox.run(update.nextId, update.oldId);
+        updateBodyRevision?.run(update.nextId, update.oldId);
       }
     });
     run();

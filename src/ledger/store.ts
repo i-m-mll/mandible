@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Db } from "../db.js";
 import { broadcast } from "../sse.js";
 import { emitLedgerEvents, type LedgerBroadcaster, type LedgerSsePayload } from "./events.js";
@@ -12,6 +13,9 @@ import { parseIssueReferences, type ParsedIssueReference } from "./issue-xrefs.j
 import type {
   LedgerActorInput,
   LedgerActorType,
+  LedgerBodyRevision,
+  LedgerBodyRevisionEntityType,
+  LedgerBodyRevisionReason,
   LedgerComment,
   LedgerConflict,
   LedgerConflictStatus,
@@ -78,6 +82,12 @@ export interface UpdateLedgerIssuePatch {
   closed_at?: number | null;
 }
 
+export interface UpdateLedgerIssueOptions extends LedgerActorInput {
+  source?: LedgerEventSource;
+  base_body_revision_id?: string;
+  base_body_hash?: string;
+}
+
 export interface AddLedgerCommentInput extends LedgerActorInput {
   id?: string;
   body: string;
@@ -88,6 +98,12 @@ export interface AddLedgerCommentInput extends LedgerActorInput {
 export interface UpdateLedgerCommentPatch {
   body?: string;
   author_display?: string;
+}
+
+export interface UpdateLedgerCommentOptions extends LedgerActorInput {
+  source?: LedgerEventSource;
+  base_body_revision_id?: string;
+  base_body_hash?: string;
 }
 
 export interface UpsertRelationshipInput {
@@ -253,16 +269,28 @@ export class LedgerStore {
         ).run(id, label, source, now);
       }
 
-      const event = this.insertEvent({
-        entity_type: "issue",
+      const { event } = this.recordBodyRevisionEvent({
+        entity_type: "issue_body",
         entity_id: id,
-        event_type: "issue.created",
-        actor_id: actor.actor_id,
-        actor_type: actor.actor_type,
-        source,
-        payload: { issue_id: id, short_id: shortId, project_id: input.project_id, title: input.title, creation_nonce: nonce },
+        issue_id: id,
         project_id: input.project_id,
+        previous_body: null,
+        next_body: input.body ?? "",
+        actor,
+        source,
+        reason: "create",
         occurred_at: now,
+        event_type: "issue.created",
+        event_entity_type: "issue",
+        event_entity_id: id,
+        event_payload: {
+          issue_id: id,
+          short_id: shortId,
+          project_id: input.project_id,
+          title: input.title,
+          creation_nonce: nonce,
+        },
+        changed_fields: ["body"],
       });
       emitted.push({ event, payload: { issue_id: id, project_id: input.project_id } });
       return this.getIssue(id);
@@ -281,11 +309,12 @@ export class LedgerStore {
     return issue;
   }
 
-  updateIssue(id: string, patch: UpdateLedgerIssuePatch, actor: LedgerActorInput = {}): LedgerIssue {
+  updateIssue(id: string, patch: UpdateLedgerIssuePatch, actor: UpdateLedgerIssueOptions = {}): LedgerIssue {
     const existing = this.requireIssue(id);
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
     const normalizedActor = normalizeActor(actor);
+    const source = actor.source ?? "mandible";
     const next = {
       title: patch.title ?? existing.title,
       body: patch.body ?? existing.body,
@@ -293,45 +322,74 @@ export class LedgerStore {
       priority: patch.priority ?? existing.priority,
       author_display: patch.author_display ?? existing.author_display,
     };
+    const changedFields = changedIssueFields(existing, next);
+    if (changedFields.length === 0) {
+      return existing;
+    }
+    const bodyChanged = changedFields.includes("body");
+    if (bodyChanged) {
+      this.assertBodyRevisionBase("issue_body", id, actor);
+    }
 
     const run = this.db.transaction(() => {
       this.db.prepare(
         `UPDATE ledger_issues
-         SET title = ?, body = ?, kind = ?, priority = ?,
-             author_display = ?, updated_at = ?
+         SET title = ?, kind = ?, priority = ?, author_display = ?, updated_at = ?
          WHERE id = ?`,
       ).run(
         next.title,
-        next.body,
         next.kind,
         next.priority,
         next.author_display,
         now,
         id,
       );
-      const event = this.insertEvent({
-        entity_type: "issue",
-        entity_id: id,
-        event_type: "issue.updated",
-        actor_id: normalizedActor.actor_id,
-        actor_type: normalizedActor.actor_type,
-        source: "mandible",
-        payload: { issue_id: id, patch },
-        project_id: existing.project_id,
-        occurred_at: now,
-      });
-      emitted.push({ event, payload: { issue_id: id, patch } });
+      const scalarPatch = omitBodyPatch(patch);
+      if (bodyChanged) {
+        const { event } = this.recordBodyRevisionEvent({
+          entity_type: "issue_body",
+          entity_id: id,
+          issue_id: id,
+          project_id: existing.project_id,
+          previous_body: existing.body,
+          next_body: next.body,
+          actor: normalizedActor,
+          source,
+          reason: "edit",
+          occurred_at: now,
+          event_type: "issue.updated",
+          event_entity_type: "issue",
+          event_entity_id: id,
+          event_payload: { issue_id: id, patch: scalarPatch },
+          changed_fields: changedFields,
+          update_current_body: true,
+        });
+        emitted.push({ event, payload: { issue_id: id, changed_fields: changedFields } });
+      } else {
+        const event = this.insertEvent({
+          entity_type: "issue",
+          entity_id: id,
+          event_type: "issue.updated",
+          actor_id: normalizedActor.actor_id,
+          actor_type: normalizedActor.actor_type,
+          source,
+          payload: { issue_id: id, patch: scalarPatch, changed_fields: changedFields },
+          project_id: existing.project_id,
+          occurred_at: now,
+        });
+        emitted.push({ event, payload: { issue_id: id, patch: scalarPatch, changed_fields: changedFields } });
+      }
       return this.getIssue(id);
     });
 
     const issue = run();
-    if (patch.body !== undefined) {
+    if (bodyChanged) {
       this.reconcileTextIssueReferences({
         source_issue_id: issue.id,
         source_entity_type: "issue_body",
         source_entity_id: issue.id,
         body: issue.body,
-        source: "mandible",
+        source,
         actor: normalizedActor,
       });
     }
@@ -370,17 +428,18 @@ export class LedgerStore {
     if (!changed) {
       return { changed: false, issue: existing };
     }
+    const changedFields = changedIssueFields(existing, next);
+    const bodyChanged = changedFields.includes("body");
 
     const emitted: LedgerSsePayload[] = [];
     const run = this.db.transaction(() => {
       this.db.prepare(
         `UPDATE ledger_issues
-         SET title = ?, body = ?, kind = ?, priority = ?, author_display = ?,
+         SET title = ?, kind = ?, priority = ?, author_display = ?,
              status = ?, resolution = ?, closed_at = ?, updated_at = ?
          WHERE id = ?`,
       ).run(
         next.title,
-        next.body,
         next.kind,
         next.priority,
         next.author_display,
@@ -391,25 +450,55 @@ export class LedgerStore {
         id,
       );
       const eventType = issueLifecycleEventType(existing.status, next.status);
-      const event = this.insertEvent({
-        entity_type: "issue",
-        entity_id: id,
-        event_type: eventType ?? "issue.updated",
-        actor_id: normalizedActor.actor_id,
-        actor_type: normalizedActor.actor_type,
-        source,
-        payload: eventType
-          ? { issue_id: id, previous_status: existing.status, status: next.status, resolution: next.resolution, patch }
-          : { issue_id: id, patch },
-        project_id: existing.project_id,
-        occurred_at: now,
-      });
-      emitted.push({ event, payload: { issue_id: id, patch } });
+      const scalarPatch = omitBodyPatch(patch);
+      const eventPayload = eventType
+        ? {
+          issue_id: id,
+          previous_status: existing.status,
+          status: next.status,
+          resolution: next.resolution,
+          patch: scalarPatch,
+        }
+        : { issue_id: id, patch: scalarPatch };
+      if (bodyChanged) {
+        const { event } = this.recordBodyRevisionEvent({
+          entity_type: "issue_body",
+          entity_id: id,
+          issue_id: id,
+          project_id: existing.project_id,
+          previous_body: existing.body,
+          next_body: next.body,
+          actor: normalizedActor,
+          source,
+          reason: source === "git_bug" ? "external_update" : "edit",
+          occurred_at: now,
+          event_type: eventType ?? "issue.updated",
+          event_entity_type: "issue",
+          event_entity_id: id,
+          event_payload: eventPayload,
+          changed_fields: changedFields,
+          update_current_body: true,
+        });
+        emitted.push({ event, payload: { issue_id: id, changed_fields: changedFields } });
+      } else {
+        const event = this.insertEvent({
+          entity_type: "issue",
+          entity_id: id,
+          event_type: eventType ?? "issue.updated",
+          actor_id: normalizedActor.actor_id,
+          actor_type: normalizedActor.actor_type,
+          source,
+          payload: { ...eventPayload, changed_fields: changedFields },
+          project_id: existing.project_id,
+          occurred_at: now,
+        });
+        emitted.push({ event, payload: { issue_id: id, patch: scalarPatch, changed_fields: changedFields } });
+      }
       return this.getIssue(id);
     });
 
     const issue = run();
-    if (patch.body !== undefined) {
+    if (bodyChanged) {
       this.reconcileTextIssueReferences({
         source_issue_id: issue.id,
         source_entity_type: "issue_body",
@@ -526,16 +615,22 @@ export class LedgerStore {
         source,
         now,
       );
-      const event = this.insertEvent({
-        entity_type: "comment",
+      const { event } = this.recordBodyRevisionEvent({
+        entity_type: "comment_body",
         entity_id: id,
-        event_type: "comment.created",
-        actor_id: actor.actor_id,
-        actor_type: actor.actor_type,
-        source,
-        payload: { issue_id: issueId, comment_id: id, ordinal, creation_nonce: nonce },
+        issue_id: issueId,
         project_id: issue.project_id,
+        previous_body: null,
+        next_body: input.body,
+        actor,
+        source,
+        reason: "create",
         occurred_at: now,
+        event_type: "comment.created",
+        event_entity_type: "comment",
+        event_entity_id: id,
+        event_payload: { issue_id: issueId, comment_id: id, ordinal, creation_nonce: nonce },
+        changed_fields: ["body"],
       });
       emitted.push({ event, payload: { issue_id: issueId, comment_id: id, ordinal } });
       return this.getComment(id);
@@ -574,29 +669,54 @@ export class LedgerStore {
 
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
+    const bodyChanged = next.body !== existing.body;
+    const changedFields = changedCommentFields(existing, next);
     const run = this.db.transaction(() => {
       this.db.prepare(
         `UPDATE ledger_comments
-         SET body = ?, author_display = ?, updated_at = ?
+         SET author_display = ?, updated_at = ?
          WHERE id = ?`,
-      ).run(next.body, next.author_display, now, id);
-      const event = this.insertEvent({
-        entity_type: "comment",
-        entity_id: id,
-        event_type: "comment.updated",
-        actor_id: actor.actor_id,
-        actor_type: actor.actor_type,
-        source,
-        payload: { issue_id: existing.issue_id, comment_id: id, patch },
-        project_id: issue.project_id,
-        occurred_at: now,
-      });
-      emitted.push({ event, payload: { issue_id: existing.issue_id, comment_id: id, patch } });
+      ).run(next.author_display, now, id);
+      const scalarPatch = omitBodyPatch(patch);
+      if (bodyChanged) {
+        const { event } = this.recordBodyRevisionEvent({
+          entity_type: "comment_body",
+          entity_id: id,
+          issue_id: existing.issue_id,
+          project_id: issue.project_id,
+          previous_body: existing.body,
+          next_body: next.body,
+          actor,
+          source,
+          reason: source === "git_bug" || source === "import" ? "external_update" : "edit",
+          occurred_at: now,
+          event_type: "comment.updated",
+          event_entity_type: "comment",
+          event_entity_id: id,
+          event_payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch },
+          changed_fields: changedFields,
+          update_current_body: true,
+        });
+        emitted.push({ event, payload: { issue_id: existing.issue_id, comment_id: id, changed_fields: changedFields } });
+      } else {
+        const event = this.insertEvent({
+          entity_type: "comment",
+          entity_id: id,
+          event_type: "comment.updated",
+          actor_id: actor.actor_id,
+          actor_type: actor.actor_type,
+          source,
+          payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch, changed_fields: changedFields },
+          project_id: issue.project_id,
+          occurred_at: now,
+        });
+        emitted.push({ event, payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch, changed_fields: changedFields } });
+      }
       return this.getComment(id);
     });
 
     const comment = run();
-    if (patch.body !== undefined) {
+    if (bodyChanged) {
       this.reconcileTextIssueReferences({
         source_issue_id: existing.issue_id,
         source_entity_type: "comment",
@@ -608,6 +728,151 @@ export class LedgerStore {
     }
     emitLedgerEvents(emitted, this.broadcaster);
     return { changed: true, comment };
+  }
+
+  updateComment(id: string, patch: UpdateLedgerCommentPatch, actorInput: UpdateLedgerCommentOptions = {}): LedgerComment {
+    const existing = this.getComment(id);
+    const issue = this.requireIssue(existing.issue_id);
+    const actor = normalizeActor(actorInput);
+    const source = actorInput.source ?? "mandible";
+    const next = {
+      body: patch.body ?? existing.body,
+      author_display: patch.author_display ?? existing.author_display,
+    };
+    const changedFields = changedCommentFields(existing, next);
+    if (changedFields.length === 0) {
+      return existing;
+    }
+    const bodyChanged = changedFields.includes("body");
+    if (bodyChanged) {
+      this.assertBodyRevisionBase("comment_body", id, actorInput);
+    }
+
+    const emitted: LedgerSsePayload[] = [];
+    const now = Date.now();
+    const run = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE ledger_comments
+         SET author_display = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(next.author_display, now, id);
+      const scalarPatch = omitBodyPatch(patch);
+      if (bodyChanged) {
+        const { event } = this.recordBodyRevisionEvent({
+          entity_type: "comment_body",
+          entity_id: id,
+          issue_id: existing.issue_id,
+          project_id: issue.project_id,
+          previous_body: existing.body,
+          next_body: next.body,
+          actor,
+          source,
+          reason: "edit",
+          occurred_at: now,
+          event_type: "comment.updated",
+          event_entity_type: "comment",
+          event_entity_id: id,
+          event_payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch },
+          changed_fields: changedFields,
+          update_current_body: true,
+        });
+        emitted.push({ event, payload: { issue_id: existing.issue_id, comment_id: id, changed_fields: changedFields } });
+      } else {
+        const event = this.insertEvent({
+          entity_type: "comment",
+          entity_id: id,
+          event_type: "comment.updated",
+          actor_id: actor.actor_id,
+          actor_type: actor.actor_type,
+          source,
+          payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch, changed_fields: changedFields },
+          project_id: issue.project_id,
+          occurred_at: now,
+        });
+        emitted.push({ event, payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch, changed_fields: changedFields } });
+      }
+      return this.getComment(id);
+    });
+
+    const comment = run();
+    if (bodyChanged) {
+      this.reconcileTextIssueReferences({
+        source_issue_id: existing.issue_id,
+        source_entity_type: "comment",
+        source_entity_id: id,
+        body: comment.body,
+        source,
+        actor,
+      });
+    }
+    emitLedgerEvents(emitted, this.broadcaster);
+    return comment;
+  }
+
+  recordNormalizedBody(input: {
+    entity_type: "issue" | "comment";
+    entity_id: string;
+    next_body: string;
+    payload: Record<string, unknown>;
+    actor?: LedgerActorInput;
+    occurred_at?: number;
+  }): LedgerEvent | null {
+    const actor = normalizeActor(input.actor ?? { actor_type: "system" });
+    const now = input.occurred_at ?? Date.now();
+    const emitted: LedgerSsePayload[] = [];
+    const target = input.entity_type === "issue"
+      ? {
+        bodyRevisionEntityType: "issue_body" as const,
+        issue: this.requireIssue(input.entity_id),
+        comment: null as LedgerComment | null,
+      }
+      : (() => {
+        const comment = this.getComment(input.entity_id);
+        return {
+          bodyRevisionEntityType: "comment_body" as const,
+          issue: this.requireIssue(comment.issue_id),
+          comment,
+        };
+      })();
+    const previousBody = target.comment?.body ?? target.issue.body;
+    if (previousBody === input.next_body) {
+      return null;
+    }
+
+    const run = this.db.transaction(() => {
+      const { event } = this.recordBodyRevisionEvent({
+        entity_type: target.bodyRevisionEntityType,
+        entity_id: input.entity_id,
+        issue_id: target.issue.id,
+        project_id: target.issue.project_id,
+        previous_body: previousBody,
+        next_body: input.next_body,
+        actor,
+        source: "system",
+        reason: "normalize",
+        occurred_at: now,
+        event_type: "markdown_body.normalized",
+        event_entity_type: input.entity_type,
+        event_entity_id: input.entity_id,
+        event_payload: input.payload,
+        changed_fields: ["body"],
+        update_current_body: true,
+      });
+      emitted.push({ event, payload: input.payload });
+      return event;
+    });
+
+    const event = run();
+    this.reconcileTextIssueReferences({
+      source_issue_id: target.issue.id,
+      source_entity_type: target.bodyRevisionEntityType === "issue_body" ? "issue_body" : "comment",
+      source_entity_id: input.entity_id,
+      body: input.next_body,
+      source: "system",
+      actor,
+    });
+    emitLedgerEvents(emitted, this.broadcaster);
+    return event;
   }
 
   setLabel(
@@ -1216,6 +1481,27 @@ export class LedgerStore {
     ).all(entity.entity_type, entity.entity_id) as LedgerEvent[];
   }
 
+  listBodyRevisions(entity: {
+    entity_type: LedgerBodyRevisionEntityType;
+    entity_id: string;
+  }): LedgerBodyRevision[] {
+    return this.db.prepare(
+      `SELECT * FROM ledger_body_revisions
+       WHERE entity_type = ? AND entity_id = ?
+       ORDER BY revision_no`,
+    ).all(entity.entity_type, entity.entity_id) as LedgerBodyRevision[];
+  }
+
+  getBodyRevision(id: string): LedgerBodyRevision {
+    const row = this.db.prepare(
+      "SELECT * FROM ledger_body_revisions WHERE id = ?",
+    ).get(id) as LedgerBodyRevision | undefined;
+    if (!row) {
+      throw new Error(`Ledger body revision not found: ${id}`);
+    }
+    return row;
+  }
+
   getEvent(id: string): LedgerEvent {
     const row = this.db.prepare("SELECT * FROM ledger_events WHERE id = ?").get(id) as LedgerEvent | undefined;
     if (!row) {
@@ -1310,6 +1596,121 @@ export class LedgerStore {
 
   private requireIssue(id: string): LedgerIssue {
     return this.getIssue(id);
+  }
+
+  private latestBodyRevision(
+    entityType: LedgerBodyRevisionEntityType,
+    entityId: string,
+  ): LedgerBodyRevision | null {
+    return (this.db.prepare(
+      `SELECT * FROM ledger_body_revisions
+       WHERE entity_type = ? AND entity_id = ?
+       ORDER BY revision_no DESC
+       LIMIT 1`,
+    ).get(entityType, entityId) as LedgerBodyRevision | undefined) ?? null;
+  }
+
+  private assertBodyRevisionBase(
+    entityType: LedgerBodyRevisionEntityType,
+    entityId: string,
+    input: { base_body_revision_id?: string; base_body_hash?: string },
+  ): void {
+    if (!input.base_body_revision_id && !input.base_body_hash) return;
+    const latest = this.latestBodyRevision(entityType, entityId);
+    if (input.base_body_revision_id && latest?.id !== input.base_body_revision_id) {
+      const error = new Error("stale body revision");
+      error.name = "LedgerBodyRevisionConflictError";
+      throw error;
+    }
+    if (input.base_body_hash && latest?.new_hash !== input.base_body_hash) {
+      const error = new Error("stale body hash");
+      error.name = "LedgerBodyRevisionConflictError";
+      throw error;
+    }
+  }
+
+  private recordBodyRevisionEvent(input: {
+    entity_type: LedgerBodyRevisionEntityType;
+    entity_id: string;
+    issue_id: string;
+    project_id: string;
+    previous_body: string | null;
+    next_body: string;
+    actor: { actor_id: string | null; actor_type: LedgerActorType };
+    source: LedgerEventSource;
+    reason: LedgerBodyRevisionReason;
+    occurred_at: number;
+    event_type: string;
+    event_entity_type: string;
+    event_entity_id: string;
+    event_payload: Record<string, unknown>;
+    changed_fields: string[];
+    update_current_body?: boolean;
+    metadata?: Record<string, unknown>;
+  }): { revision: LedgerBodyRevision; event: LedgerEvent } {
+    if (input.previous_body !== null && input.previous_body === input.next_body) {
+      throw new Error("recordBodyRevisionEvent called for unchanged body");
+    }
+    const latest = this.latestBodyRevision(input.entity_type, input.entity_id);
+    const revisionId = createLedgerId("rev", { now: input.occurred_at });
+    const revisionNo = (latest?.revision_no ?? 0) + 1;
+    const newHash = hashBody(input.next_body);
+    const baseHash = latest?.new_hash ?? (input.previous_body === null ? null : hashBody(input.previous_body));
+    const payload = {
+      ...input.event_payload,
+      changed_fields: uniqueStrings(input.changed_fields),
+      body_revision_id: revisionId,
+    };
+    const event = this.insertEvent({
+      entity_type: input.event_entity_type,
+      entity_id: input.event_entity_id,
+      event_type: input.event_type,
+      actor_id: input.actor.actor_id,
+      actor_type: input.actor.actor_type,
+      source: input.source,
+      payload,
+      project_id: input.project_id,
+      occurred_at: input.occurred_at,
+    });
+    if (input.update_current_body) {
+      if (input.entity_type === "issue_body") {
+        this.db.prepare(
+          "UPDATE ledger_issues SET body = ?, updated_at = ? WHERE id = ?",
+        ).run(input.next_body, input.occurred_at, input.entity_id);
+      } else {
+        this.db.prepare(
+          "UPDATE ledger_comments SET body = ?, updated_at = ? WHERE id = ?",
+        ).run(input.next_body, input.occurred_at, input.entity_id);
+      }
+    }
+    this.db.prepare(
+      `INSERT INTO ledger_body_revisions (
+        id, entity_type, entity_id, issue_id, project_id, revision_no, event_id,
+        actor_id, actor_type, source, reason, occurred_at, observed_at,
+        base_revision_id, base_hash, new_hash, snapshot_body, patch_format,
+        patch_text, metadata_json, redacted_at, redacted_by_actor_id, redaction_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL)`,
+    ).run(
+      revisionId,
+      input.entity_type,
+      input.entity_id,
+      input.issue_id,
+      input.project_id,
+      revisionNo,
+      event.id,
+      input.actor.actor_id,
+      input.actor.actor_type,
+      input.source,
+      input.reason,
+      input.occurred_at,
+      event.observed_at,
+      latest?.id ?? null,
+      baseHash,
+      newHash,
+      input.next_body,
+      jsonStringify(input.metadata ?? {}),
+    );
+    return { revision: this.getBodyRevision(revisionId), event };
   }
 
   private allocateIssueShortId(projectId: string, id: string): string {
@@ -1664,4 +2065,40 @@ function escapeLike(value: string): string {
 
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value ?? {});
+}
+
+function hashBody(body: string): string {
+  return createHash("sha256").update(body).digest("hex");
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
+function omitBodyPatch(patch: UpdateLedgerIssuePatch | UpdateLedgerCommentPatch): Record<string, unknown> {
+  const { body: _body, ...rest } = patch as Record<string, unknown>;
+  return rest;
+}
+
+function changedIssueFields(
+  existing: LedgerIssue,
+  next: Pick<LedgerIssue, "title" | "body" | "kind" | "priority" | "author_display">,
+): string[] {
+  const fields: string[] = [];
+  if (next.title !== existing.title) fields.push("title");
+  if (next.body !== existing.body) fields.push("body");
+  if (next.kind !== existing.kind) fields.push("kind");
+  if (next.priority !== existing.priority) fields.push("priority");
+  if (next.author_display !== existing.author_display) fields.push("author_display");
+  return fields;
+}
+
+function changedCommentFields(
+  existing: LedgerComment,
+  next: Pick<LedgerComment, "body" | "author_display">,
+): string[] {
+  const fields: string[] = [];
+  if (next.body !== existing.body) fields.push("body");
+  if (next.author_display !== existing.author_display) fields.push("author_display");
+  return fields;
 }

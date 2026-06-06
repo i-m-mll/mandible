@@ -4,6 +4,7 @@ export const LEDGER_BACKUP_TABLES = [
   "ledger_issues",
   "ledger_issue_aliases",
   "ledger_comments",
+  "ledger_body_revisions",
   "ledger_labels",
   "ledger_issue_relationships",
   "ledger_issue_relationship_sources",

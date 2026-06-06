@@ -859,9 +859,53 @@ export type LedgerIssueDetailProjection = {
   };
 };
 
+export type LedgerBodyRevision = {
+  id: string;
+  entity_type: 'issue_body' | 'comment_body';
+  entity_id: string;
+  issue_id: string;
+  project_id: string;
+  revision_no: number;
+  event_id: string | null;
+  actor_id: string | null;
+  actor_type: string;
+  source: string;
+  reason: string;
+  occurred_at: number;
+  observed_at: number;
+  base_revision_id: string | null;
+  base_hash: string | null;
+  new_hash: string;
+  snapshot_body: string;
+  patch_format: string | null;
+  patch_text: string | null;
+  metadata_json: string;
+  redacted_at: number | null;
+  redacted_by_actor_id: string | null;
+  redaction_reason: string | null;
+};
+
 export async function getLedgerIssueDetail(issueId: string): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}`);
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function getLedgerIssueBodyRevisions(issueId: string): Promise<LedgerBodyRevision[]> {
+  const response = await apiGet(`/api/ledger/issues/${encodeURIComponent(issueId)}/body/revisions`);
+  const payload = (await parseMaybeJson(response)) as { revisions?: LedgerBodyRevision[] };
+  return payload.revisions ?? [];
+}
+
+export async function getLedgerCommentBodyRevisions(commentId: string): Promise<LedgerBodyRevision[]> {
+  const response = await apiGet(`/api/ledger/comments/${encodeURIComponent(commentId)}/revisions`);
+  const payload = (await parseMaybeJson(response)) as { revisions?: LedgerBodyRevision[] };
+  return payload.revisions ?? [];
+}
+
+export async function getLedgerBodyRevision(revisionId: string): Promise<LedgerBodyRevision> {
+  const response = await apiGet(`/api/ledger/body-revisions/${encodeURIComponent(revisionId)}`);
+  const payload = (await parseMaybeJson(response)) as { revision?: LedgerBodyRevision };
+  return payload.revision as LedgerBodyRevision;
 }
 
 export async function getLedgerIssueDetailByRef(
@@ -879,6 +923,14 @@ export async function addLedgerIssueComment(
   body: string,
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiPost(`/api/ledger/issues/${encodeURIComponent(issueId)}/comments`, { body });
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function patchLedgerComment(
+  commentId: string,
+  body: Record<string, unknown>,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiPatch(`/api/ledger/comments/${encodeURIComponent(commentId)}`, body);
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
 
