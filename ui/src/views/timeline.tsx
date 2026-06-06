@@ -18,6 +18,9 @@ const STORAGE_PREFIX = 'mandible_timeline_view_state:v1';
 const EVENT_TYPES: TimelineEventKind[] = ['body', 'comment', 'state'];
 const DENSITIES: TimelineDensity[] = ['compact', 'comfortable', 'expanded'];
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MIN_TIMELINE_WINDOW_MS = 60 * 60 * 1000;
+const MIN_INSPECTOR_WIDTH = 280;
+const MAX_INSPECTOR_WIDTH = 560;
 
 export type TimelineViewProps = {
   repos: WorkRepo[];
@@ -29,6 +32,8 @@ type ProjectionStatus = 'idle' | 'syncing' | 'error';
 type TimelineUrlState = Partial<TimelineViewState> & {
   projectRef?: string;
 };
+
+type PartialTimelinePanes = Partial<TimelineViewState['panes']>;
 
 function storageKey(projectId: string): string {
   return `${STORAGE_PREFIX}:${projectId}`;
@@ -94,7 +99,38 @@ function parseUrlState(params: Record<string, string | undefined>): TimelineUrlS
     density: coerceDensity(params.density),
     visibleEventTypes: eventTypes.length > 0 ? eventTypes : undefined,
     includeClosed: parseBool(params.closed),
-    panes: params.inspector ? { ...DEFAULT_TIMELINE_VIEW_STATE.panes, inspector: parseBool(params.inspector) ?? true } : undefined,
+    panes: params.inspector
+      ? { ...DEFAULT_TIMELINE_VIEW_STATE.panes, inspector: parseBool(params.inspector) ?? true }
+      : undefined,
+  };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeInspectorWidth(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? clamp(value, MIN_INSPECTOR_WIDTH, MAX_INSPECTOR_WIDTH)
+    : DEFAULT_TIMELINE_VIEW_STATE.panes.inspectorWidth;
+}
+
+function mergePanes(
+  base: TimelineViewState['panes'],
+  local?: PartialTimelinePanes,
+  url?: PartialTimelinePanes,
+): TimelineViewState['panes'] {
+  const merged = {
+    ...DEFAULT_TIMELINE_VIEW_STATE.panes,
+    ...base,
+    ...(local ?? {}),
+    ...(url ?? {}),
+  };
+  return {
+    inspector: merged.inspector !== false,
+    inspectorWidth: normalizeInspectorWidth(merged.inspectorWidth),
+    diagnostics: merged.diagnostics === true,
+    rowList: merged.rowList !== false,
   };
 }
 
@@ -112,7 +148,7 @@ function mergeTimelineState(
     expandedPaths: url.expandedPaths?.length ? url.expandedPaths : local.expandedPaths ?? base.expandedPaths,
     visibleEventTypes: url.visibleEventTypes?.length ? url.visibleEventTypes : local.visibleEventTypes ?? base.visibleEventTypes,
     timeWindow: url.timeWindow ?? local.timeWindow ?? base.timeWindow,
-    panes: url.panes ?? local.panes ?? base.panes,
+    panes: mergePanes(base.panes, local.panes, url.panes),
   };
   if (url.rootPolicy !== undefined) merged.rootPolicy = url.rootPolicy;
   if (url.selectedRowOccurrenceId !== undefined) merged.selectedRowOccurrenceId = url.selectedRowOccurrenceId;
@@ -201,6 +237,58 @@ function visibleWindow(projection: ProjectTimelineProjection | null, state: Time
   const normalizedEnd = end <= start ? start + DAY_MS : end;
   return { start, end: normalizedEnd, span: Math.max(1, normalizedEnd - start) };
 }
+
+function zoomedWindow(
+  projection: ProjectTimelineProjection | null,
+  state: TimelineViewState,
+  factor: number,
+  focalRatio = 0.5,
+): TimelineViewState['timeWindow'] {
+  const current = visibleWindow(projection, state);
+  const axisStart = projection?.time_axis.start ?? current.start;
+  const axisEnd = projection?.time_axis.end ?? current.end;
+  const axisSpan = Math.max(MIN_TIMELINE_WINDOW_MS, axisEnd - axisStart);
+  const nextSpan = clamp(current.span * factor, MIN_TIMELINE_WINDOW_MS, axisSpan);
+  const focal = current.start + current.span * clamp(focalRatio, 0, 1);
+  let nextStart = focal - nextSpan * focalRatio;
+  let nextEnd = nextStart + nextSpan;
+  if (nextStart < axisStart) {
+    nextStart = axisStart;
+    nextEnd = nextStart + nextSpan;
+  }
+  if (nextEnd > axisEnd) {
+    nextEnd = axisEnd;
+    nextStart = nextEnd - nextSpan;
+  }
+  return { from: Math.round(nextStart), to: Math.round(nextEnd) };
+}
+
+function timelineDiagnostics(projection: ProjectTimelineProjection | null): TimelineDiagnosticView[] {
+  if (!projection) return [];
+  return [
+    ...projection.diagnostics.cycles,
+    ...projection.diagnostics.depth_limits,
+    ...projection.diagnostics.filtered_targets,
+    ...projection.diagnostics.missing_expansions,
+  ].map((diagnostic) => ({
+    key: [
+      diagnostic.kind,
+      diagnostic.row_id,
+      diagnostic.event_id,
+      diagnostic.issue_id,
+      diagnostic.target_issue_id,
+      diagnostic.message,
+    ].filter(Boolean).join(':'),
+    kind: diagnostic.kind,
+    message: diagnostic.message,
+  }));
+}
+
+type TimelineDiagnosticView = {
+  key: string;
+  kind: string;
+  message: string;
+};
 
 function eventInWindow(event: TimelineEvent, start: number, end: number): boolean {
   return event.timestamp >= start && event.timestamp <= end;
@@ -384,14 +472,44 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [collapseEvent]);
 
   const fitProject = useCallback(() => {
-    updateState({ timeWindow: { from: projection?.time_axis.start ?? null, to: projection?.time_axis.end ?? null } });
-  }, [projection, updateState]);
+    updateState({ timeWindow: { from: null, to: null } });
+  }, [updateState]);
 
   const fitSelected = useCallback(() => {
     const target = selectedEvent ?? visibleSelectedRowEvents[0] ?? selectedRowEvents[0];
     if (!target) return;
     updateState({ timeWindow: { from: target.timestamp - DAY_MS, to: target.timestamp + DAY_MS } });
   }, [selectedEvent, selectedRowEvents, updateState, visibleSelectedRowEvents]);
+
+  const zoomTimeline = useCallback((factor: number, focalRatio = 0.5) => {
+    updateState({ timeWindow: zoomedWindow(projection, viewState, factor, focalRatio) });
+  }, [projection, updateState, viewState]);
+
+  const handleTimelineWheel = useCallback((event: JSX.TargetedWheelEvent<HTMLDivElement>) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const focalRatio = bounds.width > 0
+      ? clamp((event.clientX - bounds.left) / bounds.width, 0, 1)
+      : 0.5;
+    zoomTimeline(event.deltaY < 0 ? 0.75 : 1.333, focalRatio);
+  }, [zoomTimeline]);
+
+  const startInspectorResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = viewState.panes.inspectorWidth;
+    const handleMove = (moveEvent: MouseEvent) => {
+      const nextWidth = normalizeInspectorWidth(startWidth + startX - moveEvent.clientX);
+      updateState({ panes: { ...viewState.panes, inspectorWidth: nextWidth } });
+    };
+    const handleUp = () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+  }, [updateState, viewState.panes]);
 
   const navigateEvent = useCallback((direction: 1 | -1) => {
     const rowEvents = selectedRowEvents.length > 0 ? selectedRowEvents : events;
@@ -441,12 +559,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     });
   }, [span, start]);
 
-  const diagnosticsCount = projection
-    ? projection.diagnostics.cycles.length
-      + projection.diagnostics.depth_limits.length
-      + projection.diagnostics.filtered_targets.length
-      + projection.diagnostics.missing_expansions.length
-    : 0;
+  const diagnostics = useMemo(() => timelineDiagnostics(projection), [projection]);
+  const diagnosticsCount = diagnostics.length;
+  const inspectorToggleLabel = viewState.panes.inspector ? 'Hide inspector' : 'Show inspector';
 
   return (
     <section className="timeline-workspace" aria-label="Project timeline">
@@ -508,6 +623,11 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
             onChange={(event) => updateState({ timeWindow: { ...viewState.timeWindow, to: dateInputToTimestamp((event.currentTarget as HTMLInputElement).value, true) } })}
           />
         </label>
+        <div className="timeline-zoom-group" aria-label="Timeline zoom">
+          <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(2)} aria-label="Zoom out" title="Zoom out">-</button>
+          <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(0.5)} aria-label="Zoom in" title="Zoom in">+</button>
+          <button type="button" className="timeline-button" onClick={fitProject}>Fit all</button>
+        </div>
         <div className="timeline-toggle-group" aria-label="Event types">
           {EVENT_TYPES.map((kind) => {
             const active = viewState.visibleEventTypes.includes(kind);
@@ -535,29 +655,80 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           />
           <span>Closed</span>
         </label>
-        <button type="button" className="timeline-button" onClick={fitProject}>Fit</button>
         <button type="button" className="timeline-button" onClick={fitSelected} disabled={!selectedRow && !selectedEvent}>Focus</button>
         <button
           type="button"
           className="timeline-button"
           onClick={() => updateState({ panes: { ...viewState.panes, inspector: !viewState.panes.inspector } })}
         >
-          Inspector
+          {inspectorToggleLabel}
         </button>
-        <div className="timeline-diagnostics" role="status">
-          <span>{status === 'syncing' ? 'Syncing' : status === 'error' ? 'Using last valid' : 'Current'}</span>
-          <span>{rows.length} rows</span>
-          <span>{events.length} events</span>
-          <span>{diagnosticsCount} diagnostics</span>
-        </div>
+        <button
+          type="button"
+          className="timeline-diagnostics-button"
+          onClick={() => updateState({ panes: { ...viewState.panes, diagnostics: !viewState.panes.diagnostics } })}
+          aria-expanded={viewState.panes.diagnostics}
+        >
+          Diagnostics <span>{diagnosticsCount}</span>
+        </button>
+        <div className="timeline-toolbar-spacer" />
+        {status === 'syncing' ? <div className="timeline-status" role="status">Syncing</div> : null}
       </div>
 
-      {error ? <div className="timeline-sync-banner">{error}</div> : null}
+      {viewState.panes.diagnostics ? (
+        <div className="timeline-diagnostics-panel" role="region" aria-label="Timeline diagnostics">
+          {diagnostics.length === 0 ? (
+            <span>No diagnostics.</span>
+          ) : diagnostics.map((diagnostic) => (
+            <span key={diagnostic.key}>
+              <strong>{diagnostic.kind}</strong>
+              {diagnostic.message}
+            </span>
+          ))}
+        </div>
+      ) : null}
 
-      <div className={`timeline-grid timeline-grid--${viewState.density}${viewState.panes.inspector ? '' : ' timeline-grid--no-inspector'}`}>
+      {error ? <div className="timeline-sync-banner">Timeline refresh failed. Showing the last loaded timeline. {error}</div> : null}
+
+      <div
+        className={`timeline-grid timeline-grid--${viewState.density}${viewState.panes.inspector ? '' : ' timeline-grid--no-inspector'}`}
+        style={{ '--timeline-inspector-width': `${viewState.panes.inspectorWidth}px` } as JSX.CSSProperties}
+      >
         <div className="timeline-main" role="grid" aria-rowcount={rows.length}>
-          <div className="timeline-axis">
-            <div className="timeline-axis__corner">Rows</div>
+          <div className="timeline-gutter-column" aria-label="Timeline rows">
+            <div className="timeline-axis__corner" aria-hidden="true" />
+            <div className="timeline-gutter-stack">
+              {rows.map((row) => {
+                const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
+                const selected = selectedRow?.id === row.id;
+                return (
+                  <button
+                    key={row.id}
+                    type="button"
+                    className={`timeline-gutter-row timeline-gutter-row--${row.kind}${selected ? ' timeline-gutter-row--selected' : ''}`}
+                    style={{ '--depth': row.depth } as JSX.CSSProperties}
+                    onClick={() => selectRow(row)}
+                    aria-label={`${row.issue.display_id} ${row.issue.title}. ${rowKindLabel(row.kind)} row. Status ${row.issue.status}${row.issue.resolution ? `/${row.issue.resolution}` : ''}.`}
+                  >
+                    <span className="timeline-gutter-row__branch" aria-hidden="true" />
+                    <span className="sr-only">{rowKindLabel(row.kind)} row</span>
+                    <strong>{row.issue.display_id}</strong>
+                    <span className="timeline-gutter-row__title">{row.issue.title}</span>
+                    <em>{row.issue.status}{row.issue.resolution ? `/${row.issue.resolution}` : ''}</em>
+                    {sourceEvent ? (
+                      <span className="timeline-gutter-row__origin">from {formatDate(sourceEvent.timestamp)}</span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div
+            className="timeline-time-scroll"
+            onWheel={handleTimelineWheel}
+            aria-label="Timeline time canvas"
+          >
+            <div className="timeline-time-surface">
             <div className="timeline-axis__track">
               {axisTicks.map((tick) => (
                 <span key={tick.timestamp} className="timeline-axis__tick" style={{ left: `${tick.left}%` }}>
@@ -565,38 +736,22 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 </span>
               ))}
             </div>
-          </div>
-          <div className="timeline-row-stack">
-            {rows.length === 0 ? (
-              <div className="timeline-empty">No timeline rows match the current controls.</div>
-            ) : rows.map((row) => {
-              const rowEvents = eventsByRow.get(row.id) ?? [];
-              const visibleEvents = rowEvents.filter((event) => eventInWindow(event, start, end));
-              const earlier = rowEvents.filter((event) => event.timestamp < start).length;
-              const later = rowEvents.filter((event) => event.timestamp > end).length;
-              const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
-              const selected = selectedRow?.id === row.id;
-              return (
-                <div
-                  key={row.id}
-                  className={`timeline-row timeline-row--${row.kind}${selected ? ' timeline-row--selected' : ''}`}
-                  role="row"
-                >
-                  <button
-                    type="button"
-                    className="timeline-gutter-row"
-                    style={{ '--depth': row.depth } as JSX.CSSProperties}
-                    onClick={() => selectRow(row)}
+            <div className="timeline-row-stack">
+              {rows.length === 0 ? (
+                <div className="timeline-empty">No timeline rows match the current controls.</div>
+              ) : rows.map((row) => {
+                const rowEvents = eventsByRow.get(row.id) ?? [];
+                const visibleEvents = rowEvents.filter((event) => eventInWindow(event, start, end));
+                const earlier = rowEvents.filter((event) => event.timestamp < start).length;
+                const later = rowEvents.filter((event) => event.timestamp > end).length;
+                const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
+                const selected = selectedRow?.id === row.id;
+                return (
+                  <div
+                    key={row.id}
+                    className={`timeline-row timeline-row--${row.kind}${selected ? ' timeline-row--selected' : ''}`}
+                    role="row"
                   >
-                    <span className="timeline-gutter-row__branch" aria-hidden="true" />
-                    <span className="timeline-gutter-row__kind">{rowKindLabel(row.kind)}</span>
-                    <strong>{row.issue.display_id}</strong>
-                    <span>{row.issue.title}</span>
-                    <em>{row.issue.status}{row.issue.resolution ? `/${row.issue.resolution}` : ''}</em>
-                    {sourceEvent ? (
-                      <span className="timeline-gutter-row__origin">from {formatDate(sourceEvent.timestamp)}</span>
-                    ) : null}
-                  </button>
                   <div className="timeline-row-canvas" role="gridcell">
                     {sourceEvent ? (
                       <button
@@ -613,7 +768,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                     {visibleEvents.map((event) => {
                       const eventLinks = event.link_ids.map((id) => linkById.get(id)).filter((link): link is TimelineLink => Boolean(link));
                       const issueLinks = eventLinks.filter((link) => link.target_issue && !link.target_issue.deleted);
-                      const expanded = eventLinks.some((link) => Boolean(link.expanded_row_id));
+                      const expanded = viewState.expandedEventIds.includes(event.id) || eventLinks.some((link) => Boolean(link.expanded_row_id));
                       const eventSelected = viewState.selectedEventId === event.id;
                       return (
                         <button
@@ -636,13 +791,31 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                     })}
                   </div>
                 </div>
-              );
-            })}
+                );
+              })}
+            </div>
+            </div>
           </div>
         </div>
 
         {viewState.panes.inspector ? (
           <aside className="timeline-inspector" aria-label="Timeline inspector">
+            <div
+              className="timeline-inspector__resize"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize inspector"
+              onMouseDown={startInspectorResize}
+            />
+            <button
+              type="button"
+              className="timeline-inspector__collapse"
+              aria-label="Collapse inspector"
+              title="Collapse inspector"
+              onClick={() => updateState({ panes: { ...viewState.panes, inspector: false } })}
+            >
+              {'<'}
+            </button>
             <TimelineInspector
               selectedEvent={selectedEvent}
               selectedRow={selectedRow}
@@ -701,8 +874,12 @@ function TimelineInspector({
   const eventLinks = selectedEvent
     ? selectedEvent.link_ids.map((id) => linkById.get(id)).filter((link): link is TimelineLink => Boolean(link))
     : [];
-  const expandableLinks = eventLinks.filter((link) => link.target_issue && !link.target_issue.deleted);
-  const otherRefs = eventLinks.filter((link) => link.target_issue?.deleted || link.ref_kind !== 'issue');
+  const expandableLinks = eventLinks.filter((link) => (
+    link.ref_kind === 'issue' && link.target_issue && !link.target_issue.deleted
+  ));
+  const otherRefs = eventLinks.filter((link) => (
+    link.ref_kind !== 'issue' || !link.target_issue || link.target_issue.deleted
+  ));
   return (
     <div className="timeline-inspector__content">
       {missingEventId || missingRowId ? (
@@ -746,7 +923,7 @@ function TimelineInspector({
                   <span>{link.relationship_type}</span>
                   <strong>{link.target_issue.display_id}</strong>
                   <em>{link.target_issue.title}</em>
-                  {link.expanded_row_id ? <b>expanded</b> : null}
+                  {link.expanded_row_id ? <b>expanded</b> : expandedEventIds.includes(selectedEvent.id) ? <b>expanding</b> : null}
                 </button>
               ))}
             </div>
