@@ -269,7 +269,7 @@ describe('TimelineView', () => {
     expect(zoomBody.to).toBeLessThan(Date.UTC(2026, 0, 3));
 
     fireEvent.click(screen.getByLabelText('Collapse inspector'));
-    expect(screen.getByText('Show inspector')).toBeTruthy();
+    expect(screen.getByLabelText('Show inspector')).toBeTruthy();
     await waitFor(() => {
       const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
       expect(stored).toBeTruthy();

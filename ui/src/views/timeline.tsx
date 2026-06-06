@@ -290,6 +290,16 @@ type TimelineDiagnosticView = {
   message: string;
 };
 
+function InspectorSidebarIcon({ open }: { open: boolean }): JSX.Element {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M15 4v16" />
+      {open ? <path d="M17.5 8.5h1.5M17.5 12h1.5M17.5 15.5h1.5" /> : null}
+    </svg>
+  );
+}
+
 function eventInWindow(event: TimelineEvent, start: number, end: number): boolean {
   return event.timestamp >= start && event.timestamp <= end;
 }
@@ -561,7 +571,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 
   const diagnostics = useMemo(() => timelineDiagnostics(projection), [projection]);
   const diagnosticsCount = diagnostics.length;
-  const inspectorToggleLabel = viewState.panes.inspector ? 'Hide inspector' : 'Show inspector';
+  const inspectorToggleLabel = viewState.panes.inspector ? 'Collapse inspector' : 'Show inspector';
 
   return (
     <section className="timeline-workspace" aria-label="Project timeline">
@@ -658,13 +668,6 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
         <button type="button" className="timeline-button" onClick={fitSelected} disabled={!selectedRow && !selectedEvent}>Focus</button>
         <button
           type="button"
-          className="timeline-button"
-          onClick={() => updateState({ panes: { ...viewState.panes, inspector: !viewState.panes.inspector } })}
-        >
-          {inspectorToggleLabel}
-        </button>
-        <button
-          type="button"
           className="timeline-diagnostics-button"
           onClick={() => updateState({ panes: { ...viewState.panes, diagnostics: !viewState.panes.diagnostics } })}
           aria-expanded={viewState.panes.diagnostics}
@@ -672,6 +675,15 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           Diagnostics <span>{diagnosticsCount}</span>
         </button>
         <div className="timeline-toolbar-spacer" />
+        <button
+          type="button"
+          className="timeline-sidebar-toggle"
+          onClick={() => updateState({ panes: { ...viewState.panes, inspector: !viewState.panes.inspector } })}
+          aria-label={inspectorToggleLabel}
+          title={inspectorToggleLabel}
+        >
+          <InspectorSidebarIcon open={viewState.panes.inspector} />
+        </button>
         {status === 'syncing' ? <div className="timeline-status" role="status">Syncing</div> : null}
       </div>
 
@@ -807,15 +819,6 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
               aria-label="Resize inspector"
               onMouseDown={startInspectorResize}
             />
-            <button
-              type="button"
-              className="timeline-inspector__collapse"
-              aria-label="Collapse inspector"
-              title="Collapse inspector"
-              onClick={() => updateState({ panes: { ...viewState.panes, inspector: false } })}
-            >
-              {'<'}
-            </button>
             <TimelineInspector
               selectedEvent={selectedEvent}
               selectedRow={selectedRow}
