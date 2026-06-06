@@ -1,6 +1,6 @@
 # Settings API
 
-Key-value settings stored in the Mandible database. Settings control daemon behavior, reaper configuration, UI preferences, and backup scheduling.
+Key-value settings stored in the Mandible database. Settings control daemon behavior, UI preferences, and backup scheduling.
 
 ## Endpoints
 
@@ -13,8 +13,6 @@ Get all settings as a key-value object.
 ```json
 {
   "theme": "dark",
-  "reaper_enabled": "true",
-  "reaper_claude_idle_minutes": "30",
   "protected_branches": "main,develop",
   "backup.enabled": "true",
   "backup.interval_hours": "6"
@@ -60,13 +58,12 @@ Create or update a setting. All values are stored as strings.
 **Side effects:**
 
 - **Tier 2 settings** (`theme`, `prompt`, `multiplexer`): also written to `~/.config/dotfiles.conf` as environment variables.
-- **Reaper settings** (`reaper_enabled`, `reaper_claude_idle_minutes`, `reaper_codex_idle_minutes`, `reaper_dry_run`, `reaper_cleanup_orphan_mcps`): also written to `~/.config/claude-reaper/config`.
-- **`reaper_enabled`**: additionally loads/unloads the reaper launchd job.
+- Legacy `reaper_*` settings may still be present in older databases and remain writable for compatibility, but Mandible no longer mirrors them to `~/.config/claude-reaper/config` or manages the standalone Reaper launchd job.
 
 ```bash
-curl -X PUT http://localhost:19420/api/settings/reaper_enabled \
+curl -X PUT http://localhost:19420/api/settings/theme \
   -H 'Content-Type: application/json' \
-  -d '{"value": "true"}'
+  -d '{"value": "dark"}'
 ```
 
 ## Known Setting Keys
@@ -77,11 +74,6 @@ curl -X PUT http://localhost:19420/api/settings/reaper_enabled \
 | `prompt` | — | Shell prompt style |
 | `multiplexer` | — | Preferred multiplexer |
 | `protected_branches` | `main,develop` | Comma-separated list of protected branches |
-| `reaper_enabled` | `true` | Enable/disable the idle session reaper |
-| `reaper_claude_idle_minutes` | — | Idle threshold for Claude sessions |
-| `reaper_codex_idle_minutes` | — | Idle threshold for Codex sessions |
-| `reaper_dry_run` | — | Reaper dry-run mode |
-| `reaper_cleanup_orphan_mcps` | — | Clean up orphaned MCP processes |
 | `auto_close_issues_on_merge` | `true` | Auto-close issues from explicit `Closes:` / `Resolves:` trailers after merge |
 | `backup.enabled` | `true` | Enable scheduled backups |
 | `backup.interval_hours` | `6` | Hours between backups |

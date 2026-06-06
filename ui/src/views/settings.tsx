@@ -1112,63 +1112,9 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         </div>
       </div>
 
-      {/* ── Section 2: Process Management ── */}
       <DesktopDaemonSection />
 
-      <div className="settings-view__section">
-        <div className="settings-view__section-header">
-          <h3 className="settings-view__section-title">Process Management</h3>
-          <p className="settings-view__section-desc">
-            Automatic cleanup of idle AI processes in multiplexer panes.
-          </p>
-        </div>
-
-        <div className="settings-view__section-body">
-          <ToggleRow
-            title="Reaper"
-            desc="Automatically terminate idle Claude/Codex processes."
-            settingKey="reaper_enabled"
-            settings={settings}
-            onSave={onSave}
-          />
-          <NumberInput
-            label="Claude idle threshold"
-            desc=""
-            settingKey="reaper_claude_idle_minutes"
-            settings={settings}
-            onSave={onSave}
-            min={5}
-            max={480}
-            suffix="min"
-          />
-          <NumberInput
-            label="Codex idle threshold"
-            desc=""
-            settingKey="reaper_codex_idle_minutes"
-            settings={settings}
-            onSave={onSave}
-            min={5}
-            max={480}
-            suffix="min"
-          />
-          <ToggleRow
-            title="Dry run"
-            desc="Log what would be reaped without actually terminating."
-            settingKey="reaper_dry_run"
-            settings={settings}
-            onSave={onSave}
-          />
-          <ToggleRow
-            title="Cleanup orphan MCPs"
-            desc="Terminate MCP server processes whose parent has exited."
-            settingKey="reaper_cleanup_orphan_mcps"
-            settings={settings}
-            onSave={onSave}
-          />
-        </div>
-      </div>
-
-      {/* ── Section 3: Agent Hooks ── */}
+      {/* ── Agent Hooks ── */}
       <div className="settings-view__section">
         <div className="settings-view__section-header">
           <h3 className="settings-view__section-title">Agent Hooks</h3>

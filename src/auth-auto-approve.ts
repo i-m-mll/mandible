@@ -1,13 +1,13 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
 import type Database from "better-sqlite3";
 
 import { getDb } from "./db.js";
+import { getMandibleConfigPath } from "./platform-paths.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import type { SseEvent } from "./types.js";
 
@@ -80,8 +80,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     this.db = options.db ?? getDb();
     this.now = options.now ?? (() => Date.now());
     this.broadcast = options.broadcast ?? defaultBroadcast;
-    this.configDir =
-      options.configDir ?? path.join(os.homedir(), ".config", "mandible", "delegated-signing");
+    this.configDir = options.configDir ?? getMandibleConfigPath("delegated-signing");
     this.ensureSettings();
   }
 

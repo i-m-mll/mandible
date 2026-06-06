@@ -239,8 +239,6 @@ Persisted in the `settings` table, configurable from Settings tab:
 | Setting | Description |
 |---------|-------------|
 | `protected_branches` | Branch names to protect (default: `main,develop`) |
-| `reaper_enabled` | Automatic idle session termination |
-| `reaper_claude_idle_minutes` / `reaper_codex_idle_minutes` | Idle timeout per agent type |
 | `theme` | UI theme (default: `catppuccin-mocha`) |
 | `notification_sound` / `quiet_hours` | macOS notification preferences |
 | `push_same_name_upstream` | Push branches to same-name remote refs |

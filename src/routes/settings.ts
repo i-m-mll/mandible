@@ -1,34 +1,8 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import { getDb } from "../db.js";
-
-const execFileAsync = promisify(execFile);
-
-const REAPER_PLIST_PATH = path.join(
-  os.homedir(),
-  "Library/LaunchAgents/com.mll.claude-reaper.plist"
-);
-
-/**
- * Load or unload the reaper launchd job.
- * This is the authoritative on/off switch — the job should not be running
- * when the user has disabled the reaper.
- * Bug: 372981c
- */
-async function manageReaperLaunchd(enabled: boolean): Promise<void> {
-  if (!fs.existsSync(REAPER_PLIST_PATH)) return;
-  const action = enabled ? "load" : "unload";
-  try {
-    await execFileAsync("launchctl", [action, REAPER_PLIST_PATH]);
-  } catch {
-    // Non-fatal: launchctl may fail if job is already in desired state
-    // (e.g. unloading an already-unloaded job returns an error)
-  }
-}
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 
 const DEFAULT_PROTECTED_BRANCHES = ["main", "develop"];
@@ -100,7 +74,6 @@ export function getStrSetting(key: string, defaultValue: string): string {
 }
 
 const DOTFILES_CONF_PATH = path.join(os.homedir(), ".config", "dotfiles.conf");
-const REAPER_CONF_PATH = path.join(os.homedir(), ".config", "claude-reaper", "config");
 
 /**
  * Update a single variable in dotfiles.conf.
@@ -125,60 +98,13 @@ function dualWriteDotfilesConf(envVar: string, value: string): void {
   }
 }
 
-/**
- * Update a single variable in ~/.config/claude-reaper/config.
- * If the `export VAR=` line exists, replace its value; otherwise append it.
- * Creates the directory and file if they don't exist.
- */
-export function dualWriteReaperConf(envVar: string, value: string): void {
-  try {
-    const dir = path.dirname(REAPER_CONF_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    let content = "";
-    if (fs.existsSync(REAPER_CONF_PATH)) {
-      content = fs.readFileSync(REAPER_CONF_PATH, "utf-8");
-    }
-    const pattern = new RegExp(`^(?:export\\s+)?${envVar}=.*$`, "m");
-    const newLine = `export ${envVar}="${value}"`;
-    if (pattern.test(content)) {
-      content = content.replace(pattern, newLine);
-    } else {
-      content = content.trimEnd() + "\n" + newLine + "\n";
-    }
-    fs.writeFileSync(REAPER_CONF_PATH, content, "utf-8");
-  } catch {
-    // Non-fatal: log but don't fail the API response
-  }
-}
-
-/** Sync all reaper_* settings from DB to config file on startup. */
-export function syncReaperSettingsToConfigFile(): void {
-  const REAPER_SETTING_MAP: Record<string, string[]> = {
-    reaper_enabled: ["CLAUDE_ENABLED", "CODEX_ENABLED"],
-    reaper_claude_idle_minutes: ["CLAUDE_IDLE_THRESHOLD_MINUTES"],
-    reaper_codex_idle_minutes: ["CODEX_IDLE_THRESHOLD_MINUTES"],
-    reaper_dry_run: ["DRY_RUN"],
-    reaper_cleanup_orphan_mcps: ["CLEANUP_ORPHAN_MCPS"],
-  };
-  const db = getDb();
-  for (const [key, envVars] of Object.entries(REAPER_SETTING_MAP)) {
-    const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
-    if (row) {
-      for (const envVar of envVars) {
-        dualWriteReaperConf(envVar, row.value);
-      }
-    }
-  }
-
-  // Re-establish launchd state on startup to match stored setting
-  // Bug: 372981c — Mandible restart must restore correct launchd state
-  const reaperEnabledRow = db.prepare("SELECT value FROM settings WHERE key = 'reaper_enabled'").get() as { value: string } | undefined;
-  if (reaperEnabledRow) {
-    manageReaperLaunchd(reaperEnabledRow.value === "true").catch(() => {});
-  }
-}
+const DEPRECATED_REAPER_SETTINGS = new Set([
+  "reaper_enabled",
+  "reaper_claude_idle_minutes",
+  "reaper_codex_idle_minutes",
+  "reaper_dry_run",
+  "reaper_cleanup_orphan_mcps",
+]);
 
 export function registerSettingsRoutes(server: RouteRegistrar): void {
   const db = getDb();
@@ -240,25 +166,11 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       dualWriteDotfilesConf(TIER2_MAP[key], body.value);
     }
 
-    // Dual-write reaper settings to ~/.config/claude-reaper/config
-    const REAPER_MAP: Record<string, string[]> = {
-      reaper_enabled: ["CLAUDE_ENABLED", "CODEX_ENABLED"],
-      reaper_claude_idle_minutes: ["CLAUDE_IDLE_THRESHOLD_MINUTES"],
-      reaper_codex_idle_minutes: ["CODEX_IDLE_THRESHOLD_MINUTES"],
-      reaper_dry_run: ["DRY_RUN"],
-      reaper_cleanup_orphan_mcps: ["CLEANUP_ORPHAN_MCPS"],
-    };
-    if (key in REAPER_MAP) {
-      for (const envVar of REAPER_MAP[key]) {
-        dualWriteReaperConf(envVar, body.value);
-      }
-    }
-
-    // Manage launchd job for reaper on/off toggle
-    if (key === "reaper_enabled") {
-      manageReaperLaunchd(body.value === "true").catch(() => {});
-    }
-
-    sendJson(res, 200, { ok: true, key, value: body.value });
+    sendJson(res, 200, {
+      ok: true,
+      key,
+      value: body.value,
+      deprecated: DEPRECATED_REAPER_SETTINGS.has(key) || undefined,
+    });
   });
 }
