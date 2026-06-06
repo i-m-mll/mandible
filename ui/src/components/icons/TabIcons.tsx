@@ -143,6 +143,21 @@ export function GraphIcon(props: IconProps): JSX.Element {
   );
 }
 
+/** Timeline — shared axis with lane marks */
+export function TimelineIcon(props: IconProps): JSX.Element {
+  const { size, className } = { ...defaults, ...props };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d="M4 6h16" />
+      <path d="M4 12h16" />
+      <path d="M4 18h16" />
+      <circle cx="8" cy="6" r="2" />
+      <circle cx="14" cy="12" r="2" />
+      <circle cx="18" cy="18" r="2" />
+    </svg>
+  );
+}
+
 /** Switchboard — ArrowLeftRight icon */
 export function SwitchboardIcon(props: IconProps): JSX.Element {
   const { size, className } = { ...defaults, ...props };

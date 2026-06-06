@@ -1,5 +1,13 @@
 // --- Core daemon types (P1) ---
 
+import type {
+  LedgerIssueKind,
+  LedgerIssueResolution,
+  LedgerIssueStatus,
+  LedgerPriority,
+  LedgerRelationshipType,
+} from "./ledger/types.js";
+
 export interface SSEEvent {
   type: string;
   data: unknown;
@@ -228,6 +236,165 @@ export interface IssueRepoSummary {
   merged_count: number;
   closed_count: number;
   issues: GitBugIssue[];
+}
+
+// --- Project Timeline projection types ---
+
+export type TimelineRootPolicy = "coordination" | "explicit" | "coordination_and_explicit";
+export type TimelineHeadlineSource = "title" | "markdown_heading" | "body_excerpt" | "state";
+export type TimelineSourceEntityType = "issue_body" | "comment" | "issue_state";
+export type TimelineRowOccurrenceKind = "root" | "promoted_root" | "explicit_root" | "transient";
+export type TimelineDiagnosticKind =
+  | "cycle"
+  | "depth_limit"
+  | "missing_expansion_event"
+  | "filtered_target"
+  | "deleted_target";
+
+export interface ProjectTimelineInput {
+  project_id?: string;
+  project_ref?: string;
+  root_policy?: TimelineRootPolicy;
+  explicit_root_issue_ids?: string[];
+  promoted_root_issue_ids?: string[];
+  expanded_event_ids?: string[];
+  expanded_paths?: string[];
+  include_closed?: boolean;
+  statuses?: LedgerIssueStatus[];
+  depth?: number;
+  from?: number;
+  to?: number;
+}
+
+export interface ProjectTimelineNormalizedInput {
+  project_id: string;
+  root_policy: TimelineRootPolicy;
+  explicit_root_issue_ids: string[];
+  promoted_root_issue_ids: string[];
+  expanded_event_ids: string[];
+  expanded_paths: string[];
+  include_closed: boolean;
+  statuses: LedgerIssueStatus[];
+  depth: number;
+  from: number | null;
+  to: number | null;
+}
+
+export interface TimelineIssueRef {
+  id: string;
+  display_id: string;
+  project_id: string;
+  title: string;
+  status: LedgerIssueStatus;
+  resolution: LedgerIssueResolution | null;
+  kind: LedgerIssueKind;
+  priority: LedgerPriority;
+  labels: string[];
+  deleted: boolean;
+}
+
+export interface TimelineSourceEntityRef {
+  type: TimelineSourceEntityType;
+  id: string;
+  issue_id: string;
+}
+
+export interface TimelineRowOccurrence {
+  id: string;
+  issue: TimelineIssueRef;
+  kind: TimelineRowOccurrenceKind;
+  parent_row_id: string | null;
+  source_event_id: string | null;
+  depth: number;
+  path: string[];
+  expanded: boolean;
+  cycle: boolean;
+  hidden_reason: string | null;
+}
+
+export interface TimelineEvent {
+  id: string;
+  row_id: string;
+  issue: TimelineIssueRef;
+  source_entity: TimelineSourceEntityRef;
+  kind: "body" | "comment" | "state";
+  timestamp: number;
+  ordinal: number;
+  display_headline: string;
+  headline_source: TimelineHeadlineSource;
+  body: string | null;
+  state: {
+    event_type: string;
+    status: LedgerIssueStatus | null;
+    resolution: LedgerIssueResolution | null;
+  } | null;
+  link_ids: string[];
+}
+
+export interface TimelineLink {
+  id: string;
+  event_id: string;
+  source_row_id: string;
+  source_entity: TimelineSourceEntityRef;
+  source_issue: TimelineIssueRef;
+  target_issue: TimelineIssueRef;
+  relationship_id: string;
+  relationship_type: LedgerRelationshipType;
+  ref_kind: string;
+  raw_ref: string;
+  normalized_ref: string;
+  derived: boolean;
+  expanded_row_id: string | null;
+  created_at: number;
+}
+
+export interface TimelineTimeAxis {
+  start: number | null;
+  end: number | null;
+  event_count: number;
+}
+
+export interface TimelineDiagnostic {
+  kind: TimelineDiagnosticKind;
+  message: string;
+  row_id?: string;
+  event_id?: string;
+  issue_id?: string;
+  target_issue_id?: string;
+  depth?: number;
+  path?: string[];
+}
+
+export interface TimelineDiagnostics {
+  total_issues: number;
+  deleted_issues: number;
+  root_count: number;
+  reachable_from_roots_count: number;
+  unreferenced_open_issue_ids: string[];
+  loner_open_issue_ids: string[];
+  derived_reference_count: number;
+  repeated_reference_target_issue_ids: string[];
+  multi_root_issue_ids: string[];
+  cycles: TimelineDiagnostic[];
+  depth_limits: TimelineDiagnostic[];
+  filtered_targets: TimelineDiagnostic[];
+  missing_expansions: TimelineDiagnostic[];
+}
+
+export interface ProjectTimelineProjection {
+  project: {
+    id: string;
+    display_name: string;
+    repo_id: string | null;
+    repo_name: string | null;
+    repo_root: string | null;
+  };
+  inputs: ProjectTimelineNormalizedInput;
+  time_axis: TimelineTimeAxis;
+  rows: TimelineRowOccurrence[];
+  events: TimelineEvent[];
+  links: TimelineLink[];
+  diagnostics: TimelineDiagnostics;
 }
 
 // --- Session-Issue linking types ---
