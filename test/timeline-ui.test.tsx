@@ -252,6 +252,33 @@ describe('TimelineView', () => {
     });
   });
 
+  it('persists zoom and inspector collapsed state as project view state', async () => {
+    const fetchMock = stubTimelineFetch(projection(), projection(), projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    fireEvent.click(screen.getByLabelText('Zoom in'));
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    const zoomBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(zoomBody.from).toBeGreaterThan(Date.UTC(2026, 0, 1));
+    expect(zoomBody.to).toBeLessThan(Date.UTC(2026, 0, 3));
+
+    fireEvent.click(screen.getByLabelText('Collapse inspector'));
+    expect(screen.getByText('Show inspector')).toBeTruthy();
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      const state = JSON.parse(String(stored));
+      expect(state.timeWindow.from).toBe(zoomBody.from);
+      expect(state.panes.inspector).toBe(false);
+    });
+  });
+
   it('keeps the last valid projection mounted while a newer request is syncing', async () => {
     let resolveSecond: (value: ProjectTimelineProjection) => void = () => undefined;
     const second = new Promise<ProjectTimelineProjection>((resolve) => {
@@ -316,6 +343,95 @@ describe('TimelineView', () => {
     await waitFor(() => expect(document.querySelectorAll('.timeline-row').length).toBe(2));
     expect(screen.getByText('Full body text')).toBeTruthy();
     expect(screen.queryByText('No selection')).toBeNull();
+  });
+
+  it('expands issue refs from a selected transient event', async () => {
+    const base = projection();
+    const transient = projection({
+      rows: [
+        ...base.rows,
+        {
+          ...base.rows[0],
+          id: 'row-child',
+          kind: 'transient',
+          parent_row_id: 'row-root',
+          source_event_id: 'event-body',
+          depth: 1,
+          path: ['row-root', 'row-child'],
+        },
+      ],
+      events: [
+        ...base.events,
+        {
+          ...base.events[0],
+          id: 'event-transient',
+          row_id: 'row-child',
+          display_headline: 'Transient ref event',
+          body: 'Nested event body',
+          link_ids: ['link-grandchild'],
+        },
+      ],
+      links: [
+        ...base.links,
+        {
+          ...base.links[0],
+          id: 'link-grandchild',
+          event_id: 'event-transient',
+          source_row_id: 'row-child',
+          target_issue: {
+            ...base.links[0].target_issue,
+            id: 'iss_grandchild',
+            display_id: 'abc1234',
+            title: 'Nested referenced issue',
+          },
+          normalized_ref: 'abc1234',
+          raw_ref: 'abc1234',
+          expanded_row_id: null,
+        },
+      ],
+    });
+    const expanded = projection({
+      rows: [
+        ...transient.rows,
+        {
+          ...base.rows[0],
+          id: 'row-grandchild',
+          kind: 'transient',
+          parent_row_id: 'row-child',
+          source_event_id: 'event-transient',
+          depth: 2,
+          path: ['row-root', 'row-child', 'row-grandchild'],
+          issue: transient.links[1].target_issue,
+        },
+      ],
+      events: transient.events,
+      links: [
+        transient.links[0],
+        {
+          ...transient.links[1],
+          expanded_row_id: 'row-grandchild',
+        },
+      ],
+    });
+    const fetchMock = stubTimelineFetch(transient, expanded);
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Transient ref event')).toBeTruthy());
+    fireEvent.click(screen.getByText('Transient ref event'));
+    expect(screen.getByText('Nested event body')).toBeTruthy();
+    expect(screen.getByText('Expand refs')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Expand refs'));
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    const expandBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(expandBody.expanded_event_ids).toContain('event-transient');
+    await waitFor(() => expect(document.querySelectorAll('.timeline-row').length).toBe(3));
+    expect(screen.getByText('Fold refs')).toBeTruthy();
   });
 
   it('does not auto-select a replacement when the selected event disappears', async () => {

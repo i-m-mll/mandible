@@ -10,6 +10,8 @@ export type TimelineTimeWindow = {
 
 export type TimelinePaneVisibility = {
   inspector: boolean;
+  inspectorWidth: number;
+  diagnostics: boolean;
   rowList: boolean;
 };
 
@@ -184,6 +186,8 @@ export const DEFAULT_TIMELINE_VIEW_STATE: TimelineViewState = {
   includeClosed: false,
   panes: {
     inspector: true,
+    inspectorWidth: 350,
+    diagnostics: false,
     rowList: true,
   },
 };
