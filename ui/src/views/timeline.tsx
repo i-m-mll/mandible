@@ -232,8 +232,11 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 
   useEffect(() => {
     const canonicalProjectId = projection?.project.id ?? projectRef;
-    const timer = window.setTimeout(() => writeStoredState(canonicalProjectId, viewState), 250);
-    return () => window.clearTimeout(timer);
+    const timers = [window.setTimeout(() => writeStoredState(canonicalProjectId, viewState), 250)];
+    if (projection?.project.id && projection.project.id !== projectRef) {
+      timers.push(window.setTimeout(() => writeStoredState(projectRef, viewState), 250));
+    }
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
   }, [projectRef, projection?.project.id, viewState]);
 
   useEffect(() => {

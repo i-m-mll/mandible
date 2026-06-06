@@ -233,6 +233,25 @@ describe('TimelineView', () => {
     expect(document.querySelector('.timeline-grid--compact')).toBeTruthy();
   });
 
+  it('keeps route-ref and canonical project storage coherent after load', async () => {
+    stubTimelineFetch(projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible', density: 'expanded' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    await waitFor(() => {
+      const canonical = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      const routeRef = window.localStorage.getItem('mandible_timeline_view_state:v1:mandible');
+      expect(canonical).toBeTruthy();
+      expect(routeRef).toBeTruthy();
+      expect(JSON.parse(String(canonical)).density).toBe('expanded');
+      expect(JSON.parse(String(routeRef)).density).toBe('expanded');
+    });
+  });
+
   it('keeps the last valid projection mounted while a newer request is syncing', async () => {
     let resolveSecond: (value: ProjectTimelineProjection) => void = () => undefined;
     const second = new Promise<ProjectTimelineProjection>((resolve) => {
