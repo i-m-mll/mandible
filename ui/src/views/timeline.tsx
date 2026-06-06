@@ -103,11 +103,9 @@ function mergeTimelineState(
   local: Partial<TimelineViewState>,
   url: TimelineUrlState,
 ): TimelineViewState {
-  return {
+  const merged: TimelineViewState = {
     ...base,
     ...local,
-    ...url,
-    projectRef: undefined,
     explicitRootIssueIds: url.explicitRootIssueIds?.length ? url.explicitRootIssueIds : local.explicitRootIssueIds ?? base.explicitRootIssueIds,
     promotedRootIssueIds: url.promotedRootIssueIds?.length ? url.promotedRootIssueIds : local.promotedRootIssueIds ?? base.promotedRootIssueIds,
     expandedEventIds: url.expandedEventIds?.length ? url.expandedEventIds : local.expandedEventIds ?? base.expandedEventIds,
@@ -115,7 +113,13 @@ function mergeTimelineState(
     visibleEventTypes: url.visibleEventTypes?.length ? url.visibleEventTypes : local.visibleEventTypes ?? base.visibleEventTypes,
     timeWindow: url.timeWindow ?? local.timeWindow ?? base.timeWindow,
     panes: url.panes ?? local.panes ?? base.panes,
-  } as TimelineViewState;
+  };
+  if (url.rootPolicy !== undefined) merged.rootPolicy = url.rootPolicy;
+  if (url.selectedRowOccurrenceId !== undefined) merged.selectedRowOccurrenceId = url.selectedRowOccurrenceId;
+  if (url.selectedEventId !== undefined) merged.selectedEventId = url.selectedEventId;
+  if (url.density !== undefined) merged.density = url.density;
+  if (url.includeClosed !== undefined) merged.includeClosed = url.includeClosed;
+  return merged;
 }
 
 function readStoredState(projectId: string): Partial<TimelineViewState> {

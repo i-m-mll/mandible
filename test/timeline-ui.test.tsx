@@ -281,6 +281,43 @@ describe('TimelineView', () => {
     await waitFor(() => expect(screen.getByText('Synced headline')).toBeTruthy());
   });
 
+  it('preserves selected event state when expansion refetches without URL selection params', async () => {
+    const expanded = projection({
+      rows: [
+        ...projection().rows,
+        {
+          ...projection().rows[0],
+          id: 'row-child',
+          kind: 'transient',
+          parent_row_id: 'row-root',
+          source_event_id: 'event-body',
+          depth: 1,
+        },
+      ],
+      links: [
+        {
+          ...projection().links[0],
+          expanded_row_id: 'row-child',
+        },
+      ],
+    });
+    stubTimelineFetch(projection(), expanded);
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    fireEvent.click(screen.getByText('Build shared axis'));
+    expect(screen.getByText('Full body text')).toBeTruthy();
+    fireEvent.click(screen.getByText('Expand refs'));
+
+    await waitFor(() => expect(document.querySelectorAll('.timeline-row').length).toBe(2));
+    expect(screen.getByText('Full body text')).toBeTruthy();
+    expect(screen.queryByText('No selection')).toBeNull();
+  });
+
   it('does not auto-select a replacement when the selected event disappears', async () => {
     stubTimelineFetch(projection(), projection({ events: [] }));
 
