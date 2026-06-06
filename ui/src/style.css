@@ -555,22 +555,27 @@ a {
 }
 
 .timeline-diagnostics-button {
+  position: relative;
   gap: 7px;
 }
 
 .timeline-diagnostics-button span {
-  min-width: 20px;
-  height: 20px;
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 16px;
+  height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(77, 163, 255, 0.42);
   border-radius: 999px;
-  padding: 0 5px;
-  background: rgba(77, 163, 255, 0.16);
-  color: var(--text-primary);
+  padding: 0 4px;
+  background: var(--accent-yellow);
+  color: #fff;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 16px;
 }
 
 .timeline-diagnostics-panel {

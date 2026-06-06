@@ -671,8 +671,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           className="timeline-diagnostics-button"
           onClick={() => updateState({ panes: { ...viewState.panes, diagnostics: !viewState.panes.diagnostics } })}
           aria-expanded={viewState.panes.diagnostics}
+          aria-label={diagnosticsCount > 0 ? `Diagnostics (${diagnosticsCount})` : 'Diagnostics'}
         >
-          Diagnostics <span>{diagnosticsCount}</span>
+          Diagnostics
+          {diagnosticsCount > 0 ? <span>{diagnosticsCount}</span> : null}
         </button>
         <div className="timeline-toolbar-spacer" />
         <button
