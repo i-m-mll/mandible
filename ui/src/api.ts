@@ -1,6 +1,7 @@
 import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
 import type { PresetWithNodes, PresetDiff, ConventionSettingLink, SessionValidationResult } from './types/presets';
+import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
 export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
 
 export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[]; presets?: T[]; nodes?: T[]; diffs?: T[] };
@@ -329,6 +330,32 @@ export async function getIssueRepos<T>(): Promise<T[]> {
   const response = await apiGet('/api/issues');
   const payload = (await parseMaybeJson(response)) as ApiList<T>;
   return normalizeList(payload);
+}
+
+export async function getProjectTimeline(
+  input: ProjectTimelineInput,
+  signal?: AbortSignal,
+): Promise<ProjectTimelineProjection> {
+  const response = await fetch('/api/timeline/project', {
+    method: 'POST',
+    headers: {
+      ...DEFAULT_HEADERS,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+    signal,
+  });
+  if (!response.ok) {
+    let message = `POST /api/timeline/project failed: ${response.status}`;
+    try {
+      const body = await response.json() as { error?: string; message?: string };
+      message = body.error || body.message || message;
+    } catch {
+      // keep generic message
+    }
+    throw new Error(message);
+  }
+  return (await parseMaybeJson(response)) as ProjectTimelineProjection;
 }
 
 export async function getIssueDetail(

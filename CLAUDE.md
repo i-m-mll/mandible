@@ -44,7 +44,41 @@ Key conventions:
 
 ## Dist files
 
-Do **not** commit `dist/` in feature branches. Build once in the integration branch after all feature merges, then commit the dist there.
+Do **not** commit `dist/` or `ui/dist/` in feature branches or integration
+branches. They are local runtime build outputs and are rebuilt locally after
+merge by the Mandible post-merge build hook. Before delivery, verify generated
+output hygiene with:
+
+```bash
+git ls-files dist ui/dist
+git status --short --ignored dist ui/dist
+```
+
+`git ls-files dist ui/dist` should return no tracked files.
+
+## Dataful UX state
+
+Mandible dataful workspaces must preserve user-visible state unless the user
+explicitly changes or resets it. Unexpected resets are bugs.
+
+- Preserve per-workspace and per-project view state across tab switches,
+  project switches, route changes, refreshes, daemon syncs, and app restarts
+  when the state represents user intent.
+- Treat backend refreshes, polling, SSE events, and refetches as reconciliation
+  inputs, not as reasons to collapse panes, clear selections, reset filters,
+  lose scroll/zoom position, or flicker UI structure.
+- Keep URL-shareable state, browser-local state, project defaults, and
+  ledger-backed persisted state distinct in types and code paths. Do not
+  silently promote local view state into canonical project or ledger state.
+- Resets, destructive state changes, and canonical mutations must be caused by
+  explicit user actions with clear affordances.
+- Use consistent contracts for rows, events, refs, entities, and selections so
+  a new entity type does not become a special edge case that bypasses normal
+  rendering, persistence, navigation, or accessibility behavior.
+
+For Timeline specifically, the shared global time axis is a contract: changing
+expansion or row visibility changes the visible row tree, never the meaning of
+horizontal time coordinates.
 
 ## Worktree build notes
 

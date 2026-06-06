@@ -55,6 +55,7 @@ import type { WorkBranch, WorkRepo } from './views/work';
 import { LogsView } from './views/logs';
 import { GraphView } from './views/graph';
 import type { GraphNodeType } from './views/graph';
+import { TimelineView } from './views/timeline';
 import { PresetsView } from './views/presets';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
@@ -67,6 +68,7 @@ import {
   SettingsIcon,
   PresetsIcon,
   GraphIcon,
+  TimelineIcon,
   SwitchboardIcon,
   LogsIcon,
   ProjectsIcon,
@@ -918,6 +920,13 @@ function App(): JSX.Element {
       icon: GraphIcon,
     },
     {
+      tab: 'timeline',
+      href: '#/timeline',
+      label: 'Timeline',
+      title: 'Timeline',
+      icon: TimelineIcon,
+    },
+    {
       tab: 'auth',
       href: '#/auth',
       label: 'Auth',
@@ -1193,6 +1202,12 @@ function App(): JSX.Element {
             refreshToken={graphRefreshToken}
             initialMode={route.params.mode}
             initialFocus={route.params.focus}
+          />
+        )}
+        {route.tab === 'timeline' && (
+          <TimelineView
+            repos={state.workRepos}
+            params={route.params}
           />
         )}
         {route.tab === 'presets' && (
