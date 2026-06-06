@@ -92,7 +92,13 @@ mandible issue report <id> [--json]
 mandible issue triage [--repo <repo-ref>] [--status open|closed|all] [--label <label>] [--stale-days N] [--limit N] [--json]
 mandible issue close <id> [--commit <sha>]
 mandible issue open <id>
-mandible issue comment <id> -m <text>
+mandible issue description show <issue-ref> [--json]
+mandible issue description history <issue-ref> [--json] [--with-body]
+mandible issue comment add <issue-ref> -m <text>
+mandible issue comment show <comment-ref> [--json]
+mandible issue comment history <comment-ref> [--json] [--with-body]
+mandible issue revision show <revision-id> [--json]
+mandible issue revision diff <old-revision-id> <new-revision-id> [--force]
 mandible issue label add <id> <label>
 mandible issue label rm <id> <label>
 ```
@@ -108,11 +114,22 @@ mandible issue label rm <id> <label>
 | `triage` | Filter issues by status, label, stale age, and limit for deterministic review queues. |
 | `close` | Close an issue, recording the resolving commit SHA. Adds a ledger comment, appends a git note, and reports the resolution to the Mandible API. |
 | `open` | Reopen a closed issue |
-| `comment` | Add a comment to an issue |
+| `description show` | Show only the issue description, without comments or metadata in human output. |
+| `description history` | Show read-only revision history for the issue description. This maps to Mandible's `issue_body` revision entity. |
+| `comment add` | Add a comment to an issue. Compatibility alias: `mandible issue comment <issue-ref> -m <text>`. |
+| `comment show` | Show one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |
+| `comment history` | Show read-only text revision history for one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |
+| `revision show` | Show one globally addressed text revision by revision ID. Revision IDs are unique across issue-description and comment revisions. |
+| `revision diff` | Print a unified diff between two text revisions. Cross-entity diffs are rejected unless `--force` is passed. |
 | `label add` | Add a label |
 | `label rm` | Remove a label |
 
 Prefer `mandible issue report <id> --json` when an agent needs issue context for a handoff or planning pass. Agents remain responsible for synthesis and decisions; the CLI output is only a deterministic fact packet.
+
+Revision inspection commands are read-only. They expose stored snapshots and
+derived diffs; they do not restore, edit, or roll back issue descriptions or
+comments. Compatibility aliases `body-history` and `comment-history` are still
+accepted but are not the preferred command names.
 
 ### mandible auth list
 

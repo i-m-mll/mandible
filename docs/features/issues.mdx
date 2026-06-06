@@ -48,8 +48,12 @@ Issues can also be managed from the command line:
 mandible issue new -t 'Title' -m 'Body' --label feature
 mandible issue list --status open
 mandible issue show <id>
+mandible issue description show <id>
+mandible issue description history <id>
+mandible issue comment show issue-ref#last
+mandible issue comment history issue-ref#comment-ordinal
 mandible issue close <id>
-mandible issue comment <id> -m 'Comment'
+mandible issue comment add <id> -m 'Comment'
 ```
 
 See the CLI reference for the full command set.
