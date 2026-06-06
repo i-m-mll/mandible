@@ -319,7 +319,7 @@ GET    /api/health                Health check
 mandible wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
 mandible task <description>              Set session task/status
 mandible inbox [check|ack|watch|add]     Manage session inbox
-mandible issue <subcommand>              Issue operations (new, close, comment, show, list)
+mandible issue <subcommand>              Issue operations, comments, labels, and body revision history
 mandible auth list [opts]                List active auth requests
 mandible auth request <branch> [opts]    Submit auth request
 mandible auth merge <branch> [opts]      Execute authenticated merge

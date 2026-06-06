@@ -29,7 +29,16 @@ Usage:
   mandible issue triage [opts] [--json]                           Filter issues for review
   mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
   mandible issue open <id>                                        Reopen a closed issue
-  mandible issue comment <id> -m <text>                           Add a comment
+  mandible issue description show <issue-ref> [--json]            Show only the issue description
+  mandible issue description history <issue-ref> [--json] [--with-body]
+                                                                  Show issue description revision history
+  mandible issue comment add <issue-ref> -m <text>                 Add a comment
+  mandible issue comment show <comment-ref> [--json]               Show one comment
+  mandible issue comment history <comment-ref> [--json] [--with-body]
+                                                                  Show one comment revision history
+  mandible issue revision show <revision-id> [--json]             Show one text revision
+  mandible issue revision diff <old-revision-id> <new-revision-id> [--force]
+                                                                  Diff two text revisions
   mandible issue label add <id> <label>                           Add a label
   mandible issue label rm <id> <label>                            Remove a label
   mandible issue markdown <audit|normalize|export> [opts]          Audit, normalize, or export ledger Markdown
@@ -146,7 +155,7 @@ cmd_close() {
   err "${GREEN}Closed issue ${id} (resolved by ${sha:0:12})${RESET}"
 }
 
-cmd_comment() {
+cmd_comment_add() {
   local id=""
   local message=""
 
@@ -174,7 +183,7 @@ cmd_comment() {
   done
 
   if [[ -z "$id" || -z "$message" ]]; then
-    die "Usage: mandible issue comment <id> -m <text>" 2
+    die "Usage: mandible issue comment add <issue-ref> -m <text>" 2
   fi
 
   require_tools
@@ -488,6 +497,439 @@ cmd_open() {
   err "${GREEN}Reopened issue ${id}${RESET}"
 }
 
+print_revision_history() {
+  local with_body="$1"
+  jq -r --arg with_body "$with_body" '
+    def timestamp:
+      ((.occurred_at // .observed_at // 0) / 1000 | todateiso8601);
+    def actor:
+      (.actor_id // .actor_type // "-");
+    def short_hash:
+      ((.new_hash // "")[0:12]);
+    .revisions as $revisions
+    | if ($revisions | length) == 0 then
+        "No body revisions."
+      else
+        "rev\tid\treason\tsource\toccurred\tactor\thash",
+        ($revisions[]
+          | "#\(.revision_no)\t\(.id)\t\(.reason)\t\(.source)\t\(timestamp)\t\(actor)\t\(short_hash)",
+            (if $with_body == "1" then
+              "----- body #\(.revision_no) -----\n\(.snapshot_body)\n----- end body #\(.revision_no) -----"
+            else empty end))
+      end
+  '
+}
+
+cmd_description_show() {
+  local issue_ref=""
+  local json=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then
+          issue_ref="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: mandible issue description show <issue-ref> [--json]" 2
+  fi
+
+  require_tools
+  local response
+  response=$(api_get "/api/ledger/issues/$(urlencode "$issue_ref")") \
+    || die "${RED}Failed to fetch issue ${issue_ref}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq '{issue_id: .id, display_id, title, description: .body, updated_at}'
+  else
+    printf '%s\n' "$response" | jq -r '.body // ""'
+  fi
+}
+
+cmd_description_history() {
+  local issue_ref=""
+  local json=0
+  local with_body=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      --with-body) with_body=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then
+          issue_ref="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: mandible issue description history <issue-ref> [--json] [--with-body]" 2
+  fi
+
+  require_tools
+  local response
+  response=$(api_get "/api/ledger/issues/$(urlencode "$issue_ref")/body/revisions") \
+    || die "${RED}Failed to fetch body revisions for issue ${issue_ref}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq '.'
+  else
+    printf '%s\n' "$response" | print_revision_history "$with_body"
+  fi
+}
+
+cmd_description() {
+  local action="${1:-}"
+  shift || true
+
+  case "$action" in
+    show) cmd_description_show "$@" ;;
+    history) cmd_description_history "$@" ;;
+    ""|-h|--help)
+      cat <<'DESCRIPTION_USAGE'
+Usage:
+  mandible issue description show <issue-ref> [--json]
+  mandible issue description history <issue-ref> [--json] [--with-body]
+DESCRIPTION_USAGE
+      ;;
+    *)
+      die "Unknown description action: $action (expected show or history)" 2
+      ;;
+  esac
+}
+
+resolve_comment_ref() {
+  local comment_ref="$1"
+
+  if [[ "$comment_ref" != *"#"* ]]; then
+    printf '%s' "$comment_ref"
+    return
+  fi
+
+  local issue_ref="${comment_ref%%#*}"
+  local selector="${comment_ref##*#}"
+  if [[ -z "$issue_ref" || -z "$selector" ]]; then
+    die "Comment reference must be <issue-ref>#<ordinal>, <issue-ref>#last, or a raw comment id." 2
+  fi
+  if [[ "$selector" != "last" && ! "$selector" =~ ^[0-9]+$ ]]; then
+    die "Comment selector must be an integer ordinal or 'last': $comment_ref" 2
+  fi
+  if [[ "$selector" == "0" ]]; then
+    die "Comment ordinal 0 is the issue description; use 'mandible issue description show ${issue_ref}' or 'mandible issue description history ${issue_ref}'." 2
+  fi
+
+  local comment_id
+  if [[ "$selector" == "last" ]]; then
+    comment_id=$(
+      api_get "/api/ledger/issues/$(urlencode "$issue_ref")" \
+        | jq -er '(.comments // [] | sort_by(.created_at // 0) | last | .id) // empty'
+    ) || die "${RED}Could not resolve comment reference ${comment_ref}${RESET}" 1
+  else
+    comment_id=$(
+      api_get "/api/ledger/issues/$(urlencode "$issue_ref")" \
+        | jq -er --argjson ordinal "$selector" '
+            (.comments // [])[]
+            | select(.ordinal == $ordinal)
+            | .id
+          '
+    ) || die "${RED}Could not resolve comment reference ${comment_ref}${RESET}" 1
+  fi
+  printf '%s' "$comment_id"
+}
+
+cmd_comment_show() {
+  local comment_ref=""
+  local json=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$comment_ref" ]]; then
+          comment_ref="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$comment_ref" ]]; then
+    die "Usage: mandible issue comment show <comment-ref> [--json]" 2
+  fi
+
+  require_tools
+  local comment_id response
+  comment_id=$(resolve_comment_ref "$comment_ref")
+  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_id")/revisions") \
+    || die "${RED}Failed to fetch comment ${comment_ref}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq --arg comment_id "$comment_id" '{
+      comment_id: $comment_id,
+      revision: (.revisions // [] | sort_by(.revision_no) | last),
+      body: ((.revisions // [] | sort_by(.revision_no) | last | .snapshot_body) // "")
+    }'
+  else
+    printf '%s\n' "$response" | jq -r '(.revisions // [] | sort_by(.revision_no) | last | .snapshot_body) // ""'
+  fi
+}
+
+cmd_comment_history() {
+  local comment_ref=""
+  local json=0
+  local with_body=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      --with-body) with_body=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$comment_ref" ]]; then
+          comment_ref="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$comment_ref" ]]; then
+    die "Usage: mandible issue comment history <comment-ref> [--json] [--with-body]" 2
+  fi
+
+  require_tools
+  local comment_id response
+  comment_id=$(resolve_comment_ref "$comment_ref")
+  response=$(api_get "/api/ledger/comments/$(urlencode "$comment_id")/revisions") \
+    || die "${RED}Failed to fetch body revisions for comment ${comment_ref}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq '.'
+  else
+    printf '%s\n' "$response" | print_revision_history "$with_body"
+  fi
+}
+
+cmd_comment() {
+  local action="${1:-}"
+
+  case "$action" in
+    add)
+      shift
+      cmd_comment_add "$@"
+      ;;
+    show)
+      shift
+      cmd_comment_show "$@"
+      ;;
+    history)
+      shift
+      cmd_comment_history "$@"
+      ;;
+    ""|-h|--help)
+      cat <<'COMMENT_USAGE'
+Usage:
+  mandible issue comment add <issue-ref> -m <text>
+  mandible issue comment show <comment-ref> [--json]
+  mandible issue comment history <comment-ref> [--json] [--with-body]
+
+Comment refs can be raw comment IDs, <issue-ref>#<ordinal>, or <issue-ref>#last.
+Compatibility alias: mandible issue comment <issue-ref> -m <text>
+COMMENT_USAGE
+      ;;
+    *)
+      cmd_comment_add "$@"
+      ;;
+  esac
+}
+
+fetch_revision() {
+  local revision_id="$1"
+  api_get "/api/ledger/body-revisions/$(urlencode "$revision_id")" | jq -c '.revision'
+}
+
+print_revision_detail() {
+  jq -r '
+    def timestamp:
+      ((.occurred_at // .observed_at // 0) / 1000 | todateiso8601);
+    "revision: \(.id)",
+    "entity: \(.entity_type) \(.entity_id)",
+    "issue: \(.issue_id)",
+    "number: #\(.revision_no)",
+    "reason: \(.reason)",
+    "source: \(.source)",
+    "occurred: \(timestamp)",
+    "actor: \(.actor_id // .actor_type // "-")",
+    "base_revision: \(.base_revision_id // "-")",
+    "hash: \(.new_hash)",
+    "",
+    "body:",
+    .snapshot_body
+  '
+}
+
+cmd_revision_show() {
+  local revision_id=""
+  local json=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$revision_id" ]]; then
+          revision_id="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$revision_id" ]]; then
+    die "Usage: mandible issue revision show <revision-id> [--json]" 2
+  fi
+
+  require_tools
+  local response
+  response=$(api_get "/api/ledger/body-revisions/$(urlencode "$revision_id")") \
+    || die "${RED}Failed to fetch body revision ${revision_id}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq '.'
+  else
+    printf '%s\n' "$response" | jq -c '.revision' | print_revision_detail
+  fi
+}
+
+cmd_revision_diff() {
+  local old_revision_id=""
+  local new_revision_id=""
+  local force=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --force) force=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$old_revision_id" ]]; then
+          old_revision_id="$1"
+        elif [[ -z "$new_revision_id" ]]; then
+          new_revision_id="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$old_revision_id" || -z "$new_revision_id" ]]; then
+    die "Usage: mandible issue revision diff <old-revision-id> <new-revision-id> [--force]" 2
+  fi
+
+  command -v python3 >/dev/null 2>&1 || die "python3 not found." 1
+  require_tools
+
+  local old_revision new_revision old_entity new_entity old_id new_id
+  old_revision=$(fetch_revision "$old_revision_id") \
+    || die "${RED}Failed to fetch body revision ${old_revision_id}${RESET}" 1
+  new_revision=$(fetch_revision "$new_revision_id") \
+    || die "${RED}Failed to fetch body revision ${new_revision_id}${RESET}" 1
+  old_entity=$(printf '%s\n' "$old_revision" | jq -r '.entity_type')
+  new_entity=$(printf '%s\n' "$new_revision" | jq -r '.entity_type')
+  old_id=$(printf '%s\n' "$old_revision" | jq -r '.entity_id')
+  new_id=$(printf '%s\n' "$new_revision" | jq -r '.entity_id')
+
+  if (( ! force )) && [[ "$old_entity:$old_id" != "$new_entity:$new_id" ]]; then
+    die "Refusing to diff revisions from different entities (${old_entity}:${old_id} vs ${new_entity}:${new_id}); pass --force to override." 2
+  fi
+
+  local old_file new_file
+  old_file=$(mktemp)
+  new_file=$(mktemp)
+  printf '%s\n' "$old_revision" | jq -j '.snapshot_body' > "$old_file"
+  printf '%s\n' "$new_revision" | jq -j '.snapshot_body' > "$new_file"
+
+  local status
+  python3 - "$old_file" "$new_file" "$old_revision" "$new_revision" <<'PY'
+import difflib
+import json
+import sys
+
+old_path, new_path, old_json, new_json = sys.argv[1:5]
+old = json.loads(old_json)
+new = json.loads(new_json)
+
+def label(revision):
+    return f"{revision['id']} #{revision['revision_no']} {revision['entity_type']}:{revision['entity_id']}"
+
+with open(old_path, "r", encoding="utf-8") as handle:
+    old_lines = handle.read().splitlines()
+with open(new_path, "r", encoding="utf-8") as handle:
+    new_lines = handle.read().splitlines()
+
+for line in difflib.unified_diff(
+    old_lines,
+    new_lines,
+    fromfile=label(old),
+    tofile=label(new),
+    lineterm="",
+):
+    print(line)
+PY
+  status=$?
+  rm -f "$old_file" "$new_file"
+  return "$status"
+}
+
+cmd_revision() {
+  local action="${1:-}"
+  shift || true
+
+  case "$action" in
+    show) cmd_revision_show "$@" ;;
+    diff) cmd_revision_diff "$@" ;;
+    ""|-h|--help)
+      cat <<'REVISION_USAGE'
+Usage:
+  mandible issue revision show <revision-id> [--json]
+  mandible issue revision diff <old-revision-id> <new-revision-id> [--force]
+REVISION_USAGE
+      ;;
+    *)
+      die "Unknown revision action: $action (expected show or diff)" 2
+      ;;
+  esac
+}
+
 cmd_refs() {
   local action="${1:-}"
   shift || true
@@ -534,7 +976,11 @@ case "$subcmd" in
   triage)  cmd_triage "$@" ;;
   close)   cmd_close "$@" ;;
   open)    cmd_open "${1:-}" ;;
+  description) cmd_description "$@" ;;
   comment) cmd_comment "$@" ;;
+  body-history) cmd_description_history "$@" ;;
+  comment-history) cmd_comment_history "$@" ;;
+  revision) cmd_revision "$@" ;;
   label)   cmd_label "$@" ;;
   markdown) cmd_markdown "$@" ;;
   refs)    cmd_refs "$@" ;;
