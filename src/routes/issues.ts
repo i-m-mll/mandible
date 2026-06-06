@@ -143,6 +143,10 @@ function sendJson(res: unknown, status: number, payload: unknown): void {
   }
 }
 
+function isBodyRevisionConflict(error: unknown): boolean {
+  return error instanceof Error && error.name === "LedgerBodyRevisionConflictError";
+}
+
 function applyMarkdownBodyPolicy(
   res: unknown,
   db: Db,
@@ -445,6 +449,59 @@ export function registerIssueRoutes(
     sendLedgerIssueProjection(res, db, resolved.issue_id);
   });
 
+  server.get("/api/ledger/issues/:issueId/body/revisions", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    const revisions = new LedgerStore(db).listBodyRevisions({
+      entity_type: "issue_body",
+      entity_id: resolved.issue_id,
+    });
+    sendJson(res, 200, { revisions });
+  });
+
+  server.get("/api/ledger/comments/:commentId/revisions", (req, res) => {
+    const commentId = getParam(req, "commentId");
+    if (!commentId) {
+      sendJson(res, 400, { error: "missing commentId" });
+      return;
+    }
+    const db = getDb();
+    const store = new LedgerStore(db);
+    try {
+      store.getComment(commentId);
+      const revisions = store.listBodyRevisions({
+        entity_type: "comment_body",
+        entity_id: commentId,
+      });
+      sendJson(res, 200, { revisions });
+    } catch (error) {
+      sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
+    }
+  });
+
+  server.get("/api/ledger/body-revisions/:revisionId", (req, res) => {
+    const revisionId = getParam(req, "revisionId");
+    if (!revisionId) {
+      sendJson(res, 400, { error: "missing revisionId" });
+      return;
+    }
+    try {
+      const revision = new LedgerStore(getDb()).getBodyRevision(revisionId);
+      sendJson(res, 200, { revision });
+    } catch (error) {
+      sendJson(res, 404, { error: error instanceof Error ? error.message : "body revision not found" });
+    }
+  });
+
   // GET /api/issues/:repoId/:issueId/ledger-detail — resolve a route issue ref
   // into the canonical projection used by graph and issue detail panes.
   server.get("/api/issues/:repoId/:issueId/ledger-detail", (req, res) => {
@@ -543,6 +600,51 @@ export function registerIssueRoutes(
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownPolicy.warnings);
   });
 
+  server.patch?.("/api/ledger/comments/:commentId", (req, res) => {
+    const commentId = getParam(req, "commentId");
+    if (!commentId) {
+      sendJson(res, 400, { error: "missing commentId" });
+      return;
+    }
+    const body = getBody(req) ?? {};
+    const patch: { body?: string; author_display?: string } = {};
+    let markdownWarnings: MarkdownBodyPolicyWarning[] = [];
+    const db = getDb();
+    if (typeof body.body === "string") {
+      const markdownPolicy = applyMarkdownBodyPolicy(res, db, body.body);
+      if (!markdownPolicy.ok) return;
+      markdownWarnings = markdownPolicy.warnings;
+      patch.body = body.body;
+    }
+    if (typeof body.author_display === "string") {
+      patch.author_display = body.author_display;
+    }
+    if (Object.keys(patch).length === 0) {
+      sendJson(res, 400, { error: "body or author_display is required" });
+      return;
+    }
+    const store = new LedgerStore(db);
+    try {
+      const comment = store.updateComment(commentId, patch, {
+        actor_type: "mandible_user",
+        author_display: "Mandible",
+        base_body_revision_id: typeof body.base_revision_id === "string"
+          ? body.base_revision_id
+          : typeof body.base_body_revision_id === "string"
+            ? body.base_body_revision_id
+            : undefined,
+        base_body_hash: typeof body.base_body_hash === "string" ? body.base_body_hash : undefined,
+      });
+      sendLedgerIssueProjection(res, db, comment.issue_id, markdownWarnings);
+    } catch (error) {
+      if (isBodyRevisionConflict(error)) {
+        sendJson(res, 409, { error: error instanceof Error ? error.message : "stale body revision" });
+        return;
+      }
+      sendJson(res, 404, { error: error instanceof Error ? error.message : "comment not found" });
+    }
+  });
+
   server.patch?.("/api/ledger/issues/:issueId", (req, res) => {
     const issueRef = getParam(req, "issueId");
     if (!issueRef) {
@@ -586,7 +688,24 @@ export function registerIssueRoutes(
 
     const store = new LedgerStore(db);
     if (Object.keys(patch).length > 0) {
-      store.updateIssue(resolved.issue_id, patch, { actor_type: "mandible_user", author_display: "Mandible" });
+      try {
+        store.updateIssue(resolved.issue_id, patch, {
+          actor_type: "mandible_user",
+          author_display: "Mandible",
+          base_body_revision_id: typeof body.base_body_revision_id === "string"
+            ? body.base_body_revision_id
+            : typeof body.base_revision_id === "string"
+              ? body.base_revision_id
+              : undefined,
+          base_body_hash: typeof body.base_body_hash === "string" ? body.base_body_hash : undefined,
+        });
+      } catch (error) {
+        if (isBodyRevisionConflict(error)) {
+          sendJson(res, 409, { error: error instanceof Error ? error.message : "stale body revision" });
+          return;
+        }
+        throw error;
+      }
     }
     if (body.status !== undefined || body.resolution !== undefined) {
       const status = enumValue(body.status, LEDGER_ISSUE_STATUSES);

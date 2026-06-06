@@ -57,6 +57,7 @@ describe("ledger schema", () => {
     ).all() as Array<{ name: string }>;
     expect(tables.map((row) => row.name)).toEqual([
       "ledger_auth_issue_links",
+      "ledger_body_revisions",
       "ledger_comments",
       "ledger_commit_issue_links",
       "ledger_conflicts",
@@ -83,6 +84,7 @@ describe("ledger schema", () => {
       "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_ledger_%'",
     ).all() as Array<{ name: string }>;
     expect(indexes.map((row) => row.name)).toContain("idx_ledger_issues_project_status_updated");
+    expect(indexes.map((row) => row.name)).toContain("idx_ledger_body_revisions_entity");
     expect(indexes.map((row) => row.name)).toContain("idx_ledger_outbox_adapter_status");
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
   });
@@ -107,6 +109,100 @@ describe("ledger schema", () => {
     upgradeDb.close();
   });
 
+  it("backfills current-only body revisions when upgrading an existing ledger", () => {
+    const upgradePath = path.join(tempDir, "body-revisions-upgrade.db");
+    const upgradeDb = new Database(upgradePath);
+    upgradeDb.pragma("foreign_keys = ON");
+    upgradeDb.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO meta (key, value) VALUES ('schema_version', '67');
+      CREATE TABLE ledger_projects (
+        id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        remote_identity TEXT NOT NULL,
+        upstream_identity TEXT NOT NULL,
+        namespace_policy TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE ledger_issues (
+        id TEXT PRIMARY KEY,
+        short_id TEXT NOT NULL DEFAULT '',
+        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL,
+        resolution TEXT,
+        kind TEXT NOT NULL DEFAULT 'unknown',
+        priority TEXT NOT NULL DEFAULT 'unknown',
+        author_actor_id TEXT,
+        author_actor_type TEXT NOT NULL DEFAULT 'external_adapter',
+        author_display TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT 'mandible',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        closed_at INTEGER,
+        deleted_at INTEGER
+      );
+      CREATE TABLE ledger_comments (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL DEFAULT 0,
+        body TEXT NOT NULL,
+        author_actor_id TEXT,
+        author_actor_type TEXT NOT NULL,
+        author_display TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER,
+        deleted_at INTEGER
+      );
+      CREATE TABLE ledger_events (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        actor_id TEXT,
+        actor_type TEXT NOT NULL,
+        source TEXT NOT NULL,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        occurred_at INTEGER NOT NULL,
+        observed_at INTEGER NOT NULL
+      );
+      INSERT INTO ledger_projects
+        (id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at)
+        VALUES ('prj_test', 'test', 'local:test', 'local:test', 'local', 1000, 1000);
+      INSERT INTO ledger_issues
+        (id, short_id, project_id, title, body, status, kind, priority, author_actor_type, source, created_at, updated_at)
+        VALUES ('iss_test', 'iss_tes', 'prj_test', 'Issue', 'Issue body', 'open', 'feature', 'normal', 'agent', 'mandible', 1000, 1000);
+      INSERT INTO ledger_comments
+        (id, issue_id, ordinal, body, author_actor_type, source, created_at)
+        VALUES ('com_test', 'iss_test', 1, 'Comment body', 'agent', 'mandible', 1100);
+    `);
+
+    migrate(upgradeDb);
+
+    expect(upgradeDb.prepare(
+      "SELECT entity_type, entity_id, revision_no, reason, snapshot_body FROM ledger_body_revisions ORDER BY entity_type",
+    ).all()).toEqual([
+      {
+        entity_type: "comment_body",
+        entity_id: "com_test",
+        revision_no: 1,
+        reason: "migration_snapshot",
+        snapshot_body: "Comment body",
+      },
+      {
+        entity_type: "issue_body",
+        entity_id: "iss_test",
+        revision_no: 1,
+        reason: "migration_snapshot",
+        snapshot_body: "Issue body",
+      },
+    ]);
+    upgradeDb.close();
+  });
+
   it("enforces canonical ledger foreign keys", () => {
     expect(() => {
       db.prepare(
@@ -128,6 +224,8 @@ describe("ledger schema", () => {
       .run(JSON.stringify({ issue_id: issue.id, patch: { status: "closed", resolution: "merged" } }), event.id);
     db.prepare("UPDATE ledger_outbox SET event_id = 'evt_00legacy00_00112233445566778899' WHERE id = ?")
       .run(outbox.id);
+    db.prepare("UPDATE ledger_body_revisions SET event_id = 'evt_00legacy00_00112233445566778899' WHERE event_id = ?")
+      .run(event.id);
     db.pragma("foreign_keys = ON");
     db.prepare("UPDATE meta SET value = '60' WHERE key = 'schema_version'").run();
 
@@ -207,6 +305,15 @@ describe("ledger store", () => {
     expect(events).toHaveLength(1);
     expect(events[0].id).toMatch(/^[0-9a-f]{64}$/);
     expect(events[0].id).not.toMatch(/^evt_/);
+    const revisions = store.listBodyRevisions({ entity_type: "issue_body", entity_id: issue.id });
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]).toMatchObject({
+      revision_no: 1,
+      reason: "create",
+      snapshot_body: "Body",
+      event_id: events[0].id,
+    });
+    expect(JSON.parse(events[0].payload_json)).toMatchObject({ body_revision_id: revisions[0].id });
     expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
     expect(broadcasts).toEqual(["ledger:issue:created", "ledger:event:created"]);
   });
@@ -254,7 +361,65 @@ describe("ledger store", () => {
     const events = store.listEvents({ entity_type: "comment", entity_id: comment.id });
     expect(events).toHaveLength(1);
     expect(events[0].id).toMatch(/^[0-9a-f]{64}$/);
+    const revisions = store.listBodyRevisions({ entity_type: "comment_body", entity_id: comment.id });
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]).toMatchObject({
+      revision_no: 1,
+      reason: "create",
+      snapshot_body: "A comment",
+      event_id: events[0].id,
+    });
     expect(store.listOutbox({ status: "pending" })).toHaveLength(0);
+  });
+
+  it("records body edit revisions, omits body text from event patches, and skips no-op bodies", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const issue = createIssue(store, project.project.id);
+
+    const updated = store.updateIssue(issue.id, { title: "Renamed", body: "After" });
+    const noOp = store.updateIssue(issue.id, { body: "After" });
+    const issueEvents = store.listEvents({ entity_type: "issue", entity_id: issue.id });
+    const revisions = store.listBodyRevisions({ entity_type: "issue_body", entity_id: issue.id });
+
+    expect(updated.body).toBe("After");
+    expect(noOp.body).toBe("After");
+    expect(issueEvents.map((event) => event.event_type)).toEqual(["issue.created", "issue.updated"]);
+    expect(revisions.map((revision) => revision.snapshot_body)).toEqual(["Body", "After"]);
+    expect(revisions[1]).toMatchObject({
+      revision_no: 2,
+      reason: "edit",
+      base_revision_id: revisions[0].id,
+      event_id: issueEvents[1].id,
+    });
+    const payload = JSON.parse(issueEvents[1].payload_json);
+    expect(payload).toMatchObject({
+      body_revision_id: revisions[1].id,
+      changed_fields: ["title", "body"],
+      patch: { title: "Renamed" },
+    });
+    expect(payload.patch).not.toHaveProperty("body");
+  });
+
+  it("records comment edit revisions and rejects stale bases", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const issue = createIssue(store, project.project.id);
+    const comment = store.addComment(issue.id, { body: "Before" });
+    const base = store.listBodyRevisions({ entity_type: "comment_body", entity_id: comment.id })[0];
+
+    store.updateComment(comment.id, { body: "After" }, { base_body_revision_id: base.id });
+    expect(() => {
+      store.updateComment(comment.id, { body: "Again" }, { base_body_revision_id: base.id });
+    }).toThrow(/stale body revision/);
+
+    const revisions = store.listBodyRevisions({ entity_type: "comment_body", entity_id: comment.id });
+    const events = store.listEvents({ entity_type: "comment", entity_id: comment.id });
+    expect(revisions.map((revision) => revision.snapshot_body)).toEqual(["Before", "After"]);
+    expect(JSON.parse(events[1].payload_json)).toMatchObject({
+      body_revision_id: revisions[1].id,
+      changed_fields: ["body"],
+    });
   });
 
   it("records issue close and reopen as lifecycle events", () => {

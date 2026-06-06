@@ -200,11 +200,12 @@ async function applyEvent(
     const issueRef = requireGitBugIssueRef(store, event.entity_id);
     const issue = store.getIssue(event.entity_id);
     const patch = getPatchPayload(payload);
+    const bodyChanged = hasChangedField(payload, "body") || typeof payload.body_revision_id === "string";
     if ("title" in patch) {
       const updated = await client.editTitle(repoRoot, issueRef.external_id, issue.title);
       if (!updated.ok) throw new Error(updated.error);
     }
-    if ("body" in patch) {
+    if (bodyChanged) {
       const remote = await client.getIssue(repoRoot, issueRef.external_id);
       if (!remote.ok) throw new Error(remote.error);
       if (!remote.value.description_comment_id) {
@@ -217,7 +218,7 @@ async function applyEvent(
       const updated = await client.setStatus(repoRoot, issueRef.external_id, payload.status);
       if (!updated.ok) throw new Error(updated.error);
     }
-    if ("title" in patch || "body" in patch || payload.status === "open" || payload.status === "closed") {
+    if ("title" in patch || bodyChanged || payload.status === "open" || payload.status === "closed") {
       await refreshIssueRemoteRef(store, client, repoRoot, outbox.project_id, event.entity_id);
       return "applied";
     }
@@ -352,6 +353,10 @@ function getPatchPayload(payload: Record<string, unknown>): Record<string, unkno
   return patch && typeof patch === "object" && !Array.isArray(patch)
     ? patch as Record<string, unknown>
     : {};
+}
+
+function hasChangedField(payload: Record<string, unknown>, field: string): boolean {
+  return Array.isArray(payload.changed_fields) && payload.changed_fields.includes(field);
 }
 
 function parseMetadata(value: string): Record<string, unknown> {

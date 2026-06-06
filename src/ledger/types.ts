@@ -80,6 +80,20 @@ export const LEDGER_RELATIONSHIP_PROVENANCES = [
 ] as const;
 export type LedgerRelationshipProvenance = (typeof LEDGER_RELATIONSHIP_PROVENANCES)[number];
 
+export const LEDGER_BODY_REVISION_ENTITY_TYPES = ["issue_body", "comment_body"] as const;
+export type LedgerBodyRevisionEntityType = (typeof LEDGER_BODY_REVISION_ENTITY_TYPES)[number];
+
+export const LEDGER_BODY_REVISION_REASONS = [
+  "create",
+  "edit",
+  "import_snapshot",
+  "external_update",
+  "normalize",
+  "migration_snapshot",
+  "restore",
+] as const;
+export type LedgerBodyRevisionReason = (typeof LEDGER_BODY_REVISION_REASONS)[number];
+
 export type LedgerNamespacePolicy = "remote" | "upstream" | "local";
 
 export interface LedgerActorInput {
@@ -153,6 +167,32 @@ export interface LedgerComment {
   created_at: number;
   updated_at: number | null;
   deleted_at: number | null;
+}
+
+export interface LedgerBodyRevision {
+  id: string;
+  entity_type: LedgerBodyRevisionEntityType;
+  entity_id: string;
+  issue_id: string;
+  project_id: string;
+  revision_no: number;
+  event_id: string | null;
+  actor_id: string | null;
+  actor_type: LedgerActorType;
+  source: LedgerEventSource;
+  reason: LedgerBodyRevisionReason;
+  occurred_at: number;
+  observed_at: number;
+  base_revision_id: string | null;
+  base_hash: string | null;
+  new_hash: string;
+  snapshot_body: string;
+  patch_format: string | null;
+  patch_text: string | null;
+  metadata_json: string;
+  redacted_at: number | null;
+  redacted_by_actor_id: string | null;
+  redaction_reason: string | null;
 }
 
 export interface LedgerLabel {
