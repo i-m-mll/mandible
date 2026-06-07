@@ -47,6 +47,10 @@ const FALLBACK_TIMELINE_WIDTH_PX = 820;
 const MIN_TIMELINE_WINDOW_MS = TIMELINE_HOUR_MS;
 const MIN_INSPECTOR_WIDTH = 280;
 const MAX_INSPECTOR_WIDTH = 560;
+const MIN_TIMELINE_EDGE_BREATHING_PX = 16;
+const MAX_TIMELINE_EDGE_BREATHING_PX = 32;
+const TIMELINE_EDGE_BREATHING_RATIO = 0.03;
+const TIMELINE_TICK_SPACING_PX = 120;
 const TIMELINE_LAYOUT_METRICS: Record<TimelineDensityMode, {
   laneHeightPx: number;
   markWidthPx: number;
@@ -143,6 +147,14 @@ function parseUrlState(params: Record<string, string | undefined>): TimelineUrlS
       ? { ...DEFAULT_TIMELINE_VIEW_STATE.panes, inspector: parseBool(params.inspector) ?? true }
       : undefined,
   };
+}
+
+function timelineEdgePaddingPx(markWidthPx: number, viewportWidthPx: number): number {
+  const breathingPx = Math.min(
+    MAX_TIMELINE_EDGE_BREATHING_PX,
+    Math.max(MIN_TIMELINE_EDGE_BREATHING_PX, viewportWidthPx * TIMELINE_EDGE_BREATHING_RATIO),
+  );
+  return Math.ceil(markWidthPx / 2 + breathingPx);
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -456,12 +468,14 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       fallbackSpanMs: fallbackSpan,
     });
   }, [eventsByRow, projection?.time_axis.end, projection?.time_axis.start]);
+  const layoutMetrics = TIMELINE_LAYOUT_METRICS[viewState.density];
   const renderDomain = useMemo(() => (
     paddedTimelineRenderDomain(dataExtent, {
       viewportWidthPx: timeViewportWidthPx,
+      edgePaddingPx: timelineEdgePaddingPx(layoutMetrics.markWidthPx, timeViewportWidthPx),
       minSpanMs: TIMELINE_DAY_MS,
     })
-  ), [dataExtent, timeViewportWidthPx]);
+  ), [dataExtent, layoutMetrics.markWidthPx, timeViewportWidthPx]);
   const viewport = useMemo(() => (
     viewportFromState(renderDomain, viewState)
   ), [renderDomain, viewState]);
@@ -471,7 +485,6 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const scrollMetrics = useMemo(() => (
     timelineScrollMetrics(renderDomain, viewport, timeViewportWidthPx)
   ), [renderDomain, timeViewportWidthPx, viewport]);
-  const layoutMetrics = TIMELINE_LAYOUT_METRICS[viewState.density];
   const eventById = useMemo(() => new Map(events.map((event) => [event.id, event])), [events]);
   const rowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
   const timelineLayout = useMemo(() => (
@@ -771,7 +784,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [navigateEvent, navigateRow]);
 
   const axisTicks = useMemo(() => {
-    return generateTimelineTicks(viewport, timeViewportWidthPx).map((tick) => ({
+    return generateTimelineTicks(viewport, timeViewportWidthPx, {
+      targetSpacingPx: TIMELINE_TICK_SPACING_PX,
+    }).map((tick) => ({
       ...tick,
       left: eventLeft(tick.timestamp, renderDomain.start, domainSpan),
     }));

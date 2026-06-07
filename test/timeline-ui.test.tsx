@@ -518,6 +518,53 @@ describe('TimelineView', () => {
     expect(fetchMock.mock.calls.length).toBe(1);
   });
 
+  it('pads fitted timeline edges by the rendered mark width', async () => {
+    const base = projection();
+    const firstEvent = {
+      ...base.events[0],
+      id: 'event-first-edge',
+      timestamp: Date.UTC(2026, 0, 1, 12),
+      ordinal: 0,
+      display_headline: 'First edge event',
+      link_ids: [],
+    };
+    const lastEvent = {
+      ...base.events[0],
+      id: 'event-last-edge',
+      timestamp: Date.UTC(2026, 0, 3, 12),
+      ordinal: 1,
+      display_headline: 'Last edge event',
+      link_ids: [],
+    };
+    stubTimelineFetch(projection({
+      events: [firstEvent, lastEvent],
+      links: [],
+      time_axis: {
+        start: Date.UTC(2026, 0, 1),
+        end: Date.UTC(2026, 0, 4),
+        event_count: 2,
+      },
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible', density: 'comfortable' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Last edge event')).toBeTruthy());
+
+    const firstButton = screen.getByText('First edge event').closest('button') as HTMLButtonElement;
+    const lastButton = screen.getByText('Last edge event').closest('button') as HTMLButtonElement;
+    const surface = document.querySelector('.timeline-time-surface') as HTMLElement;
+    const surfaceWidthPx = parseFloat(surface.style.width);
+    const halfComfortableMarkWidthPx = 85;
+
+    expect(parseFloat(firstButton.style.left)).toBeGreaterThan(halfComfortableMarkWidthPx);
+    expect(parseFloat(lastButton.style.left)).toBeLessThan(
+      surfaceWidthPx - halfComfortableMarkWidthPx,
+    );
+  });
+
   it('renders hour ticks for day-scale timeline views', async () => {
     stubTimelineFetch(projection());
 
