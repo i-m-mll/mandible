@@ -450,7 +450,7 @@ describe('TimelineView', () => {
     });
   });
 
-  it('uses a gentler ctrl-wheel zoom than button zoom', async () => {
+  it('maps pinch-out wheel gestures to zoom in', async () => {
     const fetchMock = stubTimelineFetch(projection());
 
     render(h(TimelineView, {
@@ -465,7 +465,7 @@ describe('TimelineView', () => {
     await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
     fireEvent.wheel(screen.getByLabelText('Timeline time canvas'), {
       ctrlKey: true,
-      deltaY: 100,
+      deltaY: -100,
       clientX: 100,
     });
     expect(fetchMock.mock.calls.length).toBe(1);
@@ -479,7 +479,7 @@ describe('TimelineView', () => {
 
     fireEvent.wheel(screen.getByLabelText('Timeline time canvas'), {
       ctrlKey: true,
-      deltaY: -100,
+      deltaY: 100,
       clientX: 100,
     });
 
@@ -488,6 +488,63 @@ describe('TimelineView', () => {
       expect(stored).toBeTruthy();
       const state = JSON.parse(String(stored));
       expect(state.timeWindow.to - state.timeWindow.from).toBeCloseTo(TEST_DAY_MS, 0);
+    });
+  });
+
+  it('zooms in from the fitted viewport with wheel gestures over the row area', async () => {
+    const base = projection();
+    stubTimelineFetch(projection({
+      events: [
+        base.events[0],
+        {
+          ...base.events[0],
+          id: 'event-next-day',
+          timestamp: Date.UTC(2026, 0, 2, 12),
+          display_headline: 'Next day event',
+        },
+      ],
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    fireEvent.wheel(screen.getByRole('grid'), {
+      ctrlKey: true,
+      deltaY: -100,
+      clientX: 500,
+    });
+
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      const state = JSON.parse(String(stored));
+      expect(state.timeWindow.to - state.timeWindow.from).toBeLessThan(TEST_DAY_MS * 1.35);
+    });
+  });
+
+  it('persists timeline row gutter resizing from the right edge', async () => {
+    stubTimelineFetch(projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    const separator = screen.getByRole('separator', { name: 'Resize timeline rows' });
+    fireEvent.mouseDown(separator, { clientX: 300 });
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 360 }));
+    window.dispatchEvent(new MouseEvent('pointerup'));
+
+    await waitFor(() => {
+      const grid = document.querySelector<HTMLElement>('.timeline-grid');
+      expect(grid?.style.getPropertyValue('--timeline-row-list-width')).toBe('360px');
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      expect(JSON.parse(String(stored)).panes.rowListWidth).toBe(360);
     });
   });
 
@@ -985,6 +1042,7 @@ describe('TimelineView', () => {
     fireEvent.click(cluster);
 
     const clusterList = screen.getByText('Cluster events').closest('.timeline-list-fallback') as HTMLElement;
+    expect(screen.getByText('Zoom to cluster')).toBeTruthy();
     expect(within(clusterList).getByText('Same cluster A')).toBeTruthy();
     expect(within(clusterList).getByText('Same cluster B')).toBeTruthy();
     await waitFor(() => {
@@ -1019,5 +1077,17 @@ describe('TimelineView', () => {
     expect(cluster.classList.contains('timeline-cluster--range')).toBe(true);
     expect(parseFloat((cluster as HTMLButtonElement).style.left)).toBeGreaterThan(0);
     expect(parseFloat((cluster as HTMLButtonElement).style.width)).toBeGreaterThan(0);
+
+    fireEvent.click(cluster);
+    fireEvent.click(screen.getByText('Zoom to cluster'));
+
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      const state = JSON.parse(String(stored));
+      expect(state.timeWindow.from).toBeLessThanOrEqual(Date.UTC(2026, 0, 1, 12));
+      expect(state.timeWindow.to).toBeGreaterThanOrEqual(Date.UTC(2026, 0, 1, 12, 45));
+      expect(state.timeWindow.to - state.timeWindow.from).toBeLessThan(TEST_DAY_MS);
+    });
   });
 });

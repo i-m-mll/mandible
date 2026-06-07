@@ -13,6 +13,7 @@ export type TimelinePaneVisibility = {
   inspectorWidth: number;
   diagnostics: boolean;
   rowList: boolean;
+  rowListWidth: number;
 };
 
 export type TimelineViewState = {
@@ -192,5 +193,6 @@ export const DEFAULT_TIMELINE_VIEW_STATE: TimelineViewState = {
     inspectorWidth: 350,
     diagnostics: false,
     rowList: true,
+    rowListWidth: 300,
   },
 };

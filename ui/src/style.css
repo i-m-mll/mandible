@@ -721,7 +721,7 @@ a {
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: var(--timeline-row-list-width, 300px) minmax(0, 1fr);
   overflow-x: hidden;
   overflow-y: auto;
   background: rgba(8, 12, 17, 0.62);
@@ -734,6 +734,15 @@ a {
   min-width: 0;
   background: rgba(14, 20, 28, 0.98);
   border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.timeline-gutter-resize-hit {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
 }
 
 .timeline-axis__corner {

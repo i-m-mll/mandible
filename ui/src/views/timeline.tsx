@@ -47,6 +47,8 @@ const FALLBACK_TIMELINE_WIDTH_PX = 820;
 const MIN_TIMELINE_WINDOW_MS = TIMELINE_HOUR_MS;
 const MIN_INSPECTOR_WIDTH = 280;
 const MAX_INSPECTOR_WIDTH = 560;
+const MIN_ROW_LIST_WIDTH = 220;
+const MAX_ROW_LIST_WIDTH = 520;
 const MIN_TIMELINE_EDGE_BREATHING_PX = 16;
 const MAX_TIMELINE_EDGE_BREATHING_PX = 32;
 const TIMELINE_EDGE_BREATHING_RATIO = 0.03;
@@ -171,6 +173,12 @@ function normalizeInspectorWidth(value: unknown): number {
     : DEFAULT_TIMELINE_VIEW_STATE.panes.inspectorWidth;
 }
 
+function normalizeRowListWidth(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? clamp(value, MIN_ROW_LIST_WIDTH, MAX_ROW_LIST_WIDTH)
+    : DEFAULT_TIMELINE_VIEW_STATE.panes.rowListWidth;
+}
+
 function mergePanes(
   base: TimelineViewState['panes'],
   local?: PartialTimelinePanes,
@@ -187,6 +195,7 @@ function mergePanes(
     inspectorWidth: normalizeInspectorWidth(merged.inspectorWidth),
     diagnostics: merged.diagnostics === true,
     rowList: merged.rowList !== false,
+    rowListWidth: normalizeRowListWidth(merged.rowListWidth),
   };
 }
 
@@ -421,6 +430,8 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const [status, setStatus] = useState<ProjectionStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const timeScrollRef = useRef<HTMLDivElement | null>(null);
+  const suppressProgrammaticScrollRef = useRef(false);
+  const rowListResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [timeViewportWidthPx, setTimeViewportWidthPx] = useState(FALLBACK_TIMELINE_WIDTH_PX);
   const laneCacheRef = useRef<TimelineLaneCache>({});
   const requestGeneration = useRef(0);
@@ -672,7 +683,11 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     const element = timeScrollRef.current;
     if (!element) return;
     if (Math.abs(element.scrollLeft - scrollMetrics.scrollLeftPx) > 1) {
+      suppressProgrammaticScrollRef.current = true;
       element.scrollLeft = scrollMetrics.scrollLeftPx;
+      window.setTimeout(() => {
+        suppressProgrammaticScrollRef.current = false;
+      }, 0);
     }
   }, [scrollMetrics.scrollLeftPx, scrollMetrics.surfaceWidthPx]);
 
@@ -750,6 +765,32 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     collapseEvent(row.source_event_id);
   }, [collapseEvent]);
 
+  const beginRowListResize = useCallback((
+    event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    if (rowListResizeRef.current) return;
+    rowListResizeRef.current = {
+      startX: event.clientX,
+      startWidth: viewState.panes.rowListWidth,
+    };
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const origin = rowListResizeRef.current;
+      if (!origin) return;
+      const width = normalizeRowListWidth(origin.startWidth + moveEvent.clientX - origin.startX);
+      updateState({ panes: { ...viewState.panes, rowListWidth: width } });
+    };
+    const stopResize = () => {
+      rowListResizeRef.current = null;
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+  }, [updateState, viewState.panes]);
+
   const fitProject = useCallback(() => {
     const next = fitTimelineViewport(renderDomain);
     updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
@@ -768,6 +809,22 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     );
     updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
   }, [renderDomain, selectedEvent, selectedRowEvents, updateState, visibleSelectedRowEvents]);
+
+  const zoomToCluster = useCallback((cluster: TimelineClusterMark) => {
+    const minTime = cluster.kind === 'same_time_cluster' ? cluster.timestamp : cluster.minTime;
+    const maxTime = cluster.kind === 'same_time_cluster' ? cluster.timestamp : cluster.maxTime;
+    const clusterSpan = Math.max(0, maxTime - minTime);
+    const targetSpan = Math.max(clusterSpan, TIMELINE_HOUR_MS);
+    const padding = cluster.kind === 'same_time_cluster'
+      ? targetSpan / 2
+      : Math.max(targetSpan * 0.12, TIMELINE_HOUR_MS / 2);
+    const next = clampTimelineViewport(
+      { from: minTime - padding, to: maxTime + padding },
+      renderDomain,
+      { minSpanMs: MIN_TIMELINE_WINDOW_MS },
+    );
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, updateState]);
 
   const zoomTimeline = useCallback((factor: number, focalRatio = 0.5) => {
     const next = zoomTimelineViewport(viewport, renderDomain, factor, focalRatio, {
@@ -795,6 +852,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [renderDomain, updateState, viewState.timeWindow, viewport]);
 
   const handleTimeScroll = useCallback((event: JSX.TargetedUIEvent<HTMLDivElement>) => {
+    if (suppressProgrammaticScrollRef.current) return;
     const next = viewportFromTimelineScroll(
       renderDomain,
       event.currentTarget.scrollLeft,
@@ -807,11 +865,11 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const handleTimelineWheel = useCallback((event: JSX.TargetedWheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
-    const bounds = event.currentTarget.getBoundingClientRect();
+    const bounds = timeScrollRef.current?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
     const focalRatio = bounds.width > 0
       ? clamp((event.clientX - bounds.left) / bounds.width, 0, 1)
       : 0.5;
-    zoomTimeline(event.deltaY > 0 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);
+    zoomTimeline(event.deltaY < 0 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);
   }, [zoomTimeline]);
 
   const navigateEvent = useCallback((direction: 1 | -1) => {
@@ -895,6 +953,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       onPromoteRow={promoteRow}
       onRemovePromotedRow={removePromotedRow}
       onRemoveTransientRow={removeTransientRow}
+      onZoomToCluster={zoomToCluster}
     />
   ), [
     collapseEvent,
@@ -914,6 +973,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     viewState.selectedEventId,
     viewState.selectedRowOccurrenceId,
     visibleSelectedRowEvents,
+    zoomToCluster,
   ]);
   const rightSidebarDescriptor = useMemo(() => ({
     id: 'timeline-inspector',
@@ -1063,8 +1123,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 
       <div
         className={`timeline-grid timeline-grid--${viewState.density}`}
+        style={{ '--timeline-row-list-width': `${viewState.panes.rowListWidth}px` } as JSX.CSSProperties}
       >
-        <div className="timeline-main" role="grid" aria-rowcount={rows.length}>
+        <div className="timeline-main" role="grid" aria-rowcount={rows.length} onWheel={handleTimelineWheel}>
           <div className="timeline-gutter-column" aria-label="Timeline rows">
             <div className="timeline-axis__corner" aria-hidden="true" />
             <div className="timeline-gutter-stack">
@@ -1096,12 +1157,22 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 );
               })}
             </div>
+            <div
+              className="timeline-gutter-resize-hit"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize timeline rows"
+              aria-valuemin={MIN_ROW_LIST_WIDTH}
+              aria-valuemax={MAX_ROW_LIST_WIDTH}
+              aria-valuenow={Math.round(viewState.panes.rowListWidth)}
+              onMouseDown={beginRowListResize}
+              onPointerDown={beginRowListResize}
+            />
           </div>
           <div
             className="timeline-time-scroll"
             ref={timeScrollRef}
             onScroll={handleTimeScroll}
-            onWheel={handleTimelineWheel}
             aria-label="Timeline time canvas"
           >
             <div
@@ -1174,6 +1245,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                           width: `${Math.max(cluster.widthPx, 28)}px`,
                         }}
                         onClick={() => selectCluster(cluster)}
+                        onDblClick={() => zoomToCluster(cluster)}
                         aria-label={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
                         title={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
                       >
@@ -1192,6 +1264,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                           width: `${cluster.widthPx}px`,
                         }}
                         onClick={() => selectCluster(cluster)}
+                        onDblClick={() => zoomToCluster(cluster)}
                         aria-label={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
                         title={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
                       >
@@ -1257,6 +1330,7 @@ type InspectorProps = {
   onPromoteRow: (row: TimelineRowOccurrence) => void;
   onRemovePromotedRow: (row: TimelineRowOccurrence) => void;
   onRemoveTransientRow: (row: TimelineRowOccurrence) => void;
+  onZoomToCluster: (cluster: TimelineClusterMark) => void;
 };
 
 function TimelineInspector({
@@ -1276,6 +1350,7 @@ function TimelineInspector({
   onPromoteRow,
   onRemovePromotedRow,
   onRemoveTransientRow,
+  onZoomToCluster,
 }: InspectorProps): JSX.Element {
   const eventLinks = selectedEvent
     ? selectedEvent.link_ids.map((id) => linkById.get(id)).filter((link): link is TimelineLink => Boolean(link))
@@ -1308,6 +1383,9 @@ function TimelineInspector({
             <div><dt>Row</dt><dd>{selectedRow?.issue.display_id ?? selectedCluster.rowId}</dd></div>
             <div><dt>Selected child</dt><dd>{selectedCluster.containsSelected ? 'Yes' : 'No'}</dd></div>
           </dl>
+          <div className="timeline-inspector__actions">
+            <button type="button" onClick={() => onZoomToCluster(selectedCluster)}>Zoom to cluster</button>
+          </div>
           <div className="timeline-list-fallback timeline-cluster-list">
             <h3>Cluster events</h3>
             {selectedClusterEvents.length === 0 ? <p>No cluster events in the current projection.</p> : selectedClusterEvents.map((event) => (
