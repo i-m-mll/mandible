@@ -318,13 +318,25 @@ function rowKindLabel(kind: TimelineRowOccurrence['kind']): string {
 function viewportFromState(
   domain: TimelineRenderDomain,
   state: TimelineViewState,
+  options: { edgePaddingPx: number; viewportWidthPx: number },
 ): TimelineViewport {
   const fit = fitTimelineViewport(domain);
+  const requested = {
+    from: state.timeWindow.from ?? fit.from,
+    to: state.timeWindow.to ?? fit.to,
+  };
+  const clamped = clampTimelineViewport(requested, domain, { minSpanMs: MIN_TIMELINE_WINDOW_MS });
+  const span = Math.max(1, clamped.to - clamped.from);
+  const firstEventXPx = ((domain.extent.start - clamped.from) / span) * options.viewportWidthPx;
+  const lastEventXPx = ((domain.extent.end - clamped.from) / span) * options.viewportWidthPx;
+  const coversDataExtent = clamped.from <= domain.extent.start && clamped.to >= domain.extent.end;
+  const clipsDataExtent = (
+    firstEventXPx < options.edgePaddingPx
+    || options.viewportWidthPx - lastEventXPx < options.edgePaddingPx
+  );
+  if (domain.extent.eventCount > 0 && coversDataExtent && clipsDataExtent) return fit;
   return clampTimelineViewport(
-    {
-      from: state.timeWindow.from ?? fit.from,
-      to: state.timeWindow.to ?? fit.to,
-    },
+    requested,
     domain,
     { minSpanMs: MIN_TIMELINE_WINDOW_MS },
   );
@@ -469,16 +481,17 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     });
   }, [eventsByRow, projection?.time_axis.end, projection?.time_axis.start]);
   const layoutMetrics = TIMELINE_LAYOUT_METRICS[viewState.density];
+  const edgePaddingPx = timelineEdgePaddingPx(layoutMetrics.markWidthPx, timeViewportWidthPx);
   const renderDomain = useMemo(() => (
     paddedTimelineRenderDomain(dataExtent, {
       viewportWidthPx: timeViewportWidthPx,
-      edgePaddingPx: timelineEdgePaddingPx(layoutMetrics.markWidthPx, timeViewportWidthPx),
+      edgePaddingPx,
       minSpanMs: TIMELINE_DAY_MS,
     })
-  ), [dataExtent, layoutMetrics.markWidthPx, timeViewportWidthPx]);
+  ), [dataExtent, edgePaddingPx, timeViewportWidthPx]);
   const viewport = useMemo(() => (
-    viewportFromState(renderDomain, viewState)
-  ), [renderDomain, viewState]);
+    viewportFromState(renderDomain, viewState, { edgePaddingPx, viewportWidthPx: timeViewportWidthPx })
+  ), [edgePaddingPx, renderDomain, timeViewportWidthPx, viewState]);
   const viewportSpan = Math.max(1, viewport.to - viewport.from);
   const domainSpan = Math.max(1, renderDomain.end - renderDomain.start);
   const { start, end } = { start: viewport.from, end: viewport.to };

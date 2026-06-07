@@ -565,6 +565,56 @@ describe('TimelineView', () => {
     );
   });
 
+  it('promotes stale fit-all windows to the padded render domain', async () => {
+    const base = projection();
+    const firstTimestamp = Date.UTC(2026, 0, 1, 12);
+    const lastTimestamp = Date.UTC(2026, 0, 3, 12);
+    const firstEvent = {
+      ...base.events[0],
+      id: 'event-stale-first-edge',
+      timestamp: firstTimestamp,
+      ordinal: 0,
+      display_headline: 'Stale first edge event',
+      link_ids: [],
+    };
+    const lastEvent = {
+      ...base.events[0],
+      id: 'event-stale-last-edge',
+      timestamp: lastTimestamp,
+      ordinal: 1,
+      display_headline: 'Stale last edge event',
+      link_ids: [],
+    };
+    window.localStorage.setItem('mandible_timeline_view_state:v1:mandible', JSON.stringify({
+      timeWindow: { from: firstTimestamp, to: lastTimestamp },
+    }));
+    stubTimelineFetch(projection({
+      events: [firstEvent, lastEvent],
+      links: [],
+      time_axis: {
+        start: Date.UTC(2026, 0, 1),
+        end: Date.UTC(2026, 0, 4),
+        event_count: 2,
+      },
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible', density: 'comfortable' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Stale last edge event')).toBeTruthy());
+
+    const firstButton = screen.getByText('Stale first edge event').closest('button') as HTMLButtonElement;
+    const lastButton = screen.getByText('Stale last edge event').closest('button') as HTMLButtonElement;
+    const surface = document.querySelector('.timeline-time-surface') as HTMLElement;
+    const surfaceWidthPx = parseFloat(surface.style.width);
+
+    expect(surfaceWidthPx).toBe(820);
+    expect(parseFloat(firstButton.style.left)).toBeGreaterThan(85);
+    expect(parseFloat(lastButton.style.left)).toBeLessThan(surfaceWidthPx - 85);
+  });
+
   it('renders hour ticks for day-scale timeline views', async () => {
     stubTimelineFetch(projection());
 
