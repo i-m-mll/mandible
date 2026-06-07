@@ -248,37 +248,6 @@ a {
   padding-top: max(18px, env(titlebar-area-height, 28px));
 }
 
-.app-rail__brand {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 38px;
-  padding: 0 8px;
-}
-
-.app-rail__mark {
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: linear-gradient(135deg, rgba(77, 163, 255, 0.28), rgba(50, 210, 150, 0.2));
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  color: var(--text-primary);
-  font-weight: 700;
-  font-size: 15px;
-}
-
-.app-rail__brand-text {
-  min-width: 0;
-  font-size: 17px;
-  font-weight: 650;
-  letter-spacing: 0;
-}
-
 .app-rail__nav {
   flex: 1;
   min-height: 0;
@@ -399,11 +368,6 @@ a {
   padding-inline: 6px;
   overflow: visible;
   z-index: 30;
-}
-
-.app-layout--rail-icons .app-rail__brand {
-  justify-content: center;
-  padding-inline: 0;
 }
 
 .app-layout--rail-icons .app-rail__nav {

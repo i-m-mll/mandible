@@ -1163,9 +1163,6 @@ function App(): JSX.Element {
           } as JSX.CSSProperties : undefined}
         >
           <aside className="app-rail" data-tauri-drag-region>
-            <div className="app-rail__brand" title="Mandible">
-              <span className="app-rail__mark" aria-hidden="true">M</span>
-          </div>
           <nav className="app-rail__nav" aria-label="Main navigation">
             <div className="app-rail__group">
               {primaryNavItems.map(renderRailItem)}
