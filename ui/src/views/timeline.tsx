@@ -56,12 +56,13 @@ const WHEEL_ZOOM_OUT_FACTOR = 1 / WHEEL_ZOOM_IN_FACTOR;
 const MAX_TIMELINE_PROJECTION_DEPTH = 8;
 const TIMELINE_LAYOUT_METRICS: Record<TimelineDensityMode, {
   laneHeightPx: number;
+  eventHeightPx: number;
   markWidthPx: number;
   rowMinHeightPx: number;
 }> = {
-  compact: { laneHeightPx: 36, markWidthPx: 34, rowMinHeightPx: 54 },
-  comfortable: { laneHeightPx: 54, markWidthPx: 170, rowMinHeightPx: 82 },
-  expanded: { laneHeightPx: 82, markWidthPx: 240, rowMinHeightPx: 122 },
+  compact: { laneHeightPx: 36, eventHeightPx: 30, markWidthPx: 34, rowMinHeightPx: 54 },
+  comfortable: { laneHeightPx: 54, eventHeightPx: 46, markWidthPx: 170, rowMinHeightPx: 82 },
+  expanded: { laneHeightPx: 82, eventHeightPx: 74, markWidthPx: 240, rowMinHeightPx: 122 },
 };
 const TIMELINE_ROW_PADDING_Y_PX = 8;
 const EMPTY_TIMELINE_EVENTS: TimelineEvent[] = [];
@@ -810,7 +811,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     const focalRatio = bounds.width > 0
       ? clamp((event.clientX - bounds.left) / bounds.width, 0, 1)
       : 0.5;
-    zoomTimeline(event.deltaY < 0 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);
+    zoomTimeline(event.deltaY > 0 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);
   }, [zoomTimeline]);
 
   const navigateEvent = useCallback((direction: 1 | -1) => {
@@ -1137,13 +1138,25 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 const originXPx = sourceEvent
                   ? eventLeftPx(sourceEvent.timestamp, renderDomain.start, domainSpan, scrollMetrics.surfaceWidthPx)
                   : null;
+                const expandedSourceMark = rowEventMarks.find(({ event }) => {
+                  const eventLinks = event.link_ids
+                    .map((id) => linkById.get(id))
+                    .filter((link): link is TimelineLink => Boolean(link));
+                  return viewState.expandedEventIds.includes(event.id)
+                    || eventLinks.some((link) => Boolean(link.expanded_row_id));
+                })?.mark ?? null;
+                const sourceParentStartYPx = expandedSourceMark
+                  ? markLaneTopPx(expandedSourceMark, layoutMetrics.laneHeightPx) + layoutMetrics.eventHeightPx / 2
+                  : null;
                 return (
                   <div
                     key={row.id}
-                    className={`timeline-row timeline-row--${row.kind}${sourceEvent ? ' timeline-row--has-origin' : ''}${selected ? ' timeline-row--selected' : ''}`}
+                    className={`timeline-row timeline-row--${row.kind}${sourceEvent ? ' timeline-row--has-origin' : ''}${expandedSourceMark ? ' timeline-row--source-parent' : ''}${selected ? ' timeline-row--selected' : ''}`}
                     role="row"
                     style={{
                       '--origin-x': originXPx === null ? undefined : `${originXPx}px`,
+                      '--source-parent-x': expandedSourceMark ? `${expandedSourceMark.xPx}px` : undefined,
+                      '--source-parent-start-y': sourceParentStartYPx === null ? undefined : `${sourceParentStartYPx}px`,
                       height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px`,
                     } as JSX.CSSProperties}
                   >

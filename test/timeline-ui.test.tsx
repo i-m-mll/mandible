@@ -465,7 +465,7 @@ describe('TimelineView', () => {
     await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
     fireEvent.wheel(screen.getByLabelText('Timeline time canvas'), {
       ctrlKey: true,
-      deltaY: -100,
+      deltaY: 100,
       clientX: 100,
     });
     expect(fetchMock.mock.calls.length).toBe(1);
@@ -475,6 +475,19 @@ describe('TimelineView', () => {
       expect(stored).toBeTruthy();
       const state = JSON.parse(String(stored));
       expect(state.timeWindow.to - state.timeWindow.from).toBeCloseTo(TEST_DAY_MS * 0.9, 0);
+    });
+
+    fireEvent.wheel(screen.getByLabelText('Timeline time canvas'), {
+      ctrlKey: true,
+      deltaY: -100,
+      clientX: 100,
+    });
+
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      const state = JSON.parse(String(stored));
+      expect(state.timeWindow.to - state.timeWindow.from).toBeCloseTo(TEST_DAY_MS, 0);
     });
   });
 
@@ -889,6 +902,10 @@ describe('TimelineView', () => {
       button.textContent?.includes('Transient ref event')
       && button.classList.contains('timeline-event--expanded')
     ))).toBe(true);
+    const sourceParent = document.querySelector<HTMLElement>('.timeline-row--source-parent');
+    expect(sourceParent).toBeTruthy();
+    expect(sourceParent?.style.getPropertyValue('--source-parent-x')).toMatch(/px$/);
+    expect(sourceParent?.style.getPropertyValue('--source-parent-start-y')).toMatch(/px$/);
     expect(document.querySelector('.timeline-row--has-origin')).toBeTruthy();
     expect(document.querySelector('.timeline-origin-marker')).toBeNull();
     expect(screen.getByText('Fold refs')).toBeTruthy();
