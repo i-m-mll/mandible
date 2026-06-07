@@ -23,6 +23,7 @@ export type TimelineViewState = {
   expandedPaths: string[];
   selectedRowOccurrenceId: string | null;
   selectedEventId: string | null;
+  selectedClusterId: string | null;
   timeWindow: TimelineTimeWindow;
   density: TimelineDensity;
   visibleEventTypes: TimelineEventKind[];
@@ -180,6 +181,7 @@ export const DEFAULT_TIMELINE_VIEW_STATE: TimelineViewState = {
   expandedPaths: [],
   selectedRowOccurrenceId: null,
   selectedEventId: null,
+  selectedClusterId: null,
   timeWindow: { from: null, to: null },
   density: 'comfortable',
   visibleEventTypes: ['body', 'comment', 'state'],

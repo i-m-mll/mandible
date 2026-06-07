@@ -24,6 +24,8 @@ import {
   type TimelineDensityMode,
   type TimelineEventMark,
   type TimelineLaneCache,
+  type TimelineRangeCluster,
+  type TimelineSameTimeCluster,
 } from './timeline-layout';
 import {
   DEFAULT_TIMELINE_VIEW_STATE,
@@ -128,6 +130,7 @@ function parseUrlState(params: Record<string, string | undefined>): TimelineUrlS
     expandedPaths: parseCsv(params.paths),
     selectedRowOccurrenceId: params.row || undefined,
     selectedEventId: params.event || undefined,
+    selectedClusterId: undefined,
     timeWindow: from !== null || to !== null ? { from, to } : undefined,
     density: coerceDensity(params.density),
     visibleEventTypes: eventTypes.length > 0 ? eventTypes : undefined,
@@ -246,7 +249,7 @@ function eventLeftPx(timestamp: number, start: number, span: number, widthPx: nu
   return Math.max(0, Math.min(widthPx, ((timestamp - start) / span) * widthPx));
 }
 
-function eventLaneTopPx(mark: TimelineEventMark, laneHeightPx: number): number {
+function markLaneTopPx(mark: { lane: number }, laneHeightPx: number): number {
   return TIMELINE_ROW_PADDING_Y_PX + mark.lane * laneHeightPx + laneHeightPx / 2;
 }
 
@@ -256,6 +259,37 @@ function rangeClusterMinCountForDensity(density: TimelineDensityMode): number {
 
 function eventKindLabel(kind: TimelineEventKind): string {
   return kind === 'body' ? 'Body' : kind === 'comment' ? 'Comment' : 'State';
+}
+
+type TimelineClusterMark = TimelineSameTimeCluster | TimelineRangeCluster;
+
+function clusterKindLabel(cluster: TimelineClusterMark): string {
+  return cluster.kind === 'same_time_cluster' ? 'Same-time cluster' : 'Range cluster';
+}
+
+function clusterCategorySummaryLabel(summary: Record<string, number>): string {
+  const entries = Object.entries(summary).sort(([left], [right]) => left.localeCompare(right));
+  return entries.length > 0
+    ? entries.map(([category, count]) => `${eventKindLabel(category as TimelineEventKind)} ${count}`).join(', ')
+    : 'Event 0';
+}
+
+function clusterTimeLabel(cluster: TimelineClusterMark): string {
+  if (cluster.kind === 'same_time_cluster') {
+    return `at ${formatDateTime(cluster.timestamp)}`;
+  }
+  return `from ${formatDateTime(cluster.minTime)} to ${formatDateTime(cluster.maxTime)}`;
+}
+
+function clusterAccessibleLabel(cluster: TimelineClusterMark, selectedClusterId: string | null): string {
+  return [
+    clusterKindLabel(cluster),
+    `${cluster.count} ${cluster.count === 1 ? 'event' : 'events'}`,
+    clusterCategorySummaryLabel(cluster.categorySummary),
+    clusterTimeLabel(cluster),
+    cluster.containsSelected ? 'contains selected child event' : '',
+    selectedClusterId === cluster.id ? 'selected cluster' : '',
+  ].filter(Boolean).join(', ');
 }
 
 function rowKindLabel(kind: TimelineRowOccurrence['kind']): string {
@@ -461,6 +495,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       viewportWidthPx: scrollMetrics.surfaceWidthPx,
       density: viewState.density,
       selectedEventId: viewState.selectedEventId,
+      expandedClusterIds: viewState.selectedClusterId ? [viewState.selectedClusterId] : [],
       previousLaneByMarkId: laneCacheRef.current,
       markWidthPx: layoutMetrics.markWidthPx,
       rowMinHeightPx: layoutMetrics.rowMinHeightPx,
@@ -479,10 +514,26 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     scrollMetrics.surfaceWidthPx,
     viewState.density,
     viewState.selectedEventId,
+    viewState.selectedClusterId,
   ]);
   const eventMarkById = useMemo(() => (
     new Map(timelineLayout.eventMarks.map((mark) => [mark.eventId, mark]))
   ), [timelineLayout.eventMarks]);
+  const clusterById = useMemo(() => (
+    new Map<TimelineClusterMark['id'], TimelineClusterMark>([
+      ...timelineLayout.sameTimeClusters.map((cluster) => [cluster.id, cluster] as const),
+      ...timelineLayout.rangeClusters.map((cluster) => [cluster.id, cluster] as const),
+    ])
+  ), [timelineLayout.rangeClusters, timelineLayout.sameTimeClusters]);
+  const selectedCluster = viewState.selectedClusterId
+    ? clusterById.get(viewState.selectedClusterId) ?? null
+    : null;
+  const selectedClusterEvents = selectedCluster
+    ? selectedCluster.eventIds
+      .map((eventId) => eventById.get(eventId))
+      .filter((event): event is TimelineEvent => Boolean(event))
+      .sort((left, right) => left.timestamp - right.timestamp || left.ordinal - right.ordinal)
+    : [];
   const selectedEvent = viewState.selectedEventId ? eventById.get(viewState.selectedEventId) ?? null : null;
   const selectedRow = viewState.selectedRowOccurrenceId
     ? rowById.get(viewState.selectedRowOccurrenceId) ?? null
@@ -532,17 +583,28 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     }
   }, [scrollMetrics.scrollLeftPx, scrollMetrics.surfaceWidthPx]);
 
-  const selectEvent = useCallback((event: TimelineEvent) => {
+  const selectEvent = useCallback((event: TimelineEvent, options: { preserveCluster?: boolean } = {}) => {
     updateState({
       selectedEventId: event.id,
       selectedRowOccurrenceId: event.row_id,
+      selectedClusterId: options.preserveCluster ? viewState.selectedClusterId : null,
       panes: { ...viewState.panes, inspector: true },
     });
-  }, [updateState, viewState.panes]);
+  }, [updateState, viewState.panes, viewState.selectedClusterId]);
 
   const selectRow = useCallback((row: TimelineRowOccurrence) => {
     updateState({
       selectedRowOccurrenceId: row.id,
+      selectedEventId: null,
+      selectedClusterId: null,
+      panes: { ...viewState.panes, inspector: true },
+    });
+  }, [updateState, viewState.panes]);
+
+  const selectCluster = useCallback((cluster: TimelineClusterMark) => {
+    updateState({
+      selectedClusterId: cluster.id,
+      selectedRowOccurrenceId: cluster.rowId,
       selectedEventId: null,
       panes: { ...viewState.panes, inspector: true },
     });
@@ -578,6 +640,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       selectedEventId: viewState.selectedEventId && remove.has(viewState.selectedEventId)
         ? null
         : viewState.selectedEventId,
+      selectedClusterId: viewState.selectedClusterId,
     });
   }, [events, links, rows, updateState, viewState]);
 
@@ -936,6 +999,8 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 const rowEventMarks = rowEvents
                   .map((event) => ({ event, mark: eventMarkById.get(event.id) }))
                   .filter((entry): entry is { event: TimelineEvent; mark: TimelineEventMark } => Boolean(entry.mark));
+                const rowSameTimeClusters = timelineLayout.sameTimeClusters.filter((cluster) => cluster.rowId === row.id);
+                const rowRangeClusters = timelineLayout.rangeClusters.filter((cluster) => cluster.rowId === row.id);
                 const earlier = rowEvents.filter((event) => event.timestamp < start).length;
                 const later = rowEvents.filter((event) => event.timestamp > end).length;
                 const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
@@ -960,6 +1025,41 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                     ) : null}
                     {earlier > 0 ? <span className="timeline-boundary timeline-boundary--left">{earlier} earlier</span> : null}
                     {later > 0 ? <span className="timeline-boundary timeline-boundary--right">{later} later</span> : null}
+                    {rowRangeClusters.map((cluster) => (
+                      <button
+                        key={cluster.id}
+                        type="button"
+                        className={`timeline-cluster timeline-cluster--range${viewState.selectedClusterId === cluster.id ? ' timeline-cluster--selected' : ''}${cluster.containsSelected ? ' timeline-cluster--contains-selected' : ''}`}
+                        style={{
+                          left: `${cluster.xPx}px`,
+                          top: `${markLaneTopPx(cluster, layoutMetrics.laneHeightPx)}px`,
+                          width: `${Math.max(cluster.widthPx, 28)}px`,
+                        }}
+                        onClick={() => selectCluster(cluster)}
+                        aria-label={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
+                        title={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
+                      >
+                        <span className="timeline-cluster__range-line" aria-hidden="true" />
+                        <strong>{cluster.count}</strong>
+                      </button>
+                    ))}
+                    {rowSameTimeClusters.map((cluster) => (
+                      <button
+                        key={cluster.id}
+                        type="button"
+                        className={`timeline-cluster timeline-cluster--same-time${viewState.selectedClusterId === cluster.id ? ' timeline-cluster--selected' : ''}${cluster.containsSelected ? ' timeline-cluster--contains-selected' : ''}`}
+                        style={{
+                          left: `${cluster.xPx}px`,
+                          top: `${markLaneTopPx(cluster, layoutMetrics.laneHeightPx)}px`,
+                          width: `${cluster.widthPx}px`,
+                        }}
+                        onClick={() => selectCluster(cluster)}
+                        aria-label={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
+                        title={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
+                      >
+                        <strong>{cluster.count}</strong>
+                      </button>
+                    ))}
                     {rowEventMarks.map(({ event, mark }) => {
                       const eventLinks = event.link_ids.map((id) => linkById.get(id)).filter((link): link is TimelineLink => Boolean(link));
                       const issueLinks = eventLinks.filter((link) => link.target_issue && !link.target_issue.deleted);
@@ -972,7 +1072,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                           className={`timeline-event timeline-event--${event.kind}${eventSelected ? ' timeline-event--selected' : ''}${expanded ? ' timeline-event--expanded' : ''}`}
                           style={{
                             left: `${mark.xPx}px`,
-                            top: `${eventLaneTopPx(mark, layoutMetrics.laneHeightPx)}px`,
+                            top: `${markLaneTopPx(mark, layoutMetrics.laneHeightPx)}px`,
                           }}
                           onClick={() => selectEvent(event)}
                           title={`${event.display_headline} ${formatDateTime(event.timestamp)}`}
@@ -1007,8 +1107,11 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
             />
             <TimelineInspector
               selectedEvent={selectedEvent}
+              selectedCluster={selectedCluster}
+              selectedClusterEvents={selectedClusterEvents}
               selectedRow={selectedRow}
               missingEventId={viewState.selectedEventId && !selectedEvent ? viewState.selectedEventId : null}
+              missingClusterId={viewState.selectedClusterId && !selectedCluster ? viewState.selectedClusterId : null}
               missingRowId={viewState.selectedRowOccurrenceId && !selectedRow ? viewState.selectedRowOccurrenceId : null}
               rowEvents={visibleSelectedRowEvents}
               links={links}
@@ -1030,8 +1133,11 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 
 type InspectorProps = {
   selectedEvent: TimelineEvent | null;
+  selectedCluster: TimelineClusterMark | null;
+  selectedClusterEvents: TimelineEvent[];
   selectedRow: TimelineRowOccurrence | null;
   missingEventId: string | null;
+  missingClusterId: string | null;
   missingRowId: string | null;
   rowEvents: TimelineEvent[];
   links: TimelineLink[];
@@ -1039,7 +1145,7 @@ type InspectorProps = {
   expandedEventIds: string[];
   onExpandEvent: (eventId: string) => void;
   onCollapseEvent: (eventId: string) => void;
-  onSelectEvent: (event: TimelineEvent) => void;
+  onSelectEvent: (event: TimelineEvent, options?: { preserveCluster?: boolean }) => void;
   onPromoteRow: (row: TimelineRowOccurrence) => void;
   onRemovePromotedRow: (row: TimelineRowOccurrence) => void;
   onRemoveTransientRow: (row: TimelineRowOccurrence) => void;
@@ -1047,8 +1153,11 @@ type InspectorProps = {
 
 function TimelineInspector({
   selectedEvent,
+  selectedCluster,
+  selectedClusterEvents,
   selectedRow,
   missingEventId,
+  missingClusterId,
   missingRowId,
   rowEvents,
   linkById,
@@ -1071,12 +1180,37 @@ function TimelineInspector({
   ));
   return (
     <div className="timeline-inspector__content">
-      {missingEventId || missingRowId ? (
+      {missingEventId || missingClusterId || missingRowId ? (
         <div className="timeline-inspector__missing">
           Selection is outside the current projection.
           {missingEventId ? <code>{missingEventId}</code> : null}
+          {missingClusterId ? <code>{missingClusterId}</code> : null}
           {missingRowId ? <code>{missingRowId}</code> : null}
         </div>
+      ) : null}
+      {selectedCluster && !selectedEvent ? (
+        <section className="timeline-inspector__section">
+          <div className="timeline-inspector__header">
+            <span>{clusterKindLabel(selectedCluster)}</span>
+            <strong>{selectedCluster.count} events</strong>
+          </div>
+          <dl className="timeline-meta">
+            <div><dt>Time</dt><dd>{clusterTimeLabel(selectedCluster)}</dd></div>
+            <div><dt>Categories</dt><dd>{clusterCategorySummaryLabel(selectedCluster.categorySummary)}</dd></div>
+            <div><dt>Row</dt><dd>{selectedRow?.issue.display_id ?? selectedCluster.rowId}</dd></div>
+            <div><dt>Selected child</dt><dd>{selectedCluster.containsSelected ? 'Yes' : 'No'}</dd></div>
+          </dl>
+          <div className="timeline-list-fallback timeline-cluster-list">
+            <h3>Cluster events</h3>
+            {selectedClusterEvents.length === 0 ? <p>No cluster events in the current projection.</p> : selectedClusterEvents.map((event) => (
+              <button key={event.id} type="button" onClick={() => onSelectEvent(event, { preserveCluster: true })}>
+                <time>{formatDateTime(event.timestamp)}</time>
+                <strong>{event.display_headline}</strong>
+                <span>{eventKindLabel(event.kind)} - {event.issue.display_id} - ordinal {event.ordinal}</span>
+              </button>
+            ))}
+          </div>
+        </section>
       ) : null}
       {selectedEvent ? (
         <section className="timeline-inspector__section">
@@ -1157,7 +1291,7 @@ function TimelineInspector({
             ))}
           </div>
         </section>
-      ) : !selectedEvent ? (
+      ) : !selectedEvent && !selectedCluster ? (
         <section className="timeline-inspector__section">
           <div className="timeline-inspector__header">
             <span>No selection</span>

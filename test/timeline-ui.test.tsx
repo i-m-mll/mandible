@@ -1,4 +1,4 @@
-import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/preact';
+import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
@@ -261,6 +261,65 @@ function nearTimeProjection(): ProjectTimelineProjection {
       start: Date.UTC(2026, 0, 1),
       end: Date.UTC(2026, 0, 3),
       event_count: 4,
+    },
+  });
+}
+
+function sameTimeClusterProjection(): ProjectTimelineProjection {
+  const base = projection();
+  const timestamp = Date.UTC(2026, 0, 1, 12);
+  return projection({
+    events: [
+      {
+        ...base.events[0],
+        id: 'event-same-a',
+        timestamp,
+        ordinal: 0,
+        display_headline: 'Same cluster A',
+        body: 'First same-time body',
+        kind: 'body',
+        link_ids: [],
+      },
+      {
+        ...base.events[0],
+        id: 'event-same-b',
+        timestamp,
+        ordinal: 1,
+        display_headline: 'Same cluster B',
+        body: 'Second same-time body',
+        kind: 'comment',
+        link_ids: [],
+      },
+    ],
+    links: [],
+    time_axis: {
+      start: Date.UTC(2026, 0, 1),
+      end: Date.UTC(2026, 0, 3),
+      event_count: 2,
+    },
+  });
+}
+
+function rangeClusterProjection(): ProjectTimelineProjection {
+  const base = projection();
+  const start = Date.UTC(2026, 0, 1, 12);
+  const events = [0, 15, 30, 45].map((minutes, index) => ({
+    ...base.events[0],
+    id: `event-range-${index}`,
+    timestamp: start + minutes * 60 * 1000,
+    ordinal: index,
+    display_headline: `Range cluster ${index + 1}`,
+    body: `Range event ${index + 1}`,
+    kind: 'comment' as const,
+    link_ids: [],
+  }));
+  return projection({
+    events,
+    links: [],
+    time_axis: {
+      start: Date.UTC(2026, 0, 1),
+      end: Date.UTC(2026, 0, 3),
+      event_count: events.length,
     },
   });
 }
@@ -645,5 +704,57 @@ describe('TimelineView', () => {
     expect(new Set(laneTops).size).toBe(3);
     expect(lefts[0]).toBeLessThan(lefts[1]);
     expect(lefts[1]).toBeLessThan(lefts[2]);
+  });
+
+  it('renders same-time clusters and opens a chronological child list', async () => {
+    stubTimelineFetch(sameTimeClusterProjection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    const cluster = await screen.findByRole('button', {
+      name: /Same-time cluster, 2 events, Body 1, Comment 1, at 2026-01-01 12:00:00Z/,
+    });
+    expect(screen.queryByText('Same cluster A')).toBeNull();
+
+    fireEvent.click(cluster);
+
+    const clusterList = screen.getByText('Cluster events').closest('.timeline-list-fallback') as HTMLElement;
+    expect(within(clusterList).getByText('Same cluster A')).toBeTruthy();
+    expect(within(clusterList).getByText('Same cluster B')).toBeTruthy();
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      expect(JSON.parse(String(stored)).selectedClusterId).toContain('same_time_cluster');
+    });
+
+    fireEvent.click(within(clusterList).getByText('Same cluster B'));
+
+    expect(screen.getByText('Second same-time body')).toBeTruthy();
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      const state = JSON.parse(String(stored));
+      expect(state.selectedEventId).toBe('event-same-b');
+      expect(state.selectedClusterId).toContain('same_time_cluster');
+    });
+  });
+
+  it('renders range clusters with a true time range label and span', async () => {
+    stubTimelineFetch(rangeClusterProjection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible', density: 'comfortable' },
+    }));
+
+    const cluster = await screen.findByRole('button', {
+      name: /Range cluster, 4 events, Comment 4, from 2026-01-01 12:00:00Z to 2026-01-01 12:45:00Z/,
+    });
+
+    expect(cluster.classList.contains('timeline-cluster--range')).toBe(true);
+    expect(parseFloat((cluster as HTMLButtonElement).style.left)).toBeGreaterThan(0);
+    expect(parseFloat((cluster as HTMLButtonElement).style.width)).toBeGreaterThan(0);
   });
 });
