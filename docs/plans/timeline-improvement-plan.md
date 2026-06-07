@@ -22,9 +22,12 @@ content unless it has stable contracts.
 ### Truthful Time
 
 The primary Timeline view must keep horizontal position tied to timestamp. The
-default x-axis remains linear UTC time. If a future view ever displaces an item
-horizontally, the true timestamp anchor must remain explicit with a connector or
-anchor marker.
+default x-axis remains linear UTC time. The default overlap plan does not dodge
+or displace individual items horizontally: an event mark's anchor x-coordinate
+is its timestamp. If a future explicit focus/context mode ever displaces an item
+horizontally, the true timestamp anchor must remain visible with a connector or
+anchor marker, and that mode must advertise that it is no longer the default
+linear view.
 
 Preferred collision hierarchy:
 
@@ -35,6 +38,11 @@ Preferred collision hierarchy:
 4. Drill down by zooming to range, expanding local vertical space, or opening a
    list/detail surface.
 5. Avoid adaptive or nonlinear time in the default view.
+
+Point clusters and range clusters also follow this rule. Same-time badges are
+anchored to the exact timestamp. Range capsules span the true first-to-last
+event interval. Neither is an excuse to nudge children to visually convenient
+but false x-positions.
 
 ### State Stability
 
@@ -114,6 +122,48 @@ Default response:
 - include severity/category summary where available;
 - optionally show tiny internal rug/density ticks;
 - drill-down can zoom to the range or open a child list.
+
+## Time Domain, Scroll Bounds, and Axis Ticks
+
+The Timeline has three separate time concepts that should not be collapsed into
+one state variable:
+
+- data extent: earliest/latest timestamp available after project/filter
+  selection;
+- padded render domain: data extent plus enough edge breathing room to keep
+  boundary marks fully visible;
+- viewport window: the current visible time range controlled by zoom, pan, fit,
+  focus, and explicit inputs.
+
+Boundary marks should not be chopped off. The padded render domain should add
+left/right time padding equivalent to at least the largest expected half-mark
+width plus a small visual gap. This padding is part of the rendered time domain,
+not extra scroll slack after the surface ends.
+
+Scroll bounds should match the actual rendered time surface. When the user
+scrolls fully left or right, the visible edge should be the left or right edge
+of the track/canvas region, with no horizontal scrollbar travel beyond the
+drawn axis and row canvases.
+
+Zoom must preserve a panning path back to the rest of the data extent. Zooming
+into May 22, for example, should produce a May 22 viewport within the padded
+project domain, not a trapped one-day universe with no reachable neighboring
+events. If toolbar date fields remain date-only controls, sub-day zoom state
+must be preserved internally instead of rounded away by those inputs.
+
+Axis ticks should be generated from the viewport duration and available pixels,
+not by formatting every tick as a date. Choose a target spacing of roughly
+120-180px, then select a calendar interval that fits the current scale:
+
+- years, quarters, months, weeks, or days for broad views;
+- 12h, 6h, 3h, 1h intervals for day-scale views;
+- 30m, 15m, 5m, 1m intervals for close views;
+- seconds only for deliberate very close inspection.
+
+Formatting must avoid repeated indistinguishable labels. If adjacent ticks are
+within the same day, labels should move to hour/minute precision such as
+`06:00`, `12:00`, `18:00`, with enough date context on boundaries or the first
+tick. Do not print more precision than the interval warrants.
 
 ## Proposed Data Model Additions
 
@@ -223,6 +273,7 @@ Outputs:
 Acceptance:
 
 - all x positions derive from the shared linear time scale;
+- event anchors never use horizontal collision dodging in the default view;
 - no event mark overlaps another event mark in the same lane;
 - output is deterministic for stable input;
 - selected events preserve stable mark/cluster identity across recomputation;
@@ -232,6 +283,10 @@ Acceptance:
   change;
 - the minimal deterministic importance/category mapping exists before any
   visual cluster rendering uses it;
+- the layout receives distinct data extent, padded render domain, and viewport
+  window values;
+- edge padding keeps first and last marks fully visible without adding
+  scrollbar space beyond the actual time surface;
 - no DOM measurement is required for the first version; use conservative width
   estimates by density mode.
 
@@ -261,6 +316,10 @@ Acceptance:
 
 - current overlapping comment boxes become non-overlapping lanes;
 - rows grow vertically up to the configured lane budget;
+- default lane budgets are 2 lanes in compact density, 3 lanes in comfortable
+  density, and 4 lanes in expanded density;
+- explicit local expansion can temporarily allow up to 6 lanes for the selected
+  row before clustering/list drill-down becomes the preferred representation;
 - keyboard traversal still follows time order, not lane order;
 - zoom/pan changes do not make marks jump lanes unless necessary.
 
@@ -370,6 +429,8 @@ Approach:
 - compute expansion zoom/range for each cluster;
 - invalidate by projection revision and view filters;
 - virtualize rows and marks for large timelines.
+- generate axis ticks from viewport duration and pixel width using stable
+  calendar intervals.
 
 Acceptance:
 
@@ -378,6 +439,8 @@ Acceptance:
 - large projects stay interactive.
 - caching preserves the default linear UTC time scale and does not implement
   gap compression.
+- zoomed day-scale views show meaningful hour/minute ticks rather than repeated
+  identical dates.
 
 ## Explicitly Deferred
 
@@ -401,13 +464,19 @@ visible distortion markers. It should not be used to solve default overlap.
 2. Wire lane-packed marks into `TimelineView`, making `rowLayoutById.heightPx`
    drive both gutter and time rows while preserving scroll anchoring and the
    current view state.
-3. Add same-time badges, range capsules, and synchronized cluster child list
+3. Fix time-domain handling so first/last marks are not clipped, horizontal
+   scroll bounds match the actual time surface, zoom preserves panning across
+   the padded project domain, and sub-day viewport state is not rounded away by
+   date-only inputs.
+4. Add zoom-aware axis ticks that switch from dates to hours/minutes at
+   appropriate scales without repeated indistinguishable labels.
+5. Add same-time badges, range capsules, and synchronized cluster child list
    drill-down behind a lane-budget threshold.
-4. Extend the deterministic importance/category policy and expose it in visual
+6. Extend the deterministic importance/category policy and expose it in visual
    summaries and aria labels.
-5. Add hierarchy/cache/virtualization only after the cluster and state contracts
+7. Add hierarchy/cache/virtualization only after the cluster and state contracts
    are stable.
-6. Browser-verify with real Mandible data at dense windows and with synthetic
+8. Browser-verify with real Mandible data at dense windows and with synthetic
    fixture cases for identical timestamps and burst ranges.
 
 ## Verification Matrix
@@ -421,6 +490,11 @@ Unit tests:
 - lane stability under small zoom delta;
 - prior lane reuse across refetch with stable inputs;
 - gutter/time row height synchronization;
+- first and last event marks remain fully visible at fit and at scroll
+  extremes;
+- horizontal scroll extents match the rendered axis/row surface extents;
+- zoom/pan can return from a sub-day viewport to neighboring project events;
+- day-scale zoom produces hour ticks with non-repeated labels;
 - cluster split after zoom-to-range;
 - keyboard ordering and accessible labels.
 
@@ -445,9 +519,15 @@ Build checks:
 
 - Implement lane packing before clustering so the row layout has a truthful
   individual-mark baseline.
+- Do not horizontally dodge individual event marks in the default Timeline.
+- Use 2/3/4 default lanes for compact/comfortable/expanded density, with up to
+  6 lanes only for explicit local expansion of the selected row.
 - Add early density detection before expensive full-label layout to keep large
   bursts cheap.
 - Distinguish exact timestamp multiplicity from time-range clustering.
+- Add padded render-domain and tick-generation fixes before cluster drill-down,
+  because clipped boundary marks and repeated tick labels are basic timeline
+  correctness problems.
 - Treat cluster objects as first-class stateful view entities, not ad hoc DOM
   fallbacks.
 - Preserve the current shared-axis invariant from [issue:41d22a6].
@@ -458,7 +538,6 @@ Build checks:
   issue body, state transition, and diagnostics?
 - Should clusters be purely frontend-derived for the next iteration, or should
   projection metadata include event categories and importance hints?
-- What is the default lane budget by density mode?
 - Should "expand here" create temporary local lanes inside a row or open a
   child list first?
 - How should row height changes animate without causing vertical context loss?
