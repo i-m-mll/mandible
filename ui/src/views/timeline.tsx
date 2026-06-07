@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { getProjectTimeline } from '../api';
+import { useRegisterAppRightSidebar } from '../app-shell';
 import type { WorkRepo } from './work';
 import {
   TIMELINE_DAY_MS,
@@ -56,6 +57,9 @@ const TIMELINE_LAYOUT_METRICS: Record<TimelineDensityMode, {
   expanded: { laneHeightPx: 82, markWidthPx: 240, rowMinHeightPx: 122 },
 };
 const TIMELINE_ROW_PADDING_Y_PX = 8;
+const EMPTY_TIMELINE_EVENTS: TimelineEvent[] = [];
+const EMPTY_TIMELINE_LINKS: TimelineLink[] = [];
+const EMPTY_TIMELINE_ROWS: TimelineRowOccurrence[] = [];
 
 export type TimelineViewProps = {
   repos: WorkRepo[];
@@ -341,16 +345,6 @@ type TimelineDiagnosticView = {
   message: string;
 };
 
-function InspectorSidebarIcon({ open }: { open: boolean }): JSX.Element {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M15 4v16" />
-      {open ? <path d="M17.5 8.5h1.5M17.5 12h1.5M17.5 15.5h1.5" /> : null}
-    </svg>
-  );
-}
-
 function eventInWindow(event: TimelineEvent, start: number, end: number): boolean {
   return event.timestamp >= start && event.timestamp <= end;
 }
@@ -433,9 +427,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     viewState.includeClosed,
   ]);
 
-  const rows = projection?.rows ?? [];
-  const events = projection?.events ?? [];
-  const links = projection?.links ?? [];
+  const rows = projection?.rows ?? EMPTY_TIMELINE_ROWS;
+  const events = projection?.events ?? EMPTY_TIMELINE_EVENTS;
+  const links = projection?.links ?? EMPTY_TIMELINE_LINKS;
   const linkById = useMemo(() => new Map(links.map((link) => [link.id, link])), [links]);
   const eventsByRow = useMemo(() => {
     const result = new Map<string, TimelineEvent[]>();
@@ -528,18 +522,22 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const selectedCluster = viewState.selectedClusterId
     ? clusterById.get(viewState.selectedClusterId) ?? null
     : null;
-  const selectedClusterEvents = selectedCluster
-    ? selectedCluster.eventIds
-      .map((eventId) => eventById.get(eventId))
-      .filter((event): event is TimelineEvent => Boolean(event))
-      .sort((left, right) => left.timestamp - right.timestamp || left.ordinal - right.ordinal)
-    : [];
+  const selectedClusterEvents = useMemo(() => (
+    selectedCluster
+      ? selectedCluster.eventIds
+        .map((eventId) => eventById.get(eventId))
+        .filter((event): event is TimelineEvent => Boolean(event))
+        .sort((left, right) => left.timestamp - right.timestamp || left.ordinal - right.ordinal)
+      : EMPTY_TIMELINE_EVENTS
+  ), [eventById, selectedCluster]);
   const selectedEvent = viewState.selectedEventId ? eventById.get(viewState.selectedEventId) ?? null : null;
   const selectedRow = viewState.selectedRowOccurrenceId
     ? rowById.get(viewState.selectedRowOccurrenceId) ?? null
     : selectedEvent ? rowById.get(selectedEvent.row_id) ?? null : null;
-  const selectedRowEvents = selectedRow ? eventsByRow.get(selectedRow.id) ?? [] : [];
-  const visibleSelectedRowEvents = selectedRowEvents.filter((event) => eventInWindow(event, start, end));
+  const selectedRowEvents = selectedRow ? eventsByRow.get(selectedRow.id) ?? EMPTY_TIMELINE_EVENTS : EMPTY_TIMELINE_EVENTS;
+  const visibleSelectedRowEvents = useMemo(() => (
+    selectedRowEvents.filter((event) => eventInWindow(event, start, end))
+  ), [end, selectedRowEvents, start]);
 
   useEffect(() => {
     laneCacheRef.current = timelineLayout.nextLaneByMarkId;
@@ -721,22 +719,6 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     zoomTimeline(event.deltaY < 0 ? 0.75 : 1.333, focalRatio);
   }, [zoomTimeline]);
 
-  const startInspectorResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = viewState.panes.inspectorWidth;
-    const handleMove = (moveEvent: MouseEvent) => {
-      const nextWidth = normalizeInspectorWidth(startWidth + startX - moveEvent.clientX);
-      updateState({ panes: { ...viewState.panes, inspectorWidth: nextWidth } });
-    };
-    const handleUp = () => {
-      window.removeEventListener('mousemove', handleMove);
-      window.removeEventListener('mouseup', handleUp);
-    };
-    window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleUp);
-  }, [updateState, viewState.panes]);
-
   const navigateEvent = useCallback((direction: 1 | -1) => {
     const chronologicalEvents = timelineLayout.chronologicalOrder
       .filter((entry) => !selectedRow || entry.rowId === selectedRow.id)
@@ -797,7 +779,68 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 
   const diagnostics = useMemo(() => timelineDiagnostics(projection), [projection]);
   const diagnosticsCount = diagnostics.length;
-  const inspectorToggleLabel = viewState.panes.inspector ? 'Collapse inspector' : 'Show inspector';
+  const inspectorContent = useMemo(() => (
+    <TimelineInspector
+      selectedEvent={selectedEvent}
+      selectedCluster={selectedCluster}
+      selectedClusterEvents={selectedClusterEvents}
+      selectedRow={selectedRow}
+      missingEventId={viewState.selectedEventId && !selectedEvent ? viewState.selectedEventId : null}
+      missingClusterId={viewState.selectedClusterId && !selectedCluster ? viewState.selectedClusterId : null}
+      missingRowId={viewState.selectedRowOccurrenceId && !selectedRow ? viewState.selectedRowOccurrenceId : null}
+      rowEvents={visibleSelectedRowEvents}
+      links={links}
+      linkById={linkById}
+      expandedEventIds={viewState.expandedEventIds}
+      onExpandEvent={expandEvent}
+      onCollapseEvent={collapseEvent}
+      onSelectEvent={selectEvent}
+      onPromoteRow={promoteRow}
+      onRemovePromotedRow={removePromotedRow}
+      onRemoveTransientRow={removeTransientRow}
+    />
+  ), [
+    collapseEvent,
+    expandEvent,
+    linkById,
+    links,
+    promoteRow,
+    removePromotedRow,
+    removeTransientRow,
+    selectEvent,
+    selectedCluster,
+    selectedClusterEvents,
+    selectedEvent,
+    selectedRow,
+    viewState.expandedEventIds,
+    viewState.selectedClusterId,
+    viewState.selectedEventId,
+    viewState.selectedRowOccurrenceId,
+    visibleSelectedRowEvents,
+  ]);
+  const rightSidebarDescriptor = useMemo(() => ({
+    id: 'timeline-inspector',
+    title: 'inspector',
+    ariaLabel: 'Timeline inspector',
+    open: viewState.panes.inspector,
+    width: viewState.panes.inspectorWidth,
+    minWidth: MIN_INSPECTOR_WIDTH,
+    maxWidth: MAX_INSPECTOR_WIDTH,
+    onOpenChange: (open: boolean) => {
+      updateState({ panes: { ...viewState.panes, inspector: open } });
+    },
+    onWidthChange: (width: number) => {
+      updateState({
+        panes: {
+          ...viewState.panes,
+          inspectorWidth: normalizeInspectorWidth(width),
+        },
+      });
+    },
+    content: inspectorContent,
+  }), [inspectorContent, updateState, viewState.panes]);
+
+  useRegisterAppRightSidebar(rightSidebarDescriptor);
 
   return (
     <section className="timeline-workspace" aria-label="Project timeline">
@@ -903,15 +946,6 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           {diagnosticsCount > 0 ? <span>{diagnosticsCount}</span> : null}
         </button>
         <div className="timeline-toolbar-spacer" />
-        <button
-          type="button"
-          className="timeline-sidebar-toggle"
-          onClick={() => updateState({ panes: { ...viewState.panes, inspector: !viewState.panes.inspector } })}
-          aria-label={inspectorToggleLabel}
-          title={inspectorToggleLabel}
-        >
-          <InspectorSidebarIcon open={viewState.panes.inspector} />
-        </button>
         {status === 'syncing' ? <div className="timeline-status" role="status">Syncing</div> : null}
       </div>
 
@@ -931,8 +965,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       {error ? <div className="timeline-sync-banner">Timeline refresh failed. Showing the last loaded timeline. {error}</div> : null}
 
       <div
-        className={`timeline-grid timeline-grid--${viewState.density}${viewState.panes.inspector ? '' : ' timeline-grid--no-inspector'}`}
-        style={{ '--timeline-inspector-width': `${viewState.panes.inspectorWidth}px` } as JSX.CSSProperties}
+        className={`timeline-grid timeline-grid--${viewState.density}`}
       >
         <div className="timeline-main" role="grid" aria-rowcount={rows.length}>
           <div className="timeline-gutter-column" aria-label="Timeline rows">
@@ -1096,36 +1129,6 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           </div>
         </div>
 
-        {viewState.panes.inspector ? (
-          <aside className="timeline-inspector" aria-label="Timeline inspector">
-            <div
-              className="timeline-inspector__resize"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize inspector"
-              onMouseDown={startInspectorResize}
-            />
-            <TimelineInspector
-              selectedEvent={selectedEvent}
-              selectedCluster={selectedCluster}
-              selectedClusterEvents={selectedClusterEvents}
-              selectedRow={selectedRow}
-              missingEventId={viewState.selectedEventId && !selectedEvent ? viewState.selectedEventId : null}
-              missingClusterId={viewState.selectedClusterId && !selectedCluster ? viewState.selectedClusterId : null}
-              missingRowId={viewState.selectedRowOccurrenceId && !selectedRow ? viewState.selectedRowOccurrenceId : null}
-              rowEvents={visibleSelectedRowEvents}
-              links={links}
-              linkById={linkById}
-              expandedEventIds={viewState.expandedEventIds}
-              onExpandEvent={expandEvent}
-              onCollapseEvent={collapseEvent}
-              onSelectEvent={selectEvent}
-              onPromoteRow={promoteRow}
-              onRemovePromotedRow={removePromotedRow}
-              onRemoveTransientRow={removeTransientRow}
-            />
-          </aside>
-        ) : null}
       </div>
     </section>
   );

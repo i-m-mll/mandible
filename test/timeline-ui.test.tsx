@@ -1,9 +1,15 @@
 import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
+import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { parseRouteFromHash } from '../ui/src/routing';
-import { TimelineView } from '../ui/src/views/timeline';
+import {
+  AppShellProvider,
+  type AppRightSidebarDescriptor,
+  type AppShellContextValue,
+} from '../ui/src/app-shell';
+import { TimelineView as RawTimelineView, type TimelineViewProps } from '../ui/src/views/timeline';
 import type { ProjectTimelineProjection } from '../ui/src/types/timeline';
 
 function stubLocalStorage(): void {
@@ -193,6 +199,39 @@ function stubTimelineFetch(...responses: Array<ProjectTimelineProjection | Promi
   });
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
+}
+
+function TimelineView(props: TimelineViewProps): JSX.Element {
+  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
+    setRightSidebar(descriptor);
+    return () => setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+  }, []);
+  const shell = useMemo<AppShellContextValue>(() => ({
+    rightSidebar,
+    registerRightSidebar,
+  }), [registerRightSidebar, rightSidebar]);
+  const toggleLabel = rightSidebar?.open ? `Collapse ${rightSidebar.title}` : `Show ${rightSidebar?.title ?? 'inspector'}`;
+
+  return (
+    <AppShellProvider value={shell}>
+      <div className="app-header">
+        {rightSidebar?.content ? (
+          <button
+            type="button"
+            aria-label={toggleLabel}
+            onClick={() => rightSidebar.onOpenChange(!rightSidebar.open)}
+          />
+        ) : null}
+      </div>
+      <RawTimelineView {...props} />
+      {rightSidebar?.open && rightSidebar.content ? (
+        <aside className="app-right-sidebar" aria-label={rightSidebar.ariaLabel}>
+          {rightSidebar.content}
+        </aside>
+      ) : null}
+    </AppShellProvider>
+  );
 }
 
 function nearTimeProjection(): ProjectTimelineProjection {

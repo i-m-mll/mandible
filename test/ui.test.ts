@@ -1,9 +1,17 @@
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
+import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
 import { parseRouteFromHash } from '../ui/src/routing';
+import {
+  AppShellProvider,
+  RightSidebarIcon,
+  useRegisterAppRightSidebar,
+  type AppRightSidebarDescriptor,
+  type AppShellContextValue,
+} from '../ui/src/app-shell';
 import { AuthQueueView } from '../ui/src/views/auth';
 import { ReviewView } from '../ui/src/views/review';
 import { SessionsView } from '../ui/src/views/sessions';
@@ -85,6 +93,71 @@ describe('App routing', () => {
       tab: 'console',
       params: { session: 's1' },
     });
+  });
+});
+
+describe('app shell', () => {
+  function RegisteredSidebar(): JSX.Element {
+    const descriptor = useMemo<AppRightSidebarDescriptor>(() => ({
+      id: 'test-sidebar',
+      title: 'inspector',
+      ariaLabel: 'Test inspector',
+      open: true,
+      width: 360,
+      onOpenChange: () => undefined,
+      onWidthChange: () => undefined,
+      content: h('div', {}, 'Inspector content'),
+    }), []);
+
+    useRegisterAppRightSidebar(descriptor);
+    return h('main', {}, 'Workspace');
+  }
+
+  function ShellProbe(): JSX.Element {
+    const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+    const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
+      setRightSidebar(descriptor);
+      return () => setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+    }, []);
+    const shell = useMemo<AppShellContextValue>(() => ({
+      rightSidebar,
+      registerRightSidebar,
+    }), [registerRightSidebar, rightSidebar]);
+
+    return h(AppShellProvider, { value: shell }, [
+      h('header', { className: 'app-header' }, [
+        h('span', { className: 'app-header__brand-text' }, 'Mandible'),
+        h('span', { className: 'app-header__route' }, 'Timeline'),
+        rightSidebar?.content
+          ? h('button', {
+            type: 'button',
+            'aria-label': rightSidebar.open ? `Collapse ${rightSidebar.title}` : `Show ${rightSidebar.title}`,
+            onClick: () => setRightSidebar({
+              ...rightSidebar,
+              open: !rightSidebar.open,
+            }),
+          }, h(RightSidebarIcon, { open: rightSidebar.open }))
+          : null,
+      ]),
+      h(RegisteredSidebar, {}),
+      rightSidebar?.open && rightSidebar.content
+        ? h('aside', { className: 'app-right-sidebar', 'aria-label': rightSidebar.ariaLabel }, rightSidebar.content)
+        : null,
+    ]);
+  }
+
+  it('renders shared header identity, route title, and registered right sidebar toggle', async () => {
+    render(h(ShellProbe, {}));
+
+    expect(screen.getByText('Mandible')).toBeTruthy();
+    expect(screen.getByText('Timeline')).toBeTruthy();
+    await waitFor(() => expect(screen.getByLabelText('Collapse inspector')).toBeTruthy());
+    expect(screen.getByLabelText('Test inspector')).toBeTruthy();
+    expect(screen.getByText('Inspector content')).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Collapse inspector'));
+    expect(screen.getByLabelText('Show inspector')).toBeTruthy();
+    expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 });
 
