@@ -51,6 +51,8 @@ const MIN_TIMELINE_EDGE_BREATHING_PX = 16;
 const MAX_TIMELINE_EDGE_BREATHING_PX = 32;
 const TIMELINE_EDGE_BREATHING_RATIO = 0.03;
 const TIMELINE_TICK_SPACING_PX = 120;
+const WHEEL_ZOOM_IN_FACTOR = 0.9;
+const WHEEL_ZOOM_OUT_FACTOR = 1 / WHEEL_ZOOM_IN_FACTOR;
 const TIMELINE_LAYOUT_METRICS: Record<TimelineDensityMode, {
   laneHeightPx: number;
   markWidthPx: number;
@@ -208,6 +210,15 @@ function mergeTimelineState(
   if (url.density !== undefined) merged.density = url.density;
   if (url.includeClosed !== undefined) merged.includeClosed = url.includeClosed;
   return merged;
+}
+
+function clearTimelineSelection(state: TimelineViewState): TimelineViewState {
+  return {
+    ...state,
+    selectedRowOccurrenceId: null,
+    selectedEventId: null,
+    selectedClusterId: null,
+  };
 }
 
 function readStoredState(projectId: string): Partial<TimelineViewState> {
@@ -393,16 +404,48 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const [timeViewportWidthPx, setTimeViewportWidthPx] = useState(FALLBACK_TIMELINE_WIDTH_PX);
   const laneCacheRef = useRef<TimelineLaneCache>({});
   const requestGeneration = useRef(0);
+  const appliedRouteProjectRef = useRef(initialProjectRef);
+
+  const resetLoadedProjection = useCallback(() => {
+    requestGeneration.current += 1;
+    lastProjectionRef.current = null;
+    laneCacheRef.current = {};
+    setProjection(null);
+    setError(null);
+    setStatus('idle');
+  }, []);
+
+  const stateForProjectSelection = useCallback((nextProjectRef: string) => (
+    clearTimelineSelection(mergeTimelineState(
+      DEFAULT_TIMELINE_VIEW_STATE,
+      readStoredState(nextProjectRef),
+      {},
+    ))
+  ), []);
+
+  const handleProjectChange = useCallback((nextProjectRef: string) => {
+    resetLoadedProjection();
+    setProjectRef(nextProjectRef);
+    setViewState(stateForProjectSelection(nextProjectRef));
+  }, [resetLoadedProjection, stateForProjectSelection]);
 
   useEffect(() => {
     const nextProjectRef = defaultProjectRef(repos, urlState.projectRef);
-    if (nextProjectRef !== projectRef) {
+    if (nextProjectRef !== appliedRouteProjectRef.current) {
+      appliedRouteProjectRef.current = nextProjectRef;
+      resetLoadedProjection();
       setProjectRef(nextProjectRef);
-      setViewState(mergeTimelineState(DEFAULT_TIMELINE_VIEW_STATE, readStoredState(nextProjectRef), urlState));
+      setViewState(clearTimelineSelection(mergeTimelineState(
+        DEFAULT_TIMELINE_VIEW_STATE,
+        readStoredState(nextProjectRef),
+        urlState,
+      )));
       return;
     }
-    setViewState((current) => mergeTimelineState(current, {}, urlState));
-  }, [projectRef, repos, urlState]);
+    if (nextProjectRef === projectRef) {
+      setViewState((current) => mergeTimelineState(current, {}, urlState));
+    }
+  }, [projectRef, repos, resetLoadedProjection, urlState]);
 
   useEffect(() => {
     const canonicalProjectId = projection?.project.id ?? projectRef;
@@ -742,7 +785,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     const focalRatio = bounds.width > 0
       ? clamp((event.clientX - bounds.left) / bounds.width, 0, 1)
       : 0.5;
-    zoomTimeline(event.deltaY < 0 ? 0.75 : 1.333, focalRatio);
+    zoomTimeline(event.deltaY < 0 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);
   }, [zoomTimeline]);
 
   const navigateEvent = useCallback((direction: 1 | -1) => {
@@ -877,7 +920,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           <span>Project</span>
           <select
             value={projectRef}
-            onChange={(event) => setProjectRef((event.currentTarget as HTMLSelectElement).value)}
+            onChange={(event) => handleProjectChange((event.currentTarget as HTMLSelectElement).value)}
           >
             {repos.length === 0 ? <option value={projectRef}>{projectRef}</option> : repos.map((repo) => (
               <option key={repoId(repo)} value={repoId(repo)}>{repoTitle(repo)}</option>
@@ -974,7 +1017,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           {diagnosticsCount > 0 ? <span>{diagnosticsCount}</span> : null}
         </button>
         <div className="timeline-toolbar-spacer" />
-        {status === 'syncing' ? <div className="timeline-status" role="status">Syncing</div> : null}
+        {status === 'syncing' ? <div className="timeline-status" role="status" aria-label="Updating timeline" /> : null}
       </div>
 
       {viewState.panes.diagnostics ? (

@@ -624,8 +624,31 @@ a {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
-  color: var(--text-muted);
-  font-size: 12px;
+  justify-content: center;
+  width: 16px;
+  height: 32px;
+}
+
+.timeline-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(154, 164, 178, 0.86);
+  animation: timeline-status-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes timeline-status-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .timeline-diagnostics-button {
@@ -818,7 +841,8 @@ a {
   grid-template-areas:
     "branch id"
     "branch title"
-    "branch meta";
+    "branch status"
+    "branch origin";
   column-gap: 8px;
   row-gap: 3px;
   align-content: center;
@@ -871,9 +895,16 @@ a {
   font-size: 12px;
 }
 
+.timeline-gutter-row em {
+  grid-area: status;
+}
+
+.timeline-gutter-row__origin {
+  grid-area: origin;
+}
+
 .timeline-gutter-row em,
 .timeline-gutter-row__origin {
-  grid-area: meta;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

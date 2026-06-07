@@ -234,6 +234,8 @@ function TimelineView(props: TimelineViewProps): JSX.Element {
   );
 }
 
+const TEST_DAY_MS = 24 * 60 * 60 * 1000;
+
 function nearTimeProjection(): ProjectTimelineProjection {
   const base = projection();
   const nearEvents = [
@@ -448,6 +450,34 @@ describe('TimelineView', () => {
     });
   });
 
+  it('uses a gentler ctrl-wheel zoom than button zoom', async () => {
+    const fetchMock = stubTimelineFetch(projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: {
+        project: 'mandible',
+        from: String(Date.UTC(2026, 0, 1, 12)),
+        to: String(Date.UTC(2026, 0, 2, 12)),
+      },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    fireEvent.wheel(screen.getByLabelText('Timeline time canvas'), {
+      ctrlKey: true,
+      deltaY: -100,
+      clientX: 100,
+    });
+    expect(fetchMock.mock.calls.length).toBe(1);
+
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      const state = JSON.parse(String(stored));
+      expect(state.timeWindow.to - state.timeWindow.from).toBeCloseTo(TEST_DAY_MS * 0.9, 0);
+    });
+  });
+
   it('preserves sub-day viewport times when date-only boundaries are edited', async () => {
     const base = projection();
     const fetchMock = stubTimelineFetch(projection({
@@ -629,7 +659,78 @@ describe('TimelineView', () => {
     expect(screen.getByText('18:00')).toBeTruthy();
   });
 
-  it('keeps the last valid projection mounted while a newer request is syncing', async () => {
+  it('clears stale projection and selection immediately when selecting another project', async () => {
+    let resolveSecond: (value: ProjectTimelineProjection) => void = () => undefined;
+    const second = new Promise<ProjectTimelineProjection>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const base = projection();
+    const other = projection({
+      project: {
+        ...base.project,
+        id: 'prj_humble',
+        display_name: 'humble',
+        repo_id: 'humble',
+        repo_name: 'humble',
+        repo_root: '/repo/humble',
+      },
+      rows: [
+        {
+          ...base.rows[0],
+          id: 'row-humble',
+          issue: {
+            ...base.rows[0].issue,
+            id: 'iss_humble',
+            project_id: 'prj_humble',
+            display_id: 'abc9876',
+            title: 'Humble timeline shell',
+          },
+        },
+      ],
+      events: [
+        {
+          ...base.events[0],
+          id: 'event-humble',
+          row_id: 'row-humble',
+          issue: {
+            ...base.events[0].issue,
+            id: 'iss_humble',
+            project_id: 'prj_humble',
+            display_id: 'abc9876',
+            title: 'Humble timeline shell',
+          },
+          display_headline: 'Load Humble timeline',
+          body: 'Humble body text',
+          link_ids: [],
+        },
+      ],
+      links: [],
+    });
+    stubTimelineFetch(base, second);
+
+    render(h(TimelineView, {
+      repos: [
+        { id: 'mandible', name: 'mandible' },
+        { id: 'humble', name: 'humble' },
+      ],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    fireEvent.click(screen.getByText('Build shared axis'));
+    expect(screen.getByText('Full body text')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'humble' } });
+
+    expect(screen.queryByText('Build shared axis')).toBeNull();
+    expect(screen.queryByText('Full body text')).toBeNull();
+    expect(screen.queryByText('Syncing')).toBeNull();
+
+    resolveSecond(other);
+    await waitFor(() => expect(screen.getByText('Load Humble timeline')).toBeTruthy());
+  });
+
+  it('keeps the last valid projection mounted while a newer same-project request is syncing', async () => {
     let resolveSecond: (value: ProjectTimelineProjection) => void = () => undefined;
     const second = new Promise<ProjectTimelineProjection>((resolve) => {
       resolveSecond = resolve;
@@ -644,7 +745,8 @@ describe('TimelineView', () => {
     await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
     fireEvent.click(screen.getByText('Closed'));
     expect(screen.getByText('Build shared axis')).toBeTruthy();
-    expect(screen.getByText('Syncing')).toBeTruthy();
+    expect(screen.queryByText('Syncing')).toBeNull();
+    expect(screen.getByRole('status', { name: 'Updating timeline' })).toBeTruthy();
 
     resolveSecond(projection({
       events: [
