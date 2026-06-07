@@ -184,7 +184,7 @@ a {
   display: none;
 }
 
-@media (max-width: 700px) {
+@media (max-width: 800px) {
   .app-header {
     gap: 10px;
     padding: 0 10px;
@@ -554,6 +554,10 @@ a {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.app-content--timeline {
+  padding: 0;
 }
 
 /* Project Timeline workspace */

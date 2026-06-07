@@ -1184,7 +1184,9 @@ function App(): JSX.Element {
             })}
           </nav>
         </aside>
-        <main className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}`}>
+        <main
+          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}`}
+        >
         {route.tab === 'auth' && (
           <AuthQueueView
             queue={state.authQueue}
