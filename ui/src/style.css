@@ -180,10 +180,6 @@ a {
   min-height: 100%;
 }
 
-.app-right-sidebar__scrim {
-  display: none;
-}
-
 @media (max-width: 800px) {
   .app-header {
     gap: 10px;
@@ -199,17 +195,6 @@ a {
     grid-template-columns: 56px minmax(0, 1fr);
   }
 
-  .app-right-sidebar__scrim {
-    position: fixed;
-    inset: 48px 0 0;
-    z-index: 86;
-    display: block;
-    border: 0;
-    padding: 0;
-    background: rgba(0, 0, 0, 0.44);
-    cursor: default;
-  }
-
   .app-right-sidebar {
     position: fixed;
     top: 48px;
@@ -221,8 +206,7 @@ a {
     box-shadow: var(--shadow-soft);
   }
 
-  .tauri-window .app-right-sidebar,
-  .tauri-window .app-right-sidebar__scrim {
+  .tauri-window .app-right-sidebar {
     top: max(48px, env(titlebar-area-height, 48px));
   }
 

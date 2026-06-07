@@ -1306,30 +1306,22 @@ function App(): JSX.Element {
         )}
         </main>
           {rightSidebarOpen && rightSidebar ? (
-            <>
-              <button
-                type="button"
-                className="app-right-sidebar__scrim"
-                aria-label={`Dismiss ${rightSidebar.title}`}
-                onClick={() => rightSidebar.onOpenChange(false)}
+            <aside
+              className="app-right-sidebar"
+              aria-label={rightSidebar.ariaLabel}
+              style={{ width: `${rightSidebar.width}px` }}
+            >
+              <div
+                className="app-right-sidebar__resize"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={`Resize ${rightSidebar.title}`}
+                onMouseDown={startRightSidebarResize}
               />
-              <aside
-                className="app-right-sidebar"
-                aria-label={rightSidebar.ariaLabel}
-                style={{ width: `${rightSidebar.width}px` }}
-              >
-                <div
-                  className="app-right-sidebar__resize"
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label={`Resize ${rightSidebar.title}`}
-                  onMouseDown={startRightSidebarResize}
-                />
-                <div className="app-right-sidebar__content">
-                  {rightSidebar.content}
-                </div>
-              </aside>
-            </>
+              <div className="app-right-sidebar__content">
+                {rightSidebar.content}
+              </div>
+            </aside>
           ) : null}
         </div>
       </AppShellProvider>
