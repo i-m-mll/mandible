@@ -223,6 +223,8 @@ describe('TimelineView', () => {
         density: 'compact',
         closed: '1',
         expanded: 'url-event',
+        from: String(Date.UTC(2026, 0, 1, 6)),
+        to: String(Date.UTC(2026, 0, 2, 6)),
       },
     }));
 
@@ -230,6 +232,8 @@ describe('TimelineView', () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.include_closed).toBe(true);
     expect(body.expanded_event_ids).toEqual(['url-event']);
+    expect(body).not.toHaveProperty('from');
+    expect(body).not.toHaveProperty('to');
     expect(document.querySelector('.timeline-grid--compact')).toBeTruthy();
   });
 
@@ -252,8 +256,8 @@ describe('TimelineView', () => {
     });
   });
 
-  it('persists zoom and inspector collapsed state as project view state', async () => {
-    const fetchMock = stubTimelineFetch(projection(), projection(), projection());
+  it('persists zoom and inspector collapsed state without viewport refetches', async () => {
+    const fetchMock = stubTimelineFetch(projection());
 
     render(h(TimelineView, {
       repos: [{ id: 'mandible', name: 'mandible' }],
@@ -262,11 +266,7 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
     fireEvent.click(screen.getByLabelText('Zoom in'));
-
-    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
-    const zoomBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
-    expect(zoomBody.from).toBeGreaterThan(Date.UTC(2026, 0, 1));
-    expect(zoomBody.to).toBeLessThan(Date.UTC(2026, 0, 3));
+    expect(fetchMock.mock.calls.length).toBe(1);
 
     fireEvent.click(screen.getByLabelText('Collapse inspector'));
     expect(screen.getByLabelText('Show inspector')).toBeTruthy();
@@ -274,9 +274,94 @@ describe('TimelineView', () => {
       const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
       expect(stored).toBeTruthy();
       const state = JSON.parse(String(stored));
-      expect(state.timeWindow.from).toBe(zoomBody.from);
+      expect(state.timeWindow.from).toBeGreaterThan(Date.UTC(2026, 0, 1) - 12 * 60 * 60 * 1000);
+      expect(state.timeWindow.to).toBeLessThan(Date.UTC(2026, 0, 2));
       expect(state.panes.inspector).toBe(false);
     });
+  });
+
+  it('preserves sub-day viewport times when date-only boundaries are edited', async () => {
+    const base = projection();
+    const fetchMock = stubTimelineFetch(projection({
+      events: [
+        base.events[0],
+        {
+          ...base.events[0],
+          id: 'event-later',
+          timestamp: Date.UTC(2026, 0, 4, 12),
+          ordinal: 1,
+          display_headline: 'Later domain anchor',
+          link_ids: [],
+        },
+      ],
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: {
+        project: 'mandible',
+        from: String(Date.UTC(2026, 0, 1, 13, 45, 30, 250)),
+        to: String(Date.UTC(2026, 0, 2, 17, 20, 10, 500)),
+      },
+    }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(1));
+    await waitFor(() => expect(screen.getByText('Timeline UI shell')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText('To'), {
+      target: { value: '2026-01-03' },
+    });
+
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      const state = JSON.parse(String(stored));
+      expect(state.timeWindow.from).toBe(Date.UTC(2026, 0, 1, 13, 45, 30, 250));
+      expect(state.timeWindow.to).toBe(Date.UTC(2026, 0, 3, 17, 20, 10, 500));
+    });
+  });
+
+  it('uses the visible event-type extent for padded mark positions', async () => {
+    const base = projection();
+    const commentEvent = {
+      ...base.events[0],
+      id: 'event-comment',
+      kind: 'comment' as const,
+      timestamp: Date.UTC(2026, 0, 2, 12),
+      ordinal: 1,
+      display_headline: 'Comment extent anchor',
+      body: 'Comment body',
+      link_ids: [],
+    };
+    const fetchMock = stubTimelineFetch(projection({
+      events: [base.events[0], commentEvent],
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Comment extent anchor')).toBeTruthy());
+    fireEvent.click(screen.getByText('Body'));
+
+    await waitFor(() => expect(screen.queryByText('Build shared axis')).toBeNull());
+    const commentButton = screen.getByText('Comment extent anchor').closest('button') as HTMLButtonElement;
+    expect(commentButton.style.left).toBe('50%');
+    expect(fetchMock.mock.calls.length).toBe(1);
+  });
+
+  it('renders hour ticks for day-scale timeline views', async () => {
+    stubTimelineFetch(projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    expect(screen.getByText('06:00')).toBeTruthy();
+    expect(screen.getByText('12:00')).toBeTruthy();
+    expect(screen.getByText('18:00')).toBeTruthy();
   });
 
   it('keeps the last valid projection mounted while a newer request is syncing', async () => {

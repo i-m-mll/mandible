@@ -3,6 +3,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { getProjectTimeline } from '../api';
 import type { WorkRepo } from './work';
 import {
+  TIMELINE_DAY_MS,
+  TIMELINE_HOUR_MS,
+  clampTimelineViewport,
+  editTimelineViewportDateBoundary,
+  fitTimelineViewport,
+  formatUtcDate,
+  formatUtcDateTime,
+  generateTimelineTicks,
+  paddedTimelineRenderDomain,
+  timelineExtentFromTimestamps,
+  timelineScrollMetrics,
+  viewportFromTimelineScroll,
+  zoomTimelineViewport,
+  type TimelineRenderDomain,
+  type TimelineViewport,
+} from './timeline-time';
+import {
   DEFAULT_TIMELINE_VIEW_STATE,
   type ProjectTimelineProjection,
   type TimelineDensity,
@@ -17,8 +34,8 @@ import {
 const STORAGE_PREFIX = 'mandible_timeline_view_state:v1';
 const EVENT_TYPES: TimelineEventKind[] = ['body', 'comment', 'state'];
 const DENSITIES: TimelineDensity[] = ['compact', 'comfortable', 'expanded'];
-const DAY_MS = 24 * 60 * 60 * 1000;
-const MIN_TIMELINE_WINDOW_MS = 60 * 60 * 1000;
+const FALLBACK_TIMELINE_WIDTH_PX = 820;
+const MIN_TIMELINE_WINDOW_MS = TIMELINE_HOUR_MS;
 const MIN_INSPECTOR_WIDTH = 280;
 const MAX_INSPECTOR_WIDTH = 560;
 
@@ -194,24 +211,15 @@ function defaultProjectRef(repos: WorkRepo[], explicit?: string): string {
 }
 
 function formatDate(value: number | null | undefined): string {
-  if (!value) return 'Open';
-  return new Date(value).toISOString().slice(0, 10);
+  return formatUtcDate(value) || 'Open';
 }
 
 function formatDateTime(value: number | null | undefined): string {
-  if (!value) return 'Open';
-  return new Date(value).toLocaleString();
+  return formatUtcDateTime(value) || 'Open';
 }
 
 function dateInputValue(value: number | null): string {
-  return value ? new Date(value).toISOString().slice(0, 10) : '';
-}
-
-function dateInputToTimestamp(value: string, endOfDay = false): number | null {
-  if (!value) return null;
-  const parsed = Date.parse(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(parsed)) return null;
-  return endOfDay ? parsed + DAY_MS - 1 : parsed;
+  return formatUtcDate(value);
 }
 
 function eventLeft(timestamp: number, start: number, span: number): number {
@@ -229,38 +237,19 @@ function rowKindLabel(kind: TimelineRowOccurrence['kind']): string {
   return 'Root';
 }
 
-function visibleWindow(projection: ProjectTimelineProjection | null, state: TimelineViewState): { start: number; end: number; span: number } {
-  const fallbackStart = projection?.time_axis.start ?? Date.now() - 7 * DAY_MS;
-  const fallbackEnd = projection?.time_axis.end ?? Date.now();
-  const start = state.timeWindow.from ?? fallbackStart;
-  const end = state.timeWindow.to ?? fallbackEnd;
-  const normalizedEnd = end <= start ? start + DAY_MS : end;
-  return { start, end: normalizedEnd, span: Math.max(1, normalizedEnd - start) };
-}
-
-function zoomedWindow(
-  projection: ProjectTimelineProjection | null,
+function viewportFromState(
+  domain: TimelineRenderDomain,
   state: TimelineViewState,
-  factor: number,
-  focalRatio = 0.5,
-): TimelineViewState['timeWindow'] {
-  const current = visibleWindow(projection, state);
-  const axisStart = projection?.time_axis.start ?? current.start;
-  const axisEnd = projection?.time_axis.end ?? current.end;
-  const axisSpan = Math.max(MIN_TIMELINE_WINDOW_MS, axisEnd - axisStart);
-  const nextSpan = clamp(current.span * factor, MIN_TIMELINE_WINDOW_MS, axisSpan);
-  const focal = current.start + current.span * clamp(focalRatio, 0, 1);
-  let nextStart = focal - nextSpan * focalRatio;
-  let nextEnd = nextStart + nextSpan;
-  if (nextStart < axisStart) {
-    nextStart = axisStart;
-    nextEnd = nextStart + nextSpan;
-  }
-  if (nextEnd > axisEnd) {
-    nextEnd = axisEnd;
-    nextStart = nextEnd - nextSpan;
-  }
-  return { from: Math.round(nextStart), to: Math.round(nextEnd) };
+): TimelineViewport {
+  const fit = fitTimelineViewport(domain);
+  return clampTimelineViewport(
+    {
+      from: state.timeWindow.from ?? fit.from,
+      to: state.timeWindow.to ?? fit.to,
+    },
+    domain,
+    { minSpanMs: MIN_TIMELINE_WINDOW_MS },
+  );
 }
 
 function timelineDiagnostics(projection: ProjectTimelineProjection | null): TimelineDiagnosticView[] {
@@ -320,6 +309,8 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const lastProjectionRef = useRef<ProjectTimelineProjection | null>(null);
   const [status, setStatus] = useState<ProjectionStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const timeScrollRef = useRef<HTMLDivElement | null>(null);
+  const [timeViewportWidthPx, setTimeViewportWidthPx] = useState(FALLBACK_TIMELINE_WIDTH_PX);
   const requestGeneration = useRef(0);
 
   useEffect(() => {
@@ -355,8 +346,6 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       expanded_event_ids: viewState.expandedEventIds,
       expanded_paths: viewState.expandedPaths,
       include_closed: viewState.includeClosed,
-      from: viewState.timeWindow.from ?? undefined,
-      to: viewState.timeWindow.to ?? undefined,
     }, controller.signal)
       .then((next) => {
         if (requestGeneration.current !== generation) return;
@@ -379,8 +368,6 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     viewState.expandedEventIds.join(','),
     viewState.expandedPaths.join(','),
     viewState.includeClosed,
-    viewState.timeWindow.from,
-    viewState.timeWindow.to,
   ]);
 
   const rows = projection?.rows ?? [];
@@ -400,13 +387,39 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     }
     return result;
   }, [events, viewState.visibleEventTypes]);
+  const dataExtent = useMemo(() => {
+    const timestamps = Array.from(eventsByRow.values()).flatMap((rowEvents) => (
+      rowEvents.map((event) => event.timestamp)
+    ));
+    const fallbackEnd = projection?.time_axis.end ?? Date.now();
+    const fallbackStart = projection?.time_axis.start ?? fallbackEnd - TIMELINE_DAY_MS;
+    const fallbackSpan = Math.max(1, fallbackEnd - fallbackStart);
+    return timelineExtentFromTimestamps(timestamps, {
+      fallbackNow: fallbackEnd,
+      fallbackSpanMs: fallbackSpan,
+    });
+  }, [eventsByRow, projection?.time_axis.end, projection?.time_axis.start]);
+  const renderDomain = useMemo(() => (
+    paddedTimelineRenderDomain(dataExtent, {
+      viewportWidthPx: timeViewportWidthPx,
+      minSpanMs: TIMELINE_DAY_MS,
+    })
+  ), [dataExtent, timeViewportWidthPx]);
+  const viewport = useMemo(() => (
+    viewportFromState(renderDomain, viewState)
+  ), [renderDomain, viewState]);
+  const viewportSpan = Math.max(1, viewport.to - viewport.from);
+  const domainSpan = Math.max(1, renderDomain.end - renderDomain.start);
+  const { start, end } = { start: viewport.from, end: viewport.to };
+  const scrollMetrics = useMemo(() => (
+    timelineScrollMetrics(renderDomain, viewport, timeViewportWidthPx)
+  ), [renderDomain, timeViewportWidthPx, viewport]);
   const eventById = useMemo(() => new Map(events.map((event) => [event.id, event])), [events]);
   const rowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
   const selectedEvent = viewState.selectedEventId ? eventById.get(viewState.selectedEventId) ?? null : null;
   const selectedRow = viewState.selectedRowOccurrenceId
     ? rowById.get(viewState.selectedRowOccurrenceId) ?? null
     : selectedEvent ? rowById.get(selectedEvent.row_id) ?? null : null;
-  const { start, end, span } = visibleWindow(projection, viewState);
   const selectedRowEvents = selectedRow ? eventsByRow.get(selectedRow.id) ?? [] : [];
   const visibleSelectedRowEvents = selectedRowEvents.filter((event) => eventInWindow(event, start, end));
 
@@ -418,6 +431,35 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       panes: patch.panes ?? current.panes,
     }));
   }, []);
+
+  useEffect(() => {
+    const element = timeScrollRef.current;
+    if (!element) return undefined;
+
+    const measure = () => {
+      const width = element.clientWidth || element.getBoundingClientRect().width;
+      if (width > 0) {
+        setTimeViewportWidthPx(Math.round(width));
+      }
+    };
+
+    measure();
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+
+  useEffect(() => {
+    const element = timeScrollRef.current;
+    if (!element) return;
+    if (Math.abs(element.scrollLeft - scrollMetrics.scrollLeftPx) > 1) {
+      element.scrollLeft = scrollMetrics.scrollLeftPx;
+    }
+  }, [scrollMetrics.scrollLeftPx, scrollMetrics.surfaceWidthPx]);
 
   const selectEvent = useCallback((event: TimelineEvent) => {
     updateState({
@@ -482,18 +524,58 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [collapseEvent]);
 
   const fitProject = useCallback(() => {
-    updateState({ timeWindow: { from: null, to: null } });
-  }, [updateState]);
+    const next = fitTimelineViewport(renderDomain);
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, updateState]);
 
   const fitSelected = useCallback(() => {
     const target = selectedEvent ?? visibleSelectedRowEvents[0] ?? selectedRowEvents[0];
     if (!target) return;
-    updateState({ timeWindow: { from: target.timestamp - DAY_MS, to: target.timestamp + DAY_MS } });
-  }, [selectedEvent, selectedRowEvents, updateState, visibleSelectedRowEvents]);
+    const next = clampTimelineViewport(
+      {
+        from: target.timestamp - TIMELINE_DAY_MS,
+        to: target.timestamp + TIMELINE_DAY_MS,
+      },
+      renderDomain,
+      { minSpanMs: MIN_TIMELINE_WINDOW_MS },
+    );
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, selectedEvent, selectedRowEvents, updateState, visibleSelectedRowEvents]);
 
   const zoomTimeline = useCallback((factor: number, focalRatio = 0.5) => {
-    updateState({ timeWindow: zoomedWindow(projection, viewState, factor, focalRatio) });
-  }, [projection, updateState, viewState]);
+    const next = zoomTimelineViewport(viewport, renderDomain, factor, focalRatio, {
+      minSpanMs: MIN_TIMELINE_WINDOW_MS,
+    });
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, updateState, viewport]);
+
+  const editDateBoundary = useCallback((boundary: 'from' | 'to', value: string) => {
+    if (!value) {
+      updateState({
+        timeWindow: {
+          ...viewState.timeWindow,
+          [boundary]: null,
+        },
+      });
+      return;
+    }
+    const next = clampTimelineViewport(
+      editTimelineViewportDateBoundary(viewport, boundary, value),
+      renderDomain,
+      { minSpanMs: MIN_TIMELINE_WINDOW_MS },
+    );
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, updateState, viewState.timeWindow, viewport]);
+
+  const handleTimeScroll = useCallback((event: JSX.TargetedUIEvent<HTMLDivElement>) => {
+    const next = viewportFromTimelineScroll(
+      renderDomain,
+      event.currentTarget.scrollLeft,
+      viewportSpan,
+      timeViewportWidthPx,
+    );
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, timeViewportWidthPx, updateState, viewportSpan]);
 
   const handleTimelineWheel = useCallback((event: JSX.TargetedWheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey && !event.metaKey) return;
@@ -562,12 +644,11 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [navigateEvent, navigateRow]);
 
   const axisTicks = useMemo(() => {
-    const ticks = 4;
-    return Array.from({ length: ticks + 1 }, (_, index) => {
-      const timestamp = start + (span * index) / ticks;
-      return { timestamp, left: (index / ticks) * 100 };
-    });
-  }, [span, start]);
+    return generateTimelineTicks(viewport, timeViewportWidthPx).map((tick) => ({
+      ...tick,
+      left: eventLeft(tick.timestamp, renderDomain.start, domainSpan),
+    }));
+  }, [domainSpan, renderDomain.start, timeViewportWidthPx, viewport]);
 
   const diagnostics = useMemo(() => timelineDiagnostics(projection), [projection]);
   const diagnosticsCount = diagnostics.length;
@@ -621,16 +702,16 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           <span>From</span>
           <input
             type="date"
-            value={dateInputValue(viewState.timeWindow.from)}
-            onChange={(event) => updateState({ timeWindow: { ...viewState.timeWindow, from: dateInputToTimestamp((event.currentTarget as HTMLInputElement).value) } })}
+            value={dateInputValue(viewport.from)}
+            onChange={(event) => editDateBoundary('from', (event.currentTarget as HTMLInputElement).value)}
           />
         </label>
         <label className="timeline-control">
           <span>To</span>
           <input
             type="date"
-            value={dateInputValue(viewState.timeWindow.to)}
-            onChange={(event) => updateState({ timeWindow: { ...viewState.timeWindow, to: dateInputToTimestamp((event.currentTarget as HTMLInputElement).value, true) } })}
+            value={dateInputValue(viewport.to)}
+            onChange={(event) => editDateBoundary('to', (event.currentTarget as HTMLInputElement).value)}
           />
         </label>
         <div className="timeline-zoom-group" aria-label="Timeline zoom">
@@ -739,14 +820,24 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           </div>
           <div
             className="timeline-time-scroll"
+            ref={timeScrollRef}
+            onScroll={handleTimeScroll}
             onWheel={handleTimelineWheel}
             aria-label="Timeline time canvas"
           >
-            <div className="timeline-time-surface">
+            <div
+              className="timeline-time-surface"
+              style={{ width: `${scrollMetrics.surfaceWidthPx}px` } as JSX.CSSProperties}
+            >
             <div className="timeline-axis__track">
               {axisTicks.map((tick) => (
-                <span key={tick.timestamp} className="timeline-axis__tick" style={{ left: `${tick.left}%` }}>
-                  {formatDate(tick.timestamp)}
+                <span
+                  key={tick.timestamp}
+                  className={`timeline-axis__tick${tick.major ? ' timeline-axis__tick--major' : ''}`}
+                  style={{ left: `${tick.left}%` }}
+                >
+                  {tick.contextLabel ? <em>{tick.contextLabel}</em> : null}
+                  {tick.label}
                 </span>
               ))}
             </div>
@@ -771,7 +862,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                       <button
                         type="button"
                         className="timeline-origin-marker"
-                        style={{ left: `${eventLeft(sourceEvent.timestamp, start, span)}%` }}
+                        style={{ left: `${eventLeft(sourceEvent.timestamp, renderDomain.start, domainSpan)}%` }}
                         onClick={() => selectEvent(sourceEvent)}
                       >
                         Origin
@@ -789,7 +880,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                           key={event.id}
                           type="button"
                           className={`timeline-event timeline-event--${event.kind}${eventSelected ? ' timeline-event--selected' : ''}${expanded ? ' timeline-event--expanded' : ''}`}
-                          style={{ left: `${eventLeft(event.timestamp, start, span)}%` }}
+                          style={{ left: `${eventLeft(event.timestamp, renderDomain.start, domainSpan)}%` }}
                           onClick={() => selectEvent(event)}
                           title={`${event.display_headline} ${formatDateTime(event.timestamp)}`}
                         >
