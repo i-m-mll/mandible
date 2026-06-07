@@ -138,6 +138,13 @@ type MarkCandidate = TimelineLayoutMark extends infer Mark
     : never
   : never;
 
+type SameTimeClusterCandidate = Omit<TimelineSameTimeCluster, "lane"> & { lane?: number };
+
+type ClusteredCandidateResult = {
+  candidates: MarkCandidate[];
+  expandedSameTimeClusters: TimelineSameTimeCluster[];
+};
+
 const IMPORTANCE_RANK: Record<TimelineImportance, number> = {
   routine: 0,
   normal: 1,
@@ -205,6 +212,7 @@ export function buildTimelineLayout(input: TimelineLayoutInput): TimelineLayoutR
   }
 
   const marks: TimelineLayoutMark[] = [];
+  const expandedSameTimeClusters: TimelineSameTimeCluster[] = [];
   const rowLayouts: TimelineRowLayout[] = [];
   const rowLayoutById: Record<string, TimelineRowLayout> = {};
   const laneBudgetByRowId: Record<string, number> = {};
@@ -212,10 +220,20 @@ export function buildTimelineLayout(input: TimelineLayoutInput): TimelineLayoutR
   let nextRowTopPx = 0;
 
   for (const row of rows) {
-    const laneBudget = getTimelineLaneBudget(density, row.locallyExpanded);
-    laneBudgetByRowId[row.id] = laneBudget;
     const rowEvents = sortEvents(eventsByRow.get(row.id) ?? []);
-    const candidates = buildClusteredCandidates(rowEvents, {
+    const baseLaneBudget = getTimelineLaneBudget(density, row.locallyExpanded);
+    const expandedSameTimeEventCount = getExpandedSameTimeEventCount(rowEvents, {
+      clusterWidthPx,
+      expandedClusterIds,
+      input,
+      minGapPx,
+      zoomBucket,
+    });
+    const laneBudget = expandedSameTimeEventCount > 0
+      ? Math.max(baseLaneBudget, baseLaneBudget + expandedSameTimeEventCount)
+      : baseLaneBudget;
+    laneBudgetByRowId[row.id] = laneBudget;
+    const clustered = buildClusteredCandidates(rowEvents, {
       clusterWidthPx,
       expandedClusterIds,
       input,
@@ -224,6 +242,8 @@ export function buildTimelineLayout(input: TimelineLayoutInput): TimelineLayoutR
       rangeClusterMinCount,
       zoomBucket,
     });
+    expandedSameTimeClusters.push(...clustered.expandedSameTimeClusters);
+    const candidates = clustered.candidates;
     const rowMarks = packLanes(candidates, laneBudget, previousLaneByMarkId);
     const laneCount = rowMarks.length === 0
       ? 0
@@ -252,9 +272,10 @@ export function buildTimelineLayout(input: TimelineLayoutInput): TimelineLayoutR
   }
 
   const eventMarks = marks.filter((mark): mark is TimelineEventMark => mark.kind === "event");
-  const sameTimeClusters = marks.filter(
-    (mark): mark is TimelineSameTimeCluster => mark.kind === "same_time_cluster",
-  );
+  const sameTimeClusters = [
+    ...marks.filter((mark): mark is TimelineSameTimeCluster => mark.kind === "same_time_cluster"),
+    ...expandedSameTimeClusters,
+  ];
   const rangeClusters = marks.filter(
     (mark): mark is TimelineRangeCluster => mark.kind === "range_cluster",
   );
@@ -295,9 +316,9 @@ function buildClusteredCandidates(
     rangeClusterMinCount: number;
     zoomBucket: string;
   },
-): MarkCandidate[] {
-  const preliminaryMarks = buildPreliminaryMarks(events, options);
-  const components = collectOverlapComponents(preliminaryMarks);
+): ClusteredCandidateResult {
+  const preliminary = buildPreliminaryMarks(events, options);
+  const components = collectOverlapComponents(preliminary.candidates);
   const candidates: MarkCandidate[] = [];
 
   for (const component of components) {
@@ -317,7 +338,10 @@ function buildClusteredCandidates(
     }
   }
 
-  return sortCandidates(candidates);
+  return {
+    candidates: sortCandidates(candidates),
+    expandedSameTimeClusters: preliminary.expandedSameTimeClusters,
+  };
 }
 
 function buildPreliminaryMarks(
@@ -329,8 +353,9 @@ function buildPreliminaryMarks(
     minGapPx: number;
     zoomBucket: string;
   },
-): MarkCandidate[] {
+): ClusteredCandidateResult {
   const marks: MarkCandidate[] = [];
+  const expandedSameTimeClusters: TimelineSameTimeCluster[] = [];
   const eventsByTimestamp = new Map<number, TimelineLayoutEventInput[]>();
 
   for (const event of events) {
@@ -342,13 +367,22 @@ function buildPreliminaryMarks(
   for (const timestampEvents of eventsByTimestamp.values()) {
     const sorted = sortEvents(timestampEvents);
     if (sorted.length > 1) {
-      marks.push(createSameTimeCluster(sorted, options));
+      const cluster = createSameTimeCluster(sorted, options);
+      if (cluster.expanded) {
+        expandedSameTimeClusters.push(materializeSameTimeClusterMetadata(cluster));
+        marks.push(...sorted.map((event) => createEventMark(event, options.input, options.minGapPx)));
+      } else {
+        marks.push(cluster);
+      }
     } else {
       marks.push(createEventMark(sorted[0], options.input, options.minGapPx));
     }
   }
 
-  return sortCandidates(marks);
+  return {
+    candidates: sortCandidates(marks),
+    expandedSameTimeClusters,
+  };
 }
 
 function createEventMark(
@@ -383,7 +417,7 @@ function createSameTimeCluster(
     minGapPx: number;
     zoomBucket: string;
   },
-): MarkCandidate {
+): SameTimeClusterCandidate {
   const rowId = events[0].rowId;
   const timestamp = events[0].timestamp;
   const eventIds = events.map((event) => event.id).sort();
@@ -413,6 +447,47 @@ function createSameTimeCluster(
     intervalStartPx: xPx - halfWidthWithGap,
     intervalEndPx: xPx + halfWidthWithGap,
   };
+}
+
+function materializeSameTimeClusterMetadata(
+  cluster: SameTimeClusterCandidate,
+): TimelineSameTimeCluster {
+  return {
+    ...cluster,
+    lane: cluster.lane ?? 0,
+  };
+}
+
+function getExpandedSameTimeEventCount(
+  events: TimelineLayoutEventInput[],
+  options: {
+    clusterWidthPx: number;
+    expandedClusterIds: Set<string>;
+    input: TimelineLayoutInput;
+    minGapPx: number;
+    zoomBucket: string;
+  },
+): number {
+  let maxExpandedCount = 0;
+  const eventsByTimestamp = new Map<number, TimelineLayoutEventInput[]>();
+
+  for (const event of events) {
+    const timestampEvents = eventsByTimestamp.get(event.timestamp) ?? [];
+    timestampEvents.push(event);
+    eventsByTimestamp.set(event.timestamp, timestampEvents);
+  }
+
+  for (const timestampEvents of eventsByTimestamp.values()) {
+    if (timestampEvents.length <= 1) {
+      continue;
+    }
+    const cluster = createSameTimeCluster(sortEvents(timestampEvents), options);
+    if (cluster.expanded) {
+      maxExpandedCount = Math.max(maxExpandedCount, cluster.count);
+    }
+  }
+
+  return maxExpandedCount;
 }
 
 function createRangeCluster(

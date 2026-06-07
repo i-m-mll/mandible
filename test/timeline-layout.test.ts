@@ -152,6 +152,28 @@ describe("buildTimelineLayout", () => {
     expect(cluster.categorySummary).toEqual({ comment: 2, state: 1 });
   });
 
+  it("expands selected same-time clusters into child event marks while retaining cluster metadata", () => {
+    const events = [
+      event("b", 250, { category: "state", importance: "critical" }),
+      event("a", 250, { category: "comment", importance: "routine" }),
+      event("c", 250, { category: "comment" }),
+    ];
+    const collapsed = layout(events, { zoomBucket: "hour" });
+    const clusterId = collapsed.sameTimeClusters[0].id;
+
+    const result = layout(events, {
+      expandedClusterIds: [clusterId],
+      zoomBucket: "hour",
+    });
+
+    expect(result.marks.map((mark) => mark.kind)).toEqual(["event", "event", "event"]);
+    expect(result.eventMarks.map((mark) => mark.eventId).sort()).toEqual(["a", "b", "c"]);
+    expect(result.sameTimeClusters).toHaveLength(1);
+    expect(result.sameTimeClusters[0].id).toBe(clusterId);
+    expect(result.sameTimeClusters[0].expanded).toBe(true);
+    expect(result.chronologicalOrder.map((entry) => entry.markKind)).toEqual(["event", "event", "event"]);
+  });
+
   it("clusters dense nonzero bursts into true range marks with selected-child metadata", () => {
     const events = [
       event("e1", 100),

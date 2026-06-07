@@ -431,6 +431,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const [error, setError] = useState<string | null>(null);
   const timeScrollRef = useRef<HTMLDivElement | null>(null);
   const suppressProgrammaticScrollRef = useRef(false);
+  const suppressProgrammaticScrollTimerRef = useRef<number | null>(null);
   const rowListResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [timeViewportWidthPx, setTimeViewportWidthPx] = useState(FALLBACK_TIMELINE_WIDTH_PX);
   const laneCacheRef = useRef<TimelineLaneCache>({});
@@ -679,15 +680,25 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     return () => window.removeEventListener('resize', measure);
   }, []);
 
+  useEffect(() => () => {
+    if (suppressProgrammaticScrollTimerRef.current !== null) {
+      window.clearTimeout(suppressProgrammaticScrollTimerRef.current);
+    }
+  }, []);
+
   useEffect(() => {
     const element = timeScrollRef.current;
     if (!element) return;
     if (Math.abs(element.scrollLeft - scrollMetrics.scrollLeftPx) > 1) {
       suppressProgrammaticScrollRef.current = true;
+      if (suppressProgrammaticScrollTimerRef.current !== null) {
+        window.clearTimeout(suppressProgrammaticScrollTimerRef.current);
+      }
       element.scrollLeft = scrollMetrics.scrollLeftPx;
-      window.setTimeout(() => {
+      suppressProgrammaticScrollTimerRef.current = window.setTimeout(() => {
         suppressProgrammaticScrollRef.current = false;
-      }, 0);
+        suppressProgrammaticScrollTimerRef.current = null;
+      }, 80);
     }
   }, [scrollMetrics.scrollLeftPx, scrollMetrics.surfaceWidthPx]);
 
@@ -865,6 +876,14 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const handleTimelineWheel = useCallback((event: JSX.TargetedWheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
+    suppressProgrammaticScrollRef.current = true;
+    if (suppressProgrammaticScrollTimerRef.current !== null) {
+      window.clearTimeout(suppressProgrammaticScrollTimerRef.current);
+    }
+    suppressProgrammaticScrollTimerRef.current = window.setTimeout(() => {
+      suppressProgrammaticScrollRef.current = false;
+      suppressProgrammaticScrollTimerRef.current = null;
+    }, 80);
     const bounds = timeScrollRef.current?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
     const focalRatio = bounds.width > 0
       ? clamp((event.clientX - bounds.left) / bounds.width, 0, 1)
@@ -1200,7 +1219,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 const rowEventMarks = rowEvents
                   .map((event) => ({ event, mark: eventMarkById.get(event.id) }))
                   .filter((entry): entry is { event: TimelineEvent; mark: TimelineEventMark } => Boolean(entry.mark));
-                const rowSameTimeClusters = timelineLayout.sameTimeClusters.filter((cluster) => cluster.rowId === row.id);
+                const rowSameTimeClusters = timelineLayout.sameTimeClusters.filter(
+                  (cluster) => cluster.rowId === row.id && !cluster.expanded,
+                );
                 const rowRangeClusters = timelineLayout.rangeClusters.filter((cluster) => cluster.rowId === row.id);
                 const earlier = rowEvents.filter((event) => event.timestamp < start).length;
                 const later = rowEvents.filter((event) => event.timestamp > end).length;
@@ -1245,7 +1266,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                           width: `${Math.max(cluster.widthPx, 28)}px`,
                         }}
                         onClick={() => selectCluster(cluster)}
-                        onDblClick={() => zoomToCluster(cluster)}
+                        onDblClick={() => {
+                          selectCluster(cluster);
+                          zoomToCluster(cluster);
+                        }}
                         aria-label={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
                         title={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
                       >
@@ -1264,7 +1288,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                           width: `${cluster.widthPx}px`,
                         }}
                         onClick={() => selectCluster(cluster)}
-                        onDblClick={() => zoomToCluster(cluster)}
+                        onDblClick={() => {
+                          selectCluster(cluster);
+                          zoomToCluster(cluster);
+                        }}
                         aria-label={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
                         title={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
                       >
@@ -1285,7 +1312,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                             left: `${mark.xPx}px`,
                             top: `${markLaneTopPx(mark, layoutMetrics.laneHeightPx)}px`,
                           }}
-                          onClick={() => selectEvent(event)}
+                          onClick={() => selectEvent(event, {
+                            preserveCluster: Boolean(selectedCluster?.eventIds.includes(event.id)),
+                          })}
                           title={`${event.display_headline} ${formatDateTime(event.timestamp)}`}
                         >
                           <span className="timeline-event__marker" aria-hidden="true" />

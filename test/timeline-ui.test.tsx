@@ -516,6 +516,9 @@ describe('TimelineView', () => {
       deltaY: -100,
       clientX: 500,
     });
+    fireEvent.scroll(screen.getByLabelText('Timeline time canvas'), {
+      target: { scrollLeft: 0 },
+    });
 
     await waitFor(() => {
       const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
@@ -1046,9 +1049,27 @@ describe('TimelineView', () => {
     expect(within(clusterList).getByText('Same cluster A')).toBeTruthy();
     expect(within(clusterList).getByText('Same cluster B')).toBeTruthy();
     await waitFor(() => {
+      expect(document.querySelector('.timeline-row-canvas .timeline-cluster--same-time')).toBeNull();
+      const canvasEvents = Array.from(document.querySelectorAll('.timeline-row-canvas .timeline-event'))
+        .map((element) => element.textContent ?? '');
+      expect(canvasEvents.some((text) => text.includes('Same cluster A'))).toBe(true);
+      expect(canvasEvents.some((text) => text.includes('Same cluster B'))).toBe(true);
+    });
+    await waitFor(() => {
       const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
       expect(stored).toBeTruthy();
       expect(JSON.parse(String(stored)).selectedClusterId).toContain('same_time_cluster');
+    });
+
+    const canvasChild = Array.from(document.querySelectorAll<HTMLButtonElement>('.timeline-row-canvas .timeline-event'))
+      .find((button) => button.textContent?.includes('Same cluster A'));
+    expect(canvasChild).toBeTruthy();
+    fireEvent.click(canvasChild as HTMLButtonElement);
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      const state = JSON.parse(String(stored));
+      expect(state.selectedEventId).toBe('event-same-a');
+      expect(state.selectedClusterId).toContain('same_time_cluster');
     });
 
     fireEvent.click(within(clusterList).getByText('Same cluster B'));
@@ -1059,6 +1080,35 @@ describe('TimelineView', () => {
       const state = JSON.parse(String(stored));
       expect(state.selectedEventId).toBe('event-same-b');
       expect(state.selectedClusterId).toContain('same_time_cluster');
+    });
+  });
+
+  it('double-clicks into same-time clusters instead of only zooming toward the marker', async () => {
+    stubTimelineFetch(sameTimeClusterProjection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    const cluster = await screen.findByRole('button', {
+      name: /Same-time cluster, 2 events, Body 1, Comment 1, at 2026-01-01 12:00:00Z/,
+    });
+
+    fireEvent.dblClick(cluster);
+
+    await waitFor(() => {
+      expect(document.querySelector('.timeline-row-canvas .timeline-cluster--same-time')).toBeNull();
+      const canvasEvents = Array.from(document.querySelectorAll('.timeline-row-canvas .timeline-event'))
+        .map((element) => element.textContent ?? '');
+      expect(canvasEvents.some((text) => text.includes('Same cluster A'))).toBe(true);
+      expect(canvasEvents.some((text) => text.includes('Same cluster B'))).toBe(true);
+    });
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      const state = JSON.parse(String(stored));
+      expect(state.selectedClusterId).toContain('same_time_cluster');
+      expect(state.timeWindow.to - state.timeWindow.from).toBeLessThan(TEST_DAY_MS);
     });
   });
 
