@@ -820,6 +820,7 @@ a {
 .timeline-row-canvas {
   position: relative;
   min-height: inherit;
+  height: 100%;
   width: 100%;
   overflow: hidden;
   background:

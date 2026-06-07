@@ -20,6 +20,12 @@ import {
   type TimelineViewport,
 } from './timeline-time';
 import {
+  buildTimelineLayout,
+  type TimelineDensityMode,
+  type TimelineEventMark,
+  type TimelineLaneCache,
+} from './timeline-layout';
+import {
   DEFAULT_TIMELINE_VIEW_STATE,
   type ProjectTimelineProjection,
   type TimelineDensity,
@@ -38,6 +44,16 @@ const FALLBACK_TIMELINE_WIDTH_PX = 820;
 const MIN_TIMELINE_WINDOW_MS = TIMELINE_HOUR_MS;
 const MIN_INSPECTOR_WIDTH = 280;
 const MAX_INSPECTOR_WIDTH = 560;
+const TIMELINE_LAYOUT_METRICS: Record<TimelineDensityMode, {
+  laneHeightPx: number;
+  markWidthPx: number;
+  rowMinHeightPx: number;
+}> = {
+  compact: { laneHeightPx: 36, markWidthPx: 34, rowMinHeightPx: 54 },
+  comfortable: { laneHeightPx: 54, markWidthPx: 170, rowMinHeightPx: 82 },
+  expanded: { laneHeightPx: 82, markWidthPx: 240, rowMinHeightPx: 122 },
+};
+const TIMELINE_ROW_PADDING_Y_PX = 8;
 
 export type TimelineViewProps = {
   repos: WorkRepo[];
@@ -226,6 +242,18 @@ function eventLeft(timestamp: number, start: number, span: number): number {
   return Math.max(0, Math.min(100, ((timestamp - start) / span) * 100));
 }
 
+function eventLeftPx(timestamp: number, start: number, span: number, widthPx: number): number {
+  return Math.max(0, Math.min(widthPx, ((timestamp - start) / span) * widthPx));
+}
+
+function eventLaneTopPx(mark: TimelineEventMark, laneHeightPx: number): number {
+  return TIMELINE_ROW_PADDING_Y_PX + mark.lane * laneHeightPx + laneHeightPx / 2;
+}
+
+function rangeClusterMinCountForDensity(density: TimelineDensityMode): number {
+  return density === 'compact' ? 3 : density === 'comfortable' ? 4 : 5;
+}
+
 function eventKindLabel(kind: TimelineEventKind): string {
   return kind === 'body' ? 'Body' : kind === 'comment' ? 'Comment' : 'State';
 }
@@ -311,6 +339,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const [error, setError] = useState<string | null>(null);
   const timeScrollRef = useRef<HTMLDivElement | null>(null);
   const [timeViewportWidthPx, setTimeViewportWidthPx] = useState(FALLBACK_TIMELINE_WIDTH_PX);
+  const laneCacheRef = useRef<TimelineLaneCache>({});
   const requestGeneration = useRef(0);
 
   useEffect(() => {
@@ -414,14 +443,56 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const scrollMetrics = useMemo(() => (
     timelineScrollMetrics(renderDomain, viewport, timeViewportWidthPx)
   ), [renderDomain, timeViewportWidthPx, viewport]);
+  const layoutMetrics = TIMELINE_LAYOUT_METRICS[viewState.density];
   const eventById = useMemo(() => new Map(events.map((event) => [event.id, event])), [events]);
   const rowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
+  const timelineLayout = useMemo(() => (
+    buildTimelineLayout({
+      rows: rows.map((row) => ({ id: row.id })),
+      events: Array.from(eventsByRow.values()).flatMap((rowEvents) => rowEvents.map((event) => ({
+        id: event.id,
+        rowId: event.row_id,
+        timestamp: event.timestamp,
+        widthPx: layoutMetrics.markWidthPx,
+        category: event.kind,
+        importance: event.issue.priority === 'critical' ? 'critical' : 'normal',
+      }))),
+      renderDomain: { start: renderDomain.start, end: renderDomain.end },
+      viewportWidthPx: scrollMetrics.surfaceWidthPx,
+      density: viewState.density,
+      selectedEventId: viewState.selectedEventId,
+      previousLaneByMarkId: laneCacheRef.current,
+      markWidthPx: layoutMetrics.markWidthPx,
+      rowMinHeightPx: layoutMetrics.rowMinHeightPx,
+      rowPaddingYPx: TIMELINE_ROW_PADDING_Y_PX,
+      laneHeightPx: layoutMetrics.laneHeightPx,
+      rangeClusterMinCount: rangeClusterMinCountForDensity(viewState.density),
+    })
+  ), [
+    eventsByRow,
+    layoutMetrics.laneHeightPx,
+    layoutMetrics.markWidthPx,
+    layoutMetrics.rowMinHeightPx,
+    renderDomain.end,
+    renderDomain.start,
+    rows,
+    scrollMetrics.surfaceWidthPx,
+    viewState.density,
+    viewState.selectedEventId,
+  ]);
+  const eventMarkById = useMemo(() => (
+    new Map(timelineLayout.eventMarks.map((mark) => [mark.eventId, mark]))
+  ), [timelineLayout.eventMarks]);
   const selectedEvent = viewState.selectedEventId ? eventById.get(viewState.selectedEventId) ?? null : null;
   const selectedRow = viewState.selectedRowOccurrenceId
     ? rowById.get(viewState.selectedRowOccurrenceId) ?? null
     : selectedEvent ? rowById.get(selectedEvent.row_id) ?? null : null;
   const selectedRowEvents = selectedRow ? eventsByRow.get(selectedRow.id) ?? [] : [];
   const visibleSelectedRowEvents = selectedRowEvents.filter((event) => eventInWindow(event, start, end));
+
+  useEffect(() => {
+    laneCacheRef.current = timelineLayout.nextLaneByMarkId;
+  }, [timelineLayout.nextLaneByMarkId]);
 
   const updateState = useCallback((patch: Partial<TimelineViewState>) => {
     setViewState((current) => ({
@@ -604,14 +675,25 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [updateState, viewState.panes]);
 
   const navigateEvent = useCallback((direction: 1 | -1) => {
-    const rowEvents = selectedRowEvents.length > 0 ? selectedRowEvents : events;
+    const chronologicalEvents = timelineLayout.chronologicalOrder
+      .filter((entry) => !selectedRow || entry.rowId === selectedRow.id)
+      .map((entry) => eventById.get(entry.eventId))
+      .filter((event): event is TimelineEvent => Boolean(event));
+    const rowEvents = chronologicalEvents.length > 0 ? chronologicalEvents : selectedRowEvents;
     if (rowEvents.length === 0) return;
     const index = viewState.selectedEventId
       ? rowEvents.findIndex((event) => event.id === viewState.selectedEventId)
       : -1;
     const next = rowEvents[Math.max(0, Math.min(rowEvents.length - 1, index + direction))] ?? rowEvents[0];
     selectEvent(next);
-  }, [events, selectEvent, selectedRowEvents, viewState.selectedEventId]);
+  }, [
+    eventById,
+    selectEvent,
+    selectedRow,
+    selectedRowEvents,
+    timelineLayout.chronologicalOrder,
+    viewState.selectedEventId,
+  ]);
 
   const navigateRow = useCallback((direction: 1 | -1) => {
     if (rows.length === 0) return;
@@ -796,12 +878,16 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
               {rows.map((row) => {
                 const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
                 const selected = selectedRow?.id === row.id;
+                const rowLayout = timelineLayout.rowLayoutById[row.id];
                 return (
                   <button
                     key={row.id}
                     type="button"
                     className={`timeline-gutter-row timeline-gutter-row--${row.kind}${selected ? ' timeline-gutter-row--selected' : ''}`}
-                    style={{ '--depth': row.depth } as JSX.CSSProperties}
+                    style={{
+                      '--depth': row.depth,
+                      height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px`,
+                    } as JSX.CSSProperties}
                     onClick={() => selectRow(row)}
                     aria-label={`${row.issue.display_id} ${row.issue.title}. ${rowKindLabel(row.kind)} row. Status ${row.issue.status}${row.issue.resolution ? `/${row.issue.resolution}` : ''}.`}
                   >
@@ -846,7 +932,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 <div className="timeline-empty">No timeline rows match the current controls.</div>
               ) : rows.map((row) => {
                 const rowEvents = eventsByRow.get(row.id) ?? [];
-                const visibleEvents = rowEvents.filter((event) => eventInWindow(event, start, end));
+                const rowLayout = timelineLayout.rowLayoutById[row.id];
+                const rowEventMarks = rowEvents
+                  .map((event) => ({ event, mark: eventMarkById.get(event.id) }))
+                  .filter((entry): entry is { event: TimelineEvent; mark: TimelineEventMark } => Boolean(entry.mark));
                 const earlier = rowEvents.filter((event) => event.timestamp < start).length;
                 const later = rowEvents.filter((event) => event.timestamp > end).length;
                 const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
@@ -856,13 +945,14 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                     key={row.id}
                     className={`timeline-row timeline-row--${row.kind}${selected ? ' timeline-row--selected' : ''}`}
                     role="row"
+                    style={{ height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px` } as JSX.CSSProperties}
                   >
                   <div className="timeline-row-canvas" role="gridcell">
                     {sourceEvent ? (
                       <button
                         type="button"
                         className="timeline-origin-marker"
-                        style={{ left: `${eventLeft(sourceEvent.timestamp, renderDomain.start, domainSpan)}%` }}
+                        style={{ left: `${eventLeftPx(sourceEvent.timestamp, renderDomain.start, domainSpan, scrollMetrics.surfaceWidthPx)}px` }}
                         onClick={() => selectEvent(sourceEvent)}
                       >
                         Origin
@@ -870,7 +960,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                     ) : null}
                     {earlier > 0 ? <span className="timeline-boundary timeline-boundary--left">{earlier} earlier</span> : null}
                     {later > 0 ? <span className="timeline-boundary timeline-boundary--right">{later} later</span> : null}
-                    {visibleEvents.map((event) => {
+                    {rowEventMarks.map(({ event, mark }) => {
                       const eventLinks = event.link_ids.map((id) => linkById.get(id)).filter((link): link is TimelineLink => Boolean(link));
                       const issueLinks = eventLinks.filter((link) => link.target_issue && !link.target_issue.deleted);
                       const expanded = viewState.expandedEventIds.includes(event.id) || eventLinks.some((link) => Boolean(link.expanded_row_id));
@@ -880,7 +970,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                           key={event.id}
                           type="button"
                           className={`timeline-event timeline-event--${event.kind}${eventSelected ? ' timeline-event--selected' : ''}${expanded ? ' timeline-event--expanded' : ''}`}
-                          style={{ left: `${eventLeft(event.timestamp, renderDomain.start, domainSpan)}%` }}
+                          style={{
+                            left: `${mark.xPx}px`,
+                            top: `${eventLaneTopPx(mark, layoutMetrics.laneHeightPx)}px`,
+                          }}
                           onClick={() => selectEvent(event)}
                           title={`${event.display_headline} ${formatDateTime(event.timestamp)}`}
                         >

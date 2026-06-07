@@ -195,6 +195,76 @@ function stubTimelineFetch(...responses: Array<ProjectTimelineProjection | Promi
   return fetchMock;
 }
 
+function nearTimeProjection(): ProjectTimelineProjection {
+  const base = projection();
+  const nearEvents = [
+    {
+      ...base.events[0],
+      id: 'event-near-a',
+      timestamp: Date.UTC(2026, 0, 1, 12, 0),
+      ordinal: 0,
+      display_headline: 'Near event A',
+      link_ids: [],
+    },
+    {
+      ...base.events[0],
+      id: 'event-near-b',
+      timestamp: Date.UTC(2026, 0, 1, 12, 30),
+      ordinal: 1,
+      display_headline: 'Near event B',
+      link_ids: [],
+    },
+    {
+      ...base.events[0],
+      id: 'event-near-c',
+      timestamp: Date.UTC(2026, 0, 1, 13, 0),
+      ordinal: 2,
+      display_headline: 'Near event C',
+      link_ids: [],
+    },
+  ];
+  return projection({
+    rows: [
+      base.rows[0],
+      {
+        ...base.rows[0],
+        id: 'row-secondary',
+        kind: 'explicit_root',
+        issue: {
+          ...base.rows[0].issue,
+          id: 'iss_secondary',
+          display_id: 'bb22ccd',
+          title: 'Secondary row',
+        },
+      },
+    ],
+    events: [
+      ...nearEvents,
+      {
+        ...base.events[0],
+        id: 'event-secondary',
+        row_id: 'row-secondary',
+        timestamp: Date.UTC(2026, 0, 2, 12),
+        ordinal: 0,
+        display_headline: 'Secondary event',
+        link_ids: [],
+        issue: {
+          ...base.events[0].issue,
+          id: 'iss_secondary',
+          display_id: 'bb22ccd',
+          title: 'Secondary row',
+        },
+      },
+    ],
+    links: [],
+    time_axis: {
+      start: Date.UTC(2026, 0, 1),
+      end: Date.UTC(2026, 0, 3),
+      event_count: 4,
+    },
+  });
+}
+
 describe('Timeline route', () => {
   it('parses timeline hashes as a first-class workspace', () => {
     expect(parseRouteFromHash('#/timeline?project=mandible&density=compact')).toEqual({
@@ -346,7 +416,7 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.queryByText('Build shared axis')).toBeNull());
     const commentButton = screen.getByText('Comment extent anchor').closest('button') as HTMLButtonElement;
-    expect(commentButton.style.left).toBe('50%');
+    expect(commentButton.style.left).toBe('410px');
     expect(fetchMock.mock.calls.length).toBe(1);
   });
 
@@ -534,5 +604,46 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.getByText('Selection is outside the current projection.')).toBeTruthy());
     expect(screen.queryByText('Synced headline')).toBeNull();
+  });
+
+  it('synchronizes gutter and timeline row heights from packed lane layout', async () => {
+    stubTimelineFetch(nearTimeProjection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible', density: 'comfortable' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Near event C')).toBeTruthy());
+    const gutterRows = Array.from(document.querySelectorAll<HTMLElement>('.timeline-gutter-row'));
+    const timelineRows = Array.from(document.querySelectorAll<HTMLElement>('.timeline-row'));
+
+    expect(gutterRows).toHaveLength(2);
+    expect(timelineRows).toHaveLength(2);
+    expect(gutterRows[0].style.height).toBe(timelineRows[0].style.height);
+    expect(gutterRows[1].style.height).toBe(timelineRows[1].style.height);
+    expect(parseInt(timelineRows[0].style.height, 10)).toBeGreaterThan(
+      parseInt(timelineRows[1].style.height, 10),
+    );
+  });
+
+  it('renders near-time event marks in separate lanes without horizontal displacement', async () => {
+    stubTimelineFetch(nearTimeProjection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible', density: 'comfortable' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Near event C')).toBeTruthy());
+    const nearButtons = ['Near event A', 'Near event B', 'Near event C'].map((label) => (
+      screen.getByText(label).closest('button') as HTMLButtonElement
+    ));
+    const laneTops = nearButtons.map((button) => button.style.top);
+    const lefts = nearButtons.map((button) => parseFloat(button.style.left));
+
+    expect(new Set(laneTops).size).toBe(3);
+    expect(lefts[0]).toBeLessThan(lefts[1]);
+    expect(lefts[1]).toBeLessThan(lefts[2]);
   });
 });
