@@ -882,7 +882,15 @@ describe('TimelineView', () => {
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
     const expandBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
     expect(expandBody.expanded_event_ids).toContain('event-transient');
+    expect(expandBody.depth).toBe(2);
     await waitFor(() => expect(document.querySelectorAll('.timeline-row').length).toBe(3));
+    const eventButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('.timeline-event'));
+    expect(eventButtons.some((button) => (
+      button.textContent?.includes('Transient ref event')
+      && button.classList.contains('timeline-event--expanded')
+    ))).toBe(true);
+    expect(document.querySelector('.timeline-row--has-origin')).toBeTruthy();
+    expect(document.querySelector('.timeline-origin-marker')).toBeNull();
     expect(screen.getByText('Fold refs')).toBeTruthy();
   });
 

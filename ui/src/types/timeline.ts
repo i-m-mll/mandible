@@ -40,6 +40,7 @@ export type ProjectTimelineInput = {
   expanded_event_ids?: string[];
   expanded_paths?: string[];
   include_closed?: boolean;
+  depth?: number;
   from?: number;
   to?: number;
 };

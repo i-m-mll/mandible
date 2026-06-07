@@ -53,6 +53,7 @@ const TIMELINE_EDGE_BREATHING_RATIO = 0.03;
 const TIMELINE_TICK_SPACING_PX = 120;
 const WHEEL_ZOOM_IN_FACTOR = 0.9;
 const WHEEL_ZOOM_OUT_FACTOR = 1 / WHEEL_ZOOM_IN_FACTOR;
+const MAX_TIMELINE_PROJECTION_DEPTH = 8;
 const TIMELINE_LAYOUT_METRICS: Record<TimelineDensityMode, {
   laneHeightPx: number;
   markWidthPx: number;
@@ -219,6 +220,24 @@ function clearTimelineSelection(state: TimelineViewState): TimelineViewState {
     selectedEventId: null,
     selectedClusterId: null,
   };
+}
+
+function projectionDepthForExpandedEvents(
+  projection: ProjectTimelineProjection | null,
+  expandedEventIds: readonly string[],
+): number {
+  if (expandedEventIds.length === 0) return 1;
+  if (!projection) return MAX_TIMELINE_PROJECTION_DEPTH;
+  const rowById = new Map(projection.rows.map((row) => [row.id, row]));
+  const eventById = new Map(projection.events.map((event) => [event.id, event]));
+  let depth = 1;
+  for (const eventId of expandedEventIds) {
+    const event = eventById.get(eventId);
+    const row = event ? rowById.get(event.row_id) : null;
+    if (!row) return MAX_TIMELINE_PROJECTION_DEPTH;
+    depth = Math.max(depth, row.depth + 1);
+  }
+  return Math.min(MAX_TIMELINE_PROJECTION_DEPTH, Math.max(1, depth));
 }
 
 function readStoredState(projectId: string): Partial<TimelineViewState> {
@@ -428,6 +447,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     setProjectRef(nextProjectRef);
     setViewState(stateForProjectSelection(nextProjectRef));
   }, [resetLoadedProjection, stateForProjectSelection]);
+  const projectionDepth = useMemo(
+    () => projectionDepthForExpandedEvents(projection, viewState.expandedEventIds),
+    [projection, viewState.expandedEventIds],
+  );
 
   useEffect(() => {
     const nextProjectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -470,6 +493,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       expanded_event_ids: viewState.expandedEventIds,
       expanded_paths: viewState.expandedPaths,
       include_closed: viewState.includeClosed,
+      depth: projectionDepth,
     }, controller.signal)
       .then((next) => {
         if (requestGeneration.current !== generation) return;
@@ -492,6 +516,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     viewState.expandedEventIds.join(','),
     viewState.expandedPaths.join(','),
     viewState.includeClosed,
+    projectionDepth,
   ]);
 
   const rows = projection?.rows ?? EMPTY_TIMELINE_ROWS;
@@ -1109,24 +1134,20 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 const later = rowEvents.filter((event) => event.timestamp > end).length;
                 const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
                 const selected = selectedRow?.id === row.id;
+                const originXPx = sourceEvent
+                  ? eventLeftPx(sourceEvent.timestamp, renderDomain.start, domainSpan, scrollMetrics.surfaceWidthPx)
+                  : null;
                 return (
                   <div
                     key={row.id}
-                    className={`timeline-row timeline-row--${row.kind}${selected ? ' timeline-row--selected' : ''}`}
+                    className={`timeline-row timeline-row--${row.kind}${sourceEvent ? ' timeline-row--has-origin' : ''}${selected ? ' timeline-row--selected' : ''}`}
                     role="row"
-                    style={{ height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px` } as JSX.CSSProperties}
+                    style={{
+                      '--origin-x': originXPx === null ? undefined : `${originXPx}px`,
+                      height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px`,
+                    } as JSX.CSSProperties}
                   >
                   <div className="timeline-row-canvas" role="gridcell">
-                    {sourceEvent ? (
-                      <button
-                        type="button"
-                        className="timeline-origin-marker"
-                        style={{ left: `${eventLeftPx(sourceEvent.timestamp, renderDomain.start, domainSpan, scrollMetrics.surfaceWidthPx)}px` }}
-                        onClick={() => selectEvent(sourceEvent)}
-                      >
-                        Origin
-                      </button>
-                    ) : null}
                     {earlier > 0 ? <span className="timeline-boundary timeline-boundary--left">{earlier} earlier</span> : null}
                     {later > 0 ? <span className="timeline-boundary timeline-boundary--right">{later} later</span> : null}
                     {rowRangeClusters.map((cluster) => (

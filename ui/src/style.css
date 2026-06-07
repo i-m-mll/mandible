@@ -929,8 +929,20 @@ a {
     rgba(11, 15, 20, 0.55);
 }
 
+.timeline-row--has-origin .timeline-row-canvas::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  bottom: 0;
+  left: var(--origin-x);
+  border-left: 1px solid rgba(245, 194, 92, 0.36);
+  pointer-events: none;
+}
+
 .timeline-event {
   position: absolute;
+  z-index: 1;
   top: 50%;
   transform: translate(-50%, -50%);
   width: 170px;
@@ -973,7 +985,11 @@ a {
 }
 
 .timeline-event--expanded {
-  border-style: double;
+  border-color: rgba(245, 194, 92, 0.72);
+  background: rgba(31, 38, 34, 0.98);
+  box-shadow:
+    inset 0 0 0 1px rgba(245, 194, 92, 0.18),
+    0 10px 24px rgba(0, 0, 0, 0.28);
 }
 
 .timeline-event__marker {
@@ -1081,7 +1097,6 @@ a {
   border-color: rgba(245, 194, 92, 0.72);
 }
 
-.timeline-origin-marker,
 .timeline-boundary {
   position: absolute;
   z-index: 2;
@@ -1093,11 +1108,6 @@ a {
   background: rgba(245, 194, 92, 0.1);
   color: var(--accent-yellow);
   font-size: 10px;
-}
-
-.timeline-origin-marker {
-  transform: translateX(-50%);
-  cursor: pointer;
 }
 
 .timeline-boundary--left {
