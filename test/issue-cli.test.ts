@@ -1,12 +1,15 @@
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let server: http.Server | null = null;
 let requestedPaths: string[] = [];
+let tempRoots: string[] = [];
 
 const issueRevision = {
   id: "rev_issue_1",
@@ -58,10 +61,11 @@ const newCommentRevision = {
 function run(
   args: string[],
   port: number,
+  cwd = process.cwd(),
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(CLI, args, {
-      cwd: process.cwd(),
+      cwd,
       env: {
         ...process.env,
         MANDIBLE_PORT: String(port),
@@ -83,6 +87,36 @@ function run(
   });
 }
 
+function git(args: string[], cwd: string): string {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
+  }
+  return result.stdout.trim();
+}
+
+function makeGitRepoWithWorktree(): { repoRoot: string; worktreeRoot: string } {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-issue-cli-"));
+  tempRoots.push(tempRoot);
+  const repoRoot = path.join(tempRoot, "mandible");
+  const worktreeRoot = path.join(tempRoot, "worktrees", "feature__demo");
+
+  fs.mkdirSync(repoRoot, { recursive: true });
+  git(["init", "-b", "main"], repoRoot);
+  git(["config", "user.name", "Mandible Test"], repoRoot);
+  git(["config", "user.email", "mandible-test@example.invalid"], repoRoot);
+  git(["config", "commit.gpgsign", "false"], repoRoot);
+  fs.writeFileSync(path.join(repoRoot, "tracked.txt"), "base\n", "utf8");
+  git(["add", "tracked.txt"], repoRoot);
+  git(["commit", "-m", "base"], repoRoot);
+  git(["worktree", "add", "-b", "feature/demo", worktreeRoot], repoRoot);
+
+  return {
+    repoRoot: fs.realpathSync(repoRoot),
+    worktreeRoot: fs.realpathSync(worktreeRoot),
+  };
+}
+
 function listen(): Promise<number> {
   requestedPaths = [];
   return new Promise((resolve) => {
@@ -90,6 +124,15 @@ function listen(): Promise<number> {
       requestedPaths.push(req.url ?? "");
       res.setHeader("Content-Type", "application/json");
 
+      if (req.url?.startsWith("/api/issues?")) {
+        res.end(JSON.stringify([
+          {
+            repo_name: "mandible",
+            issues: [{ id: "abc", status: "open", title: "Worktree issue" }],
+          },
+        ]));
+        return;
+      }
       if (req.url === "/api/ledger/issues/abc/body/revisions") {
         res.end(JSON.stringify({ revisions: [issueRevision] }));
         return;
@@ -147,6 +190,10 @@ afterEach(async () => {
     });
     server = null;
   }
+  for (const root of tempRoots) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+  tempRoots = [];
 });
 
 describe("issue CLI body revisions", () => {
@@ -246,5 +293,38 @@ describe("issue CLI body revisions", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("Refusing to diff revisions from different entities");
+  });
+});
+
+describe("issue CLI list repo scoping", () => {
+  it("passes the root checkout path as the repo filter", async () => {
+    const { repoRoot } = makeGitRepoWithWorktree();
+    const port = await listen();
+    const result = await run(["issue", "list", "--status", "open"], port, repoRoot);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("abc\topen\tmandible\tWorktree issue");
+
+    const listPath = requestedPaths.find((item) => item.startsWith("/api/issues?"));
+    expect(listPath).toBeTruthy();
+    const url = new URL(`http://127.0.0.1${listPath}`);
+    expect(url.searchParams.get("repo")).toBe(repoRoot);
+    expect(url.searchParams.get("status")).toBe("open");
+  });
+
+  it("normalizes linked worktree cwd to the main checkout path", async () => {
+    const { repoRoot, worktreeRoot } = makeGitRepoWithWorktree();
+    const port = await listen();
+    const result = await run(["issue", "list", "--status", "open"], port, worktreeRoot);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("abc\topen\tmandible\tWorktree issue");
+
+    const listPath = requestedPaths.find((item) => item.startsWith("/api/issues?"));
+    expect(listPath).toBeTruthy();
+    const url = new URL(`http://127.0.0.1${listPath}`);
+    expect(url.searchParams.get("repo")).toBe(repoRoot);
+    expect(url.searchParams.get("repo")).not.toBe(worktreeRoot);
+    expect(url.searchParams.get("status")).toBe("open");
   });
 });

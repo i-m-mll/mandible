@@ -64,6 +64,22 @@ repo_root() {
 }
 
 repo_ref() {
+  local common_dir
+
+  if common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    && [[ -n "$common_dir" ]]; then
+    case "$common_dir" in
+      */.git)
+        dirname "$common_dir"
+        return
+        ;;
+      */.git/*)
+        printf '%s\n' "${common_dir%%/.git/*}"
+        return
+        ;;
+    esac
+  fi
+
   repo_root
 }
 
