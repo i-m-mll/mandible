@@ -526,6 +526,10 @@ describe('TimelineView', () => {
       const state = JSON.parse(String(stored));
       expect(state.timeWindow.to - state.timeWindow.from).toBeLessThan(TEST_DAY_MS * 1.35);
     });
+    await waitFor(() => {
+      const surface = document.querySelector('.timeline-time-surface') as HTMLElement;
+      expect(parseFloat(surface.style.width)).toBeGreaterThan(820);
+    });
   });
 
   it('recovers from the maximum zoomed-out viewport using the next pinch-in gesture', async () => {
@@ -553,27 +557,22 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.getByText('Recovery next day event')).toBeTruthy());
     const grid = screen.getByRole('grid');
-    const timeCanvas = screen.getByLabelText('Timeline time canvas');
-    for (let index = 0; index < 14; index += 1) {
-      fireEvent.wheel(grid, { ctrlKey: true, deltaY: 100, clientX: 500 });
-      fireEvent.scroll(timeCanvas, { target: { scrollLeft: 0 } });
-    }
+    fireEvent.click(screen.getByText('Fit all'));
 
-    let maxedOutSpan = 0;
+    let fittedSurfaceWidth = 0;
     await waitFor(() => {
       const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
-      const state = JSON.parse(String(stored));
-      maxedOutSpan = state.timeWindow.to - state.timeWindow.from;
-      expect(maxedOutSpan).toBeGreaterThan(TEST_DAY_MS);
+      expect(JSON.parse(String(stored)).timeWindow).toEqual({ from: null, to: null });
+      const surface = document.querySelector('.timeline-time-surface') as HTMLElement;
+      fittedSurfaceWidth = parseFloat(surface.style.width);
+      expect(fittedSurfaceWidth).toBeLessThanOrEqual(821);
     });
 
     fireEvent.wheel(grid, { ctrlKey: true, deltaY: -100, clientX: 500 });
-    fireEvent.scroll(timeCanvas, { target: { scrollLeft: 0 } });
 
     await waitFor(() => {
-      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
-      const state = JSON.parse(String(stored));
-      expect(state.timeWindow.to - state.timeWindow.from).toBeLessThan(maxedOutSpan * 0.95);
+      const surface = document.querySelector('.timeline-time-surface') as HTMLElement;
+      expect(parseFloat(surface.style.width)).toBeGreaterThan(fittedSurfaceWidth * 1.05);
     });
   });
 
@@ -791,6 +790,50 @@ describe('TimelineView', () => {
     expect(surfaceWidthPx).toBe(820);
     expect(parseFloat(firstButton.style.left)).toBeGreaterThan(85);
     expect(parseFloat(lastButton.style.left)).toBeLessThan(surfaceWidthPx - 85);
+  });
+
+  it('respects explicit near-fit windows instead of snapping them back to fit', async () => {
+    const base = projection();
+    const firstTimestamp = Date.UTC(2026, 0, 1, 12);
+    const lastTimestamp = Date.UTC(2026, 0, 3, 12);
+    const firstEvent = {
+      ...base.events[0],
+      id: 'event-near-fit-first-edge',
+      timestamp: firstTimestamp,
+      ordinal: 0,
+      display_headline: 'Near fit first edge event',
+      link_ids: [],
+    };
+    const lastEvent = {
+      ...base.events[0],
+      id: 'event-near-fit-last-edge',
+      timestamp: lastTimestamp,
+      ordinal: 1,
+      display_headline: 'Near fit last edge event',
+      link_ids: [],
+    };
+    window.localStorage.setItem('mandible_timeline_view_state:v1:mandible', JSON.stringify({
+      timeWindow: { from: firstTimestamp - TEST_DAY_MS / 12, to: lastTimestamp + TEST_DAY_MS / 12 },
+    }));
+    stubTimelineFetch(projection({
+      events: [firstEvent, lastEvent],
+      links: [],
+      time_axis: {
+        start: Date.UTC(2026, 0, 1),
+        end: Date.UTC(2026, 0, 4),
+        event_count: 2,
+      },
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible', density: 'comfortable' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Near fit last edge event')).toBeTruthy());
+
+    const surface = document.querySelector('.timeline-time-surface') as HTMLElement;
+    expect(parseFloat(surface.style.width)).toBeGreaterThan(820);
   });
 
   it('renders hour ticks for day-scale timeline views', async () => {

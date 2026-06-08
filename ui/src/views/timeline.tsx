@@ -167,6 +167,10 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function approximatelyEqualTimestamp(left: number, right: number): boolean {
+  return Math.abs(left - right) <= 1;
+}
+
 function normalizeInspectorWidth(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value)
     ? clamp(value, MIN_INSPECTOR_WIDTH, MAX_INSPECTOR_WIDTH)
@@ -358,23 +362,24 @@ function rowKindLabel(kind: TimelineRowOccurrence['kind']): string {
 function viewportFromState(
   domain: TimelineRenderDomain,
   state: TimelineViewState,
-  options: { edgePaddingPx: number; viewportWidthPx: number },
+  _options: { edgePaddingPx: number; viewportWidthPx: number },
 ): TimelineViewport {
   const fit = fitTimelineViewport(domain);
+  if (state.timeWindow.from === null && state.timeWindow.to === null) {
+    return fit;
+  }
   const requested = {
     from: state.timeWindow.from ?? fit.from,
     to: state.timeWindow.to ?? fit.to,
   };
-  const clamped = clampTimelineViewport(requested, domain, { minSpanMs: MIN_TIMELINE_WINDOW_MS });
-  const span = Math.max(1, clamped.to - clamped.from);
-  const firstEventXPx = ((domain.extent.start - clamped.from) / span) * options.viewportWidthPx;
-  const lastEventXPx = ((domain.extent.end - clamped.from) / span) * options.viewportWidthPx;
-  const coversDataExtent = clamped.from <= domain.extent.start && clamped.to >= domain.extent.end;
-  const clipsDataExtent = (
-    firstEventXPx < options.edgePaddingPx
-    || options.viewportWidthPx - lastEventXPx < options.edgePaddingPx
+  const isLegacyRawExtentFit = (
+    domain.extent.eventCount > 0
+    && state.timeWindow.from !== null
+    && state.timeWindow.to !== null
+    && approximatelyEqualTimestamp(Math.min(state.timeWindow.from, state.timeWindow.to), domain.extent.start)
+    && approximatelyEqualTimestamp(Math.max(state.timeWindow.from, state.timeWindow.to), domain.extent.end)
   );
-  if (domain.extent.eventCount > 0 && coversDataExtent && clipsDataExtent) return fit;
+  if (isLegacyRawExtentFit) return fit;
   return clampTimelineViewport(
     requested,
     domain,
@@ -809,9 +814,8 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [updateState, viewState.panes]);
 
   const fitProject = useCallback(() => {
-    const next = fitTimelineViewport(renderDomain);
-    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
-  }, [renderDomain, updateState]);
+    updateState({ timeWindow: { from: null, to: null } });
+  }, [updateState]);
 
   const fitSelected = useCallback(() => {
     const target = selectedEvent ?? visibleSelectedRowEvents[0] ?? selectedRowEvents[0];
@@ -847,6 +851,14 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     const next = zoomTimelineViewport(viewport, renderDomain, factor, focalRatio, {
       minSpanMs: MIN_TIMELINE_WINDOW_MS,
     });
+    const fitted = (
+      approximatelyEqualTimestamp(next.from, renderDomain.start)
+      && approximatelyEqualTimestamp(next.to, renderDomain.end)
+    );
+    if (fitted) {
+      updateState({ timeWindow: { from: null, to: null } });
+      return;
+    }
     updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
   }, [renderDomain, updateState, viewport]);
 
