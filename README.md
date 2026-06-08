@@ -239,8 +239,6 @@ Persisted in the `settings` table, configurable from Settings tab:
 | Setting | Description |
 |---------|-------------|
 | `protected_branches` | Branch names to protect (default: `main,develop`) |
-| `reaper_enabled` | Automatic idle session termination |
-| `reaper_claude_idle_minutes` / `reaper_codex_idle_minutes` | Idle timeout per agent type |
 | `theme` | UI theme (default: `catppuccin-mocha`) |
 | `notification_sound` / `quiet_hours` | macOS notification preferences |
 | `push_same_name_upstream` | Push branches to same-name remote refs |
@@ -319,7 +317,7 @@ GET    /api/health                Health check
 mandible wrap [--app NAME] -- <cmd>      Session lifecycle wrapper
 mandible task <description>              Set session task/status
 mandible inbox [check|ack|watch|add]     Manage session inbox
-mandible issue <subcommand>              Issue operations (new, close, comment, show, list)
+mandible issue <subcommand>              Issue operations, comments, labels, and body revision history
 mandible auth list [opts]                List active auth requests
 mandible auth request <branch> [opts]    Submit auth request
 mandible auth merge <branch> [opts]      Execute authenticated merge

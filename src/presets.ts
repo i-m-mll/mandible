@@ -85,7 +85,6 @@ export interface ConventionSettingLink {
 // Bug: 8baedeb — setting patterns for auto-detection of convention-setting links
 const SETTING_PATTERNS: Array<{ pattern: RegExp; settingKey: string; linkType: string }> = [
   { pattern: /protected.branch/i, settingKey: "protected_branches", linkType: "references" },
-  { pattern: /reaper|idle.threshold|idle.timeout/i, settingKey: "reaper_enabled", linkType: "references" },
   { pattern: /signing|gpg.sign|yubikey/i, settingKey: "commit_signing", linkType: "references" },
   { pattern: /claude.*(notification|notify)/i, settingKey: "claude_notifications_enabled", linkType: "references" },
   { pattern: /quiet.hours/i, settingKey: "quiet_hours", linkType: "references" },

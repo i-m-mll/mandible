@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import { parse as parseToml } from "smol-toml";
 import { getDb } from "./db.js";
+import { ensureMandibleConfigFile } from "./platform-paths.js";
 import { broadcast, type SseEvent } from "./sse.js";
 
 export interface LastCommit {
@@ -77,13 +78,6 @@ interface WorktreeInfo {
 }
 
 const DEFAULT_REPO_ROOT = path.join(os.homedir(), ".dotfiles");
-const DEFAULT_CONFIG_PATH = path.join(
-  os.homedir(),
-  ".config",
-  "mandible",
-  "repos.json",
-);
-
 const BRANCH_TABLE_SCHEMA = `
   CREATE TABLE IF NOT EXISTS branches (
     repo_root TEXT NOT NULL,
@@ -418,7 +412,9 @@ export class WorkScanner {
     this.defaultRepoRoot = path.resolve(
       resolveHome(options.default_repo_root ?? DEFAULT_REPO_ROOT),
     );
-    this.configPath = path.resolve(resolveHome(options.config_path ?? DEFAULT_CONFIG_PATH));
+    this.configPath = path.resolve(
+      resolveHome(options.config_path ?? ensureMandibleConfigFile("repos.json")),
+    );
     this.repoRootsOverride = options.repo_roots
       ? normalizeRoots(options.repo_roots)
       : null;

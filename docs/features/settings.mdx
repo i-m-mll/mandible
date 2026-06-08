@@ -29,17 +29,7 @@ Only visible when running inside the desktop app (Tauri shell). See [Desktop App
 
 ## Process Management
 
-Automatic cleanup of idle agent processes.
-
-| Setting | Type | Description |
-|---------|------|-------------|
-| Reaper | Toggle | Enable/disable automatic termination of idle Claude/Codex processes in multiplexer panes. |
-| Claude idle threshold | Number (min) | Minutes of inactivity before Claude is reaped. Range: 5-480. |
-| Codex idle threshold | Number (min) | Same, for Codex. |
-| Dry run | Toggle | Log what would be reaped without actually terminating. Useful for tuning thresholds. |
-| Cleanup orphan MCPs | Toggle | Terminate MCP server processes whose parent has exited. |
-
-Reaper settings are dual-written to `~/.config/claude-reaper/config` so the launchd-based reaper job picks them up outside the dashboard.
+The standalone Claude/Codex Reaper integration is deprecated. Mandible still reconciles dead sessions internally, but Reaper-specific settings are no longer shown in Settings and are no longer dual-written to `~/.config/claude-reaper/config`.
 
 ## Agent Hooks
 

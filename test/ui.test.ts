@@ -175,6 +175,23 @@ describe('SettingsView', () => {
     fireEvent.click(screen.getByLabelText('Close settings'));
     expect(onClose).toHaveBeenCalledOnce();
   });
+
+  it('does not show deprecated Reaper controls', () => {
+    render(
+      h(SettingsView, {
+        settings: {
+          reaper_enabled: 'true',
+          reaper_claude_idle_minutes: '30',
+          reaper_codex_idle_minutes: '45',
+        },
+        onSave: async () => undefined,
+      }),
+    );
+
+    expect(screen.queryByText('Reaper')).toBeNull();
+    expect(screen.queryByText('Claude idle threshold')).toBeNull();
+    expect(screen.queryByText('Codex idle threshold')).toBeNull();
+  });
 });
 
 describe('AuthQueueView', () => {
