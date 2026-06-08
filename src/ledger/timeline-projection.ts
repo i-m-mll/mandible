@@ -72,6 +72,7 @@ export function buildProjectTimelineProjection(
   const depthLimits: TimelineDiagnostic[] = [];
   const filteredTargets: TimelineDiagnostic[] = [];
   const missingExpansions: TimelineDiagnostic[] = [];
+  const childRowIdsByParent = new Map<string, string[]>();
   const expandedEvents = new Set(normalized.expanded_event_ids);
   const expandedPaths = new Set(normalized.expanded_paths);
   const expandedEventHits = new Set<string>();
@@ -196,7 +197,9 @@ export function buildProjectTimelineProjection(
     }
   }
 
-  for (const row of rows) {
+  const orderedRows = orderRowsPreorder(rows, childRowIdsByParent);
+
+  for (const row of orderedRows) {
     visibleIssueIds.add(row.issue.id);
     if (row.kind === "root" || row.kind === "promoted_root" || row.kind === "explicit_root") {
       rootOccurrencesByIssue.set(row.issue.id, (rootOccurrencesByIssue.get(row.issue.id) ?? 0) + 1);
@@ -213,12 +216,12 @@ export function buildProjectTimelineProjection(
     project,
     inputs: normalized,
     time_axis: timeAxis(events),
-    rows,
+    rows: orderedRows,
     events,
     links,
     diagnostics: buildDiagnostics({
       issues,
-      rows,
+      rows: orderedRows,
       visibleIssueIds,
       relationshipSources,
       referenceCounts,
@@ -253,8 +256,41 @@ export function buildProjectTimelineProjection(
       hidden_reason: null,
     };
     rows.push(row);
+    if (parentRowId !== null) {
+      const siblings = childRowIdsByParent.get(parentRowId) ?? [];
+      siblings.push(row.id);
+      childRowIdsByParent.set(parentRowId, siblings);
+    }
     return row;
   }
+}
+
+function orderRowsPreorder(
+  rows: TimelineRowOccurrence[],
+  childRowIdsByParent: Map<string, string[]>,
+): TimelineRowOccurrence[] {
+  const rowById = new Map(rows.map((row) => [row.id, row]));
+  const ordered: TimelineRowOccurrence[] = [];
+  const visited = new Set<string>();
+
+  const visit = (row: TimelineRowOccurrence) => {
+    if (visited.has(row.id)) return;
+    visited.add(row.id);
+    ordered.push(row);
+    for (const childId of childRowIdsByParent.get(row.id) ?? []) {
+      const child = rowById.get(childId);
+      if (child) visit(child);
+    }
+  };
+
+  for (const row of rows) {
+    if (row.parent_row_id === null) visit(row);
+  }
+  for (const row of rows) {
+    visit(row);
+  }
+
+  return ordered;
 }
 
 function normalizeInput(

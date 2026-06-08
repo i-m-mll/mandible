@@ -1,7 +1,33 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { getProjectTimeline } from '../api';
+import { useRegisterAppRightSidebar } from '../app-shell';
 import type { WorkRepo } from './work';
+import {
+  TIMELINE_DAY_MS,
+  TIMELINE_HOUR_MS,
+  clampTimelineViewport,
+  editTimelineViewportDateBoundary,
+  fitTimelineViewport,
+  formatUtcDate,
+  formatUtcDateTime,
+  generateTimelineTicks,
+  paddedTimelineRenderDomain,
+  timelineExtentFromTimestamps,
+  timelineScrollMetrics,
+  viewportFromTimelineScroll,
+  zoomTimelineViewport,
+  type TimelineRenderDomain,
+  type TimelineViewport,
+} from './timeline-time';
+import {
+  buildTimelineLayout,
+  type TimelineDensityMode,
+  type TimelineEventMark,
+  type TimelineLaneCache,
+  type TimelineRangeCluster,
+  type TimelineSameTimeCluster,
+} from './timeline-layout';
 import {
   DEFAULT_TIMELINE_VIEW_STATE,
   type ProjectTimelineProjection,
@@ -17,7 +43,33 @@ import {
 const STORAGE_PREFIX = 'mandible_timeline_view_state:v1';
 const EVENT_TYPES: TimelineEventKind[] = ['body', 'comment', 'state'];
 const DENSITIES: TimelineDensity[] = ['compact', 'comfortable', 'expanded'];
-const DAY_MS = 24 * 60 * 60 * 1000;
+const FALLBACK_TIMELINE_WIDTH_PX = 820;
+const MIN_TIMELINE_WINDOW_MS = TIMELINE_HOUR_MS;
+const MIN_INSPECTOR_WIDTH = 280;
+const MAX_INSPECTOR_WIDTH = 560;
+const MIN_ROW_LIST_WIDTH = 220;
+const MAX_ROW_LIST_WIDTH = 520;
+const MIN_TIMELINE_EDGE_BREATHING_PX = 16;
+const MAX_TIMELINE_EDGE_BREATHING_PX = 32;
+const TIMELINE_EDGE_BREATHING_RATIO = 0.03;
+const TIMELINE_TICK_SPACING_PX = 120;
+const WHEEL_ZOOM_IN_FACTOR = 0.9;
+const WHEEL_ZOOM_OUT_FACTOR = 1 / WHEEL_ZOOM_IN_FACTOR;
+const MAX_TIMELINE_PROJECTION_DEPTH = 8;
+const TIMELINE_LAYOUT_METRICS: Record<TimelineDensityMode, {
+  laneHeightPx: number;
+  eventHeightPx: number;
+  markWidthPx: number;
+  rowMinHeightPx: number;
+}> = {
+  compact: { laneHeightPx: 36, eventHeightPx: 30, markWidthPx: 34, rowMinHeightPx: 54 },
+  comfortable: { laneHeightPx: 54, eventHeightPx: 46, markWidthPx: 170, rowMinHeightPx: 82 },
+  expanded: { laneHeightPx: 82, eventHeightPx: 74, markWidthPx: 240, rowMinHeightPx: 122 },
+};
+const TIMELINE_ROW_PADDING_Y_PX = 8;
+const EMPTY_TIMELINE_EVENTS: TimelineEvent[] = [];
+const EMPTY_TIMELINE_LINKS: TimelineLink[] = [];
+const EMPTY_TIMELINE_ROWS: TimelineRowOccurrence[] = [];
 
 export type TimelineViewProps = {
   repos: WorkRepo[];
@@ -29,6 +81,8 @@ type ProjectionStatus = 'idle' | 'syncing' | 'error';
 type TimelineUrlState = Partial<TimelineViewState> & {
   projectRef?: string;
 };
+
+type PartialTimelinePanes = Partial<TimelineViewState['panes']>;
 
 function storageKey(projectId: string): string {
   return `${STORAGE_PREFIX}:${projectId}`;
@@ -90,11 +144,62 @@ function parseUrlState(params: Record<string, string | undefined>): TimelineUrlS
     expandedPaths: parseCsv(params.paths),
     selectedRowOccurrenceId: params.row || undefined,
     selectedEventId: params.event || undefined,
+    selectedClusterId: undefined,
     timeWindow: from !== null || to !== null ? { from, to } : undefined,
     density: coerceDensity(params.density),
     visibleEventTypes: eventTypes.length > 0 ? eventTypes : undefined,
     includeClosed: parseBool(params.closed),
-    panes: params.inspector ? { ...DEFAULT_TIMELINE_VIEW_STATE.panes, inspector: parseBool(params.inspector) ?? true } : undefined,
+    panes: params.inspector
+      ? { ...DEFAULT_TIMELINE_VIEW_STATE.panes, inspector: parseBool(params.inspector) ?? true }
+      : undefined,
+  };
+}
+
+function timelineEdgePaddingPx(markWidthPx: number, viewportWidthPx: number): number {
+  const breathingPx = Math.min(
+    MAX_TIMELINE_EDGE_BREATHING_PX,
+    Math.max(MIN_TIMELINE_EDGE_BREATHING_PX, viewportWidthPx * TIMELINE_EDGE_BREATHING_RATIO),
+  );
+  return Math.ceil(markWidthPx / 2 + breathingPx);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function approximatelyEqualTimestamp(left: number, right: number): boolean {
+  return Math.abs(left - right) <= 1;
+}
+
+function normalizeInspectorWidth(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? clamp(value, MIN_INSPECTOR_WIDTH, MAX_INSPECTOR_WIDTH)
+    : DEFAULT_TIMELINE_VIEW_STATE.panes.inspectorWidth;
+}
+
+function normalizeRowListWidth(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? clamp(value, MIN_ROW_LIST_WIDTH, MAX_ROW_LIST_WIDTH)
+    : DEFAULT_TIMELINE_VIEW_STATE.panes.rowListWidth;
+}
+
+function mergePanes(
+  base: TimelineViewState['panes'],
+  local?: PartialTimelinePanes,
+  url?: PartialTimelinePanes,
+): TimelineViewState['panes'] {
+  const merged = {
+    ...DEFAULT_TIMELINE_VIEW_STATE.panes,
+    ...base,
+    ...(local ?? {}),
+    ...(url ?? {}),
+  };
+  return {
+    inspector: merged.inspector !== false,
+    inspectorWidth: normalizeInspectorWidth(merged.inspectorWidth),
+    diagnostics: merged.diagnostics === true,
+    rowList: merged.rowList !== false,
+    rowListWidth: normalizeRowListWidth(merged.rowListWidth),
   };
 }
 
@@ -112,7 +217,7 @@ function mergeTimelineState(
     expandedPaths: url.expandedPaths?.length ? url.expandedPaths : local.expandedPaths ?? base.expandedPaths,
     visibleEventTypes: url.visibleEventTypes?.length ? url.visibleEventTypes : local.visibleEventTypes ?? base.visibleEventTypes,
     timeWindow: url.timeWindow ?? local.timeWindow ?? base.timeWindow,
-    panes: url.panes ?? local.panes ?? base.panes,
+    panes: mergePanes(base.panes, local.panes, url.panes),
   };
   if (url.rootPolicy !== undefined) merged.rootPolicy = url.rootPolicy;
   if (url.selectedRowOccurrenceId !== undefined) merged.selectedRowOccurrenceId = url.selectedRowOccurrenceId;
@@ -120,6 +225,33 @@ function mergeTimelineState(
   if (url.density !== undefined) merged.density = url.density;
   if (url.includeClosed !== undefined) merged.includeClosed = url.includeClosed;
   return merged;
+}
+
+function clearTimelineSelection(state: TimelineViewState): TimelineViewState {
+  return {
+    ...state,
+    selectedRowOccurrenceId: null,
+    selectedEventId: null,
+    selectedClusterId: null,
+  };
+}
+
+function projectionDepthForExpandedEvents(
+  projection: ProjectTimelineProjection | null,
+  expandedEventIds: readonly string[],
+): number {
+  if (expandedEventIds.length === 0) return 1;
+  if (!projection) return MAX_TIMELINE_PROJECTION_DEPTH;
+  const rowById = new Map(projection.rows.map((row) => [row.id, row]));
+  const eventById = new Map(projection.events.map((event) => [event.id, event]));
+  let depth = 1;
+  for (const eventId of expandedEventIds) {
+    const event = eventById.get(eventId);
+    const row = event ? rowById.get(event.row_id) : null;
+    if (!row) return MAX_TIMELINE_PROJECTION_DEPTH;
+    depth = Math.max(depth, row.depth + 1);
+  }
+  return Math.min(MAX_TIMELINE_PROJECTION_DEPTH, Math.max(1, depth));
 }
 
 function readStoredState(projectId: string): Partial<TimelineViewState> {
@@ -158,32 +290,66 @@ function defaultProjectRef(repos: WorkRepo[], explicit?: string): string {
 }
 
 function formatDate(value: number | null | undefined): string {
-  if (!value) return 'Open';
-  return new Date(value).toISOString().slice(0, 10);
+  return formatUtcDate(value) || 'Open';
 }
 
 function formatDateTime(value: number | null | undefined): string {
-  if (!value) return 'Open';
-  return new Date(value).toLocaleString();
+  return formatUtcDateTime(value) || 'Open';
 }
 
 function dateInputValue(value: number | null): string {
-  return value ? new Date(value).toISOString().slice(0, 10) : '';
-}
-
-function dateInputToTimestamp(value: string, endOfDay = false): number | null {
-  if (!value) return null;
-  const parsed = Date.parse(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(parsed)) return null;
-  return endOfDay ? parsed + DAY_MS - 1 : parsed;
+  return formatUtcDate(value);
 }
 
 function eventLeft(timestamp: number, start: number, span: number): number {
   return Math.max(0, Math.min(100, ((timestamp - start) / span) * 100));
 }
 
+function eventLeftPx(timestamp: number, start: number, span: number, widthPx: number): number {
+  return Math.max(0, Math.min(widthPx, ((timestamp - start) / span) * widthPx));
+}
+
+function markLaneTopPx(mark: { lane: number }, laneHeightPx: number): number {
+  return TIMELINE_ROW_PADDING_Y_PX + mark.lane * laneHeightPx + laneHeightPx / 2;
+}
+
+function rangeClusterMinCountForDensity(density: TimelineDensityMode): number {
+  return density === 'compact' ? 3 : density === 'comfortable' ? 4 : 5;
+}
+
 function eventKindLabel(kind: TimelineEventKind): string {
   return kind === 'body' ? 'Body' : kind === 'comment' ? 'Comment' : 'State';
+}
+
+type TimelineClusterMark = TimelineSameTimeCluster | TimelineRangeCluster;
+
+function clusterKindLabel(cluster: TimelineClusterMark): string {
+  return cluster.kind === 'same_time_cluster' ? 'Same-time cluster' : 'Range cluster';
+}
+
+function clusterCategorySummaryLabel(summary: Record<string, number>): string {
+  const entries = Object.entries(summary).sort(([left], [right]) => left.localeCompare(right));
+  return entries.length > 0
+    ? entries.map(([category, count]) => `${eventKindLabel(category as TimelineEventKind)} ${count}`).join(', ')
+    : 'Event 0';
+}
+
+function clusterTimeLabel(cluster: TimelineClusterMark): string {
+  if (cluster.kind === 'same_time_cluster') {
+    return `at ${formatDateTime(cluster.timestamp)}`;
+  }
+  return `from ${formatDateTime(cluster.minTime)} to ${formatDateTime(cluster.maxTime)}`;
+}
+
+function clusterAccessibleLabel(cluster: TimelineClusterMark, selectedClusterId: string | null): string {
+  return [
+    clusterKindLabel(cluster),
+    `${cluster.count} ${cluster.count === 1 ? 'event' : 'events'}`,
+    clusterCategorySummaryLabel(cluster.categorySummary),
+    clusterTimeLabel(cluster),
+    cluster.containsSelected ? 'contains selected child event' : '',
+    selectedClusterId === cluster.id ? 'selected cluster' : '',
+  ].filter(Boolean).join(', ');
 }
 
 function rowKindLabel(kind: TimelineRowOccurrence['kind']): string {
@@ -193,14 +359,60 @@ function rowKindLabel(kind: TimelineRowOccurrence['kind']): string {
   return 'Root';
 }
 
-function visibleWindow(projection: ProjectTimelineProjection | null, state: TimelineViewState): { start: number; end: number; span: number } {
-  const fallbackStart = projection?.time_axis.start ?? Date.now() - 7 * DAY_MS;
-  const fallbackEnd = projection?.time_axis.end ?? Date.now();
-  const start = state.timeWindow.from ?? fallbackStart;
-  const end = state.timeWindow.to ?? fallbackEnd;
-  const normalizedEnd = end <= start ? start + DAY_MS : end;
-  return { start, end: normalizedEnd, span: Math.max(1, normalizedEnd - start) };
+function viewportFromState(
+  domain: TimelineRenderDomain,
+  state: TimelineViewState,
+  _options: { edgePaddingPx: number; viewportWidthPx: number },
+): TimelineViewport {
+  const fit = fitTimelineViewport(domain);
+  if (state.timeWindow.from === null && state.timeWindow.to === null) {
+    return fit;
+  }
+  const requested = {
+    from: state.timeWindow.from ?? fit.from,
+    to: state.timeWindow.to ?? fit.to,
+  };
+  const isLegacyRawExtentFit = (
+    domain.extent.eventCount > 0
+    && state.timeWindow.from !== null
+    && state.timeWindow.to !== null
+    && approximatelyEqualTimestamp(Math.min(state.timeWindow.from, state.timeWindow.to), domain.extent.start)
+    && approximatelyEqualTimestamp(Math.max(state.timeWindow.from, state.timeWindow.to), domain.extent.end)
+  );
+  if (isLegacyRawExtentFit) return fit;
+  return clampTimelineViewport(
+    requested,
+    domain,
+    { minSpanMs: MIN_TIMELINE_WINDOW_MS },
+  );
 }
+
+function timelineDiagnostics(projection: ProjectTimelineProjection | null): TimelineDiagnosticView[] {
+  if (!projection) return [];
+  return [
+    ...projection.diagnostics.cycles,
+    ...projection.diagnostics.depth_limits,
+    ...projection.diagnostics.filtered_targets,
+    ...projection.diagnostics.missing_expansions,
+  ].map((diagnostic) => ({
+    key: [
+      diagnostic.kind,
+      diagnostic.row_id,
+      diagnostic.event_id,
+      diagnostic.issue_id,
+      diagnostic.target_issue_id,
+      diagnostic.message,
+    ].filter(Boolean).join(':'),
+    kind: diagnostic.kind,
+    message: diagnostic.message,
+  }));
+}
+
+type TimelineDiagnosticView = {
+  key: string;
+  kind: string;
+  message: string;
+};
 
 function eventInWindow(event: TimelineEvent, start: number, end: number): boolean {
   return event.timestamp >= start && event.timestamp <= end;
@@ -222,17 +434,61 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const lastProjectionRef = useRef<ProjectTimelineProjection | null>(null);
   const [status, setStatus] = useState<ProjectionStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const timeScrollRef = useRef<HTMLDivElement | null>(null);
+  const timelineMainRef = useRef<HTMLDivElement | null>(null);
+  const suppressProgrammaticScrollRef = useRef(false);
+  const suppressProgrammaticScrollTimerRef = useRef<number | null>(null);
+  const gestureScaleRef = useRef<number | null>(null);
+  const rowListResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [timeViewportWidthPx, setTimeViewportWidthPx] = useState(FALLBACK_TIMELINE_WIDTH_PX);
+  const laneCacheRef = useRef<TimelineLaneCache>({});
   const requestGeneration = useRef(0);
+  const appliedRouteProjectRef = useRef(initialProjectRef);
+
+  const resetLoadedProjection = useCallback(() => {
+    requestGeneration.current += 1;
+    lastProjectionRef.current = null;
+    laneCacheRef.current = {};
+    setProjection(null);
+    setError(null);
+    setStatus('idle');
+  }, []);
+
+  const stateForProjectSelection = useCallback((nextProjectRef: string) => (
+    clearTimelineSelection(mergeTimelineState(
+      DEFAULT_TIMELINE_VIEW_STATE,
+      readStoredState(nextProjectRef),
+      {},
+    ))
+  ), []);
+
+  const handleProjectChange = useCallback((nextProjectRef: string) => {
+    resetLoadedProjection();
+    setProjectRef(nextProjectRef);
+    setViewState(stateForProjectSelection(nextProjectRef));
+  }, [resetLoadedProjection, stateForProjectSelection]);
+  const projectionDepth = useMemo(
+    () => projectionDepthForExpandedEvents(projection, viewState.expandedEventIds),
+    [projection, viewState.expandedEventIds],
+  );
 
   useEffect(() => {
     const nextProjectRef = defaultProjectRef(repos, urlState.projectRef);
-    if (nextProjectRef !== projectRef) {
+    if (nextProjectRef !== appliedRouteProjectRef.current) {
+      appliedRouteProjectRef.current = nextProjectRef;
+      resetLoadedProjection();
       setProjectRef(nextProjectRef);
-      setViewState(mergeTimelineState(DEFAULT_TIMELINE_VIEW_STATE, readStoredState(nextProjectRef), urlState));
+      setViewState(clearTimelineSelection(mergeTimelineState(
+        DEFAULT_TIMELINE_VIEW_STATE,
+        readStoredState(nextProjectRef),
+        urlState,
+      )));
       return;
     }
-    setViewState((current) => mergeTimelineState(current, {}, urlState));
-  }, [projectRef, repos, urlState]);
+    if (nextProjectRef === projectRef) {
+      setViewState((current) => mergeTimelineState(current, {}, urlState));
+    }
+  }, [projectRef, repos, resetLoadedProjection, urlState]);
 
   useEffect(() => {
     const canonicalProjectId = projection?.project.id ?? projectRef;
@@ -257,8 +513,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       expanded_event_ids: viewState.expandedEventIds,
       expanded_paths: viewState.expandedPaths,
       include_closed: viewState.includeClosed,
-      from: viewState.timeWindow.from ?? undefined,
-      to: viewState.timeWindow.to ?? undefined,
+      depth: projectionDepth,
     }, controller.signal)
       .then((next) => {
         if (requestGeneration.current !== generation) return;
@@ -281,13 +536,12 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     viewState.expandedEventIds.join(','),
     viewState.expandedPaths.join(','),
     viewState.includeClosed,
-    viewState.timeWindow.from,
-    viewState.timeWindow.to,
+    projectionDepth,
   ]);
 
-  const rows = projection?.rows ?? [];
-  const events = projection?.events ?? [];
-  const links = projection?.links ?? [];
+  const rows = projection?.rows ?? EMPTY_TIMELINE_ROWS;
+  const events = projection?.events ?? EMPTY_TIMELINE_EVENTS;
+  const links = projection?.links ?? EMPTY_TIMELINE_LINKS;
   const linkById = useMemo(() => new Map(links.map((link) => [link.id, link])), [links]);
   const eventsByRow = useMemo(() => {
     const result = new Map<string, TimelineEvent[]>();
@@ -302,15 +556,106 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     }
     return result;
   }, [events, viewState.visibleEventTypes]);
+  const dataExtent = useMemo(() => {
+    const timestamps = Array.from(eventsByRow.values()).flatMap((rowEvents) => (
+      rowEvents.map((event) => event.timestamp)
+    ));
+    const fallbackEnd = projection?.time_axis.end ?? Date.now();
+    const fallbackStart = projection?.time_axis.start ?? fallbackEnd - TIMELINE_DAY_MS;
+    const fallbackSpan = Math.max(1, fallbackEnd - fallbackStart);
+    return timelineExtentFromTimestamps(timestamps, {
+      fallbackNow: fallbackEnd,
+      fallbackSpanMs: fallbackSpan,
+    });
+  }, [eventsByRow, projection?.time_axis.end, projection?.time_axis.start]);
+  const layoutMetrics = TIMELINE_LAYOUT_METRICS[viewState.density];
+  const edgePaddingPx = timelineEdgePaddingPx(layoutMetrics.markWidthPx, timeViewportWidthPx);
+  const renderDomain = useMemo(() => (
+    paddedTimelineRenderDomain(dataExtent, {
+      viewportWidthPx: timeViewportWidthPx,
+      edgePaddingPx,
+      minSpanMs: TIMELINE_DAY_MS,
+    })
+  ), [dataExtent, edgePaddingPx, timeViewportWidthPx]);
+  const viewport = useMemo(() => (
+    viewportFromState(renderDomain, viewState, { edgePaddingPx, viewportWidthPx: timeViewportWidthPx })
+  ), [edgePaddingPx, renderDomain, timeViewportWidthPx, viewState]);
+  const viewportSpan = Math.max(1, viewport.to - viewport.from);
+  const domainSpan = Math.max(1, renderDomain.end - renderDomain.start);
+  const { start, end } = { start: viewport.from, end: viewport.to };
+  const scrollMetrics = useMemo(() => (
+    timelineScrollMetrics(renderDomain, viewport, timeViewportWidthPx)
+  ), [renderDomain, timeViewportWidthPx, viewport]);
   const eventById = useMemo(() => new Map(events.map((event) => [event.id, event])), [events]);
   const rowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
+  const timelineLayout = useMemo(() => (
+    buildTimelineLayout({
+      rows: rows.map((row) => ({ id: row.id })),
+      events: Array.from(eventsByRow.values()).flatMap((rowEvents) => rowEvents.map((event) => ({
+        id: event.id,
+        rowId: event.row_id,
+        timestamp: event.timestamp,
+        widthPx: layoutMetrics.markWidthPx,
+        category: event.kind,
+        importance: event.issue.priority === 'critical' ? 'critical' : 'normal',
+      }))),
+      renderDomain: { start: renderDomain.start, end: renderDomain.end },
+      viewportWidthPx: scrollMetrics.surfaceWidthPx,
+      density: viewState.density,
+      selectedEventId: viewState.selectedEventId,
+      expandedClusterIds: viewState.selectedClusterId ? [viewState.selectedClusterId] : [],
+      previousLaneByMarkId: laneCacheRef.current,
+      markWidthPx: layoutMetrics.markWidthPx,
+      rowMinHeightPx: layoutMetrics.rowMinHeightPx,
+      rowPaddingYPx: TIMELINE_ROW_PADDING_Y_PX,
+      laneHeightPx: layoutMetrics.laneHeightPx,
+      rangeClusterMinCount: rangeClusterMinCountForDensity(viewState.density),
+    })
+  ), [
+    eventsByRow,
+    layoutMetrics.laneHeightPx,
+    layoutMetrics.markWidthPx,
+    layoutMetrics.rowMinHeightPx,
+    renderDomain.end,
+    renderDomain.start,
+    rows,
+    scrollMetrics.surfaceWidthPx,
+    viewState.density,
+    viewState.selectedEventId,
+    viewState.selectedClusterId,
+  ]);
+  const eventMarkById = useMemo(() => (
+    new Map(timelineLayout.eventMarks.map((mark) => [mark.eventId, mark]))
+  ), [timelineLayout.eventMarks]);
+  const clusterById = useMemo(() => (
+    new Map<TimelineClusterMark['id'], TimelineClusterMark>([
+      ...timelineLayout.sameTimeClusters.map((cluster) => [cluster.id, cluster] as const),
+      ...timelineLayout.rangeClusters.map((cluster) => [cluster.id, cluster] as const),
+    ])
+  ), [timelineLayout.rangeClusters, timelineLayout.sameTimeClusters]);
+  const selectedCluster = viewState.selectedClusterId
+    ? clusterById.get(viewState.selectedClusterId) ?? null
+    : null;
+  const selectedClusterEvents = useMemo(() => (
+    selectedCluster
+      ? selectedCluster.eventIds
+        .map((eventId) => eventById.get(eventId))
+        .filter((event): event is TimelineEvent => Boolean(event))
+        .sort((left, right) => left.timestamp - right.timestamp || left.ordinal - right.ordinal)
+      : EMPTY_TIMELINE_EVENTS
+  ), [eventById, selectedCluster]);
   const selectedEvent = viewState.selectedEventId ? eventById.get(viewState.selectedEventId) ?? null : null;
   const selectedRow = viewState.selectedRowOccurrenceId
     ? rowById.get(viewState.selectedRowOccurrenceId) ?? null
     : selectedEvent ? rowById.get(selectedEvent.row_id) ?? null : null;
-  const { start, end, span } = visibleWindow(projection, viewState);
-  const selectedRowEvents = selectedRow ? eventsByRow.get(selectedRow.id) ?? [] : [];
-  const visibleSelectedRowEvents = selectedRowEvents.filter((event) => eventInWindow(event, start, end));
+  const selectedRowEvents = selectedRow ? eventsByRow.get(selectedRow.id) ?? EMPTY_TIMELINE_EVENTS : EMPTY_TIMELINE_EVENTS;
+  const visibleSelectedRowEvents = useMemo(() => (
+    selectedRowEvents.filter((event) => eventInWindow(event, start, end))
+  ), [end, selectedRowEvents, start]);
+
+  useEffect(() => {
+    laneCacheRef.current = timelineLayout.nextLaneByMarkId;
+  }, [timelineLayout.nextLaneByMarkId]);
 
   const updateState = useCallback((patch: Partial<TimelineViewState>) => {
     setViewState((current) => ({
@@ -321,17 +666,75 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     }));
   }, []);
 
-  const selectEvent = useCallback((event: TimelineEvent) => {
+  const suppressTimelineScrollEvents = useCallback((durationMs = 160) => {
+    suppressProgrammaticScrollRef.current = true;
+    if (suppressProgrammaticScrollTimerRef.current !== null) {
+      window.clearTimeout(suppressProgrammaticScrollTimerRef.current);
+    }
+    suppressProgrammaticScrollTimerRef.current = window.setTimeout(() => {
+      suppressProgrammaticScrollRef.current = false;
+      suppressProgrammaticScrollTimerRef.current = null;
+    }, durationMs);
+  }, []);
+
+  useEffect(() => {
+    const element = timeScrollRef.current;
+    if (!element) return undefined;
+
+    const measure = () => {
+      const width = element.clientWidth || element.getBoundingClientRect().width;
+      if (width > 0) {
+        setTimeViewportWidthPx(Math.round(width));
+      }
+    };
+
+    measure();
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+
+  useEffect(() => () => {
+    if (suppressProgrammaticScrollTimerRef.current !== null) {
+      window.clearTimeout(suppressProgrammaticScrollTimerRef.current);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const element = timeScrollRef.current;
+    if (!element) return;
+    if (Math.abs(element.scrollLeft - scrollMetrics.scrollLeftPx) > 1) {
+      suppressTimelineScrollEvents();
+      element.scrollLeft = scrollMetrics.scrollLeftPx;
+    }
+  }, [scrollMetrics.scrollLeftPx, scrollMetrics.surfaceWidthPx, suppressTimelineScrollEvents]);
+
+  const selectEvent = useCallback((event: TimelineEvent, options: { preserveCluster?: boolean } = {}) => {
     updateState({
       selectedEventId: event.id,
       selectedRowOccurrenceId: event.row_id,
+      selectedClusterId: options.preserveCluster ? viewState.selectedClusterId : null,
       panes: { ...viewState.panes, inspector: true },
     });
-  }, [updateState, viewState.panes]);
+  }, [updateState, viewState.panes, viewState.selectedClusterId]);
 
   const selectRow = useCallback((row: TimelineRowOccurrence) => {
     updateState({
       selectedRowOccurrenceId: row.id,
+      selectedEventId: null,
+      selectedClusterId: null,
+      panes: { ...viewState.panes, inspector: true },
+    });
+  }, [updateState, viewState.panes]);
+
+  const selectCluster = useCallback((cluster: TimelineClusterMark) => {
+    updateState({
+      selectedClusterId: cluster.id,
+      selectedRowOccurrenceId: cluster.rowId,
       selectedEventId: null,
       panes: { ...viewState.panes, inspector: true },
     });
@@ -367,6 +770,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       selectedEventId: viewState.selectedEventId && remove.has(viewState.selectedEventId)
         ? null
         : viewState.selectedEventId,
+      selectedClusterId: viewState.selectedClusterId,
     });
   }, [events, links, rows, updateState, viewState]);
 
@@ -383,25 +787,192 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     collapseEvent(row.source_event_id);
   }, [collapseEvent]);
 
+  const beginRowListResize = useCallback((
+    event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    if (rowListResizeRef.current) return;
+    rowListResizeRef.current = {
+      startX: event.clientX,
+      startWidth: viewState.panes.rowListWidth,
+    };
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const origin = rowListResizeRef.current;
+      if (!origin) return;
+      const width = normalizeRowListWidth(origin.startWidth + moveEvent.clientX - origin.startX);
+      updateState({ panes: { ...viewState.panes, rowListWidth: width } });
+    };
+    const stopResize = () => {
+      rowListResizeRef.current = null;
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+  }, [updateState, viewState.panes]);
+
   const fitProject = useCallback(() => {
-    updateState({ timeWindow: { from: projection?.time_axis.start ?? null, to: projection?.time_axis.end ?? null } });
-  }, [projection, updateState]);
+    updateState({ timeWindow: { from: null, to: null } });
+  }, [updateState]);
 
   const fitSelected = useCallback(() => {
     const target = selectedEvent ?? visibleSelectedRowEvents[0] ?? selectedRowEvents[0];
     if (!target) return;
-    updateState({ timeWindow: { from: target.timestamp - DAY_MS, to: target.timestamp + DAY_MS } });
-  }, [selectedEvent, selectedRowEvents, updateState, visibleSelectedRowEvents]);
+    const next = clampTimelineViewport(
+      {
+        from: target.timestamp - TIMELINE_DAY_MS,
+        to: target.timestamp + TIMELINE_DAY_MS,
+      },
+      renderDomain,
+      { minSpanMs: MIN_TIMELINE_WINDOW_MS },
+    );
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, selectedEvent, selectedRowEvents, updateState, visibleSelectedRowEvents]);
+
+  const zoomToCluster = useCallback((cluster: TimelineClusterMark) => {
+    const minTime = cluster.kind === 'same_time_cluster' ? cluster.timestamp : cluster.minTime;
+    const maxTime = cluster.kind === 'same_time_cluster' ? cluster.timestamp : cluster.maxTime;
+    const clusterSpan = Math.max(0, maxTime - minTime);
+    const targetSpan = Math.max(clusterSpan, TIMELINE_HOUR_MS);
+    const padding = cluster.kind === 'same_time_cluster'
+      ? targetSpan / 2
+      : Math.max(targetSpan * 0.12, TIMELINE_HOUR_MS / 2);
+    const next = clampTimelineViewport(
+      { from: minTime - padding, to: maxTime + padding },
+      renderDomain,
+      { minSpanMs: MIN_TIMELINE_WINDOW_MS },
+    );
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, updateState]);
+
+  const zoomTimeline = useCallback((factor: number, focalRatio = 0.5) => {
+    const next = zoomTimelineViewport(viewport, renderDomain, factor, focalRatio, {
+      minSpanMs: MIN_TIMELINE_WINDOW_MS,
+    });
+    const fitted = (
+      approximatelyEqualTimestamp(next.from, renderDomain.start)
+      && approximatelyEqualTimestamp(next.to, renderDomain.end)
+    );
+    if (fitted) {
+      updateState({ timeWindow: { from: null, to: null } });
+      return;
+    }
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, updateState, viewport]);
+
+  const editDateBoundary = useCallback((boundary: 'from' | 'to', value: string) => {
+    if (!value) {
+      updateState({
+        timeWindow: {
+          ...viewState.timeWindow,
+          [boundary]: null,
+        },
+      });
+      return;
+    }
+    const next = clampTimelineViewport(
+      editTimelineViewportDateBoundary(viewport, boundary, value),
+      renderDomain,
+      { minSpanMs: MIN_TIMELINE_WINDOW_MS },
+    );
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, updateState, viewState.timeWindow, viewport]);
+
+  const handleTimeScroll = useCallback((event: JSX.TargetedUIEvent<HTMLDivElement>) => {
+    if (suppressProgrammaticScrollRef.current) return;
+    const next = viewportFromTimelineScroll(
+      renderDomain,
+      event.currentTarget.scrollLeft,
+      viewportSpan,
+      timeViewportWidthPx,
+    );
+    updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
+  }, [renderDomain, timeViewportWidthPx, updateState, viewportSpan]);
+
+  const handleTimelineWheel = useCallback((event: WheelEvent) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    suppressTimelineScrollEvents();
+    const bounds = timeScrollRef.current?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
+    const focalRatio = bounds.width > 0
+      ? clamp((event.clientX - bounds.left) / bounds.width, 0, 1)
+      : 0.5;
+    zoomTimeline(event.deltaY < 0 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);
+  }, [suppressTimelineScrollEvents, zoomTimeline]);
+
+  useEffect(() => {
+    const element = timelineMainRef.current;
+    if (!element) return undefined;
+    element.addEventListener('wheel', handleTimelineWheel, { capture: true, passive: false });
+    return () => element.removeEventListener('wheel', handleTimelineWheel, { capture: true });
+  }, [handleTimelineWheel]);
+
+  const handleTimelineGestureStart = useCallback((event: Event) => {
+    const gestureEvent = event as Event & { scale?: number };
+    event.preventDefault();
+    suppressTimelineScrollEvents();
+    gestureScaleRef.current = Number.isFinite(gestureEvent.scale) && gestureEvent.scale
+      ? gestureEvent.scale
+      : 1;
+  }, [suppressTimelineScrollEvents]);
+
+  const handleTimelineGestureChange = useCallback((event: Event) => {
+    const gestureEvent = event as Event & { scale?: number; clientX?: number };
+    const nextScale = Number.isFinite(gestureEvent.scale) && gestureEvent.scale
+      ? gestureEvent.scale
+      : 1;
+    const previousScale = gestureScaleRef.current ?? 1;
+    const scaleDelta = nextScale / Math.max(previousScale, 0.001);
+    if (Math.abs(scaleDelta - 1) < 0.01) return;
+    event.preventDefault();
+    suppressTimelineScrollEvents();
+    gestureScaleRef.current = nextScale;
+    const bounds = timeScrollRef.current?.getBoundingClientRect() ?? timelineMainRef.current?.getBoundingClientRect();
+    const focalRatio = bounds && bounds.width > 0
+      ? clamp(((gestureEvent.clientX ?? bounds.left + bounds.width / 2) - bounds.left) / bounds.width, 0, 1)
+      : 0.5;
+    zoomTimeline(scaleDelta > 1 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);
+  }, [suppressTimelineScrollEvents, zoomTimeline]);
+
+  const handleTimelineGestureEnd = useCallback(() => {
+    gestureScaleRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    const element = timelineMainRef.current;
+    if (!element) return undefined;
+    element.addEventListener('gesturestart', handleTimelineGestureStart, { capture: true, passive: false });
+    element.addEventListener('gesturechange', handleTimelineGestureChange, { capture: true, passive: false });
+    element.addEventListener('gestureend', handleTimelineGestureEnd, { capture: true });
+    return () => {
+      element.removeEventListener('gesturestart', handleTimelineGestureStart, { capture: true });
+      element.removeEventListener('gesturechange', handleTimelineGestureChange, { capture: true });
+      element.removeEventListener('gestureend', handleTimelineGestureEnd, { capture: true });
+    };
+  }, [handleTimelineGestureChange, handleTimelineGestureEnd, handleTimelineGestureStart]);
 
   const navigateEvent = useCallback((direction: 1 | -1) => {
-    const rowEvents = selectedRowEvents.length > 0 ? selectedRowEvents : events;
+    const chronologicalEvents = timelineLayout.chronologicalOrder
+      .filter((entry) => !selectedRow || entry.rowId === selectedRow.id)
+      .map((entry) => eventById.get(entry.eventId))
+      .filter((event): event is TimelineEvent => Boolean(event));
+    const rowEvents = chronologicalEvents.length > 0 ? chronologicalEvents : selectedRowEvents;
     if (rowEvents.length === 0) return;
     const index = viewState.selectedEventId
       ? rowEvents.findIndex((event) => event.id === viewState.selectedEventId)
       : -1;
     const next = rowEvents[Math.max(0, Math.min(rowEvents.length - 1, index + direction))] ?? rowEvents[0];
     selectEvent(next);
-  }, [events, selectEvent, selectedRowEvents, viewState.selectedEventId]);
+  }, [
+    eventById,
+    selectEvent,
+    selectedRow,
+    selectedRowEvents,
+    timelineLayout.chronologicalOrder,
+    viewState.selectedEventId,
+  ]);
 
   const navigateRow = useCallback((direction: 1 | -1) => {
     if (rows.length === 0) return;
@@ -434,19 +1005,80 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [navigateEvent, navigateRow]);
 
   const axisTicks = useMemo(() => {
-    const ticks = 4;
-    return Array.from({ length: ticks + 1 }, (_, index) => {
-      const timestamp = start + (span * index) / ticks;
-      return { timestamp, left: (index / ticks) * 100 };
-    });
-  }, [span, start]);
+    return generateTimelineTicks(viewport, timeViewportWidthPx, {
+      targetSpacingPx: TIMELINE_TICK_SPACING_PX,
+    }).map((tick) => ({
+      ...tick,
+      left: eventLeft(tick.timestamp, renderDomain.start, domainSpan),
+    }));
+  }, [domainSpan, renderDomain.start, timeViewportWidthPx, viewport]);
 
-  const diagnosticsCount = projection
-    ? projection.diagnostics.cycles.length
-      + projection.diagnostics.depth_limits.length
-      + projection.diagnostics.filtered_targets.length
-      + projection.diagnostics.missing_expansions.length
-    : 0;
+  const diagnostics = useMemo(() => timelineDiagnostics(projection), [projection]);
+  const diagnosticsCount = diagnostics.length;
+  const inspectorContent = useMemo(() => (
+    <TimelineInspector
+      selectedEvent={selectedEvent}
+      selectedCluster={selectedCluster}
+      selectedClusterEvents={selectedClusterEvents}
+      selectedRow={selectedRow}
+      missingEventId={viewState.selectedEventId && !selectedEvent ? viewState.selectedEventId : null}
+      missingClusterId={viewState.selectedClusterId && !selectedCluster ? viewState.selectedClusterId : null}
+      missingRowId={viewState.selectedRowOccurrenceId && !selectedRow ? viewState.selectedRowOccurrenceId : null}
+      rowEvents={visibleSelectedRowEvents}
+      links={links}
+      linkById={linkById}
+      expandedEventIds={viewState.expandedEventIds}
+      onExpandEvent={expandEvent}
+      onCollapseEvent={collapseEvent}
+      onSelectEvent={selectEvent}
+      onPromoteRow={promoteRow}
+      onRemovePromotedRow={removePromotedRow}
+      onRemoveTransientRow={removeTransientRow}
+      onZoomToCluster={zoomToCluster}
+    />
+  ), [
+    collapseEvent,
+    expandEvent,
+    linkById,
+    links,
+    promoteRow,
+    removePromotedRow,
+    removeTransientRow,
+    selectEvent,
+    selectedCluster,
+    selectedClusterEvents,
+    selectedEvent,
+    selectedRow,
+    viewState.expandedEventIds,
+    viewState.selectedClusterId,
+    viewState.selectedEventId,
+    viewState.selectedRowOccurrenceId,
+    visibleSelectedRowEvents,
+    zoomToCluster,
+  ]);
+  const rightSidebarDescriptor = useMemo(() => ({
+    id: 'timeline-inspector',
+    title: 'inspector',
+    ariaLabel: 'Timeline inspector',
+    open: viewState.panes.inspector,
+    width: viewState.panes.inspectorWidth,
+    minWidth: MIN_INSPECTOR_WIDTH,
+    maxWidth: MAX_INSPECTOR_WIDTH,
+    onOpenChange: (open: boolean) => {
+      updateState({ panes: { ...viewState.panes, inspector: open } });
+    },
+    onWidthChange: (width: number) => {
+      updateState({
+        panes: {
+          ...viewState.panes,
+          inspectorWidth: normalizeInspectorWidth(width),
+        },
+      });
+    },
+    content: inspectorContent,
+  }), [inspectorContent, updateState, viewState.panes]);
+
+  useRegisterAppRightSidebar(rightSidebarDescriptor);
 
   return (
     <section className="timeline-workspace" aria-label="Project timeline">
@@ -455,7 +1087,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           <span>Project</span>
           <select
             value={projectRef}
-            onChange={(event) => setProjectRef((event.currentTarget as HTMLSelectElement).value)}
+            onChange={(event) => handleProjectChange((event.currentTarget as HTMLSelectElement).value)}
           >
             {repos.length === 0 ? <option value={projectRef}>{projectRef}</option> : repos.map((repo) => (
               <option key={repoId(repo)} value={repoId(repo)}>{repoTitle(repo)}</option>
@@ -496,18 +1128,23 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           <span>From</span>
           <input
             type="date"
-            value={dateInputValue(viewState.timeWindow.from)}
-            onChange={(event) => updateState({ timeWindow: { ...viewState.timeWindow, from: dateInputToTimestamp((event.currentTarget as HTMLInputElement).value) } })}
+            value={dateInputValue(viewport.from)}
+            onChange={(event) => editDateBoundary('from', (event.currentTarget as HTMLInputElement).value)}
           />
         </label>
         <label className="timeline-control">
           <span>To</span>
           <input
             type="date"
-            value={dateInputValue(viewState.timeWindow.to)}
-            onChange={(event) => updateState({ timeWindow: { ...viewState.timeWindow, to: dateInputToTimestamp((event.currentTarget as HTMLInputElement).value, true) } })}
+            value={dateInputValue(viewport.to)}
+            onChange={(event) => editDateBoundary('to', (event.currentTarget as HTMLInputElement).value)}
           />
         </label>
+        <div className="timeline-zoom-group" aria-label="Timeline zoom">
+          <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(2)} aria-label="Zoom out" title="Zoom out">-</button>
+          <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(0.5)} aria-label="Zoom in" title="Zoom in">+</button>
+          <button type="button" className="timeline-button" onClick={fitProject}>Fit all</button>
+        </div>
         <div className="timeline-toggle-group" aria-label="Event types">
           {EVENT_TYPES.map((kind) => {
             const active = viewState.visibleEventTypes.includes(kind);
@@ -535,93 +1172,211 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           />
           <span>Closed</span>
         </label>
-        <button type="button" className="timeline-button" onClick={fitProject}>Fit</button>
         <button type="button" className="timeline-button" onClick={fitSelected} disabled={!selectedRow && !selectedEvent}>Focus</button>
         <button
           type="button"
-          className="timeline-button"
-          onClick={() => updateState({ panes: { ...viewState.panes, inspector: !viewState.panes.inspector } })}
+          className="timeline-diagnostics-button"
+          onClick={() => updateState({ panes: { ...viewState.panes, diagnostics: !viewState.panes.diagnostics } })}
+          aria-expanded={viewState.panes.diagnostics}
+          aria-label={diagnosticsCount > 0 ? `Diagnostics (${diagnosticsCount})` : 'Diagnostics'}
         >
-          Inspector
+          Diagnostics
+          {diagnosticsCount > 0 ? <span>{diagnosticsCount}</span> : null}
         </button>
-        <div className="timeline-diagnostics" role="status">
-          <span>{status === 'syncing' ? 'Syncing' : status === 'error' ? 'Using last valid' : 'Current'}</span>
-          <span>{rows.length} rows</span>
-          <span>{events.length} events</span>
-          <span>{diagnosticsCount} diagnostics</span>
-        </div>
+        <div className="timeline-toolbar-spacer" />
+        {status === 'syncing' ? <div className="timeline-status" role="status" aria-label="Updating timeline" /> : null}
       </div>
 
-      {error ? <div className="timeline-sync-banner">{error}</div> : null}
+      {viewState.panes.diagnostics ? (
+        <div className="timeline-diagnostics-panel" role="region" aria-label="Timeline diagnostics">
+          {diagnostics.length === 0 ? (
+            <span>No diagnostics.</span>
+          ) : diagnostics.map((diagnostic) => (
+            <span key={diagnostic.key}>
+              <strong>{diagnostic.kind}</strong>
+              {diagnostic.message}
+            </span>
+          ))}
+        </div>
+      ) : null}
 
-      <div className={`timeline-grid timeline-grid--${viewState.density}${viewState.panes.inspector ? '' : ' timeline-grid--no-inspector'}`}>
-        <div className="timeline-main" role="grid" aria-rowcount={rows.length}>
-          <div className="timeline-axis">
-            <div className="timeline-axis__corner">Rows</div>
-            <div className="timeline-axis__track">
-              {axisTicks.map((tick) => (
-                <span key={tick.timestamp} className="timeline-axis__tick" style={{ left: `${tick.left}%` }}>
-                  {formatDate(tick.timestamp)}
-                </span>
-              ))}
-            </div>
-          </div>
-          <div className="timeline-row-stack">
-            {rows.length === 0 ? (
-              <div className="timeline-empty">No timeline rows match the current controls.</div>
-            ) : rows.map((row) => {
-              const rowEvents = eventsByRow.get(row.id) ?? [];
-              const visibleEvents = rowEvents.filter((event) => eventInWindow(event, start, end));
-              const earlier = rowEvents.filter((event) => event.timestamp < start).length;
-              const later = rowEvents.filter((event) => event.timestamp > end).length;
-              const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
-              const selected = selectedRow?.id === row.id;
-              return (
-                <div
-                  key={row.id}
-                  className={`timeline-row timeline-row--${row.kind}${selected ? ' timeline-row--selected' : ''}`}
-                  role="row"
-                >
+      {error ? <div className="timeline-sync-banner">Timeline refresh failed. Showing the last loaded timeline. {error}</div> : null}
+
+      <div
+        className={`timeline-grid timeline-grid--${viewState.density}`}
+        style={{ '--timeline-row-list-width': `${viewState.panes.rowListWidth}px` } as JSX.CSSProperties}
+      >
+        <div className="timeline-main" ref={timelineMainRef} role="grid" aria-rowcount={rows.length}>
+          <div className="timeline-gutter-column" aria-label="Timeline rows">
+            <div className="timeline-axis__corner" aria-hidden="true" />
+            <div className="timeline-gutter-stack">
+              {rows.map((row) => {
+                const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
+                const selected = selectedRow?.id === row.id;
+                const rowLayout = timelineLayout.rowLayoutById[row.id];
+                return (
                   <button
+                    key={row.id}
                     type="button"
-                    className="timeline-gutter-row"
-                    style={{ '--depth': row.depth } as JSX.CSSProperties}
+                    className={`timeline-gutter-row timeline-gutter-row--${row.kind}${selected ? ' timeline-gutter-row--selected' : ''}`}
+                    style={{
+                      '--depth': row.depth,
+                      height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px`,
+                    } as JSX.CSSProperties}
                     onClick={() => selectRow(row)}
+                    aria-label={`${row.issue.display_id} ${row.issue.title}. ${rowKindLabel(row.kind)} row. Status ${row.issue.status}${row.issue.resolution ? `/${row.issue.resolution}` : ''}.`}
                   >
                     <span className="timeline-gutter-row__branch" aria-hidden="true" />
-                    <span className="timeline-gutter-row__kind">{rowKindLabel(row.kind)}</span>
+                    <span className="sr-only">{rowKindLabel(row.kind)} row</span>
                     <strong>{row.issue.display_id}</strong>
-                    <span>{row.issue.title}</span>
+                    <span className="timeline-gutter-row__title">{row.issue.title}</span>
                     <em>{row.issue.status}{row.issue.resolution ? `/${row.issue.resolution}` : ''}</em>
                     {sourceEvent ? (
                       <span className="timeline-gutter-row__origin">from {formatDate(sourceEvent.timestamp)}</span>
                     ) : null}
                   </button>
+                );
+              })}
+            </div>
+            <div
+              className="timeline-gutter-resize-hit"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize timeline rows"
+              aria-valuemin={MIN_ROW_LIST_WIDTH}
+              aria-valuemax={MAX_ROW_LIST_WIDTH}
+              aria-valuenow={Math.round(viewState.panes.rowListWidth)}
+              onMouseDown={beginRowListResize}
+              onPointerDown={beginRowListResize}
+            />
+          </div>
+          <div
+            className="timeline-time-scroll"
+            ref={timeScrollRef}
+            onScroll={handleTimeScroll}
+            aria-label="Timeline time canvas"
+          >
+            <div
+              className="timeline-time-surface"
+              style={{ width: `${scrollMetrics.surfaceWidthPx}px` } as JSX.CSSProperties}
+            >
+            <div className="timeline-axis__track">
+              {axisTicks.map((tick) => (
+                <span
+                  key={tick.timestamp}
+                  className={`timeline-axis__tick${tick.major ? ' timeline-axis__tick--major' : ''}`}
+                  style={{ left: `${tick.left}%` }}
+                >
+                  {tick.contextLabel ? <em>{tick.contextLabel}</em> : null}
+                  {tick.label}
+                </span>
+              ))}
+            </div>
+            <div className="timeline-row-stack">
+              {rows.length === 0 ? (
+                <div className="timeline-empty">No timeline rows match the current controls.</div>
+              ) : rows.map((row) => {
+                const rowEvents = eventsByRow.get(row.id) ?? [];
+                const rowLayout = timelineLayout.rowLayoutById[row.id];
+                const rowEventMarks = rowEvents
+                  .map((event) => ({ event, mark: eventMarkById.get(event.id) }))
+                  .filter((entry): entry is { event: TimelineEvent; mark: TimelineEventMark } => Boolean(entry.mark));
+                const rowSameTimeClusters = timelineLayout.sameTimeClusters.filter(
+                  (cluster) => cluster.rowId === row.id && !cluster.expanded,
+                );
+                const rowRangeClusters = timelineLayout.rangeClusters.filter((cluster) => cluster.rowId === row.id);
+                const earlier = rowEvents.filter((event) => event.timestamp < start).length;
+                const later = rowEvents.filter((event) => event.timestamp > end).length;
+                const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
+                const selected = selectedRow?.id === row.id;
+                const originXPx = sourceEvent
+                  ? eventLeftPx(sourceEvent.timestamp, renderDomain.start, domainSpan, scrollMetrics.surfaceWidthPx)
+                  : null;
+                const expandedSourceMark = rowEventMarks.find(({ event }) => {
+                  const eventLinks = event.link_ids
+                    .map((id) => linkById.get(id))
+                    .filter((link): link is TimelineLink => Boolean(link));
+                  return viewState.expandedEventIds.includes(event.id)
+                    || eventLinks.some((link) => Boolean(link.expanded_row_id));
+                })?.mark ?? null;
+                const sourceParentStartYPx = expandedSourceMark
+                  ? markLaneTopPx(expandedSourceMark, layoutMetrics.laneHeightPx) + layoutMetrics.eventHeightPx / 2
+                  : null;
+                return (
+                  <div
+                    key={row.id}
+                    className={`timeline-row timeline-row--${row.kind}${sourceEvent ? ' timeline-row--has-origin' : ''}${expandedSourceMark ? ' timeline-row--source-parent' : ''}${selected ? ' timeline-row--selected' : ''}`}
+                    role="row"
+                    style={{
+                      '--origin-x': originXPx === null ? undefined : `${originXPx}px`,
+                      '--source-parent-x': expandedSourceMark ? `${expandedSourceMark.xPx}px` : undefined,
+                      '--source-parent-start-y': sourceParentStartYPx === null ? undefined : `${sourceParentStartYPx}px`,
+                      height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px`,
+                    } as JSX.CSSProperties}
+                  >
                   <div className="timeline-row-canvas" role="gridcell">
-                    {sourceEvent ? (
-                      <button
-                        type="button"
-                        className="timeline-origin-marker"
-                        style={{ left: `${eventLeft(sourceEvent.timestamp, start, span)}%` }}
-                        onClick={() => selectEvent(sourceEvent)}
-                      >
-                        Origin
-                      </button>
-                    ) : null}
                     {earlier > 0 ? <span className="timeline-boundary timeline-boundary--left">{earlier} earlier</span> : null}
                     {later > 0 ? <span className="timeline-boundary timeline-boundary--right">{later} later</span> : null}
-                    {visibleEvents.map((event) => {
+                    {rowRangeClusters.map((cluster) => (
+                      <button
+                        key={cluster.id}
+                        type="button"
+                        className={`timeline-cluster timeline-cluster--range${viewState.selectedClusterId === cluster.id ? ' timeline-cluster--selected' : ''}${cluster.containsSelected ? ' timeline-cluster--contains-selected' : ''}`}
+                        style={{
+                          left: `${cluster.xPx}px`,
+                          top: `${markLaneTopPx(cluster, layoutMetrics.laneHeightPx)}px`,
+                          width: `${Math.max(cluster.widthPx, 28)}px`,
+                        }}
+                        onClick={() => selectCluster(cluster)}
+                        onDblClick={() => {
+                          selectCluster(cluster);
+                          zoomToCluster(cluster);
+                        }}
+                        aria-label={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
+                        title={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
+                      >
+                        <span className="timeline-cluster__range-line" aria-hidden="true" />
+                        <strong>{cluster.count}</strong>
+                      </button>
+                    ))}
+                    {rowSameTimeClusters.map((cluster) => (
+                      <button
+                        key={cluster.id}
+                        type="button"
+                        className={`timeline-cluster timeline-cluster--same-time${viewState.selectedClusterId === cluster.id ? ' timeline-cluster--selected' : ''}${cluster.containsSelected ? ' timeline-cluster--contains-selected' : ''}`}
+                        style={{
+                          left: `${cluster.xPx}px`,
+                          top: `${markLaneTopPx(cluster, layoutMetrics.laneHeightPx)}px`,
+                          width: `${cluster.widthPx}px`,
+                        }}
+                        onClick={() => selectCluster(cluster)}
+                        onDblClick={() => {
+                          selectCluster(cluster);
+                          zoomToCluster(cluster);
+                        }}
+                        aria-label={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
+                        title={clusterAccessibleLabel(cluster, viewState.selectedClusterId)}
+                      >
+                        <strong>{cluster.count}</strong>
+                      </button>
+                    ))}
+                    {rowEventMarks.map(({ event, mark }) => {
                       const eventLinks = event.link_ids.map((id) => linkById.get(id)).filter((link): link is TimelineLink => Boolean(link));
                       const issueLinks = eventLinks.filter((link) => link.target_issue && !link.target_issue.deleted);
-                      const expanded = eventLinks.some((link) => Boolean(link.expanded_row_id));
+                      const expanded = viewState.expandedEventIds.includes(event.id) || eventLinks.some((link) => Boolean(link.expanded_row_id));
                       const eventSelected = viewState.selectedEventId === event.id;
                       return (
                         <button
                           key={event.id}
                           type="button"
                           className={`timeline-event timeline-event--${event.kind}${eventSelected ? ' timeline-event--selected' : ''}${expanded ? ' timeline-event--expanded' : ''}`}
-                          style={{ left: `${eventLeft(event.timestamp, start, span)}%` }}
-                          onClick={() => selectEvent(event)}
+                          style={{
+                            left: `${mark.xPx}px`,
+                            top: `${markLaneTopPx(mark, layoutMetrics.laneHeightPx)}px`,
+                          }}
+                          onClick={() => selectEvent(event, {
+                            preserveCluster: Boolean(selectedCluster?.eventIds.includes(event.id)),
+                          })}
                           title={`${event.display_headline} ${formatDateTime(event.timestamp)}`}
                         >
                           <span className="timeline-event__marker" aria-hidden="true" />
@@ -636,31 +1391,13 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                     })}
                   </div>
                 </div>
-              );
-            })}
+                );
+              })}
+            </div>
+            </div>
           </div>
         </div>
 
-        {viewState.panes.inspector ? (
-          <aside className="timeline-inspector" aria-label="Timeline inspector">
-            <TimelineInspector
-              selectedEvent={selectedEvent}
-              selectedRow={selectedRow}
-              missingEventId={viewState.selectedEventId && !selectedEvent ? viewState.selectedEventId : null}
-              missingRowId={viewState.selectedRowOccurrenceId && !selectedRow ? viewState.selectedRowOccurrenceId : null}
-              rowEvents={visibleSelectedRowEvents}
-              links={links}
-              linkById={linkById}
-              expandedEventIds={viewState.expandedEventIds}
-              onExpandEvent={expandEvent}
-              onCollapseEvent={collapseEvent}
-              onSelectEvent={selectEvent}
-              onPromoteRow={promoteRow}
-              onRemovePromotedRow={removePromotedRow}
-              onRemoveTransientRow={removeTransientRow}
-            />
-          </aside>
-        ) : null}
       </div>
     </section>
   );
@@ -668,8 +1405,11 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 
 type InspectorProps = {
   selectedEvent: TimelineEvent | null;
+  selectedCluster: TimelineClusterMark | null;
+  selectedClusterEvents: TimelineEvent[];
   selectedRow: TimelineRowOccurrence | null;
   missingEventId: string | null;
+  missingClusterId: string | null;
   missingRowId: string | null;
   rowEvents: TimelineEvent[];
   links: TimelineLink[];
@@ -677,16 +1417,20 @@ type InspectorProps = {
   expandedEventIds: string[];
   onExpandEvent: (eventId: string) => void;
   onCollapseEvent: (eventId: string) => void;
-  onSelectEvent: (event: TimelineEvent) => void;
+  onSelectEvent: (event: TimelineEvent, options?: { preserveCluster?: boolean }) => void;
   onPromoteRow: (row: TimelineRowOccurrence) => void;
   onRemovePromotedRow: (row: TimelineRowOccurrence) => void;
   onRemoveTransientRow: (row: TimelineRowOccurrence) => void;
+  onZoomToCluster: (cluster: TimelineClusterMark) => void;
 };
 
 function TimelineInspector({
   selectedEvent,
+  selectedCluster,
+  selectedClusterEvents,
   selectedRow,
   missingEventId,
+  missingClusterId,
   missingRowId,
   rowEvents,
   linkById,
@@ -697,20 +1441,53 @@ function TimelineInspector({
   onPromoteRow,
   onRemovePromotedRow,
   onRemoveTransientRow,
+  onZoomToCluster,
 }: InspectorProps): JSX.Element {
   const eventLinks = selectedEvent
     ? selectedEvent.link_ids.map((id) => linkById.get(id)).filter((link): link is TimelineLink => Boolean(link))
     : [];
-  const expandableLinks = eventLinks.filter((link) => link.target_issue && !link.target_issue.deleted);
-  const otherRefs = eventLinks.filter((link) => link.target_issue?.deleted || link.ref_kind !== 'issue');
+  const expandableLinks = eventLinks.filter((link) => (
+    link.ref_kind === 'issue' && link.target_issue && !link.target_issue.deleted
+  ));
+  const otherRefs = eventLinks.filter((link) => (
+    link.ref_kind !== 'issue' || !link.target_issue || link.target_issue.deleted
+  ));
   return (
     <div className="timeline-inspector__content">
-      {missingEventId || missingRowId ? (
+      {missingEventId || missingClusterId || missingRowId ? (
         <div className="timeline-inspector__missing">
           Selection is outside the current projection.
           {missingEventId ? <code>{missingEventId}</code> : null}
+          {missingClusterId ? <code>{missingClusterId}</code> : null}
           {missingRowId ? <code>{missingRowId}</code> : null}
         </div>
+      ) : null}
+      {selectedCluster && !selectedEvent ? (
+        <section className="timeline-inspector__section">
+          <div className="timeline-inspector__header">
+            <span>{clusterKindLabel(selectedCluster)}</span>
+            <strong>{selectedCluster.count} events</strong>
+          </div>
+          <dl className="timeline-meta">
+            <div><dt>Time</dt><dd>{clusterTimeLabel(selectedCluster)}</dd></div>
+            <div><dt>Categories</dt><dd>{clusterCategorySummaryLabel(selectedCluster.categorySummary)}</dd></div>
+            <div><dt>Row</dt><dd>{selectedRow?.issue.display_id ?? selectedCluster.rowId}</dd></div>
+            <div><dt>Selected child</dt><dd>{selectedCluster.containsSelected ? 'Yes' : 'No'}</dd></div>
+          </dl>
+          <div className="timeline-inspector__actions">
+            <button type="button" onClick={() => onZoomToCluster(selectedCluster)}>Zoom to cluster</button>
+          </div>
+          <div className="timeline-list-fallback timeline-cluster-list">
+            <h3>Cluster events</h3>
+            {selectedClusterEvents.length === 0 ? <p>No cluster events in the current projection.</p> : selectedClusterEvents.map((event) => (
+              <button key={event.id} type="button" onClick={() => onSelectEvent(event, { preserveCluster: true })}>
+                <time>{formatDateTime(event.timestamp)}</time>
+                <strong>{event.display_headline}</strong>
+                <span>{eventKindLabel(event.kind)} - {event.issue.display_id} - ordinal {event.ordinal}</span>
+              </button>
+            ))}
+          </div>
+        </section>
       ) : null}
       {selectedEvent ? (
         <section className="timeline-inspector__section">
@@ -746,7 +1523,7 @@ function TimelineInspector({
                   <span>{link.relationship_type}</span>
                   <strong>{link.target_issue.display_id}</strong>
                   <em>{link.target_issue.title}</em>
-                  {link.expanded_row_id ? <b>expanded</b> : null}
+                  {link.expanded_row_id ? <b>expanded</b> : expandedEventIds.includes(selectedEvent.id) ? <b>expanding</b> : null}
                 </button>
               ))}
             </div>
@@ -791,7 +1568,7 @@ function TimelineInspector({
             ))}
           </div>
         </section>
-      ) : !selectedEvent ? (
+      ) : !selectedEvent && !selectedCluster ? (
         <section className="timeline-inspector__section">
           <div className="timeline-inspector__header">
             <span>No selection</span>

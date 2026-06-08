@@ -38,6 +38,12 @@ import {
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
 import { parseRouteFromHash, type Route } from './routing';
+import {
+  AppShellProvider,
+  RightSidebarIcon,
+  type AppRightSidebarDescriptor,
+  type AppShellContextValue,
+} from './app-shell';
 import { AuthQueueView } from './views/auth';
 import type { AuthRequest } from './views/auth';
 import { ArtifactsView } from './views/artifacts';
@@ -78,6 +84,10 @@ import {
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
 
 function getRepoId(repo: WorkRepo): string {
   return repo.id || repo.name || '';
@@ -146,6 +156,19 @@ function App(): JSX.Element {
   // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
   const [rebuilding, setRebuilding] = useState(false);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
+  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+
+  const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
+    setRightSidebar(descriptor);
+    return () => {
+      setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+    };
+  }, []);
+
+  const appShellContext = useMemo<AppShellContextValue>(() => ({
+    rightSidebar,
+    registerRightSidebar,
+  }), [registerRightSidebar, rightSidebar]);
 
   const navigateToHash = useCallback((hash: string) => {
     if (typeof window === 'undefined') {
@@ -1034,6 +1057,45 @@ function App(): JSX.Element {
     );
   };
 
+  const currentRouteTitle = (
+    [...primaryNavItems, ...secondaryNavItems, {
+      tab: 'settings' as const,
+      href: '#/settings',
+      label: 'Settings',
+      title: 'Settings',
+      icon: SettingsIcon,
+    }].find((item) => item.tab === route.tab)?.title ?? 'Mandible'
+  );
+  const rightSidebarAvailable = Boolean(rightSidebar?.content);
+  const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
+  const rightSidebarToggleLabel = rightSidebar
+    ? rightSidebar.open
+      ? `Collapse ${rightSidebar.title}`
+      : `Show ${rightSidebar.title}`
+    : 'Show details sidebar';
+
+  const startRightSidebarResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
+    if (!rightSidebar) {
+      return;
+    }
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = rightSidebar.width;
+    const minWidth = rightSidebar.minWidth ?? 280;
+    const maxWidth = rightSidebar.maxWidth ?? 560;
+    const handleMove = (moveEvent: MouseEvent) => {
+      const viewportMax = Math.floor(window.innerWidth * 0.6);
+      const nextWidth = clamp(startWidth + startX - moveEvent.clientX, minWidth, Math.min(maxWidth, viewportMax));
+      rightSidebar.onWidthChange(nextWidth);
+    };
+    const handleUp = () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+  }, [rightSidebar]);
+
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
   if (rebuilding) {
     return <RebuildingSplash />;
@@ -1072,11 +1134,35 @@ function App(): JSX.Element {
           </button>
         </div>
       )}
-      <div className={`app-layout app-layout--rail-${railDisplayMode}`}>
-        <aside className="app-rail" data-tauri-drag-region>
-          <div className="app-rail__brand" title="Mandible">
-            <span className="app-rail__mark" aria-hidden="true">M</span>
-          </div>
+      <header className="app-header" data-tauri-drag-region>
+        <div className="app-header__brand" title="Mandible">
+          <span className="app-header__mark" aria-hidden="true">M</span>
+          <span className="app-header__brand-text">Mandible</span>
+        </div>
+        <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
+        <div className="app-header__actions">
+          {rightSidebarAvailable ? (
+            <button
+              type="button"
+              className={`app-header__icon-button${rightSidebarOpen ? ' app-header__icon-button--active' : ''}`}
+              onClick={() => rightSidebar?.onOpenChange(!rightSidebar.open)}
+              aria-label={rightSidebarToggleLabel}
+              aria-pressed={rightSidebarOpen}
+              title={rightSidebarToggleLabel}
+            >
+              <RightSidebarIcon open={rightSidebarOpen} />
+            </button>
+          ) : null}
+        </div>
+      </header>
+      <AppShellProvider value={appShellContext}>
+        <div
+          className={`app-layout app-layout--rail-${railDisplayMode}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
+          style={rightSidebarOpen && rightSidebar ? {
+            '--app-right-sidebar-width': `${rightSidebar.width}px`,
+          } as JSX.CSSProperties : undefined}
+        >
+          <aside className="app-rail" data-tauri-drag-region>
           <nav className="app-rail__nav" aria-label="Main navigation">
             <div className="app-rail__group">
               {primaryNavItems.map(renderRailItem)}
@@ -1095,7 +1181,9 @@ function App(): JSX.Element {
             })}
           </nav>
         </aside>
-        <main className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}`}>
+        <main
+          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}`}
+        >
         {route.tab === 'auth' && (
           <AuthQueueView
             queue={state.authQueue}
@@ -1217,7 +1305,26 @@ function App(): JSX.Element {
           />
         )}
         </main>
-      </div>
+          {rightSidebarOpen && rightSidebar ? (
+            <aside
+              className="app-right-sidebar"
+              aria-label={rightSidebar.ariaLabel}
+              style={{ width: `${rightSidebar.width}px` }}
+            >
+              <div
+                className="app-right-sidebar__resize"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={`Resize ${rightSidebar.title}`}
+                onMouseDown={startRightSidebarResize}
+              />
+              <div className="app-right-sidebar__content">
+                {rightSidebar.content}
+              </div>
+            </aside>
+          ) : null}
+        </div>
+      </AppShellProvider>
     </div>
   );
 }

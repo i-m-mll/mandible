@@ -10,7 +10,10 @@ export type TimelineTimeWindow = {
 
 export type TimelinePaneVisibility = {
   inspector: boolean;
+  inspectorWidth: number;
+  diagnostics: boolean;
   rowList: boolean;
+  rowListWidth: number;
 };
 
 export type TimelineViewState = {
@@ -21,6 +24,7 @@ export type TimelineViewState = {
   expandedPaths: string[];
   selectedRowOccurrenceId: string | null;
   selectedEventId: string | null;
+  selectedClusterId: string | null;
   timeWindow: TimelineTimeWindow;
   density: TimelineDensity;
   visibleEventTypes: TimelineEventKind[];
@@ -37,6 +41,7 @@ export type ProjectTimelineInput = {
   expanded_event_ids?: string[];
   expanded_paths?: string[];
   include_closed?: boolean;
+  depth?: number;
   from?: number;
   to?: number;
 };
@@ -178,12 +183,16 @@ export const DEFAULT_TIMELINE_VIEW_STATE: TimelineViewState = {
   expandedPaths: [],
   selectedRowOccurrenceId: null,
   selectedEventId: null,
+  selectedClusterId: null,
   timeWindow: { from: null, to: null },
   density: 'comfortable',
   visibleEventTypes: ['body', 'comment', 'state'],
   includeClosed: false,
   panes: {
     inspector: true,
+    inspectorWidth: 350,
+    diagnostics: false,
     rowList: true,
+    rowListWidth: 300,
   },
 };

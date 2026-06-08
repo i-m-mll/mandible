@@ -146,6 +146,72 @@ describe("project timeline projection", () => {
     );
   });
 
+  it("orders nested transient occurrences directly beneath their expanded parent", () => {
+    const base = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+    });
+    const alphaBody = eventBySource(base, "issue_body", fixture.issues.rootA.id);
+    const betaBody = eventBySource(base, "issue_body", fixture.issues.rootB.id);
+    const firstLevel = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      expanded_event_ids: [alphaBody.id, betaBody.id],
+      depth: 2,
+    });
+    const alphaSharedRow = firstLevel.rows.find((row) => (
+      row.issue.id === fixture.issues.shared.id
+      && row.parent_row_id === `row:root:${fixture.issues.rootA.id}:0`
+    ));
+    expect(alphaSharedRow).toBeTruthy();
+    const sharedNestedEvent = firstLevel.events.find((event) => (
+      event.row_id === alphaSharedRow?.id
+      && event.source_entity.type === "comment"
+      && event.source_entity.id === fixture.comments.sharedNested
+    ));
+    expect(sharedNestedEvent).toBeTruthy();
+
+    const nested = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      expanded_event_ids: [alphaBody.id, betaBody.id, sharedNestedEvent?.id ?? ""],
+      depth: 2,
+    });
+    const alphaShared = nested.rows.find((row) => row.id === alphaSharedRow?.id);
+    const nestedChild = nested.rows.find((row) => (
+      row.issue.id === fixture.issues.nested.id
+      && row.parent_row_id === alphaShared?.id
+    ));
+    const betaRoot = nested.rows.find((row) => row.issue.id === fixture.issues.rootB.id);
+    const betaShared = nested.rows.find((row) => (
+      row.issue.id === fixture.issues.shared.id
+      && row.parent_row_id === betaRoot?.id
+    ));
+
+    expect(alphaShared).toMatchObject({
+      parent_row_id: `row:root:${fixture.issues.rootA.id}:0`,
+      depth: 1,
+    });
+    expect(nestedChild).toMatchObject({
+      parent_row_id: alphaShared?.id,
+      source_event_id: sharedNestedEvent?.id,
+      depth: 2,
+    });
+    expect(betaShared).toMatchObject({
+      parent_row_id: betaRoot?.id,
+      depth: 1,
+    });
+    expect(nested.rows.map((row) => row.id)).toEqual([
+      `row:root:${fixture.issues.rootA.id}:0`,
+      alphaShared?.id,
+      nestedChild?.id,
+      `row:root:${fixture.issues.rootB.id}:1`,
+      betaShared?.id,
+    ]);
+    expect(nested.time_axis).toEqual({
+      start: base.time_axis.start,
+      end: base.time_axis.end,
+      event_count: nested.events.length,
+    });
+  });
+
   it("diagnoses depth limits, filtered targets, deleted targets, missing expansions, and cycles", () => {
     const first = buildProjectTimelineProjection(fixture.db, {
       project_id: fixture.project.id,
