@@ -1,6 +1,6 @@
 # Shared app header and right sidebar shell
 
-Issue: `4fb8d9b`  
+Issue: `4fb8d9b`
 Umbrella: `41d22a6`
 
 ## Problem
