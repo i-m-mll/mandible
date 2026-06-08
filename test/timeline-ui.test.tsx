@@ -528,6 +528,81 @@ describe('TimelineView', () => {
     });
   });
 
+  it('recovers from the maximum zoomed-out viewport using the next pinch-in gesture', async () => {
+    const base = projection();
+    stubTimelineFetch(projection({
+      events: [
+        base.events[0],
+        {
+          ...base.events[0],
+          id: 'event-recovery-next-day',
+          timestamp: Date.UTC(2026, 0, 2, 12),
+          display_headline: 'Recovery next day event',
+        },
+      ],
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: {
+        project: 'mandible',
+        from: String(Date.UTC(2026, 0, 1, 12)),
+        to: String(Date.UTC(2026, 0, 1, 18)),
+      },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Recovery next day event')).toBeTruthy());
+    const grid = screen.getByRole('grid');
+    const timeCanvas = screen.getByLabelText('Timeline time canvas');
+    for (let index = 0; index < 14; index += 1) {
+      fireEvent.wheel(grid, { ctrlKey: true, deltaY: 100, clientX: 500 });
+      fireEvent.scroll(timeCanvas, { target: { scrollLeft: 0 } });
+    }
+
+    let maxedOutSpan = 0;
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      const state = JSON.parse(String(stored));
+      maxedOutSpan = state.timeWindow.to - state.timeWindow.from;
+      expect(maxedOutSpan).toBeGreaterThan(TEST_DAY_MS);
+    });
+
+    fireEvent.wheel(grid, { ctrlKey: true, deltaY: -100, clientX: 500 });
+    fireEvent.scroll(timeCanvas, { target: { scrollLeft: 0 } });
+
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      const state = JSON.parse(String(stored));
+      expect(state.timeWindow.to - state.timeWindow.from).toBeLessThan(maxedOutSpan * 0.95);
+    });
+  });
+
+  it('handles native gesture events as a pinch fallback', async () => {
+    stubTimelineFetch(projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    const grid = screen.getByRole('grid');
+    const startEvent = new Event('gesturestart', { bubbles: true, cancelable: true });
+    Object.defineProperty(startEvent, 'scale', { value: 1 });
+    Object.defineProperty(startEvent, 'clientX', { value: 500 });
+    grid.dispatchEvent(startEvent);
+    const changeEvent = new Event('gesturechange', { bubbles: true, cancelable: true });
+    Object.defineProperty(changeEvent, 'scale', { value: 1.2 });
+    Object.defineProperty(changeEvent, 'clientX', { value: 500 });
+    grid.dispatchEvent(changeEvent);
+
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      const state = JSON.parse(String(stored));
+      expect(state.timeWindow.to - state.timeWindow.from).toBeLessThan(TEST_DAY_MS * 1.35);
+    });
+  });
+
   it('persists timeline row gutter resizing from the right edge', async () => {
     stubTimelineFetch(projection());
 

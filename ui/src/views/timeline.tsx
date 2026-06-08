@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { getProjectTimeline } from '../api';
 import { useRegisterAppRightSidebar } from '../app-shell';
@@ -430,8 +430,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const [status, setStatus] = useState<ProjectionStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const timeScrollRef = useRef<HTMLDivElement | null>(null);
+  const timelineMainRef = useRef<HTMLDivElement | null>(null);
   const suppressProgrammaticScrollRef = useRef(false);
   const suppressProgrammaticScrollTimerRef = useRef<number | null>(null);
+  const gestureScaleRef = useRef<number | null>(null);
   const rowListResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [timeViewportWidthPx, setTimeViewportWidthPx] = useState(FALLBACK_TIMELINE_WIDTH_PX);
   const laneCacheRef = useRef<TimelineLaneCache>({});
@@ -659,6 +661,17 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     }));
   }, []);
 
+  const suppressTimelineScrollEvents = useCallback((durationMs = 160) => {
+    suppressProgrammaticScrollRef.current = true;
+    if (suppressProgrammaticScrollTimerRef.current !== null) {
+      window.clearTimeout(suppressProgrammaticScrollTimerRef.current);
+    }
+    suppressProgrammaticScrollTimerRef.current = window.setTimeout(() => {
+      suppressProgrammaticScrollRef.current = false;
+      suppressProgrammaticScrollTimerRef.current = null;
+    }, durationMs);
+  }, []);
+
   useEffect(() => {
     const element = timeScrollRef.current;
     if (!element) return undefined;
@@ -686,21 +699,14 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     }
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = timeScrollRef.current;
     if (!element) return;
     if (Math.abs(element.scrollLeft - scrollMetrics.scrollLeftPx) > 1) {
-      suppressProgrammaticScrollRef.current = true;
-      if (suppressProgrammaticScrollTimerRef.current !== null) {
-        window.clearTimeout(suppressProgrammaticScrollTimerRef.current);
-      }
+      suppressTimelineScrollEvents();
       element.scrollLeft = scrollMetrics.scrollLeftPx;
-      suppressProgrammaticScrollTimerRef.current = window.setTimeout(() => {
-        suppressProgrammaticScrollRef.current = false;
-        suppressProgrammaticScrollTimerRef.current = null;
-      }, 80);
     }
-  }, [scrollMetrics.scrollLeftPx, scrollMetrics.surfaceWidthPx]);
+  }, [scrollMetrics.scrollLeftPx, scrollMetrics.surfaceWidthPx, suppressTimelineScrollEvents]);
 
   const selectEvent = useCallback((event: TimelineEvent, options: { preserveCluster?: boolean } = {}) => {
     updateState({
@@ -873,23 +879,67 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     updateState({ timeWindow: { from: Math.round(next.from), to: Math.round(next.to) } });
   }, [renderDomain, timeViewportWidthPx, updateState, viewportSpan]);
 
-  const handleTimelineWheel = useCallback((event: JSX.TargetedWheelEvent<HTMLDivElement>) => {
+  const handleTimelineWheel = useCallback((event: WheelEvent) => {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
-    suppressProgrammaticScrollRef.current = true;
-    if (suppressProgrammaticScrollTimerRef.current !== null) {
-      window.clearTimeout(suppressProgrammaticScrollTimerRef.current);
-    }
-    suppressProgrammaticScrollTimerRef.current = window.setTimeout(() => {
-      suppressProgrammaticScrollRef.current = false;
-      suppressProgrammaticScrollTimerRef.current = null;
-    }, 80);
+    suppressTimelineScrollEvents();
     const bounds = timeScrollRef.current?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect();
     const focalRatio = bounds.width > 0
       ? clamp((event.clientX - bounds.left) / bounds.width, 0, 1)
       : 0.5;
     zoomTimeline(event.deltaY < 0 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);
-  }, [zoomTimeline]);
+  }, [suppressTimelineScrollEvents, zoomTimeline]);
+
+  useEffect(() => {
+    const element = timelineMainRef.current;
+    if (!element) return undefined;
+    element.addEventListener('wheel', handleTimelineWheel, { capture: true, passive: false });
+    return () => element.removeEventListener('wheel', handleTimelineWheel, { capture: true });
+  }, [handleTimelineWheel]);
+
+  const handleTimelineGestureStart = useCallback((event: Event) => {
+    const gestureEvent = event as Event & { scale?: number };
+    event.preventDefault();
+    suppressTimelineScrollEvents();
+    gestureScaleRef.current = Number.isFinite(gestureEvent.scale) && gestureEvent.scale
+      ? gestureEvent.scale
+      : 1;
+  }, [suppressTimelineScrollEvents]);
+
+  const handleTimelineGestureChange = useCallback((event: Event) => {
+    const gestureEvent = event as Event & { scale?: number; clientX?: number };
+    const nextScale = Number.isFinite(gestureEvent.scale) && gestureEvent.scale
+      ? gestureEvent.scale
+      : 1;
+    const previousScale = gestureScaleRef.current ?? 1;
+    const scaleDelta = nextScale / Math.max(previousScale, 0.001);
+    if (Math.abs(scaleDelta - 1) < 0.01) return;
+    event.preventDefault();
+    suppressTimelineScrollEvents();
+    gestureScaleRef.current = nextScale;
+    const bounds = timeScrollRef.current?.getBoundingClientRect() ?? timelineMainRef.current?.getBoundingClientRect();
+    const focalRatio = bounds && bounds.width > 0
+      ? clamp(((gestureEvent.clientX ?? bounds.left + bounds.width / 2) - bounds.left) / bounds.width, 0, 1)
+      : 0.5;
+    zoomTimeline(scaleDelta > 1 ? WHEEL_ZOOM_IN_FACTOR : WHEEL_ZOOM_OUT_FACTOR, focalRatio);
+  }, [suppressTimelineScrollEvents, zoomTimeline]);
+
+  const handleTimelineGestureEnd = useCallback(() => {
+    gestureScaleRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    const element = timelineMainRef.current;
+    if (!element) return undefined;
+    element.addEventListener('gesturestart', handleTimelineGestureStart, { capture: true, passive: false });
+    element.addEventListener('gesturechange', handleTimelineGestureChange, { capture: true, passive: false });
+    element.addEventListener('gestureend', handleTimelineGestureEnd, { capture: true });
+    return () => {
+      element.removeEventListener('gesturestart', handleTimelineGestureStart, { capture: true });
+      element.removeEventListener('gesturechange', handleTimelineGestureChange, { capture: true });
+      element.removeEventListener('gestureend', handleTimelineGestureEnd, { capture: true });
+    };
+  }, [handleTimelineGestureChange, handleTimelineGestureEnd, handleTimelineGestureStart]);
 
   const navigateEvent = useCallback((direction: 1 | -1) => {
     const chronologicalEvents = timelineLayout.chronologicalOrder
@@ -1144,7 +1194,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
         className={`timeline-grid timeline-grid--${viewState.density}`}
         style={{ '--timeline-row-list-width': `${viewState.panes.rowListWidth}px` } as JSX.CSSProperties}
       >
-        <div className="timeline-main" role="grid" aria-rowcount={rows.length} onWheel={handleTimelineWheel}>
+        <div className="timeline-main" ref={timelineMainRef} role="grid" aria-rowcount={rows.length}>
           <div className="timeline-gutter-column" aria-label="Timeline rows">
             <div className="timeline-axis__corner" aria-hidden="true" />
             <div className="timeline-gutter-stack">
