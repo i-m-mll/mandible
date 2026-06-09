@@ -241,7 +241,7 @@ mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
 6. Performs `git merge --no-ff --no-edit -S` (signed merge).
 7. Auto-resolves conflicts in generated dist files (takes `--theirs`).
 8. Verifies the merge is not empty (tree differs from parent).
-9. Auto-closes issues referenced via explicit `Closes:` / `Resolves:` trailers in merged commits.
+9. Auto-closes issues referenced via explicit `Closes-Mandible-Issue:` trailers in merged commits.
 10. Closes issues declared in the auth request's `issue_closures` field.
 11. Cleans up merged branch worktrees (via `dwt`).
 

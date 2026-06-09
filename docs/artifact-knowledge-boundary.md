@@ -1,8 +1,8 @@
 # Artifact, Document, and Knowledge Boundary
 
-Bug: a8fbc09
-Bug: e16807c
-Bug: d25bac5
+Mandible-Issue: a8fbc09
+Mandible-Issue: e16807c
+Mandible-Issue: d25bac5
 
 Mandible owns operational provenance, issue/work/auth/session state, artifact
 references, and optional artifact custody. HumbleB owns document snapshots,
@@ -48,16 +48,15 @@ The artifact root is configurable without code changes. Resolution order is:
 3. `MANDIBLE_HOME/artifacts`
 4. `~/.mandible/artifacts`
 
-`MANDIBLE_ARTIFACT_DIR` remains the strongest override for scripts, tests, and
-backward-compatible one-off runs. Existing `artifact://sha256/...` and stored
-`file://...` database URIs remain valid; moving or copying older cache-backed
-artifacts is out of scope for this slice and should be handled by a future
-migration tool if needed.
+`MANDIBLE_ARTIFACT_DIR` remains the strongest override for scripts and tests.
+Stored `file://.../sha256/...` database URIs remain storage paths, not authored
+artifact refs; authored artifact refs should use compact `artifact:<prefix>`
+syntax.
 
 ## Examples
 
 - Repo-local RLRMP report: `custody_mode=link`, `home_repo_id=rlrmp`,
-  `repo_locator={repo_id, ref, path}`, optional `artifact://sha256/...`.
+  `repo_locator={repo_id, ref, path}`, optional `artifact:<prefix>`.
 - RLRMP ignored bulk artifact: `custody_mode=link`, provider/local URI,
   content hash, `availability=unchecked` or `missing` until checked.
 - Mandible review packet: `custody_mode=managed` when stored in Mandible CAS,

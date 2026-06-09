@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 export const LEDGER_ID_PREFIXES = [
   "prj",
   "chk",
-  "iss",
+  "issue",
   "com",
   "evt",
   "out",

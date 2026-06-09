@@ -1,18 +1,17 @@
 # Artifact CLI and Runtime Contract
 
-Bug: 44074ed
-Bug: 58316eb
-Bug: f094416
+Mandible-Issue: 44074ed
+Mandible-Issue: 58316eb
+Mandible-Issue: f094416
 
 Mandible artifact commands are a thin interface over the artifact registry. They
 should create structured artifact records and links, not just paste paths into
 issue comments. Durable references should prefer `repo://...` and
-`artifact://sha256/...` over absolute local paths.
+compact `artifact:<sha-or-prefix>` refs over absolute local paths.
 
 User-facing hash references may use compact SHA-256 prefixes when the prefix is
 long enough to identify exactly one artifact, for example
-`artifact:ad46ed88a9e8`. Full legacy forms remain valid:
-`artifact://sha256/<hash>`, `artifact:sha256:<hash>`, and `sha256:<hash>`.
+`artifact:ad46ed88a9e8`. SHA-prefixed URI forms are not valid authored refs.
 Prefix resolution must report `ambiguous` when multiple artifacts match and
 `unresolved` when none match; it must not guess or create a new hash-only
 artifact from a short prefix.
@@ -58,7 +57,7 @@ Expected JSON shape:
   "custody_mode": "link",
   "availability": "present",
   "recoverability": "local_only",
-  "ref": "artifact://sha256/...",
+  "ref": "artifact:...",
   "warnings": ["local_only"]
 }
 ```
@@ -116,7 +115,7 @@ custody. This is the right escape hatch for hash-only external references or
 local-only files that need durable issue evidence:
 
 ```bash
-mandible artifact snapshot artifact://sha256/<hash> --from ./external.txt --json
+mandible artifact snapshot artifact:<hash-or-prefix> --from ./external.txt --json
 ```
 
 For a local path that should be copied directly into Mandible custody, use:
@@ -175,7 +174,7 @@ is explicitly snapshotted into Mandible custody.
 Bundle membership can be appended later:
 
 ```bash
-mandible artifact bundle add artifact://sha256/<bundle-hash> \
+mandible artifact bundle add artifact:<bundle-hash-or-prefix> \
   _artifacts/run-7/weights.safetensors \
   --allow-local-only \
   --json

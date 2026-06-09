@@ -59,7 +59,7 @@ Key optional fields:
 - `session_id` — Links the request to the agent session that submitted it.
 - `repo`, `base_branch`, `head_branch` — Branch metadata for merge requests.
 - `diff_summary` — A text summary of the changes being merged.
-- `commit_message` — The proposed merge commit message. `Bug:` trailers are work-tracking references, not closure signals.
+- `commit_message` — The proposed merge commit message. `Mandible-Issue:` trailers are work-tracking references, not closure signals.
 - `spec_content` — A specification explaining the intent and design decisions.
 - `issue_references` — Issue IDs attached for review context/provenance; these do not close on merge.
 - `issue_closures` — Issue IDs to close on successful merge.
@@ -75,9 +75,9 @@ Duplicates are detected by two signals:
 1. **Same branch pair** — If a pending/approved request already targets the same `head_branch` and `base_branch`, it's a duplicate regardless of which session submitted it.
 2. **Same session + title** — If the same session already has a pending request with the same title.
 
-### Bug Reference Verification
+### Mandible Issue Reference Verification
 
-For merge requests, the queue verifies that every non-merge commit in the branch range contains a `Bug:` trailer linking it to an issue. Commits missing this reference cause the submission to be rejected with a descriptive error listing the offending commits. This enforces the work-tracking convention that every unit of work has an associated issue. `Bug:` trailers are reference-only; closure requires `issue_closures` or an explicit closure trailer such as `Closes:` / `Resolves:`.
+For merge requests, the queue verifies that every non-merge commit in the branch range contains a `Mandible-Issue:` trailer linking it to an issue. Commits missing this reference cause the submission to be rejected with a descriptive error listing the offending commits. This enforces the work-tracking convention that every unit of work has an associated issue. `Mandible-Issue:` trailers are reference-only; closure requires `issue_closures` or an explicit `Closes-Mandible-Issue:` trailer.
 
 ## Reviewing and Acting on Requests
 

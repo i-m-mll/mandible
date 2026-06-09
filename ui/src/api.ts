@@ -1773,7 +1773,7 @@ export type ArtifactResolveResult = {
   scheme: string;
   normalized_ref: string;
   artifact: ArtifactRecord | null;
-  alias: ArtifactAliasRecord;
+  alias: ArtifactAliasRecord | null;
 };
 
 export type ArtifactContentResult = {

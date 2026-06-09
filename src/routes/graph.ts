@@ -23,7 +23,7 @@ import type {
   GraphQueryParams,
   GraphSpec,
 } from "../types.js";
-import { extractBugRefs } from "../utils/bug-refs.js";
+import { extractMandibleIssueRefs } from "../utils/bug-refs.js";
 
 // Bug: 7a141c3 — graph API implementation
 // Bug: 50c4afb — typed graph modes for the React Flow graph workspace
@@ -844,7 +844,7 @@ function addAuthNodesAndEdges(
   for (const auth of authRows) {
     const refs = new Set<string>();
     if (auth.commit_message) {
-      extractBugRefs(auth.commit_message).forEach((ref) => refs.add(ref));
+      extractMandibleIssueRefs(auth.commit_message).forEach((ref) => refs.add(ref));
     }
     try {
       for (const field of [auth.issue_references, auth.issue_closures, auth.issue_ids, auth.issues]) {
