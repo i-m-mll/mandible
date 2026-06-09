@@ -148,13 +148,12 @@ function RebuildingSplash(): JSX.Element {
 
 function MandibleHeaderLogo(): JSX.Element {
   return (
-    <span
+    <img
       className="app-header__logo"
-      style={{
-        WebkitMask: "url('/icon.svg') center / contain no-repeat",
-        mask: "url('/icon.svg') center / contain no-repeat",
-      }}
+      src="/header-logo.svg"
+      alt=""
       aria-hidden="true"
+      draggable={false}
     />
   );
 }

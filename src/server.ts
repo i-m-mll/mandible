@@ -370,7 +370,14 @@ async function handleStaticRequest(
   return sendFile(res, filePath, method);
 }
 
-const PWA_FILES = new Set(["/manifest.json", "/sw.js", "/icon.svg", "/icon-192.png", "/icon-512.png"]);
+const PWA_FILES = new Set([
+  "/manifest.json",
+  "/sw.js",
+  "/icon.svg",
+  "/header-logo.svg",
+  "/icon-192.png",
+  "/icon-512.png",
+]);
 
 function resolveStaticPath(pathname: string): string | null {
   if (pathname === "/") {
