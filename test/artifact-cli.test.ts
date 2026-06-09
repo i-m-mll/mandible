@@ -89,7 +89,7 @@ describe("artifact CLI", () => {
     const payload = JSON.parse(result.stdout);
     const planned = payload.registered[0].planned_payload;
     expect(planned.uri).toMatch(/^file:\/\//);
-    expect(planned.canonical_ref).toMatch(/^artifact:\/\/sha256\//);
+    expect(planned.canonical_ref).toMatch(/^artifact:[a-f0-9]{64}$/);
     expect(planned.metadata.recoverability).toBe("local_only");
     expect(planned.metadata.git.untracked).toBe(true);
     expect(planned.metadata.warnings.map((warning: { code: string }) => warning.code)).toContain("untracked_local_only");

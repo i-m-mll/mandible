@@ -189,16 +189,16 @@ describe("ledger issue detail projection", () => {
     const store = new LedgerStore(db);
     const linkedHash = "b".repeat(64);
     const linkedId = `artifact:sha256:${linkedHash}`;
-    insertArtifact(linkedId, linkedHash, `artifact://sha256/${linkedHash}`);
+    insertArtifact(linkedId, linkedHash, `artifact:${linkedHash}`);
     const issue = store.createIssue({
       project_id: checkout.project.id,
       title: "Artifacts",
-      body: "See repo://repo@main/results/summary.md for the generated report.",
+      body: "See [artifact:repo://repo@main/results/summary.md] for the generated report.",
       kind: "feature",
       aliases: [{ alias_kind: "git_bug_human", alias: "art1234", is_primary: true }],
     });
     store.addComment(issue.id, {
-      body: "Follow-up feedbax://runs/demo is also relevant.",
+      body: "Follow-up [artifact:feedbax://runs/demo] is also relevant.",
       actor_type: "agent",
       author_display: "Codex",
       source: "session",
@@ -218,7 +218,7 @@ describe("ledger issue detail projection", () => {
     expect(artifacts).toHaveLength(3);
     expect(artifacts[0]).toMatchObject({
       id: linkedId,
-      uri: `artifact://sha256/${linkedHash}`,
+      uri: `artifact:${linkedHash}`,
       links: [{ id: "link_1", link_type: "produced_by", role: "report" }],
     });
     expect(artifacts.map((artifact) => artifact.refs).flat().sort()).toEqual([

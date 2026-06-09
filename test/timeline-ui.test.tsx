@@ -70,7 +70,7 @@ function projection(overrides: Partial<ProjectTimelineProjection> = {}): Project
       {
         id: 'row-root',
         issue: {
-          id: 'iss_root',
+          id: 'issue_root',
           display_id: '2733a47',
           project_id: 'prj_mandible',
           title: 'Timeline UI shell',
@@ -96,7 +96,7 @@ function projection(overrides: Partial<ProjectTimelineProjection> = {}): Project
         id: 'event-body',
         row_id: 'row-root',
         issue: {
-          id: 'iss_root',
+          id: 'issue_root',
           display_id: '2733a47',
           project_id: 'prj_mandible',
           title: 'Timeline UI shell',
@@ -109,8 +109,8 @@ function projection(overrides: Partial<ProjectTimelineProjection> = {}): Project
         },
         source_entity: {
           type: 'issue_body',
-          id: 'iss_root:body',
-          issue_id: 'iss_root',
+          id: 'issue_root:body',
+          issue_id: 'issue_root',
         },
         kind: 'body',
         timestamp: Date.UTC(2026, 0, 1, 12),
@@ -129,11 +129,11 @@ function projection(overrides: Partial<ProjectTimelineProjection> = {}): Project
         source_row_id: 'row-root',
         source_entity: {
           type: 'issue_body',
-          id: 'iss_root:body',
-          issue_id: 'iss_root',
+          id: 'issue_root:body',
+          issue_id: 'issue_root',
         },
         source_issue: {
-          id: 'iss_root',
+          id: 'issue_root',
           display_id: '2733a47',
           project_id: 'prj_mandible',
           title: 'Timeline UI shell',
@@ -145,7 +145,7 @@ function projection(overrides: Partial<ProjectTimelineProjection> = {}): Project
           deleted: false,
         },
         target_issue: {
-          id: 'iss_child',
+          id: 'issue_child',
           display_id: '96b5bff',
           project_id: 'prj_mandible',
           title: 'Left gutter tree',
@@ -273,7 +273,7 @@ function nearTimeProjection(): ProjectTimelineProjection {
         kind: 'explicit_root',
         issue: {
           ...base.rows[0].issue,
-          id: 'iss_secondary',
+          id: 'issue_secondary',
           display_id: 'bb22ccd',
           title: 'Secondary row',
         },
@@ -291,7 +291,7 @@ function nearTimeProjection(): ProjectTimelineProjection {
         link_ids: [],
         issue: {
           ...base.events[0].issue,
-          id: 'iss_secondary',
+          id: 'issue_secondary',
           display_id: 'bb22ccd',
           title: 'Secondary row',
         },
@@ -871,7 +871,7 @@ describe('TimelineView', () => {
           id: 'row-humble',
           issue: {
             ...base.rows[0].issue,
-            id: 'iss_humble',
+            id: 'issue_humble',
             project_id: 'prj_humble',
             display_id: 'abc9876',
             title: 'Humble timeline shell',
@@ -885,7 +885,7 @@ describe('TimelineView', () => {
           row_id: 'row-humble',
           issue: {
             ...base.events[0].issue,
-            id: 'iss_humble',
+            id: 'issue_humble',
             project_id: 'prj_humble',
             display_id: 'abc9876',
             title: 'Humble timeline shell',
@@ -1023,7 +1023,7 @@ describe('TimelineView', () => {
           source_row_id: 'row-child',
           target_issue: {
             ...base.links[0].target_issue,
-            id: 'iss_grandchild',
+            id: 'issue_grandchild',
             display_id: 'abc1234',
             title: 'Nested referenced issue',
           },

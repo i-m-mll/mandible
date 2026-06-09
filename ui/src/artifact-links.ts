@@ -1,8 +1,8 @@
-const CUSTOM_URI_PATTERN = /\[artifact:([^\]\s]+)\]|\b(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"')\]]+|artifact:sha256:[0-9a-f]{7,64}|artifact:[0-9a-f]{7,64}|sha256:[0-9a-f]{7,64})/gi;
+const CUSTOM_URI_PATTERN = /\[artifact:([^\]\s]+)\]/gi;
 const DIRECT_NAV_SCHEMES = new Set(['http', 'https', 'mailto']);
-const SHA_ARTIFACT_REF = /^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])([0-9a-f]{7,64})$/i;
-const FULL_SHA_ARTIFACT_REF = /^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])([0-9a-f]{64})$/i;
+const DEPRECATED_SHA_ARTIFACT_REF = /^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)[0-9a-f]{7,64}$/i;
 const COMPACT_SHA_ARTIFACT_REF = /^artifact:([0-9a-f]{7,64})$/i;
+const BARE_SHA_ARTIFACT_REF = /^[0-9a-f]{7,64}$/i;
 
 export function artifactHref(ref: string): string {
   return `#/artifacts?ref=${encodeURIComponent(ref)}`;
@@ -13,12 +13,13 @@ export function artifactDetailHref(id: string): string {
 }
 
 export function isArtifactLikeRef(ref: string): boolean {
+  if (DEPRECATED_SHA_ARTIFACT_REF.test(ref.trim())) return false;
+  if (BARE_SHA_ARTIFACT_REF.test(ref.trim())) return true;
   const scheme = schemeForRef(ref);
-  if (!scheme) return /^artifact:sha256:[0-9a-f]{7,64}$/i.test(ref);
+  if (!scheme) return false;
   if (scheme === 'artifact') {
-    return SHA_ARTIFACT_REF.test(ref) || COMPACT_SHA_ARTIFACT_REF.test(ref);
+    return COMPACT_SHA_ARTIFACT_REF.test(ref);
   }
-  if (scheme === 'sha256') return /^sha256:[0-9a-f]{7,64}$/i.test(ref);
   return !DIRECT_NAV_SCHEMES.has(scheme);
 }
 
@@ -28,15 +29,16 @@ export function compactArtifactRef(hash: string, length = 12): string {
 
 export function displayArtifactRef(ref: string): string {
   const trimmed = ref.trim();
-  const sha = SHA_ARTIFACT_REF.exec(trimmed);
-  if (sha) return compactArtifactRef(sha[1], sha[1].length >= 12 ? 12 : sha[1].length);
+  if (BARE_SHA_ARTIFACT_REF.test(trimmed)) {
+    return compactArtifactRef(trimmed, trimmed.length >= 12 ? 12 : trimmed.length);
+  }
   const compact = COMPACT_SHA_ARTIFACT_REF.exec(trimmed);
-  if (compact) return compactArtifactRef(compact[1], compact[1].length);
+  if (compact) return compactArtifactRef(compact[1], compact[1].length >= 12 ? 12 : compact[1].length);
   return trimmed;
 }
 
 function isVerboseArtifactHashRef(ref: string): boolean {
-  return FULL_SHA_ARTIFACT_REF.test(ref.trim());
+  return false;
 }
 
 export function linkifyArtifactRefs(html: string): string {

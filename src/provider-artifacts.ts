@@ -469,14 +469,13 @@ function hashFromArtifactRef(input: ArtifactInput): string | undefined {
   if (isSha256(input.sha256)) {
     return input.sha256.toLowerCase();
   }
-  const ref = input.artifact_id ?? input.uri;
-  if (!ref) return undefined;
-  const match = /(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])([a-f0-9]{64})/i.exec(ref);
+  if (!input.artifact_id) return undefined;
+  const match = /^(?:artifact:sha256:|artifact:)([a-f0-9]{64})$/i.exec(input.artifact_id.trim());
   return match?.[1]?.toLowerCase();
 }
 
 function artifactHashFromRef(ref: string): string | undefined {
-  const match = /^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])([a-f0-9]{64})$/i.exec(ref.trim());
+  const match = /^(?:artifact:sha256:|artifact:)([a-f0-9]{64})$/i.exec(ref.trim());
   return match?.[1]?.toLowerCase();
 }
 
@@ -490,9 +489,9 @@ const MIN_ARTIFACT_HASH_PREFIX_LENGTH = 7;
 
 function artifactHashRefFromRef(ref: string): ArtifactHashRefParse | null {
   const trimmed = ref.trim();
-  const match = /^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/]|artifact:)([a-f0-9]*)$/i.exec(trimmed);
+  const match = /^(?:artifact:)?([a-f0-9]+)$/i.exec(trimmed);
   if (!match) {
-    if (/^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])|^artifact:[a-f0-9]+/i.test(trimmed)) {
+    if (/^artifact:/i.test(trimmed)) {
       return { kind: "invalid", prefix: "" };
     }
     return null;
@@ -501,6 +500,10 @@ function artifactHashRefFromRef(ref: string): ArtifactHashRefParse | null {
   if (prefix.length === 64) return { kind: "full", hash: prefix, prefix };
   if (prefix.length >= MIN_ARTIFACT_HASH_PREFIX_LENGTH) return { kind: "prefix", prefix };
   return { kind: "too_short", prefix };
+}
+
+function isDeprecatedArtifactHashSyntax(ref: string): boolean {
+  return /^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)[a-f0-9]{7,64}$/i.test(ref.trim());
 }
 
 function schemeFromRef(ref: string): string {
@@ -516,13 +519,17 @@ function normalizeRef(ref: string): {
   locator: JsonRecord;
 } {
   const alias = ref.trim();
-  const artifactHash = artifactHashFromRef(alias);
-  if (artifactHash) {
+  const artifactHashRef = artifactHashRefFromRef(alias);
+  if (artifactHashRef && artifactHashRef.kind !== "invalid" && artifactHashRef.kind !== "too_short") {
     return {
       scheme: "artifact",
       alias,
-      normalizedRef: `artifact://sha256/${artifactHash}`,
-      locator: { algorithm: "sha256", hash: artifactHash },
+      normalizedRef: `artifact:${artifactHashRef.prefix}`,
+      locator: {
+        algorithm: "sha256",
+        prefix: artifactHashRef.prefix,
+        ...(artifactHashRef.kind === "full" ? { hash: artifactHashRef.hash } : {}),
+      },
     };
   }
 
@@ -1889,7 +1896,7 @@ export function createArtifactBundle(
   );
   if (input.issue) {
     resolveAndLinkArtifact(db, {
-      artifact_ref: bundle.id,
+      artifact_ref: `artifact:${bundle.content_hash}`,
       entity_type: "issue",
       entity_id: input.issue,
       issue_project: input.issue_project,
@@ -1908,14 +1915,14 @@ export function addArtifactBundleMembers(
   members: ArtifactBundleMemberInput[],
   now = Date.now(),
 ): ArtifactBundleRecord {
-  const resolution = resolveArtifactRef(db, bundleRef, now);
-  if (!resolution.artifact) throw new Error(`bundle ref did not resolve: ${bundleRef}`);
-  const existingMembers = listArtifactBundleMembers(db, resolution.artifact.id);
+  const bundle = getArtifact(db, bundleRef) ?? resolveArtifactRef(db, bundleRef, now).artifact;
+  if (!bundle) throw new Error(`bundle ref did not resolve: ${bundleRef}`);
+  const existingMembers = listArtifactBundleMembers(db, bundle.id);
   const start = existingMembers.length;
   const added = members.map((member, index) =>
-    linkBundleMember(db, resolution.artifact!.id, resolveBundleMemberArtifact(db, member, now), member, start + index, now)
+    linkBundleMember(db, bundle.id, resolveBundleMemberArtifact(db, member, now), member, start + index, now)
   );
-  return { bundle: getArtifact(db, resolution.artifact.id) as ArtifactRecord, members: [...existingMembers, ...added] };
+  return { bundle: getArtifact(db, bundle.id) as ArtifactRecord, members: [...existingMembers, ...added] };
 }
 
 export function listArtifactBundleMembers(db: Db, bundleId: string): ArtifactBundleMemberRecord[] {
@@ -2107,7 +2114,7 @@ function materializeHashArtifact(
   now = Date.now(),
 ): { artifact: ArtifactRecord; alias: ArtifactAliasRecord } {
   const id = `artifact:sha256:${hash}`;
-  const normalizedRef = `artifact://sha256/${hash}`;
+  const normalizedRef = `artifact:${hash}`;
   const metadata = {
     title: normalizedRef,
     source_ref: ref,
@@ -2289,7 +2296,7 @@ export function ingestArtifact(
   }
   const id = `artifact:sha256:${hash}`;
   const filePath = artifactPathForHash(hash, artifactRoot);
-  let uri = input.uri ?? input.artifact_id ?? `artifact://sha256/${hash}`;
+  let uri = input.uri ?? input.artifact_id ?? `artifact:${hash}`;
   let sizeBytes = input.size_bytes ?? uriSizeBytes(uri) ?? 0;
   if (bytes) {
     ensureDir(path.dirname(filePath));
@@ -2457,17 +2464,11 @@ export function ingestArtifact(
   if (artifactAliasTablesExist(db)) {
     registerArtifactAlias(db, {
       artifactId: id,
-      ref: `artifact://sha256/${hash}`,
+      ref: `artifact:${hash}`,
       source: "artifact_identity",
       now,
     });
-    registerArtifactAlias(db, {
-      artifactId: id,
-      ref: id,
-      source: "artifact_identity",
-      now,
-    });
-    if (input.artifact_id && input.artifact_id !== id && input.artifact_id !== `artifact://sha256/${hash}`) {
+    if (input.artifact_id && input.artifact_id !== id && !isDeprecatedArtifactHashSyntax(input.artifact_id)) {
       registerArtifactAlias(db, {
         artifactId: id,
         ref: input.artifact_id,
@@ -2475,7 +2476,7 @@ export function ingestArtifact(
         now,
       });
     }
-    if (uri) {
+    if (uri && !isDeprecatedArtifactHashSyntax(uri)) {
       registerArtifactAlias(db, {
         artifactId: id,
         ref: uri,
@@ -3121,6 +3122,18 @@ export function listArtifacts(db: Db, options: ArtifactListOptions = {}): Artifa
 }
 
 export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
+  if (isDeprecatedArtifactHashSyntax(ref)) {
+    const trimmed = ref.trim();
+    return {
+      status: "unsupported",
+      ref,
+      scheme: schemeFromRef(trimmed),
+      normalized_ref: trimmed,
+      artifact: null,
+      alias: null,
+    };
+  }
+
   const normalized = normalizeRef(ref);
   const hashRef = artifactHashRefFromRef(ref);
   if (hashRef) {
@@ -3202,37 +3215,6 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
       scheme: normalized.scheme,
       normalized_ref: normalized.normalizedRef,
       artifact: null,
-      alias,
-    };
-  }
-
-  const hash = artifactHashFromRef(normalized.normalizedRef);
-  if (hash) {
-    let artifact = getArtifact(db, `artifact:sha256:${hash}`);
-    if (!artifact) {
-      const materialized = materializeHashArtifact(db, ref, hash, now);
-      artifact = materialized.artifact;
-      return {
-        status: materialized.alias.resolution_status,
-        ref,
-        scheme: normalized.scheme,
-        normalized_ref: normalized.normalizedRef,
-        artifact,
-        alias: materialized.alias,
-      };
-    }
-    const alias = registerArtifactAlias(db, {
-      artifactId: artifact.id,
-      ref,
-      source: "artifact_resolver",
-      now,
-    });
-    return {
-      status: alias.resolution_status,
-      ref,
-      scheme: normalized.scheme,
-      normalized_ref: normalized.normalizedRef,
-      artifact,
       alias,
     };
   }

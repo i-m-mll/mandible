@@ -174,10 +174,10 @@ describe("ledger schema", () => {
         VALUES ('prj_test', 'test', 'local:test', 'local:test', 'local', 1000, 1000);
       INSERT INTO ledger_issues
         (id, short_id, project_id, title, body, status, kind, priority, author_actor_type, source, created_at, updated_at)
-        VALUES ('iss_test', 'iss_tes', 'prj_test', 'Issue', 'Issue body', 'open', 'feature', 'normal', 'agent', 'mandible', 1000, 1000);
+        VALUES ('issue_test', 'issue_tes', 'prj_test', 'Issue', 'Issue body', 'open', 'feature', 'normal', 'agent', 'mandible', 1000, 1000);
       INSERT INTO ledger_comments
         (id, issue_id, ordinal, body, author_actor_type, source, created_at)
-        VALUES ('com_test', 'iss_test', 1, 'Comment body', 'agent', 'mandible', 1100);
+        VALUES ('com_test', 'issue_test', 1, 'Comment body', 'agent', 'mandible', 1100);
     `);
 
     migrate(upgradeDb);
@@ -194,7 +194,7 @@ describe("ledger schema", () => {
       },
       {
         entity_type: "issue_body",
-        entity_id: "iss_test",
+        entity_id: "issue_test",
         revision_no: 1,
         reason: "migration_snapshot",
         snapshot_body: "Issue body",
@@ -208,7 +208,7 @@ describe("ledger schema", () => {
       db.prepare(
         `INSERT INTO ledger_comments (
           id, issue_id, body, author_actor_type, author_display, source, created_at
-        ) VALUES ('com_missing', 'iss_missing', 'bad', 'system', '', 'system', 1)`,
+        ) VALUES ('com_missing', 'issue_missing', 'bad', 'system', '', 'system', 1)`,
       ).run();
     }).toThrow();
   });
@@ -245,16 +245,16 @@ describe("ledger schema", () => {
 
 describe("ledger IDs and project identity", () => {
   it("generates prefixed chronological IDs without path-derived material", () => {
-    const first = createLedgerId("iss", {
+    const first = createLedgerId("issue", {
       now: 1000,
       random: Buffer.from("11111111111111111111", "hex"),
     });
-    const second = createLedgerId("iss", {
+    const second = createLedgerId("issue", {
       now: 1001,
       random: Buffer.from("22222222222222222222", "hex"),
     });
 
-    expect(first).toMatch(/^iss_[0-9a-z]{10}_[0-9a-f]{20}$/);
+    expect(first).toMatch(/^issue_[0-9a-z]{10}_[0-9a-f]{20}$/);
     expect(first < second).toBe(true);
     expect(first).not.toContain("mandible");
   });
@@ -550,7 +550,7 @@ describe("ledger store", () => {
   it("parses explicit typed issue references only", () => {
     const refs = parseIssueReferences([
       "See [issue:abc1234], [issue:mandible/def4567], and [comment:mandible/ghi7890#com_1].",
-      "Ignore #feedbee, bare feedbee1, and iss_legacy_alias in normal text.",
+      "Ignore #feedbee, bare feedbee1, and issue_legacy_alias in normal text.",
       "Inline `020a65b` and commit `7714da1` are plain code/text.",
       "Current commit is f026c06, superseding the earlier 7714da1.",
       "Skip [`abc1234`](#/issues?repo=x&issue=abc1234), `#badcafe`, and ```#deadbee```.",
