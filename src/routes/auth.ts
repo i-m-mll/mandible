@@ -44,9 +44,9 @@ export function registerAuthRoutes(
           : payload.repo;
     }
 
-    // Auth merge gate: verify Bug: references in non-merge commits
+    // Auth merge gate: verify Mandible issue references in non-merge commits.
     if (payload.command && (payload.command.includes("auth merge") || payload.command.includes("auth-merge"))) {
-      const gateError = verifyBugReferences(payload);
+      const gateError = verifyMandibleIssueReferences(payload);
       if (gateError) {
         res.status(400).json({ error: gateError });
         return;
@@ -625,7 +625,7 @@ function repoRootFromGitCommonDir(cwd: string): string | null {
   }
 }
 
-function verifyBugReferences(
+function verifyMandibleIssueReferences(
   payload: AuthRequestInput
 ): string | null {
   const { cwd, head_branch, base_branch } = payload;
@@ -653,7 +653,7 @@ function verifyBugReferences(
         timeout: 5000,
       }).trim();
 
-      if (!body.split("\n").some((line: string) => line.startsWith("Bug:"))) {
+      if (!body.split("\n").some((line: string) => line.startsWith("Mandible-Issue:"))) {
         const oneline = execSync(`git log -1 --oneline ${sha}`, {
           cwd,
           encoding: "utf-8",
@@ -665,15 +665,15 @@ function verifyBugReferences(
 
     if (missing.length > 0) {
       return (
-        `${missing.length} commit(s) missing Bug: references:\n` +
+        `${missing.length} commit(s) missing Mandible-Issue references:\n` +
         missing.map((m) => `  ${m}`).join("\n") +
-        "\n\nUse agent-commit --issue <id> for all commits."
+        "\n\nUse Mandible-Issue: <issue-ref> trailers for work-tracking commits."
       );
     }
 
     return null;
   } catch (err) {
-    console.error("Bug reference verification failed:", err);
+    console.error("Mandible issue reference verification failed:", err);
     return null;
   }
 }

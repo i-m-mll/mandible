@@ -123,7 +123,7 @@ describe("ledger operational links", () => {
       id: "auth_1",
       repo: project.checkout.root,
       issueIds: ["abc1234"],
-      commitMessage: "Merge work\n\nBug: abc1234\n",
+      commitMessage: "Merge work\n\nMandible-Issue: abc1234\n",
     });
 
     const workResult = linkWorkUnitToLedgerIssue(db, {
@@ -140,7 +140,7 @@ describe("ledger operational links", () => {
 	  auth_request_id: "auth_1",
 	  repo_ref: project.checkout.root,
 	  issue_ids: ["abc1234"],
-	  commit_message: "Merge work\n\nBug: abc1234\n",
+	  commit_message: "Merge work\n\nMandible-Issue: abc1234\n",
     });
 
     expect(workResult).toMatchObject({ ok: true, issue_id: issue.id });
@@ -156,6 +156,51 @@ describe("ledger operational links", () => {
 	expect(
 	  db.prepare("SELECT issue_id, link_type FROM ledger_auth_issue_links WHERE auth_request_id = 'auth_1'").get(),
 	).toEqual({ issue_id: issue.id, link_type: "references" });
+  });
+
+  it("extracts only Mandible-specific trailers from auth commit messages", () => {
+    const project = createProject("trailers");
+    const referenced = createIssue(project.project.id, "abc1234");
+    const closed = createIssue(project.project.id, "def5678");
+    createIssue(project.project.id, "badcafe", "Legacy generic issue");
+    insertAuthRequest({
+      id: "auth_trailers",
+      repo: project.checkout.root,
+      commitMessage: [
+        "Merge work",
+        "",
+        "Mandible-Issue: abc1234",
+        "Closes-Mandible-Issue: def5678",
+        "Bug: badcafe",
+        "Closes: badcafe",
+        "Resolves: badcafe",
+      ].join("\n"),
+    });
+
+    const results = syncAuthRequestLedgerLinks(db, {
+      auth_request_id: "auth_trailers",
+      repo_ref: project.checkout.root,
+      commit_message: [
+        "Merge work",
+        "",
+        "Mandible-Issue: abc1234",
+        "Closes-Mandible-Issue: def5678",
+        "Bug: badcafe",
+        "Closes: badcafe",
+        "Resolves: badcafe",
+      ].join("\n"),
+    });
+
+    expect(results.map((result) => result.ok ? result.issue_id : result.issue_ref).sort())
+      .toEqual([closed.id, referenced.id].sort());
+    expect(
+      db.prepare(
+        "SELECT issue_id, link_type FROM ledger_auth_issue_links WHERE auth_request_id = 'auth_trailers' ORDER BY issue_id",
+      ).all(),
+    ).toEqual([
+      { issue_id: referenced.id, link_type: "references" },
+      { issue_id: closed.id, link_type: "resolves" },
+    ].sort((a, b) => a.issue_id.localeCompare(b.issue_id)));
   });
 
   it("backfills legacy operational rows and persists unresolved mismatches", () => {

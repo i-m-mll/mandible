@@ -1,4 +1,4 @@
-const CUSTOM_URI_PATTERN = /\b(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"')\]]+|artifact:sha256:[0-9a-f]{7,64}|artifact:[0-9a-f]{7,64}|sha256:[0-9a-f]{7,64})/gi;
+const CUSTOM_URI_PATTERN = /\[artifact:([^\]\s]+)\]|\b(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"')\]]+|artifact:sha256:[0-9a-f]{7,64}|artifact:[0-9a-f]{7,64}|sha256:[0-9a-f]{7,64})/gi;
 const DIRECT_NAV_SCHEMES = new Set(['http', 'https', 'mailto']);
 const SHA_ARTIFACT_REF = /^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])([0-9a-f]{7,64})$/i;
 const FULL_SHA_ARTIFACT_REF = /^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])([0-9a-f]{64})$/i;
@@ -88,7 +88,8 @@ function linkifyTextNodes(container: HTMLElement): void {
     let match: RegExpExecArray | null;
     const fragment = document.createDocumentFragment();
     while ((match = CUSTOM_URI_PATTERN.exec(text))) {
-      const ref = trimTrailingPunctuation(match[0]);
+      const raw = match[1] ?? match[0];
+      const ref = trimTrailingPunctuation(raw);
       if (match.index > lastIndex) {
         fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
       }
@@ -99,7 +100,7 @@ function linkifyTextNodes(container: HTMLElement): void {
         anchor.textContent = displayArtifactRef(ref);
         anchor.title = `Open artifact reference ${ref}`;
         fragment.appendChild(anchor);
-        if (ref.length < match[0].length) {
+        if (!match[1] && ref.length < match[0].length) {
           fragment.appendChild(document.createTextNode(match[0].slice(ref.length)));
         }
       } else {

@@ -1,4 +1,4 @@
-export type IssueReferenceKind = "issue" | "comment" | "deprecated_iss_alias";
+export type IssueReferenceKind = "issue" | "comment";
 
 export interface ParsedIssueReference {
   kind: IssueReferenceKind;
@@ -10,9 +10,6 @@ export interface ParsedIssueReference {
 }
 
 const EXPLICIT_REF_PATTERN = /\[(issue|comment):([^\]\s]+)\]/g;
-const HASH_REF_PATTERN = /(?<![\w/])#([0-9a-f]{7,64})\b/g;
-const BARE_HEX_REF_PATTERN = /(?<![\w/])([0-9a-f]{7,64})\b/g;
-const DEPRECATED_ISS_REF_PATTERN = /(?<![\w])iss_[A-Za-z0-9_]+/g;
 
 export function parseIssueReferences(source: string): ParsedIssueReference[] {
   if (!source) return [];
@@ -30,39 +27,6 @@ export function parseIssueReferences(source: string): ParsedIssueReference[] {
     if (isProtected(protectedRanges, match.index ?? 0)) continue;
     const ref = parseExplicitReference(match[1], match[2], match[0]);
     if (ref) add(ref);
-  }
-
-  for (const match of source.matchAll(HASH_REF_PATTERN)) {
-    if (isProtected(protectedRanges, match.index ?? 0)) continue;
-    add({
-      kind: "issue",
-      raw: match[0],
-      normalized: match[1],
-      issueRef: match[1],
-    });
-  }
-
-  for (const match of source.matchAll(BARE_HEX_REF_PATTERN)) {
-    const index = match.index ?? 0;
-    if (isProtected(protectedRanges, index)) continue;
-    if (isCommitLikeContext(source, index) || isAuthRequestContext(source, index)) continue;
-    add({
-      kind: "issue",
-      raw: match[0],
-      normalized: match[1],
-      issueRef: match[1],
-    });
-  }
-
-  for (const match of source.matchAll(DEPRECATED_ISS_REF_PATTERN)) {
-    const index = match.index ?? 0;
-    if (isProtected(protectedRanges, index)) continue;
-    add({
-      kind: "deprecated_iss_alias",
-      raw: match[0],
-      normalized: match[0],
-      issueRef: match[0],
-    });
   }
 
   return refs;
@@ -129,24 +93,10 @@ function collectRanges(source: string, pattern: RegExp, ranges: ProtectedRange[]
 function collectInlineCodeRanges(source: string, ranges: ProtectedRange[]): void {
   for (const match of source.matchAll(/`([^`\n]+)`/g)) {
     const start = match.index ?? 0;
-    const content = match[1].trim();
-    const isLegacyIssueRef = /^[0-9a-f]{7,64}$/.test(content) || /^iss_[A-Za-z0-9_]+$/.test(content);
-    if (isLegacyIssueRef && !isCommitLikeContext(source, start) && !isAuthRequestContext(source, start)) {
-      continue;
-    }
     ranges.push({ start, end: start + match[0].length });
   }
 }
 
 function isProtected(ranges: ProtectedRange[], index: number): boolean {
   return ranges.some((range) => index >= range.start && index < range.end);
-}
-
-function isCommitLikeContext(text: string, matchIndex: number): boolean {
-  return /(?:merge|commit(?:\s+(?:is|was|hash|sha))?|superseding\s+the\s+earlier|earlier)\s+$/i
-    .test(text.slice(Math.max(0, matchIndex - 64), matchIndex));
-}
-
-function isAuthRequestContext(text: string, matchIndex: number): boolean {
-  return /(?:auth\s+request|auth)\s+$/i.test(text.slice(Math.max(0, matchIndex - 32), matchIndex));
 }

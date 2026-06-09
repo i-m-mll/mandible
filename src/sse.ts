@@ -90,7 +90,7 @@ export class SseManager {
 
     // Query recently-completed auth requests (within the daemon uptime window)
     let recentRequests: Array<{ id: string; title: string }> = [];
-    const bugRefs: Array<{ repo_id: string; issue_id: string }> = [];
+    const issueRefs: Array<{ repo_id: string; issue_id: string }> = [];
     try {
       const db = getDb();
       const cutoff = Date.now() - 60_000;
@@ -102,9 +102,9 @@ export class SseManager {
       recentRequests = rows.map((r) => ({ id: r.id, title: r.title }));
       for (const row of rows) {
         const msg = row.commit_message || "";
-        const match = msg.match(/^Bug:\s+(\S+)/m);
+        const match = msg.match(/^Mandible-Issue:\s+(\S+)/m);
         if (match && row.repo) {
-          bugRefs.push({ repo_id: row.repo, issue_id: match[1] });
+          issueRefs.push({ repo_id: row.repo, issue_id: match[1] });
         }
       }
     } catch {
@@ -119,7 +119,8 @@ export class SseManager {
         commit_date: this.startupCommit.date,
         uptime,
         recent_requests: recentRequests,
-        bug_refs: bugRefs,
+        issue_refs: issueRefs,
+        bug_refs: issueRefs,
       },
       timestamp: new Date().toISOString()
     };

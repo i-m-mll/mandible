@@ -547,13 +547,13 @@ describe("ledger store", () => {
     expect(store.listConflicts({ status: "open" })).toHaveLength(1);
   });
 
-  it("parses issue references while skipping code blocks, links, and commit contexts", () => {
+  it("parses explicit typed issue references only", () => {
     const refs = parseIssueReferences([
-      "See [issue:abc1234], [issue:mandible/def4567], [comment:mandible/ghi7890#com_1], and #feedbee.",
-      "Legacy inline `020a65b` should count, but commit `7714da1` should not.",
+      "See [issue:abc1234], [issue:mandible/def4567], and [comment:mandible/ghi7890#com_1].",
+      "Ignore #feedbee, bare feedbee1, and iss_legacy_alias in normal text.",
+      "Inline `020a65b` and commit `7714da1` are plain code/text.",
       "Current commit is f026c06, superseding the earlier 7714da1.",
       "Skip [`abc1234`](#/issues?repo=x&issue=abc1234), `#badcafe`, and ```#deadbee```.",
-      "Deprecated alias iss_legacy_alias is compatibility only.",
     ].join("\n"));
 
     expect(refs.map((ref) => [ref.kind, ref.project ?? "", ref.issueRef, ref.commentRef ?? ""]))
@@ -561,9 +561,6 @@ describe("ledger store", () => {
         ["issue", "", "abc1234", ""],
         ["issue", "mandible", "def4567", ""],
         ["comment", "mandible", "ghi7890", "com_1"],
-        ["issue", "", "feedbee", ""],
-        ["issue", "", "020a65b", ""],
-        ["deprecated_iss_alias", "", "iss_legacy_alias", ""],
       ]);
   });
 
@@ -614,7 +611,7 @@ describe("ledger store", () => {
     })).toHaveLength(eventsAfterCreate);
 
     store.addComment(source.id, {
-      body: "Also `abcd123`.",
+      body: "Also [issue:abcd123].",
       actor_type: "agent",
       author_display: "Codex",
     });

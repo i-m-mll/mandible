@@ -498,7 +498,7 @@ describe('LedgerIssueDetail', () => {
         default_branch: 'main',
       },
       title: 'Refs',
-      body: 'See [issue:def456], #789abcd, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, <feedbax://runs/demo>, repo://mandible@main/results/report.md, and `#deadbee` in code.',
+      body: 'See [issue:def456], #789abcd, iss_legacy_alias, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, [artifact:artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb], artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, <feedbax://runs/demo>, repo://mandible@main/results/report.md, and `#deadbee` in code.',
       status: 'open',
       resolution: null,
       kind: 'feature',
@@ -555,20 +555,15 @@ describe('LedgerIssueDetail', () => {
       href: (node as HTMLAnchorElement).getAttribute('href'),
     }));
     expect(issueLinks).toContainEqual({ text: 'def456', href: '#/issues?repo=mandible&issue=def456' });
-    expect(issueLinks).toContainEqual({ text: '#789abcd', href: '#/issues?repo=mandible&issue=789abcd' });
-    expect(issueLinks).toContainEqual({
-      text: '2257522a',
-      href: '#/auth?request=2257522a',
-    });
+    expect(issueLinks.some((link) => link.text === '#789abcd')).toBe(false);
+    expect(issueLinks.some((link) => link.text === 'iss_legacy_alias')).toBe(false);
+    expect(issueLinks.some((link) => link.text === '2257522a')).toBe(false);
     expect(issueLinks.some((link) => link.text === '204ade09bc3a')).toBe(false);
     expect(issueLinks).toContainEqual({
       text: 'def456#com_2',
       href: '#/issues?repo=mandible&issue=def456&comment=com_2',
     });
-    expect(issueLinks).toContainEqual({
-      text: '020a65b',
-      href: '#/issues?repo=mandible&issue=020a65b',
-    });
+    expect(issueLinks.some((link) => link.text === '020a65b')).toBe(false);
     expect(issueLinks.some((link) => link.text === '7714da1')).toBe(false);
     expect(issueLinks.some((link) => link.text === 'f026c06')).toBe(false);
     expect(issueLinks).toContainEqual({
@@ -579,6 +574,10 @@ describe('LedgerIssueDetail', () => {
       text: node.textContent,
       href: (node as HTMLAnchorElement).getAttribute('href'),
     }));
+    expect(artifactLinks).toContainEqual({
+      text: 'artifact:bbbbbbbbbbbb',
+      href: '#/artifacts?ref=artifact%3Asha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    });
     expect(artifactLinks).toContainEqual({
       text: 'artifact:aaaaaaaaaaaa',
       href: '#/artifacts?ref=artifact%3A%2F%2Fsha256%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
