@@ -11,7 +11,7 @@ import {
   type ArtifactResolveResult,
   type KnowledgeBackrefRecord,
 } from '../api';
-import { artifactDetailHref } from '../artifact-links';
+import { artifactDetailHref, compactArtifactRef, displayArtifactRef } from '../artifact-links';
 import { sanitizeMarkdown } from '../sanitize';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 
@@ -531,7 +531,25 @@ function artifactTitle(artifact: ArtifactRecord): string {
   const metadataTitle = typeof artifact.metadata.title === 'string' ? artifact.metadata.title : '';
   const filename = typeof artifact.metadata.filename === 'string' ? artifact.metadata.filename : '';
   const logicalName = typeof artifact.metadata.logical_name === 'string' ? artifact.metadata.logical_name : '';
-  return metadataTitle || logicalName || filename || artifact.role || artifact.content_hash.slice(0, 12);
+  const repoLocator = artifactRepoLocator(artifact);
+  return artifactTitleCandidate(metadataTitle)
+    || artifactTitleCandidate(logicalName)
+    || filename
+    || repoLocator
+    || artifact.role
+    || compactArtifactRef(artifact.content_hash);
+}
+
+function artifactRepoLocator(artifact: ArtifactRecord): string {
+  const repoId = typeof artifact.repo_locator.repo_id === 'string' ? artifact.repo_locator.repo_id : '';
+  const repoPath = typeof artifact.repo_locator.path === 'string' ? artifact.repo_locator.path : '';
+  if (!repoId || !repoPath) return '';
+  const ref = typeof artifact.repo_locator.ref === 'string' ? artifact.repo_locator.ref : '';
+  return `repo://${repoId}${ref ? `@${ref}` : ''}/${repoPath.replace(/^\/+/, '')}`;
+}
+
+function artifactTitleCandidate(value: string): string {
+  return value && displayArtifactRef(value) === value ? value : '';
 }
 
 function artifactPreview(content: ArtifactContentResult): { kind: 'json' | 'markdown' | 'text' | 'binary' | 'empty'; value: string } {

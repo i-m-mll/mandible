@@ -454,6 +454,61 @@ describe("provider/artifact substrate", () => {
     expect(detail?.aliases?.some((alias) => alias.scheme === "file")).toBe(true);
   });
 
+  it("resolves compact artifact hash prefixes without changing canonical artifact identity", () => {
+    const hash = "1234567890abcdef".repeat(4);
+    const artifact = ingestArtifact(db, {
+      sha256: hash,
+      role: "report",
+      uri: "repo://mandible@main/results/report.md",
+      custody_mode: "link",
+      repo_locator: { repo_id: "mandible", ref: "main", path: "results/report.md" },
+    }, 1000, tempDir);
+
+    const compact = resolveArtifactRef(db, "artifact:1234567890ab", 2000);
+    const legacyColon = resolveArtifactRef(db, `artifact:sha256:${hash}`, 2000);
+    const legacyPlain = resolveArtifactRef(db, `sha256:${hash}`, 2000);
+
+    expect(compact).toMatchObject({
+      status: "resolved",
+      artifact: { id: artifact.id, content_hash: hash },
+      alias: {
+        artifact_id: artifact.id,
+        normalized_ref: "artifact:1234567890ab",
+        locator: { algorithm: "sha256", prefix: "1234567890ab", resolved_hash: hash },
+      },
+    });
+    expect(legacyColon).toMatchObject({ status: "resolved", artifact: { id: artifact.id } });
+    expect(legacyPlain).toMatchObject({ status: "resolved", artifact: { id: artifact.id } });
+    expect(getArtifact(db, artifact.id)?.id).toBe(`artifact:sha256:${hash}`);
+  });
+
+  it("reports ambiguous, unresolved, and unsupported compact artifact hash refs explicitly", () => {
+    const firstHash = `abc1234${"0".repeat(57)}`;
+    const secondHash = `abc1234${"1".repeat(57)}`;
+    ingestArtifact(db, { sha256: firstHash, uri: `artifact://sha256/${firstHash}` }, 1000, tempDir);
+    ingestArtifact(db, { sha256: secondHash, uri: `artifact://sha256/${secondHash}` }, 1001, tempDir);
+
+    const ambiguous = resolveArtifactRef(db, "artifact:abc1234", 2000);
+    const unresolved = resolveArtifactRef(db, "artifact:fffffff", 2001);
+    const unsupported = resolveArtifactRef(db, "artifact:abc123", 2002);
+
+    expect(ambiguous).toMatchObject({
+      status: "ambiguous",
+      artifact: null,
+      alias: { resolution_status: "ambiguous", artifact_id: null },
+    });
+    expect(unresolved).toMatchObject({
+      status: "unresolved",
+      artifact: null,
+      alias: { resolution_status: "unresolved", artifact_id: null },
+    });
+    expect(unsupported).toMatchObject({
+      status: "unsupported",
+      artifact: null,
+      alias: { resolution_status: "unsupported", artifact_id: null },
+    });
+  });
+
   it("resolves repo and provider aliases without requiring issue association", () => {
     const hash = "f".repeat(64);
     const artifact = ingestArtifact(db, {

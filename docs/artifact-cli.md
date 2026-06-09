@@ -9,6 +9,14 @@ should create structured artifact records and links, not just paste paths into
 issue comments. Durable references should prefer `repo://...` and
 `artifact://sha256/...` over absolute local paths.
 
+User-facing hash references may use compact SHA-256 prefixes when the prefix is
+long enough to identify exactly one artifact, for example
+`artifact:ad46ed88a9e8`. Full legacy forms remain valid:
+`artifact://sha256/<hash>`, `artifact:sha256:<hash>`, and `sha256:<hash>`.
+Prefix resolution must report `ambiguous` when multiple artifacts match and
+`unresolved` when none match; it must not guess or create a new hash-only
+artifact from a short prefix.
+
 ## Repo-Local Artifacts
 
 Tracked, clean repo files are recoverable from Git when the ref is immutable and

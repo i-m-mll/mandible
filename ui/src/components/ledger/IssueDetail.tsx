@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { sanitizeHtml, sanitizeMarkdown } from '../../sanitize';
-import { artifactDetailHref, linkifyArtifactRefs } from '../../artifact-links';
+import { artifactDetailHref, compactArtifactRef, displayArtifactRef, linkifyArtifactRefs } from '../../artifact-links';
 import type {
   LedgerIssueDetailAssociatedArtifact,
   LedgerIssueDetailAuthRequest,
@@ -276,8 +276,8 @@ function artifactSourceLabel(artifact: LedgerIssueDetailAssociatedArtifact): str
 
 function artifactTitle(artifact: LedgerIssueDetailAssociatedArtifact): string {
   const ref = artifact.refs[0];
-  if (ref) return ref;
-  return artifact.uri || artifact.id;
+  if (ref) return displayArtifactRef(ref);
+  return artifactFileLabel(artifact.uri) || displayArtifactRef(artifact.uri) || compactArtifactRef(artifact.content_hash);
 }
 
 function artifactMetaLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
@@ -288,6 +288,13 @@ function artifactMetaLabel(artifact: LedgerIssueDetailAssociatedArtifact): strin
     artifact.availability === 'unchecked' ? null : artifact.availability,
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : artifact.id;
+}
+
+function artifactFileLabel(uri: string): string {
+  if (!uri.startsWith('file://')) return '';
+  const pathname = uri.slice('file://'.length);
+  const basename = pathname.split(/[\\/]/).filter(Boolean).at(-1) ?? '';
+  return basename && !/^[0-9a-f]{64}$/i.test(basename) ? basename : '';
 }
 
 function IssueActionsMenu({

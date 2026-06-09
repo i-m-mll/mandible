@@ -480,6 +480,29 @@ function artifactHashFromRef(ref: string): string | undefined {
   return match?.[1]?.toLowerCase();
 }
 
+type ArtifactHashRefParse =
+  | { kind: "full"; hash: string; prefix: string }
+  | { kind: "prefix"; prefix: string }
+  | { kind: "too_short"; prefix: string }
+  | { kind: "invalid"; prefix: string };
+
+const MIN_ARTIFACT_HASH_PREFIX_LENGTH = 7;
+
+function artifactHashRefFromRef(ref: string): ArtifactHashRefParse | null {
+  const trimmed = ref.trim();
+  const match = /^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/]|artifact:)([a-f0-9]*)$/i.exec(trimmed);
+  if (!match) {
+    if (/^(?:artifact(?::|:\/\/)sha256[:/]|sha256[:/])|^artifact:[a-f0-9]+/i.test(trimmed)) {
+      return { kind: "invalid", prefix: "" };
+    }
+    return null;
+  }
+  const prefix = match[1].toLowerCase();
+  if (prefix.length === 64) return { kind: "full", hash: prefix, prefix };
+  if (prefix.length >= MIN_ARTIFACT_HASH_PREFIX_LENGTH) return { kind: "prefix", prefix };
+  return { kind: "too_short", prefix };
+}
+
 function schemeFromRef(ref: string): string {
   const trimmed = ref.trim();
   const schemeMatch = /^([a-z][a-z0-9+.-]*):/i.exec(trimmed);
@@ -1943,6 +1966,26 @@ function getArtifactLink(db: Db, id: string): ArtifactLinkRecord | null {
   return row ? artifactLinkFromRow(row) : null;
 }
 
+function registerHashPrefixAlias(
+  db: Db,
+  ref: string,
+  prefix: string,
+  status: "unresolved" | "ambiguous" | "unsupported",
+  now: number,
+): ArtifactAliasRecord {
+  return registerArtifactAlias(db, {
+    ref,
+    locator: {
+      algorithm: "sha256",
+      prefix,
+      min_prefix_length: MIN_ARTIFACT_HASH_PREFIX_LENGTH,
+    },
+    resolutionStatus: status,
+    source: "artifact_resolver",
+    now,
+  });
+}
+
 function materializeReferenceArtifact(
   db: Db,
   ref: string,
@@ -3079,6 +3122,90 @@ export function listArtifacts(db: Db, options: ArtifactListOptions = {}): Artifa
 
 export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
   const normalized = normalizeRef(ref);
+  const hashRef = artifactHashRefFromRef(ref);
+  if (hashRef) {
+    if (hashRef.kind === "too_short" || hashRef.kind === "invalid") {
+      const alias = registerHashPrefixAlias(db, ref, hashRef.prefix, "unsupported", now);
+      return {
+        status: "unsupported",
+        ref,
+        scheme: normalized.scheme,
+        normalized_ref: normalized.normalizedRef,
+        artifact: null,
+        alias,
+      };
+    }
+
+    const hash = hashRef.kind === "full" ? hashRef.hash : null;
+    if (hash) {
+      let artifact = getArtifact(db, `artifact:sha256:${hash}`);
+      if (!artifact) {
+        const materialized = materializeHashArtifact(db, ref, hash, now);
+        artifact = materialized.artifact;
+        return {
+          status: materialized.alias.resolution_status,
+          ref,
+          scheme: normalized.scheme,
+          normalized_ref: normalized.normalizedRef,
+          artifact,
+          alias: materialized.alias,
+        };
+      }
+      const alias = registerArtifactAlias(db, {
+        artifactId: artifact.id,
+        ref,
+        source: "artifact_resolver",
+        now,
+      });
+      return {
+        status: alias.resolution_status,
+        ref,
+        scheme: normalized.scheme,
+        normalized_ref: normalized.normalizedRef,
+        artifact,
+        alias,
+      };
+    }
+
+    const matches = listArtifacts(db, { hashPrefix: hashRef.prefix, limit: 2 });
+    if (matches.length === 1) {
+      const alias = registerArtifactAlias(db, {
+        artifactId: matches[0].id,
+        ref,
+        locator: {
+          algorithm: "sha256",
+          prefix: hashRef.prefix,
+          resolved_hash: matches[0].content_hash,
+        },
+        source: "artifact_resolver",
+        now,
+      });
+      return {
+        status: alias.resolution_status,
+        ref,
+        scheme: normalized.scheme,
+        normalized_ref: normalized.normalizedRef,
+        artifact: matches[0],
+        alias,
+      };
+    }
+    const alias = registerHashPrefixAlias(
+      db,
+      ref,
+      hashRef.prefix,
+      matches.length > 1 ? "ambiguous" : "unresolved",
+      now,
+    );
+    return {
+      status: alias.resolution_status,
+      ref,
+      scheme: normalized.scheme,
+      normalized_ref: normalized.normalizedRef,
+      artifact: null,
+      alias,
+    };
+  }
+
   const hash = artifactHashFromRef(normalized.normalizedRef);
   if (hash) {
     let artifact = getArtifact(db, `artifact:sha256:${hash}`);
