@@ -90,6 +90,7 @@ a {
   width: 100%;
   height: 100%;
   display: block;
+  background: currentColor;
 }
 
 .app-header__brand-text {
@@ -589,6 +590,14 @@ a {
   cursor: pointer;
 }
 
+.timeline-action-row button,
+.timeline-action-row a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 .timeline-icon-button {
   width: 32px;
   padding: 0;
@@ -991,8 +1000,7 @@ a {
 }
 
 .timeline-grid--compact .timeline-event__body,
-.timeline-grid--compact .timeline-event em,
-.timeline-grid--compact .timeline-event b {
+.timeline-grid--compact .timeline-event__refs-toggle {
   display: none;
 }
 
@@ -1037,8 +1045,7 @@ a {
 
 .timeline-event__body strong,
 .timeline-event__body span,
-.timeline-event em,
-.timeline-event b {
+.timeline-event__refs-toggle {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1050,17 +1057,63 @@ a {
   font-weight: 650;
 }
 
-.timeline-event__body span,
-.timeline-event em,
-.timeline-event b {
+.timeline-event__body span {
   color: var(--text-muted);
   font-size: 10px;
   font-style: normal;
 }
 
-.timeline-event b {
+.timeline-event__refs-toggle {
+  position: absolute;
+  z-index: 2;
+  transform: translate(57px, 13px);
+  min-width: 31px;
+  height: 20px;
+  display: inline-grid;
+  grid-template-columns: auto 10px;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid rgba(50, 210, 150, 0.5);
+  border-radius: 999px;
+  padding: 0 5px;
+  background: rgba(9, 33, 27, 0.98);
   color: var(--accent-green);
-  font-weight: 650;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+}
+
+.timeline-grid--expanded .timeline-event__refs-toggle {
+  transform: translate(92px, 25px);
+}
+
+.timeline-event__refs-toggle:hover,
+.timeline-event__refs-toggle:focus-visible {
+  border-color: rgba(50, 210, 150, 0.9);
+  background: rgba(12, 46, 36, 0.98);
+  outline: none;
+}
+
+.timeline-event__refs-toggle--expanded {
+  border-color: rgba(245, 194, 92, 0.66);
+  color: var(--accent-yellow);
+  background: rgba(43, 36, 19, 0.98);
+}
+
+.timeline-event__refs-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.timeline-event__refs-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .timeline-cluster {
@@ -1156,6 +1209,11 @@ a {
   gap: 12px;
 }
 
+.timeline-inspector__section--event {
+  min-height: calc(100vh - 96px);
+  grid-template-rows: auto auto auto minmax(280px, 1fr) auto auto auto;
+}
+
 .timeline-inspector__header {
   display: grid;
   gap: 4px;
@@ -1192,6 +1250,10 @@ a {
   margin: 0;
 }
 
+.timeline-meta--event {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .timeline-meta div {
   min-width: 0;
   display: grid;
@@ -1226,7 +1288,8 @@ a {
 }
 
 .timeline-event-body {
-  max-height: 220px;
+  min-height: min(48vh, 420px);
+  max-height: none;
   overflow: auto;
   margin: 0;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -1234,10 +1297,56 @@ a {
   padding: 10px;
   background: rgba(0, 0, 0, 0.22);
   color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.timeline-event-body > :first-child {
+  margin-top: 0;
+}
+
+.timeline-event-body > :last-child {
+  margin-bottom: 0;
+}
+
+.timeline-event-body p,
+.timeline-event-body ul,
+.timeline-event-body ol,
+.timeline-event-body blockquote,
+.timeline-event-body pre {
+  margin: 0 0 0.85em;
+}
+
+.timeline-event-body ul,
+.timeline-event-body ol {
+  padding-left: 1.35em;
+}
+
+.timeline-event-body code {
+  border-radius: 4px;
+  padding: 1px 4px;
+  background: rgba(255, 255, 255, 0.08);
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.45;
-  white-space: pre-wrap;
+  font-size: 0.92em;
+}
+
+.timeline-event-body pre {
+  overflow: auto;
+  border-radius: 7px;
+  padding: 9px;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.timeline-event-body pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.timeline-event-body a {
+  color: var(--accent-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .timeline-ref-list,
