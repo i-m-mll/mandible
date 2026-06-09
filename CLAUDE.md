@@ -12,9 +12,34 @@ Mandible is a local-first agent control plane and conversation browser. It provi
 npm run build        # Full build (TypeScript + esbuild UI)
 npm run build:watch  # UI hot-reload (esbuild watch only)
 npm run dev          # TypeScript watch + UI watch (both in parallel)
+npm run iab-preview  # Create/reuse an isolated integration-branch IAB preview
 npm start            # Run daemon (requires prior build)
 npm test             # Run tests (vitest)
 ```
+
+## IAB integration previews
+
+When a user asks to work on Mandible in the IAB, annotate Mandible in the
+in-app browser, open Mandible from an integration branch, or run a copy-instance
+of Mandible for browser iteration, start with the deterministic local launcher:
+
+```bash
+npm run iab-preview -- --json
+```
+
+This is the expected one-command path for preview setup. It creates or reuses
+an `integration/mandible-iab-preview-*` worktree, copies the live Mandible DB
+into `~/.cache/mandible/previews/`, starts a persistent preview daemon on a
+free local port, verifies `/api/health`, and returns the URL, branch, worktree,
+database copy, launch label, and log paths. After it succeeds, use the Codex
+Browser/IAB skill to open the returned `freshUrl`.
+
+If the current checkout is already a non-protected `integration/*` preview
+branch and the recorded preview is healthy, the launcher reports that existing
+instance and does not create another branch. Use `--force-new` only when the
+user explicitly needs a separate integration branch/instance. Do not interfere
+with another running preview branch or daemon unless the user explicitly asks
+for that specific instance to be restarted or replaced.
 
 ## Repo conventions
 

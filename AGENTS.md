@@ -3,6 +3,30 @@
 These repo-local instructions supplement the global agent instructions and
 `CLAUDE.md`.
 
+## Mandible IAB Preview Launcher
+
+When the user asks to work on Mandible in the IAB, annotate Mandible in the
+in-app browser, open Mandible from an integration branch, or otherwise run a
+copy-instance of Mandible for browser iteration, use the deterministic local
+launcher first:
+
+```bash
+npm run iab-preview -- --json
+```
+
+The launcher creates or reuses an `integration/mandible-iab-preview-*`
+worktree, copies the Mandible database into `~/.cache/mandible/previews/`,
+starts a persistent preview daemon on a free local port, verifies health, and
+prints the URL plus branch/worktree/log metadata. After it succeeds, the only
+remaining browser step should be opening the returned `freshUrl` in the Codex
+IAB using the browser skill.
+
+If you are already on a non-protected `integration/*` preview branch and its
+preview is healthy, the launcher reports the existing instance instead of
+creating another branch. Use `--force-new` only when the user explicitly needs
+a separate integration branch/instance. Do not restart or replace an unrelated
+running preview instance unless the user explicitly asks for that exact action.
+
 ## Dataful UX State
 
 Mandible dataful workspaces must preserve user-visible state unless the user
