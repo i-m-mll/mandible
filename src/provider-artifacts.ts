@@ -502,14 +502,19 @@ function artifactHashRefFromRef(ref: string): ArtifactHashRefParse | null {
   return { kind: "too_short", prefix };
 }
 
-function isDeprecatedArtifactHashSyntax(ref: string): boolean {
-  return /^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)[a-f0-9]{7,64}$/i.test(ref.trim());
-}
-
 function schemeFromRef(ref: string): string {
   const trimmed = ref.trim();
   const schemeMatch = /^([a-z][a-z0-9+.-]*):/i.exec(trimmed);
   return schemeMatch ? schemeMatch[1].toLowerCase() : "unknown";
+}
+
+function isRegisterableArtifactRef(ref: string): boolean {
+  const trimmed = ref.trim();
+  const artifactHashRef = artifactHashRefFromRef(trimmed);
+  if (artifactHashRef) {
+    return artifactHashRef.kind === "full" || artifactHashRef.kind === "prefix";
+  }
+  return schemeFromRef(trimmed) !== "unknown" && trimmed.includes("://");
 }
 
 function normalizeRef(ref: string): {
@@ -2468,7 +2473,7 @@ export function ingestArtifact(
       source: "artifact_identity",
       now,
     });
-    if (input.artifact_id && input.artifact_id !== id && !isDeprecatedArtifactHashSyntax(input.artifact_id)) {
+    if (input.artifact_id && input.artifact_id !== id && isRegisterableArtifactRef(input.artifact_id)) {
       registerArtifactAlias(db, {
         artifactId: id,
         ref: input.artifact_id,
@@ -2476,7 +2481,7 @@ export function ingestArtifact(
         now,
       });
     }
-    if (uri && !isDeprecatedArtifactHashSyntax(uri)) {
+    if (uri && isRegisterableArtifactRef(uri)) {
       registerArtifactAlias(db, {
         artifactId: id,
         ref: uri,
@@ -3122,22 +3127,20 @@ export function listArtifacts(db: Db, options: ArtifactListOptions = {}): Artifa
 }
 
 export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
-  if (isDeprecatedArtifactHashSyntax(ref)) {
-    const trimmed = ref.trim();
-    return {
-      status: "unsupported",
-      ref,
-      scheme: schemeFromRef(trimmed),
-      normalized_ref: trimmed,
-      artifact: null,
-      alias: null,
-    };
-  }
-
   const normalized = normalizeRef(ref);
   const hashRef = artifactHashRefFromRef(ref);
   if (hashRef) {
-    if (hashRef.kind === "too_short" || hashRef.kind === "invalid") {
+    if (hashRef.kind === "invalid") {
+      return {
+        status: "unsupported",
+        ref,
+        scheme: normalized.scheme,
+        normalized_ref: normalized.normalizedRef,
+        artifact: null,
+        alias: null,
+      };
+    }
+    if (hashRef.kind === "too_short") {
       const alias = registerHashPrefixAlias(db, ref, hashRef.prefix, "unsupported", now);
       return {
         status: "unsupported",
@@ -3216,6 +3219,17 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
       normalized_ref: normalized.normalizedRef,
       artifact: null,
       alias,
+    };
+  }
+
+  if (!isRegisterableArtifactRef(ref)) {
+    return {
+      status: "unsupported",
+      ref,
+      scheme: normalized.scheme,
+      normalized_ref: normalized.normalizedRef,
+      artifact: null,
+      alias: null,
     };
   }
 

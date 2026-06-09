@@ -1,8 +1,8 @@
 # Artifact, Document, and Knowledge Boundary
 
-Bug: a8fbc09
-Bug: e16807c
-Bug: d25bac5
+Mandible-Issue: a8fbc09
+Mandible-Issue: e16807c
+Mandible-Issue: d25bac5
 
 Mandible owns operational provenance, issue/work/auth/session state, artifact
 references, and optional artifact custody. HumbleB owns document snapshots,

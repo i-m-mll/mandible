@@ -936,7 +936,6 @@ function mapConflict(row: LedgerConflict): LedgerIssueDetailConflict {
 
 const ARTIFACT_REF_PATTERN = /\[artifact:([^\]\s]+)\]/gi;
 const DIRECT_NAV_SCHEMES = new Set(["http", "https", "mailto"]);
-const DEPRECATED_SHA_ARTIFACT_REF = /^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)[0-9a-f]{7,64}$/i;
 const BARE_SHA_ARTIFACT_REF = /^[0-9a-f]{7,64}$/i;
 
 function extractArtifactRefs(sources: string[]): string[] {
@@ -956,13 +955,12 @@ function extractArtifactRefs(sources: string[]): string[] {
 }
 
 function isArtifactLikeRef(ref: string): boolean {
-  if (DEPRECATED_SHA_ARTIFACT_REF.test(ref)) return false;
   if (BARE_SHA_ARTIFACT_REF.test(ref)) return true;
   const scheme = schemeForRef(ref);
   if (scheme === "artifact") {
     return /^artifact:[0-9a-f]{7,64}$/i.test(ref);
   }
-  return Boolean(scheme && !DIRECT_NAV_SCHEMES.has(scheme));
+  return Boolean(scheme && ref.includes("://") && !DIRECT_NAV_SCHEMES.has(scheme));
 }
 
 function trimTrailingPunctuation(value: string): string {

@@ -1,6 +1,5 @@
 const CUSTOM_URI_PATTERN = /\[artifact:([^\]\s]+)\]/gi;
 const DIRECT_NAV_SCHEMES = new Set(['http', 'https', 'mailto']);
-const DEPRECATED_SHA_ARTIFACT_REF = /^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)[0-9a-f]{7,64}$/i;
 const COMPACT_SHA_ARTIFACT_REF = /^artifact:([0-9a-f]{7,64})$/i;
 const BARE_SHA_ARTIFACT_REF = /^[0-9a-f]{7,64}$/i;
 
@@ -13,14 +12,13 @@ export function artifactDetailHref(id: string): string {
 }
 
 export function isArtifactLikeRef(ref: string): boolean {
-  if (DEPRECATED_SHA_ARTIFACT_REF.test(ref.trim())) return false;
   if (BARE_SHA_ARTIFACT_REF.test(ref.trim())) return true;
   const scheme = schemeForRef(ref);
   if (!scheme) return false;
   if (scheme === 'artifact') {
     return COMPACT_SHA_ARTIFACT_REF.test(ref);
   }
-  return !DIRECT_NAV_SCHEMES.has(scheme);
+  return ref.includes('://') && !DIRECT_NAV_SCHEMES.has(scheme);
 }
 
 export function compactArtifactRef(hash: string, length = 12): string {

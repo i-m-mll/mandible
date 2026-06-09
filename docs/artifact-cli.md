@@ -1,8 +1,8 @@
 # Artifact CLI and Runtime Contract
 
-Bug: 44074ed
-Bug: 58316eb
-Bug: f094416
+Mandible-Issue: 44074ed
+Mandible-Issue: 58316eb
+Mandible-Issue: f094416
 
 Mandible artifact commands are a thin interface over the artifact registry. They
 should create structured artifact records and links, not just paste paths into
@@ -11,8 +11,7 @@ compact `artifact:<sha-or-prefix>` refs over absolute local paths.
 
 User-facing hash references may use compact SHA-256 prefixes when the prefix is
 long enough to identify exactly one artifact, for example
-`artifact:ad46ed88a9e8`. Deprecated SHA-prefixed URI forms are not valid
-authored refs.
+`artifact:ad46ed88a9e8`. SHA-prefixed URI forms are not valid authored refs.
 Prefix resolution must report `ambiguous` when multiple artifacts match and
 `unresolved` when none match; it must not guess or create a new hash-only
 artifact from a short prefix.
