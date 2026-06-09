@@ -1,8 +1,10 @@
 # agent-commit
 
-Commit wrapper that enforces issue linkage. Every commit made by an agent must reference at least one Mandible issue via `Bug:` trailers.
+Commit wrapper that enforces issue linkage. The forward Mandible trailer contract is `Mandible-Issue: <issue-ref>` for work/reference tracking and `Closes-Mandible-Issue: <issue-ref>` only for explicit closure.
 
 `agent-commit` lives in `~/.dotfiles/bin/` (not in the Mandible repo). It is part of the dotfiles tooling but integrates tightly with Mandible for session-issue linking and work-unit activation.
+
+Current installed dotfiles versions may still emit legacy `Bug:` trailers. That wrapper must be updated in dotfiles; this repo no longer treats `Bug:`, `Closes:`, or `Resolves:` as the forward Mandible trailer policy.
 
 ## Usage
 
@@ -26,8 +28,8 @@ The tool constructs commit messages in this format:
 ```
 <summary>
 
-Bug: <id1>
-Bug: <id2>
+Mandible-Issue: <id1>
+Mandible-Issue: <id2>
 Co-authored-by: Claude Opus 4.6 <noreply@anthropic.com>
 ```
 
@@ -57,4 +59,4 @@ Co-authored-by: Claude Opus 4.6 <noreply@anthropic.com>
 
 - **`wt`** (dotfiles): Creates worktrees with `--issue` flag that writes a `.issue` file for auto-discovery.
 - **`mandible issue`**: Issue management CLI.
-- **`mandible auth request`**: Submits merge requests that reference `Bug:` trailers for auto-closure.
+- **`mandible auth request`**: Submits merge requests that use structured `issue_references` / `issue_closures` fields plus Mandible-specific trailers when commit metadata is needed.

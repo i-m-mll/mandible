@@ -410,7 +410,7 @@ describe('ReviewView', () => {
 describe('LedgerIssueDetail', () => {
   it('renders ledger issue evidence and sanitizes Markdown HTML', () => {
     const detail = {
-      id: 'iss_1',
+      id: 'issue_1',
       display_id: 'abc123',
       project: {
         id: 'proj_1',
@@ -485,7 +485,7 @@ describe('LedgerIssueDetail', () => {
 
   it('linkifies typed ledger issue and comment references outside code', () => {
     const detail = {
-      id: 'iss_1',
+      id: 'issue_1',
       display_id: 'abc123',
       project: {
         id: 'proj_1',
@@ -498,7 +498,7 @@ describe('LedgerIssueDetail', () => {
         default_branch: 'main',
       },
       title: 'Refs',
-      body: 'See [issue:def456], #789abcd, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, <feedbax://runs/demo>, repo://mandible@main/results/report.md, and `#deadbee` in code.',
+      body: 'See [issue:def456], #789abcd, issue_legacy_alias, auth request 2257522a, merge 204ade09bc3a, [comment:mandible/def456#com_2], next `020a65b`, commit `7714da1`, current commit is f026c06, superseding the earlier 7714da1, [artifact:bbbbbbbbbbbb], [artifact:feedbax://runs/demo], [artifact:repo://mandible@main/results/report.md], and `#deadbee` in code.',
       status: 'open',
       resolution: null,
       kind: 'feature',
@@ -555,20 +555,15 @@ describe('LedgerIssueDetail', () => {
       href: (node as HTMLAnchorElement).getAttribute('href'),
     }));
     expect(issueLinks).toContainEqual({ text: 'def456', href: '#/issues?repo=mandible&issue=def456' });
-    expect(issueLinks).toContainEqual({ text: '#789abcd', href: '#/issues?repo=mandible&issue=789abcd' });
-    expect(issueLinks).toContainEqual({
-      text: '2257522a',
-      href: '#/auth?request=2257522a',
-    });
+    expect(issueLinks.some((link) => link.text === '#789abcd')).toBe(false);
+    expect(issueLinks.some((link) => link.text === 'issue_legacy_alias')).toBe(false);
+    expect(issueLinks.some((link) => link.text === '2257522a')).toBe(false);
     expect(issueLinks.some((link) => link.text === '204ade09bc3a')).toBe(false);
     expect(issueLinks).toContainEqual({
       text: 'def456#com_2',
       href: '#/issues?repo=mandible&issue=def456&comment=com_2',
     });
-    expect(issueLinks).toContainEqual({
-      text: '020a65b',
-      href: '#/issues?repo=mandible&issue=020a65b',
-    });
+    expect(issueLinks.some((link) => link.text === '020a65b')).toBe(false);
     expect(issueLinks.some((link) => link.text === '7714da1')).toBe(false);
     expect(issueLinks.some((link) => link.text === 'f026c06')).toBe(false);
     expect(issueLinks).toContainEqual({
@@ -580,8 +575,8 @@ describe('LedgerIssueDetail', () => {
       href: (node as HTMLAnchorElement).getAttribute('href'),
     }));
     expect(artifactLinks).toContainEqual({
-      text: 'artifact:aaaaaaaaaaaa',
-      href: '#/artifacts?ref=artifact%3A%2F%2Fsha256%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      text: 'artifact:bbbbbbbbbbbb',
+      href: '#/artifacts?ref=bbbbbbbbbbbb',
     });
     expect(artifactLinks).toContainEqual({
       text: 'feedbax://runs/demo',
@@ -598,7 +593,7 @@ describe('LedgerIssueDetail', () => {
 
   it('normalizes imported comments with escaped newline sequences before Markdown rendering', () => {
     const detail = {
-      id: 'iss_1',
+      id: 'issue_1',
       display_id: 'abc123',
       project: {
         id: 'proj_1',
@@ -650,7 +645,7 @@ describe('LedgerIssueDetail', () => {
 
   it('renders associated artifacts as compact links into the artifacts view', () => {
     const detail = {
-      id: 'iss_1',
+      id: 'issue_1',
       display_id: 'abc123',
       project: {
         id: 'proj_1',
@@ -685,7 +680,7 @@ describe('LedgerIssueDetail', () => {
           id: 'artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           algorithm: 'sha256',
           content_hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-          uri: 'artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          uri: 'artifact:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           media_type: 'text/markdown',
           role: 'report',
           provider_id: 'provider_1',
@@ -698,7 +693,7 @@ describe('LedgerIssueDetail', () => {
             {
               id: 'link_1',
               entity_type: 'issue',
-              entity_id: 'iss_1',
+              entity_id: 'issue_1',
               link_type: 'produced_by',
               role: 'report',
               repo_id: 'mandible',
@@ -714,7 +709,7 @@ describe('LedgerIssueDetail', () => {
           id: 'artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
           algorithm: 'sha256',
           content_hash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-          uri: 'artifact://sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          uri: 'artifact:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
           media_type: null,
           role: null,
           provider_id: null,
@@ -748,7 +743,7 @@ describe('LedgerIssueDetail', () => {
   it('keeps issue and comment provenance behind metadata controls', () => {
     const now = Date.now();
     const detail = {
-      id: 'iss_1',
+      id: 'issue_1',
       display_id: 'abc123',
       project: {
         id: 'proj_1',
@@ -815,7 +810,7 @@ describe('LedgerIssueDetail', () => {
 
   it('keeps issue actions in the header overflow menu while preserving the comment composer button', () => {
     const detail = {
-      id: 'iss_1',
+      id: 'issue_1',
       display_id: 'abc123',
       project: {
         id: 'proj_1',
@@ -878,14 +873,14 @@ describe('ArtifactsView', () => {
       id: 'artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       algorithm: 'sha256',
       content_hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      uri: 'artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      uri: 'artifact:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       media_type: 'text/markdown',
       role: 'report',
       size_bytes: 42,
       provider_id: 'feedbax',
       manifest_id: null,
       metadata: {
-        title: 'artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        title: 'demo-report.md',
         filename: 'demo-report.md',
       },
       pinned: false,

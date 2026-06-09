@@ -386,8 +386,6 @@ current_repo_id() {
   basename "$root"
 }
 
-# Bug: 670e375 — auto-close issues referenced in explicit closure trailers after merge
-# Bug: 7b83c1f — Bug: trailers are reference/work-tracking links only.
 collect_auto_close_issues() {
   local base_commit="$1"  # commit before merge (ORIG_HEAD)
   # Check if auto-close is enabled via Mandible setting
@@ -401,10 +399,10 @@ collect_auto_close_issues() {
     fi
   fi
 
-  # Extract explicit closure trailers from merged commits.
+  # Extract explicit Mandible closure trailers from merged commits.
   local issue_ids
   issue_ids=$(git log --format='%b' "${base_commit}..HEAD" 2>/dev/null \
-    | grep -oE '^(Closes|Resolves): [a-f0-9]+' \
+    | grep -oE '^Closes-Mandible-Issue: [^[:space:]]+' \
     | awk '{print $2}' \
     | sort -u)
   printf "%s" "$issue_ids"

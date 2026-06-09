@@ -1218,7 +1218,7 @@ export class AuthQueue {
       }
     }
 
-    // 3. Match by explicit close-on-merge issue IDs. Bug: trailers and
+    // 3. Match by explicit close-on-merge issue IDs. Mandible-Issue trailers and
     // issue_references are provenance links, not completion signals.
     const closesIssues = completed.issue_closures ?? completed.issues ?? [];
     const allIssueIds = [...closesIssues];
@@ -1435,11 +1435,10 @@ function tailLines(text: string, n: number): string | null {
   return result || null;
 }
 
-// Bug: ba9687f — extract issue IDs from Bug: trailers in commit messages
 function extractIssueIdsFromCommitMessage(commitMessage: string | null | undefined): string[] | null {
   if (!commitMessage) return null;
   const refs: string[] = [];
-  const regex = /^Bug:\s+(\S+)/gm;
+  const regex = /^Mandible-Issue:\s+(\S+)/gm;
   let m;
   while ((m = regex.exec(commitMessage)) !== null) refs.push(m[1]);
   return refs.length > 0 ? refs : null;

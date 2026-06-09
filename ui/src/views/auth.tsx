@@ -125,11 +125,10 @@ function formatNumber(value: number): string {
   return value.toLocaleString();
 }
 
-/** Extract Bug: references from commit message. Returns issue ID prefixes. */
-function extractBugRefs(message: string): string[] {
+function extractMandibleIssueRefs(message: string): string[] {
   if (!message) return [];
   const refs: string[] = [];
-  const regex = /^Bug:\s+(\S+)/gm;
+  const regex = /^Mandible-Issue:\s+(\S+)/gm;
   let match;
   while ((match = regex.exec(message)) !== null) {
     refs.push(match[1]);
@@ -522,7 +521,7 @@ function AuthCard({
   const referenceRefs = useMemo(
     () => uniqueStrings([
       ...(Array.isArray(structuredReferenceIds) ? structuredReferenceIds : []),
-      ...(Array.isArray(structuredLegacyIds) ? structuredLegacyIds : extractBugRefs(commitMsg)),
+      ...(Array.isArray(structuredLegacyIds) ? structuredLegacyIds : extractMandibleIssueRefs(commitMsg)),
     ]),
     [structuredReferenceIds, structuredLegacyIds, commitMsg]
   );

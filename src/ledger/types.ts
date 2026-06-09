@@ -224,7 +224,7 @@ export interface LedgerIssueRelationshipSource {
   source_issue_id: string;
   target_issue_id: string;
   relationship_type: LedgerRelationshipType;
-  ref_kind: "issue" | "comment" | "deprecated_iss_alias";
+  ref_kind: "issue" | "comment";
   raw_ref: string;
   normalized_ref: string;
   metadata_json: string;

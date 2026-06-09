@@ -919,7 +919,7 @@ function normalizeMarkdownSource(source: string): string {
   return source.replace(/\\n/g, '\n');
 }
 
-const REF_PATTERN = /\[#(\d+)\]|\[(issue|comment):([^\]\s]+)\]|(?<![\w/])#([0-9a-f]{7,64})\b|(?<![\w/])([0-9a-f]{7,64})\b|(?<![\w])iss_[A-Za-z0-9_]+/g;
+const REF_PATTERN = /\[#(\d+)\]|\[(issue|comment):([^\]\s]+)\]/g;
 
 function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): string {
   if (typeof document === 'undefined' || !html) return html;
@@ -972,10 +972,8 @@ function linkifyInlineCodeRefs(container: HTMLElement, detail: LedgerIssueDetail
     REF_PATTERN.lastIndex = 0;
     const match = REF_PATTERN.exec(text);
     if (!match || match.index !== 0 || match[0].length !== text.length) continue;
-    const isLegacyBareIssueRef = Boolean(match[5]);
     const isExplicitRef = Boolean(match[2]);
-    const isCanonicalRef = !match[1] && !match[2] && !match[4] && !match[5] && match[0].startsWith('iss_');
-    if (!isLegacyBareIssueRef && !isExplicitRef && !isCanonicalRef) continue;
+    if (!isExplicitRef) continue;
     const context = code.parentElement?.textContent ?? text;
     const contextIndex = Math.max(0, context.indexOf(text));
     match.index = contextIndex;
@@ -990,9 +988,6 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection, te
   const ordinalCommentRef = match[1];
   const explicitType = match[2];
   const explicitRef = match[3];
-  const hashIssueRef = match[4];
-  const bareIssueRef = match[5];
-  const canonicalIssueRef = !ordinalCommentRef && !explicitType && !hashIssueRef && !bareIssueRef ? match[0] : '';
   if (ordinalCommentRef) {
     const anchor = document.createElement('a');
     anchor.className = 'ledger-xref';
@@ -1001,20 +996,11 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection, te
     anchor.title = `Open comment #${ordinalCommentRef}`;
     return anchor;
   }
-  const ref = explicitRef || hashIssueRef || bareIssueRef || canonicalIssueRef;
+  const ref = explicitRef;
   if (!ref) return null;
 
   const anchor = document.createElement('a');
   anchor.className = 'ledger-xref';
-  if (bareIssueRef && isAuthRequestContext(text, match.index)) {
-    anchor.textContent = match[0];
-    anchor.href = `#/auth?request=${encodeURIComponent(ref)}`;
-    anchor.title = `Open auth request ${ref}`;
-    return anchor;
-  }
-  if (bareIssueRef && isCommitLikeContext(text, match.index)) {
-    return null;
-  }
   if (explicitType === 'comment') {
     const parsed = parseCommentRef(ref, detail);
     if (!parsed) return null;
@@ -1026,26 +1012,17 @@ function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection, te
 
   const auth = detail.auth_requests.find((request) => request.id.startsWith(ref));
   if (auth) {
-    anchor.textContent = explicitType ? auth.id.slice(0, 8) : (bareIssueRef || match[0]);
+    anchor.textContent = auth.id.slice(0, 8);
     anchor.href = `#/auth?request=${encodeURIComponent(auth.id)}`;
     anchor.title = `Open auth request ${auth.id.slice(0, 8)}`;
     return anchor;
   }
   const parsedIssue = parseIssueRef(ref, detail);
   if (!parsedIssue) return null;
-  anchor.textContent = explicitType ? issueRefLabel(parsedIssue, detail) : (bareIssueRef || match[0]);
+  anchor.textContent = issueRefLabel(parsedIssue, detail);
   anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
   anchor.title = `Open issue ${parsedIssue.issue}`;
   return anchor;
-}
-
-function isAuthRequestContext(text: string, matchIndex: number): boolean {
-  return /(?:auth\s+request|auth)\s+$/i.test(text.slice(Math.max(0, matchIndex - 32), matchIndex));
-}
-
-function isCommitLikeContext(text: string, matchIndex: number): boolean {
-  return /(?:merge|commit(?:\s+(?:is|was|hash|sha))?|superseding\s+the\s+earlier|earlier)\s+$/i
-    .test(text.slice(Math.max(0, matchIndex - 64), matchIndex));
 }
 
 function issueRefLabel(parsed: { repo: string; issue: string }, detail: LedgerIssueDetailProjection): string {

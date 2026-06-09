@@ -934,8 +934,10 @@ function mapConflict(row: LedgerConflict): LedgerIssueDetailConflict {
   };
 }
 
-const ARTIFACT_REF_PATTERN = /\b(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"')\]]+|artifact:sha256:[0-9a-f]{7,64}|artifact:[0-9a-f]{7,64}|sha256:[0-9a-f]{7,64})/gi;
+const ARTIFACT_REF_PATTERN = /\[artifact:([^\]\s]+)\]/gi;
 const DIRECT_NAV_SCHEMES = new Set(["http", "https", "mailto"]);
+const DEPRECATED_SHA_ARTIFACT_REF = /^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)[0-9a-f]{7,64}$/i;
+const BARE_SHA_ARTIFACT_REF = /^[0-9a-f]{7,64}$/i;
 
 function extractArtifactRefs(sources: string[]): string[] {
   const refs: string[] = [];
@@ -944,7 +946,7 @@ function extractArtifactRefs(sources: string[]): string[] {
     ARTIFACT_REF_PATTERN.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = ARTIFACT_REF_PATTERN.exec(source))) {
-      const ref = trimTrailingPunctuation(match[0]);
+      const ref = trimTrailingPunctuation(match[1] ?? match[0]);
       if (!isArtifactLikeRef(ref) || seen.has(ref)) continue;
       seen.add(ref);
       refs.push(ref);
@@ -954,11 +956,12 @@ function extractArtifactRefs(sources: string[]): string[] {
 }
 
 function isArtifactLikeRef(ref: string): boolean {
+  if (DEPRECATED_SHA_ARTIFACT_REF.test(ref)) return false;
+  if (BARE_SHA_ARTIFACT_REF.test(ref)) return true;
   const scheme = schemeForRef(ref);
   if (scheme === "artifact") {
-    return /^(?:artifact(?::|:\/\/)sha256[:/][0-9a-f]{7,64}|artifact:[0-9a-f]{7,64})$/i.test(ref);
+    return /^artifact:[0-9a-f]{7,64}$/i.test(ref);
   }
-  if (scheme === "sha256") return /^sha256:[0-9a-f]{7,64}$/i.test(ref);
   return Boolean(scheme && !DIRECT_NAV_SCHEMES.has(scheme));
 }
 

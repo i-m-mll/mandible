@@ -279,8 +279,8 @@ export function syncAuthRequestLedgerLinks(
 ): OperationalLinkResult[] {
   const refs = new Map<string, "references" | "resolves">();
   for (const ref of input.issue_ids ?? []) refs.set(ref, "references");
-  for (const ref of extractBugIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "references");
-  for (const ref of extractClosingIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "resolves");
+  for (const ref of extractMandibleIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "references");
+  for (const ref of extractMandibleClosingIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "resolves");
   for (const ref of input.issue_references ?? []) refs.set(ref, "references");
   for (const ref of input.issue_closures ?? []) refs.set(ref, "resolves");
   // Legacy issues were documented as close-on-merge; preserve that meaning.
@@ -682,16 +682,16 @@ function sourceFieldsForAuthRef(
   if ((input.issue_closures ?? []).includes(ref)) fields.push("issue_closures");
   if ((input.issue_ids ?? []).includes(ref)) fields.push("issue_ids");
   if ((input.issues ?? []).includes(ref)) fields.push("issues");
-  if (extractBugIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message");
-  if (extractClosingIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message_closure");
+  if (extractMandibleIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message");
+  if (extractMandibleClosingIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message_closure");
   if (extractMergeResultIssueRefs(input.merge_output).includes(ref)) fields.push("merge_output");
   return fields;
 }
 
-function extractBugIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {
+function extractMandibleIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {
   if (!commitMessage) return [];
   const refs: string[] = [];
-  const regex = /^Bug:\s+(\S+)/gm;
+  const regex = /^Mandible-Issue:\s+(\S+)/gm;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(commitMessage)) !== null) {
     refs.push(match[1]);
@@ -699,10 +699,10 @@ function extractBugIssueRefsFromCommitMessage(commitMessage?: string | null): st
   return refs;
 }
 
-function extractClosingIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {
+function extractMandibleClosingIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {
   if (!commitMessage) return [];
   const refs: string[] = [];
-  const regex = /^(?:Closes|Resolves):\s+(\S+)/gm;
+  const regex = /^Closes-Mandible-Issue:\s+(\S+)/gm;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(commitMessage)) !== null) {
     refs.push(match[1]);

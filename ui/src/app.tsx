@@ -416,7 +416,10 @@ function App(): JSX.Element {
       const recentRequests = Array.isArray(record?.recent_requests)
         ? (record.recent_requests as Array<{ id: string; title: string }>)
         : [];
-      const rawBugRefs = Array.isArray(record?.bug_refs) ? record.bug_refs : [];
+      const rawIssueRefs = Array.isArray(record?.issue_refs)
+        ? record.issue_refs
+        : (Array.isArray(record?.bug_refs) ? record.bug_refs : []);
+      const rawBugRefs = rawIssueRefs;
       const bugRefs: BugRef[] = rawBugRefs
         .map((ref: unknown) => {
           if (ref && typeof ref === 'object' && 'repo_id' in ref && 'issue_id' in ref) {

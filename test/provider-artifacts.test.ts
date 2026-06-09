@@ -450,7 +450,7 @@ describe("provider/artifact substrate", () => {
 
     expect(byHash.map((item) => item.id)).toContain(artifact.id);
     expect(byQuery.map((item) => item.id)).toContain(artifact.id);
-    expect(detail?.aliases?.map((alias) => alias.normalized_ref)).toContain(`artifact://sha256/${artifact.content_hash}`);
+    expect(detail?.aliases?.map((alias) => alias.normalized_ref)).toContain(`artifact:${artifact.content_hash}`);
     expect(detail?.aliases?.some((alias) => alias.scheme === "file")).toBe(true);
   });
 
@@ -465,8 +465,8 @@ describe("provider/artifact substrate", () => {
     }, 1000, tempDir);
 
     const compact = resolveArtifactRef(db, "artifact:1234567890ab", 2000);
-    const legacyColon = resolveArtifactRef(db, `artifact:sha256:${hash}`, 2000);
-    const legacyPlain = resolveArtifactRef(db, `sha256:${hash}`, 2000);
+    const deprecatedColon = resolveArtifactRef(db, `artifact:sha256:${hash}`, 2000);
+    const deprecatedPlain = resolveArtifactRef(db, `sha256:${hash}`, 2000);
 
     expect(compact).toMatchObject({
       status: "resolved",
@@ -477,16 +477,16 @@ describe("provider/artifact substrate", () => {
         locator: { algorithm: "sha256", prefix: "1234567890ab", resolved_hash: hash },
       },
     });
-    expect(legacyColon).toMatchObject({ status: "resolved", artifact: { id: artifact.id } });
-    expect(legacyPlain).toMatchObject({ status: "resolved", artifact: { id: artifact.id } });
+    expect(deprecatedColon).toMatchObject({ status: "unsupported", artifact: null, alias: null });
+    expect(deprecatedPlain).toMatchObject({ status: "unsupported", artifact: null, alias: null });
     expect(getArtifact(db, artifact.id)?.id).toBe(`artifact:sha256:${hash}`);
   });
 
   it("reports ambiguous, unresolved, and unsupported compact artifact hash refs explicitly", () => {
     const firstHash = `abc1234${"0".repeat(57)}`;
     const secondHash = `abc1234${"1".repeat(57)}`;
-    ingestArtifact(db, { sha256: firstHash, uri: `artifact://sha256/${firstHash}` }, 1000, tempDir);
-    ingestArtifact(db, { sha256: secondHash, uri: `artifact://sha256/${secondHash}` }, 1001, tempDir);
+    ingestArtifact(db, { sha256: firstHash, uri: `artifact:${firstHash}` }, 1000, tempDir);
+    ingestArtifact(db, { sha256: secondHash, uri: `artifact:${secondHash}` }, 1001, tempDir);
 
     const ambiguous = resolveArtifactRef(db, "artifact:abc1234", 2000);
     const unresolved = resolveArtifactRef(db, "artifact:fffffff", 2001);
@@ -614,7 +614,7 @@ describe("provider/artifact substrate", () => {
 
   it("materializes missing content-hash refs as external hash records", () => {
     const hash = "a".repeat(64);
-    const resolution = resolveArtifactRef(db, `artifact://sha256/${hash}`, 1000);
+    const resolution = resolveArtifactRef(db, `artifact:${hash}`, 1000);
 
     expect(resolution).toMatchObject({
       status: "resolved",
@@ -703,7 +703,7 @@ describe("provider/artifact substrate", () => {
       availability: "present",
       reference: {
         recoverability: "local_only",
-        preferred_ref: `artifact://sha256/${sha256(checkpoint)}`,
+        preferred_ref: `artifact:${sha256(checkpoint)}`,
         warnings: ["local_only"],
         git: { tracked: false, ignored: true, staged: false, dirty: false },
       },
@@ -782,7 +782,7 @@ describe("provider/artifact substrate", () => {
       1000,
     );
     const hash = "b".repeat(64);
-    const hashResolution = resolveArtifactRef(db, `artifact://sha256/${hash}`, 1000);
+    const hashResolution = resolveArtifactRef(db, `artifact:${hash}`, 1000);
 
     const repoLink = resolveAndLinkArtifact(db, {
       ref: repoResolution.normalized_ref,
@@ -796,7 +796,7 @@ describe("provider/artifact substrate", () => {
       metadata: { input_ref: repoResolution.normalized_ref },
     }, 2000).link;
     const hashLink = resolveAndLinkArtifact(db, {
-      ref: `artifact://sha256/${hash}`,
+      ref: `artifact:${hash}`,
       entity_type: "issue",
       entity_id: issueId,
       link_type: "references",
@@ -862,7 +862,7 @@ describe("provider/artifact substrate", () => {
   it("promotes a hash-only external artifact when bytes are snapshotted into Mandible custody", () => {
     const content = "external bytes\n";
     const hash = sha256(content);
-    const external = resolveArtifactRef(db, `artifact://sha256/${hash}`, 1000);
+    const external = resolveArtifactRef(db, `artifact:${hash}`, 1000);
 
     expect(external.artifact).toMatchObject({
       id: `artifact:sha256:${hash}`,
@@ -871,7 +871,7 @@ describe("provider/artifact substrate", () => {
     });
 
     const snapshotted = snapshotArtifactBytes(db, {
-      ref: `artifact://sha256/${hash}`,
+      ref: `artifact:${hash}`,
       content,
       media_type: "text/plain",
       filename: "external.txt",
@@ -940,13 +940,13 @@ describe("provider/artifact substrate", () => {
       name: "run-7 packet",
       role: "artifact_bundle",
       members: [
-        { ref: tracked.id, role: "run_record" },
-        { ref: local.id, role: "model_checkpoint", metadata: { warning_codes: ["local_only"] } },
+        { ref: `artifact:${tracked.content_hash}`, role: "run_record" },
+        { ref: `artifact:${local.content_hash}`, role: "model_checkpoint", metadata: { warning_codes: ["local_only"] } },
       ],
     }, 2000, tempDir);
     const bundle = bundleResult.bundle;
     const appended = addArtifactBundleMembers(db, bundle.id, [
-      { ref: figure.id, role: "figure" },
+      { ref: `artifact:${figure.content_hash}`, role: "figure" },
     ], 3000);
 
     const trackedDetail = getArtifact(db, tracked.id);
@@ -1148,7 +1148,7 @@ describe("provider/artifact substrate", () => {
           {
             role: "training_checkpoint",
             logical_name: "feedbax_checkpoint_stub-job.eqx",
-            artifact_id: `artifact://sha256/${checkpointHash}`,
+            artifact_id: `artifact:${checkpointHash}`,
             sha256: checkpointHash,
             media_type: "application/x-equinox",
             size_bytes: 16,
@@ -1277,7 +1277,7 @@ describe("provider/artifact substrate", () => {
           sha256: graphHash,
         },
         parameter_store: {
-          artifact_id: `artifact://sha256/${parameterHash}`,
+          artifact_id: `artifact:${parameterHash}`,
           sha256: parameterHash,
           logical_name: "model.params.eqx",
           media_type: "application/x-equinox",
@@ -1290,7 +1290,7 @@ describe("provider/artifact substrate", () => {
           repo_locator: { repo_id: "rlrmp", path: "_artifacts/b41c940/model.params.eqx" },
         },
         state_store: {
-          artifact_id: `artifact://sha256/${parentHash}`,
+          artifact_id: `artifact:${parentHash}`,
           sha256: parentHash,
           logical_name: "model.state.eqx",
           storage_backend: "feedbax-local",

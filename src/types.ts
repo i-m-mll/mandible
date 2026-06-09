@@ -883,7 +883,7 @@ export interface ArtifactResolveResult {
   scheme: string;
   normalized_ref: string;
   artifact: ArtifactRecord | null;
-  alias: ArtifactAliasRecord;
+  alias: ArtifactAliasRecord | null;
 }
 
 export type KnowledgeBackrefSourceType = "artifact" | "document";

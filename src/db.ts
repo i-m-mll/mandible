@@ -1128,7 +1128,7 @@ const MIGRATIONS: Migration[] = [
         target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
         relationship_type TEXT NOT NULL
           CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),
-        ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment','deprecated_iss_alias')),
+        ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment')),
         raw_ref TEXT NOT NULL,
         normalized_ref TEXT NOT NULL,
         metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -1497,7 +1497,7 @@ const MIGRATIONS: Migration[] = [
         target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
         relationship_type TEXT NOT NULL
           CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),
-        ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment','deprecated_iss_alias')),
+        ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment')),
         raw_ref TEXT NOT NULL,
         normalized_ref TEXT NOT NULL,
         metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -1647,6 +1647,11 @@ const MIGRATIONS: Migration[] = [
         ON ledger_body_revisions(event_id)
         WHERE event_id IS NOT NULL`
     ]
+  },
+  {
+    version: 69,
+    name: "remove_legacy_issue_ref_kinds",
+    statements: []
   }
 ];
 
@@ -1750,6 +1755,9 @@ export function migrate(db: Db): void {
   }
   if (pending.some((m) => m.version === 68)) {
     backfillLedgerBodyRevisions(db);
+  }
+  if (pending.some((m) => m.version === 69)) {
+    removeLegacyIssueRelationshipSourceKinds(db);
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
   if (pending.some((m) => m.version === 26)) {
@@ -2085,6 +2093,77 @@ function stableMigrationRevisionId(entityType: string, entityId: string): string
 
 function bodyHash(body: string): string {
   return createHash("sha256").update(body).digest("hex");
+}
+
+function removeLegacyIssueRelationshipSourceKinds(db: Db): void {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issue_relationship_sources'")
+    .get();
+  if (!table) return;
+
+  const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS ledger_issue_relationship_sources_old_refkind");
+      db.exec("ALTER TABLE ledger_issue_relationship_sources RENAME TO ledger_issue_relationship_sources_old_refkind");
+      db.exec(
+        `CREATE TABLE ledger_issue_relationship_sources (
+          id TEXT PRIMARY KEY,
+          relationship_id TEXT NOT NULL REFERENCES ledger_issue_relationships(id) ON DELETE CASCADE,
+          source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue_body','comment')),
+          source_entity_id TEXT NOT NULL,
+          source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+          target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+          relationship_type TEXT NOT NULL
+            CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),
+          ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment')),
+          raw_ref TEXT NOT NULL,
+          normalized_ref TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          deleted_at INTEGER,
+          UNIQUE(source_entity_type, source_entity_id, target_issue_id, relationship_type, ref_kind, normalized_ref)
+        )`,
+      );
+      db.exec(
+        `INSERT INTO ledger_issue_relationship_sources (
+          id, relationship_id, source_entity_type, source_entity_id,
+          source_issue_id, target_issue_id, relationship_type, ref_kind,
+          raw_ref, normalized_ref, metadata_json, created_at, updated_at, deleted_at
+        )
+        SELECT
+          id, relationship_id, source_entity_type, source_entity_id,
+          source_issue_id, target_issue_id, relationship_type, ref_kind,
+          raw_ref, normalized_ref, metadata_json, created_at, updated_at, deleted_at
+        FROM ledger_issue_relationship_sources_old_refkind
+        WHERE ref_kind IN ('issue','comment')`,
+      );
+      db.exec("DROP TABLE ledger_issue_relationship_sources_old_refkind");
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_relationship
+          ON ledger_issue_relationship_sources(relationship_id)`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_source
+          ON ledger_issue_relationship_sources(source_entity_type, source_entity_id)`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_target
+          ON ledger_issue_relationship_sources(target_issue_id)`,
+      );
+    })();
+  } finally {
+    if (previousForeignKeys) {
+      db.pragma("foreign_keys = ON");
+    }
+  }
+
+  const violations = db.prepare("PRAGMA foreign_key_check").all();
+  if (violations.length > 0) {
+    throw new Error(`Legacy issue ref-kind migration left ${violations.length} foreign key violations`);
+  }
 }
 
 function migrateLedgerEventHashIds(db: Db): void {

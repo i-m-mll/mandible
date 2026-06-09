@@ -471,7 +471,7 @@ function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolveResult 
           ['Raw ref', resolution.ref],
           ['Normalized ref', resolution.normalized_ref],
           ['Status', resolution.status],
-          ['Source', resolution.alias.source],
+          ['Source', resolution.alias?.source ?? ''],
         ]} />
       </section>
     </article>

@@ -227,7 +227,7 @@ classify_path() {
     else
       recoverability="local_only"
       uri="file://${abs}"
-      canonical_ref="artifact://sha256/${sha}"
+      canonical_ref="artifact:${sha}"
       repo_locator="$(jq -n --arg repo_id "$repo_id" --arg ref "$branch" --arg path "$rel" \
         '{repo_id:$repo_id, ref:$ref, path:$path, local_only:true}')"
       if [[ "$ignored" == true ]]; then
@@ -245,7 +245,7 @@ classify_path() {
     rel="$filename"
     repo_id=""
     uri=""
-    canonical_ref="artifact://sha256/${sha}"
+    canonical_ref="artifact:${sha}"
     repo_locator='{}'
     recoverability="local_only"
     warnings="$(jq -n '[{code:"outside_repo", message:"outside-repo paths require --copy or --managed for durable registration"}]')"
@@ -275,7 +275,7 @@ classify_path() {
       role:$role,
       size_bytes:$size_bytes,
       uri:$uri,
-      canonical_ref:(if $recoverability == "local_only" then "artifact://sha256/" + $sha256 else $uri end),
+      canonical_ref:(if $recoverability == "local_only" then "artifact:" + $sha256 else $uri end),
       recoverability:$recoverability,
       availability:$availability,
       custody_mode:"link",
@@ -321,7 +321,7 @@ payload_for_path() {
     content_b64="$(base64 < "$(python_path abs "$input")" | tr -d '\n')"
     classified="$(printf '%s' "$classified" | jq \
       --arg custody "$mode" \
-      '.custody_mode=$custody | .recoverability="mandible_cas" | .canonical_ref=("artifact://sha256/" + .sha256) | .warnings=(.warnings + [{code:"snapshot_custody", message:"bytes will be stored in Mandible artifact storage"}])')"
+      '.custody_mode=$custody | .recoverability="mandible_cas" | .canonical_ref=("artifact:" + .sha256) | .warnings=(.warnings + [{code:"snapshot_custody", message:"bytes will be stored in Mandible artifact storage"}])')"
     printf '%s' "$classified" | jq \
       --arg content_base64 "$content_b64" \
       --argjson links "$links" \
@@ -771,7 +771,7 @@ bundle_create() {
         continue
       fi
       if (( dry_run )); then
-        artifact="$(printf '%s' "$payload" | jq '{id:("artifact://sha256/" + .sha256), role, custody_mode, recoverability:.metadata.recoverability, uri}')"
+        artifact="$(printf '%s' "$payload" | jq '{id:("artifact:" + .sha256), role, custody_mode, recoverability:.metadata.recoverability, uri}')"
       else
         if ! response=$(api_post "/api/artifacts/ingest" "$payload"); then
           failed="$(printf '%s' "$failed" | jq --arg ref "$member" '. + [{ref:$ref, error:"api_ingest_failed"}]')"
