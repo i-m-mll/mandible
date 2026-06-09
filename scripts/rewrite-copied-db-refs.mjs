@@ -87,12 +87,14 @@ export async function runCopiedDbRefCleanup(options = {}) {
       artifact_refs_rewritten: 0,
       naked_typed_refs_bracketed: 0,
       malformed_artifact_aliases_removed: 0,
+      malformed_artifacts_removed: 0,
       refused: 0,
     },
     mutations: [],
     samples: [],
     refused: [],
     removed_aliases: [],
+    removed_artifacts: [],
     skipped_targets: [],
     integrity_check: null,
   };
@@ -157,6 +159,7 @@ export async function runCopiedDbRefCleanup(options = {}) {
     }
 
     const aliasDeletes = planMalformedAliasDeletes(db, report);
+    const artifactDeletes = planMalformedArtifactDeletes(db, report);
     if (apply) {
       const applyChanges = db.transaction(() => {
         for (const update of plannedUpdates) {
@@ -171,6 +174,15 @@ export async function runCopiedDbRefCleanup(options = {}) {
         for (const aliasId of aliasDeletes) {
           db.prepare("DELETE FROM artifact_aliases WHERE id = ?").run(aliasId);
         }
+        for (const artifactId of artifactDeletes) {
+          if (tableExists(db, "artifact_links")) {
+            db.prepare("DELETE FROM artifact_links WHERE artifact_id = ?").run(artifactId);
+          }
+          if (tableExists(db, "artifact_aliases")) {
+            db.prepare("DELETE FROM artifact_aliases WHERE artifact_id = ?").run(artifactId);
+          }
+          db.prepare("DELETE FROM artifacts WHERE id = ?").run(artifactId);
+        }
       });
       applyChanges();
     }
@@ -181,6 +193,7 @@ export async function runCopiedDbRefCleanup(options = {}) {
       0,
     );
     report.summary.malformed_artifact_aliases_removed = aliasDeletes.length;
+    report.summary.malformed_artifacts_removed = artifactDeletes.length;
     report.summary.refused = report.refused.length;
     report.integrity_check = db.pragma("integrity_check", { simple: true });
   } finally {
@@ -237,12 +250,14 @@ function buildContext(db) {
   const issueAliases = loadIssueAliases(db);
   const issueResolver = buildIssueResolver(issues, issueAliases);
   const artifactHashes = loadArtifactHashes(db);
+  const artifactRefs = loadArtifactRefs(db);
   const comments = loadComments(db, issueResolver);
   return {
     issues,
     issueResolver,
     artifactHashes,
     artifactHashSet: new Set(artifactHashes),
+    artifactRefResolver: buildArtifactRefResolver(artifactRefs),
     commentResolver: buildCommentResolver(comments, issueResolver),
     typedResolvers: {
       auth: buildIdResolver(loadIds(db, "auth_requests"), 8),
@@ -441,6 +456,48 @@ function loadArtifactHashes(db) {
   return Array.from(hashes).sort();
 }
 
+function loadArtifactRefs(db) {
+  const refs = new Set();
+  if (tableExists(db, "artifacts")) {
+    const columns = tableColumns(db, "artifacts");
+    const scanColumns = ["uri"].filter((name) => columns.has(name));
+    const rows = db.prepare(`SELECT ${scanColumns.map(quoteIdent).join(", ")} FROM artifacts`).all();
+    for (const row of rows) {
+      for (const column of scanColumns) addArtifactUriRef(refs, row[column]);
+    }
+  }
+  if (tableExists(db, "artifact_aliases")) {
+    const columns = tableColumns(db, "artifact_aliases");
+    const scanColumns = ["alias", "normalized_ref"].filter((name) => columns.has(name));
+    const rows = db.prepare(`SELECT ${scanColumns.map(quoteIdent).join(", ")} FROM artifact_aliases`).all();
+    for (const row of rows) {
+      for (const column of scanColumns) addArtifactUriRef(refs, row[column]);
+    }
+  }
+  return Array.from(refs).sort();
+}
+
+function addArtifactUriRef(refs, value) {
+  if (typeof value !== "string") return;
+  const trimmed = trimArtifactUriRef(value);
+  if (isMalformedArtifactAliasValue(trimmed)) return;
+  if (!isCustomArtifactUri(trimmed)) return;
+  refs.add(trimmed);
+}
+
+function buildArtifactRefResolver(refs) {
+  const byLower = new Map(refs.map((ref) => [ref.toLowerCase(), ref]));
+  return {
+    resolve(ref) {
+      const trimmed = trimArtifactUriRef(ref);
+      if (!isCustomArtifactUri(trimmed)) return { ok: false, reason: "unsupported" };
+      const exact = byLower.get(trimmed.toLowerCase());
+      if (exact) return { ok: true, ref: exact };
+      return { ok: false, reason: "unresolved" };
+    },
+  };
+}
+
 function collectHashesFromValue(value, hashes) {
   if (typeof value !== "string") return;
   for (const match of value.matchAll(/[a-f0-9]{64}/gi)) {
@@ -450,8 +507,39 @@ function collectHashesFromValue(value, hashes) {
 
 function rewriteCell(value, kind, context, source) {
   if (kind === "json") return rewriteJsonCell(value, context, source);
+  if (kind === "artifact_ref") return rewriteArtifactRegistryRef(value, context, source);
   const includeIssueRefs = kind !== "artifact_ref";
   return rewriteText(value, context, source, { includeIssueRefs });
+}
+
+function rewriteArtifactRegistryRef(value, context, source) {
+  const replacements = [];
+  const refused = [];
+  const counts = zeroCounts();
+  const trimmed = value.trim();
+  if (isMalformedArtifactAliasValue(trimmed)) {
+    return { changed: false, text: value, counts, replacements, refused };
+  }
+
+  const hashResolved = resolveArtifactRef(trimmed, context);
+  if (hashResolved.ok) {
+    const next = `artifact:${hashResolved.prefix}`;
+    counts.artifact += 1;
+    replacements.push({ kind: "artifact", before: value, after: next });
+    return { changed: next !== value, text: next, counts, replacements, refused };
+  }
+
+  const uriResolved = context.artifactRefResolver.resolve(trimmed);
+  if (uriResolved.ok) {
+    const next = uriResolved.ref;
+    replacements.push({ kind: "typed", before: value, after: next });
+    return { changed: next !== value, text: next, counts, replacements, refused };
+  }
+
+  if (looksLikeArtifactRefValue(trimmed)) {
+    refused.push(refusal(source, `artifact_${hashResolved.reason}`, `Artifact registry ref '${trimmed}' was not rewritten`, trimmed));
+  }
+  return { changed: false, text: value, counts, replacements, refused };
 }
 
 function rewriteJsonCell(value, context, source) {
@@ -569,6 +657,23 @@ function rewriteArtifacts(value, context, source) {
     counts.artifact += 1;
     const next = `[artifact:${resolved.prefix}]`;
     replacements.push({ kind: "artifact", before: match, after: next });
+    return next;
+  });
+
+  text = replaceOutsideProtected(text, artifactUriRefPattern(), (match) => {
+    const ref = trimArtifactUriRef(match);
+    if (isPlaceholderArtifactUri(ref)) return match;
+    const resolved = context.artifactRefResolver.resolve(ref);
+    if (!resolved.ok) {
+      if (looksLikeArtifactUri(ref)) {
+        refused.push(refusal(source, `artifact_${resolved.reason}`, `Naked artifact URI '${ref}' was not bracketed`, ref));
+      }
+      return match;
+    }
+    counts.artifact += 1;
+    counts.typed += 1;
+    const next = `[artifact:${resolved.ref}]${match.slice(ref.length)}`;
+    replacements.push({ kind: "typed", before: match, after: next });
     return next;
   });
 
@@ -698,6 +803,10 @@ function artifactHashRefPattern() {
   return /\b(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)([a-f0-9]{7,64})\b/gi;
 }
 
+function artifactUriRefPattern() {
+  return /\b[a-z][a-z0-9+.-]*:\/\/[^\s<>"')\]]+/gi;
+}
+
 function nakedTypedRefPattern() {
   return /(?<![\[\w/.-])\b(issue|comment|auth|artifact|session|work_unit):([A-Za-z0-9][A-Za-z0-9._/@#-]{1,127})\b(?![\]\w/-])/gi;
 }
@@ -754,6 +863,23 @@ function looksLikeInternalRef(ref) {
     || /\b(?:com|sess|wu|auth|req)_[A-Za-z0-9_-]{4,}\b/.test(ref);
 }
 
+function trimArtifactUriRef(value) {
+  return String(value).trim().replace(/[.,;:!?]+$/g, "");
+}
+
+function isCustomArtifactUri(value) {
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(value)?.[1]?.toLowerCase();
+  return Boolean(scheme && ["repo", "feedbax", "humbleb", "zotero", "manifest"].includes(scheme));
+}
+
+function looksLikeArtifactUri(value) {
+  return isCustomArtifactUri(value) && !isPlaceholderArtifactUri(value);
+}
+
+function isPlaceholderArtifactUri(value) {
+  return value.includes("...") || /[<>]/.test(value);
+}
+
 function isFileStorageLocator(text, index) {
   const before = text.slice(Math.max(0, index - 80), index).toLowerCase();
   return /file:\/\/[^\s]*$/.test(before) || /\/artifacts\/sha256\/[a-f0-9]{2}\/?$/i.test(before);
@@ -780,35 +906,104 @@ function planMalformedAliasDeletes(db, report) {
   for (const row of rows) {
     const alias = String(row.alias ?? "");
     const normalized = String(row.normalized_ref ?? "");
-    const invalid = [alias, normalized].some(isMalformedArtifactHashRef);
+    const invalid = [alias, normalized].some(isMalformedArtifactAliasValue);
     if (!invalid) continue;
-    const artifactId = row.artifact_id == null ? "" : String(row.artifact_id);
-    const hasLegitimateArtifact = artifactId && existingArtifactIds.has(artifactId);
-    const unresolved = !artifactId || String(row.resolution_status ?? "") !== "resolved";
-    if (unresolved && !hasLegitimateArtifact) {
-      deletes.push(String(row.id));
-      report.removed_aliases.push({
-        id: String(row.id),
-        alias,
-        normalized_ref: normalized,
-        reason: "malformed artifact hash ref without a legitimate artifact target",
-      });
-    } else {
-      report.refused.push(refusal(
-        { table: "artifact_aliases", column: "alias", rowId: String(row.id) },
-        "malformed_alias_has_target",
-        "Malformed artifact alias has a legitimate artifact target; left unchanged",
-        `${alias} ${normalized}`.trim(),
-      ));
-    }
+    deletes.push(String(row.id));
+    report.removed_aliases.push({
+      id: String(row.id),
+      alias,
+      normalized_ref: normalized,
+      artifact_id: row.artifact_id == null ? null : String(row.artifact_id),
+      artifact_exists: row.artifact_id != null && existingArtifactIds.has(String(row.artifact_id)),
+      reason: "malformed artifact alias removed",
+    });
   }
   return deletes;
 }
 
-function isMalformedArtifactHashRef(value) {
+function planMalformedArtifactDeletes(db, report) {
+  if (!tableExists(db, "artifacts")) return [];
+  const columns = tableColumns(db, "artifacts");
+  const selectColumns = ["id", "uri", "metadata_json", "reference_json"].filter((name) => columns.has(name));
+  const rows = db.prepare(`SELECT ${selectColumns.map(quoteIdent).join(", ")} FROM artifacts`).all();
+  const linkedCounts = countByArtifactId(db, "artifact_links");
+  const aliasCounts = countByArtifactId(db, "artifact_aliases");
+  const deletes = [];
+  for (const row of rows) {
+    const id = String(row.id ?? "");
+    if (!id.startsWith("artifact:ref:")) continue;
+    const badRefs = malformedArtifactRefsForRow(row);
+    if (badRefs.length === 0) continue;
+    deletes.push(id);
+    report.removed_artifacts.push({
+      id,
+      uri: row.uri == null ? null : String(row.uri),
+      bad_refs: badRefs,
+      artifact_links_removed: linkedCounts.get(id) ?? 0,
+      artifact_aliases_removed: aliasCounts.get(id) ?? 0,
+      reason: "malformed reference artifact removed",
+    });
+  }
+  return deletes;
+}
+
+function malformedArtifactRefsForRow(row) {
+  const values = new Set();
+  addMalformedArtifactRefValue(values, row.uri);
+  for (const key of ["metadata_json", "reference_json"]) {
+    const raw = row[key];
+    if (typeof raw !== "string" || raw.length === 0) continue;
+    try {
+      collectMalformedArtifactRefs(JSON.parse(raw), values);
+    } catch {
+      addMalformedArtifactRefValue(values, raw);
+    }
+  }
+  return Array.from(values).sort();
+}
+
+function collectMalformedArtifactRefs(value, values) {
+  if (typeof value === "string") {
+    addMalformedArtifactRefValue(values, value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectMalformedArtifactRefs(item, values);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const child of Object.values(value)) collectMalformedArtifactRefs(child, values);
+}
+
+function addMalformedArtifactRefValue(values, value) {
+  if (typeof value !== "string") return;
   const trimmed = value.trim();
+  if (isMalformedArtifactAliasValue(trimmed)) values.add(trimmed);
+}
+
+function countByArtifactId(db, table) {
+  if (!tableExists(db, table) || !tableColumns(db, table).has("artifact_id")) return new Map();
+  return new Map(
+    db.prepare(
+      `SELECT artifact_id, COUNT(*) AS count
+       FROM ${quoteIdent(table)}
+       WHERE artifact_id IS NOT NULL
+       GROUP BY artifact_id`,
+    ).all().map((row) => [String(row.artifact_id), Number(row.count)]),
+  );
+}
+
+function isMalformedArtifactAliasValue(value) {
+  const trimmed = value.trim();
+  if (/^(?:artifact:\/\/(?:sha256\/?)?|repo:\/\/)$/i.test(trimmed)) return true;
+  if (/^\[artifact:/i.test(trimmed)) return true;
   if (!/^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)/i.test(trimmed)) return false;
   return !/^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)[a-f0-9]{7,64}$/i.test(trimmed);
+}
+
+function looksLikeArtifactRefValue(value) {
+  return /^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:|artifact:)[a-f0-9]{7,64}$/i.test(value)
+    || isCustomArtifactUri(value);
 }
 
 async function copySqliteDb(sourceDb, targetDb) {

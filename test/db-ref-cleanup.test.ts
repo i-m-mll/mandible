@@ -14,6 +14,7 @@ const issueId = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678
 const otherIssueId = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd";
 const artifactHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const collidingArtifactHash = `aaaaaaa${"b".repeat(57)}`;
+const malformedReferenceHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const commentId = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 const authId = "123e4567-e89b-12d3-a456-426614174000";
 const sessionId = "sess_abcdef12345";
@@ -95,6 +96,7 @@ beforeEach(() => {
       "Link [#abcdef0](https://example.test) stays.",
       `Artifact artifact://sha256/${artifactHash} changes.`,
       "Naked artifact:aaaaaaa changes.",
+      "Repo locator repo://mandible@main/results/report.md changes.",
       `Typed comment:abcdef0#com_2 auth:${authId.slice(0, 8)} session:${sessionId.slice(0, 8)} work_unit:${workUnitId.slice(0, 8)} change.`,
       "Event name auth:resolved stays naked.",
     ].join("\n"),
@@ -140,6 +142,13 @@ beforeEach(() => {
     collidingArtifactHash,
     "file:///tmp/artifacts/sha256/aa/" + collidingArtifactHash,
   );
+  db.prepare("INSERT INTO artifacts (id, content_hash, uri, metadata_json, reference_json) VALUES (?, ?, ?, ?, ?)").run(
+    "artifact:ref:malformed-sha",
+    malformedReferenceHash,
+    "artifact://sha256/",
+    JSON.stringify({ title: "artifact://sha256/", locator: { uri: "artifact://sha256/" } }),
+    JSON.stringify({ normalized_ref: "artifact://sha256/", locator: { uri: "artifact://sha256/" } }),
+  );
   db.prepare(
     "INSERT INTO artifact_aliases (id, artifact_id, scheme, alias, normalized_ref, locator_json, resolution_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
   ).run(
@@ -149,6 +158,17 @@ beforeEach(() => {
     "artifact://sha256/" + artifactHash,
     "artifact://sha256/" + artifactHash,
     JSON.stringify({ ref: "sha256:" + artifactHash }),
+    "resolved",
+  );
+  db.prepare(
+    "INSERT INTO artifact_aliases (id, artifact_id, scheme, alias, normalized_ref, locator_json, resolution_status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    "alias-repo",
+    "artifact:sha256:" + artifactHash,
+    "repo",
+    "repo://mandible@main/results/report.md",
+    "repo://mandible@main/results/report.md",
+    JSON.stringify({ repo_id: "mandible", ref: "main", path: "results/report.md" }),
     "resolved",
   );
   db.prepare(
@@ -187,7 +207,15 @@ describe("copied DB ref cleanup", () => {
     expect(report.integrity_check).toBe("ok");
     expect(report.summary.issue_refs_rewritten).toBeGreaterThanOrEqual(5);
     expect(report.summary.artifact_refs_rewritten).toBeGreaterThanOrEqual(6);
+    expect(report.summary.naked_typed_refs_bracketed).toBeGreaterThanOrEqual(1);
     expect(report.summary.malformed_artifact_aliases_removed).toBe(1);
+    expect(report.summary.malformed_artifacts_removed).toBe(1);
+    expect(report.removed_artifacts).toEqual([
+      expect.objectContaining({
+        id: "artifact:ref:malformed-sha",
+        reason: "malformed reference artifact removed",
+      }),
+    ]);
     expect(fs.existsSync(report.backup_db)).toBe(true);
     expect(fs.existsSync(report.candidate_db)).toBe(true);
     expect(fs.existsSync(report.report_path)).toBe(true);
@@ -203,6 +231,7 @@ describe("copied DB ref cleanup", () => {
       expect(issue.body).toContain("`#abcdef0`");
       expect(issue.body).toContain("[#abcdef0](https://example.test)");
       expect(issue.body).toContain("[artifact:aaaaaaaa]");
+      expect(issue.body).toContain("[artifact:repo://mandible@main/results/report.md]");
       expect(issue.body).toContain("Naked artifact:aaaaaaa changes.");
       expect(issue.body).toContain("[comment:abcdef0#com_2]");
       expect(issue.body).toContain("[auth:123e4567]");
@@ -230,6 +259,9 @@ describe("copied DB ref cleanup", () => {
 
       const aliasCount = candidate.prepare("SELECT COUNT(*) AS count FROM artifact_aliases WHERE id = 'alias-bad'").get() as { count: number };
       expect(aliasCount.count).toBe(0);
+
+      const malformedArtifactCount = candidate.prepare("SELECT COUNT(*) AS count FROM artifacts WHERE id = 'artifact:ref:malformed-sha'").get() as { count: number };
+      expect(malformedArtifactCount.count).toBe(0);
     } finally {
       candidate.close();
     }
