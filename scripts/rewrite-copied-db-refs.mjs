@@ -12,6 +12,8 @@ const MIN_ARTIFACT_PREFIX_LENGTH = 7;
 const SAMPLE_LIMIT = 40;
 const DEFAULT_DB = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
 const DEFAULT_OUTPUT_ROOT = path.join(os.homedir(), ".cache", "mandible", "db-ref-cleanup");
+const LEGACY_ISS_REF_PATTERN = /\biss_[A-Za-z0-9_-]{4,}\b/g;
+const LEGACY_ISS_EXACT_PATTERN = /^iss_[A-Za-z0-9_-]{4,}$/;
 
 const TEXT_TARGETS = [
   { table: "ledger_issues", key: "id", columns: [{ name: "body", kind: "markdown" }] },
@@ -84,6 +86,9 @@ export async function runCopiedDbRefCleanup(options = {}) {
       rows_updated: 0,
       cells_updated: 0,
       issue_refs_rewritten: 0,
+      legacy_issue_refs_rewritten: 0,
+      legacy_issue_aliases_removed: 0,
+      legacy_issue_metadata_cleaned: 0,
       artifact_refs_rewritten: 0,
       naked_typed_refs_bracketed: 0,
       malformed_artifact_aliases_removed: 0,
@@ -94,6 +99,8 @@ export async function runCopiedDbRefCleanup(options = {}) {
     samples: [],
     refused: [],
     removed_aliases: [],
+    removed_legacy_issue_aliases: [],
+    legacy_issue_metadata_updates: [],
     removed_artifacts: [],
     skipped_targets: [],
     integrity_check: null,
@@ -111,7 +118,7 @@ export async function runCopiedDbRefCleanup(options = {}) {
         ...target.contextColumns,
       ];
       const rows = db.prepare(
-        `SELECT ${uniqueList(selectColumns).map((column) => quoteIdent(column)).join(", ")}
+        `SELECT rowid AS __rowid, ${uniqueList(selectColumns).map((column) => quoteIdent(column)).join(", ")}
          FROM ${quoteIdent(target.table)}
          ORDER BY ${quoteIdent(target.key)}`,
       ).all();
@@ -132,6 +139,9 @@ export async function runCopiedDbRefCleanup(options = {}) {
           if (!rewritten.changed) continue;
           updates[column.name] = rewritten.text;
           report.summary.issue_refs_rewritten += rewritten.counts.issue;
+          report.summary.legacy_issue_refs_rewritten += rewritten.replacements
+            .filter((replacement) => replacement.legacy_kind === "legacy_id")
+            .length;
           report.summary.artifact_refs_rewritten += rewritten.counts.artifact;
           report.summary.naked_typed_refs_bracketed += rewritten.counts.typed;
           cellMutations.push({
@@ -149,7 +159,7 @@ export async function runCopiedDbRefCleanup(options = {}) {
           });
         }
         if (cellMutations.length === 0) continue;
-        plannedUpdates.push({ table: target.table, key: target.key, rowId: row[target.key], updates });
+        plannedUpdates.push({ table: target.table, key: "rowid", rowId: row.__rowid, updates });
         report.mutations.push({
           table: target.table,
           row_id: String(row[target.key]),
@@ -158,6 +168,12 @@ export async function runCopiedDbRefCleanup(options = {}) {
       }
     }
 
+    const legacyMetadataUpdates = planLegacyIssueMetadataUpdates(db, context, report);
+    plannedUpdates.push(...legacyMetadataUpdates);
+    const scheduledCells = plannedCellKeys(plannedUpdates);
+    const legacyTextUpdates = planLegacyIssueTextUpdates(db, context, scheduledCells, report);
+    plannedUpdates.push(...legacyTextUpdates);
+    const legacyAliasDeletes = planLegacyIssueAliasDeletes(db, context, report);
     const aliasDeletes = planMalformedAliasDeletes(db, report);
     const artifactDeletes = planMalformedArtifactDeletes(db, report);
     if (apply) {
@@ -165,11 +181,15 @@ export async function runCopiedDbRefCleanup(options = {}) {
         for (const update of plannedUpdates) {
           const columns = Object.keys(update.updates);
           const assignments = columns.map((column) => `${quoteIdent(column)} = ?`).join(", ");
+          const keyExpr = update.key === "rowid" ? "rowid" : quoteIdent(update.key);
           db.prepare(
             `UPDATE ${quoteIdent(update.table)}
              SET ${assignments}
-             WHERE ${quoteIdent(update.key)} = ?`,
+             WHERE ${keyExpr} = ?`,
           ).run(...columns.map((column) => update.updates[column]), update.rowId);
+        }
+        for (const rowId of legacyAliasDeletes) {
+          db.prepare("DELETE FROM ledger_issue_aliases WHERE rowid = ?").run(rowId);
         }
         for (const aliasId of aliasDeletes) {
           db.prepare("DELETE FROM artifact_aliases WHERE id = ?").run(aliasId);
@@ -192,6 +212,8 @@ export async function runCopiedDbRefCleanup(options = {}) {
       (count, update) => count + Object.keys(update.updates).length,
       0,
     );
+    report.summary.legacy_issue_aliases_removed = legacyAliasDeletes.length;
+    report.summary.legacy_issue_metadata_cleaned = legacyMetadataUpdates.length;
     report.summary.malformed_artifact_aliases_removed = aliasDeletes.length;
     report.summary.malformed_artifacts_removed = artifactDeletes.length;
     report.summary.refused = report.refused.length;
@@ -249,12 +271,14 @@ function buildContext(db) {
   const issues = loadIssues(db);
   const issueAliases = loadIssueAliases(db);
   const issueResolver = buildIssueResolver(issues, issueAliases);
+  const legacyIssueRefs = loadLegacyIssueRefs(db, issues, issueResolver);
   const artifactHashes = loadArtifactHashes(db);
   const artifactRefs = loadArtifactRefs(db);
   const comments = loadComments(db, issueResolver);
   return {
     issues,
     issueResolver,
+    legacyIssueRefs,
     artifactHashes,
     artifactHashSet: new Set(artifactHashes),
     artifactRefResolver: buildArtifactRefResolver(artifactRefs),
@@ -386,6 +410,37 @@ function loadIssueAliases(db) {
       { issue_id: String(row.issue_id), project_id: String(row.project_id ?? ""), ref: String(row.external_id ?? "") },
     ])
     .filter((row) => row.ref.length > 0);
+}
+
+function loadLegacyIssueRefs(db, issues, issueResolver) {
+  const refs = new Map();
+  if (!tableExists(db, "ledger_issue_aliases")) return refs;
+  const columns = tableColumns(db, "ledger_issue_aliases");
+  const selected = [
+    "rowid",
+    "issue_id",
+    columns.has("alias_kind") ? "alias_kind" : "'' AS alias_kind",
+    columns.has("alias") ? "alias" : "'' AS alias",
+    columns.has("external_id") ? "external_id" : "'' AS external_id",
+  ];
+  const issuesById = new Map(issues.map((issue) => [issue.id, issue]));
+  for (const row of db.prepare(`SELECT ${selected.join(", ")} FROM ledger_issue_aliases`).all()) {
+    const issue = issuesById.get(String(row.issue_id));
+    if (!issue) continue;
+    const values = [row.alias, row.external_id].map((value) => String(value ?? ""));
+    const isLegacyAlias = String(row.alias_kind ?? "") === "legacy_mandible_id"
+      || values.some((value) => LEGACY_ISS_EXACT_PATTERN.test(value));
+    if (!isLegacyAlias) continue;
+    for (const value of values) {
+      if (!LEGACY_ISS_EXACT_PATTERN.test(value)) continue;
+      refs.set(value, {
+        issue_id: issue.id,
+        display: issueResolver.display(issue),
+        rowid: Number(row.rowid),
+      });
+    }
+  }
+  return refs;
 }
 
 function buildIssueResolver(issues, aliases) {
@@ -743,6 +798,13 @@ function rewriteIssues(value, context, source) {
     const token = match.startsWith("#") ? match.slice(1) : match;
     if (isLikelyArtifactOrShaContext(fullText, index, match.length)) return match;
     const legacyKind = match.startsWith("#") ? "hash_tag" : match.startsWith("iss_") ? "legacy_id" : "bare_hash";
+    const legacy = context.legacyIssueRefs.get(token);
+    if (legacy) {
+      counts.issue += 1;
+      const next = `[issue:${legacy.display}]`;
+      replacements.push({ kind: "issue", legacy_kind: legacyKind, before: match, after: next });
+      return next;
+    }
     const resolved = context.issueResolver.resolve(token);
     if (!resolved.ok) {
       refused.push(refusal(source, `issue_${resolved.reason}`, `Issue ref '${match}' was not rewritten`, match));
@@ -754,6 +816,222 @@ function rewriteIssues(value, context, source) {
     return next;
   });
   return { text, counts, replacements, refused };
+}
+
+function planLegacyIssueMetadataUpdates(db, context, report) {
+  const updates = [];
+  for (const table of ["ledger_work_unit_issue_links", "ledger_auth_issue_links"]) {
+    if (!tableExists(db, table)) continue;
+    const columns = tableColumns(db, table);
+    if (!columns.has("metadata_json")) continue;
+    const rows = db.prepare(
+      `SELECT rowid AS __rowid, metadata_json
+       FROM ${quoteIdent(table)}
+       WHERE metadata_json LIKE '%iss\\_%' ESCAPE '\\'`,
+    ).all();
+    for (const row of rows) {
+      if (typeof row.metadata_json !== "string" || row.metadata_json.length === 0) continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(row.metadata_json);
+      } catch {
+        continue;
+      }
+      const cleaned = removeLegacyIssueMetadata(parsed);
+      const replaced = replaceLegacyIssueRefsInValue(cleaned.value, context);
+      if (!cleaned.changed && replaced.count === 0) continue;
+      updates.push({
+        table,
+        key: "rowid",
+        rowId: row.__rowid,
+        updates: { metadata_json: JSON.stringify(replaced.value) },
+      });
+      report.summary.legacy_issue_refs_rewritten += replaced.count;
+      pushLimited(report.legacy_issue_metadata_updates, {
+        table,
+        row_id: String(row.__rowid),
+        removed_legacy_issue_id_keys: cleaned.removed,
+        legacy_refs_rewritten: replaced.count,
+        before: sampleText(row.metadata_json, 500),
+        after: sampleText(JSON.stringify(replaced.value), 500),
+      });
+    }
+  }
+  return updates;
+}
+
+function removeLegacyIssueMetadata(value) {
+  if (Array.isArray(value)) {
+    let changed = false;
+    let removed = 0;
+    const next = value.map((item) => {
+      const child = removeLegacyIssueMetadata(item);
+      changed ||= child.changed;
+      removed += child.removed;
+      return child.value;
+    });
+    return { value: next, changed, removed };
+  }
+  if (!value || typeof value !== "object") return { value, changed: false, removed: 0 };
+  let changed = false;
+  let removed = 0;
+  const next = {};
+  for (const [key, childValue] of Object.entries(value)) {
+    if (key === "legacy_issue_id"
+      && typeof childValue === "string"
+      && LEGACY_ISS_EXACT_PATTERN.test(childValue)) {
+      changed = true;
+      removed += 1;
+      continue;
+    }
+    const child = removeLegacyIssueMetadata(childValue);
+    changed ||= child.changed;
+    removed += child.removed;
+    next[key] = child.value;
+  }
+  return { value: next, changed, removed };
+}
+
+function planLegacyIssueTextUpdates(db, context, scheduledCells, report) {
+  if (context.legacyIssueRefs.size === 0) return [];
+  const updates = [];
+  for (const table of userTables(db)) {
+    if (table === "ledger_issue_aliases") continue;
+    for (const column of textColumns(db, table)) {
+      const rows = db.prepare(
+        `SELECT rowid AS __rowid, ${quoteIdent(column)} AS value
+         FROM ${quoteIdent(table)}
+         WHERE ${quoteIdent(column)} LIKE '%iss\\_%' ESCAPE '\\'`,
+      ).all();
+      for (const row of rows) {
+        const cellKey = plannedCellKey(table, row.__rowid, column);
+        if (scheduledCells.has(cellKey)) continue;
+        if (typeof row.value !== "string" || row.value.length === 0) continue;
+        const replaced = replaceLegacyIssueRefsInString(row.value, context);
+        if (!replaced.changed) continue;
+        updates.push({
+          table,
+          key: "rowid",
+          rowId: row.__rowid,
+          updates: { [column]: replaced.text },
+        });
+        report.summary.legacy_issue_refs_rewritten += replaced.count;
+        pushLimited(report.samples, {
+          table,
+          row_id: String(row.__rowid),
+          column,
+          before: sampleText(row.value, 500),
+          after: sampleText(replaced.text, 500),
+        });
+        report.mutations.push({
+          table,
+          row_id: String(row.__rowid),
+          cells: [{
+            column,
+            replacements: replaced.replacements,
+            before_sample: sampleText(row.value),
+            after_sample: sampleText(replaced.text),
+          }],
+        });
+      }
+    }
+  }
+  return updates;
+}
+
+function replaceLegacyIssueRefsInValue(value, context) {
+  if (typeof value === "string") {
+    const replaced = replaceLegacyIssueRefsInString(value, context);
+    return { value: replaced.text, count: replaced.count };
+  }
+  if (Array.isArray(value)) {
+    let count = 0;
+    const next = value.map((item) => {
+      const child = replaceLegacyIssueRefsInValue(item, context);
+      count += child.count;
+      return child.value;
+    });
+    return { value: next, count };
+  }
+  if (value && typeof value === "object") {
+    let count = 0;
+    const next = {};
+    for (const [key, child] of Object.entries(value)) {
+      const replaced = replaceLegacyIssueRefsInValue(child, context);
+      count += replaced.count;
+      next[key] = replaced.value;
+    }
+    return { value: next, count };
+  }
+  return { value, count: 0 };
+}
+
+function replaceLegacyIssueRefsInString(value, context) {
+  let count = 0;
+  const replacements = [];
+  const text = value.replace(LEGACY_ISS_REF_PATTERN, (match) => {
+    const legacy = context.legacyIssueRefs.get(match);
+    if (!legacy) return match;
+    const next = `[issue:${legacy.display}]`;
+    count += 1;
+    replacements.push({ kind: "issue", legacy_kind: "legacy_id", before: match, after: next });
+    return next;
+  });
+  return { changed: text !== value, text, count, replacements };
+}
+
+function planLegacyIssueAliasDeletes(db, context, report) {
+  if (!tableExists(db, "ledger_issue_aliases")) return [];
+  const columns = tableColumns(db, "ledger_issue_aliases");
+  const selected = [
+    "rowid",
+    columns.has("issue_id") ? "issue_id" : "'' AS issue_id",
+    columns.has("alias_kind") ? "alias_kind" : "'' AS alias_kind",
+    columns.has("project_id") ? "project_id" : "'' AS project_id",
+    columns.has("alias") ? "alias" : "'' AS alias",
+    columns.has("external_id") ? "external_id" : "'' AS external_id",
+    columns.has("source") ? "source" : "'' AS source",
+  ];
+  const deletes = [];
+  for (const row of db.prepare(`SELECT ${selected.join(", ")} FROM ledger_issue_aliases`).all()) {
+    const alias = String(row.alias ?? "");
+    const externalId = String(row.external_id ?? "");
+    const aliasKind = String(row.alias_kind ?? "");
+    const shouldDelete = aliasKind === "legacy_mandible_id"
+      || LEGACY_ISS_EXACT_PATTERN.test(alias)
+      || LEGACY_ISS_EXACT_PATTERN.test(externalId);
+    if (!shouldDelete) continue;
+    deletes.push(Number(row.rowid));
+    pushLimited(report.removed_legacy_issue_aliases, {
+      rowid: Number(row.rowid),
+      issue_id: String(row.issue_id ?? ""),
+      project_id: String(row.project_id ?? ""),
+      alias_kind: aliasKind,
+      alias,
+      external_id: externalId,
+      source: String(row.source ?? ""),
+      mapped_display: context.legacyIssueRefs.get(alias)?.display
+        ?? context.legacyIssueRefs.get(externalId)?.display
+        ?? null,
+      reason: "legacy iss_ issue alias removed",
+    });
+  }
+  return deletes;
+}
+
+function plannedCellKeys(plannedUpdates) {
+  const keys = new Set();
+  for (const update of plannedUpdates) {
+    if (update.key !== "rowid") continue;
+    for (const column of Object.keys(update.updates)) {
+      keys.add(plannedCellKey(update.table, update.rowId, column));
+    }
+  }
+  return keys;
+}
+
+function plannedCellKey(table, rowId, column) {
+  return `${table}\0${rowId}\0${column}`;
 }
 
 function replaceOutsideProtected(value, pattern, replace) {
@@ -1022,6 +1300,29 @@ function tableExists(db, table) {
 
 function tableColumns(db, table) {
   return new Set(db.prepare(`PRAGMA table_info(${quoteIdent(table)})`).all().map((row) => String(row.name)));
+}
+
+function userTables(db) {
+  return db.prepare(
+    `SELECT name
+     FROM sqlite_master
+     WHERE type = 'table'
+       AND name NOT LIKE 'sqlite_%'
+     ORDER BY name`,
+  ).all().map((row) => String(row.name));
+}
+
+function textColumns(db, table) {
+  return db.prepare(`PRAGMA table_info(${quoteIdent(table)})`).all()
+    .filter((row) => {
+      const type = String(row.type ?? "").toUpperCase();
+      return type === ""
+        || type.includes("CHAR")
+        || type.includes("CLOB")
+        || type.includes("TEXT")
+        || type.includes("JSON");
+    })
+    .map((row) => String(row.name));
 }
 
 function quoteIdent(value) {

@@ -78,6 +78,20 @@ beforeEach(() => {
       error TEXT,
       diff_summary TEXT
     );
+    CREATE TABLE ledger_work_unit_issue_links (
+      work_unit_id TEXT NOT NULL,
+      issue_id TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE ledger_auth_issue_links (
+      auth_request_id TEXT NOT NULL,
+      issue_id TEXT NOT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE conversation_blocks (
+      id TEXT PRIMARY KEY,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+    );
     CREATE TABLE sessions (
       id TEXT PRIMARY KEY
     );
@@ -178,7 +192,7 @@ beforeEach(() => {
     "auth-1",
     "Spec references #abcdef0.",
     "Merge commit abcdef0",
-    "Artifact sha256:" + artifactHash,
+    "Diff mentions iss_legacy. Artifact sha256:" + artifactHash,
   );
   db.prepare("INSERT INTO auth_requests (id, spec_content, output, diff_summary) VALUES (?, ?, ?, ?)").run(
     authId,
@@ -188,6 +202,20 @@ beforeEach(() => {
   );
   db.prepare("INSERT INTO sessions (id) VALUES (?)").run(sessionId);
   db.prepare("INSERT INTO work_units (id) VALUES (?)").run(workUnitId);
+  db.prepare("INSERT INTO ledger_work_unit_issue_links (work_unit_id, issue_id, metadata_json) VALUES (?, ?, ?)").run(
+    workUnitId,
+    issueId,
+    JSON.stringify({ legacy_issue_id: "iss_legacy", repo_id: "mandible", note: "See iss_legacy" }),
+  );
+  db.prepare("INSERT INTO ledger_auth_issue_links (auth_request_id, issue_id, metadata_json) VALUES (?, ?, ?)").run(
+    authId,
+    issueId,
+    JSON.stringify({ legacy_issue_id: "iss_legacy", repo_id: "mandible", source_fields: ["issue_references"] }),
+  );
+  db.prepare("INSERT INTO conversation_blocks (id, metadata_json) VALUES (?, ?)").run(
+    "block-1",
+    JSON.stringify({ provider_url: "/api/ledger/issues/iss_legacy", text: "native log iss_legacy" }),
+  );
 });
 
 afterEach(() => {
@@ -206,6 +234,9 @@ describe("copied DB ref cleanup", () => {
 
     expect(report.integrity_check).toBe("ok");
     expect(report.summary.issue_refs_rewritten).toBeGreaterThanOrEqual(5);
+    expect(report.summary.legacy_issue_refs_rewritten).toBeGreaterThanOrEqual(5);
+    expect(report.summary.legacy_issue_aliases_removed).toBe(1);
+    expect(report.summary.legacy_issue_metadata_cleaned).toBe(2);
     expect(report.summary.artifact_refs_rewritten).toBeGreaterThanOrEqual(6);
     expect(report.summary.naked_typed_refs_bracketed).toBeGreaterThanOrEqual(1);
     expect(report.summary.malformed_artifact_aliases_removed).toBe(1);
@@ -246,6 +277,7 @@ describe("copied DB ref cleanup", () => {
       });
 
       const comment = candidate.prepare("SELECT body FROM ledger_comments WHERE id = 'comment-1'").get() as { body: string };
+      expect(comment.body).toContain("Legacy [issue:abcdef0]");
       expect(comment.body).toContain("Plan artifact: [artifact:aaaaaaaa].");
 
       const auth = candidate.prepare("SELECT spec_content, output, diff_summary FROM auth_requests WHERE id = 'auth-1'").get() as {
@@ -255,7 +287,26 @@ describe("copied DB ref cleanup", () => {
       };
       expect(auth.spec_content).toBe("Spec references [issue:abcdef0].");
       expect(auth.output).toBe("Merge commit abcdef0");
-      expect(auth.diff_summary).toBe("Artifact sha256:" + artifactHash);
+      expect(auth.diff_summary).toBe("Diff mentions [issue:abcdef0]. Artifact sha256:" + artifactHash);
+
+      const legacyAliasCount = candidate.prepare(
+        "SELECT COUNT(*) AS count FROM ledger_issue_aliases WHERE alias GLOB 'iss_*' OR external_id GLOB 'iss_*'",
+      ).get() as { count: number };
+      expect(legacyAliasCount.count).toBe(0);
+
+      const workLink = candidate.prepare("SELECT metadata_json FROM ledger_work_unit_issue_links").get() as { metadata_json: string };
+      const workMetadata = JSON.parse(workLink.metadata_json);
+      expect(workMetadata).not.toHaveProperty("legacy_issue_id");
+      expect(workMetadata.note).toBe("See [issue:abcdef0]");
+
+      const authLink = candidate.prepare("SELECT metadata_json FROM ledger_auth_issue_links").get() as { metadata_json: string };
+      const authMetadata = JSON.parse(authLink.metadata_json);
+      expect(authMetadata).not.toHaveProperty("legacy_issue_id");
+      expect(authMetadata.source_fields).toEqual(["issue_references"]);
+
+      const block = candidate.prepare("SELECT metadata_json FROM conversation_blocks WHERE id = 'block-1'").get() as { metadata_json: string };
+      expect(block.metadata_json).toContain("[issue:abcdef0]");
+      expect(block.metadata_json).not.toContain("iss_legacy");
 
       const aliasCount = candidate.prepare("SELECT COUNT(*) AS count FROM artifact_aliases WHERE id = 'alias-bad'").get() as { count: number };
       expect(aliasCount.count).toBe(0);
