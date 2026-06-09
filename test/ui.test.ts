@@ -580,7 +580,7 @@ describe('LedgerIssueDetail', () => {
       href: (node as HTMLAnchorElement).getAttribute('href'),
     }));
     expect(artifactLinks).toContainEqual({
-      text: 'artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      text: 'artifact:aaaaaaaaaaaa',
       href: '#/artifacts?ref=artifact%3A%2F%2Fsha256%2Faaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     });
     expect(artifactLinks).toContainEqual({
@@ -710,6 +710,21 @@ describe('LedgerIssueDetail', () => {
             },
           ],
         },
+        {
+          id: 'artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          algorithm: 'sha256',
+          content_hash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          uri: 'artifact://sha256/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          media_type: null,
+          role: null,
+          provider_id: null,
+          manifest_id: null,
+          custody_mode: 'external',
+          availability: 'remote_only',
+          created_at: Date.now(),
+          refs: [],
+          links: [],
+        },
       ],
       conflicts: [],
       sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
@@ -721,6 +736,10 @@ describe('LedgerIssueDetail', () => {
     const link = screen.getByText('repo://mandible@main/results/report.md').closest('a') as HTMLAnchorElement | null;
     expect(link?.getAttribute('href')).toBe(
       '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+    const compactLink = screen.getByText('artifact:bbbbbbbbbbbb').closest('a') as HTMLAnchorElement | null;
+    expect(compactLink?.getAttribute('href')).toBe(
+      '#/artifacts?artifact=artifact%3Asha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     );
     expect(screen.getByText('linked + referenced')).toBeTruthy();
     expect(screen.getByText('report · text/markdown · provider_1 · present')).toBeTruthy();
@@ -865,7 +884,10 @@ describe('ArtifactsView', () => {
       size_bytes: 42,
       provider_id: 'feedbax',
       manifest_id: null,
-      metadata: { title: 'Demo Report' },
+      metadata: {
+        title: 'artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        filename: 'demo-report.md',
+      },
       pinned: false,
       custody_mode: 'managed',
       home_repo_id: 'mandible',
@@ -942,6 +964,8 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: artifact.id }));
 
     await waitFor(() => expect(screen.getByText('humbleb://claims/claim_1')).toBeTruthy());
+    expect(screen.getAllByText('demo-report.md').length).toBeGreaterThan(0);
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('demo-report.md');
     const filterButton = screen.getByLabelText('Artifact filters');
     expect(filterButton.textContent).not.toContain('⋯');
     expect(filterButton.querySelector('svg')).toBeTruthy();

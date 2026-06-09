@@ -934,7 +934,7 @@ function mapConflict(row: LedgerConflict): LedgerIssueDetailConflict {
   };
 }
 
-const ARTIFACT_REF_PATTERN = /\b(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"')\]]+|artifact:sha256:[0-9a-f]{7,64})/gi;
+const ARTIFACT_REF_PATTERN = /\b(?:[a-z][a-z0-9+.-]*:\/\/[^\s<>"')\]]+|artifact:sha256:[0-9a-f]{7,64}|artifact:[0-9a-f]{7,64}|sha256:[0-9a-f]{7,64})/gi;
 const DIRECT_NAV_SCHEMES = new Set(["http", "https", "mailto"]);
 
 function extractArtifactRefs(sources: string[]): string[] {
@@ -954,8 +954,11 @@ function extractArtifactRefs(sources: string[]): string[] {
 }
 
 function isArtifactLikeRef(ref: string): boolean {
-  if (/^artifact:sha256:[0-9a-f]{7,64}$/i.test(ref)) return true;
   const scheme = schemeForRef(ref);
+  if (scheme === "artifact") {
+    return /^(?:artifact(?::|:\/\/)sha256[:/][0-9a-f]{7,64}|artifact:[0-9a-f]{7,64})$/i.test(ref);
+  }
+  if (scheme === "sha256") return /^sha256:[0-9a-f]{7,64}$/i.test(ref);
   return Boolean(scheme && !DIRECT_NAV_SCHEMES.has(scheme));
 }
 
