@@ -1,7 +1,10 @@
+import { Fragment } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { marked } from 'marked';
 
 import { getProjectTimeline } from '../api';
 import { useRegisterAppRightSidebar } from '../app-shell';
+import { sanitizeMarkdown } from '../sanitize';
 import type { WorkRepo } from './work';
 import {
   TIMELINE_DAY_MS,
@@ -319,6 +322,27 @@ function rangeClusterMinCountForDensity(density: TimelineDensityMode): number {
 
 function eventKindLabel(kind: TimelineEventKind): string {
   return kind === 'body' ? 'Body' : kind === 'comment' ? 'Comment' : 'State';
+}
+
+function shortIssueId(displayId: string): string {
+  return displayId.length > 12 ? displayId.slice(0, 7) : displayId;
+}
+
+function eventEyebrow(event: TimelineEvent): string {
+  return `${eventKindLabel(event.kind)} ${shortIssueId(event.issue.display_id)} #${event.ordinal}`;
+}
+
+function normalizeMarkdownSource(source: string): string {
+  if (!source.includes('\\n')) return source;
+  const literalNewlineCount = (source.match(/\\n/g) ?? []).length;
+  const actualNewlineCount = (source.match(/\n/g) ?? []).length;
+  if (literalNewlineCount < 2 || actualNewlineCount > 0) return source;
+  return source.replace(/\\n/g, '\n');
+}
+
+function renderTimelineMarkdown(source: string): string {
+  const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
+  return sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
 }
 
 type TimelineClusterMark = TimelineSameTimeCluster | TimelineRangeCluster;
@@ -1365,28 +1389,50 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                       const issueLinks = eventLinks.filter((link) => link.target_issue && !link.target_issue.deleted);
                       const expanded = viewState.expandedEventIds.includes(event.id) || eventLinks.some((link) => Boolean(link.expanded_row_id));
                       const eventSelected = viewState.selectedEventId === event.id;
+                      const refsToggleLabel = `${expanded ? 'Fold' : 'Expand'} ${issueLinks.length} issue ${issueLinks.length === 1 ? 'ref' : 'refs'} for ${event.display_headline}`;
+                      const eventPosition = {
+                        left: `${mark.xPx}px`,
+                        top: `${markLaneTopPx(mark, layoutMetrics.laneHeightPx)}px`,
+                      } as JSX.CSSProperties;
                       return (
-                        <button
-                          key={event.id}
-                          type="button"
-                          className={`timeline-event timeline-event--${event.kind}${eventSelected ? ' timeline-event--selected' : ''}${expanded ? ' timeline-event--expanded' : ''}`}
-                          style={{
-                            left: `${mark.xPx}px`,
-                            top: `${markLaneTopPx(mark, layoutMetrics.laneHeightPx)}px`,
-                          }}
-                          onClick={() => selectEvent(event, {
-                            preserveCluster: Boolean(selectedCluster?.eventIds.includes(event.id)),
-                          })}
-                          title={`${event.display_headline} ${formatDateTime(event.timestamp)}`}
-                        >
-                          <span className="timeline-event__marker" aria-hidden="true" />
-                          <span className="timeline-event__body">
-                            <strong>{event.display_headline}</strong>
-                            <span>{formatDate(event.timestamp)}</span>
-                          </span>
-                          {eventLinks.length > 0 ? <em>{eventLinks.length} refs</em> : null}
-                          {issueLinks.length > 0 ? <b>{issueLinks.length} expandable</b> : null}
-                        </button>
+                        <Fragment key={event.id}>
+                          <button
+                            type="button"
+                            className={`timeline-event timeline-event--${event.kind}${eventSelected ? ' timeline-event--selected' : ''}${expanded ? ' timeline-event--expanded' : ''}`}
+                            style={eventPosition}
+                            onClick={() => selectEvent(event, {
+                              preserveCluster: Boolean(selectedCluster?.eventIds.includes(event.id)),
+                            })}
+                            title={`${event.display_headline} ${formatDateTime(event.timestamp)}`}
+                          >
+                            <span className="timeline-event__marker" aria-hidden="true" />
+                            <span className="timeline-event__body">
+                              <strong>{event.display_headline}</strong>
+                              <span>{formatDate(event.timestamp)}</span>
+                            </span>
+                          </button>
+                          {issueLinks.length > 0 ? (
+                            <button
+                              type="button"
+                              className={`timeline-event__refs-toggle${expanded ? ' timeline-event__refs-toggle--expanded' : ''}`}
+                              style={eventPosition}
+                              onClick={(clickEvent) => {
+                                clickEvent.stopPropagation();
+                                if (expanded) {
+                                  collapseEvent(event.id);
+                                } else {
+                                  expandEvent(event.id);
+                                }
+                              }}
+                              aria-label={refsToggleLabel}
+                              title={refsToggleLabel}
+                              aria-expanded={expanded}
+                            >
+                              <span className="timeline-event__refs-count">{issueLinks.length}</span>
+                              <span className="timeline-event__refs-icon" aria-hidden="true">{expanded ? '-' : '+'}</span>
+                            </button>
+                          ) : null}
+                        </Fragment>
                       );
                     })}
                   </div>
@@ -1452,6 +1498,11 @@ function TimelineInspector({
   const otherRefs = eventLinks.filter((link) => (
     link.ref_kind !== 'issue' || !link.target_issue || link.target_issue.deleted
   ));
+  const selectedEventBodyHtml = useMemo(() => (
+    selectedEvent
+      ? renderTimelineMarkdown(selectedEvent.body || selectedEvent.display_headline)
+      : ''
+  ), [selectedEvent?.body, selectedEvent?.display_headline]);
   return (
     <div className="timeline-inspector__content">
       {missingEventId || missingClusterId || missingRowId ? (
@@ -1490,23 +1541,20 @@ function TimelineInspector({
         </section>
       ) : null}
       {selectedEvent ? (
-        <section className="timeline-inspector__section">
+        <section className="timeline-inspector__section timeline-inspector__section--event">
           <div className="timeline-inspector__header">
-            <span>{eventKindLabel(selectedEvent.kind)}</span>
+            <span>{eventEyebrow(selectedEvent)}</span>
             <strong>{selectedEvent.display_headline}</strong>
           </div>
-          <dl className="timeline-meta">
-            <div><dt>Issue</dt><dd>{selectedEvent.issue.display_id}</dd></div>
+          <dl className="timeline-meta timeline-meta--event">
             <div><dt>Timestamp</dt><dd>{formatDateTime(selectedEvent.timestamp)}</dd></div>
-            <div><dt>Ordinal</dt><dd>{selectedEvent.ordinal}</dd></div>
-            <div><dt>Source</dt><dd>{selectedEvent.source_entity.type}</dd></div>
           </dl>
           {selectedEvent.state ? (
             <div className="timeline-state-pill">
               {selectedEvent.state.event_type}: {selectedEvent.state.status ?? 'none'}
             </div>
           ) : null}
-          <pre className="timeline-event-body">{selectedEvent.body || selectedEvent.display_headline}</pre>
+          <div className="timeline-event-body" dangerouslySetInnerHTML={{ __html: selectedEventBodyHtml }} />
           <div className="timeline-action-row">
             {expandedEventIds.includes(selectedEvent.id) ? (
               <button type="button" onClick={() => onCollapseEvent(selectedEvent.id)}>Fold refs</button>
