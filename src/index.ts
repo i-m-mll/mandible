@@ -11,6 +11,7 @@ import { SessionRegistry } from "./registry.js";
 import { SessionDiscovery, ReaperTimer } from "./session-discovery.js";
 import { SseManager, setSseManager } from "./sse.js";
 import { Router, createServer, startServer, attachWebSocketUpgrade } from "./server.js";
+import { FileRpcTransport } from "./file-rpc-transport.js";
 import { removePidFile, writePidFile } from "./lifecycle.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerAuthRoutes } from "./routes/auth.js";
@@ -134,6 +135,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     getStartupInfo: () => startupInfo,
     isRebuilding: () => authQueue.isRebuilding,
   });
+  const fileRpcTransport = new FileRpcTransport({ router, logger });
+  fileRpcTransport.start();
 
   // Attach WebSocket upgrade handler for console backend sessions (Bug: e980dd8)
   const wss = new WebSocketServer({ noServer: true });
@@ -337,6 +340,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     reaperTimer.stop();
     workUnitReconciler.stop();
     navEnricher.stop();
+    fileRpcTransport.stop();
     authQueue.dispose();
     clearTimeout(issueStartupTimer);
     clearTimeout(startupDiscoveryTimer);

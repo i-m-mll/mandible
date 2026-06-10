@@ -1,11 +1,14 @@
-#!/usr/bin/env zsh
+#!/usr/bin/env bash
 # mandible auth list: List active Mandible auth requests.
 #
 # Usage: mandible auth list [options]
 
-emulate -L zsh -o pipefail
+set -u
+set -o pipefail
 
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher.
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
 
 json=0
 repo_filter=""
@@ -46,23 +49,23 @@ while [[ $# -gt 0 ]]; do
     --status) status_filter="${2:?--status requires a value}"; shift 2 ;;
     --type) type_filter="${2:?--type requires a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
-    -*) print -u2 "Unknown option: $1"; usage >&2; exit 1 ;;
-    *) print -u2 "Unexpected argument: $1"; usage >&2; exit 1 ;;
+    -*) printf '%s\n' "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    *) printf '%s\n' "Unexpected argument: $1" >&2; exit 1 ;;
   esac
 done
 
 if ! command -v jq >/dev/null 2>&1; then
-  print -u2 "Error: jq is required for mandible auth list."
+  printf '%s\n' "Error: jq is required for mandible auth list." >&2
   exit 1
 fi
 
-url="${MANDIBLE_BASE}/api/auth/queue"
+url="/api/auth/queue"
 if [[ -n "$type_filter" ]]; then
-  url="${url}?type=${type_filter}"
+  url="${url}?type=$(urlencode "$type_filter")"
 fi
 
-response=$(curl -fsS --max-time 5 "$url" 2>/dev/null) || {
-  print -u2 "Error: could not reach Mandible daemon at ${MANDIBLE_BASE}."
+response=$(api_get "$url" 2>/dev/null) || {
+  printf '%s\n' "Error: could not reach Mandible daemon at ${MANDIBLE_BASE}." >&2
   exit 1
 }
 
@@ -85,8 +88,8 @@ if [[ -n "$status_filter" ]]; then
   jq_args+=(--arg status "$status_filter")
 fi
 
-filtered=$(printf '%s' "$response" | jq "${jq_args[@]}" "{ requests: (${jq_filter}) }") || {
-  print -u2 "Error: auth queue response was not valid JSON."
+filtered=$(printf '%s' "$response" | jq ${jq_args[@]+"${jq_args[@]}"} "{ requests: (${jq_filter}) }") || {
+  printf '%s\n' "Error: auth queue response was not valid JSON." >&2
   exit 1
 }
 
@@ -97,11 +100,11 @@ fi
 
 count=$(printf '%s' "$filtered" | jq '.requests | length')
 if [[ "$count" == "0" ]]; then
-  print "Auth queue: no active requests"
+  printf '%s\n' "Auth queue: no active requests"
   exit 0
 fi
 
-print "Auth queue: ${count} active request(s)"
+printf '%s\n' "Auth queue: ${count} active request(s)"
 printf '%s' "$filtered" | jq -r '
   .requests[]
   | "[\(.id[0:8])] \(.status) \(.repo // "-") \(.head_branch // "-") -> \(.base_branch // "-") - \(.title // "(untitled)")"

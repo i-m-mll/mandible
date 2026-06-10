@@ -45,6 +45,17 @@ export interface ResponseLike {
 
 export type RouteHandler = (req: RequestLike, res: ResponseLike) => unknown;
 
+export interface RouterInvokeRequest {
+  method: string;
+  url: string;
+  body?: unknown;
+}
+
+export interface RouterInvokeResponse {
+  status: number;
+  body: unknown;
+}
+
 export interface RouteRegistrar {
   get(path: string, handler: RouteHandler): void;
   post(path: string, handler: RouteHandler): void;
@@ -94,6 +105,23 @@ class HttpResponse implements ResponseLike {
   }
 }
 
+class CapturedResponse implements ResponseLike {
+  statusCode = 200;
+  sent = false;
+  body: unknown = null;
+
+  status(code: number): ResponseLike {
+    this.statusCode = code;
+    return this;
+  }
+
+  json(payload: unknown): void {
+    if (this.sent) return;
+    this.sent = true;
+    this.body = payload;
+  }
+}
+
 export class Router implements RouteRegistrar {
   private routes: CompiledRoute[] = [];
 
@@ -122,13 +150,42 @@ export class Router implements RouteRegistrar {
     this.routes.push({ method, regex, paramNames, handler });
   }
 
+  async invoke(input: RouterInvokeRequest): Promise<RouterInvokeResponse> {
+    const response = new CapturedResponse();
+    const handled = await this.dispatch(input.method, input.url, input.body, response);
+    if (!handled) {
+      return { status: 404, body: { error: "not_found" } };
+    }
+    return {
+      status: response.statusCode,
+      body: response.sent ? response.body : null,
+    };
+  }
+
   async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> {
     const method = req.method ?? "GET";
-    const url = new URL(req.url ?? "/", "http://localhost");
+    let body: unknown = undefined;
+    if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
+      const rawBody = await readBody(req);
+      if (rawBody) {
+        try { body = JSON.parse(rawBody); } catch { body = rawBody; }
+      }
+    }
+    return this.dispatch(method, req.url ?? "/", body, new HttpResponse(res));
+  }
+
+  private async dispatch(
+    method: string,
+    requestUrl: string,
+    body: unknown,
+    response: ResponseLike,
+  ): Promise<boolean> {
+    const normalizedMethod = method.toUpperCase();
+    const url = new URL(requestUrl, "http://localhost");
     const pathname = url.pathname;
 
     for (const route of this.routes) {
-      if (route.method !== method) continue;
+      if (route.method !== normalizedMethod) continue;
       const match = pathname.match(route.regex);
       if (!match) continue;
 
@@ -142,17 +199,7 @@ export class Router implements RouteRegistrar {
         query[key] = value;
       });
 
-      let body: unknown = undefined;
-      // Bug: a21979a — include DELETE so body.reason is parsed for DELETE /api/auth/request/:id
-      if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
-        const rawBody = await readBody(req);
-        if (rawBody) {
-          try { body = JSON.parse(rawBody); } catch { body = rawBody; }
-        }
-      }
-
-      const request: RequestLike = { method, url: req.url ?? "/", params, query, body };
-      const response = new HttpResponse(res);
+      const request: RequestLike = { method: normalizedMethod, url: requestUrl, params, query, body };
 
       await route.handler(request, response);
       return true;

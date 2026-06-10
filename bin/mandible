@@ -20,7 +20,7 @@
 set -euo pipefail
 
 export MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
-export MANDIBLE_BASE="http://127.0.0.1:${MANDIBLE_PORT}"
+export MANDIBLE_BASE="${MANDIBLE_BASE:-http://127.0.0.1:${MANDIBLE_PORT}}"
 
 # Resolve script's own directory robustly — no realpath (not standard on macOS)
 MANDIBLE_BIN_DIR="$(cd "$(dirname "$0")" && pwd -P)"

@@ -1,4 +1,6 @@
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,6 +12,7 @@ let server: http.Server | null = null;
 function run(
   args: string[],
   port: number,
+  extraEnv: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(CLI, args, {
@@ -17,6 +20,7 @@ function run(
       env: {
         ...process.env,
         MANDIBLE_PORT: String(port),
+        ...extraEnv,
       },
     });
     let stdout = "";
@@ -33,6 +37,25 @@ function run(
       resolve({ status, stdout, stderr });
     });
   });
+}
+
+function startFileRpcResponder(spoolDir: string, queue: unknown): NodeJS.Timeout {
+  fs.mkdirSync(spoolDir, { recursive: true });
+  const timer = setInterval(() => {
+    for (const file of fs.readdirSync(spoolDir)) {
+      if (!file.endsWith(".request.json")) continue;
+      const requestPath = path.join(spoolDir, file);
+      const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as { id?: string };
+      const id = request.id ?? file.replace(/\.request\.json$/, "");
+      fs.writeFileSync(
+        path.join(spoolDir, `${id}.response.json`),
+        JSON.stringify({ id, status: 200, body: queue }),
+        "utf8",
+      );
+      fs.rmSync(requestPath, { force: true });
+    }
+  }, 10);
+  return timer;
 }
 
 function listenWithQueue(queue: unknown): Promise<number> {
@@ -130,6 +153,24 @@ describe("auth list CLI", () => {
     expect(payload.requests[0].repo).toBe("mandible");
     expect(payload.requests[0].head_branch).toBe("feature/auth-list-cli");
     expect(payload.requests[0].status).toBe("pending");
+  });
+
+  it("lists auth requests through file RPC", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-list-file-rpc-"));
+    const timer = startFileRpcResponder(spoolDir, queue);
+
+    try {
+      const result = await run(["auth", "list", "--json"], 0, {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).requests).toHaveLength(2);
+    } finally {
+      clearInterval(timer);
+      fs.rmSync(spoolDir, { recursive: true, force: true });
+    }
   });
 
   it("reports a daemon connectivity error", async () => {

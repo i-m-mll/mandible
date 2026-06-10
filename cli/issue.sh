@@ -10,6 +10,9 @@ RESET=$'\033[0m'
 RED=$'\033[31m'
 GREEN=$'\033[32m'
 
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
+
 err() {
   printf "%b\n" "$*" >&2
 }
@@ -52,16 +55,10 @@ USAGE
 }
 
 require_tools() {
-  command -v curl >/dev/null 2>&1 || die "curl not found." 1
   command -v jq >/dev/null 2>&1 || die "jq not found." 1
-}
-
-api_base() {
-  printf 'http://127.0.0.1:%s' "${MANDIBLE_PORT:-19420}"
-}
-
-urlencode() {
-  jq -rn --arg value "$1" '$value|@uri'
+  if ! api_is_file_rpc; then
+    command -v curl >/dev/null 2>&1 || die "curl not found." 1
+  fi
 }
 
 repo_root() {
@@ -86,20 +83,6 @@ repo_ref() {
   fi
 
   repo_root
-}
-
-api_get() {
-  local path="$1"
-  curl -sf --max-time 15 "$(api_base)$path"
-}
-
-api_send() {
-  local method="$1"
-  local path="$2"
-  local data="$3"
-  curl -sf --max-time 15 -X "$method" "$(api_base)$path" \
-    -H 'Content-Type: application/json' \
-    -d "$data"
 }
 
 labels_json() {
