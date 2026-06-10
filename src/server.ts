@@ -11,6 +11,7 @@ const ROOT_DIR = resolveRootDir();
 const UI_DIR = path.join(ROOT_DIR, "ui");
 const UI_INDEX_PATH = path.join(UI_DIR, "index.html");
 const UI_DIST_DIR = path.join(UI_DIR, "dist");
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -45,6 +46,10 @@ export interface ResponseLike {
 }
 
 export type RouteHandler = (req: RequestLike, res: ResponseLike) => unknown;
+
+export interface RouterOptions {
+  logger?: Logger;
+}
 
 export interface RouterInvokeRequest {
   method: string;
@@ -143,6 +148,8 @@ class CapturedResponse implements ResponseLike {
 export class Router implements RouteRegistrar {
   private routes: CompiledRoute[] = [];
 
+  constructor(private options: RouterOptions = {}) {}
+
   get(path: string, handler: RouteHandler): void {
     this.addRoute("GET", path, handler);
   }
@@ -219,7 +226,16 @@ export class Router implements RouteRegistrar {
 
       const request: RequestLike = { method: normalizedMethod, url: requestUrl, params, query, body };
 
-      await route.handler(request, response);
+      try {
+        await route.handler(request, response);
+      } catch (error) {
+        this.options.logger?.("error", "route_handler_error", {
+          method: normalizedMethod,
+          pathname,
+          error: String(error),
+        });
+        response.status(500).json({ error: "internal_error" });
+      }
       return true;
     }
 
@@ -269,6 +285,13 @@ export function createServer(options: ServerOptions): http.Server {
     const isApi = isApiPath(pathname);
 
     logger("debug", "request", { method, pathname });
+
+    const boundary = validateDaemonWriteBoundary(req, method, isApi);
+    if (!boundary.ok) {
+      logger("warn", "request_forbidden", { method, pathname, reason: boundary.reason });
+      sendJson(res, 403, { error: "forbidden", reason: boundary.reason });
+      return;
+    }
 
     // SSE endpoints handled directly (long-lived connections don't fit the router)
     if (pathname === "/api/events" && method === "GET") {
@@ -320,7 +343,17 @@ export function attachWebSocketUpgrade(
     head: Buffer
   ) => void
 ): void {
-  server.on("upgrade", handleUpgrade);
+  server.on("upgrade", (req, socket, head) => {
+    const boundary = validateDaemonBrowserBoundary(req);
+    if (!boundary.ok) {
+      socket.write(
+        "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      );
+      socket.destroy();
+      return;
+    }
+    handleUpgrade(req, socket, head);
+  });
 }
 
 export function startServer(
@@ -522,6 +555,95 @@ function isNotFound(error: unknown): boolean {
 
 function isApiPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
+}
+
+type WriteBoundaryResult = { ok: true } | { ok: false; reason: string };
+
+function validateDaemonWriteBoundary(
+  req: http.IncomingMessage,
+  method: string,
+  isApi: boolean,
+): WriteBoundaryResult {
+  const normalizedMethod = method.toUpperCase();
+  if (!isApi || !UNSAFE_METHODS.has(normalizedMethod)) {
+    return { ok: true };
+  }
+
+  return validateDaemonBrowserBoundary(req);
+}
+
+function validateDaemonBrowserBoundary(req: http.IncomingMessage): WriteBoundaryResult {
+  const host = parseHostHeader(firstHeader(req, "host"));
+  if (!host || !isLoopbackHostname(host.hostname)) {
+    return { ok: false, reason: "invalid_host" };
+  }
+
+  const secFetchSite = firstHeader(req, "sec-fetch-site")?.toLowerCase();
+  if (secFetchSite === "cross-site") {
+    return { ok: false, reason: "cross_site_fetch" };
+  }
+
+  const origin = firstHeader(req, "origin");
+  if (!origin) {
+    return { ok: true };
+  }
+
+  const parsedOrigin = parseOriginHeader(origin);
+  if (!parsedOrigin || !isLoopbackHostname(parsedOrigin.hostname)) {
+    return { ok: false, reason: "invalid_origin" };
+  }
+  if (parsedOrigin.port !== host.port) {
+    return { ok: false, reason: "origin_port_mismatch" };
+  }
+
+  return { ok: true };
+}
+
+function firstHeader(req: http.IncomingMessage, name: string): string | undefined {
+  const value = req.headers[name.toLowerCase()];
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
+}
+
+function parseHostHeader(value: string | undefined): { hostname: string; port: string } | null {
+  if (!value) {
+    return null;
+  }
+  try {
+    const url = new URL(`http://${value}`);
+    return {
+      hostname: normalizeHostname(url.hostname),
+      port: url.port,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseOriginHeader(value: string): { hostname: string; port: string } | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+    return {
+      hostname: normalizeHostname(url.hostname),
+      port: url.port,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/^\[|\]$/g, "");
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function resolveRootDir(): string {

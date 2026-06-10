@@ -31,24 +31,6 @@ export class AuthHookManager {
 
   constructor(db?: Db) {
     this.db = db ?? getDb();
-    this.ensureSchema();
-  }
-
-  private ensureSchema(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS auth_hooks (
-        id            TEXT PRIMARY KEY,
-        repo_pattern  TEXT NOT NULL DEFAULT '*',
-        auth_type     TEXT NOT NULL DEFAULT 'merge',
-        command       TEXT NOT NULL,
-        label         TEXT NOT NULL DEFAULT '',
-        enabled       INTEGER NOT NULL DEFAULT 1,
-        builtin       INTEGER NOT NULL DEFAULT 0,
-        position      INTEGER NOT NULL DEFAULT 0,
-        created_at    INTEGER NOT NULL,
-        updated_at    INTEGER NOT NULL
-      )
-    `);
   }
 
   /**

@@ -18,84 +18,24 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
-import { setDb } from "../src/db.js";
+import { migrate, setDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
 import type { SseEvent } from "../src/types.js";
 
 // --- DB helpers ---------------------------------------------------------
 
-/**
- * Build an in-memory DB with the minimal schema needed by the tier query:
- *   - auth_requests (with the new target_* / delivered_at columns)
- *   - sessions (so the tier resolver can look up cwd → repo root)
- *   - settings (so the grace-window lookup has fallback values)
- *
- * We use AuthQueue's ensureSchema() to provision auth_requests, matching the
- * production migration shape, then add the rest manually.
- */
 function setupInMemoryDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   db.pragma("journal_mode = WAL");
-  // Provision auth_requests with the new columns via the AuthQueue fallback
-  // schema. ensureSchema is intentionally idempotent.
-  new AuthQueue({ db });
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY,
-      cwd TEXT,
-      branch TEXT,
-      continuation TEXT,
-      continuation_acked_by TEXT,
-      ended_at TEXT,
-      status TEXT NOT NULL DEFAULT 'active'
-    );
-    CREATE TABLE IF NOT EXISTS work_units (
-      id TEXT PRIMARY KEY,
-      issue_id TEXT NOT NULL,
-      repo_id TEXT NOT NULL,
-      branch TEXT,
-      parent_branch TEXT,
-      kind TEXT NOT NULL DEFAULT 'solo',
-      state TEXT NOT NULL DEFAULT 'open',
-      assigned_session_id TEXT,
-      continuation TEXT,
-      continuation_by TEXT,
-      continuation_at INTEGER,
-      created_at INTEGER NOT NULL DEFAULT 0,
-      activated_at INTEGER,
-      last_commit_at INTEGER,
-      resolved_at INTEGER,
-      auth_request_id TEXT
-    );
-    CREATE TABLE IF NOT EXISTS webhook_events (
-      id             TEXT PRIMARY KEY,
-      source         TEXT NOT NULL,
-      event_type     TEXT NOT NULL,
-      title          TEXT,
-      data_json      TEXT NOT NULL DEFAULT '{}',
-      target_session TEXT,
-      target_issue   TEXT,
-      target_branch  TEXT,
-      priority       TEXT NOT NULL DEFAULT 'normal',
-      status         TEXT NOT NULL DEFAULT 'pending',
-      created_at     INTEGER NOT NULL DEFAULT 0,
-      delivered_at   INTEGER,
-      delivered_to   TEXT
-    );
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-  `);
+  migrate(db);
   setDb(db);
   return db;
 }
@@ -138,8 +78,37 @@ function seedAuthRow(db: InstanceType<typeof Database>, seed: AuthRowSeed): void
   });
 }
 
+function registerWorkRepo(db: InstanceType<typeof Database>, repoRoot: string): void {
+  setDb(db);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_repos (
+      id TEXT NOT NULL,
+      root TEXT NOT NULL,
+      name TEXT NOT NULL,
+      default_branch TEXT NOT NULL DEFAULT '',
+      dir_exists INTEGER NOT NULL DEFAULT 1,
+      excluded INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (root)
+    );
+  `);
+  db.prepare(
+    `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
+     VALUES (@id, @root, @name, @default_branch, 1, 0)`
+  ).run({
+    id: path.basename(repoRoot),
+    root: realpathSync(repoRoot),
+    name: path.basename(repoRoot),
+    default_branch: "main",
+  });
+}
+
 function seedSession(db: InstanceType<typeof Database>, id: string, cwd: string): void {
-  db.prepare("INSERT INTO sessions (id, cwd) VALUES (?, ?)").run(id, cwd);
+  db.prepare("INSERT INTO sessions (id, app, cwd, status) VALUES (?, ?, ?, ?)").run(
+    id,
+    "codex",
+    cwd,
+    "ended",
+  );
 }
 
 function setGraceSetting(db: InstanceType<typeof Database>, key: string, days: number): void {
@@ -311,7 +280,7 @@ describe("inbox tier query (auth_results)", () => {
 
 describe("AuthQueue.markDelivered (powers /api/inbox/delivered/:id)", () => {
   it("sets delivered_at on first call, is a no-op on second call", () => {
-    const db = new Database(":memory:");
+    const db = setupInMemoryDb();
     const queue = new AuthQueue({ db, now: () => 100 });
     const req = queue.submit({ command: "echo ok", title: "test" });
 
@@ -327,7 +296,7 @@ describe("AuthQueue.markDelivered (powers /api/inbox/delivered/:id)", () => {
   });
 
   it("returns false for unknown request ids", () => {
-    const db = new Database(":memory:");
+    const db = setupInMemoryDb();
     const queue = new AuthQueue({ db });
     expect(queue.markDelivered("00000000-0000-0000-0000-000000000000")).toBe(false);
   });
@@ -1059,7 +1028,7 @@ describe("channel-server startup catch-up (Bug: 4e32923)", () => {
 
 describe("auth route accepts target_session_id / target_repo_root from CLI", () => {
   it("parseAuthRequestPayload preserves conversation_id (Bug: 6d7411b)", async () => {
-    const db = new Database(":memory:");
+    const db = setupInMemoryDb();
     const queue = new AuthQueue({ db });
 
     const req = queue.submit({
@@ -1089,7 +1058,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
     };
     // The actual exercise: submit through AuthQueue + the auth route, and read
     // back via getRequest. This both exercises parse* and the DB write path.
-    const db = new Database(":memory:");
+    const db = setupInMemoryDb();
     const queue = new AuthQueue({ db });
     captured.push({ ok: true });
 
@@ -1143,8 +1112,9 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       git("commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234");
       git("checkout", "main");
 
-      const db = new Database(":memory:");
+      const db = setupInMemoryDb();
       const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
       const app = new TestRouteRegistrar();
       registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
 
@@ -1170,6 +1140,101 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
         },
       });
       expect(accepted.statusCode).toBe(201);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects injection-shaped auth merge branch names before git verification", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-injection-"));
+    try {
+      const repoRoot = path.join(tempDir, "repo");
+      const marker = path.join(tempDir, "injection-ran");
+      execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+      const git = (...args: string[]) => execFileSync(
+        "git",
+        [
+          "-C",
+          repoRoot,
+          "-c",
+          "user.name=Mandible Test",
+          "-c",
+          "user.email=test@example.invalid",
+          ...args,
+        ],
+        { stdio: "ignore" },
+      );
+      git("commit", "--allow-empty", "-m", "init");
+      git("checkout", "-b", "feature/mandible-issue");
+      git("commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234");
+      git("checkout", "main");
+
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/mandible-issue --into main",
+          title: "Injection branch request",
+          cwd: repoRoot,
+          base_branch: "main",
+          head_branch: `feature/mandible-issue; touch ${marker}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(String((response.body as { error?: string }).error)).toContain("Invalid 'head_branch'");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when auth merge git verification errors", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-fail-closed-"));
+    try {
+      const repoRoot = path.join(tempDir, "repo");
+      execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+      const git = (...args: string[]) => execFileSync(
+        "git",
+        [
+          "-C",
+          repoRoot,
+          "-c",
+          "user.name=Mandible Test",
+          "-c",
+          "user.email=test@example.invalid",
+          ...args,
+        ],
+        { stdio: "ignore" },
+      );
+      git("commit", "--allow-empty", "-m", "init");
+      git("checkout", "-b", "feature/mandible-issue");
+      git("commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234");
+
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/mandible-issue --into missing-base",
+          title: "Verification error request",
+          cwd: repoRoot,
+          base_branch: "missing-base",
+          head_branch: "feature/mandible-issue",
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(String((response.body as { error?: string }).error)).toContain(
+        "verification failed; manual review required"
+      );
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -1203,7 +1268,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
         stdio: "ignore"
       });
 
-      const db = new Database(":memory:");
+      const db = setupInMemoryDb();
       const queue = new AuthQueue({ db });
       const app = new TestRouteRegistrar();
       registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));

@@ -108,7 +108,6 @@ export class AuthQueue {
     this.executor = options.executor ?? executeAuthCommand;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
-    this.ensureSchema();
     this.recoverStuckRequests();
     this.startExpiryTimer();
   }
@@ -166,55 +165,78 @@ export class AuthQueue {
    */
   private recoverStuckRequests(): void {
     const now = this.now();
+    const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
+    const cutoff = now - STUCK_THRESHOLD_MS;
 
-    // Case 1: approved/executing with output — check for merge evidence
-    const withOutput = this.db
-      .prepare(
-        "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') AND output IS NOT NULL AND output != '' AND exit_code IS NULL"
-      )
-      .all() as Record<string, unknown>[];
+    const recoveredSuccessIds: string[] = [];
+    const recoveredFailureIds: string[] = [];
+    const runRecovery = this.db.transaction(() => {
+      // Case 1: approved/executing with output — check for merge evidence or
+      // stale partial output from a killed executor.
+      const withOutput = this.db
+        .prepare(
+          "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') AND output IS NOT NULL AND output != '' AND exit_code IS NULL"
+        )
+        .all() as Record<string, unknown>[];
 
-    const successUpdate = this.db.prepare(
-      "UPDATE auth_requests SET status = 'completed', exit_code = 0, resolved_at = ?, updated_at = ? WHERE id = ?"
-    );
+      const successUpdate = this.db.prepare(
+        "UPDATE auth_requests SET status = 'completed', exit_code = 0, resolved_at = ?, updated_at = ? WHERE id = ?"
+      );
+      const failUpdate = this.db.prepare(
+        "UPDATE auth_requests SET status = 'completed', exit_code = 1, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
+      );
 
-    for (const row of withOutput) {
-      const output = String(row.output ?? "");
-      if (output.includes("Merge made by") || output.includes("Fast-forward")) {
-        successUpdate.run(now, now, row.id);
-        const recovered = this.getRequest(String(row.id));
-        if (recovered) {
-          this.applyLedgerCompletionForRequest(recovered);
-          this.broadcast({
-            event: "auth:resolved",
-            data: this.buildResolvedPayload(recovered)
-          });
+      for (const row of withOutput) {
+        const output = String(row.output ?? "");
+        if (output.includes("Merge made by") || output.includes("Fast-forward")) {
+          successUpdate.run(now, now, row.id);
+          recoveredSuccessIds.push(String(row.id));
+          continue;
         }
+        if (Number(row.approved_at ?? 0) < cutoff) {
+          failUpdate.run(
+            now,
+            now,
+            "Stuck in approved state with partial output — execution interrupted (likely daemon restart)",
+            row.id
+          );
+          recoveredFailureIds.push(String(row.id));
+        }
+      }
+
+      // Case 2: approved with empty output, older than 5 minutes — execution interrupted
+      // Bug: 68aa754 — stuck in approved state with no output means the executor
+      // never ran or was killed before producing any output (likely daemon restart)
+      const emptyApproved = this.db
+        .prepare(
+          "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') AND (output IS NULL OR output = '') AND exit_code IS NULL AND approved_at < ?"
+        )
+        .all(cutoff) as Record<string, unknown>[];
+
+      for (const row of emptyApproved) {
+        failUpdate.run(now, now, "Stuck in approved state — execution interrupted (likely daemon restart)", row.id);
+        recoveredFailureIds.push(String(row.id));
+      }
+    });
+
+    runRecovery();
+
+    for (const id of recoveredSuccessIds) {
+      const recovered = this.getRequest(id);
+      if (recovered) {
+        this.afterSuccessfulMerge(recovered);
+        this.broadcast({
+          event: "auth:resolved",
+          data: this.buildResolvedPayload(recovered)
+        });
         console.log(
-          `[auth-queue] recovered stuck request ${row.id}: merge succeeded but result was not recorded (daemon killed mid-execution)`
+          `[auth-queue] recovered stuck request ${id}: merge succeeded but result was not recorded (daemon killed mid-execution)`
         );
       }
     }
 
-    // Case 2: approved with empty output, older than 5 minutes — execution interrupted
-    // Bug: 68aa754 — stuck in approved state with no output means the executor
-    // never ran or was killed before producing any output (likely daemon restart)
-    const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
-    const cutoff = now - STUCK_THRESHOLD_MS;
-
-    const emptyApproved = this.db
-      .prepare(
-        "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') AND (output IS NULL OR output = '') AND exit_code IS NULL AND approved_at < ?"
-      )
-      .all(cutoff) as Record<string, unknown>[];
-
-    const failUpdate = this.db.prepare(
-      "UPDATE auth_requests SET status = 'completed', exit_code = 1, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
-    );
-
-    for (const row of emptyApproved) {
-      failUpdate.run(now, now, "Stuck in approved state — execution interrupted (likely daemon restart)", row.id);
-      const recovered = this.getRequest(String(row.id));
+    for (const id of recoveredFailureIds) {
+      const recovered = this.getRequest(id);
       if (recovered) {
         this.broadcast({
           event: "auth:resolved",
@@ -222,9 +244,11 @@ export class AuthQueue {
         });
       }
       console.log(
-        `[auth-queue] recovered stuck request ${row.id}: approved but no output after 5min — marking as interrupted`
+        `[auth-queue] recovered stuck request ${id}: approved but unfinished after 5min — marking as interrupted`
       );
     }
+
+    this.sweepSuccessfulMergeFinalizers();
   }
 
   /**
@@ -962,13 +986,13 @@ export class AuthQueue {
       .run(now, now, exitCode, output, error ?? null, id);
 
     const completed = this.requireRequest(id);
+    if (exitCode === 0) {
+      this.afterSuccessfulMerge(completed);
+    }
     this.broadcast({
       event: "auth:resolved",
       data: this.buildResolvedPayload(completed)
     });
-    if (exitCode === 0) {
-      this.afterSuccessfulMerge(completed);
-    }
     return completed;
   }
 
@@ -1032,29 +1056,43 @@ export class AuthQueue {
     const STUCK_RUNTIME_THRESHOLD_MS = 10 * 60 * 1000;
     const cutoff = now - STUCK_RUNTIME_THRESHOLD_MS;
 
-    const stuckRows = this.db
-      .prepare(
-        "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') " +
-          "AND (output IS NULL OR output = '') AND exit_code IS NULL AND approved_at < ?"
-      )
-      .all(cutoff) as Record<string, unknown>[];
+    const recoveredIds: string[] = [];
+    const runRecovery = this.db.transaction(() => {
+      const stuckRows = this.db
+        .prepare(
+          "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') " +
+            "AND exit_code IS NULL AND approved_at < ? " +
+            "AND (output IS NULL OR output = '' OR (output NOT LIKE '%Merge made by%' AND output NOT LIKE '%Fast-forward%'))"
+        )
+        .all(cutoff) as Record<string, unknown>[];
 
-    if (stuckRows.length === 0) {
+      if (stuckRows.length === 0) {
+        return;
+      }
+
+      const failUpdate = this.db.prepare(
+        "UPDATE auth_requests SET status = 'completed', exit_code = 1, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
+      );
+
+      for (const row of stuckRows) {
+        failUpdate.run(
+          now,
+          now,
+          "Stuck in approved state for >10 minutes — execution interrupted (periodic recovery)",
+          row.id
+        );
+        recoveredIds.push(String(row.id));
+      }
+    });
+
+    runRecovery();
+
+    if (recoveredIds.length === 0) {
       return;
     }
 
-    const failUpdate = this.db.prepare(
-      "UPDATE auth_requests SET status = 'completed', exit_code = 1, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
-    );
-
-    for (const row of stuckRows) {
-      failUpdate.run(
-        now,
-        now,
-        "Stuck in approved state for >10 minutes — execution interrupted (periodic recovery)",
-        row.id
-      );
-      const recovered = this.getRequest(String(row.id));
+    for (const id of recoveredIds) {
+      const recovered = this.getRequest(id);
       if (recovered) {
         this.broadcast({
           event: "auth:resolved",
@@ -1062,7 +1100,7 @@ export class AuthQueue {
         });
       }
       console.log(
-        `[auth-queue] periodic recovery: stuck request ${row.id} approved >10min with no output — marking as interrupted`
+        `[auth-queue] periodic recovery: stuck request ${id} approved >10min without merge evidence — marking as interrupted`
       );
     }
   }
@@ -1209,6 +1247,11 @@ export class AuthQueue {
       .run(now, now, exitCode, errorText, id);
 
     const completed = this.requireRequest(id);
+    // Bug: 2164775 — run idempotent success finalizers before the resolved
+    // broadcast so consumers observe the resolved work-unit/ledger state.
+    if (exitCode === 0) {
+      this.afterSuccessfulMerge(completed);
+    }
     this.broadcast({
       event: "auth:resolved",
       data: this.buildResolvedPayload(completed)
@@ -1218,9 +1261,6 @@ export class AuthQueue {
     // other pending/failed requests targeting the same branch merge. These are
     // stale duplicates (retries, corrected-CWD resubmissions) — approving them
     // would waste a YubiKey tap on a branch that no longer exists.
-    if (exitCode === 0) {
-      this.afterSuccessfulMerge(completed);
-    }
   }
 
   private afterSuccessfulMerge(completed: AuthRequest): void {
@@ -1237,6 +1277,17 @@ export class AuthQueue {
           `[auth-queue] failed to resolve work units after merge: ${err instanceof Error ? err.message : String(err)}`
         );
       }
+    }
+  }
+
+  private sweepSuccessfulMergeFinalizers(): void {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' AND exit_code = 0"
+      )
+      .all() as Record<string, unknown>[];
+    for (const row of rows) {
+      this.afterSuccessfulMerge(mapRow(row));
     }
   }
 
@@ -1651,62 +1702,6 @@ export class AuthQueue {
     return request;
   }
 
-  private ensureSchema(): void {
-    // Bug: 4e32923 — include scoping columns in the fresh-DB fallback schema.
-    // The MIGRATIONS array (src/db.ts) is the canonical source of truth; this
-    // path only fires for ad-hoc test DBs that bypass openDb().
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS auth_requests (
-        id TEXT PRIMARY KEY,
-        session_id TEXT,
-        type TEXT NOT NULL DEFAULT 'merge',
-        command TEXT NOT NULL,
-        title TEXT NOT NULL,
-        cwd TEXT,
-        diff_summary TEXT,
-        commit_message TEXT,
-        spec_content TEXT,
-        repo TEXT,
-        base_branch TEXT,
-        head_branch TEXT,
-        files_changed INTEGER DEFAULT 0,
-        additions INTEGER DEFAULT 0,
-        deletions INTEGER DEFAULT 0,
-        post_merge_handoff TEXT,
-        issue_references TEXT,
-        issue_closures TEXT,
-        issue_ids TEXT,
-        issues TEXT,
-        depends_on_id TEXT,
-        execution_mode TEXT NOT NULL DEFAULT 'daemon',
-        status TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        last_executed_at INTEGER,
-        approved_at INTEGER,
-        resolved_at INTEGER,
-        skipped_at INTEGER,
-        expires_at INTEGER NOT NULL,
-        exit_code INTEGER,
-        output TEXT NOT NULL DEFAULT '',
-        error TEXT,
-        acknowledged_by TEXT,
-        target_session_id TEXT,
-        target_repo_root TEXT,
-        delivered_at INTEGER,
-        conversation_id TEXT,
-        approval_source TEXT NOT NULL DEFAULT 'manual',
-        approval_lease_id TEXT
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_auth_requests_status_created
-        ON auth_requests(status, created_at);
-
-      CREATE INDEX IF NOT EXISTS idx_auth_requests_queue
-        ON auth_requests(status, skipped_at, created_at);
-
-    `);
-  }
 }
 
 // Bug: 929c6d0 — extract the last N lines from a string for error output summaries.

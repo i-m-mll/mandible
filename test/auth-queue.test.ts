@@ -6,11 +6,25 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
+import type { AuthHookManager } from "../src/auth-hooks.js";
+import { migrate } from "../src/db.js";
 import type { SseEvent } from "../src/types.js";
 
-function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
+function createMigratedDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
+  migrate(db);
+  return db;
+}
+
+function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
+  const db = createMigratedDb();
   return new AuthQueue({ db, ...options });
+}
+
+function createNoopHookManager(): AuthHookManager {
+  return {
+    executeHooks: async () => []
+  } as unknown as AuthHookManager;
 }
 
 async function waitForStatus(queue: AuthQueue, id: string, status: string, timeoutMs = 2000) {
@@ -158,6 +172,74 @@ describe("auth queue", () => {
     expect(approved.status).toBe("executing");
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(calls).toHaveLength(0);
+  });
+
+  it("recovers stale executing requests with partial output on restart", () => {
+    let now = 0;
+    const db = createMigratedDb();
+    const queue = new AuthQueue({ db, now: () => now });
+    const request = queue.submit({
+      command: "mandible auth merge feature/partial",
+      title: "Partial execution",
+      execution_mode: "remote"
+    });
+    queue.approve(request.id);
+    queue.appendOutput(request.id, "Executing merge command...\n");
+    queue.dispose();
+
+    now = 6 * 60 * 1000;
+    const events: SseEvent[] = [];
+    const restarted = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
+    try {
+      const recovered = restarted.getRequest(request.id);
+      expect(recovered?.status).toBe("completed");
+      expect(recovered?.exit_code).toBe(1);
+      expect(recovered?.error).toContain("partial output");
+      expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
+    } finally {
+      restarted.dispose();
+      db.close();
+    }
+  });
+
+  it("recovers successful executing requests and reapplies merge finalizers on restart", () => {
+    let now = 0;
+    const db = createMigratedDb();
+    const queue = new AuthQueue({ db, now: () => now });
+    const request = queue.submit({
+      type: "merge",
+      command: "mandible auth merge feature/recovered --into main",
+      title: "Recovered merge",
+      repo: "mandible",
+      base_branch: "main",
+      head_branch: "feature/recovered",
+      execution_mode: "remote"
+    });
+    db.prepare(
+      `INSERT INTO work_units (
+        id, issue_id, repo_id, branch, kind, state, created_at, auth_request_id
+      ) VALUES (
+        'wu-recovered', 'issue-1', 'mandible', 'feature/recovered', 'solo', 'committed', ?, ?
+      )`
+    ).run(now, request.id);
+    queue.approve(request.id);
+    queue.appendOutput(request.id, "Merge made by recursive.\n");
+    queue.dispose();
+
+    now = 6 * 60 * 1000;
+    const restarted = new AuthQueue({ db, now: () => now });
+    try {
+      const recovered = restarted.getRequest(request.id);
+      const workUnit = db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-recovered'")
+        .get() as { state: string; resolved_at: number | null };
+      expect(recovered?.status).toBe("completed");
+      expect(recovered?.exit_code).toBe(0);
+      expect(workUnit.state).toBe("resolved");
+      expect(workUnit.resolved_at).toBe(now);
+    } finally {
+      restarted.dispose();
+      db.close();
+    }
   });
 
   it("executes in daemon mode", async () => {
@@ -377,7 +459,7 @@ describe("auth queue", () => {
 
   it("marks pending merge requests needs_rebase after post-merge revalidation", () => {
     const repo = createAuthCheckRepo();
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const events: SseEvent[] = [];
     const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
     try {
@@ -901,6 +983,7 @@ describe("auth queue", () => {
 
       try {
         const queue = createQueue({
+          hookManager: createNoopHookManager(),
           broadcast: (event) => {
             events.push(event);
             if (event.event === "auth:resolved") {
@@ -960,6 +1043,7 @@ describe("auth queue", () => {
 
       try {
         const queue = createQueue({
+          hookManager: createNoopHookManager(),
           executor: async () => ({
             exit_code: 0,
             signal: null,

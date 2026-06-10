@@ -1,9 +1,10 @@
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/preact';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
+import { getReviewSpec, patchSession, updateConversation } from '../ui/src/api';
 import {
   navigateToMandibleDeepLink,
   routeHashFromMandibleDeepLink,
@@ -36,6 +37,14 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+
+function changeSelect(select: HTMLElement, value: string): void {
+  act(() => {
+    (select as HTMLSelectElement).value = value;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
 
 function setViewportWidth(width: number): void {
   Object.defineProperty(window, 'innerWidth', {
@@ -291,9 +300,6 @@ describe('SettingsView', () => {
     fireEvent.input(screen.getByLabelText('New instruction target path'), {
       target: { value: '/tmp/50-mandible.generated.md' },
     });
-    fireEvent.change(screen.getByLabelText('New instruction target mode'), {
-      target: { value: 'standalone' },
-    });
     fireEvent.click(screen.getByText('Add target'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -304,7 +310,7 @@ describe('SettingsView', () => {
           targets: [
             { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
             { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
-            { path: '/tmp/50-mandible.generated.md', mode: 'standalone' },
+            { path: '/tmp/50-mandible.generated.md', mode: 'managed-block' },
           ],
           cleanupRemovedTargets: false,
         }),
@@ -413,7 +419,7 @@ describe('WorkOverviewView', () => {
     fireEvent.click(screen.getByText('Refresh now'));
     expect(onRescan).toHaveBeenCalledTimes(1);
 
-    fireEvent.change(screen.getByDisplayValue('Last activity'), { target: { value: 'name' } });
+    changeSelect(screen.getByDisplayValue('Last activity'), 'name');
     fireEvent.click(screen.getByTitle('Reverse sort direction'));
     await waitFor(() => {
       const repoNames = Array.from(document.querySelectorAll('.work-repo-item__name'))
@@ -530,13 +536,52 @@ describe('ReviewView', () => {
         params: { repo: 'repo', base: 'main', head: 'feat' },
         loaders: {
           diff: async () => '<div class="diff">diff</div>',
-          spec: async () => ({ markdown: 'spec text', commits: ['c1'] }),
+          spec: async () => ({ markdown: 'spec text', commits: ['c1'], meta: {} }),
         },
       }),
     );
 
     await waitFor(() => expect(screen.getByText('spec text')).toBeTruthy());
     expect(screen.getByText('c1')).toBeTruthy();
+  });
+});
+
+describe('API contract helpers', () => {
+  it('normalizes legacy review spec fields into the canonical payload', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => (
+      new Response(JSON.stringify({ raw: 'legacy spec', commits: ['c1'] }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    )));
+
+    const spec = await getReviewSpec({ repo: 'repo', branch: 'feature/x' });
+
+    expect(spec).toEqual({ markdown: 'legacy spec', commits: ['c1'], meta: {} });
+  });
+
+  it('surfaces server error bodies for PATCH helpers', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => (
+      new Response(JSON.stringify({ error: 'specific failure' }), {
+        status: 409,
+        headers: { 'content-type': 'application/json' },
+      })
+    )));
+
+    await expect(patchSession('s1', { status: 'dead' })).rejects.toThrow('specific failure');
+  });
+
+  it('sends conversation starred updates as booleans', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo, init?: RequestInit) => (
+      new Response(JSON.stringify({ id: 'c1', starred: true }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await updateConversation('c1', { starred: true });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.starred).toBe(true);
   });
 });
 

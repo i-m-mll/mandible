@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { IPty, IDisposable } from "node-pty";
 import pty from "node-pty";
@@ -46,6 +46,9 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   private logger: Logger;
   /** Bug: 790433d — Preset IDs for PTY sessions, applied at launch via --append-system-prompt */
   private presetIds: string[] = [];
+  private promptChildren: Set<ChildProcess> = new Set();
+  private restartTimer: NodeJS.Timeout | null = null;
+  private destroyed = false;
 
   constructor(meta: ConsoleSession, logger: Logger) {
     super();
@@ -61,10 +64,14 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   }
 
   start(): void {
+    if (this.destroyed) {
+      return;
+    }
     if (this.ptyProc) {
       this.logger("warn", "pty_already_running", { id: this.id });
       return;
     }
+    this.clearRestartTimer();
 
     const env = this.buildPtyEnv(this.meta.env);
 
@@ -120,6 +127,9 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   }
 
   stop(signal?: string): void {
+    this.clearRestartTimer();
+    this.killPromptChildren(signal ?? "SIGHUP");
+
     if (!this.ptyProc) return;
 
     this.onDataDisposable?.dispose();
@@ -154,7 +164,13 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   }
 
   destroy(): void {
-    if (this.meta.status === "running") {
+    if (this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
+    this.clearRestartTimer();
+    this.killPromptChildren("SIGHUP");
+    if (this.ptyProc) {
       this.stop("SIGHUP");
     }
     this.wsClients.clear();
@@ -208,6 +224,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    this.promptChildren.add(child);
 
     let lineBuffer = "";
     let sawResult = false;
@@ -217,7 +234,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       model: this.extractModel(this.meta.args),
     };
 
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout?.on("data", (chunk: Buffer) => {
       lineBuffer += chunk.toString("utf8");
       const lines = lineBuffer.split("\n");
       lineBuffer = lines.pop() ?? "";
@@ -249,11 +266,24 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     });
 
     let stderrBuf = "";
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr?.on("data", (chunk: Buffer) => {
       stderrBuf += chunk.toString("utf8");
     });
 
+    let completed = false;
+    const complete = () => {
+      if (completed) {
+        return false;
+      }
+      completed = true;
+      this.promptChildren.delete(child);
+      return true;
+    };
+
     child.on("close", (code) => {
+      if (!complete()) {
+        return;
+      }
       if (lineBuffer.trim()) {
         if (invocation.normalize === "claude") {
           this.ingestText(lineBuffer + "\n");
@@ -290,6 +320,25 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
         });
       }
     });
+
+    child.on("error", (err) => {
+      if (!complete()) {
+        return;
+      }
+      this.logger("warn", "pty_prompt_child_error", { id: this.id, error: String(err) });
+      if (!sawResult) {
+        this.ingestStructuredEvent({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [String(err)],
+          session_id: existingSessionId,
+          duration_ms: 0,
+          num_turns: 0,
+          total_cost_usd: 0,
+        });
+      }
+    });
   }
 
   addWsClient(ws: WebSocket): void {
@@ -316,6 +365,9 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
         ws.send(snapshot);
       } catch (err) {
         this.logger("warn", "ws_replay_failed", { id: this.id, error: String(err) });
+        this.removeWsClient(ws);
+        try { ws.close(1011, "replay failed"); } catch { /* already closed */ }
+        return;
       }
     }
 
@@ -323,6 +375,9 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       ws.send(JSON.stringify({ type: "init", session: this.meta }));
     } catch (err) {
       this.logger("warn", "ws_init_failed", { id: this.id, error: String(err) });
+      this.removeWsClient(ws);
+      try { ws.close(1011, "init failed"); } catch { /* already closed */ }
+      return;
     }
 
     ws.on("close", () => {
@@ -376,7 +431,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
         try {
           ws.send(buf);
         } catch {
-          // Client disconnected; will be cleaned up on close
+          this.removeWsClient(ws);
         }
       }
     }
@@ -475,7 +530,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.logger("info", "pty_exited", { id: this.id, exitCode, signal, status });
     this.wsClients.clear();
 
-    if (this.meta.auto_restart && crashed) {
+    if (this.meta.auto_restart && crashed && !this.destroyed) {
       this.restartAttempts += 1;
       if (this.restartAttempts > MAX_RESTART_ATTEMPTS) {
         this.logger("warn", "pty_restart_limit_reached", {
@@ -494,16 +549,36 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
         delay,
         attempt: this.restartAttempts,
       });
-      const timer = setTimeout(() => {
-        if (this.meta.auto_restart) {
+      this.restartTimer = setTimeout(() => {
+        this.restartTimer = null;
+        if (this.meta.auto_restart && !this.destroyed) {
           this.logger("info", "pty_auto_restart", { id: this.id, attempt: this.restartAttempts });
           this.start();
         }
       }, delay);
-      if (timer && typeof timer === "object" && "unref" in timer) {
-        (timer as NodeJS.Timeout).unref();
+      if (this.restartTimer && typeof this.restartTimer === "object" && "unref" in this.restartTimer) {
+        this.restartTimer.unref();
       }
     }
+  }
+
+  private clearRestartTimer(): void {
+    if (!this.restartTimer) {
+      return;
+    }
+    clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+  }
+
+  private killPromptChildren(signal: string): void {
+    for (const child of this.promptChildren) {
+      try {
+        child.kill(signal as NodeJS.Signals);
+      } catch {
+        // Process may already be gone.
+      }
+    }
+    this.promptChildren.clear();
   }
 
   private broadcastWsStatus(status: ConsoleSessionStatus, exitCode?: number): void {
@@ -517,7 +592,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       try {
         ws.send(msg);
       } catch {
-        // Ignore send errors on disconnect
+        this.removeWsClient(ws);
       }
     }
   }

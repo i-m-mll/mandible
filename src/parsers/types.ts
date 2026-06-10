@@ -20,7 +20,6 @@ export interface BlockMetadata {
   tool_input?: unknown;
   tool_output?: unknown;
   model?: string;
-  duration_ms?: number;
   token_usage?: { input: number; output: number; cache_read?: number };
   source_event_type?: string;
   visibility?: "default_hidden" | "default_visible";

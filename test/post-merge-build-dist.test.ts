@@ -41,6 +41,7 @@ describe("post-merge build hook", () => {
         ...process.env,
         HOME: home,
         MANDIBLE_POST_MERGE_BUILD_COMMAND: "true",
+        NODE_PATH: path.join(process.cwd(), "node_modules"),
       },
     });
 

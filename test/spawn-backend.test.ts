@@ -5,6 +5,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { SpawnBackend } from "../src/backends/spawn-backend.js";
 import type { ConsoleSession, ConsoleStreamEvent, Logger } from "../src/types.js";
+import type { WebSocket } from "ws";
 
 function makeMeta(overrides: Partial<ConsoleSession> = {}): ConsoleSession {
   return {
@@ -178,6 +179,22 @@ describe("SpawnBackend", () => {
       });
     }
     expect(backend.getStreamEvents().length).toBeLessThanOrEqual(2000);
+  });
+
+  it("removes websocket clients when init send fails", () => {
+    const ws = {
+      send: vi.fn(() => {
+        throw new Error("closed");
+      }),
+      close: vi.fn(),
+      on: vi.fn(),
+    } as unknown as WebSocket;
+
+    backend.addWsClient(ws);
+    backend.ingestStructuredEvent({ type: "system", subtype: "after-close", session_id: "s1" });
+
+    expect(ws.close).toHaveBeenCalledWith(1011, "init failed");
+    expect(ws.send).toHaveBeenCalledTimes(1);
   });
 });
 
