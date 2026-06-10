@@ -23,6 +23,7 @@ export class WorkUnitReconciler {
     if (typeof this.timer === "object" && "unref" in this.timer) {
       this.timer.unref();
     }
+    this.reconcile();
   }
 
   stop(): void {
@@ -58,28 +59,33 @@ export class WorkUnitReconciler {
   private reconcileDeadSessions(): number {
     const db = getDb();
 
-    // Find work units with assigned sessions that are dead or ended
-    const stale = db
-      .prepare(
-        `SELECT wu.id FROM work_units wu
-         JOIN sessions s ON wu.assigned_session_id = s.id
-         WHERE wu.assigned_session_id IS NOT NULL
-           AND wu.state IN ('open', 'committed')
-           AND s.status IN ('dead', 'ended')`
-      )
-      .all() as Array<{ id: string }>;
+    const run = db.transaction(() => {
+      // Find work units with assigned sessions that are dead or ended
+      const stale = db
+        .prepare(
+          `SELECT wu.id FROM work_units wu
+           JOIN sessions s ON wu.assigned_session_id = s.id
+           WHERE wu.assigned_session_id IS NOT NULL
+             AND wu.state IN ('open', 'committed')
+             AND s.status IN ('dead', 'ended')
+           ORDER BY wu.id`
+        )
+        .all() as Array<{ id: string }>;
 
-    if (stale.length === 0) return 0;
+      if (stale.length === 0) return 0;
 
-    const clearStmt = db.prepare(
-      "UPDATE work_units SET assigned_session_id = NULL WHERE id = ?"
-    );
+      const clearStmt = db.prepare(
+        "UPDATE work_units SET assigned_session_id = NULL WHERE id = ?"
+      );
 
-    for (const row of stale) {
-      clearStmt.run(row.id);
-    }
+      for (const row of stale) {
+        clearStmt.run(row.id);
+      }
 
-    return stale.length;
+      return stale.length;
+    });
+
+    return run();
   }
 
   /**
@@ -89,40 +95,45 @@ export class WorkUnitReconciler {
   private reconcileAbandonedBranches(): number {
     const db = getDb();
 
-    // Find committed work units with branches that don't exist in the branches table
-    // A branch that was merged and deleted will not appear in the branches table.
-    // Bug: f3dbb3e — skip work units in the auth pipeline (auth_request_id IS NOT NULL).
-    // Their branch may be temporarily missing (just merged and cleaned up).
-    const committed = db
-      .prepare(
-        `SELECT wu.id, wu.branch, wu.repo_id FROM work_units wu
-         WHERE wu.state = 'committed' AND wu.branch IS NOT NULL
-           AND wu.auth_request_id IS NULL`
-      )
-      .all() as Array<{ id: string; branch: string; repo_id: string }>;
+    const run = db.transaction(() => {
+      // Find committed work units with branches that don't exist in the branches table
+      // A branch that was merged and deleted will not appear in the branches table.
+      // Bug: f3dbb3e — skip work units in the auth pipeline (auth_request_id IS NOT NULL).
+      // Their branch may be temporarily missing (just merged and cleaned up).
+      const committed = db
+        .prepare(
+          `SELECT wu.id, wu.branch, wu.repo_id FROM work_units wu
+           WHERE wu.state = 'committed' AND wu.branch IS NOT NULL
+             AND wu.auth_request_id IS NULL
+           ORDER BY wu.id`
+        )
+        .all() as Array<{ id: string; branch: string; repo_id: string }>;
 
-    if (committed.length === 0) return 0;
+      if (committed.length === 0) return 0;
 
-    const checkBranch = db.prepare(
-      "SELECT 1 FROM branches WHERE branch = ? LIMIT 1"
-    );
+      const checkBranch = db.prepare(
+        "SELECT 1 FROM branches WHERE branch = ? LIMIT 1"
+      );
 
-    const abandonStmt = db.prepare(
-      "UPDATE work_units SET state = 'abandoned' WHERE id = ?"
-    );
+      const abandonStmt = db.prepare(
+        "UPDATE work_units SET state = 'abandoned' WHERE id = ?"
+      );
 
-    let count = 0;
-    for (const row of committed) {
-      const exists = checkBranch.get(row.branch) as unknown;
-      if (!exists) {
-        // Also check if maybe the branch was resolved by an auth merge
-        // (the auth-queue hook should have caught this, but this is a safety net)
-        abandonStmt.run(row.id);
-        count++;
+      let count = 0;
+      for (const row of committed) {
+        const exists = checkBranch.get(row.branch) as unknown;
+        if (!exists) {
+          // Also check if maybe the branch was resolved by an auth merge
+          // (the auth-queue hook should have caught this, but this is a safety net)
+          abandonStmt.run(row.id);
+          count++;
+        }
       }
-    }
 
-    return count;
+      return count;
+    });
+
+    return run();
   }
 
   /**
@@ -132,34 +143,39 @@ export class WorkUnitReconciler {
   private reconcileAutoCommit(): number {
     const db = getDb();
 
-    // Find open work units that have a branch with commits ahead of default
-    const openWithBranch = db
-      .prepare(
-        `SELECT wu.id, wu.branch FROM work_units wu
-         WHERE wu.state = 'open' AND wu.branch IS NOT NULL`
-      )
-      .all() as Array<{ id: string; branch: string }>;
+    const run = db.transaction(() => {
+      // Find open work units that have a branch with commits ahead of default
+      const openWithBranch = db
+        .prepare(
+          `SELECT wu.id, wu.branch FROM work_units wu
+           WHERE wu.state = 'open' AND wu.branch IS NOT NULL
+           ORDER BY wu.id`
+        )
+        .all() as Array<{ id: string; branch: string }>;
 
-    if (openWithBranch.length === 0) return 0;
+      if (openWithBranch.length === 0) return 0;
 
-    const checkAhead = db.prepare(
-      "SELECT ahead_default FROM branches WHERE branch = ? AND ahead_default > 0 LIMIT 1"
-    );
+      const checkAhead = db.prepare(
+        "SELECT ahead_default FROM branches WHERE branch = ? AND ahead_default > 0 LIMIT 1"
+      );
 
-    const commitStmt = db.prepare(
-      "UPDATE work_units SET state = 'committed', activated_at = ? WHERE id = ?"
-    );
+      const commitStmt = db.prepare(
+        "UPDATE work_units SET state = 'committed', activated_at = ? WHERE id = ?"
+      );
 
-    const now = Date.now();
-    let count = 0;
-    for (const row of openWithBranch) {
-      const ahead = checkAhead.get(row.branch) as { ahead_default: number } | undefined;
-      if (ahead) {
-        commitStmt.run(now, row.id);
-        count++;
+      const now = Date.now();
+      let count = 0;
+      for (const row of openWithBranch) {
+        const ahead = checkAhead.get(row.branch) as { ahead_default: number } | undefined;
+        if (ahead) {
+          commitStmt.run(now, row.id);
+          count++;
+        }
       }
-    }
 
-    return count;
+      return count;
+    });
+
+    return run();
   }
 }
