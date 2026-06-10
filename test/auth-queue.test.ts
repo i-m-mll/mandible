@@ -169,7 +169,7 @@ describe("auth queue", () => {
 
   it("recovers stale executing requests with partial output on restart", () => {
     let now = 0;
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const queue = new AuthQueue({ db, now: () => now });
     const request = queue.submit({
       command: "mandible auth merge feature/partial",
@@ -197,21 +197,8 @@ describe("auth queue", () => {
 
   it("recovers successful executing requests and reapplies merge finalizers on restart", () => {
     let now = 0;
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const queue = new AuthQueue({ db, now: () => now });
-    db.exec(`
-      CREATE TABLE work_units (
-        id TEXT PRIMARY KEY,
-        issue_id TEXT NOT NULL,
-        repo_id TEXT NOT NULL,
-        branch TEXT,
-        kind TEXT NOT NULL DEFAULT 'solo',
-        state TEXT NOT NULL DEFAULT 'open',
-        created_at INTEGER NOT NULL,
-        resolved_at INTEGER,
-        auth_request_id TEXT
-      )
-    `);
     const request = queue.submit({
       type: "merge",
       command: "mandible auth merge feature/recovered --into main",
