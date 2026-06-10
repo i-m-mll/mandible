@@ -1692,6 +1692,29 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_ledger_issue_checkpoints_issue_created
         ON ledger_issue_checkpoints(issue_id, created_at DESC)`
     ]
+  },
+  {
+    version: 72,
+    name: "self_merge_hook_instruction_refresh_label",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS auth_hooks (
+        id            TEXT PRIMARY KEY,
+        repo_pattern  TEXT NOT NULL DEFAULT '*',
+        auth_type     TEXT NOT NULL DEFAULT 'merge',
+        command       TEXT NOT NULL,
+        label         TEXT NOT NULL DEFAULT '',
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        builtin       INTEGER NOT NULL DEFAULT 0,
+        position      INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      )`,
+      `UPDATE auth_hooks
+       SET label = 'Build Mandible and install instructions after merge',
+           updated_at = CAST(strftime('%s','now') * 1000 AS INTEGER)
+       WHERE id = 'builtin-mandible-rebuild'
+         AND command = 'bash cli/post-merge-build-dist.sh'`
+    ]
   }
 ];
 
