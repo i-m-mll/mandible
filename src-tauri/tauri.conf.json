@@ -25,6 +25,13 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["mandible"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["dmg", "app"],
