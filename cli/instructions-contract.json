@@ -51,6 +51,10 @@
       "description": "Find existing auth requests before submitting duplicates."
     },
     {
+      "name": "mandible auth check [--branch <branch>] [--repo <repo>] [--target <branch>] [--json]",
+      "description": "Report whether a merge is clean against the target and queued pairwise-independent requests."
+    },
+    {
       "name": "mandible auth request <branch> --title <text> --issue <id> [--closes-issue <id>] [--spec <text>] [--no-watch]",
       "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure."
     },
@@ -67,7 +71,7 @@
   "authLifecycle": [
     "Protected-branch merges are asynchronous: submit an auth request, stop, and let the user approve in Mandible.",
     "Approval and merge execution are user actions. Agents do not approve, merge, or bypass the auth queue.",
-    "At most one pending auth request should exist for the same repo/head/base; check `mandible auth list` first when unsure."
+    "Multiple pending merge requests may coexist when they are pairwise independent. Run `mandible auth check` before submitting when unsure; submission rejects clashes with file-level conflict context. Planned related branches still integrate first."
   ],
   "coordination": [
     "The umbrella issue is the coordinator; sessions are disposable role holders.",

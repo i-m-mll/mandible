@@ -2,6 +2,7 @@ import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
 import { execSync } from "node:child_process";
 import path from "node:path";
@@ -17,6 +18,16 @@ export function registerAuthRoutes(
 ): AuthQueue {
   const autoApproveManager = autoApprove ?? new AuthAutoApproveManager();
   const authQueue = queue ?? new AuthQueue({ autoApprover: autoApproveManager });
+  app.post("/api/auth/check", (req, res) => {
+    const payload = parseAuthCheckPayload(readBody<Record<string, unknown>>(req));
+    if (!payload) {
+      res.status(400).json({ error: "Invalid auth check payload." });
+      return;
+    }
+    const report = authQueue.checkMergeIndependence(payload);
+    res.status(200).json({ check: report });
+  });
+
   app.post("/api/auth/request", (req, res) => {
     const payload = parseAuthRequestPayload(readBody<Record<string, unknown>>(req));
     if (!payload) {
@@ -65,8 +76,12 @@ export function registerAuthRoutes(
       return;
     }
 
-    const request = authQueue.submit(payload);
-    res.status(201).json({ request_id: request.id });
+    try {
+      const request = authQueue.submit(payload);
+      res.status(201).json({ request_id: request.id });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
   });
 
   app.get("/api/auth/request/:id", (req, res) => {
@@ -398,6 +413,16 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
   };
 }
 
+function parseAuthCheckPayload(body: Record<string, unknown>): AuthMergeCheckInput | null {
+  return {
+    repo: typeof body.repo === "string" ? body.repo : null,
+    base_branch: typeof body.base_branch === "string" ? body.base_branch : null,
+    head_branch: typeof body.head_branch === "string" ? body.head_branch : null,
+    cwd: typeof body.cwd === "string" ? body.cwd : null,
+    request_id: typeof body.request_id === "string" ? body.request_id : null,
+  };
+}
+
 // Bug: 297677f — parse a string array field (for issues)
 function parseStringArray(value: unknown): string[] | null | undefined {
   if (value === null) return null;
@@ -597,6 +622,10 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
     // callers (including the dashboard) receive the specific error message
     if (error.code === "invalid_command") {
       res.status(422).json({ error: error.message });
+      return;
+    }
+    if (error.code === "merge_conflict") {
+      res.status(409).json({ error: error.message, check: error.details });
       return;
     }
   }

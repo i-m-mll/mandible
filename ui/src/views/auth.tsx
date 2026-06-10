@@ -216,6 +216,7 @@ function getResolvedAtMs(request: AuthRequest): number {
 }
 
 function isFailedLikeStatus(status: string, exitCode?: number | null): boolean {
+  if (status === 'needs_rebase') return true;
   if (status === 'expired') return true;
   if (status !== 'completed') return false;
   return exitCode != null && exitCode !== 0;
@@ -232,6 +233,7 @@ function isHistoryStatus(status: string, exitCode?: number | null): boolean {
 function getStatusLabel(request: AuthRequest): string {
   const status = getAuthStatus(request);
   if (status === 'approved' || status === 'executing') return 'Executing';
+  if (status === 'needs_rebase') return 'Needs rebase';
   if (status === 'completed') {
     if (request.exit_code != null && request.exit_code !== 0) return 'Failed';
     return 'Completed';
@@ -241,7 +243,7 @@ function getStatusLabel(request: AuthRequest): string {
 
 function getStatusClass(request: AuthRequest): string {
   const status = getAuthStatus(request);
-  if (status === 'completed' && request.exit_code != null && request.exit_code !== 0) {
+  if (isFailedLikeStatus(status, request.exit_code ?? null)) {
     return 'status-pill status-pill--failed';
   }
   return `status-pill status-pill--${status.toLowerCase()}`;
@@ -675,7 +677,11 @@ function AuthCard({
             <div className={`auth-failure${status === 'expired' ? ' auth-failure--expired' : ''}`}>
               <div className="auth-failure__header">
                 <span className="auth-failure__title">
-                  {status === 'expired' ? 'Expired' : 'Failed'}
+                  {status === 'expired'
+                    ? 'Expired'
+                    : status === 'needs_rebase'
+                      ? 'Needs rebase'
+                      : 'Failed'}
                 </span>
                 {request.exit_code != null && request.exit_code !== 0 && (
                   <span className="auth-failure__code">Exit {request.exit_code}</span>
@@ -683,7 +689,11 @@ function AuthCard({
               </div>
               <p className="auth-failure__summary">
                 {failureSummary ||
-                  (status === 'expired' ? 'Expired without a response.' : 'No output captured.')}
+                  (status === 'expired'
+                    ? 'Expired without a response.'
+                    : status === 'needs_rebase'
+                      ? 'Another auth merge changed the target branch; rebase and retry this request.'
+                      : 'No output captured.')}
               </p>
             </div>
           )}

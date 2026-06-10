@@ -10,6 +10,7 @@
 #   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
 #   description <subcommand>         Alias for issue description operations
 #   auth list [opts]                 List active auth requests
+#   auth check [opts]                Check queued merge independence
 #   auth request <branch> [opts]     Submit auth merge request
 #   auth merge <branch> [opts]       Execute authenticated merge
 #   logs <subcommand>                Inspect provider-native source logs
@@ -39,6 +40,7 @@ Commands:
   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
   description <subcommand>         Alias for issue description operations
   auth list [opts]                 List active auth requests
+  auth check [opts]                Check queued merge independence
   auth request <branch> [opts]     Submit auth merge request
   auth merge <branch> [opts]       Execute authenticated merge
   logs <subcommand>                Inspect provider-native source logs
@@ -56,6 +58,7 @@ Usage: mandible auth <subcommand> [args...]
 
 Subcommands:
   list [opts]                 List active auth requests
+  check [opts]                Check queued merge independence
   request <branch> [opts]     Submit auth merge request
   merge <branch> [opts]       Execute authenticated merge
 EOF
@@ -72,6 +75,7 @@ case "${1:-}" in
     case "${1:-}" in
       ""|-h|--help|help) auth_usage ;;
       list)    shift; exec "$MANDIBLE_CLI_DIR/auth-list.sh" "$@" ;;
+      check)   shift; exec "$MANDIBLE_CLI_DIR/auth-check.sh" "$@" ;;
       request) shift; exec "$MANDIBLE_CLI_DIR/auth-request.sh" "$@" ;;
       merge)   shift; exec "$MANDIBLE_CLI_DIR/auth-merge.sh" "$@" ;;
       *) echo "Unknown auth subcommand: ${1:-}" >&2; usage >&2; exit 1 ;;

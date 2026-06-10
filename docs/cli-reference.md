@@ -30,6 +30,7 @@ mandible issue markdown <audit|normalize|export> [opts]
 
 ## AUTH
 mandible auth list [--json] [--repo R] [--head B] [--base B] [--status S] [--type T]
+mandible auth check [--branch B] [--repo R] [--target B] [--cwd P] [--json]
 mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue <id>]...
   [--type merge|commit|force-push|branch-delete|config-change|preset-promote|data-delete]
   [--commit-message T] [--diff-summary T] [--spec T] [--handoff T] [--repo R]

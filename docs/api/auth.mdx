@@ -6,9 +6,40 @@ The auth queue manages protected-branch merges and other authenticated actions. 
 
 Auth request types: `merge`, `commit`, `force-push`, `branch-delete`, `config-change`, `preset-promote`, `data-delete`.
 
-Auth request statuses: `pending`, `executing`, `approved`, `completed`, `rejected`, `expired`, `dismissed`.
+Auth request statuses: `pending`, `executing`, `approved`, `needs_rebase`, `completed`, `rejected`, `expired`, `dismissed`.
 
 ## Endpoints
+
+### POST /api/auth/check
+
+Check whether a merge request is clean against its target branch and queued
+pairwise-independent merge requests. The check uses Git merge-tree objects and
+does not write to the worktree.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `cwd` | string | yes | Protected-branch worktree path used for Git checks |
+| `base_branch` | string | yes | Target branch |
+| `head_branch` | string | yes | Candidate branch |
+| `repo` | string | no | Repository name used to filter queued requests |
+| `request_id` | string | no | Existing request ID to exclude during revalidation |
+
+**Response:** `200 OK`
+
+```json
+{
+  "check": {
+    "status": "clean",
+    "repo": "myrepo",
+    "base_branch": "main",
+    "head_branch": "feature/foo",
+    "checked_requests": 2,
+    "conflicts": []
+  }
+}
+```
 
 ### POST /api/auth/request
 
@@ -47,7 +78,7 @@ Submit a new auth request.
 
 **Error responses:**
 - `400` — Invalid payload
-- `409` — Duplicate request exists (returns `request_id` and `status` of existing request)
+- `409` — Duplicate request exists, or merge-tree independence check found a conflict
 
 ```bash
 curl -X POST http://localhost:19420/api/auth/request \

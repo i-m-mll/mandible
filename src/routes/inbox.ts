@@ -111,6 +111,7 @@ function computeOutcome(row: AuthResultRow): AuthRequestOutcome {
     case "rejected":  return "rejected";
     case "dismissed": return "dismissed";
     case "expired":   return "expired";
+    case "needs_rebase": return "needs_rebase";
     case "completed":
       return (row.exit_code != null && row.exit_code !== 0) ? "failed" : "succeeded";
     default:
@@ -129,7 +130,7 @@ const COLUMNS_AUTH_RESULT =
   "id, title, status, exit_code, error, head_branch, resolved_at, repo, base_branch, " +
   "post_merge_handoff, issue_references, issue_closures, issue_ids, target_session_id, target_repo_root, delivered_at";
 
-const RESOLVED_STATUSES = "('completed', 'rejected', 'expired', 'dismissed')";
+const RESOLVED_STATUSES = "('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase')";
 
 interface TierRow {
   row: AuthResultRow;
@@ -555,7 +556,7 @@ export function registerInboxRoutes(
            AND delivered_at IS NULL
            AND resolved_at IS NOT NULL
            AND acknowledged_by IS NULL
-           AND status IN ('completed', 'rejected', 'expired', 'dismissed')
+           AND status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase')
          ORDER BY resolved_at ASC`;
       params = [targetSessionId, conversationId];
     } else {
@@ -566,7 +567,7 @@ export function registerInboxRoutes(
            AND delivered_at IS NULL
            AND resolved_at IS NOT NULL
            AND acknowledged_by IS NULL
-           AND status IN ('completed', 'rejected', 'expired', 'dismissed')
+           AND status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase')
          ORDER BY resolved_at ASC`;
       params = [targetSessionId];
     }
@@ -638,7 +639,7 @@ export function registerInboxRoutes(
       "UPDATE sessions SET continuation_acked_by = 'bulk' WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
     ).run();
     db.prepare(
-      "UPDATE auth_requests SET acknowledged_by = 'bulk' WHERE status IN ('completed', 'rejected', 'expired', 'dismissed') AND acknowledged_by IS NULL"
+      "UPDATE auth_requests SET acknowledged_by = 'bulk' WHERE status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
     ).run();
     sendJson(res, 200, { ok: true });
   });

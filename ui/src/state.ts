@@ -622,7 +622,7 @@ function selectBadgeCounts(state: AppState): {
   }).length;
   const auth = authQueue.filter((request) => {
     const status = (request.status || request.state || '').toLowerCase();
-    return !status || status === 'pending';
+    return !status || status === 'pending' || status === 'needs_rebase';
   }).length;
   const work = workBranches.reduce((total, branches) => {
     if (!Array.isArray(branches)) {

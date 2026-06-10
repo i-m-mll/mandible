@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
@@ -28,18 +29,47 @@ const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
 ];
 
 export class AuthQueueError extends Error {
-  readonly code: "not_found" | "invalid_status" | "invalid_command";
+  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict";
   readonly status?: AuthRequestStatus;
+  readonly details?: unknown;
 
   constructor(
-    code: "not_found" | "invalid_status" | "invalid_command",
+    code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict",
     message: string,
-    status?: AuthRequestStatus
+    status?: AuthRequestStatus,
+    details?: unknown
   ) {
     super(message);
     this.code = code;
     this.status = status;
+    this.details = details;
   }
+}
+
+export interface AuthMergeCheckInput {
+  repo?: string | null;
+  base_branch?: string | null;
+  head_branch?: string | null;
+  cwd?: string | null;
+  request_id?: string | null;
+}
+
+export interface AuthMergeConflict {
+  scope: "target" | "queue";
+  request_id: string | null;
+  head_branch: string | null;
+  files: string[];
+  message: string;
+}
+
+export interface AuthMergeCheckReport {
+  status: "clean" | "conflict" | "unknown";
+  repo: string | null;
+  base_branch: string | null;
+  head_branch: string | null;
+  checked_requests: number;
+  conflicts: AuthMergeConflict[];
+  reason?: string;
 }
 
 export interface AuthQueueOptions {
@@ -238,6 +268,18 @@ export class AuthQueue {
   }
 
   submit(payload: AuthRequestInput): AuthRequest {
+    const mergeCheck = this.checkMergeIndependence(payload);
+    if (mergeCheck.status === "conflict") {
+      const firstConflict = mergeCheck.conflicts[0];
+      const files = firstConflict?.files.length ? ` (${firstConflict.files.join(", ")})` : "";
+      throw new AuthQueueError(
+        "merge_conflict",
+        `Auth request conflicts with ${firstConflict?.scope === "queue" ? `pending request ${firstConflict.request_id?.slice(0, 8)}` : "the target branch"}${files}. Consolidate the branches onto an integration branch or rebase before submitting.`,
+        undefined,
+        mergeCheck
+      );
+    }
+
     const now = this.now();
     const request: AuthRequest = {
       id: randomUUID(),
@@ -404,6 +446,107 @@ export class AuthQueue {
     return request;
   }
 
+  checkMergeIndependence(input: AuthMergeCheckInput): AuthMergeCheckReport {
+    const repo = input.repo ?? null;
+    const baseBranch = input.base_branch ?? null;
+    const headBranch = input.head_branch ?? null;
+    const cwd = input.cwd ?? null;
+
+    if (!baseBranch || !headBranch || !cwd) {
+      return {
+        status: "unknown",
+        repo,
+        base_branch: baseBranch,
+        head_branch: headBranch,
+        checked_requests: 0,
+        conflicts: [],
+        reason: "base_branch, head_branch, and cwd are required for merge checks"
+      };
+    }
+
+    const candidateTarget = this.mergeTree(cwd, baseBranch, headBranch);
+    if (!candidateTarget.clean) {
+      return {
+        status: "conflict",
+        repo,
+        base_branch: baseBranch,
+        head_branch: headBranch,
+        checked_requests: 0,
+        conflicts: [{
+          scope: "target",
+          request_id: null,
+          head_branch: headBranch,
+          files: candidateTarget.files,
+          message: candidateTarget.message
+        }]
+      };
+    }
+
+    let simulatedBase = baseBranch;
+    let checked = 0;
+    const pending = this.pendingMergeRequestsForCheck({
+      repo,
+      baseBranch,
+      excludeId: input.request_id ?? null,
+    });
+
+    for (const request of pending) {
+      if (!request.head_branch) {
+        continue;
+      }
+      checked += 1;
+      const pendingResult = this.mergeTree(cwd, simulatedBase, request.head_branch);
+      if (!pendingResult.clean) {
+        return {
+          status: "conflict",
+          repo,
+          base_branch: baseBranch,
+          head_branch: headBranch,
+          checked_requests: checked,
+          conflicts: [{
+            scope: "queue",
+            request_id: request.id,
+            head_branch: request.head_branch,
+            files: pendingResult.files,
+            message: pendingResult.message
+          }]
+        };
+      }
+      simulatedBase = this.createSyntheticMergeCommit(
+        cwd,
+        pendingResult.tree!,
+        simulatedBase,
+        request.head_branch
+      );
+      const candidateAfterPending = this.mergeTree(cwd, simulatedBase, headBranch);
+      if (!candidateAfterPending.clean) {
+        return {
+          status: "conflict",
+          repo,
+          base_branch: baseBranch,
+          head_branch: headBranch,
+          checked_requests: checked,
+          conflicts: [{
+            scope: "queue",
+            request_id: request.id,
+            head_branch: request.head_branch,
+            files: candidateAfterPending.files,
+            message: candidateAfterPending.message
+          }]
+        };
+      }
+    }
+
+    return {
+      status: "clean",
+      repo,
+      base_branch: baseBranch,
+      head_branch: headBranch,
+      checked_requests: checked,
+      conflicts: []
+    };
+  }
+
   getRequest(id: string): AuthRequest | null {
     this.expireStale();
     // Bug: caa157e — support UUID prefix matching
@@ -553,7 +696,7 @@ export class AuthQueue {
     const rows = this.db
       .prepare(
         "SELECT * FROM auth_requests WHERE " +
-          "status IN ('pending', 'approved', 'executing', 'expired') " +
+          "status IN ('pending', 'approved', 'executing', 'expired', 'needs_rebase') " +
           "OR (status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0) " +
           "OR (status IN ('completed', 'rejected', 'dismissed') AND resolved_at >= ?) " +
           "ORDER BY created_at ASC"
@@ -823,6 +966,9 @@ export class AuthQueue {
       event: "auth:resolved",
       data: this.buildResolvedPayload(completed)
     });
+    if (exitCode === 0) {
+      this.afterSuccessfulMerge(completed);
+    }
     return completed;
   }
 
@@ -1073,18 +1219,153 @@ export class AuthQueue {
     // stale duplicates (retries, corrected-CWD resubmissions) — approving them
     // would waste a YubiKey tap on a branch that no longer exists.
     if (exitCode === 0) {
-      this.autoDismissDuplicates(completed);
-      this.applyLedgerCompletionForRequest(completed);
-      // Bug: 8a281b3 — resolve work units on successful auth merge (best-effort;
-      // work_units table may not exist in test DBs or fresh installs mid-migration)
-      if (this.tableExists("work_units")) {
-        try {
-          this.resolveWorkUnitsOnMerge(completed);
-        } catch (err) {
-          console.warn(
-            `[auth-queue] failed to resolve work units after merge: ${err instanceof Error ? err.message : String(err)}`
-          );
+      this.afterSuccessfulMerge(completed);
+    }
+  }
+
+  private afterSuccessfulMerge(completed: AuthRequest): void {
+    this.autoDismissDuplicates(completed);
+    this.revalidatePendingMergeRequests(completed);
+    this.applyLedgerCompletionForRequest(completed);
+    // Bug: 8a281b3 — resolve work units on successful auth merge (best-effort;
+    // work_units table may not exist in test DBs or fresh installs mid-migration)
+    if (this.tableExists("work_units")) {
+      try {
+        this.resolveWorkUnitsOnMerge(completed);
+      } catch (err) {
+        console.warn(
+          `[auth-queue] failed to resolve work units after merge: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+  }
+
+  private pendingMergeRequestsForCheck({
+    repo,
+    baseBranch,
+    excludeId,
+  }: {
+    repo: string | null;
+    baseBranch: string;
+    excludeId: string | null;
+  }): AuthRequest[] {
+    const args: unknown[] = [baseBranch];
+    let where = "type = 'merge' AND base_branch = ? AND head_branch IS NOT NULL " +
+      "AND status IN ('pending', 'approved', 'executing')";
+    if (repo) {
+      where += " AND repo = ?";
+      args.push(repo);
+    }
+    if (excludeId) {
+      where += " AND id != ?";
+      args.push(excludeId);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM auth_requests WHERE ${where} ` +
+          "ORDER BY COALESCE(skipped_at, created_at) ASC, created_at ASC"
+      )
+      .all(...args) as Record<string, unknown>[];
+    return rows.map((row) => mapRow(row));
+  }
+
+  private mergeTree(
+    cwd: string,
+    base: string,
+    head: string
+  ): { clean: true; tree: string; files: string[]; message: string } | { clean: false; files: string[]; message: string } {
+    try {
+      const stdout = execFileSync("git", ["merge-tree", "--write-tree", base, head], {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024
+      }).trim();
+      const tree = stdout.split(/\s+/)[0] ?? "";
+      if (!tree) {
+        return { clean: false, files: [], message: "git merge-tree did not return a tree" };
+      }
+      return { clean: true, tree, files: [], message: "clean" };
+    } catch (error) {
+      const output = outputFromExecError(error);
+      return {
+        clean: false,
+        files: conflictFilesFromMergeTreeOutput(output, cwd, base, head),
+        message: output.trim() || "git merge-tree reported a conflict"
+      };
+    }
+  }
+
+  private createSyntheticMergeCommit(
+    cwd: string,
+    tree: string,
+    firstParent: string,
+    secondParent: string
+  ): string {
+    return execFileSync(
+      "git",
+      ["commit-tree", tree, "-p", firstParent, "-p", secondParent, "-m", "mandible auth check synthetic merge"],
+      {
+        cwd,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Mandible",
+          GIT_AUTHOR_EMAIL: "mandible@localhost",
+          GIT_COMMITTER_NAME: "Mandible",
+          GIT_COMMITTER_EMAIL: "mandible@localhost"
         }
+      }
+    ).trim();
+  }
+
+  private revalidatePendingMergeRequests(completed: AuthRequest): void {
+    if (!completed.repo || !completed.base_branch || !completed.cwd) {
+      return;
+    }
+    const pending = this.pendingMergeRequestsForCheck({
+      repo: completed.repo,
+      baseBranch: completed.base_branch,
+      excludeId: completed.id,
+    }).filter((request) => request.status === "pending");
+    if (pending.length === 0) {
+      return;
+    }
+
+    const now = this.now();
+    const markNeedsRebase = this.db.prepare(
+      "UPDATE auth_requests SET status = 'needs_rebase', resolved_at = ?, updated_at = ?, error = ? WHERE id = ? AND status = 'pending'"
+    );
+
+    for (const request of pending) {
+      const report = this.checkMergeIndependence({
+        request_id: request.id,
+        repo: request.repo,
+        base_branch: request.base_branch,
+        head_branch: request.head_branch,
+        cwd: request.cwd ?? completed.cwd,
+      });
+      if (report.status !== "conflict") {
+        continue;
+      }
+      const conflict = report.conflicts[0];
+      const files = conflict?.files.length ? ` Files: ${conflict.files.join(", ")}.` : "";
+      const reason =
+        `Needs rebase: ${request.head_branch ?? request.id.slice(0, 8)} conflicts after ` +
+        `${completed.head_branch ?? completed.id.slice(0, 8)} merged.${files}`;
+      const result = markNeedsRebase.run(now, now, reason, request.id);
+      if (result.changes === 0) {
+        continue;
+      }
+      const invalidated = this.getRequest(request.id);
+      if (invalidated) {
+        this.broadcast({
+          event: "auth:resolved",
+          data: this.buildResolvedPayload(invalidated)
+        });
+        this.broadcast({
+          event: "auth:needs_rebase",
+          data: { request: invalidated, check: report }
+        });
       }
     }
   }
@@ -1299,6 +1580,8 @@ export class AuthQueue {
         return "dismissed";
       case "expired":
         return "expired";
+      case "needs_rebase":
+        return "needs_rebase";
       case "completed":
         return (request.exit_code != null && request.exit_code !== 0) ? "failed" : "succeeded";
       default:
@@ -1343,7 +1626,7 @@ export class AuthQueue {
   }
 
   private isFailedLike(request: AuthRequest): boolean {
-    if (request.status === "expired") {
+    if (request.status === "expired" || request.status === "needs_rebase") {
       return true;
     }
     if (request.status !== "completed") {
@@ -1442,6 +1725,57 @@ function extractIssueIdsFromCommitMessage(commitMessage: string | null | undefin
   let m;
   while ((m = regex.exec(commitMessage)) !== null) refs.push(m[1]);
   return refs.length > 0 ? refs : null;
+}
+
+function outputFromExecError(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return String(error ?? "");
+  }
+  const maybe = error as { stdout?: unknown; stderr?: unknown; message?: unknown };
+  const stdout = Buffer.isBuffer(maybe.stdout) ? maybe.stdout.toString("utf8") : String(maybe.stdout ?? "");
+  const stderr = Buffer.isBuffer(maybe.stderr) ? maybe.stderr.toString("utf8") : String(maybe.stderr ?? "");
+  const message = typeof maybe.message === "string" ? maybe.message : "";
+  return [stdout, stderr, message].filter(Boolean).join("\n");
+}
+
+function conflictFilesFromMergeTreeOutput(
+  output: string,
+  cwd: string,
+  base: string,
+  head: string
+): string[] {
+  const files = new Set<string>();
+  const patterns = [
+    /CONFLICT \([^)]+\): .* in (.+)$/gm,
+    /^Auto-merging (.+)$/gm,
+    /^changed in both\s+(.+)$/gm,
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(output)) !== null) {
+      const file = match[1]?.trim();
+      if (file) {
+        files.add(file);
+      }
+    }
+  }
+  if (files.size === 0) {
+    try {
+      const diff = execFileSync("git", ["diff", "--name-only", `${base}...${head}`], {
+        cwd,
+        encoding: "utf8",
+      });
+      for (const line of diff.split("\n")) {
+        const file = line.trim();
+        if (file) {
+          files.add(file);
+        }
+      }
+    } catch {
+      // Best-effort context only; the merge-tree message remains authoritative.
+    }
+  }
+  return Array.from(files).sort();
 }
 
 function mapRow(row: Record<string, unknown>): AuthRequest {

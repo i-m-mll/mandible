@@ -1,7 +1,11 @@
 import Database from "better-sqlite3";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { AuthQueue } from "../src/auth-queue.js";
+import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { SseEvent } from "../src/types.js";
 
 function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
@@ -19,6 +23,38 @@ async function waitForStatus(queue: AuthQueue, id: string, status: string, timeo
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`Timed out waiting for status ${status}`);
+}
+
+function git(cwd: string, args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function writeFile(repo: string, relativePath: string, content: string): void {
+  const fullPath = path.join(repo, relativePath);
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+  fs.writeFileSync(fullPath, content, "utf8");
+}
+
+function createAuthCheckRepo(): string {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-check-"));
+  git(repo, ["init", "-b", "main"]);
+  git(repo, ["config", "user.name", "Mandible Test"]);
+  git(repo, ["config", "user.email", "mandible-test@localhost"]);
+  git(repo, ["config", "commit.gpgsign", "false"]);
+  writeFile(repo, "shared.txt", "base\n");
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-m", "init"]);
+  return repo;
+}
+
+function commitOnBranch(repo: string, branch: string, changes: Record<string, string>): void {
+  git(repo, ["checkout", "-b", branch, "main"]);
+  for (const [file, content] of Object.entries(changes)) {
+    writeFile(repo, file, content);
+  }
+  git(repo, ["add", "."]);
+  git(repo, ["commit", "-m", branch]);
+  git(repo, ["checkout", "main"]);
 }
 
 describe("auth queue", () => {
@@ -254,6 +290,137 @@ describe("auth queue", () => {
 
     const stillPending = queue.getRequest(first.id);
     expect(stillPending?.status).toBe("pending");
+  });
+
+  it("accepts pairwise-independent pending merge requests", () => {
+    const repo = createAuthCheckRepo();
+    const queue = createQueue();
+    try {
+      commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
+      commitOnBranch(repo, "feature/b", { "b.txt": "b\n" });
+
+      const first = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/a --into main",
+        title: "Merge feature/a",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/a",
+        cwd: repo,
+      });
+      const check = queue.checkMergeIndependence({
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/b",
+        cwd: repo,
+      });
+      expect(check.status).toBe("clean");
+      expect(check.checked_requests).toBe(1);
+
+      const second = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/b --into main",
+        title: "Merge feature/b",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/b",
+        cwd: repo,
+      });
+
+      expect(queue.getRequest(first.id)?.status).toBe("pending");
+      expect(queue.getRequest(second.id)?.status).toBe("pending");
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a pending merge request that conflicts with the queued simulation", () => {
+    const repo = createAuthCheckRepo();
+    const queue = createQueue();
+    try {
+      commitOnBranch(repo, "feature/a", { "shared.txt": "a\n" });
+      commitOnBranch(repo, "feature/b", { "shared.txt": "b\n" });
+
+      const first = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/a --into main",
+        title: "Merge feature/a",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/a",
+        cwd: repo,
+      });
+
+      const check = queue.checkMergeIndependence({
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/b",
+        cwd: repo,
+      });
+      expect(check.status).toBe("conflict");
+      expect(check.conflicts[0]?.request_id).toBe(first.id);
+      expect(check.conflicts[0]?.files).toContain("shared.txt");
+
+      expect(() => queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/b --into main",
+        title: "Merge feature/b",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/b",
+        cwd: repo,
+      })).toThrow(AuthQueueError);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("marks pending merge requests needs_rebase after post-merge revalidation", () => {
+    const repo = createAuthCheckRepo();
+    const db = new Database(":memory:");
+    const events: SseEvent[] = [];
+    const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
+    try {
+      commitOnBranch(repo, "feature/a", { "shared.txt": "a\n" });
+      commitOnBranch(repo, "feature/b", { "shared.txt": "b\n" });
+
+      const pending = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/b --into main",
+        title: "Merge feature/b",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/b",
+        cwd: repo,
+      });
+      const now = 100;
+      db.prepare(
+        `INSERT INTO auth_requests (
+          id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
+          status, created_at, updated_at, expires_at, output, execution_mode,
+          files_changed, additions, deletions, approval_source
+        ) VALUES (
+          'merge-a', NULL, 'merge', 'mandible auth merge feature/a --into main',
+          'Merge feature/a', ?, 'repo', 'main', 'feature/a',
+          'executing', ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual'
+        )`
+      ).run(repo, now, now, now + 1000);
+
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/a", "-m", "merge feature/a"]);
+      queue.setResult("merge-a", 0, "ok");
+
+      const invalidated = queue.getRequest(pending.id);
+      expect(invalidated?.status).toBe("needs_rebase");
+      expect(invalidated?.error).toContain("Needs rebase");
+      expect(events.some((event) => event.event === "auth:needs_rebase")).toBe(true);
+      expect(events.some((event) => {
+        const data = event.data as Record<string, unknown>;
+        return event.event === "auth:resolved" && data.request_id === pending.id;
+      })).toBe(true);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it("expires stale requests", () => {
