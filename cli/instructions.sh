@@ -10,7 +10,7 @@ usage() {
   cat <<'EOF'
 Usage:
   mandible instructions diff [--target <file>]
-  mandible instructions install [--target <file>]
+  mandible instructions install [--target <file>] [--worktree <path>] [--force]
 EOF
 }
 
@@ -55,6 +55,103 @@ render_block() {
   printf '%s\n' "$BEGIN_MARKER"
   render_fragment
   printf '\n%s\n' "$END_MARKER"
+}
+
+absolute_path() {
+  node - "$1" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+const target = path.resolve(process.argv[2]);
+try {
+  process.stdout.write(fs.realpathSync.native(target));
+} catch {
+  const parent = fs.realpathSync.native(path.dirname(target));
+  process.stdout.write(path.join(parent, path.basename(target)));
+}
+NODE
+}
+
+git_root_for_path() {
+  local path="$1"
+  local dir
+  if [[ -d "$path" ]]; then
+    dir="$path"
+  else
+    dir="$(dirname "$path")"
+  fi
+  git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true
+}
+
+repo_relative_path() {
+  local root="$1"
+  local target="$2"
+  node - "$root" "$target" <<'NODE'
+const path = require("node:path");
+const root = path.resolve(process.argv[2]);
+const target = path.resolve(process.argv[3]);
+const relative = path.relative(root, target);
+if (relative.startsWith("..") || path.isAbsolute(relative)) {
+  process.exit(1);
+}
+process.stdout.write(relative);
+NODE
+}
+
+map_target_to_worktree() {
+  local target="$1"
+  local worktree="$2"
+  local target_abs worktree_abs source_root rel
+  target_abs="$(absolute_path "$target")"
+  worktree_abs="$(absolute_path "$worktree")"
+  if rel="$(repo_relative_path "$worktree_abs" "$target_abs" 2>/dev/null)"; then
+    printf '%s\n' "$target_abs"
+    return 0
+  fi
+  source_root="$(git_root_for_path "$target_abs")"
+  if [[ -z "$source_root" ]]; then
+    printf 'Cannot map target outside a git worktree: %s\n' "$target" >&2
+    return 2
+  fi
+  if ! rel="$(repo_relative_path "$source_root" "$target_abs")"; then
+    printf 'Cannot map target outside source repo root: %s\n' "$target" >&2
+    return 2
+  fi
+  printf '%s/%s\n' "$worktree_abs" "$rel"
+}
+
+tracked_file_on_protected_branch() {
+  local target="$1"
+  local root rel branch protected
+  root="$(git_root_for_path "$target")"
+  [[ -n "$root" ]] || return 1
+  rel="$(repo_relative_path "$root" "$(absolute_path "$target")")" || return 1
+  git -C "$root" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || return 1
+  branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  [[ -n "$branch" ]] || return 1
+  if git -C "$root" show-ref --verify --quiet refs/heads/develop; then
+    protected="develop"
+  else
+    protected="main"
+  fi
+  [[ "$branch" == "$protected" ]]
+}
+
+guard_install_target() {
+  local target="$1"
+  local force="$2"
+  [[ "$force" == "1" ]] && return 0
+  if tracked_file_on_protected_branch "$target"; then
+    cat >&2 <<EOF
+Refusing to install Mandible instructions into a tracked file on the protected branch:
+  $target
+
+Install into a feature worktree instead, for example:
+  mandible instructions install --target "$target" --worktree <feature-worktree>
+
+Use --force only when you intentionally want to bypass this guard.
+EOF
+    return 3
+  fi
 }
 
 write_desired_file() {
@@ -127,12 +224,22 @@ diff_block() {
 subcommand="${1:-}"
 shift || true
 target="$(default_target)"
+worktree=""
+force=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target)
       target="${2:?--target requires a value}"
       shift 2
+      ;;
+    --worktree)
+      worktree="${2:?--worktree requires a value}"
+      shift 2
+      ;;
+    --force)
+      force=1
+      shift
       ;;
     -h|--help)
       usage
@@ -146,9 +253,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$worktree" ]]; then
+  target="$(map_target_to_worktree "$target" "$worktree")"
+fi
+
 case "$subcommand" in
   diff) diff_block "$target" ;;
-  install) install_block "$target" ;;
+  install)
+    guard_install_target "$target" "$force"
+    install_block "$target"
+    ;;
   ""|-h|--help|help) usage ;;
   *)
     printf 'Unknown instructions subcommand: %s\n' "$subcommand" >&2

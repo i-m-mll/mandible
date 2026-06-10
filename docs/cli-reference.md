@@ -75,7 +75,7 @@ mandible artifact bundle check <bundle-ref> [--json]
 
 ## INSTRUCTIONS
 mandible instructions diff [--target <file>]
-mandible instructions install [--target <file>]
+mandible instructions install [--target <file>] [--worktree <path>] [--force]
 
 ## INBOX / TASK / MISC
 mandible inbox [check|add "text"|ack <type> <id>|watch <request-id>]
