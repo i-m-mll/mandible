@@ -1169,7 +1169,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       git("commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234");
       git("checkout", "main");
 
-      const db = new Database(":memory:");
+      const db = setupInMemoryDb();
       const queue = new AuthQueue({ db });
       registerWorkRepo(db, repoRoot);
       const app = new TestRouteRegistrar();
@@ -1215,7 +1215,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       git("checkout", "-b", "feature/mandible-issue");
       git("commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234");
 
-      const db = new Database(":memory:");
+      const db = setupInMemoryDb();
       const queue = new AuthQueue({ db });
       registerWorkRepo(db, repoRoot);
       const app = new TestRouteRegistrar();
