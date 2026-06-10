@@ -6,7 +6,7 @@ This guide walks through the complete lifecycle of an authenticated operation, f
 
 The agent has been working in a feature branch worktree — say `feature/add-dark-mode`. It has made commits using the agent signing key, each with a `Mandible-Issue:` trailer linking to the tracking issue. The work is done, tests pass, and the agent is ready to merge into the protected branch.
 
-At this point, the agent cannot merge directly. The protected branch requires user authentication (a YubiKey signature). If the agent needs to check whether a request already exists and does not know the request ID, it first runs `mandible auth list --repo <repo> --head <branch> --base <branch>`. Then it submits an auth request.
+At this point, the agent cannot merge directly. The protected branch requires user authentication (a YubiKey signature). If the agent needs to check whether a request already exists and does not know the request ID, it first runs `mandible auth list --repo <repo> --head <branch> --base <branch>`. If other requests are already queued for the repo, it can run `mandible auth check --branch <branch> --repo <repo>` to confirm pairwise independence before submitting. Then it submits an auth request.
 
 ## 2. Submitting the Auth Request
 
@@ -220,7 +220,7 @@ This asynchronous delivery model means the agent doesn't need to be running when
 
 ### Merge Conflict
 
-If the merge has conflicts, the command exits with a non-zero code. The request is marked as `completed` with a non-zero `exit_code`, and the error output shows the conflict details. The user can:
+If the merge has conflicts, the command exits with a non-zero code. The request is marked as `completed` with a non-zero `exit_code`, and the error output shows the conflict details. If another approved merge invalidates a still-pending request before approval, Mandible moves that request to `needs_rebase` and delivers the result to the submitting session's inbox. The user or agent can:
 - Have the agent resolve conflicts on the feature branch.
 - Retry the request after resolution.
 
@@ -254,4 +254,4 @@ curl -s http://localhost:19420/api/auth/queue
 curl -s http://localhost:19420/api/auth/history?limit=10
 ```
 
-The queue endpoint returns pending, approved, executing, expired, failed, and recently resolved requests — everything the user might need to act on.
+The queue endpoint returns pending, approved, executing, needs-rebase, expired, failed, and recently resolved requests — everything the user might need to act on.

@@ -99,6 +99,7 @@ export type AuthRequestStatus =
   | "pending"
   | "executing"
   | "approved"   // legacy — kept for DB backward compat, recovery converts to executing
+  | "needs_rebase"
   | "rejected"
   | "expired"
   | "completed"
@@ -108,6 +109,7 @@ export type AuthRequestStatus =
 export type AuthRequestOutcome =
   | "succeeded"   // completed with exit_code === 0
   | "failed"      // completed with exit_code !== 0
+  | "needs_rebase" // queued merge was invalidated by another completed merge
   | "rejected"    // user rejected
   | "dismissed"   // dismissed without executing
   | "expired"     // TTL elapsed before execution

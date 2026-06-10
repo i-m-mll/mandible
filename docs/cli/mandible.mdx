@@ -156,6 +156,19 @@ already exist but the request ID is unknown.
 | `--status <status>` | Filter by request status |
 | `--type <type>` | Filter by auth request type |
 
+### mandible auth check
+
+Check whether a branch can merge cleanly against the target branch and the
+current pairwise-independent auth queue.
+
+```
+mandible auth check [--branch <branch>] [--repo <name>] [--target <branch>] [--cwd <path>] [--json]
+```
+
+The check uses Git's merge-tree machinery and does not write to the worktree.
+It reports target conflicts first, then the queued request that makes the
+candidate conflict in queue order.
+
 ### mandible auth request
 
 Submit an auth request and optionally watch for resolution.

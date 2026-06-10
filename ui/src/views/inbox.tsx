@@ -49,7 +49,7 @@ export interface InboxContinuation {
 export interface InboxAuthResult {
   id: string;
   title: string;
-  status: 'completed' | 'rejected' | 'expired' | 'dismissed';
+  status: 'completed' | 'rejected' | 'expired' | 'dismissed' | 'needs_rebase';
   exit_code: number | null;
   error: string | null;
   head_branch: string | null;
@@ -140,7 +140,7 @@ function itemBorderColor(item: UnifiedItem): string {
   if (item.type === 'preset_diff') return '#f5c25c'; // accent-yellow for preset diffs
   const ar = item.raw as InboxAuthResult;
   if (ar.status === 'completed') return '#34d399';
-  if (ar.status === 'rejected' || ar.status === 'expired') return '#f87171';
+  if (ar.status === 'rejected' || ar.status === 'expired' || ar.status === 'needs_rebase') return '#f87171';
   if (ar.status === 'dismissed') return '#9ca3af';
   return '#9ca3af';
 }
@@ -487,9 +487,12 @@ function AuthResultDetail({
   const statusColor =
     item.status === 'completed'
       ? '#34d399'
-      : item.status === 'rejected' || item.status === 'expired'
+      : item.status === 'rejected' || item.status === 'expired' || item.status === 'needs_rebase'
         ? '#f87171'
         : '#9ca3af';
+  const statusLabel = item.status === 'needs_rebase'
+    ? 'Needs rebase'
+    : item.status.charAt(0).toUpperCase() + item.status.slice(1);
 
   return (
     <div className="inbox-detail__content">
@@ -498,7 +501,7 @@ function AuthResultDetail({
           className="inbox-detail__type-badge"
           style={{ color: statusColor, background: `${statusColor}22` }}
         >
-          {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
+          {statusLabel}
         </span>
         <h2 className="inbox-detail__title">{item.title || 'Auth Request'}</h2>
       </div>

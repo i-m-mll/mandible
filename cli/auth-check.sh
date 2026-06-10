@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# mandible auth check: Check whether a branch is independent from the auth queue.
+#
+# Usage: mandible auth check [--branch <branch>] [--repo <name>] [--target <branch>] [--cwd <path>] [--json]
+
+set -euo pipefail
+
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
+
+branch=""
+repo=""
+target_override=""
+cwd_override=""
+json=0
+
+usage() {
+  sed -n '2,/^$/{ s/^# //; s/^#$//; p; }' "$0"
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --branch) branch="${2:?--branch requires a value}"; shift 2 ;;
+    --repo) repo="${2:?--repo requires a value}"; shift 2 ;;
+    --target|--base) target_override="${2:?--target requires a value}"; shift 2 ;;
+    --cwd) cwd_override="${2:?--cwd requires a value}"; shift 2 ;;
+    --json) json=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *)
+      if [[ -z "$branch" ]]; then
+        branch="$1"
+      else
+        echo "Unexpected argument: $1" >&2
+        exit 2
+      fi
+      shift
+      ;;
+  esac
+done
+
+detect_protected_branch() {
+  if git show-ref --verify --quiet refs/heads/develop 2>/dev/null; then
+    echo "develop"
+  else
+    echo "main"
+  fi
+}
+
+if [[ -z "$branch" ]]; then
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+fi
+if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
+  echo "Error: could not determine branch; pass --branch." >&2
+  exit 2
+fi
+
+if [[ -n "$target_override" ]]; then
+  base_branch="$target_override"
+else
+  base_branch=$(detect_protected_branch)
+fi
+
+if [[ -n "$cwd_override" ]]; then
+  target_cwd="$cwd_override"
+else
+  target_cwd=""
+  current_wt=""
+  while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+      current_wt="${line#worktree }"
+    elif [[ "$line" == "branch refs/heads/${base_branch}" ]]; then
+      target_cwd="$current_wt"
+      break
+    fi
+  done < <(git worktree list --porcelain 2>/dev/null)
+fi
+if [[ -z "$target_cwd" ]]; then
+  echo "Error: cannot find worktree for target branch '${base_branch}'" >&2
+  exit 1
+fi
+
+if [[ -z "$repo" ]]; then
+  repo=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")" 2>/dev/null) || repo=""
+fi
+
+payload=$(jq -nc \
+  --arg repo "$repo" \
+  --arg base_branch "$base_branch" \
+  --arg head_branch "$branch" \
+  --arg cwd "$target_cwd" \
+  '{
+    repo: (if $repo == "" then null else $repo end),
+    base_branch: $base_branch,
+    head_branch: $head_branch,
+    cwd: $cwd
+  }')
+
+response=$(api_send POST "/api/auth/check" "$payload") || {
+  echo "Error: could not reach Mandible daemon at ${MANDIBLE_BASE}." >&2
+  exit 1
+}
+
+if [[ "$json" == "1" ]]; then
+  printf '%s\n' "$response"
+  status=$(printf '%s' "$response" | jq -r '.check.status // "unknown"')
+  [[ "$status" == "clean" ]]
+  exit $?
+fi
+
+status=$(printf '%s' "$response" | jq -r '.check.status // "unknown"')
+checked=$(printf '%s' "$response" | jq -r '.check.checked_requests // 0')
+case "$status" in
+  clean)
+    printf 'Auth check: clean (%s pending request(s) checked)\n' "$checked"
+    exit 0
+    ;;
+  conflict)
+    printf 'Auth check: conflict\n' >&2
+    printf '%s\n' "$response" | jq -r '
+      .check.conflicts[]
+      | "- " + .scope + ": " + (.request_id // "target") + " " + (.head_branch // "") +
+        (if (.files | length) > 0 then " [" + (.files | join(", ")) + "]" else "" end)
+    ' >&2
+    exit 1
+    ;;
+  *)
+    reason=$(printf '%s' "$response" | jq -r '.check.reason // "unknown"')
+    printf 'Auth check: unknown: %s\n' "$reason" >&2
+    exit 1
+    ;;
+esac

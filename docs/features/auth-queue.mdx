@@ -26,17 +26,20 @@ An auth request moves through a well-defined state machine:
 
 ```
 pending → executing → completed (exit_code 0 = success, non-zero = failure)
+pending → needs_rebase (post-merge revalidation found a new conflict)
 pending → rejected
 pending → expired (TTL exceeded, default 24 hours)
 pending → dismissed (manually dismissed by user or auto-dismissed after a sibling succeeds)
 completed (failed) → pending (via retry)
 expired → pending (via retry)
+needs_rebase → pending (via retry after rebasing or integration)
 ```
 
 ### Statuses
 
 - **pending** — Waiting for the user to act. The request is visible in the dashboard queue.
 - **executing** — The user approved and the command is running. Output streams to the dashboard in real time.
+- **needs_rebase** — Another approved merge changed the target branch and this queued request now conflicts. Rebase or consolidate the branch, then retry the request.
 - **completed** — Execution finished. Check `exit_code`: 0 means success, anything else is a failure. Failed completions stay visible in the queue so the user can retry or dismiss them.
 - **rejected** — The user explicitly declined the request.
 - **expired** — The request sat in `pending` for longer than the TTL (24 hours by default) without action. Expiry is checked every 30 seconds.
@@ -44,7 +47,7 @@ expired → pending (via retry)
 
 ## Submitting Requests
 
-Requests are typically submitted via the `mandible auth request` CLI command, which handles metadata collection (diff stats, commit messages, issue IDs, specs) and posts to the API. When an agent needs to check whether a request already exists and does not know the request ID, it should run `mandible auth list --repo <repo> --head <branch> --base <branch>` first. The raw submission API endpoint is:
+Requests are typically submitted via the `mandible auth request` CLI command, which handles metadata collection (diff stats, commit messages, issue IDs, specs) and posts to the API. When an agent needs to check whether a request already exists and does not know the request ID, it should run `mandible auth list --repo <repo> --head <branch> --base <branch>` first. When it needs to check whether a branch is independent from the queued merge work, it should run `mandible auth check --branch <branch> --repo <repo>`. The raw submission API endpoint is:
 
 ```
 POST /api/auth/request
@@ -74,6 +77,15 @@ The queue automatically detects duplicate submissions. If an agent accidentally 
 Duplicates are detected by two signals:
 1. **Same branch pair** — If a pending/approved request already targets the same `head_branch` and `base_branch`, it's a duplicate regardless of which session submitted it.
 2. **Same session + title** — If the same session already has a pending request with the same title.
+
+### Pairwise Independence
+
+For merge requests, Mandible checks Git merge-tree results before queueing.
+The candidate branch must merge cleanly into the target branch. It must also
+remain clean after the already queued merge requests for the same repo and
+target branch are simulated in queue order. Independent branches may sit in
+the queue together. A conflicting branch is rejected with a file-level clash
+report and should be rebased or consolidated onto an integration branch.
 
 ### Mandible Issue Reference Verification
 
@@ -177,7 +189,7 @@ Dependencies are informational — Mandible does not enforce ordering automatica
 
 ## Auto-Dismiss on Success
 
-When a merge request completes successfully, Mandible automatically dismisses any other pending, expired, or failed requests targeting the same branch pair. These are stale duplicates — retries, corrected resubmissions — and approving them would waste a YubiKey tap on a branch that has already been merged and deleted.
+When a merge request completes successfully, Mandible automatically dismisses any other pending, expired, or failed requests targeting the same branch pair. These are stale duplicates — retries, corrected resubmissions — and approving them would waste a YubiKey tap on a branch that has already been merged and deleted. It also revalidates the remaining pending merge requests for the repo against the new target head. Requests that now conflict move to `needs_rebase`, broadcast an auth result, and appear in the submitting session's inbox.
 
 ## Work Unit Resolution
 
