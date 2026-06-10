@@ -73,8 +73,10 @@ describe("instructions CLI", () => {
 
     const install = await run(["instructions", "install"], { HOME: home });
     expect(install.status).toBe(0);
-    const target = path.join(home, ".claude", "CLAUDE.md");
-    expect(fs.readFileSync(target, "utf8")).toContain("Mandible Interface Contract");
+    const claudeTarget = path.join(home, ".claude", "CLAUDE.md");
+    const codexTarget = path.join(home, ".codex", "AGENTS.md");
+    expect(fs.readFileSync(claudeTarget, "utf8")).toContain("Mandible Interface Contract");
+    expect(fs.readFileSync(codexTarget, "utf8")).toContain("Mandible Interface Contract");
   });
 
   it("refuses to install into a tracked target on the protected branch", async () => {
@@ -142,5 +144,46 @@ describe("instructions CLI", () => {
     expect(installed).toContain("Mandible Interface Contract");
     expect(installed).not.toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
     expect(fs.readFileSync(hookOut, "utf8")).toBe("ran");
+  });
+
+  it("cleans managed blocks and exact standalone generated targets", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-cleanup-"));
+    tempRoots.push(tempDir);
+    const managedTarget = path.join(tempDir, "AGENTS.md");
+    const standaloneTarget = path.join(tempDir, "50-mandible.generated.md");
+
+    fs.writeFileSync(managedTarget, "# Existing\n", "utf8");
+    const managedInstall = await run(["instructions", "install", "--target", managedTarget]);
+    expect(managedInstall.status).toBe(0);
+    expect(fs.readFileSync(managedTarget, "utf8")).toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
+
+    const managedCleanup = await run([
+      "instructions",
+      "cleanup",
+      "--target",
+      managedTarget,
+      "--mode",
+      "managed-block",
+    ]);
+    expect(managedCleanup.status).toBe(0);
+    expect(fs.readFileSync(managedTarget, "utf8")).toBe("# Existing\n");
+
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-clean-home-"));
+    tempRoots.push(home);
+    const env = { HOME: home, MANDIBLE_DB: path.join(home, ".cache", "mandible", "mandible.db") };
+    expect((await run(["instructions", "targets", "add", standaloneTarget, "--mode", "standalone"], env)).status).toBe(0);
+    expect((await run(["instructions", "install"], env)).status).toBe(0);
+    expect(fs.existsSync(standaloneTarget)).toBe(true);
+
+    const standaloneCleanup = await run([
+      "instructions",
+      "cleanup",
+      "--target",
+      standaloneTarget,
+      "--mode",
+      "standalone",
+    ]);
+    expect(standaloneCleanup.status).toBe(0);
+    expect(fs.existsSync(standaloneTarget)).toBe(false);
   });
 });

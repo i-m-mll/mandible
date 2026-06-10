@@ -234,6 +234,47 @@ describe('SettingsView', () => {
 
   it('saves instruction delivery targets and post-export hook settings', async () => {
     const onSave = vi.fn(async () => undefined);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/settings/instructions-delivery' && (!init || init.method === undefined || init.method === 'GET')) {
+        return new Response(JSON.stringify({
+          targets: [
+            { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
+            { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
+          ],
+          postExport: '',
+          configuredTargets: false,
+          export: { ok: true, stdout: '', stderr: '' },
+          cleanup: [],
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/settings/instructions-delivery' && init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body)) as {
+          targets?: Array<{ path: string; mode: string }>;
+          postExport?: string;
+          resetToDefaults?: boolean;
+        };
+        const targets = body.resetToDefaults
+          ? [
+            { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
+            { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
+          ]
+          : body.targets ?? [
+            { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
+            { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
+          ];
+        return new Response(JSON.stringify({
+          targets,
+          postExport: body.postExport ?? '',
+          configuredTargets: true,
+          export: { ok: true, stdout: 'Installed', stderr: '' },
+          cleanup: [],
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
     render(
       h(SettingsView, {
         settings: {},
@@ -242,7 +283,12 @@ describe('SettingsView', () => {
     );
 
     expect(screen.getByText('Instruction Delivery')).toBeTruthy();
-    fireEvent.input(screen.getByPlaceholderText('/path/to/50-mandible.generated.md'), {
+    expect(await screen.findByDisplayValue('/Users/mll/.claude/CLAUDE.md')).toBeTruthy();
+    expect(screen.getByDisplayValue('/Users/mll/.codex/AGENTS.md')).toBeTruthy();
+    expect(screen.queryByPlaceholderText('/path/to/50-mandible.generated.md')).toBeNull();
+    expect(screen.queryByPlaceholderText('bin/compile-agent-instructions')).toBeNull();
+
+    fireEvent.input(screen.getByLabelText('New instruction target path'), {
       target: { value: '/tmp/50-mandible.generated.md' },
     });
     fireEvent.change(screen.getByLabelText('New instruction target mode'), {
@@ -250,20 +296,34 @@ describe('SettingsView', () => {
     });
     fireEvent.click(screen.getByText('Add target'));
 
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith(
-      'instructions.targets',
-      '[{"path":"/tmp/50-mandible.generated.md","mode":"standalone"}]',
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/instructions-delivery',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          targets: [
+            { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
+            { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
+            { path: '/tmp/50-mandible.generated.md', mode: 'standalone' },
+          ],
+          cleanupRemovedTargets: false,
+        }),
+      }),
     ));
 
-    fireEvent.input(screen.getByPlaceholderText('bin/compile-agent-instructions'), {
+    fireEvent.input(screen.getByLabelText('Instructions post-export hook'), {
       target: { value: 'bin/compile-agent-instructions' },
     });
     fireEvent.click(screen.getByLabelText('Save instructions post-export hook'));
 
-    await waitFor(() => expect(onSave).toHaveBeenCalledWith(
-      'instructions.post_export',
-      'bin/compile-agent-instructions',
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/settings/instructions-delivery',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ postExport: 'bin/compile-agent-instructions' }),
+      }),
     ));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith('instructions.post_export', 'bin/compile-agent-instructions'));
   });
 });
 
