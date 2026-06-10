@@ -15,10 +15,7 @@ function isTauriWindow(): boolean {
 }
 
 function issueRouteFromUrl(url: URL): string | null {
-  const hostPath = [url.hostname, url.pathname.replace(/^\/+/, '')]
-    .filter(Boolean)
-    .join('/');
-  const [route] = hostPath.split('/');
+  const route = firstRouteSegment(url);
   if (route !== 'issues') return null;
 
   const issue = url.searchParams.get('issue')?.trim();
@@ -32,6 +29,39 @@ function issueRouteFromUrl(url: URL): string | null {
   return `#/issues?${params.toString()}`;
 }
 
+function authRouteFromUrl(url: URL): string | null {
+  const route = firstRouteSegment(url);
+  if (route !== 'auth') return null;
+
+  const request = url.searchParams.get('request')?.trim();
+  if (!request) return null;
+
+  const params = new URLSearchParams({ request });
+  return `#/auth?${params.toString()}`;
+}
+
+function artifactRouteFromUrl(url: URL): string | null {
+  const route = firstRouteSegment(url);
+  if (route !== 'artifacts') return null;
+
+  const artifact = url.searchParams.get('artifact')?.trim();
+  const ref = url.searchParams.get('ref')?.trim();
+  if (!artifact && !ref) return null;
+
+  const params = new URLSearchParams();
+  if (artifact) params.set('artifact', artifact);
+  if (ref) params.set('ref', ref);
+  return `#/artifacts?${params.toString()}`;
+}
+
+function firstRouteSegment(url: URL): string {
+  const hostPath = [url.hostname, url.pathname.replace(/^\/+/, '')]
+    .filter(Boolean)
+    .join('/');
+  const [route] = hostPath.split('/');
+  return route ?? '';
+}
+
 export function routeHashFromMandibleDeepLink(rawUrl: string): string | null {
   let url: URL;
   try {
@@ -40,7 +70,7 @@ export function routeHashFromMandibleDeepLink(rawUrl: string): string | null {
     return null;
   }
   if (url.protocol !== 'mandible:') return null;
-  return issueRouteFromUrl(url);
+  return issueRouteFromUrl(url) ?? authRouteFromUrl(url) ?? artifactRouteFromUrl(url);
 }
 
 export function navigateToMandibleDeepLink(
@@ -58,7 +88,8 @@ export async function installTauriDeepLinkHandler(
 ): Promise<() => void> {
   if (!isTauriWindow()) return () => undefined;
 
-  const deepLink: DeepLinkModule = await import('@tauri-apps/plugin-deep-link');
+  const deepLinkModule = '@tauri-apps/plugin-deep-link';
+  const deepLink: DeepLinkModule = await import(/* @vite-ignore */ deepLinkModule);
   const navigateAll = (urls: string[] | null | undefined) => {
     for (const url of urls ?? []) {
       if (navigateToMandibleDeepLink(url, navigateToHash)) break;
