@@ -83,7 +83,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   sse.startHeartbeat();
 
   // Create router and register all partition routes
-  const router = new Router();
+  const router = new Router({ logger });
   const sessionRegistry = new SessionRegistry(db);
   // Bug: 4e32923 — capture the auth queue so the inbox route can mark
   // auth_requests as delivered when the channel server forwards the event.

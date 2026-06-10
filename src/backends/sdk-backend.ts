@@ -244,6 +244,9 @@ implements
       }
     } catch (error) {
       this.logger("warn", "sdk_ws_init_failed", { id: this.id, error: String(error) });
+      this.removeWsClient(ws);
+      try { ws.close(1011, "init failed"); } catch { /* already closed */ }
+      return;
     }
 
     ws.on("close", () => {
@@ -441,35 +444,37 @@ implements
   }
 
   private async runPrompt(prompt: string): Promise<void> {
-    const sdk = await import("@anthropic-ai/claude-agent-sdk");
     const abortController = new AbortController();
-    const queryOptions = this.buildQueryOptions(abortController);
-    const query = sdk.query({
-      prompt,
-      options: queryOptions,
-    });
-
-    this.abortController = abortController;
-    this.activeQuery = query;
-
-    // Bug: 790433d — Snapshot the effective parameters for this prompt (keyframe model)
-    this.snapshotMessageParams();
-    this.messageIndex++;
-
-    // Bug: 6634023 — The SDK event stream does not echo the user's prompt back.
-    // Synthesize a user event so the prompt appears in the event log for hydration,
-    // replay, and "View history" consistency.
-    this.storeAndBroadcast({
-      type: "user",
-      session_id: this.meta.provider_session_id ?? this.id,
-      parent_tool_use_id: null,
-      message: {
-        role: "user",
-        content: [{ type: "text", text: prompt }],
-      },
-    });
+    let query: ClaudeQuery | null = null;
 
     try {
+      const sdk = await import("@anthropic-ai/claude-agent-sdk");
+      const queryOptions = this.buildQueryOptions(abortController);
+      query = sdk.query({
+        prompt,
+        options: queryOptions,
+      });
+
+      this.abortController = abortController;
+      this.activeQuery = query;
+
+      // Bug: 790433d — Snapshot the effective parameters for this prompt (keyframe model)
+      this.snapshotMessageParams();
+      this.messageIndex++;
+
+      // Bug: 6634023 — The SDK event stream does not echo the user's prompt back.
+      // Synthesize a user event so the prompt appears in the event log for hydration,
+      // replay, and "View history" consistency.
+      this.storeAndBroadcast({
+        type: "user",
+        session_id: this.meta.provider_session_id ?? this.id,
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [{ type: "text", text: prompt }],
+        },
+      });
+
       for await (const message of query) {
         const events = this.normalizeSDKEvent(message);
         for (const event of events) {
@@ -500,10 +505,12 @@ implements
         this.emitMetaUpdate({ resume_at_message: null });
       }
 
-      try {
-        query.close();
-      } catch {
-        // Best effort cleanup.
+      if (query) {
+        try {
+          query.close();
+        } catch {
+          // Best effort cleanup.
+        }
       }
     }
   }
@@ -1102,7 +1109,7 @@ implements
       try {
         ws.send(payload);
       } catch {
-        // Ignore disconnected clients.
+        this.removeWsClient(ws);
       }
     }
 
