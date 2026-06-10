@@ -4,7 +4,8 @@ import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 
 function readBody<T>(req: RequestLike): T {
@@ -644,11 +645,62 @@ function tailLines(text: string, n: number): string | null {
 
 function repoRootFromGitCommonDir(cwd: string): string | null {
   try {
-    const gitCommonDir = execSync(
-      "git rev-parse --path-format=absolute --git-common-dir",
+    const gitCommonDir = execFileSync(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
       { cwd, encoding: "utf-8", timeout: 5000 }
     ).trim();
     return gitCommonDir ? path.dirname(gitCommonDir) : null;
+  } catch {
+    return null;
+  }
+}
+
+const SAFE_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
+const FULL_GIT_SHA = /^[0-9a-f]{40}$/i;
+
+function validateAuthGateBranch(field: "base_branch" | "head_branch", value: string): string | null {
+  if (
+    !value ||
+    !SAFE_BRANCH_NAME.test(value) ||
+    value.startsWith("-") ||
+    value.includes("..") ||
+    value.includes("//") ||
+    value.endsWith("/") ||
+    value.endsWith(".")
+  ) {
+    return `Invalid '${field}' for auth merge verification; manual review required.`;
+  }
+  return null;
+}
+
+function isRegisteredRepoRoot(repoRoot: string): boolean {
+  try {
+    const normalized = normalizeExistingPath(repoRoot);
+    if (!normalized) {
+      return false;
+    }
+    const row = getDb()
+      .prepare(
+        "SELECT root FROM work_repos WHERE root = ? AND dir_exists = 1 AND excluded = 0 LIMIT 1"
+      )
+      .get(normalized) as { root?: string } | undefined;
+    if (row?.root === normalized) {
+      return true;
+    }
+    const rows = getDb()
+      .prepare("SELECT root FROM work_repos WHERE dir_exists = 1 AND excluded = 0")
+      .all() as Array<{ root: string }>;
+    return rows.some((candidate) => normalizeExistingPath(candidate.root) === normalized);
+  } catch (error) {
+    console.error("Auth merge gate repository allowlist check failed:", error);
+    return false;
+  }
+}
+
+function normalizeExistingPath(value: string): string | null {
+  try {
+    return realpathSync(path.resolve(value));
   } catch {
     return null;
   }
@@ -662,9 +714,20 @@ function verifyMandibleIssueReferences(
     return null;
   }
 
+  const baseError = validateAuthGateBranch("base_branch", base_branch);
+  if (baseError) return baseError;
+  const headError = validateAuthGateBranch("head_branch", head_branch);
+  if (headError) return headError;
+
+  const repoRoot = repoRootFromGitCommonDir(cwd);
+  if (!repoRoot || !isRegisteredRepoRoot(repoRoot)) {
+    return "Invalid or unregistered 'cwd' for auth merge verification; manual review required.";
+  }
+
   try {
-    const output = execSync(
-      `git log --no-merges --format="%H" ${base_branch}..${head_branch}`,
+    const output = execFileSync(
+      "git",
+      ["log", "--no-merges", "--format=%H", `${base_branch}..${head_branch}`],
       { cwd, encoding: "utf-8", timeout: 10000 }
     ).trim();
 
@@ -676,14 +739,18 @@ function verifyMandibleIssueReferences(
     const missing: string[] = [];
 
     for (const sha of commits) {
-      const body = execSync(`git log -1 --format="%B" ${sha}`, {
+      if (!FULL_GIT_SHA.test(sha)) {
+        return "Auth merge verification returned an invalid commit id; manual review required.";
+      }
+
+      const body = execFileSync("git", ["log", "-1", "--format=%B", sha], {
         cwd,
         encoding: "utf-8",
         timeout: 5000,
       }).trim();
 
       if (!body.split("\n").some((line: string) => line.startsWith("Mandible-Issue:"))) {
-        const oneline = execSync(`git log -1 --oneline ${sha}`, {
+        const oneline = execFileSync("git", ["log", "-1", "--oneline", sha], {
           cwd,
           encoding: "utf-8",
           timeout: 5000,
@@ -703,6 +770,6 @@ function verifyMandibleIssueReferences(
     return null;
   } catch (err) {
     console.error("Mandible issue reference verification failed:", err);
-    return null;
+    return "Mandible issue reference verification failed; manual review required.";
   }
 }
