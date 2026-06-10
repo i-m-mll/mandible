@@ -12,6 +12,7 @@ import type {
   LedgerIssueAlias,
   LedgerIssueBranch,
   LedgerIssueBranchRole,
+  LedgerIssueCheckpoint,
   LedgerIssueKind,
   LedgerIssueRelationship,
   LedgerIssueResolution,
@@ -45,6 +46,16 @@ export interface LedgerIssueDetailComment {
   source: LedgerEventSource;
   created_at: number;
   updated_at: number | null;
+}
+
+export interface LedgerIssueDetailCheckpoint {
+  id: string;
+  issue_id: string;
+  kind: string;
+  payload: unknown;
+  author: LedgerIssueDetailActor;
+  source: LedgerEventSource;
+  created_at: number;
 }
 
 export interface LedgerIssueDetailBranch {
@@ -86,6 +97,16 @@ export type LedgerIssueTimelineEntry =
       source: LedgerEventSource;
       created_at: number;
       payload: Record<string, unknown>;
+    }
+  | {
+      id: string;
+      kind: "checkpoint";
+      checkpoint_id: string;
+      checkpoint_kind: string;
+      payload: unknown;
+      author: LedgerIssueDetailActor;
+      source: LedgerEventSource;
+      created_at: number;
     };
 
 export interface LedgerIssueSummaryRef {
@@ -258,6 +279,7 @@ export interface LedgerIssueDetailProjection {
   labels: string[];
   issue_branches: LedgerIssueDetailBranch[];
   comments: LedgerIssueDetailComment[];
+  checkpoints: LedgerIssueDetailCheckpoint[];
   timeline: LedgerIssueTimelineEntry[];
   relationships: LedgerIssueDetailRelationship[];
   work_units: LedgerIssueDetailWorkUnit[];
@@ -291,13 +313,14 @@ export function buildLedgerIssueDetailProjection(
       created_at: comment.created_at,
       updated_at: comment.updated_at,
     }));
+  const checkpoints = detail.checkpoints.map(mapCheckpoint);
   const relationships = buildRelationships(db, detail);
   const author = {
     id: detail.author_actor_id,
     type: detail.author_actor_type,
     display: detail.author_display || actorTypeLabel(detail.author_actor_type),
   };
-  const timeline = buildTimeline(db, detail, comments, author);
+  const timeline = buildTimeline(db, detail, comments, checkpoints, author);
   const conflicts = listIssueConflicts(db, detail.id, comments.map((comment) => comment.id), relationships.map((rel) => rel.id));
   const sync = buildSyncSummary(db, detail, comments.map((comment) => comment.id), relationships.map((rel) => rel.id), conflicts.length);
   const associatedArtifacts = listAssociatedArtifacts(db, detail.id, detail.body, comments);
@@ -322,6 +345,7 @@ export function buildLedgerIssueDetailProjection(
     labels,
     issue_branches: detail.branches.map(mapIssueBranch),
     comments,
+    checkpoints,
     timeline,
     relationships,
     work_units: listWorkUnits(db, detail.id),
@@ -339,6 +363,22 @@ function mapIssueBranch(branch: LedgerIssueBranch): LedgerIssueDetailBranch {
     role: branch.role,
     created_at: branch.created_at,
     updated_at: branch.updated_at,
+  };
+}
+
+function mapCheckpoint(checkpoint: LedgerIssueCheckpoint): LedgerIssueDetailCheckpoint {
+  return {
+    id: checkpoint.id,
+    issue_id: checkpoint.issue_id,
+    kind: checkpoint.kind,
+    payload: parseJsonValue(checkpoint.payload_json),
+    author: {
+      id: checkpoint.author_actor_id,
+      type: checkpoint.author_actor_type,
+      display: checkpoint.author_display || actorTypeLabel(checkpoint.author_actor_type),
+    },
+    source: checkpoint.source,
+    created_at: checkpoint.created_at,
   };
 }
 
@@ -515,6 +555,7 @@ function buildTimeline(
   db: Db,
   issue: LedgerIssue,
   comments: LedgerIssueDetailComment[],
+  checkpoints: LedgerIssueDetailCheckpoint[],
   issueAuthor: LedgerIssueDetailActor,
 ): LedgerIssueTimelineEntry[] {
   const entries: LedgerIssueTimelineEntry[] = [{
@@ -539,6 +580,19 @@ function buildTimeline(
       source: comment.source,
       created_at: comment.created_at,
       updated_at: comment.updated_at,
+    });
+  }
+
+  for (const checkpoint of checkpoints) {
+    entries.push({
+      id: checkpoint.id,
+      kind: "checkpoint",
+      checkpoint_id: checkpoint.id,
+      checkpoint_kind: checkpoint.kind,
+      payload: checkpoint.payload,
+      author: checkpoint.author,
+      source: checkpoint.source,
+      created_at: checkpoint.created_at,
     });
   }
 
@@ -576,7 +630,7 @@ function buildTimeline(
 
   return entries.sort((a, b) => {
     if (a.created_at !== b.created_at) return a.created_at - b.created_at;
-    const order = { body: 0, comment: 1, state: 2 };
+    const order = { body: 0, comment: 1, state: 2, checkpoint: 3 };
     return order[a.kind] - order[b.kind];
   });
 }

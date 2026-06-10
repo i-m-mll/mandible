@@ -38,6 +38,13 @@ export function getLedgerIssueHead(db: Db, issueId: string): LedgerIssueHead {
             WHERE issue_id = @issueId AND deleted_at IS NULL
           )
         )
+        OR (
+          entity_type = 'issue_checkpoint'
+          AND entity_id IN (
+            SELECT id FROM ledger_issue_checkpoints
+            WHERE issue_id = @issueId
+          )
+        )
      ORDER BY occurred_at, observed_at, id`,
   ).all({ issueId }) as IssueHeadEventRow[];
 

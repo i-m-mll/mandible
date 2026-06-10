@@ -1671,6 +1671,27 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_issue_branches_role
         ON issue_branches(role)`
     ]
+  },
+  {
+    version: 71,
+    name: "issue_checkpoints",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS ledger_issue_checkpoints (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        author_actor_id TEXT,
+        author_actor_type TEXT NOT NULL CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),
+        author_display TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        created_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_issue_checkpoints_issue_kind_created
+        ON ledger_issue_checkpoints(issue_id, kind, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_issue_checkpoints_issue_created
+        ON ledger_issue_checkpoints(issue_id, created_at DESC)`
+    ]
   }
 ];
 

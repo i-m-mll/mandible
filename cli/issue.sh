@@ -32,6 +32,12 @@ Usage:
   mandible issue triage [opts] [--json]                           Filter issues for review
   mandible issue heads <id>... [--json]                            Print issue state digests
   mandible issue changed --since-manifest <file> [--json]          Compare issue digests to a manifest
+  mandible issue changed --since-issue <id> [--kind <kind>] [--json]
+                                                                  Compare issue digests to a checkpoint payload
+  mandible issue checkpoint add <id> --kind <kind> [--payload-file <file>]
+                                                                  Add an issue-scoped structured checkpoint
+  mandible issue checkpoint show <id> --kind <kind> [--latest|--all] [--json]
+                                                                  Show issue-scoped structured checkpoints
   mandible issue status <id> <value>                               Set worker status
   mandible issue branch add <id> <branch> [--role primary|superseded]
                                                                   Link a branch to an issue
@@ -526,6 +532,8 @@ print_changed_result() {
 
 cmd_changed() {
   local manifest=""
+  local since_issue=""
+  local kind="delegation-manifest"
   local json=0
 
   while (( $# > 0 )); do
@@ -535,6 +543,20 @@ cmd_changed() {
           die "Missing value for --since-manifest." 2
         fi
         manifest="$2"
+        shift 2
+        ;;
+      --since-issue)
+        if (( $# < 2 )); then
+          die "Missing value for --since-issue." 2
+        fi
+        since_issue="$2"
+        shift 2
+        ;;
+      --kind)
+        if (( $# < 2 )); then
+          die "Missing value for --kind." 2
+        fi
+        kind="$2"
         shift 2
         ;;
       --json) json=1; shift ;;
@@ -547,14 +569,32 @@ cmd_changed() {
     esac
   done
 
-  if [[ -z "$manifest" ]]; then
-    die "Usage: mandible issue changed --since-manifest <file> [--json]" 2
+  if [[ -n "$manifest" && -n "$since_issue" ]]; then
+    die "Use only one of --since-manifest or --since-issue." 2
+  fi
+  if [[ -z "$manifest" && -z "$since_issue" ]]; then
+    die "Usage: mandible issue changed (--since-manifest <file> | --since-issue <id> [--kind <kind>]) [--json]" 2
+  fi
+
+  require_tools
+  local checkpoint_tmp=""
+  if [[ -n "$since_issue" ]]; then
+    local checkpoint_path checkpoint_response
+    checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints?latest=true"
+    if [[ -n "$kind" ]]; then
+      checkpoint_path="${checkpoint_path}&kind=$(urlencode "$kind")"
+    fi
+    checkpoint_response=$(api_get "$checkpoint_path") \
+      || die "${RED}Failed to fetch checkpoint for ${since_issue}${RESET}" 1
+    checkpoint_tmp=$(mktemp)
+    printf '%s\n' "$checkpoint_response" | jq -e '.payload | type == "array"' >/dev/null \
+      || die "Checkpoint payload must be a manifest JSON array." 2
+    printf '%s\n' "$checkpoint_response" | jq '.payload' > "$checkpoint_tmp"
+    manifest="$checkpoint_tmp"
   fi
   if [[ ! -f "$manifest" ]]; then
     die "Manifest not found: $manifest" 2
   fi
-
-  require_tools
   jq -e 'type == "array"' "$manifest" >/dev/null \
     || die "Manifest must be a JSON array." 2
 
@@ -599,6 +639,143 @@ cmd_changed() {
 
   print_changed_result "$json" "$changed_file" "$unchanged_file" "$missing_file"
   rm -rf "$tmpdir"
+  if [[ -n "$checkpoint_tmp" ]]; then
+    rm -f "$checkpoint_tmp"
+  fi
+}
+
+cmd_checkpoint() {
+  local action="${1:-}"
+  shift || true
+
+  case "$action" in
+    add)
+      local id=""
+      local kind=""
+      local payload_file=""
+
+      while (( $# > 0 )); do
+        case "$1" in
+          --kind)
+            if (( $# < 2 )); then
+              die "Missing value for --kind." 2
+            fi
+            kind="$2"
+            shift 2
+            ;;
+          --payload-file)
+            if (( $# < 2 )); then
+              die "Missing value for --payload-file." 2
+            fi
+            payload_file="$2"
+            shift 2
+            ;;
+          -*)
+            die "Unknown option: $1" 2
+            ;;
+          *)
+            if [[ -z "$id" ]]; then
+              id="$1"
+            else
+              die "Unexpected argument: $1" 2
+            fi
+            shift
+            ;;
+        esac
+      done
+
+      if [[ -z "$id" || -z "$kind" ]]; then
+        die "Usage: mandible issue checkpoint add <issue-ref> --kind <kind> [--payload-file <file>]" 2
+      fi
+
+      require_tools
+      local payload
+      if [[ -z "$payload_file" ]]; then
+        payload='{}'
+      elif [[ "$payload_file" == "-" ]]; then
+        payload=$(jq -c '.')
+      else
+        [[ -f "$payload_file" ]] || die "Payload file not found: $payload_file" 2
+        payload=$(jq -c '.' "$payload_file")
+      fi
+
+      local request response
+      request=$(jq -n --arg kind "$kind" --argjson payload "$payload" '{kind:$kind, payload:$payload}')
+      response=$(api_send POST "/api/ledger/issues/$(urlencode "$id")/checkpoints" "$request") \
+        || die "${RED}Failed to add checkpoint for ${id}${RESET}" 1
+      printf '%s\n' "$response" | jq -r '"checkpoint \(.id) \(.kind) \(.created_at)"'
+      ;;
+    show)
+      local id=""
+      local kind=""
+      local latest=1
+      local json=0
+
+      while (( $# > 0 )); do
+        case "$1" in
+          --kind)
+            if (( $# < 2 )); then
+              die "Missing value for --kind." 2
+            fi
+            kind="$2"
+            shift 2
+            ;;
+          --latest) latest=1; shift ;;
+          --all) latest=0; shift ;;
+          --json) json=1; shift ;;
+          -*)
+            die "Unknown option: $1" 2
+            ;;
+          *)
+            if [[ -z "$id" ]]; then
+              id="$1"
+            else
+              die "Unexpected argument: $1" 2
+            fi
+            shift
+            ;;
+        esac
+      done
+
+      if [[ -z "$id" || -z "$kind" ]]; then
+        die "Usage: mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]" 2
+      fi
+
+      require_tools
+      local path response
+      path="/api/ledger/issues/$(urlencode "$id")/checkpoints?kind=$(urlencode "$kind")"
+      if (( latest )); then
+        path="${path}&latest=true"
+      fi
+      response=$(api_get "$path") \
+        || die "${RED}Failed to fetch checkpoints for ${id}${RESET}" 1
+      if (( json )); then
+        printf '%s\n' "$response" | jq '.'
+      elif (( latest )); then
+        printf '%s\n' "$response" | jq -r '
+          "checkpoint \(.id) \(.kind)",
+          "created_at: \(.created_at)",
+          "payload:",
+          (.payload | tojson)
+        '
+      else
+        printf '%s\n' "$response" | jq -r '
+          .checkpoints[]? |
+          "checkpoint \(.id) \(.kind)\t\(.created_at)\t\(.payload | tojson)"
+        '
+      fi
+      ;;
+    ""|-h|--help)
+      cat <<'CHECKPOINT_USAGE'
+Usage:
+  mandible issue checkpoint add <issue-ref> --kind <kind> [--payload-file <file>]
+  mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]
+CHECKPOINT_USAGE
+      ;;
+    *)
+      die "Unknown checkpoint action: $action (expected add or show)" 2
+      ;;
+  esac
 }
 
 cmd_new() {
@@ -1287,6 +1464,7 @@ case "$subcmd" in
   triage)  cmd_triage "$@" ;;
   heads)   cmd_heads "$@" ;;
   changed) cmd_changed "$@" ;;
+  checkpoint) cmd_checkpoint "$@" ;;
   status)  cmd_status "$@" ;;
   branch)  cmd_branch "$@" ;;
   close)   cmd_close "$@" ;;

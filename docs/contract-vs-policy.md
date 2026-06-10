@@ -36,8 +36,9 @@ What Mandible defines, for every install:
 - **Artifact registry.** `mandible artifact` records repo- or
   custody-backed artifacts with explicit recoverability semantics.
 - **Coordination primitives.** Issue head digests (`issue heads`,
-  `issue changed --since-manifest`), `worker_status`, issue–branch relations,
-  and delegation manifests support the umbrella-as-coordinator protocol.
+  `issue changed --since-issue` / legacy `--since-manifest`),
+  `worker_status`, issue–branch relations, and kind-tagged issue checkpoints
+  support the umbrella-as-coordinator protocol.
 - **Agent instructions fragment.** Mandible ships a versioned fragment
   describing its own interface (command surface generated from the CLI source,
   trailer semantics, auth lifecycle, coordination primitives).

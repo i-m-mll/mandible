@@ -77,6 +77,8 @@ describe("file RPC transport", () => {
   it("keeps auth approval and admin endpoints out of the allowlist", () => {
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/auth/queue")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/checkpoints")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/checkpoints")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/approve")).toBe(false);
     expect(isAllowedFileRpcRoute("PUT", "/api/settings/auto_close_issues_on_merge")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/issues/scan")).toBe(false);
