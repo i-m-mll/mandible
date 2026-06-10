@@ -59,14 +59,15 @@ mandible search "<query>" [--provider claude|gemini|codex|all] [--role user|assi
 
 ## ARTIFACT
 mandible artifact ingest <path...> [--issue <id>] [--role R] [--managed|--copy|--link]
-  [--allow-local-only] [--allow-dirty-link] [--dry-run] [--json]
+  [--upload] [--allow-local-only] [--allow-dirty-link] [--dry-run] [--json]
 mandible artifact list [--repo R] [--issue <id>] [--role R] [--custody M] [--json]
 mandible artifact show <ref> [--json]
 mandible artifact resolve <ref> [--json]
 mandible artifact check <ref...> [--json]
 mandible artifact link <ref> --issue <id> [--role R] [--relation references|output|evidence|handoff] [--json]
 mandible artifact content <ref> [--output <path>] [--json]
-mandible artifact snapshot <path...> [--issue <id>] [--role R] [--json]
+mandible artifact snapshot <path...> [--issue <id>] [--role R] [--upload] [--dry-run] [--json]
+mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role R] [--upload] [--json]
 mandible artifact scan-repos [--repo R] [--max-depth N] [--register] [--dry-run] [--json]
 mandible artifact bundle create --name N [--manifest F] [--issue <id>] [--role R] [--dry-run] [--json]
 mandible artifact bundle add <bundle-ref> <path-or-ref...> [--allow-local-only] [--allow-dirty-link] [--json]

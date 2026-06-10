@@ -25,30 +25,45 @@ urlencode() {
 }
 
 api_get() {
-  local path="$1"
-  api_request GET "$path" ""
+  local request_path="$1"
+  api_request GET "$request_path" ""
 }
 
 api_send() {
   local method="$1"
-  local path="$2"
+  local request_path="$2"
   local data="$3"
-  api_request "$method" "$path" "$data"
+  api_request "$method" "$request_path" "$data"
 }
 
 api_send_capture() {
   local method="$1"
-  local path="$2"
+  local request_path="$2"
+  local data="$3"
+  local output_file="$4"
+
+  api_capture "$method" "$request_path" "$data" "$output_file"
+}
+
+api_capture() {
+  local method="$1"
+  local request_path="$2"
   local data="$3"
   local output_file="$4"
 
   if api_is_file_rpc; then
-    api_file_rpc_exchange "$method" "$path" "$data" "$output_file"
+    api_file_rpc_exchange "$method" "$request_path" "$data" "$output_file"
     return
   fi
 
-  curl -s --max-time 5 -o "$output_file" -w "%{http_code}" \
-    -X "$method" "$(api_base)$path" \
+  if [[ "$method" == "GET" ]]; then
+    curl -s --max-time 15 -o "$output_file" -w "%{http_code}" \
+      "$(api_base)$request_path" 2>/dev/null || printf ''
+    return
+  fi
+
+  curl -s --max-time 15 -o "$output_file" -w "%{http_code}" \
+    -X "$method" "$(api_base)$request_path" \
     -H 'Content-Type: application/json' \
     -d "$data" 2>/dev/null || printf ''
 }
@@ -61,13 +76,13 @@ api_file_rpc_cleanup() {
 
 api_request() {
   local method="$1"
-  local path="$2"
+  local request_path="$2"
   local data="${3:-}"
   local tmp_response response_status
 
   if api_is_file_rpc; then
     tmp_response=$(mktemp)
-    response_status=$(api_file_rpc_exchange "$method" "$path" "$data" "$tmp_response")
+    response_status=$(api_file_rpc_exchange "$method" "$request_path" "$data" "$tmp_response")
     if [[ "$response_status" =~ ^2 ]]; then
       cat "$tmp_response"
       rm -f "$tmp_response"
@@ -78,9 +93,9 @@ api_request() {
   fi
 
   if [[ "$method" == "GET" ]]; then
-    curl -sf --max-time 15 "$(api_base)$path"
+    curl -sf --max-time 15 "$(api_base)$request_path"
   else
-    curl -sf --max-time 15 -X "$method" "$(api_base)$path" \
+    curl -sf --max-time 15 -X "$method" "$(api_base)$request_path" \
       -H 'Content-Type: application/json' \
       -d "$data"
   fi
