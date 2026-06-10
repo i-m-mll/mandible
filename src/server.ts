@@ -46,6 +46,10 @@ export interface ResponseLike {
 
 export type RouteHandler = (req: RequestLike, res: ResponseLike) => unknown;
 
+export interface RouterOptions {
+  logger?: Logger;
+}
+
 export interface RouterInvokeRequest {
   method: string;
   url: string;
@@ -143,6 +147,8 @@ class CapturedResponse implements ResponseLike {
 export class Router implements RouteRegistrar {
   private routes: CompiledRoute[] = [];
 
+  constructor(private options: RouterOptions = {}) {}
+
   get(path: string, handler: RouteHandler): void {
     this.addRoute("GET", path, handler);
   }
@@ -219,7 +225,16 @@ export class Router implements RouteRegistrar {
 
       const request: RequestLike = { method: normalizedMethod, url: requestUrl, params, query, body };
 
-      await route.handler(request, response);
+      try {
+        await route.handler(request, response);
+      } catch (error) {
+        this.options.logger?.("error", "route_handler_error", {
+          method: normalizedMethod,
+          pathname,
+          error: String(error),
+        });
+        response.status(500).json({ error: "internal_error" });
+      }
       return true;
     }
 

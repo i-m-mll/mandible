@@ -2,9 +2,14 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SSEEvent, SseEvent, StartupCommitInfo } from "./types.js";
 import { getDb } from "./db.js";
 
+const MAX_CLIENT_BUFFER_BYTES = 1024 * 1024;
+
 interface SseClient {
+  req: IncomingMessage;
   res: ServerResponse;
   topics: string[];
+  remove: () => void;
+  removed: boolean;
 }
 
 export class SseManager {
@@ -18,7 +23,7 @@ export class SseManager {
     this.heartbeatTimer = setInterval(() => {
       const comment = `: heartbeat ${Date.now()}\n\n`;
       for (const client of this.clients) {
-        try { client.res.write(comment); } catch { /* removed on close */ }
+        this.writeClient(client, comment);
       }
     }, intervalMs);
     // Ensure the timer doesn't prevent process exit
@@ -33,18 +38,21 @@ export class SseManager {
       "Cache-Control": "no-cache",
       Connection: "keep-alive"
     });
-    res.write(`: connected\n\n`);
 
-    const client: SseClient = { res, topics };
-    this.clients.add(client);
-    this.maybeSendReloadEvent(client);
-
-    const remove = () => {
-      this.clients.delete(client);
+    const client: SseClient = {
+      req,
+      res,
+      topics,
+      remove: () => this.removeClient(client),
+      removed: false,
     };
+    this.clients.add(client);
 
-    req.on("close", remove);
-    res.on("close", remove);
+    req.on("close", client.remove);
+    res.on("close", client.remove);
+
+    this.writeClient(client, `: connected\n\n`);
+    this.maybeSendReloadEvent(client);
   }
 
   setStartupCommit(info: StartupCommitInfo | null): void {
@@ -57,10 +65,7 @@ export class SseManager {
       if (client.topics.length > 0 && !matchesTopic(event.type, client.topics)) {
         continue;
       }
-      // Guard against the race where the client disconnected between the topic
-      // check and the write (the "close" event that removes from this.clients
-      // is async, so the client can still be in the set with a dead socket).
-      try { client.res.write(payload); } catch { /* removed on close */ }
+      this.writeClient(client, payload);
     }
   }
 
@@ -69,8 +74,8 @@ export class SseManager {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
-    for (const client of this.clients) {
-      client.res.destroy();
+    for (const client of Array.from(this.clients)) {
+      this.removeClient(client);
     }
     this.clients.clear();
   }
@@ -124,10 +129,43 @@ export class SseManager {
       },
       timestamp: new Date().toISOString()
     };
-    try {
-      client.res.write(`data: ${JSON.stringify(event)}\n\n`);
-    } catch {
+    this.writeClient(client, `data: ${JSON.stringify(event)}\n\n`);
+  }
+
+  private writeClient(client: SseClient, payload: string): void {
+    if (client.removed) {
       return;
+    }
+    if (this.isOverBuffered(client)) {
+      this.removeClient(client);
+      return;
+    }
+    try {
+      const accepted = client.res.write(payload);
+      if (!accepted && this.isOverBuffered(client)) {
+        this.removeClient(client);
+      }
+    } catch {
+      this.removeClient(client);
+    }
+  }
+
+  private isOverBuffered(client: SseClient): boolean {
+    return client.res.writableLength > MAX_CLIENT_BUFFER_BYTES;
+  }
+
+  private removeClient(client: SseClient): void {
+    if (client.removed) {
+      return;
+    }
+    client.removed = true;
+    client.req.off("close", client.remove);
+    client.res.off("close", client.remove);
+    this.clients.delete(client);
+    try {
+      client.res.destroy();
+    } catch {
+      // Best-effort cleanup for already-closed responses.
     }
   }
 }

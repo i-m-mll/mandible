@@ -191,6 +191,9 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
       }
     } catch (error) {
       this.logger("warn", "spawn_ws_init_failed", { id: this.id, error: String(error) });
+      this.removeWsClient(ws);
+      try { ws.close(1011, "init failed"); } catch { /* already closed */ }
+      return;
     }
 
     ws.on("close", () => {
@@ -353,7 +356,19 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
         stderrBuf += chunk.toString("utf8");
       });
 
+      let completed = false;
+      const complete = () => {
+        if (completed) {
+          return false;
+        }
+        completed = true;
+        return true;
+      };
+
       child.on("close", (code) => {
+        if (!complete()) {
+          return;
+        }
         // Flush remaining line buffer
         if (lineBuffer.trim()) {
           if (invocation.normalize === "claude") {
@@ -406,6 +421,9 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
       });
 
       child.on("error", (err) => {
+        if (!complete()) {
+          return;
+        }
         this.logger("error", "spawn_child_error", { id: this.id, error: String(err) });
         if (!sawResult) {
           this.storeAndBroadcast({
@@ -421,6 +439,8 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
         }
         if (this.childProc === child) {
           this.childProc = null;
+          this.meta = { ...this.meta, pid: null, updated_at: Date.now() };
+          this.emitMetaUpdate({ pid: null, updated_at: this.meta.updated_at });
         }
         resolve();
       });
@@ -512,7 +532,7 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
       try {
         ws.send(payload);
       } catch {
-        // Ignore disconnected clients.
+        this.removeWsClient(ws);
       }
     }
 
