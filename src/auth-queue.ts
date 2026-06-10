@@ -108,7 +108,6 @@ export class AuthQueue {
     this.executor = options.executor ?? executeAuthCommand;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
-    this.ensureSchema();
     this.recoverStuckRequests();
     this.startExpiryTimer();
   }
@@ -1651,62 +1650,6 @@ export class AuthQueue {
     return request;
   }
 
-  private ensureSchema(): void {
-    // Bug: 4e32923 — include scoping columns in the fresh-DB fallback schema.
-    // The MIGRATIONS array (src/db.ts) is the canonical source of truth; this
-    // path only fires for ad-hoc test DBs that bypass openDb().
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS auth_requests (
-        id TEXT PRIMARY KEY,
-        session_id TEXT,
-        type TEXT NOT NULL DEFAULT 'merge',
-        command TEXT NOT NULL,
-        title TEXT NOT NULL,
-        cwd TEXT,
-        diff_summary TEXT,
-        commit_message TEXT,
-        spec_content TEXT,
-        repo TEXT,
-        base_branch TEXT,
-        head_branch TEXT,
-        files_changed INTEGER DEFAULT 0,
-        additions INTEGER DEFAULT 0,
-        deletions INTEGER DEFAULT 0,
-        post_merge_handoff TEXT,
-        issue_references TEXT,
-        issue_closures TEXT,
-        issue_ids TEXT,
-        issues TEXT,
-        depends_on_id TEXT,
-        execution_mode TEXT NOT NULL DEFAULT 'daemon',
-        status TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        last_executed_at INTEGER,
-        approved_at INTEGER,
-        resolved_at INTEGER,
-        skipped_at INTEGER,
-        expires_at INTEGER NOT NULL,
-        exit_code INTEGER,
-        output TEXT NOT NULL DEFAULT '',
-        error TEXT,
-        acknowledged_by TEXT,
-        target_session_id TEXT,
-        target_repo_root TEXT,
-        delivered_at INTEGER,
-        conversation_id TEXT,
-        approval_source TEXT NOT NULL DEFAULT 'manual',
-        approval_lease_id TEXT
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_auth_requests_status_created
-        ON auth_requests(status, created_at);
-
-      CREATE INDEX IF NOT EXISTS idx_auth_requests_queue
-        ON auth_requests(status, skipped_at, created_at);
-
-    `);
-  }
 }
 
 // Bug: 929c6d0 — extract the last N lines from a string for error output summaries.

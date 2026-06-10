@@ -1776,7 +1776,7 @@ function ConversationDetail({
 
   const handleStarToggle = async () => {
     if (!conversation) return;
-    const newStarred = conversation.starred ? 0 : 1;
+    const newStarred = !conversation.starred;
     try {
       await updateConversation(conversationId, { starred: newStarred });
       setConversation((prev) => prev ? { ...prev, starred: newStarred } : prev);
@@ -2815,7 +2815,7 @@ export function ConversationsView({
 
   const handleToggleEntryPin = async (entry: ChatEntry) => {
     if (!entry.conversation) return;
-    const starred = entry.conversation.starred ? 0 : 1;
+    const starred = !entry.conversation.starred;
     try {
       const updated = await updateConversation(entry.conversation.id, { starred });
       updateConversationInList(updated);

@@ -78,46 +78,6 @@ interface WorktreeInfo {
 }
 
 const DEFAULT_REPO_ROOT = path.join(os.homedir(), ".dotfiles");
-const BRANCH_TABLE_SCHEMA = `
-  CREATE TABLE IF NOT EXISTS branches (
-    repo_root TEXT NOT NULL,
-    branch TEXT NOT NULL,
-    is_current INTEGER NOT NULL,
-    is_worktree INTEGER NOT NULL,
-    worktree_path TEXT,
-    is_dirty INTEGER NOT NULL,
-    ahead INTEGER NOT NULL,
-    behind INTEGER NOT NULL,
-    ahead_default INTEGER DEFAULT 0,
-    behind_default INTEGER DEFAULT 0,
-    default_branch TEXT DEFAULT '',
-    last_commit_hash TEXT,
-    last_commit_message TEXT,
-    last_commit_author TEXT,
-    last_commit_date TEXT,
-    diff_stat TEXT,
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (repo_root, branch)
-  );
-`;
-
-const WORK_REPO_TABLE_SCHEMA = `
-  CREATE TABLE IF NOT EXISTS work_repos (
-    id TEXT NOT NULL,
-    root TEXT NOT NULL,
-    name TEXT NOT NULL,
-    default_branch TEXT NOT NULL DEFAULT '',
-    dir_exists INTEGER NOT NULL DEFAULT 1,
-    excluded INTEGER NOT NULL DEFAULT 0,
-    user_modified INTEGER NOT NULL DEFAULT 0,
-    last_scanned_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (root)
-  );
-  CREATE UNIQUE INDEX IF NOT EXISTS work_repos_id_idx ON work_repos(id);
-  CREATE INDEX IF NOT EXISTS work_repos_excluded_idx ON work_repos(excluded);
-`;
 
 function resolveHome(input: string): string {
   if (input.startsWith("~")) {
@@ -370,11 +330,6 @@ function parseLastCommit(output: string | null): LastCommit | null {
   };
 }
 
-function ensureSchema(db: SqliteDatabase): void {
-  db.exec(BRANCH_TABLE_SCHEMA);
-  db.exec(WORK_REPO_TABLE_SCHEMA);
-}
-
 function toDbBool(value: boolean): number {
   return value ? 1 : 0;
 }
@@ -419,7 +374,6 @@ export class WorkScanner {
       ? normalizeRoots(options.repo_roots)
       : null;
     this.emit = options.on_event ?? ((event) => broadcast(event));
-    ensureSchema(this.db);
   }
 
   getRepos(): RepoInfo[] {

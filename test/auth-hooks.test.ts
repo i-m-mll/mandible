@@ -3,36 +3,12 @@ import { describe, expect, it } from "vitest";
 
 import { AuthHookManager } from "../src/auth-hooks.js";
 import { AuthQueue } from "../src/auth-queue.js";
+import { migrate } from "../src/db.js";
 import type { AuthRequest } from "../src/types.js";
 
-/**
- * Create a fresh in-memory DB with the auth_hooks table and a seeded built-in hook.
- * We don't call migrate() (which runs all 46+ migrations and hits a pre-existing
- * dag_uuid conflict on fresh DBs). Instead, we let the constructors create their
- * own tables, then seed manually.
- */
 function createDbWithHooks(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
-  // AuthQueue.ensureSchema creates auth_requests table
-  // AuthHookManager.ensureSchema creates auth_hooks table
-  // Seed the built-in hook manually (normally done by migration 46)
-  const manager = new AuthHookManager(db);
-  const existing = manager.get("builtin-mandible-rebuild");
-  if (!existing) {
-    const now = Date.now();
-    db.prepare(
-      `INSERT INTO auth_hooks (id, repo_pattern, auth_type, command, label, enabled, builtin, position, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, 1, 0, ?, ?)`
-    ).run(
-      "builtin-mandible-rebuild",
-      "mandible",
-      "merge",
-      "bash cli/post-merge-build-dist.sh",
-      "Build Mandible and install instructions after merge",
-      now,
-      now,
-    );
-  }
+  migrate(db);
   return db;
 }
 

@@ -6,10 +6,17 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
+import { migrate } from "../src/db.js";
 import type { SseEvent } from "../src/types.js";
 
-function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
+function createMigratedDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
+  migrate(db);
+  return db;
+}
+
+function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
+  const db = createMigratedDb();
   return new AuthQueue({ db, ...options });
 }
 
@@ -377,7 +384,7 @@ describe("auth queue", () => {
 
   it("marks pending merge requests needs_rebase after post-merge revalidation", () => {
     const repo = createAuthCheckRepo();
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const events: SseEvent[] = [];
     const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
     try {
