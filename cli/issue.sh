@@ -895,7 +895,7 @@ cmd_label_set() {
   local label="$2"
   local payload
   require_tools
-  payload=$(jq -n --arg label "$label" --argjson present "$present" '{label:$label, present:$present}')
+  payload=$(jq -n --arg label "$label" --argjson present "$present" '{"label":$label, present:$present}')
   api_send POST "/api/ledger/issues/$(urlencode "$id")/labels" "$payload" >/dev/null \
     || die "${RED}Failed to update label '${label}' on ${id}${RESET}" 1
   if [[ "$present" == "true" ]]; then

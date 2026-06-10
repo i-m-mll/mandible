@@ -509,6 +509,37 @@ describe("issue CLI body revisions", () => {
     }
   });
 
+  it("updates labels through file RPC with jq 1.6-safe JSON keys", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-label-"));
+    tempRoots.push(spoolDir);
+    const seen: Array<Record<string, unknown>> = [];
+    const timer = startFileRpcResponder(spoolDir, (request) => {
+      seen.push(request);
+      expect(request).toMatchObject({
+        method: "POST",
+        path: "/api/ledger/issues/abc/labels",
+        body: { label: "deferred", present: false },
+      });
+      return {
+        status: 200,
+        body: { ok: true },
+      };
+    });
+
+    try {
+      const result = await run(["issue", "label", "rm", "abc", "deferred"], 0, process.cwd(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(0);
+      expect(seen).toHaveLength(1);
+      expect(result.stderr).toContain("Removed label 'deferred' from abc");
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
   it("prints issue heads as JSON", async () => {
     const port = await listen();
     const result = await run(["issue", "heads", "abc", "def", "--json"], port);
