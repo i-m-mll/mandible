@@ -8,6 +8,9 @@ RED=$'\033[31m'
 GREEN=$'\033[32m'
 YELLOW=$'\033[33m'
 
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
+
 err() {
   printf "%b\n" "$*" >&2
 }
@@ -20,7 +23,7 @@ die() {
 usage() {
   cat <<'EOF'
 Usage:
-  mandible artifact ingest <path...> [--issue <id>] [--role <role>] [--managed|--copy|--link] [--allow-local-only] [--allow-dirty-link] [--dry-run] [--json]
+  mandible artifact ingest <path...> [--issue <id>] [--role <role>] [--managed|--copy|--link] [--upload] [--allow-local-only] [--allow-dirty-link] [--dry-run] [--json]
   mandible artifact ref <uri...> [--issue <id>] [--role <role>] [--json]
   mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--json]
   mandible artifact resolve <ref> [--json]
@@ -28,8 +31,8 @@ Usage:
   mandible artifact show <ref> [--json]
   mandible artifact content <ref> [--output <path>] [--json]
   mandible artifact check <ref...> [--json]
-  mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--json]
-  mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--json]
+  mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--upload] [--json]
+  mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact scan-repos [--repo <repo>] [--max-depth N] [--register] [--dry-run] [--json]
   mandible artifact bundle create --name <name> <path-or-ref...> [--issue <id>] [--role <role>] [--allow-local-only] [--allow-dirty-link] [--json]
   mandible artifact bundle create --manifest <bundle.json> [--issue <id>] [--json]
@@ -51,29 +54,14 @@ EOF
 }
 
 require_tools() {
-  command -v curl >/dev/null 2>&1 || die "curl not found." 1
+  api_is_file_rpc || command -v curl >/dev/null 2>&1 || die "curl not found." 1
   command -v jq >/dev/null 2>&1 || die "jq not found." 1
-}
-
-api_base() {
-  printf 'http://127.0.0.1:%s' "${MANDIBLE_PORT:-19420}"
-}
-
-urlencode() {
-  jq -rn --arg value "$1" '$value|@uri'
-}
-
-api_get() {
-  local endpoint="$1"
-  curl -sf --max-time 15 "$(api_base)$endpoint"
 }
 
 api_post() {
   local endpoint="$1"
   local payload="$2"
-  curl -sf --max-time 30 -X POST "$(api_base)$endpoint" \
-    -H 'Content-Type: application/json' \
-    -d "$payload"
+  api_send POST "$endpoint" "$payload"
 }
 
 json_quote() {
@@ -143,8 +131,19 @@ issue_repo=""
 resolve_issue() {
   local ref="$1"
   [[ -n "$ref" ]] || return 0
-  issue_json="$(api_get "/api/ledger/issues/$(urlencode "$ref")")" \
-    || die "${RED}Unable to resolve issue '${ref}'. Use a longer or project-scoped issue ref if it is ambiguous.${RESET}" 1
+  local tmp_response http_status detail
+  tmp_response="$(mktemp)"
+  http_status="$(api_capture GET "/api/ledger/issues/$(urlencode "$ref")" "" "$tmp_response")"
+  if [[ ! "$http_status" =~ ^2 ]]; then
+    detail="$(jq -r '.error // .detail // .message // empty' "$tmp_response" 2>/dev/null || true)"
+    rm -f "$tmp_response"
+    if [[ -n "$detail" ]]; then
+      die "${RED}Unable to resolve issue '${ref}' (HTTP ${http_status}: ${detail}).${RESET}" 1
+    fi
+    die "${RED}Unable to resolve issue '${ref}' (HTTP ${http_status}). Use a longer or project-scoped issue ref if it is ambiguous.${RESET}" 1
+  fi
+  issue_json="$(cat "$tmp_response")"
+  rm -f "$tmp_response"
   issue_id="$(printf '%s' "$issue_json" | jq -r '.id')"
   issue_repo="$(printf '%s' "$issue_json" | jq -r '.project.repo_id // .project.repo_name // empty')"
 }
@@ -378,15 +377,16 @@ print_batch_human() {
 cmd_ingest_like() {
   local mode="$1"
   shift
-  local issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 relation="references"
+  local issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 upload=0 mode_explicit=0 relation="references"
   local paths=()
   while (( $# > 0 )); do
     case "$1" in
       --issue) issue="$2"; shift 2 ;;
       --role) role="$2"; shift 2 ;;
-      --managed) mode="managed"; shift ;;
-      --copy) mode="copy"; shift ;;
-      --link) mode="link"; shift ;;
+      --managed) mode="managed"; mode_explicit=1; shift ;;
+      --copy) mode="copy"; mode_explicit=1; shift ;;
+      --link) mode="link"; mode_explicit=1; shift ;;
+      --upload) upload=1; shift ;;
       --allow-local-only) allow_local=1; shift ;;
       --allow-dirty-link) allow_dirty=1; shift ;;
       --dry-run) dry_run=1; shift ;;
@@ -397,6 +397,14 @@ cmd_ingest_like() {
   done
   (( ${#paths[@]} > 0 )) || die "No paths supplied." 2
   require_tools
+  if (( upload )) || api_is_file_rpc; then
+    if [[ "$mode" == "link" ]]; then
+      if (( mode_explicit )); then
+        die "${RED}link custody requires daemon-visible host paths; use --copy or --managed for upload mode.${RESET}" 2
+      fi
+      mode="copy"
+    fi
+  fi
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
   local registered='[]' failed='[]' planned='[]' payload response result
@@ -662,14 +670,17 @@ cmd_scan_repos() {
 }
 
 cmd_snapshot() {
-  local from_path="" issue="" role="" json=0
+  local from_path="" issue="" role="" json=0 upload=0 dry_run=0
   local args=()
   while (( $# > 0 )); do
     case "$1" in
       --from) from_path="$2"; shift 2 ;;
       --issue) issue="$2"; shift 2 ;;
       --role) role="$2"; shift 2 ;;
+      --upload) upload=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
       --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
       *) args+=("$1"); shift ;;
     esac
   done
@@ -678,19 +689,49 @@ cmd_snapshot() {
     local forwarded=("${args[@]}")
     [[ -n "$issue" ]] && forwarded+=(--issue "$issue")
     [[ -n "$role" ]] && forwarded+=(--role "$role")
+    (( upload )) && forwarded+=(--upload)
+    (( dry_run )) && forwarded+=(--dry-run)
     (( json )) && forwarded+=(--json)
     cmd_ingest_like "copy" "${forwarded[@]}"
     return
   fi
 
+  (( dry_run == 0 )) || die "Usage: mandible artifact snapshot <path...> --dry-run [--json] or snapshot <artifact-ref> --from <path> without --dry-run" 2
   [[ ${#args[@]} -eq 1 ]] || die "Usage: mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--json]" 2
   [[ -f "$from_path" ]] || die "Snapshot source path not found or not a regular file." 2
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
   local ref="${args[1]}" payload response artifact link_response result
-  payload="$(jq -n --arg ref "$ref" --arg path "$from_path" --arg role "$role" \
-    '{ref:$ref, path:$path, custody_mode:"copy"} + (if $role == "" then {} else {role:$role} end)')"
+  if (( upload )) || api_is_file_rpc; then
+    local content_b64 sha media filename
+    content_b64="$(base64 < "$from_path" | tr -d '\n')"
+    sha="$(stable_hash "$from_path")"
+    media="$(media_type_for "$from_path")"
+    filename="$(basename "$from_path")"
+    payload="$(jq -n \
+      --arg ref "$ref" \
+      --arg content_base64 "$content_b64" \
+      --arg sha256 "$sha" \
+      --arg filename "$filename" \
+      --arg media_type "$media" \
+      --arg role "$role" \
+      --arg source_path "$from_path" \
+      '{
+        ref:$ref,
+        content_base64:$content_base64,
+        sha256:$sha256,
+        filename:$filename,
+        logical_name:$filename,
+        media_type:$media_type,
+        custody_mode:"copy",
+        metadata:{source:"artifact_cli", upload_mode:true, snapshot_source_path:$source_path},
+        reference:{owner_system:"artifact_cli", upload_mode:true}
+      } + (if $role == "" then {} else {role:$role} end)')"
+  else
+    payload="$(jq -n --arg ref "$ref" --arg path "$from_path" --arg role "$role" \
+      '{ref:$ref, path:$path, custody_mode:"copy"} + (if $role == "" then {} else {role:$role} end)')"
+  fi
   response="$(api_post "/api/artifacts/snapshot" "$payload")" || die "${RED}Failed to snapshot artifact bytes.${RESET}" 1
   artifact="$(printf '%s' "$response" | jq '.artifact')"
   if [[ -n "$issue_id" ]]; then

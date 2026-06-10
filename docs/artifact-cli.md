@@ -66,6 +66,14 @@ Do not turn ignored files into durable-looking issue evidence unless they are
 copied into Mandible custody, promoted to a provider/object store, or paired
 with a tracked regeneration path.
 
+When the CLI talks to Mandible through `MANDIBLE_BASE=file://<spool>`, path
+names belong to the client namespace, not the daemon namespace. In that mode,
+path-based `artifact ingest` defaults to copy custody and sends file bytes plus
+the client-computed SHA-256 in the request body. The same upload path can be
+forced over any transport with `--upload`. Explicit `--link` remains a
+host-path contract and is rejected in upload mode because link custody requires
+a daemon-visible path.
+
 ## Feature Branches
 
 Branch names are mutable aliases. They are useful for humans, but they are not
@@ -126,6 +134,10 @@ mandible artifact snapshot _artifacts/run-7/checkpoint.eqx \
   --role model_checkpoint \
   --json
 ```
+
+For sandboxed clients using file RPC, this command uploads the bytes directly
+and Mandible verifies the SHA-256 before storing them in content-addressed
+custody. The daemon does not need to read the client path.
 
 ## Issue Links
 
