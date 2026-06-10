@@ -10,6 +10,7 @@ const CLI = path.join(process.cwd(), "bin", "mandible");
 let server: http.Server | null = null;
 let requestedPaths: string[] = [];
 let tempRoots: string[] = [];
+let issueHeads: Record<string, unknown> = {};
 
 const issueRevision = {
   id: "rev_issue_1",
@@ -119,6 +120,22 @@ function makeGitRepoWithWorktree(): { repoRoot: string; worktreeRoot: string } {
 
 function listen(): Promise<number> {
   requestedPaths = [];
+  issueHeads = {
+    abc: {
+      issue_id: "issue-1",
+      short_id: "abc",
+      digest: "digest-before",
+      last_event_at: 1_700_000_000_000,
+      last_event_kind: "issue.created",
+    },
+    def: {
+      issue_id: "issue-2",
+      short_id: "def",
+      digest: "digest-current",
+      last_event_at: 1_700_000_010_000,
+      last_event_kind: "comment.created",
+    },
+  };
   return new Promise((resolve) => {
     server = http.createServer((req, res) => {
       requestedPaths.push(req.url ?? "");
@@ -131,6 +148,17 @@ function listen(): Promise<number> {
             issues: [{ id: "abc", status: "open", title: "Worktree issue" }],
           },
         ]));
+        return;
+      }
+      const headMatch = req.url?.match(/^\/api\/ledger\/issues\/([^/]+)\/head$/);
+      if (headMatch) {
+        const head = issueHeads[decodeURIComponent(headMatch[1])];
+        if (!head) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ error: "ledger issue not found" }));
+          return;
+        }
+        res.end(JSON.stringify(head));
         return;
       }
       if (req.url === "/api/ledger/issues/abc/body/revisions") {
@@ -216,6 +244,44 @@ describe("issue CLI body revisions", () => {
 
     expect(result.status).toBe(0);
     expect(requestedPaths).toContain("/api/ledger/issues/abc/comments");
+  });
+
+  it("prints issue heads as JSON", async () => {
+    const port = await listen();
+    const result = await run(["issue", "heads", "abc", "def", "--json"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/head");
+    expect(requestedPaths).toContain("/api/ledger/issues/def/head");
+    expect(JSON.parse(result.stdout)).toEqual([
+      issueHeads.abc,
+      issueHeads.def,
+    ]);
+  });
+
+  it("compares issue heads against a delegation manifest", async () => {
+    const port = await listen();
+    const manifest = path.join(os.tmpdir(), `mandible-manifest-${Date.now()}.json`);
+    fs.writeFileSync(manifest, JSON.stringify([
+      { issue: "abc", digest: "digest-before" },
+      { issue: "def", digest: "digest-stale" },
+      { issue: "missing", digest: "digest-missing" },
+    ]), "utf8");
+    tempRoots.push(manifest);
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-manifest",
+      manifest,
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
+    expect(body.missing.map((entry: { issue: string }) => entry.issue)).toEqual(["missing"]);
   });
 
   it("shows only the issue description", async () => {

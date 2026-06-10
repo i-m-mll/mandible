@@ -17,6 +17,9 @@ import {
   buildLedgerIssueDetailProjection,
 } from "../ledger/issue-detail.js";
 import {
+  getLedgerIssueHead,
+} from "../ledger/issue-heads.js";
+import {
   evaluateMarkdownBodyPolicy,
   getMarkdownBodyEscapePolicy,
   type MarkdownBodyPolicyWarning,
@@ -447,6 +450,25 @@ export function registerIssueRoutes(
       return;
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.get("/api/ledger/issues/:issueId/head", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    try {
+      sendJson(res, 200, getLedgerIssueHead(db, resolved.issue_id));
+    } catch (error) {
+      sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
+    }
   });
 
   server.get("/api/ledger/issues/:issueId/body/revisions", (req, res) => {

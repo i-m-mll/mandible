@@ -27,6 +27,8 @@ Usage:
   mandible issue show <id>                                        Show issue details
   mandible issue report <id> [--json]                             Print deterministic issue context
   mandible issue triage [opts] [--json]                           Filter issues for review
+  mandible issue heads <id>... [--json]                            Print issue state digests
+  mandible issue changed --since-manifest <file> [--json]          Compare issue digests to a manifest
   mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
   mandible issue open <id>                                        Reopen a closed issue
   mandible issue description show <issue-ref> [--json]            Show only the issue description
@@ -371,6 +373,157 @@ cmd_triage() {
         else .[] | "\(.id)\t\(.status)\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
         end
     '
+}
+
+print_issue_heads() {
+  local json="$1"
+  local file="$2"
+
+  if (( json )); then
+    jq -s '.' "$file"
+  else
+    jq -r '
+      "issue\tdigest\tlast_event_at\tlast_event_kind",
+      (.[] | "\(.short_id)\t\(.digest)\t\(.last_event_at // "-")\t\(.last_event_kind // "-")")
+    ' "$file"
+  fi
+}
+
+cmd_heads() {
+  local json=0
+  local -a ids=()
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        ids+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if (( ${#ids[@]} == 0 )); then
+    die "Usage: mandible issue heads <id>... [--json]" 2
+  fi
+
+  require_tools
+  local tmp response id
+  tmp=$(mktemp)
+  for id in "${ids[@]}"; do
+    response=$(api_get "/api/ledger/issues/$(urlencode "$id")/head") \
+      || die "${RED}Failed to fetch issue head for ${id}${RESET}" 1
+    printf '%s\n' "$response" >> "$tmp"
+  done
+  print_issue_heads "$json" "$tmp"
+  rm -f "$tmp"
+}
+
+print_changed_result() {
+  local json="$1"
+  local changed_file="$2"
+  local unchanged_file="$3"
+  local missing_file="$4"
+
+  if (( json )); then
+    jq -n \
+      --slurpfile changed "$changed_file" \
+      --slurpfile unchanged "$unchanged_file" \
+      --slurpfile missing "$missing_file" \
+      '{changed: $changed, unchanged: $unchanged, missing: $missing}'
+  else
+    jq -n -r \
+      --slurpfile changed "$changed_file" \
+      --slurpfile unchanged "$unchanged_file" \
+      --slurpfile missing "$missing_file" '
+        "changed:",
+        (if ($changed | length) == 0 then "  -" else ($changed[] | "  \(.issue)\t\(.expected_digest // "null") -> \(.current_digest)\t\(.last_event_kind // "-")") end),
+        "unchanged:",
+        (if ($unchanged | length) == 0 then "  -" else ($unchanged[] | "  \(.issue)\t\(.current_digest)") end),
+        "missing:",
+        (if ($missing | length) == 0 then "  -" else ($missing[] | "  \(.issue)") end)
+      '
+  fi
+}
+
+cmd_changed() {
+  local manifest=""
+  local json=0
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --since-manifest)
+        if (( $# < 2 )); then
+          die "Missing value for --since-manifest." 2
+        fi
+        manifest="$2"
+        shift 2
+        ;;
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        die "Unexpected argument: $1" 2
+        ;;
+    esac
+  done
+
+  if [[ -z "$manifest" ]]; then
+    die "Usage: mandible issue changed --since-manifest <file> [--json]" 2
+  fi
+  if [[ ! -f "$manifest" ]]; then
+    die "Manifest not found: $manifest" 2
+  fi
+
+  require_tools
+  jq -e 'type == "array"' "$manifest" >/dev/null \
+    || die "Manifest must be a JSON array." 2
+
+  local tmpdir changed_file unchanged_file missing_file
+  tmpdir=$(mktemp -d)
+  changed_file="$tmpdir/changed.jsonl"
+  unchanged_file="$tmpdir/unchanged.jsonl"
+  missing_file="$tmpdir/missing.jsonl"
+  : > "$changed_file"
+  : > "$unchanged_file"
+  : > "$missing_file"
+
+  local issue expected response current target_file
+  while IFS=$'\t' read -r issue expected; do
+    if [[ -z "$issue" ]]; then
+      rm -rf "$tmpdir"
+      die "Manifest entries must include issue, short_id, or id." 2
+    fi
+    if response=$(api_get "/api/ledger/issues/$(urlencode "$issue")/head"); then
+      current=$(printf '%s\n' "$response" | jq -r '.digest')
+      if [[ "$expected" == "$current" ]]; then
+        target_file="$unchanged_file"
+      else
+        target_file="$changed_file"
+      fi
+      jq -n \
+        --arg issue "$issue" \
+        --arg expected "$expected" \
+        --argjson head "$response" \
+        '{
+          issue: $issue,
+          expected_digest: (if $expected == "" then null else $expected end),
+          current_digest: $head.digest,
+          last_event_at: $head.last_event_at,
+          last_event_kind: $head.last_event_kind,
+          head: $head
+        }' >> "$target_file"
+    else
+      jq -n --arg issue "$issue" '{issue: $issue}' >> "$missing_file"
+    fi
+  done < <(jq -r '.[] | [(.issue // .short_id // .id // ""), (.digest // "")] | @tsv' "$manifest")
+
+  print_changed_result "$json" "$changed_file" "$unchanged_file" "$missing_file"
+  rm -rf "$tmpdir"
 }
 
 cmd_new() {
@@ -990,6 +1143,8 @@ case "$subcmd" in
   show)    cmd_show "${1:-}" ;;
   report)  cmd_report "$@" ;;
   triage)  cmd_triage "$@" ;;
+  heads)   cmd_heads "$@" ;;
+  changed) cmd_changed "$@" ;;
   close)   cmd_close "$@" ;;
   open)    cmd_open "${1:-}" ;;
   description) cmd_description "$@" ;;

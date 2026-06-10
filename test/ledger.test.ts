@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
 import { LEDGER_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createLedgerId } from "../src/ledger/ids.js";
+import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { runIssueReferenceBackfill } from "../src/ledger/issue-reference-backfill.js";
 import { parseIssueReferences } from "../src/ledger/issue-xrefs.js";
 import { normalizeRemoteIdentity, resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -285,6 +286,28 @@ describe("ledger IDs and project identity", () => {
 
     expect(one.project.id).not.toBe(two.project.id);
     expect(one.project.namespace_policy).toBe("local");
+  });
+});
+
+describe("ledger issue heads", () => {
+  it("changes the digest when an issue comment is added", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const issue = createIssue(store, project.project.id, "Digest target");
+    const before = getLedgerIssueHead(db, issue.id);
+
+    store.addComment(issue.id, {
+      body: "New digest-affecting comment",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+    });
+
+    const after = getLedgerIssueHead(db, issue.id);
+    expect(before.short_id).toBe(issue.short_id);
+    expect(before.digest).not.toBe(after.digest);
+    expect(after.last_event_kind).toBe("comment.created");
+    expect(after.last_event_at).not.toBeNull();
   });
 });
 
