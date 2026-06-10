@@ -29,6 +29,9 @@ Usage:
   mandible issue triage [opts] [--json]                           Filter issues for review
   mandible issue heads <id>... [--json]                            Print issue state digests
   mandible issue changed --since-manifest <file> [--json]          Compare issue digests to a manifest
+  mandible issue status <id> <value>                               Set worker status
+  mandible issue branch add <id> <branch> [--role primary|superseded]
+                                                                  Link a branch to an issue
   mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
   mandible issue open <id>                                        Reopen a closed issue
   mandible issue description show <issue-ref> [--json]            Show only the issue description
@@ -253,8 +256,10 @@ cmd_report() {
       display_id,
       title,
       status,
+      worker_status,
       resolution,
       labels,
+      issue_branches,
       priority,
       kind,
       project,
@@ -277,6 +282,8 @@ cmd_report() {
       def list_or_dash(xs): if (xs // []) | length == 0 then "-" else (xs | join(", ")) end;
       def short(s): (s // "" | gsub("\\s+"; " ") | if length > 180 then .[0:177] + "..." else . end);
       "\(.display_id) [\(.status)] \(.title)",
+      "worker_status: \(.worker_status // "none")",
+      "branches: \(list_or_dash((.issue_branches // []) | map(.branch + " (" + .role + ")")))",
       "labels: \(list_or_dash(.labels))",
       "updated: \(.updated_at // "-")",
       "created: \(.created_at // "-")",
@@ -373,6 +380,89 @@ cmd_triage() {
         else .[] | "\(.id)\t\(.status)\t\(.repo_name)\t\(.updated_at // "-")\t\((.labels // []) | join(","))\t\(.title)"
         end
     '
+}
+
+cmd_status() {
+  local id="${1:-}"
+  local worker_status="${2:-}"
+
+  if [[ -z "$id" || -z "$worker_status" ]]; then
+    die "Usage: mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>" 2
+  fi
+
+  case "$worker_status" in
+    none|in_progress|done|blocked|pivot-needed) ;;
+    *) die "Unknown worker status: $worker_status" 2 ;;
+  esac
+
+  require_tools
+  local payload
+  payload=$(jq -n --arg worker_status "$worker_status" '{worker_status:$worker_status}')
+  api_send POST "/api/ledger/issues/$(urlencode "$id")/worker-status" "$payload" >/dev/null \
+    || die "${RED}Failed to set worker status on ${id}${RESET}" 1
+  err "${GREEN}Set worker status '${worker_status}' on ${id}${RESET}"
+}
+
+cmd_branch() {
+  local action="${1:-}"
+  shift || true
+
+  case "$action" in
+    add) cmd_branch_add "$@" ;;
+    ""|-h|--help)
+      cat <<'BRANCH_USAGE'
+Usage:
+  mandible issue branch add <id> <branch> [--role primary|superseded]
+BRANCH_USAGE
+      ;;
+    *)
+      die "Unknown branch action: $action (expected add)" 2
+      ;;
+  esac
+}
+
+cmd_branch_add() {
+  local id=""
+  local branch=""
+  local role="primary"
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --role)
+        if (( $# < 2 )); then die "Missing value for --role." 2; fi
+        role="$2"
+        shift 2
+        ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$id" ]]; then
+          id="$1"
+        elif [[ -z "$branch" ]]; then
+          branch="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$id" || -z "$branch" ]]; then
+    die "Usage: mandible issue branch add <id> <branch> [--role primary|superseded]" 2
+  fi
+  case "$role" in
+    primary|superseded) ;;
+    *) die "Unknown branch role: $role" 2 ;;
+  esac
+
+  require_tools
+  local payload
+  payload=$(jq -n --arg branch "$branch" --arg role "$role" '{branch:$branch, role:$role}')
+  api_send POST "/api/ledger/issues/$(urlencode "$id")/branches" "$payload" >/dev/null \
+    || die "${RED}Failed to link branch '${branch}' to ${id}${RESET}" 1
+  err "${GREEN}Linked branch '${branch}' to ${id} (${role})${RESET}"
 }
 
 print_issue_heads() {
@@ -1145,6 +1235,8 @@ case "$subcmd" in
   triage)  cmd_triage "$@" ;;
   heads)   cmd_heads "$@" ;;
   changed) cmd_changed "$@" ;;
+  status)  cmd_status "$@" ;;
+  branch)  cmd_branch "$@" ;;
   close)   cmd_close "$@" ;;
   open)    cmd_open "${1:-}" ;;
   description) cmd_description "$@" ;;

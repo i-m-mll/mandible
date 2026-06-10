@@ -24,6 +24,8 @@ import type {
   LedgerExternalRef,
   LedgerIssue,
   LedgerIssueAlias,
+  LedgerIssueBranch,
+  LedgerIssueBranchRole,
   LedgerIssueDetail,
   LedgerIssueKind,
   LedgerIssueRelationship,
@@ -36,6 +38,7 @@ import type {
   LedgerPriority,
   LedgerRelationshipProvenance,
   LedgerRelationshipType,
+  LedgerWorkerStatus,
 } from "./types.js";
 
 export type ResolveIssueRefResult =
@@ -553,6 +556,109 @@ export class LedgerStore {
     const issue = run();
     emitLedgerEvents(emitted, this.broadcaster);
     return issue;
+  }
+
+  setWorkerStatus(
+    id: string,
+    workerStatus: LedgerWorkerStatus,
+    actor: LedgerActorInput = {},
+    source: LedgerEventSource = "mandible",
+  ): LedgerIssue {
+    const existing = this.requireIssue(id);
+    if (existing.worker_status === workerStatus) {
+      return existing;
+    }
+    const emitted: LedgerSsePayload[] = [];
+    const now = Date.now();
+    const normalizedActor = normalizeActor(actor);
+
+    const run = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE ledger_issues
+         SET worker_status = ?, updated_at = ?
+         WHERE id = ?`,
+      ).run(workerStatus, now, id);
+      const payload = {
+        issue_id: id,
+        previous_worker_status: existing.worker_status,
+        worker_status: workerStatus,
+      };
+      const event = this.insertEvent({
+        entity_type: "issue",
+        entity_id: id,
+        event_type: "issue.worker_status.updated",
+        actor_id: normalizedActor.actor_id,
+        actor_type: normalizedActor.actor_type,
+        source,
+        payload,
+        project_id: existing.project_id,
+        occurred_at: now,
+      });
+      emitted.push({ event, payload });
+      for (const status of ["none", "in_progress", "done", "blocked", "pivot-needed"] as const) {
+        this.setLabel(id, `mandible:status:${status}`, status === workerStatus, source, actor);
+      }
+      return this.getIssue(id);
+    });
+
+    const issue = run();
+    emitLedgerEvents(emitted, this.broadcaster);
+    return issue;
+  }
+
+  addIssueBranch(
+    issueId: string,
+    branch: string,
+    role: LedgerIssueBranchRole = "primary",
+    actor: LedgerActorInput = {},
+    source: LedgerEventSource = "mandible",
+  ): LedgerIssueBranch {
+    const issue = this.requireIssue(issueId);
+    const trimmedBranch = branch.trim();
+    if (!trimmedBranch) {
+      throw new Error("Issue branch cannot be empty");
+    }
+    const emitted: LedgerSsePayload[] = [];
+    const now = Date.now();
+    const normalizedActor = normalizeActor(actor);
+
+    const run = this.db.transaction(() => {
+      const existing = this.getIssueBranch(issueId, trimmedBranch);
+      this.db.prepare(
+        `INSERT INTO issue_branches (issue_id, branch, role, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(issue_id, branch) DO UPDATE SET
+           role = excluded.role,
+           updated_at = excluded.updated_at`,
+      ).run(issueId, trimmedBranch, role, now, now);
+      const payload = {
+        issue_id: issueId,
+        branch: trimmedBranch,
+        role,
+        previous_role: existing?.role ?? null,
+      };
+      const event = this.insertEvent({
+        entity_type: "issue",
+        entity_id: issueId,
+        event_type: existing ? "issue.branch.updated" : "issue.branch.added",
+        actor_id: normalizedActor.actor_id,
+        actor_type: normalizedActor.actor_type,
+        source,
+        payload,
+        project_id: issue.project_id,
+        occurred_at: now,
+      });
+      emitted.push({ event, payload });
+      this.setLabel(issueId, `mandible:branch:${trimmedBranch}`, true, source, actor);
+      return this.getIssueBranch(issueId, trimmedBranch);
+    });
+
+    const row = run();
+    if (!row) {
+      throw new Error(`Failed to add branch ${trimmedBranch} for issue ${issueId}`);
+    }
+    emitLedgerEvents(emitted, this.broadcaster);
+    return row;
   }
 
   recordEvent(input: RecordLedgerEventInput): LedgerEvent {
@@ -1431,6 +1537,7 @@ export class LedgerStore {
       labels: this.db.prepare(
         "SELECT * FROM ledger_labels WHERE issue_id = ? ORDER BY label",
       ).all(id) as LedgerLabel[],
+      branches: this.listIssueBranches(id),
       outgoing_relationships: this.db.prepare(
         "SELECT * FROM ledger_issue_relationships WHERE source_issue_id = ? ORDER BY created_at",
       ).all(id) as LedgerIssueRelationship[],
@@ -1471,6 +1578,12 @@ export class LedgerStore {
     return this.db.prepare(
       "SELECT * FROM ledger_issue_aliases WHERE issue_id = ? ORDER BY is_primary DESC, alias_kind, alias",
     ).all(issueId) as LedgerIssueAlias[];
+  }
+
+  listIssueBranches(issueId: string): LedgerIssueBranch[] {
+    return this.db.prepare(
+      "SELECT * FROM issue_branches WHERE issue_id = ? ORDER BY role, created_at, branch",
+    ).all(issueId) as LedgerIssueBranch[];
   }
 
   listEvents(entity: { entity_type: string; entity_id: string }): LedgerEvent[] {
@@ -1742,6 +1855,12 @@ export class LedgerStore {
     return (this.db.prepare(
       "SELECT * FROM ledger_labels WHERE issue_id = ? AND label = ?",
     ).get(issueId, label) as LedgerLabel | undefined) ?? null;
+  }
+
+  private getIssueBranch(issueId: string, branch: string): LedgerIssueBranch | null {
+    return (this.db.prepare(
+      "SELECT * FROM issue_branches WHERE issue_id = ? AND branch = ?",
+    ).get(issueId, branch) as LedgerIssueBranch | undefined) ?? null;
   }
 
   private getConflict(id: string): LedgerConflict {

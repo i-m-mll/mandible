@@ -489,6 +489,41 @@ describe("ledger store", () => {
     expect(broadcasts.filter((event) => event === "ledger:issue:closed")).toHaveLength(1);
   });
 
+  it("sets worker status and issue branches with mirrored labels", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const issue = createIssue(store, project.project.id);
+
+    const updated = store.setWorkerStatus(issue.id, "in_progress");
+    const branch = store.addIssueBranch(issue.id, "feature/demo");
+
+    expect(updated.worker_status).toBe("in_progress");
+    expect(branch).toMatchObject({
+      issue_id: issue.id,
+      branch: "feature/demo",
+      role: "primary",
+    });
+    expect(store.listIssueBranches(issue.id)).toMatchObject([
+      { branch: "feature/demo", role: "primary" },
+    ]);
+    expect(store.getIssueDetail(issue.id).labels
+      .filter((label) => label.deleted_at === null)
+      .map((label) => label.label)
+      .sort()).toContain("mandible:status:in_progress");
+    expect(store.getIssueDetail(issue.id).labels
+      .filter((label) => label.deleted_at === null)
+      .map((label) => label.label)
+      .sort()).toContain("mandible:branch:feature/demo");
+    expect(store.listEvents({ entity_type: "issue", entity_id: issue.id })
+      .map((event) => event.event_type)).toEqual([
+        "issue.created",
+        "issue.worker_status.updated",
+        "label.updated",
+        "issue.branch.added",
+        "label.updated",
+      ]);
+  });
+
   it("sets labels idempotently and records only state-changing events", () => {
     const project = createProject();
     const store = new LedgerStore(db);
@@ -747,7 +782,9 @@ describe("ledger store", () => {
 describe("ledger backup contract", () => {
   it("lists every non-reproducible ledger table for backup tooling", () => {
     const tableNames = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ledger_%'",
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table'
+         AND (name LIKE 'ledger_%' OR name = 'issue_branches')`,
     ).all() as Array<{ name: string }>;
     const backedUp = new Set<string>(LEDGER_BACKUP_TABLES);
 

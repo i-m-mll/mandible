@@ -169,10 +169,27 @@ function listen(): Promise<number> {
         res.end(JSON.stringify({ id: "comment-3" }));
         return;
       }
+      if (req.method === "POST" && req.url === "/api/ledger/issues/abc/worker-status") {
+        res.end(JSON.stringify({ id: "issue-1", display_id: "abc", worker_status: "done" }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/ledger/issues/abc/branches") {
+        res.end(JSON.stringify({
+          id: "issue-1",
+          display_id: "abc",
+          issue_branches: [{ branch: "feature/demo", role: "primary" }],
+        }));
+        return;
+      }
       if (req.url === "/api/ledger/issues/abc") {
         res.end(JSON.stringify({
           id: "issue-1",
           display_id: "abc",
+          title: "Issue title",
+          status: "open",
+          worker_status: "in_progress",
+          labels: ["feature", "mandible:status:in_progress"],
+          issue_branches: [{ branch: "feature/demo", role: "primary" }],
           body: "Issue body",
           comments: [
             { id: "comment-1", ordinal: 1, body: "First comment" },
@@ -236,6 +253,8 @@ describe("issue CLI body revisions", () => {
     expect(result.stdout).toContain("comment history <comment-ref>");
     expect(result.stdout).toContain("revision show <revision-id>");
     expect(result.stdout).toContain("revision diff <old-revision-id> <new-revision-id>");
+    expect(result.stdout).toContain("status <id> <value>");
+    expect(result.stdout).toContain("branch add <id> <branch>");
   });
 
   it("adds comments with the official comment add namespace", async () => {
@@ -244,6 +263,32 @@ describe("issue CLI body revisions", () => {
 
     expect(result.status).toBe(0);
     expect(requestedPaths).toContain("/api/ledger/issues/abc/comments");
+  });
+
+  it("sets worker status through the issue status command", async () => {
+    const port = await listen();
+    const result = await run(["issue", "status", "abc", "done"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/worker-status");
+  });
+
+  it("links branches through the issue branch namespace", async () => {
+    const port = await listen();
+    const result = await run(["issue", "branch", "add", "abc", "feature/demo"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/branches");
+  });
+
+  it("reports worker status and linked branches", async () => {
+    const port = await listen();
+    const result = await run(["issue", "report", "abc", "--json"], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.worker_status).toBe("in_progress");
+    expect(body.issue_branches).toEqual([{ branch: "feature/demo", role: "primary" }]);
   });
 
   it("prints issue heads as JSON", async () => {

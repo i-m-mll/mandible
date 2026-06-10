@@ -1,6 +1,18 @@
 export const LEDGER_ISSUE_STATUSES = ["open", "closed"] as const;
 export type LedgerIssueStatus = (typeof LEDGER_ISSUE_STATUSES)[number];
 
+export const LEDGER_WORKER_STATUSES = [
+  "none",
+  "in_progress",
+  "done",
+  "blocked",
+  "pivot-needed",
+] as const;
+export type LedgerWorkerStatus = (typeof LEDGER_WORKER_STATUSES)[number];
+
+export const LEDGER_ISSUE_BRANCH_ROLES = ["primary", "superseded"] as const;
+export type LedgerIssueBranchRole = (typeof LEDGER_ISSUE_BRANCH_ROLES)[number];
+
 export const LEDGER_ISSUE_RESOLUTIONS = [
   "fixed",
   "merged",
@@ -131,6 +143,7 @@ export interface LedgerIssue {
   title: string;
   body: string;
   status: LedgerIssueStatus;
+  worker_status: LedgerWorkerStatus;
   resolution: LedgerIssueResolution | null;
   kind: LedgerIssueKind;
   priority: LedgerPriority;
@@ -201,6 +214,14 @@ export interface LedgerLabel {
   source: string;
   created_at: number;
   deleted_at: number | null;
+}
+
+export interface LedgerIssueBranch {
+  issue_id: string;
+  branch: string;
+  role: LedgerIssueBranchRole;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface LedgerIssueRelationship {
@@ -297,6 +318,7 @@ export interface LedgerIssueDetail extends LedgerIssue {
   aliases: LedgerIssueAlias[];
   comments: LedgerComment[];
   labels: LedgerLabel[];
+  branches: LedgerIssueBranch[];
   outgoing_relationships: LedgerIssueRelationship[];
   incoming_relationships: LedgerIssueRelationship[];
 }
