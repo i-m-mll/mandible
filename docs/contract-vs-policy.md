@@ -42,10 +42,12 @@ What Mandible defines, for every install:
 - **Agent instructions fragment.** Mandible ships a versioned fragment
   describing its own interface (command surface generated from the CLI source,
   trailer semantics, auth lifecycle, coordination primitives).
-  `mandible instructions install` maintains it as a marked section in the
-  user's agent-instruction files, and Mandible-spawned SDK sessions receive it
-  directly. The fragment describes the contract only — it never contains user
-  policy.
+  `mandible instructions install` writes that fragment to user-configured
+  targets. A target may be a managed block inside an existing instruction file
+  or a standalone generated module consumed by a user-owned compiler.
+  Mandible-spawned SDK sessions receive the same fragment directly. The
+  fragment describes the contract only — it never contains user policy, and
+  where/how it is delivered is user policy.
 - **Transports.** The daemon serves HTTP on loopback and a file-RPC spool
   directory for network-isolated (sandboxed) agents. Both dispatch through the
   same router; the file transport excludes approval/admin routes.
@@ -110,7 +112,7 @@ the security boundary; it only changes the quality of the audit trail.
 |---|---|
 | `agent-commit` / trailer tooling | Commits unlinked from issues; work units not auto-activated. Everything else intact. |
 | Any signing identity | Ledger, queue, artifacts, sessions fine; `auth merge` preflight refuses to execute merges. |
-| Dotfiles / instruction files | `mandible instructions install` produces a working interface block from scratch. |
+| Dotfiles / instruction files | `mandible instructions install` produces a working interface fragment; target locations, delivery modes, and post-export compilers are user policy. |
 | Network access to loopback (sandboxed agent) | Use the file-RPC transport; approval/admin routes remain UI-only. |
 | The daemon | Nothing works by design — the daemon is the single writer. Clients must fail loudly, not fall back to direct DB writes. |
 

@@ -5861,6 +5861,10 @@ tr:hover .work-actions__trigger {
   opacity: 0.6;
 }
 
+.settings-view__input--readonly {
+  opacity: 0.82;
+}
+
 .settings-view__field-actions {
   display: flex;
   align-items: center;
@@ -6062,6 +6066,10 @@ tr:hover .work-actions__trigger {
   opacity: 0.6;
 }
 
+.settings-view__select--compact {
+  min-width: 150px;
+}
+
 .settings-view__badge--restart {
   display: inline-flex;
   align-items: center;
@@ -6113,6 +6121,30 @@ tr:hover .work-actions__trigger {
 
 .settings-view__input--wide {
   width: 260px;
+}
+
+.settings-view__empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-view__instruction-targets {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-view__instruction-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 700px) {
+  .settings-view__instruction-target {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-view__daemon-card {

@@ -59,8 +59,16 @@
       "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure."
     },
     {
-      "name": "mandible instructions diff [--target <file>] | install [--target <file>] [--worktree <path>] [--force]",
-      "description": "Show or update the managed Mandible interface block in an agent-instruction file. Installs into tracked protected-branch files are refused unless --force is explicit; use --worktree to target a feature-worktree copy."
+      "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",
+      "description": "Refresh configured instruction targets, or update one explicit target. Configured targets support managed-block and standalone modes; tracked protected-branch writes are refused unless --force is explicit."
+    },
+    {
+      "name": "mandible instructions targets list|add|rm <path> [--mode managed-block|standalone]",
+      "description": "Configure where the generated Mandible instruction fragment is written."
+    },
+    {
+      "name": "mandible instructions post-export get|set|clear <command>",
+      "description": "Configure an optional command to run after instruction targets refresh, such as a module compiler."
     }
   ],
   "trailers": [

@@ -4,13 +4,21 @@ set -euo pipefail
 
 BEGIN_MARKER="<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->"
 END_MARKER="<!-- END MANDIBLE MANAGED INSTRUCTIONS -->"
-MANIFEST_PATH="$(cd "$(dirname "$0")" && pwd -P)/instructions-contract.json"
+CLI_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+MANDIBLE_ROOT="$(cd "$CLI_DIR/.." && pwd -P)"
+MANIFEST_PATH="$CLI_DIR/instructions-contract.json"
 
 usage() {
   cat <<'EOF'
 Usage:
   mandible instructions diff [--target <file>]
   mandible instructions install [--target <file>] [--worktree <path>] [--force]
+  mandible instructions targets list
+  mandible instructions targets add <path> [--mode managed-block|standalone]
+  mandible instructions targets rm <path>
+  mandible instructions post-export get
+  mandible instructions post-export set <command>
+  mandible instructions post-export clear
 EOF
 }
 
@@ -55,6 +63,138 @@ render_block() {
   printf '%s\n' "$BEGIN_MARKER"
   render_fragment
   printf '\n%s\n' "$END_MARKER"
+}
+
+settings_helper() {
+  node - "$MANDIBLE_ROOT" "$@" <<'NODE'
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const [root, op, ...args] = process.argv.slice(2);
+let Database;
+try {
+  Database = require("better-sqlite3");
+} catch {
+  Database = require(path.join(root, "node_modules", "better-sqlite3"));
+}
+
+const dbPath = process.env.MANDIBLE_DB || path.join(os.homedir(), ".cache", "mandible", "mandible.db");
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+const db = new Database(dbPath);
+db.pragma("journal_mode = WAL");
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )
+`).run();
+
+const TARGETS_KEY = "instructions.targets";
+const POST_EXPORT_KEY = "instructions.post_export";
+
+function now() {
+  return Date.now();
+}
+
+function getSetting(key, fallback = "") {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
+  return row ? String(row.value) : fallback;
+}
+
+function setSetting(key, value) {
+  db.prepare(`
+    INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(key, value, now());
+}
+
+function readTargets() {
+  const raw = getSetting(TARGETS_KEY, "[]");
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((target) => ({
+        path: typeof target.path === "string" ? target.path : "",
+        mode: target.mode === "standalone" ? "standalone" : "managed-block",
+      }))
+      .filter((target) => target.path.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function writeTargets(targets) {
+  setSetting(TARGETS_KEY, JSON.stringify(targets));
+}
+
+function requirePath(value) {
+  if (!value) {
+    console.error("Target path is required");
+    process.exit(2);
+  }
+  return path.resolve(value);
+}
+
+switch (op) {
+  case "targets-list": {
+    for (const target of readTargets()) {
+      console.log(`${target.mode}\t${target.path}`);
+    }
+    break;
+  }
+  case "targets-add": {
+    const targetPath = requirePath(args[0]);
+    const mode = args[1] || "managed-block";
+    if (!["managed-block", "standalone"].includes(mode)) {
+      console.error(`Invalid mode: ${mode}`);
+      process.exit(2);
+    }
+    const targets = readTargets().filter((target) => target.path !== targetPath);
+    targets.push({ path: targetPath, mode });
+    writeTargets(targets);
+    console.log(`Added instruction target: ${mode}\t${targetPath}`);
+    break;
+  }
+  case "targets-rm": {
+    const targetPath = requirePath(args[0]);
+    const before = readTargets();
+    const after = before.filter((target) => target.path !== targetPath);
+    writeTargets(after);
+    if (after.length === before.length) {
+      console.log(`Instruction target not configured: ${targetPath}`);
+    } else {
+      console.log(`Removed instruction target: ${targetPath}`);
+    }
+    break;
+  }
+  case "post-export-get": {
+    const value = getSetting(POST_EXPORT_KEY, "");
+    if (value) console.log(value);
+    break;
+  }
+  case "post-export-set": {
+    const command = args.join(" ").trim();
+    if (!command) {
+      console.error("post-export command is required");
+      process.exit(2);
+    }
+    setSetting(POST_EXPORT_KEY, command);
+    console.log(`Set instructions post-export hook: ${command}`);
+    break;
+  }
+  case "post-export-clear": {
+    setSetting(POST_EXPORT_KEY, "");
+    console.log("Cleared instructions post-export hook");
+    break;
+  }
+  default:
+    console.error(`Unknown settings operation: ${op}`);
+    process.exit(2);
+}
+NODE
 }
 
 absolute_path() {
@@ -202,6 +342,99 @@ install_block() {
   printf 'Installed Mandible instructions: %s\n' "$target"
 }
 
+install_standalone() {
+  local target="$1"
+  local tmp
+  tmp=$(mktemp)
+  render_fragment > "$tmp"
+  printf '\n' >> "$tmp"
+  if [[ -f "$target" ]] && cmp -s "$target" "$tmp"; then
+    rm -f "$tmp"
+    printf 'Mandible instructions already current: %s\n' "$target"
+    return 0
+  fi
+  mkdir -p "$(dirname "$target")"
+  mv "$tmp" "$target"
+  printf 'Installed standalone Mandible instructions: %s\n' "$target"
+}
+
+install_target() {
+  local target="$1"
+  local mode="$2"
+  local force="$3"
+  guard_install_target "$target" "$force"
+  case "$mode" in
+    managed-block) install_block "$target" ;;
+    standalone) install_standalone "$target" ;;
+    *)
+      printf 'Invalid instructions target mode: %s\n' "$mode" >&2
+      return 2
+      ;;
+  esac
+}
+
+default_install_targets() {
+  local default_target="${HOME:?HOME is required}/.claude/CLAUDE.md"
+  local codex_target="${HOME}/.codex/AGENTS.md"
+  printf 'managed-block\t%s\n' "$default_target"
+  if [[ -e "$codex_target" || -L "$codex_target" ]]; then
+    printf 'managed-block\t%s\n' "$codex_target"
+  fi
+}
+
+hook_cwd_for_target() {
+  local target="$1"
+  local root
+  root="$(git_root_for_path "$target")"
+  if [[ -n "$root" ]]; then
+    printf '%s\n' "$root"
+  else
+    pwd -P
+  fi
+}
+
+run_post_export_hook() {
+  local hook="$1"
+  local first_target="$2"
+  local hook_cwd
+  [[ -n "$hook" ]] || return 0
+  hook_cwd="$(hook_cwd_for_target "$first_target")"
+  printf 'Running instructions post-export hook: %s\n' "$hook" >&2
+  if ! (cd "$hook_cwd" && bash -lc "$hook"); then
+    printf 'Instructions post-export hook failed but target refresh completed: %s\n' "$hook" >&2
+  fi
+}
+
+install_configured_targets() {
+  local force="$1"
+  local configured_file targets_file mode target first_target hook
+  configured_file="$(mktemp)"
+  targets_file="$(mktemp)"
+  settings_helper targets-list > "$configured_file"
+  if [[ -s "$configured_file" ]]; then
+    cp "$configured_file" "$targets_file"
+  else
+    printf 'No Mandible instruction targets configured; using default HOME targets. Configure persistent targets with `mandible instructions targets add <path> --mode <mode>`.\n' >&2
+    default_install_targets > "$targets_file"
+  fi
+
+  first_target=""
+  while IFS=$'\t' read -r mode target; do
+    [[ -n "$target" ]] || continue
+    if [[ -z "$first_target" ]]; then
+      first_target="$target"
+    fi
+    install_target "$target" "$mode" "$force"
+  done < "$targets_file"
+
+  rm -f "$configured_file" "$targets_file"
+
+  hook="$(settings_helper post-export-get)"
+  if [[ -n "$hook" && -n "$first_target" ]]; then
+    run_post_export_hook "$hook" "$first_target"
+  fi
+}
+
 diff_block() {
   local target="$1"
   local desired current
@@ -226,11 +459,80 @@ shift || true
 target="$(default_target)"
 worktree=""
 force=0
+explicit_target=0
+
+case "$subcommand" in
+  targets)
+    action="${1:-list}"
+    shift || true
+    case "$action" in
+      list)
+        settings_helper targets-list
+        ;;
+      add)
+        target_arg="${1:?targets add requires a path}"
+        shift
+        mode="managed-block"
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --mode)
+              mode="${2:?--mode requires a value}"
+              shift 2
+              ;;
+            *)
+              printf 'Unexpected argument: %s\n' "$1" >&2
+              usage >&2
+              exit 2
+              ;;
+          esac
+        done
+        settings_helper targets-add "$target_arg" "$mode"
+        ;;
+      rm|remove)
+        settings_helper targets-rm "${1:?targets rm requires a path}"
+        ;;
+      -h|--help|help)
+        usage
+        ;;
+      *)
+        printf 'Unknown instructions targets action: %s\n' "$action" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+    exit 0
+    ;;
+  post-export)
+    action="${1:-get}"
+    shift || true
+    case "$action" in
+      get)
+        settings_helper post-export-get
+        ;;
+      set)
+        settings_helper post-export-set "$@"
+        ;;
+      clear|rm|remove)
+        settings_helper post-export-clear
+        ;;
+      -h|--help|help)
+        usage
+        ;;
+      *)
+        printf 'Unknown instructions post-export action: %s\n' "$action" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
+    exit 0
+    ;;
+esac
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target)
       target="${2:?--target requires a value}"
+      explicit_target=1
       shift 2
       ;;
     --worktree)
@@ -260,8 +562,11 @@ fi
 case "$subcommand" in
   diff) diff_block "$target" ;;
   install)
-    guard_install_target "$target" "$force"
-    install_block "$target"
+    if [[ "$explicit_target" == "1" ]]; then
+      install_target "$target" managed-block "$force"
+    else
+      install_configured_targets "$force"
+    fi
     ;;
   ""|-h|--help|help) usage ;;
   *)

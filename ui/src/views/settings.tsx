@@ -61,6 +61,43 @@ const AUTO_RESUME_LABELS: Record<string, string> = {
 };
 const MARKDOWN_BODY_ESCAPE_POLICIES = ['warn', 'reject', 'allow'];
 const DESKTOP_DAEMON_MODES: DesktopDaemonLaunchMode[] = ['on_demand', 'manual'];
+const INSTRUCTION_TARGET_MODES = ['managed-block', 'standalone'] as const;
+
+type InstructionTargetMode = typeof INSTRUCTION_TARGET_MODES[number];
+
+type InstructionTarget = {
+  path: string;
+  mode: InstructionTargetMode;
+};
+
+function isInstructionTargetMode(value: string): value is InstructionTargetMode {
+  return (INSTRUCTION_TARGET_MODES as readonly string[]).includes(value);
+}
+
+function parseInstructionTargets(value: string | undefined): InstructionTarget[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((target) => {
+        if (!target || typeof target !== 'object') return null;
+        const record = target as Record<string, unknown>;
+        const targetPath = typeof record.path === 'string' ? record.path.trim() : '';
+        const mode = typeof record.mode === 'string' && isInstructionTargetMode(record.mode)
+          ? record.mode
+          : 'managed-block';
+        return targetPath ? { path: targetPath, mode } : null;
+      })
+      .filter((target): target is InstructionTarget => target !== null);
+  } catch {
+    return [];
+  }
+}
+
+function serializeInstructionTargets(targets: InstructionTarget[]): string {
+  return JSON.stringify(targets);
+}
 
 function Toggle(props: {
   enabled: boolean;
@@ -246,6 +283,206 @@ function SelectInput(props: {
           <option key={opt} value={opt}>{opt}</option>
         ))}
       </select>
+    </div>
+  );
+}
+
+function InstructionsDeliverySection(props: {
+  settings: Record<string, string>;
+  onSave: (key: string, value: string) => Promise<void>;
+}): JSX.Element {
+  const [targets, setTargets] = useState<InstructionTarget[]>([]);
+  const [targetPath, setTargetPath] = useState('');
+  const [targetMode, setTargetMode] = useState<InstructionTargetMode>('managed-block');
+  const [postExport, setPostExport] = useState('');
+  const [saving, setSaving] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<FeedbackState>(null);
+
+  useEffect(() => {
+    setTargets(parseInstructionTargets(props.settings['instructions.targets']));
+  }, [props.settings['instructions.targets']]);
+
+  useEffect(() => {
+    setPostExport(props.settings['instructions.post_export'] ?? '');
+  }, [props.settings['instructions.post_export']]);
+
+  const showFeedback = useCallback((state: FeedbackState) => {
+    setFeedback(state);
+    if (state) {
+      window.setTimeout(() => setFeedback(null), 3000);
+    }
+  }, []);
+
+  const saveTargets = useCallback(async (nextTargets: InstructionTarget[]) => {
+    setSaving('instructions.targets');
+    try {
+      await props.onSave('instructions.targets', serializeInstructionTargets(nextTargets));
+      setTargets(nextTargets);
+      showFeedback({ type: 'success', message: 'Targets saved' });
+    } catch (err) {
+      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to save targets' });
+    } finally {
+      setSaving(null);
+    }
+  }, [props.onSave, showFeedback]);
+
+  const addTarget = useCallback(async () => {
+    const trimmed = targetPath.trim();
+    if (!trimmed) {
+      showFeedback({ type: 'error', message: 'Target path is required' });
+      return;
+    }
+    const nextTargets = targets.filter((target) => target.path !== trimmed);
+    nextTargets.push({ path: trimmed, mode: targetMode });
+    await saveTargets(nextTargets);
+    setTargetPath('');
+  }, [saveTargets, showFeedback, targetMode, targetPath, targets]);
+
+  const removeTarget = useCallback(async (targetPathToRemove: string) => {
+    await saveTargets(targets.filter((target) => target.path !== targetPathToRemove));
+  }, [saveTargets, targets]);
+
+  const updateTargetMode = useCallback(async (targetPathToUpdate: string, mode: InstructionTargetMode) => {
+    await saveTargets(targets.map((target) => (
+      target.path === targetPathToUpdate ? { ...target, mode } : target
+    )));
+  }, [saveTargets, targets]);
+
+  const savePostExport = useCallback(async (value: string) => {
+    setSaving('instructions.post_export');
+    try {
+      await props.onSave('instructions.post_export', value.trim());
+      setPostExport(value.trim());
+      showFeedback({ type: 'success', message: value.trim() ? 'Hook saved' : 'Hook cleared' });
+    } catch (err) {
+      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to save hook' });
+    } finally {
+      setSaving(null);
+    }
+  }, [props.onSave, showFeedback]);
+
+  return (
+    <div className="settings-view__section">
+      <div className="settings-view__section-header">
+        <h3 className="settings-view__section-title">Instruction Delivery</h3>
+        <p className="settings-view__section-desc">
+          Where Mandible writes its generated instruction fragment after rebuilds.
+        </p>
+      </div>
+
+      <div className="settings-view__section-body">
+        <div className="settings-view__instruction-targets">
+          {targets.length === 0 ? (
+            <div className="settings-view__empty">No configured targets. Mandible will use the default home instruction files.</div>
+          ) : (
+            targets.map((target) => (
+              <div className="settings-view__instruction-target" key={target.path}>
+                <input
+                  type="text"
+                  className="settings-view__input settings-view__input--wide settings-view__input--readonly"
+                  value={target.path}
+                  readOnly
+                  title={target.path}
+                />
+                <select
+                  className="settings-view__select settings-view__select--compact"
+                  value={target.mode}
+                  disabled={saving === 'instructions.targets'}
+                  onChange={(e) => {
+                    const nextMode = (e.target as HTMLSelectElement).value;
+                    if (isInstructionTargetMode(nextMode)) void updateTargetMode(target.path, nextMode);
+                  }}
+                  aria-label={`Mode for ${target.path}`}
+                >
+                  <option value="managed-block">Managed block</option>
+                  <option value="standalone">Standalone</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  onClick={() => void removeTarget(target.path)}
+                  disabled={saving === 'instructions.targets'}
+                >
+                  Remove
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="settings-view__instruction-target">
+          <input
+            type="text"
+            className="settings-view__input settings-view__input--wide"
+            value={targetPath}
+            onInput={(e) => setTargetPath((e.target as HTMLInputElement).value)}
+            placeholder="/path/to/50-mandible.generated.md"
+            disabled={saving === 'instructions.targets'}
+          />
+          <select
+            className="settings-view__select settings-view__select--compact"
+            value={targetMode}
+            disabled={saving === 'instructions.targets'}
+            onChange={(e) => {
+              const nextMode = (e.target as HTMLSelectElement).value;
+              if (isInstructionTargetMode(nextMode)) setTargetMode(nextMode);
+            }}
+            aria-label="New instruction target mode"
+          >
+            <option value="managed-block">Managed block</option>
+            <option value="standalone">Standalone</option>
+          </select>
+          <button
+            type="button"
+            className="btn btn--active btn--sm"
+            onClick={() => void addTarget()}
+            disabled={saving === 'instructions.targets'}
+          >
+            Add target
+          </button>
+        </div>
+
+        <div className="settings-view__text-row">
+          <div className="settings-view__text-info">
+            <span className="settings-view__text-label">Post-export hook</span>
+            <span className="settings-view__text-desc">Optional command run after all targets refresh.</span>
+          </div>
+          <div className="settings-view__text-controls">
+            <input
+              type="text"
+              className="settings-view__input settings-view__input--wide"
+              value={postExport}
+              onInput={(e) => setPostExport((e.target as HTMLInputElement).value)}
+              placeholder="bin/compile-agent-instructions"
+              disabled={saving === 'instructions.post_export'}
+            />
+            <button
+              type="button"
+              className="btn btn--active btn--sm"
+              aria-label="Save instructions post-export hook"
+              onClick={() => void savePostExport(postExport)}
+              disabled={saving === 'instructions.post_export'}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="btn btn--sm"
+              aria-label="Clear instructions post-export hook"
+              onClick={() => void savePostExport('')}
+              disabled={saving === 'instructions.post_export' || postExport.length === 0}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        {feedback && (
+          <span className={feedback.type === 'success' ? 'settings-view__feedback settings-view__feedback--success' : 'settings-view__feedback settings-view__feedback--error'}>
+            {feedback.message}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -1141,6 +1378,8 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           />
         </div>
       </div>
+
+      <InstructionsDeliverySection settings={settings} onSave={onSave} />
 
       {/* ── Section: Conversation Branching ── */}
       <div className="settings-view__section">

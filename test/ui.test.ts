@@ -231,6 +231,40 @@ describe('SettingsView', () => {
     expect(screen.queryByText('Claude idle threshold')).toBeNull();
     expect(screen.queryByText('Codex idle threshold')).toBeNull();
   });
+
+  it('saves instruction delivery targets and post-export hook settings', async () => {
+    const onSave = vi.fn(async () => undefined);
+    render(
+      h(SettingsView, {
+        settings: {},
+        onSave,
+      }),
+    );
+
+    expect(screen.getByText('Instruction Delivery')).toBeTruthy();
+    fireEvent.input(screen.getByPlaceholderText('/path/to/50-mandible.generated.md'), {
+      target: { value: '/tmp/50-mandible.generated.md' },
+    });
+    fireEvent.change(screen.getByLabelText('New instruction target mode'), {
+      target: { value: 'standalone' },
+    });
+    fireEvent.click(screen.getByText('Add target'));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(
+      'instructions.targets',
+      '[{"path":"/tmp/50-mandible.generated.md","mode":"standalone"}]',
+    ));
+
+    fireEvent.input(screen.getByPlaceholderText('bin/compile-agent-instructions'), {
+      target: { value: 'bin/compile-agent-instructions' },
+    });
+    fireEvent.click(screen.getByLabelText('Save instructions post-export hook'));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(
+      'instructions.post_export',
+      'bin/compile-agent-instructions',
+    ));
+  });
 });
 
 describe('AuthQueueView', () => {

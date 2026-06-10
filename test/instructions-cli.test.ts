@@ -119,4 +119,28 @@ describe("instructions CLI", () => {
     expect(fs.readFileSync(worktreeTarget, "utf8")).toContain("Mandible Interface Contract");
     expect(fs.readFileSync(sourceTarget, "utf8")).toBe("# Source\n");
   });
+
+  it("refreshes configured standalone targets and runs the post-export hook", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-config-home-"));
+    const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-config-target-"));
+    tempRoots.push(home, targetDir);
+    const dbPath = path.join(home, ".cache", "mandible", "mandible.db");
+    const target = path.join(targetDir, "50-mandible.generated.md");
+    const hookOut = path.join(targetDir, "hook-ran.txt");
+    const env = { HOME: home, MANDIBLE_DB: dbPath, HOOK_OUT: hookOut };
+
+    const add = await run(["instructions", "targets", "add", target, "--mode", "standalone"], env);
+    expect(add.status).toBe(0);
+    const hookCommand = "node -e \"require('node:fs').writeFileSync(process.env.HOOK_OUT, 'ran')\"";
+    const setHook = await run(["instructions", "post-export", "set", hookCommand], env);
+    expect(setHook.status).toBe(0);
+
+    const install = await run(["instructions", "install"], env);
+
+    expect(install.status).toBe(0);
+    const installed = fs.readFileSync(target, "utf8");
+    expect(installed).toContain("Mandible Interface Contract");
+    expect(installed).not.toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
+    expect(fs.readFileSync(hookOut, "utf8")).toBe("ran");
+  });
 });
