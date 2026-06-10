@@ -40,6 +40,7 @@ import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
+import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import type { Logger, LogLevel, StartupCommitInfo } from "./types.js";
 
 const DEFAULT_PORT = 19420;
@@ -70,6 +71,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const db = openDb(options.dbPath);
   const sse = new SseManager();
   const version = resolveVersion();
+  try {
+    materializeCoworkCliCache({ sourceRoot: MANDIBLE_ROOT, version, logger });
+  } catch (error) {
+    logger("warn", "cowork_cli_cache_materialize_failed", { error: String(error) });
+  }
 
   // Set singletons so partition code can use broadcast() and getDb()
   setDb(db);
