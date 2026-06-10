@@ -1816,37 +1816,49 @@ export function migrate(db: Db): void {
   // Run post-DDL data migrations that require Node.js logic.
   // Bug: e5a945d — batch-compress existing uncompressed content
   if (shouldRunPostMigration(db, "v19_compress_existing_blocks", pending, 19, () =>
-    tableExists(db, "conversation_blocks")
+    hasUncompressedConversationBlocks(db)
   )) {
     runPostMigration(db, "v19_compress_existing_blocks", () => compressExistingBlocks(db));
   }
   // Bug: 003179f — backfill correct repo names in session_projects
-  if (shouldRunPostMigration(db, "v24_backfill_project_repo_names", pending, 24)) {
+  if (shouldRunPostMigration(db, "v24_backfill_project_repo_names", pending, 24, () =>
+    hasLegacySessionProjectWorktreeRepoIds(db)
+  )) {
     runPostMigration(db, "v24_backfill_project_repo_names", () => backfillProjectRepoNames(db));
   }
   // Bug: 59492fd — v24 used wrong join condition; v25 corrects remaining rows
-  if (shouldRunPostMigration(db, "v25_backfill_project_repo_names_v2", pending, 25)) {
+  if (shouldRunPostMigration(db, "v25_backfill_project_repo_names_v2", pending, 25, () =>
+    hasLegacySessionProjectCwdRepoIds(db)
+  )) {
     runPostMigration(db, "v25_backfill_project_repo_names_v2", () => backfillProjectRepoNamesV2(db));
   }
   // Bug: ba9687f — backfill issue_ids from commit_message Bug: trailers
-  if (shouldRunPostMigration(db, "v29_backfill_issue_ids", pending, 29)) {
+  if (shouldRunPostMigration(db, "v29_backfill_issue_ids", pending, 29, () =>
+    hasIssueIdBackfillWork(db)
+  )) {
     runPostMigration(db, "v29_backfill_issue_ids", () => backfillIssueIds(db));
   }
   // Bug: 2411ee3 — make migration 36 safe for both fresh DBs and existing DBs.
-  if (shouldRunPostMigration(db, "v36_ensure_conversation_block_dag_columns", pending, 36)) {
+  if (shouldRunPostMigration(db, "v36_ensure_conversation_block_dag_columns", pending, 36, () =>
+    needsConversationBlockDagColumns(db)
+  )) {
     runPostMigration(db, "v36_ensure_conversation_block_dag_columns", () => {
       ensureConversationBlockDagColumns(db);
     });
   }
   // Bug: e8c1d43 — link existing work_units to canonical ledger issues.
-  if (shouldRunPostMigration(db, "v58_ensure_work_unit_ledger_issue_column", pending, 58)) {
+  if (shouldRunPostMigration(db, "v58_ensure_work_unit_ledger_issue_column", pending, 58, () =>
+    needsWorkUnitLedgerIssueColumn(db)
+  )) {
     runPostMigration(db, "v58_ensure_work_unit_ledger_issue_column", () => {
       ensureWorkUnitLedgerIssueColumn(db);
     });
   }
   // Bug: 871f32e — add hash-ID display/ordinal columns safely on both fresh
   // and upgraded databases.
-  if (shouldRunPostMigration(db, "v61_ensure_ledger_hash_id_columns", pending, 61)) {
+  if (shouldRunPostMigration(db, "v61_ensure_ledger_hash_id_columns", pending, 61, () =>
+    needsLedgerHashIdColumns(db)
+  )) {
     runPostMigration(db, "v61_ensure_ledger_hash_id_columns", () => {
       ensureLedgerHashIdColumns(db);
     });
@@ -1856,12 +1868,16 @@ export function migrate(db: Db): void {
   )) {
     runPostMigration(db, "v62_migrate_ledger_event_hash_ids", () => migrateLedgerEventHashIds(db));
   }
-  if (shouldRunPostMigration(db, "v66_ensure_artifact_custody_columns", pending, 66)) {
+  if (shouldRunPostMigration(db, "v66_ensure_artifact_custody_columns", pending, 66, () =>
+    needsArtifactCustodyColumns(db)
+  )) {
     runPostMigration(db, "v66_ensure_artifact_custody_columns", () => {
       ensureArtifactCustodyColumns(db);
     });
   }
-  if (shouldRunPostMigration(db, "v69_backfill_ledger_body_revisions", pending, 69)) {
+  if (shouldRunPostMigration(db, "v69_backfill_ledger_body_revisions", pending, 69, () =>
+    needsLedgerBodyRevisionBackfill(db)
+  )) {
     runPostMigration(db, "v69_backfill_ledger_body_revisions", () => {
       backfillLedgerBodyRevisions(db);
     });
@@ -1877,7 +1893,9 @@ export function migrate(db: Db): void {
       removeLegacyIssueRelationshipSourceKinds(db);
     });
   }
-  if (shouldRunPostMigration(db, "v74_ensure_conversation_integer_timestamps", pending, 74)) {
+  if (shouldRunPostMigration(db, "v74_ensure_conversation_integer_timestamps", pending, 74, () =>
+    needsConversationIntegerTimestampWork(db)
+  )) {
     runPostMigration(db, "v74_ensure_conversation_integer_timestamps", () => {
       ensureConversationIntegerTimestampColumns(db);
     });
@@ -1955,6 +1973,14 @@ function compressExistingBlocks(db: Db): void {
   }
 }
 
+function hasUncompressedConversationBlocks(db: Db): boolean {
+  if (!tableExists(db, "conversation_blocks")) return false;
+  const names = tableColumnNames(db, "conversation_blocks");
+  if (!names.has("id") || !names.has("content") || !names.has("compressed")) return false;
+  const row = db.prepare("SELECT 1 FROM conversation_blocks WHERE compressed = 0 LIMIT 1").get();
+  return Boolean(row);
+}
+
 function ensureConversationBlockDagColumns(db: Db): void {
   if (!tableExists(db, "conversation_blocks")) return;
   const columns = db
@@ -1973,6 +1999,14 @@ function ensureConversationBlockDagColumns(db: Db): void {
       ON conversation_blocks(conversation_id, dag_parent_uuid)
       WHERE dag_parent_uuid IS NOT NULL`
   );
+}
+
+function needsConversationBlockDagColumns(db: Db): boolean {
+  if (!tableExists(db, "conversation_blocks")) return false;
+  const names = tableColumnNames(db, "conversation_blocks");
+  return !names.has("dag_uuid")
+    || !names.has("dag_parent_uuid")
+    || !indexExists(db, "idx_blocks_dag_parent");
 }
 
 function ensureConversationIntegerTimestampColumns(db: Db): void {
@@ -2052,6 +2086,46 @@ function ensureConversationIntegerTimestampColumns(db: Db): void {
   }
 }
 
+function needsConversationIntegerTimestampWork(db: Db): boolean {
+  if (tableExists(db, "conversations")) {
+    const names = tableColumnNames(db, "conversations");
+    if (
+      !names.has("started_at_ms")
+      || !names.has("ended_at_ms")
+      || !names.has("created_at_ms")
+      || !names.has("updated_at_ms")
+      || !indexExists(db, "idx_conv_started_ms")
+      || !indexExists(db, "idx_conv_ended_ms")
+    ) {
+      return true;
+    }
+    const row = db.prepare(
+      `SELECT 1 FROM conversations
+       WHERE (started_at_ms IS NULL AND started_at IS NOT NULL AND started_at != '')
+          OR (ended_at_ms IS NULL AND ended_at IS NOT NULL AND ended_at != '')
+          OR (created_at_ms IS NULL AND created_at IS NOT NULL AND created_at != '')
+          OR (updated_at_ms IS NULL AND updated_at IS NOT NULL AND updated_at != '')
+       LIMIT 1`,
+    ).get();
+    if (row) return true;
+  }
+
+  if (tableExists(db, "conversation_blocks")) {
+    const names = tableColumnNames(db, "conversation_blocks");
+    if (!names.has("timestamp_ms") || !indexExists(db, "idx_blocks_timestamp_ms")) {
+      return true;
+    }
+    const row = db.prepare(
+      `SELECT 1 FROM conversation_blocks
+       WHERE timestamp_ms IS NULL AND timestamp IS NOT NULL AND timestamp != ''
+       LIMIT 1`,
+    ).get();
+    if (row) return true;
+  }
+
+  return false;
+}
+
 function ensureWorkUnitLedgerIssueColumn(db: Db): void {
   const table = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_units'")
@@ -2070,6 +2144,12 @@ function ensureWorkUnitLedgerIssueColumn(db: Db): void {
     `CREATE INDEX IF NOT EXISTS idx_work_units_ledger_issue
       ON work_units(ledger_issue_id) WHERE ledger_issue_id IS NOT NULL`
   );
+}
+
+function needsWorkUnitLedgerIssueColumn(db: Db): boolean {
+  if (!tableExists(db, "work_units")) return false;
+  const names = tableColumnNames(db, "work_units");
+  return !names.has("ledger_issue_id") || !indexExists(db, "idx_work_units_ledger_issue");
 }
 
 function ensureLedgerHashIdColumns(db: Db): void {
@@ -2108,6 +2188,22 @@ function ensureLedgerHashIdColumns(db: Db): void {
         WHERE ordinal > 0`
     );
   }
+}
+
+function needsLedgerHashIdColumns(db: Db): boolean {
+  if (tableExists(db, "ledger_issues")) {
+    const names = tableColumnNames(db, "ledger_issues");
+    if (!names.has("short_id") || !indexExists(db, "idx_ledger_issues_project_short_id")) {
+      return true;
+    }
+  }
+  if (tableExists(db, "ledger_comments")) {
+    const names = tableColumnNames(db, "ledger_comments");
+    if (!names.has("ordinal") || !indexExists(db, "idx_ledger_comments_issue_ordinal")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function ensureArtifactCustodyColumns(db: Db): void {
@@ -2188,6 +2284,21 @@ function ensureArtifactCustodyColumns(db: Db): void {
     `CREATE INDEX IF NOT EXISTS idx_artifacts_custody
       ON artifacts(custody_mode, availability)`
   );
+}
+
+function needsArtifactCustodyColumns(db: Db): boolean {
+  if (!tableExists(db, "artifacts")) return true;
+  const names = tableColumnNames(db, "artifacts");
+  return !names.has("custody_mode")
+    || !names.has("home_repo_id")
+    || !names.has("repo_locator_json")
+    || !names.has("availability")
+    || !names.has("retention_json")
+    || !names.has("reference_json")
+    || !indexExists(db, "idx_artifacts_provider")
+    || !indexExists(db, "idx_artifacts_role")
+    || !indexExists(db, "idx_artifacts_home_repo")
+    || !indexExists(db, "idx_artifacts_custody");
 }
 
 function backfillLedgerBodyRevisions(db: Db): void {
@@ -2283,6 +2394,45 @@ function backfillLedgerBodyRevisions(db: Db): void {
     }
   });
   run();
+}
+
+function needsLedgerBodyRevisionBackfill(db: Db): boolean {
+  if (!tableExists(db, "ledger_body_revisions")) return false;
+  if (tableExists(db, "ledger_issues")) {
+    const names = tableColumnNames(db, "ledger_issues");
+    if (names.has("id") && names.has("deleted_at")) {
+      const issues = db.prepare(
+        `SELECT id FROM ledger_issues
+         WHERE deleted_at IS NULL`,
+      ).all() as Array<{ id: string }>;
+      const revision = db.prepare(
+        "SELECT 1 FROM ledger_body_revisions WHERE id = ? LIMIT 1",
+      );
+      for (const issue of issues) {
+        if (!revision.get(stableMigrationRevisionId("issue_body", issue.id))) {
+          return true;
+        }
+      }
+    }
+  }
+  if (tableExists(db, "ledger_comments")) {
+    const names = tableColumnNames(db, "ledger_comments");
+    if (names.has("id") && names.has("deleted_at")) {
+      const comments = db.prepare(
+        `SELECT id FROM ledger_comments
+         WHERE deleted_at IS NULL`,
+      ).all() as Array<{ id: string }>;
+      const revision = db.prepare(
+        "SELECT 1 FROM ledger_body_revisions WHERE id = ? LIMIT 1",
+      );
+      for (const comment of comments) {
+        if (!revision.get(stableMigrationRevisionId("comment_body", comment.id))) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 function stableMigrationRevisionId(entityType: string, entityId: string): string {
@@ -2514,7 +2664,7 @@ function parseJsonRecord(value: string): Record<string, unknown> {
 function backfillProjectRepoNames(db: Db): void {
   if (!tableExists(db, "session_projects") || !tableExists(db, "sessions")) return;
   const rows = db.prepare(
-    `SELECT sp.rowid, sp.repo_id, s.worktree
+    `SELECT sp.rowid, sp.session_id, sp.repo_id, s.worktree
      FROM session_projects sp
      JOIN sessions s ON sp.session_id = s.id
      WHERE s.worktree IS NOT NULL
@@ -2526,12 +2676,18 @@ function backfillProjectRepoNames(db: Db): void {
          OR sp.repo_id LIKE 'chore__%'  OR sp.repo_id LIKE 'chore/%'
          OR sp.repo_id LIKE 'integrate__%' OR sp.repo_id LIKE 'integrate/%'
        )`
-  ).all() as { rowid: number; repo_id: string; worktree: string }[];
+  ).all() as { rowid: number; session_id: string; repo_id: string; worktree: string }[];
 
   if (rows.length === 0) return;
 
   const update = db.prepare(
     `UPDATE session_projects SET repo_id = ?, repo_name = ? WHERE rowid = ?`
+  );
+  const existingTarget = db.prepare(
+    `SELECT 1 FROM session_projects WHERE session_id = ? AND repo_id = ? LIMIT 1`
+  );
+  const deleteDuplicate = db.prepare(
+    `DELETE FROM session_projects WHERE rowid = ?`
   );
 
   const run = db.transaction(() => {
@@ -2539,6 +2695,11 @@ function backfillProjectRepoNames(db: Db): void {
       const beforeWorktrees = row.worktree.split("/worktrees/")[0];
       const repoName = path.basename(beforeWorktrees);
       if (repoName && repoName !== row.repo_id) {
+        const targetExists = existingTarget.get(row.session_id, repoName) as { 1: number } | undefined;
+        if (targetExists) {
+          deleteDuplicate.run(row.rowid);
+          continue;
+        }
         update.run(repoName, repoName, row.rowid);
       }
     }
@@ -2546,6 +2707,29 @@ function backfillProjectRepoNames(db: Db): void {
 
   run();
   console.error(`[db] Backfilled repo names for ${rows.length} session_projects rows`);
+}
+
+function hasLegacySessionProjectWorktreeRepoIds(db: Db): boolean {
+  if (!tableExists(db, "session_projects") || !tableExists(db, "sessions")) return false;
+  const sessionProjectNames = tableColumnNames(db, "session_projects");
+  const sessionNames = tableColumnNames(db, "sessions");
+  if (!sessionProjectNames.has("repo_id") || !sessionNames.has("worktree")) return false;
+  const row = db.prepare(
+    `SELECT 1
+     FROM session_projects sp
+     JOIN sessions s ON sp.session_id = s.id
+     WHERE s.worktree IS NOT NULL
+       AND s.worktree LIKE '%/worktrees/%'
+       AND (
+         sp.repo_id LIKE 'feature__%' OR sp.repo_id LIKE 'feature/%'
+         OR sp.repo_id LIKE 'fix__%'    OR sp.repo_id LIKE 'fix/%'
+         OR sp.repo_id LIKE 'bugfix__%' OR sp.repo_id LIKE 'bugfix/%'
+         OR sp.repo_id LIKE 'chore__%'  OR sp.repo_id LIKE 'chore/%'
+         OR sp.repo_id LIKE 'integrate__%' OR sp.repo_id LIKE 'integrate/%'
+       )
+     LIMIT 1`,
+  ).get();
+  return Boolean(row);
 }
 
 /**
@@ -2605,6 +2789,31 @@ function backfillProjectRepoNamesV2(db: Db): void {
   console.error(`[db] v25: backfilled repo names for ${rows.length} session_projects rows`);
 }
 
+function hasLegacySessionProjectCwdRepoIds(db: Db): boolean {
+  if (!tableExists(db, "session_projects") || !tableExists(db, "sessions")) return false;
+  const sessionProjectNames = tableColumnNames(db, "session_projects");
+  const sessionNames = tableColumnNames(db, "sessions");
+  if (!sessionProjectNames.has("repo_id") || !sessionNames.has("cwd")) return false;
+  const row = db.prepare(
+    `SELECT 1
+     FROM session_projects sp
+     JOIN sessions s ON sp.session_id = s.id
+     WHERE (
+       sp.repo_id LIKE 'feature__%'
+       OR sp.repo_id LIKE 'fix__%'
+       OR sp.repo_id LIKE 'bugfix__%'
+       OR sp.repo_id LIKE 'hotfix__%'
+       OR sp.repo_id LIKE 'chore__%'
+       OR sp.repo_id LIKE 'release__%'
+       OR sp.repo_id LIKE 'feature/%'
+       OR sp.repo_id IN ('main', 'master', 'develop')
+     )
+     AND s.cwd IS NOT NULL AND s.cwd != ''
+     LIMIT 1`,
+  ).get();
+  return Boolean(row);
+}
+
 /**
  * Backfill issue_ids from commit_message Bug: trailers for existing auth requests.
  * Bug: ba9687f — structured issue_ids extracted at submission time; this
@@ -2650,6 +2859,20 @@ function backfillIssueIds(db: Db): void {
   }
 }
 
+function hasIssueIdBackfillWork(db: Db): boolean {
+  if (!tableExists(db, "auth_requests")) return false;
+  const names = tableColumnNames(db, "auth_requests");
+  if (!names.has("commit_message") || !names.has("issue_ids")) return false;
+  const row = db.prepare(
+    `SELECT 1 FROM auth_requests
+     WHERE issue_ids IS NULL
+       AND commit_message IS NOT NULL
+       AND commit_message LIKE '%Bug:%'
+     LIMIT 1`,
+  ).get();
+  return Boolean(row);
+}
+
 function getSchemaVersion(db: Db): number {
   const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(SCHEMA_VERSION_KEY) as
     | { value: string }
@@ -2666,7 +2889,7 @@ function shouldRunPostMigration(
   name: string,
   pending: readonly Migration[],
   version: number,
-  hasIncompleteWork: () => boolean = () => true,
+  hasIncompleteWork: () => boolean,
 ): boolean {
   if (pending.some((migration) => migration.version === version)) {
     return true;
@@ -2722,11 +2945,29 @@ function tableExists(db: Db, table: string): boolean {
 }
 
 function tableColumnNames(db: Db, table: string): Set<string> {
-  if (table !== "conversations" && table !== "conversation_blocks") {
+  const allowed = new Set([
+    "artifacts",
+    "auth_requests",
+    "conversation_blocks",
+    "conversations",
+    "ledger_comments",
+    "ledger_issues",
+    "session_projects",
+    "sessions",
+    "work_units",
+  ]);
+  if (!allowed.has(table)) {
     throw new Error(`Unsupported table_info identifier: ${table}`);
   }
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return new Set(columns.map((column) => column.name));
+}
+
+function indexExists(db: Db, index: string): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?")
+    .get(index);
+  return Boolean(row);
 }
 
 function ensureDir(dir: string): void {

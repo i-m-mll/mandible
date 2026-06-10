@@ -99,4 +99,65 @@ describe("database hardening", () => {
       db.close();
     }
   });
+
+  it("retries legacy session project backfills without primary-key collisions", () => {
+    const db = openDb(path.join(tempDir, "session-projects.db"));
+    try {
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO sessions (id, cwd, worktree, status, app, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', 'codex', datetime('now'), datetime('now'))`,
+      ).run(
+        "session-collision",
+        "/Users/mll/Main/10 Projects/10 PhD/20 Feedbax/feedbax",
+        "/Users/mll/Main/10 Projects/10 PhD/20 Feedbax/feedbax/worktrees/develop",
+      );
+      db.prepare(
+        `INSERT INTO sessions (id, cwd, worktree, status, app, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', 'codex', datetime('now'), datetime('now'))`,
+      ).run(
+        "session-update",
+        "/Users/mll/Main/10 Projects/05 Utils/mandible",
+        "/Users/mll/Main/10 Projects/05 Utils/mandible/worktrees/feature__daemon-fix",
+      );
+      db.prepare(
+        `INSERT INTO session_projects (session_id, repo_id, repo_name, created_at)
+         VALUES (?, ?, ?, ?)`,
+      ).run("session-collision", "feedbax", "feedbax", now);
+      db.prepare(
+        `INSERT INTO session_projects (session_id, repo_id, repo_name, created_at)
+         VALUES (?, ?, ?, ?)`,
+      ).run(
+        "session-collision",
+        "feature__fix-param-schema-string-type",
+        "feature__fix-param-schema-string-type",
+        now,
+      );
+      db.prepare(
+        `INSERT INTO session_projects (session_id, repo_id, repo_name, created_at)
+         VALUES (?, ?, ?, ?)`,
+      ).run("session-update", "feature__daemon-fix", "feature__daemon-fix", now);
+
+      db.prepare("DELETE FROM meta WHERE key = 'post_migration.v24_backfill_project_repo_names.complete'")
+        .run();
+      migrate(db);
+
+      const collisionRows = db.prepare(
+        "SELECT repo_id, repo_name FROM session_projects WHERE session_id = ? ORDER BY repo_id",
+      ).all("session-collision");
+      expect(collisionRows).toEqual([{ repo_id: "feedbax", repo_name: "feedbax" }]);
+
+      const updatedRow = db.prepare(
+        "SELECT repo_id, repo_name FROM session_projects WHERE session_id = ?",
+      ).get("session-update") as { repo_id: string; repo_name: string };
+      expect(updatedRow).toEqual({ repo_id: "mandible", repo_name: "mandible" });
+
+      const marker = db.prepare(
+        "SELECT value FROM meta WHERE key = 'post_migration.v24_backfill_project_repo_names.complete'",
+      ).get() as { value: string };
+      expect(marker.value).toBe("done");
+    } finally {
+      db.close();
+    }
+  });
 });
