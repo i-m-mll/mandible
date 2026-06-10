@@ -79,6 +79,9 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("GET", "/api/auth/queue")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/checkpoints")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/checkpoints")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/r/issue/abc")).toBe(false);
+    expect(isAllowedFileRpcRoute("GET", "/r/auth/auth-1")).toBe(false);
+    expect(isAllowedFileRpcRoute("GET", "/r/artifact/abcdef1")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/approve")).toBe(false);
     expect(isAllowedFileRpcRoute("PUT", "/api/settings/auto_close_issues_on_merge")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/issues/scan")).toBe(false);

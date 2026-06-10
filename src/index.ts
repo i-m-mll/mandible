@@ -35,6 +35,7 @@ import { registerPresetRoutes } from "./routes/presets.js";
 import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
 import { registerRuntimeRoutes } from "./routes/runtime.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
+import { registerRedirectRoutes } from "./routes/redirects.js";
 import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
@@ -117,6 +118,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: cc4688b — Zone 2 mutable runtime routes
   registerRuntimeRoutes(router);
   registerTimelineRoutes(router);
+  registerRedirectRoutes(router);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
   registerConversationRoutes(router, sessionManager);
 
