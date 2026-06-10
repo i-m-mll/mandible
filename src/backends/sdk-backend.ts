@@ -42,6 +42,7 @@ import type {
 import { SessionRegistry } from "../registry.js";
 import { getDb } from "../db.js";
 import { computePresetUnion } from "../presets.js";
+import { withMandibleInstructionsFragment } from "../instructions/fragment.js";
 
 const EVENT_LOG_LIMIT = 2000;
 const PERMISSION_TIMEOUT_MS = 120_000;
@@ -537,6 +538,14 @@ implements
       } catch {
         // Presets module or DB not available — fall through to default
       }
+    }
+    try {
+      systemPrompt = withMandibleInstructionsFragment(systemPrompt);
+    } catch (error) {
+      this.logger(
+        "warn",
+        `Could not render Mandible instructions fragment for session ${this.id}: ${String(error)}`,
+      );
     }
 
     // Bug: 61bee4e — settingSources controls more than just CLAUDE.md loading in the SDK.
