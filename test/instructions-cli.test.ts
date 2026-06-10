@@ -44,6 +44,21 @@ afterEach(() => {
 });
 
 describe("instructions CLI", () => {
+  it("uses NODE_BIN for embedded Node helpers when node is not on PATH", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-node-bin-"));
+    tempRoots.push(home);
+
+    const list = await run(["instructions", "targets", "list"], {
+      HOME: home,
+      MANDIBLE_DB: path.join(home, ".cache", "mandible", "mandible.db"),
+      NODE_BIN: process.execPath,
+      PATH: "/usr/bin:/bin",
+    });
+
+    expect(list.status).toBe(0);
+    expect(list.stderr).toBe("");
+  });
+
   it("diffs and installs the managed instructions block", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-cli-"));
     tempRoots.push(tempDir);

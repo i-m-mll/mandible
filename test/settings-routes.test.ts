@@ -136,6 +136,8 @@ describe("settings routes", () => {
     fs.writeFileSync(fakeCli, [
       "#!/usr/bin/env bash",
       "printf '%s\\n' \"$*\" >> \"$MANDIBLE_TEST_CLI_LOG\"",
+      "printf 'NODE_BIN=%s\\n' \"$NODE_BIN\" >> \"$MANDIBLE_TEST_CLI_LOG\"",
+      "test -x \"$NODE_BIN\"",
     ].join("\n"), "utf8");
     fs.chmodSync(fakeCli, 0o755);
     process.env.MANDIBLE_INSTRUCTIONS_CLI = fakeCli;

@@ -7,6 +7,7 @@ END_MARKER="<!-- END MANDIBLE MANAGED INSTRUCTIONS -->"
 CLI_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 MANDIBLE_ROOT="$(cd "$CLI_DIR/.." && pwd -P)"
 MANIFEST_PATH="$CLI_DIR/instructions-contract.json"
+NODE_BIN="${NODE_BIN:-node}"
 
 usage() {
   cat <<'EOF'
@@ -67,7 +68,7 @@ render_block() {
 }
 
 settings_helper() {
-  node - "$MANDIBLE_ROOT" "$@" <<'NODE'
+  "$NODE_BIN" - "$MANDIBLE_ROOT" "$@" <<'NODE'
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -199,7 +200,7 @@ NODE
 }
 
 absolute_path() {
-  node - "$1" <<'NODE'
+  "$NODE_BIN" - "$1" <<'NODE'
 const fs = require("node:fs");
 const path = require("node:path");
 const target = path.resolve(process.argv[2]);
@@ -226,7 +227,7 @@ git_root_for_path() {
 repo_relative_path() {
   local root="$1"
   local target="$2"
-  node - "$root" "$target" <<'NODE'
+  "$NODE_BIN" - "$root" "$target" <<'NODE'
 const path = require("node:path");
 const root = path.resolve(process.argv[2]);
 const target = path.resolve(process.argv[3]);
@@ -303,7 +304,7 @@ write_desired_file() {
   render_block > "$block_file"
 
   BEGIN_MARKER="$BEGIN_MARKER" END_MARKER="$END_MARKER" \
-    node - "$target" "$block_file" <<'NODE' > "$output"
+    "$NODE_BIN" - "$target" "$block_file" <<'NODE' > "$output"
 const fs = require("node:fs");
 const target = process.argv[2];
 const blockFile = process.argv[3];
@@ -368,7 +369,7 @@ cleanup_block() {
   local tmp
   tmp=$(mktemp)
   BEGIN_MARKER="$BEGIN_MARKER" END_MARKER="$END_MARKER" \
-    node - "$target" <<'NODE' > "$tmp"
+    "$NODE_BIN" - "$target" <<'NODE' > "$tmp"
 const fs = require("node:fs");
 const target = process.argv[2];
 const current = fs.readFileSync(target, "utf8");
