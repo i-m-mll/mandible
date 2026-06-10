@@ -4,6 +4,13 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: [],
+    fileParallelism: false,
+    coverage: {
+      provider: 'v8',
+      thresholds: {
+        lines: 45,
+      },
+    },
   },
   esbuild: {
     jsx: 'automatic',

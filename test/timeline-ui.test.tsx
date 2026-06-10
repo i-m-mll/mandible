@@ -1,4 +1,4 @@
-import { render, screen, waitFor, cleanup, fireEvent, within } from '@testing-library/preact';
+import { render, screen, waitFor, cleanup, fireEvent, within, act } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
@@ -38,6 +38,14 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
+
+function changeSelect(select: HTMLElement, value: string): void {
+  act(() => {
+    (select as HTMLSelectElement).value = value;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
 
 function projection(overrides: Partial<ProjectTimelineProjection> = {}): ProjectTimelineProjection {
   const base: ProjectTimelineProjection = {
@@ -911,10 +919,10 @@ describe('TimelineView', () => {
     fireEvent.click(screen.getByText('Build shared axis'));
     expect(screen.getByText('Full body text')).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText('Project'), { target: { value: 'humble' } });
+    changeSelect(screen.getByLabelText('Project'), 'humble');
 
-    expect(screen.queryByText('Build shared axis')).toBeNull();
-    expect(screen.queryByText('Full body text')).toBeNull();
+    await waitFor(() => expect(screen.queryAllByText('Build shared axis')).toHaveLength(0));
+    expect(screen.queryAllByText('Full body text')).toHaveLength(0);
     expect(screen.queryByText('Syncing')).toBeNull();
 
     resolveSecond(other);

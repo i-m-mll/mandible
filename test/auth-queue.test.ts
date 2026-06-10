@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
+import type { AuthHookManager } from "../src/auth-hooks.js";
 import { migrate } from "../src/db.js";
 import type { SseEvent } from "../src/types.js";
 
@@ -18,6 +19,12 @@ function createMigratedDb(): InstanceType<typeof Database> {
 function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
   const db = createMigratedDb();
   return new AuthQueue({ db, ...options });
+}
+
+function createNoopHookManager(): AuthHookManager {
+  return {
+    executeHooks: async () => []
+  } as unknown as AuthHookManager;
 }
 
 async function waitForStatus(queue: AuthQueue, id: string, status: string, timeoutMs = 2000) {
@@ -976,6 +983,7 @@ describe("auth queue", () => {
 
       try {
         const queue = createQueue({
+          hookManager: createNoopHookManager(),
           broadcast: (event) => {
             events.push(event);
             if (event.event === "auth:resolved") {
@@ -1035,6 +1043,7 @@ describe("auth queue", () => {
 
       try {
         const queue = createQueue({
+          hookManager: createNoopHookManager(),
           executor: async () => ({
             exit_code: 0,
             signal: null,

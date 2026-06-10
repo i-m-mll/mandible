@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/preact';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
@@ -37,6 +37,14 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+
+function changeSelect(select: HTMLElement, value: string): void {
+  act(() => {
+    (select as HTMLSelectElement).value = value;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
 
 function setViewportWidth(width: number): void {
   Object.defineProperty(window, 'innerWidth', {
@@ -292,9 +300,6 @@ describe('SettingsView', () => {
     fireEvent.input(screen.getByLabelText('New instruction target path'), {
       target: { value: '/tmp/50-mandible.generated.md' },
     });
-    fireEvent.change(screen.getByLabelText('New instruction target mode'), {
-      target: { value: 'standalone' },
-    });
     fireEvent.click(screen.getByText('Add target'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -305,7 +310,7 @@ describe('SettingsView', () => {
           targets: [
             { path: '/Users/mll/.claude/CLAUDE.md', mode: 'managed-block' },
             { path: '/Users/mll/.codex/AGENTS.md', mode: 'managed-block' },
-            { path: '/tmp/50-mandible.generated.md', mode: 'standalone' },
+            { path: '/tmp/50-mandible.generated.md', mode: 'managed-block' },
           ],
           cleanupRemovedTargets: false,
         }),
@@ -414,7 +419,7 @@ describe('WorkOverviewView', () => {
     fireEvent.click(screen.getByText('Refresh now'));
     expect(onRescan).toHaveBeenCalledTimes(1);
 
-    fireEvent.change(screen.getByDisplayValue('Last activity'), { target: { value: 'name' } });
+    changeSelect(screen.getByDisplayValue('Last activity'), 'name');
     fireEvent.click(screen.getByTitle('Reverse sort direction'));
     await waitFor(() => {
       const repoNames = Array.from(document.querySelectorAll('.work-repo-item__name'))

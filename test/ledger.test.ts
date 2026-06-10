@@ -302,6 +302,7 @@ describe("ledger issue heads", () => {
       actor_type: "agent",
       author_display: "Codex",
       source: "mandible",
+      created_at: (before.last_event_at ?? Date.now()) + 1,
     });
 
     const after = getLedgerIssueHead(db, issue.id);
