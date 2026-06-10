@@ -53,6 +53,12 @@ api_send_capture() {
     -d "$data" 2>/dev/null || printf ''
 }
 
+api_file_rpc_cleanup() {
+  # Cleanup is best-effort: create-only sandbox mounts can allow response reads
+  # while denying unlink, and the command exit code must reflect the API result.
+  rm -f "$1" 2>/dev/null || true
+}
+
 api_request() {
   local method="$1"
   local path="$2"
@@ -114,7 +120,7 @@ api_file_rpc_exchange() {
   while [[ $(date +%s) -le "$deadline" ]]; do
     if [[ -f "$response_file" ]]; then
       response=$(cat "$response_file")
-      rm -f "$response_file"
+      api_file_rpc_cleanup "$response_file"
       response_status=$(printf '%s' "$response" | jq -r '.status // 500')
       printf '%s' "$response" | jq -c '.body' > "$output_file"
       printf '%s' "$response_status"
@@ -123,7 +129,7 @@ api_file_rpc_exchange() {
     sleep 0.05
   done
 
-  rm -f "$request_file"
+  api_file_rpc_cleanup "$request_file"
   printf '{"error":"file_rpc_timeout"}' > "$output_file"
   printf '000'
 }

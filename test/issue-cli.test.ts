@@ -92,9 +92,39 @@ function run(
   });
 }
 
+function runBash(
+  script: string,
+  cwd = process.cwd(),
+  extraEnv: Record<string, string> = {},
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("bash", ["-c", script], {
+      cwd,
+      env: {
+        ...process.env,
+        ...extraEnv,
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (status) => {
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
 function startFileRpcResponder(
   spoolDir: string,
   handler: (request: Record<string, unknown>) => { status: number; body: unknown },
+  afterResponse?: (request: Record<string, unknown>) => void,
 ): NodeJS.Timeout {
   fs.mkdirSync(spoolDir, { recursive: true });
   const timer = setInterval(() => {
@@ -106,6 +136,7 @@ function startFileRpcResponder(
       const response = handler(request);
       fs.writeFileSync(path.join(spoolDir, `${id}.response.json`), JSON.stringify({ id, ...response }), "utf8");
       fs.rmSync(requestPath, { force: true });
+      afterResponse?.(request);
     }
   }, 10);
   return timer;
@@ -424,6 +455,56 @@ describe("issue CLI body revisions", () => {
         issue_branches: [{ branch: "feature/demo", role: "primary" }],
       });
     } finally {
+      clearInterval(timer);
+    }
+  });
+
+  it("ignores file RPC response cleanup failures after successful POSTs", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-cli-"));
+    tempRoots.push(spoolDir);
+    const seen: Array<Record<string, unknown>> = [];
+    const timer = startFileRpcResponder(
+      spoolDir,
+      (request) => {
+        seen.push(request);
+        expect(request).toMatchObject({
+          method: "POST",
+          path: "/api/ledger/issues/abc/comments",
+          body: { message: "New comment" },
+        });
+        return {
+          status: 200,
+          body: { id: "comment-3" },
+        };
+      },
+      () => {
+        fs.chmodSync(spoolDir, 0o555);
+      },
+    );
+
+    try {
+      const result = await runBash(
+        [
+          "set -euo pipefail",
+          `source ${JSON.stringify(path.join(process.cwd(), "cli", "api.sh"))}`,
+          "tmp_response=$(mktemp)",
+          "status=$(api_send_capture POST /api/ledger/issues/abc/comments " +
+            "'{\"message\":\"New comment\"}' \"$tmp_response\")",
+          "printf '%s\\n' \"$status\"",
+          "cat \"$tmp_response\"",
+        ].join("\n"),
+        process.cwd(),
+        {
+          MANDIBLE_BASE: `file://${spoolDir}`,
+          MANDIBLE_FILE_RPC_TIMEOUT: "5",
+        },
+      );
+
+      expect(result.status).toBe(0);
+      expect(seen).toHaveLength(1);
+      expect(result.stdout).toBe("200\n{\"id\":\"comment-3\"}\n");
+    } finally {
+      fs.chmodSync(spoolDir, 0o755);
       clearInterval(timer);
     }
   });
