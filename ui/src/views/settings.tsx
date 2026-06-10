@@ -15,11 +15,16 @@ import {
   setupDelegatedSigning,
   startDesktopDaemon,
   stopDesktopDaemon,
+  getInstructionDeliverySettings,
   updateBackupSettings,
+  updateInstructionDeliverySettings,
   updateRuntime,
   type BackupStatus,
   type AuthAutoApproveStatus,
   type DesktopDaemonLaunchMode,
+  type InstructionDeliverySettings,
+  type InstructionTarget,
+  type InstructionTargetMode,
   type DesktopDaemonStatus,
   type RuntimeStatus,
 } from '../api';
@@ -63,13 +68,6 @@ const MARKDOWN_BODY_ESCAPE_POLICIES = ['warn', 'reject', 'allow'];
 const DESKTOP_DAEMON_MODES: DesktopDaemonLaunchMode[] = ['on_demand', 'manual'];
 const INSTRUCTION_TARGET_MODES = ['managed-block', 'standalone'] as const;
 
-type InstructionTargetMode = typeof INSTRUCTION_TARGET_MODES[number];
-
-type InstructionTarget = {
-  path: string;
-  mode: InstructionTargetMode;
-};
-
 function isInstructionTargetMode(value: string): value is InstructionTargetMode {
   return (INSTRUCTION_TARGET_MODES as readonly string[]).includes(value);
 }
@@ -97,6 +95,23 @@ function parseInstructionTargets(value: string | undefined): InstructionTarget[]
 
 function serializeInstructionTargets(targets: InstructionTarget[]): string {
   return JSON.stringify(targets);
+}
+
+function instructionTargetKey(target: InstructionTarget): string {
+  return `${target.mode}\t${target.path}`;
+}
+
+function hasRemovedInstructionTargets(previous: InstructionTarget[], next: InstructionTarget[]): boolean {
+  const nextKeys = new Set(next.map(instructionTargetKey));
+  return previous.some((target) => !nextKeys.has(instructionTargetKey(target)));
+}
+
+function formatInstructionExportFeedback(result: InstructionDeliverySettings, fallback: string): string {
+  const cleanupCount = result.cleanup?.filter((item) => item.ok).length ?? 0;
+  if (cleanupCount > 0) {
+    return `${fallback}; cleaned ${cleanupCount} previous target${cleanupCount === 1 ? '' : 's'}`;
+  }
+  return fallback;
 }
 
 function Toggle(props: {
@@ -294,17 +309,18 @@ function InstructionsDeliverySection(props: {
   const [targets, setTargets] = useState<InstructionTarget[]>([]);
   const [targetPath, setTargetPath] = useState('');
   const [targetMode, setTargetMode] = useState<InstructionTargetMode>('managed-block');
+  const [targetPathDrafts, setTargetPathDrafts] = useState<Record<string, string>>({});
   const [postExport, setPostExport] = useState('');
   const [saving, setSaving] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
-
-  useEffect(() => {
-    setTargets(parseInstructionTargets(props.settings['instructions.targets']));
-  }, [props.settings['instructions.targets']]);
-
-  useEffect(() => {
-    setPostExport(props.settings['instructions.post_export'] ?? '');
-  }, [props.settings['instructions.post_export']]);
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    body: string;
+    confirmLabel: string;
+    secondaryLabel?: string;
+    onConfirm: () => void;
+    onSecondary?: () => void;
+  } | null>(null);
 
   const showFeedback = useCallback((state: FeedbackState) => {
     setFeedback(state);
@@ -313,18 +329,81 @@ function InstructionsDeliverySection(props: {
     }
   }, []);
 
-  const saveTargets = useCallback(async (nextTargets: InstructionTarget[]) => {
-    setSaving('instructions.targets');
+  useEffect(() => {
+    let cancelled = false;
+    getInstructionDeliverySettings()
+      .then((delivery) => {
+        if (cancelled) return;
+        setTargets(delivery.targets);
+        setPostExport(delivery.postExport);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const fallbackTargets = parseInstructionTargets(props.settings['instructions.targets']);
+        setTargets(fallbackTargets);
+        setPostExport(props.settings['instructions.post_export'] ?? '');
+        showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to load instruction delivery settings' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.settings, showFeedback]);
+
+  const applyInstructionDelivery = useCallback(async (
+    request: { targets?: InstructionTarget[]; postExport?: string; cleanupRemovedTargets?: boolean; resetToDefaults?: boolean },
+    successMessage: string,
+  ) => {
+    setSaving('instructions.delivery');
     try {
-      await props.onSave('instructions.targets', serializeInstructionTargets(nextTargets));
-      setTargets(nextTargets);
-      showFeedback({ type: 'success', message: 'Targets saved' });
+      const result = await updateInstructionDeliverySettings(request);
+      setTargets(result.targets);
+      setTargetPathDrafts({});
+      setPostExport(result.postExport);
+      if (request.targets || request.resetToDefaults) {
+        await props.onSave('instructions.targets', serializeInstructionTargets(result.targets));
+      }
+      if (request.postExport !== undefined) {
+        await props.onSave('instructions.post_export', result.postExport);
+      }
+      showFeedback({ type: 'success', message: formatInstructionExportFeedback(result, successMessage) });
     } catch (err) {
-      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to save targets' });
+      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to update instruction delivery' });
     } finally {
       setSaving(null);
     }
   }, [props.onSave, showFeedback]);
+
+  const saveTargets = useCallback(async (nextTargets: InstructionTarget[], cleanupRemovedTargets: boolean) => {
+    await applyInstructionDelivery(
+      { targets: nextTargets, cleanupRemovedTargets },
+      'Targets saved and exported',
+    );
+  }, [applyInstructionDelivery]);
+
+  const requestTargetSave = useCallback((nextTargets: InstructionTarget[]) => {
+    if (nextTargets.length === 0) {
+      showFeedback({ type: 'error', message: 'At least one target is required' });
+      return;
+    }
+    if (!hasRemovedInstructionTargets(targets, nextTargets)) {
+      void saveTargets(nextTargets, false);
+      return;
+    }
+    setConfirmAction({
+      title: 'Clean previous instruction target?',
+      body: 'Mandible can remove the old managed block or delete an exact generated standalone file before writing the new target list.',
+      confirmLabel: 'Clean and apply',
+      secondaryLabel: 'Apply only',
+      onConfirm: () => {
+        setConfirmAction(null);
+        void saveTargets(nextTargets, true);
+      },
+      onSecondary: () => {
+        setConfirmAction(null);
+        void saveTargets(nextTargets, false);
+      },
+    });
+  }, [saveTargets, showFeedback, targets]);
 
   const addTarget = useCallback(async () => {
     const trimmed = targetPath.trim();
@@ -334,60 +413,105 @@ function InstructionsDeliverySection(props: {
     }
     const nextTargets = targets.filter((target) => target.path !== trimmed);
     nextTargets.push({ path: trimmed, mode: targetMode });
-    await saveTargets(nextTargets);
+    requestTargetSave(nextTargets);
     setTargetPath('');
-  }, [saveTargets, showFeedback, targetMode, targetPath, targets]);
+  }, [requestTargetSave, showFeedback, targetMode, targetPath, targets]);
 
   const removeTarget = useCallback(async (targetPathToRemove: string) => {
-    await saveTargets(targets.filter((target) => target.path !== targetPathToRemove));
-  }, [saveTargets, targets]);
+    requestTargetSave(targets.filter((target) => target.path !== targetPathToRemove));
+  }, [requestTargetSave, targets]);
 
   const updateTargetMode = useCallback(async (targetPathToUpdate: string, mode: InstructionTargetMode) => {
-    await saveTargets(targets.map((target) => (
+    requestTargetSave(targets.map((target) => (
       target.path === targetPathToUpdate ? { ...target, mode } : target
     )));
-  }, [saveTargets, targets]);
+  }, [requestTargetSave, targets]);
+
+  const updateTargetPath = useCallback((targetPathToUpdate: string, nextPath: string) => {
+    const trimmed = nextPath.trim();
+    if (!trimmed || trimmed === targetPathToUpdate) {
+      setTargetPathDrafts((drafts) => {
+        const next = { ...drafts };
+        delete next[targetPathToUpdate];
+        return next;
+      });
+      return;
+    }
+    requestTargetSave(targets.map((target) => (
+      target.path === targetPathToUpdate ? { ...target, path: trimmed } : target
+    )));
+  }, [requestTargetSave, targets]);
 
   const savePostExport = useCallback(async (value: string) => {
-    setSaving('instructions.post_export');
-    try {
-      await props.onSave('instructions.post_export', value.trim());
-      setPostExport(value.trim());
-      showFeedback({ type: 'success', message: value.trim() ? 'Hook saved' : 'Hook cleared' });
-    } catch (err) {
-      showFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Failed to save hook' });
-    } finally {
-      setSaving(null);
-    }
-  }, [props.onSave, showFeedback]);
+    await applyInstructionDelivery(
+      { postExport: value.trim() },
+      value.trim() ? 'Hook saved and exported' : 'Hook cleared and exported',
+    );
+  }, [applyInstructionDelivery]);
+
+  const resetToDefaults = useCallback(() => {
+    setConfirmAction({
+      title: 'Reset instruction delivery?',
+      body: 'This will restore the default Claude and Codex instruction targets and refresh the export immediately.',
+      confirmLabel: 'Reset to defaults',
+      onConfirm: () => {
+        setConfirmAction(null);
+        void applyInstructionDelivery(
+          { resetToDefaults: true, cleanupRemovedTargets: true },
+          'Defaults restored and exported',
+        );
+      },
+    });
+  }, [applyInstructionDelivery]);
 
   return (
     <div className="settings-view__section">
-      <div className="settings-view__section-header">
-        <h3 className="settings-view__section-title">Instruction Delivery</h3>
-        <p className="settings-view__section-desc">
-          Where Mandible writes its generated instruction fragment after rebuilds.
-        </p>
+      <div className="settings-view__section-header settings-view__section-header--action">
+        <div>
+          <h3 className="settings-view__section-title">Instruction Delivery</h3>
+          <p className="settings-view__section-desc">
+            Where Mandible writes its generated instruction fragment after rebuilds.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn btn--sm"
+          onClick={resetToDefaults}
+          disabled={saving === 'instructions.delivery'}
+        >
+          Reset
+        </button>
       </div>
 
       <div className="settings-view__section-body">
         <div className="settings-view__instruction-targets">
           {targets.length === 0 ? (
-            <div className="settings-view__empty">No configured targets. Mandible will use the default home instruction files.</div>
+            <div className="settings-view__empty">Loading instruction targets...</div>
           ) : (
             targets.map((target) => (
               <div className="settings-view__instruction-target" key={target.path}>
                 <input
                   type="text"
-                  className="settings-view__input settings-view__input--wide settings-view__input--readonly"
-                  value={target.path}
-                  readOnly
+                  className="settings-view__input settings-view__input--wide"
+                  value={targetPathDrafts[target.path] ?? target.path}
+                  onInput={(e) => {
+                    const value = (e.target as HTMLInputElement).value;
+                    setTargetPathDrafts((drafts) => ({ ...drafts, [target.path]: value }));
+                  }}
+                  onBlur={(e) => updateTargetPath(target.path, (e.target as HTMLInputElement).value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      (e.currentTarget as HTMLInputElement).blur();
+                    }
+                  }}
+                  disabled={saving === 'instructions.delivery'}
                   title={target.path}
+                  aria-label={`Instruction target ${target.path}`}
                 />
                 <select
                   className="settings-view__select settings-view__select--compact"
                   value={target.mode}
-                  disabled={saving === 'instructions.targets'}
+                  disabled={saving === 'instructions.delivery'}
                   onChange={(e) => {
                     const nextMode = (e.target as HTMLSelectElement).value;
                     if (isInstructionTargetMode(nextMode)) void updateTargetMode(target.path, nextMode);
@@ -401,7 +525,7 @@ function InstructionsDeliverySection(props: {
                   type="button"
                   className="btn btn--sm"
                   onClick={() => void removeTarget(target.path)}
-                  disabled={saving === 'instructions.targets'}
+                  disabled={saving === 'instructions.delivery'}
                 >
                   Remove
                 </button>
@@ -416,13 +540,13 @@ function InstructionsDeliverySection(props: {
             className="settings-view__input settings-view__input--wide"
             value={targetPath}
             onInput={(e) => setTargetPath((e.target as HTMLInputElement).value)}
-            placeholder="/path/to/50-mandible.generated.md"
-            disabled={saving === 'instructions.targets'}
+            disabled={saving === 'instructions.delivery'}
+            aria-label="New instruction target path"
           />
           <select
             className="settings-view__select settings-view__select--compact"
             value={targetMode}
-            disabled={saving === 'instructions.targets'}
+            disabled={saving === 'instructions.delivery'}
             onChange={(e) => {
               const nextMode = (e.target as HTMLSelectElement).value;
               if (isInstructionTargetMode(nextMode)) setTargetMode(nextMode);
@@ -436,7 +560,7 @@ function InstructionsDeliverySection(props: {
             type="button"
             className="btn btn--active btn--sm"
             onClick={() => void addTarget()}
-            disabled={saving === 'instructions.targets'}
+            disabled={saving === 'instructions.delivery'}
           >
             Add target
           </button>
@@ -453,15 +577,15 @@ function InstructionsDeliverySection(props: {
               className="settings-view__input settings-view__input--wide"
               value={postExport}
               onInput={(e) => setPostExport((e.target as HTMLInputElement).value)}
-              placeholder="bin/compile-agent-instructions"
-              disabled={saving === 'instructions.post_export'}
+              disabled={saving === 'instructions.delivery'}
+              aria-label="Instructions post-export hook"
             />
             <button
               type="button"
               className="btn btn--active btn--sm"
               aria-label="Save instructions post-export hook"
               onClick={() => void savePostExport(postExport)}
-              disabled={saving === 'instructions.post_export'}
+              disabled={saving === 'instructions.delivery'}
             >
               Save
             </button>
@@ -470,7 +594,7 @@ function InstructionsDeliverySection(props: {
               className="btn btn--sm"
               aria-label="Clear instructions post-export hook"
               onClick={() => void savePostExport('')}
-              disabled={saving === 'instructions.post_export' || postExport.length === 0}
+              disabled={saving === 'instructions.delivery' || postExport.length === 0}
             >
               Clear
             </button>
@@ -483,6 +607,22 @@ function InstructionsDeliverySection(props: {
           </span>
         )}
       </div>
+
+      {confirmAction && (
+        <div className="settings-view__confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="instruction-delivery-confirm-title">
+          <div className="settings-view__confirm">
+            <h4 className="settings-view__confirm-title" id="instruction-delivery-confirm-title">{confirmAction.title}</h4>
+            <p className="settings-view__confirm-body">{confirmAction.body}</p>
+            <div className="settings-view__confirm-actions">
+              <button type="button" className="btn btn--sm" onClick={() => setConfirmAction(null)}>Cancel</button>
+              {confirmAction.onSecondary && confirmAction.secondaryLabel && (
+                <button type="button" className="btn btn--sm" onClick={confirmAction.onSecondary}>{confirmAction.secondaryLabel}</button>
+              )}
+              <button type="button" className="btn btn--active btn--sm" onClick={confirmAction.onConfirm}>{confirmAction.confirmLabel}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -5823,6 +5823,13 @@ tr:hover .work-actions__trigger {
   margin-bottom: 14px;
 }
 
+.settings-view__section-header--action {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .settings-view__section-title {
   margin: 0 0 6px;
   font-size: 16px;
@@ -6139,6 +6146,46 @@ tr:hover .work-actions__trigger {
   grid-template-columns: minmax(0, 1fr) 150px auto;
   gap: 8px;
   align-items: center;
+}
+
+.settings-view__confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.44);
+}
+
+.settings-view__confirm {
+  width: min(420px, 100%);
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-soft);
+}
+
+.settings-view__confirm-title {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-view__confirm-body {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-view__confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 700px) {

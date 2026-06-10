@@ -6,6 +6,37 @@ export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, Sess
 
 export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[]; presets?: T[]; nodes?: T[]; diffs?: T[] };
 
+export type InstructionTargetMode = 'managed-block' | 'standalone';
+
+export type InstructionTarget = {
+  path: string;
+  mode: InstructionTargetMode;
+};
+
+export type InstructionDeliverySettings = {
+  targets: InstructionTarget[];
+  postExport: string;
+  configuredTargets: boolean;
+  export?: {
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+  };
+  cleanup?: Array<{
+    target: InstructionTarget;
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+  }>;
+};
+
+export type UpdateInstructionDeliveryRequest = {
+  targets?: InstructionTarget[];
+  postExport?: string;
+  cleanupRemovedTargets?: boolean;
+  resetToDefaults?: boolean;
+};
+
 const DEFAULT_HEADERS = {
   Accept: 'application/json',
 };
@@ -1068,6 +1099,32 @@ export async function updateSetting(key: string, value: string): Promise<void> {
   if (!response.ok) {
     throw new Error(`PUT /api/settings/${key} failed: ${response.status}`);
   }
+}
+
+export async function getInstructionDeliverySettings(): Promise<InstructionDeliverySettings> {
+  const response = await apiGet('/api/settings/instructions-delivery');
+  return await parseMaybeJson(response) as InstructionDeliverySettings;
+}
+
+export async function updateInstructionDeliverySettings(
+  request: UpdateInstructionDeliveryRequest,
+): Promise<InstructionDeliverySettings> {
+  const response = await fetch('/api/settings/instructions-delivery', {
+    method: 'PUT',
+    headers: {
+      ...DEFAULT_HEADERS,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+  const payload = await parseMaybeJson(response);
+  if (!response.ok) {
+    const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : {};
+    throw new Error(typeof record.error === 'string' ? record.error : `PUT /api/settings/instructions-delivery failed: ${response.status}`);
+  }
+  return payload as InstructionDeliverySettings;
 }
 
 // ── Console API ──

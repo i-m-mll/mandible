@@ -1,11 +1,40 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { getDb } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 
 const DEFAULT_PROTECTED_BRANCHES = ["main", "develop"];
+const INSTRUCTION_TARGETS_KEY = "instructions.targets";
+const INSTRUCTION_POST_EXPORT_KEY = "instructions.post_export";
+const INSTRUCTION_TARGET_MODES = new Set(["managed-block", "standalone"]);
+
+type InstructionTargetMode = "managed-block" | "standalone";
+
+type InstructionTarget = {
+  path: string;
+  mode: InstructionTargetMode;
+};
+
+type InstructionDeliveryResult = {
+  targets: InstructionTarget[];
+  postExport: string;
+  configuredTargets: boolean;
+  export: {
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+  };
+  cleanup: Array<{
+    target: InstructionTarget;
+    ok: boolean;
+    stdout: string;
+    stderr: string;
+  }>;
+};
 
 function sendJson(res: ResponseLike, code: number, payload: unknown): void {
   res.status(code).json(payload);
@@ -13,6 +42,127 @@ function sendJson(res: ResponseLike, code: number, payload: unknown): void {
 
 function readBody<T>(req: RequestLike): T {
   return (req.body ?? {}) as T;
+}
+
+function normalizeInstructionTargets(value: unknown): InstructionTarget[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const targets: InstructionTarget[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const targetPath = typeof record.path === "string" ? record.path.trim() : "";
+    if (!targetPath) {
+      continue;
+    }
+    const mode = typeof record.mode === "string" && INSTRUCTION_TARGET_MODES.has(record.mode)
+      ? record.mode as InstructionTargetMode
+      : "managed-block";
+    const normalizedPath = path.resolve(targetPath);
+    if (seen.has(normalizedPath)) {
+      continue;
+    }
+    seen.add(normalizedPath);
+    targets.push({ path: normalizedPath, mode });
+  }
+  return targets;
+}
+
+function parseInstructionTargetsSetting(value: string | undefined): InstructionTarget[] {
+  if (!value) {
+    return [];
+  }
+  try {
+    return normalizeInstructionTargets(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
+function defaultInstructionTargets(): InstructionTarget[] {
+  const home = os.homedir();
+  return [
+    { path: path.join(home, ".claude", "CLAUDE.md"), mode: "managed-block" },
+    { path: path.join(home, ".codex", "AGENTS.md"), mode: "managed-block" },
+  ];
+}
+
+function getSettingValue(key: string, fallback = ""): string {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get(key) as { value: string } | undefined;
+  return row ? row.value : fallback;
+}
+
+function setSettingValue(key: string, value: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(key, value, Date.now());
+}
+
+function getConfiguredInstructionTargets(): { targets: InstructionTarget[]; configured: boolean } {
+  const raw = getSettingValue(INSTRUCTION_TARGETS_KEY, "");
+  const configured = raw.trim().length > 0;
+  const targets = parseInstructionTargetsSetting(raw);
+  return {
+    targets: configured ? targets : defaultInstructionTargets(),
+    configured,
+  };
+}
+
+function resolveRepoRoot(): string {
+  let current = path.dirname(fileURLToPath(import.meta.url));
+  while (true) {
+    if (fs.existsSync(path.join(current, "cli", "instructions.sh"))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return process.cwd();
+    }
+    current = parent;
+  }
+}
+
+function runInstructions(args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  const repoRoot = resolveRepoRoot();
+  const script = process.env.MANDIBLE_INSTRUCTIONS_CLI || path.join(repoRoot, "cli", "instructions.sh");
+  const result = spawnSync("bash", [script, ...args], {
+    cwd: repoRoot,
+    env: process.env,
+    encoding: "utf8",
+  });
+  return {
+    ok: result.status === 0,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? (result.error ? String(result.error) : ""),
+  };
+}
+
+function diffRemovedInstructionTargets(
+  previousTargets: InstructionTarget[],
+  nextTargets: InstructionTarget[],
+): InstructionTarget[] {
+  const nextKeys = new Set(nextTargets.map((target) => `${target.mode}\t${target.path}`));
+  return previousTargets.filter((target) => !nextKeys.has(`${target.mode}\t${target.path}`));
+}
+
+function instructionDeliverySnapshot(exportResult = { ok: true, stdout: "", stderr: "" }): InstructionDeliveryResult {
+  const configured = getConfiguredInstructionTargets();
+  return {
+    targets: configured.targets,
+    postExport: getSettingValue(INSTRUCTION_POST_EXPORT_KEY, ""),
+    configuredTargets: configured.configured,
+    export: exportResult,
+    cleanup: [],
+  };
 }
 
 /**
@@ -119,6 +269,77 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       result[row.key] = row.value;
     }
     sendJson(res, 200, result);
+  });
+
+  server.get("/api/settings/instructions-delivery", (_req, res) => {
+    sendJson(res, 200, instructionDeliverySnapshot());
+  });
+
+  server.put("/api/settings/instructions-delivery", (req, res) => {
+    const body = readBody<{
+      targets?: unknown;
+      postExport?: unknown;
+      cleanupRemovedTargets?: unknown;
+      resetToDefaults?: unknown;
+    }>(req);
+    const previous = getConfiguredInstructionTargets();
+    let nextTargets = previous.targets;
+    let targetsChanged = false;
+
+    if (body.resetToDefaults === true) {
+      nextTargets = defaultInstructionTargets();
+      setSettingValue(INSTRUCTION_TARGETS_KEY, JSON.stringify(nextTargets));
+      targetsChanged = true;
+    } else if ("targets" in body) {
+      nextTargets = normalizeInstructionTargets(body.targets);
+      if (nextTargets.length === 0) {
+        sendJson(res, 400, { error: "At least one instruction target is required" });
+        return;
+      }
+      setSettingValue(INSTRUCTION_TARGETS_KEY, JSON.stringify(nextTargets));
+      targetsChanged = true;
+    }
+
+    if ("postExport" in body) {
+      if (typeof body.postExport !== "string") {
+        sendJson(res, 400, { error: "postExport must be a string" });
+        return;
+      }
+      setSettingValue(INSTRUCTION_POST_EXPORT_KEY, body.postExport.trim());
+    }
+
+    const cleanupResults: InstructionDeliveryResult["cleanup"] = [];
+    if (targetsChanged && body.cleanupRemovedTargets === true) {
+      for (const oldTarget of diffRemovedInstructionTargets(previous.targets, nextTargets)) {
+        const cleanup = runInstructions([
+          "cleanup",
+          "--target",
+          oldTarget.path,
+          "--mode",
+          oldTarget.mode,
+        ]);
+        cleanupResults.push({ target: oldTarget, ...cleanup });
+        if (!cleanup.ok) {
+          sendJson(res, 500, {
+            error: `Failed to clean previous instruction target: ${oldTarget.path}`,
+            cleanup: cleanupResults,
+          });
+          return;
+        }
+      }
+    }
+
+    const exportResult = runInstructions(["install"]);
+    const snapshot = instructionDeliverySnapshot(exportResult);
+    snapshot.cleanup = cleanupResults;
+    if (!exportResult.ok) {
+      sendJson(res, 500, {
+        error: "Instruction export failed after saving settings",
+        ...snapshot,
+      });
+      return;
+    }
+    sendJson(res, 200, snapshot);
   });
 
   // GET /api/settings/:key — returns single setting value

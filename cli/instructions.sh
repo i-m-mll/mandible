@@ -13,6 +13,7 @@ usage() {
 Usage:
   mandible instructions diff [--target <file>]
   mandible instructions install [--target <file>] [--worktree <path>] [--force]
+  mandible instructions cleanup --target <file> --mode managed-block|standalone [--force]
   mandible instructions targets list
   mandible instructions targets add <path> [--mode managed-block|standalone]
   mandible instructions targets rm <path>
@@ -358,6 +359,81 @@ install_standalone() {
   printf 'Installed standalone Mandible instructions: %s\n' "$target"
 }
 
+cleanup_block() {
+  local target="$1"
+  if [[ ! -f "$target" ]]; then
+    printf 'No managed Mandible instructions found: %s\n' "$target"
+    return 0
+  fi
+  local tmp
+  tmp=$(mktemp)
+  BEGIN_MARKER="$BEGIN_MARKER" END_MARKER="$END_MARKER" \
+    node - "$target" <<'NODE' > "$tmp"
+const fs = require("node:fs");
+const target = process.argv[2];
+const current = fs.readFileSync(target, "utf8");
+const begin = process.env.BEGIN_MARKER;
+const end = process.env.END_MARKER;
+const start = current.indexOf(begin);
+if (start < 0) {
+  process.stdout.write(current);
+  process.exit(0);
+}
+const endStart = current.indexOf(end, start);
+if (endStart < 0) {
+  process.stderr.write("managed instructions begin marker exists without end marker\n");
+  process.exit(2);
+}
+let removeStart = start;
+if (removeStart >= 2 && current.slice(removeStart - 2, removeStart) === "\n\n") {
+  removeStart -= 1;
+}
+const endIndex = endStart + end.length + (current[endStart + end.length] === "\n" ? 1 : 0);
+process.stdout.write(current.slice(0, removeStart) + current.slice(endIndex));
+NODE
+  if cmp -s "$target" "$tmp"; then
+    rm -f "$tmp"
+    printf 'No managed Mandible instructions found: %s\n' "$target"
+    return 0
+  fi
+  mv "$tmp" "$target"
+  printf 'Removed managed Mandible instructions: %s\n' "$target"
+}
+
+cleanup_standalone() {
+  local target="$1"
+  if [[ ! -f "$target" ]]; then
+    printf 'No standalone Mandible instructions found: %s\n' "$target"
+    return 0
+  fi
+  local tmp
+  tmp=$(mktemp)
+  render_fragment > "$tmp"
+  printf '\n' >> "$tmp"
+  if cmp -s "$target" "$tmp"; then
+    rm -f "$target" "$tmp"
+    printf 'Removed standalone Mandible instructions: %s\n' "$target"
+    return 0
+  fi
+  rm -f "$tmp"
+  printf 'Skipped standalone Mandible cleanup; target is not an exact generated file: %s\n' "$target"
+}
+
+cleanup_target() {
+  local target="$1"
+  local mode="$2"
+  local force="$3"
+  guard_install_target "$target" "$force"
+  case "$mode" in
+    managed-block) cleanup_block "$target" ;;
+    standalone) cleanup_standalone "$target" ;;
+    *)
+      printf 'Invalid instructions target mode: %s\n' "$mode" >&2
+      return 2
+      ;;
+  esac
+}
+
 install_target() {
   local target="$1"
   local mode="$2"
@@ -377,9 +453,7 @@ default_install_targets() {
   local default_target="${HOME:?HOME is required}/.claude/CLAUDE.md"
   local codex_target="${HOME}/.codex/AGENTS.md"
   printf 'managed-block\t%s\n' "$default_target"
-  if [[ -e "$codex_target" || -L "$codex_target" ]]; then
-    printf 'managed-block\t%s\n' "$codex_target"
-  fi
+  printf 'managed-block\t%s\n' "$codex_target"
 }
 
 hook_cwd_for_target() {
@@ -462,6 +536,42 @@ force=0
 explicit_target=0
 
 case "$subcommand" in
+  cleanup)
+    cleanup_mode="managed-block"
+    cleanup_target_path=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --target)
+          cleanup_target_path="${2:?--target requires a value}"
+          shift 2
+          ;;
+        --mode)
+          cleanup_mode="${2:?--mode requires a value}"
+          shift 2
+          ;;
+        --force)
+          force=1
+          shift
+          ;;
+        -h|--help)
+          usage
+          exit 0
+          ;;
+        *)
+          printf 'Unexpected argument: %s\n' "$1" >&2
+          usage >&2
+          exit 2
+          ;;
+      esac
+    done
+    if [[ -z "$cleanup_target_path" ]]; then
+      printf 'cleanup requires --target <file>\n' >&2
+      usage >&2
+      exit 2
+    fi
+    cleanup_target "$cleanup_target_path" "$cleanup_mode" "$force"
+    exit 0
+    ;;
   targets)
     action="${1:-list}"
     shift || true
