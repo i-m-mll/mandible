@@ -27,6 +27,7 @@
     "@atlaskit/pragmatic-drag-and-drop-hitbox": "^1.1.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@types/d3": "^7.4.3",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",

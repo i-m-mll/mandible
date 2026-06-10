@@ -447,6 +447,7 @@ fn wait_for_shutdown(port: u16, timeout: Duration) {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
             // Set the window and webview background to match the app's dark theme (#0b0f14).
             // This prevents a white flash in the title-bar area on macOS when using

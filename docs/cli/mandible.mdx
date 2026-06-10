@@ -93,6 +93,7 @@ mandible issue triage [--repo <repo-ref>] [--status open|closed|all] [--label <l
 mandible issue close <id> [--commit <sha>]
 mandible issue open <id>
 mandible issue description show <issue-ref> [--json]
+mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
 mandible issue description history <issue-ref> [--json] [--with-body]
 mandible issue comment add <issue-ref> -m <text>
 mandible issue comment show <comment-ref> [--json]
@@ -115,6 +116,7 @@ mandible issue label rm <id> <label>
 | `close` | Close an issue, recording the resolving commit SHA. Adds a ledger comment, appends a git note, and reports the resolution to the Mandible API. |
 | `open` | Reopen a closed issue |
 | `description show` | Show only the issue description, without comments or metadata in human output. |
+| `description edit` | Edit an issue description through the ledger body API, preserving issue-body revision history. |
 | `description history` | Show read-only revision history for the issue description. This maps to Mandible's `issue_body` revision entity. |
 | `comment add` | Add a comment to an issue. Compatibility alias: `mandible issue comment <issue-ref> -m <text>`. |
 | `comment show` | Show one comment. Accepts a raw comment ID, `<issue-ref>#<ordinal>`, or `<issue-ref>#last`. |

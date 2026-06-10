@@ -38,6 +38,8 @@ Usage:
   mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
   mandible issue open <id>                                        Reopen a closed issue
   mandible issue description show <issue-ref> [--json]            Show only the issue description
+  mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
+                                                                  Edit the issue description
   mandible issue description history <issue-ref> [--json] [--with-body]
                                                                   Show issue description revision history
   mandible issue comment add <issue-ref> -m <text>                 Add a comment
@@ -836,22 +838,89 @@ cmd_description_history() {
   fi
 }
 
+cmd_description_edit() {
+  local issue_ref=""
+  local message=""
+  local base_revision_id=""
+  local base_body_hash=""
+
+  while (( $# > 0 )); do
+    case "$1" in
+      -m)
+        if (( $# < 2 )); then
+          die "Missing value for -m." 2
+        fi
+        message="$2"
+        shift 2
+        ;;
+      --base-revision|--base-body-revision)
+        if (( $# < 2 )); then
+          die "Missing value for $1." 2
+        fi
+        base_revision_id="$2"
+        shift 2
+        ;;
+      --base-body-hash)
+        if (( $# < 2 )); then
+          die "Missing value for --base-body-hash." 2
+        fi
+        base_body_hash="$2"
+        shift 2
+        ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then
+          issue_ref="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$issue_ref" || -z "$message" ]]; then
+    die "Usage: mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]" 2
+  fi
+
+  require_tools
+  local payload
+  payload=$(
+    jq -n \
+      --arg body "$message" \
+      --arg base_revision_id "$base_revision_id" \
+      --arg base_body_hash "$base_body_hash" \
+      '{
+        body: $body
+      }
+      + (if $base_revision_id == "" then {} else {base_body_revision_id: $base_revision_id} end)
+      + (if $base_body_hash == "" then {} else {base_body_hash: $base_body_hash} end)'
+  )
+  api_send PATCH "/api/ledger/issues/$(urlencode "$issue_ref")" "$payload" >/dev/null \
+    || die "${RED}Failed to edit description for issue ${issue_ref}${RESET}" 1
+  err "${GREEN}Edited description for ${issue_ref}${RESET}"
+}
+
 cmd_description() {
   local action="${1:-}"
   shift || true
 
   case "$action" in
     show) cmd_description_show "$@" ;;
+    edit) cmd_description_edit "$@" ;;
     history) cmd_description_history "$@" ;;
     ""|-h|--help)
       cat <<'DESCRIPTION_USAGE'
 Usage:
   mandible issue description show <issue-ref> [--json]
+  mandible issue description edit <issue-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
   mandible issue description history <issue-ref> [--json] [--with-body]
 DESCRIPTION_USAGE
       ;;
     *)
-      die "Unknown description action: $action (expected show or history)" 2
+      die "Unknown description action: $action (expected show, edit, or history)" 2
       ;;
   esac
 }

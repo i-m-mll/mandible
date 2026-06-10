@@ -4,6 +4,10 @@ import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
+import {
+  navigateToMandibleDeepLink,
+  routeHashFromMandibleDeepLink,
+} from '../ui/src/deep-links';
 import { parseRouteFromHash } from '../ui/src/routing';
 import {
   AppShellProvider,
@@ -93,6 +97,30 @@ describe('App routing', () => {
       tab: 'console',
       params: { session: 's1' },
     });
+  });
+
+  it('maps mandible issue deep links onto the existing Issues hash route', () => {
+    expect(routeHashFromMandibleDeepLink('mandible:///issues?issue=dfc924a')).toBe(
+      '#/issues?issue=dfc924a',
+    );
+    expect(
+      routeHashFromMandibleDeepLink('mandible:///issues?repo=mandible&issue=dfc924a&comment=2'),
+    ).toBe('#/issues?issue=dfc924a&repo=mandible&comment=2');
+    expect(routeHashFromMandibleDeepLink('mandible://issues?issue=dfc924a')).toBe(
+      '#/issues?issue=dfc924a',
+    );
+    expect(routeHashFromMandibleDeepLink('https://example.test/issues?issue=dfc924a')).toBeNull();
+    expect(routeHashFromMandibleDeepLink('mandible:///auth?request=abc')).toBeNull();
+  });
+
+  it('navigates only for supported mandible deep links', () => {
+    const navigate = vi.fn();
+
+    expect(navigateToMandibleDeepLink('mandible:///issues?issue=dfc924a', navigate)).toBe(true);
+    expect(navigate).toHaveBeenCalledWith('#/issues?issue=dfc924a');
+
+    expect(navigateToMandibleDeepLink('mandible:///issues', navigate)).toBe(false);
+    expect(navigate).toHaveBeenCalledTimes(1);
   });
 });
 

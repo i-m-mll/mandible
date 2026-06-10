@@ -37,6 +37,7 @@ import {
 } from './api';
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
+import { installTauriDeepLinkHandler } from './deep-links';
 import { parseRouteFromHash, type Route } from './routing';
 import {
   AppShellProvider,
@@ -216,6 +217,28 @@ function App(): JSX.Element {
       window.removeEventListener('popstate', handleChange);
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let removeListener: (() => void) | undefined;
+
+    installTauriDeepLinkHandler(navigateToHash)
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
+        removeListener = cleanup;
+      })
+      .catch((error) => {
+        console.error('Failed to initialize Mandible deep links:', error);
+      });
+
+    return () => {
+      disposed = true;
+      removeListener?.();
+    };
+  }, [navigateToHash]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || route.tab === 'settings') {

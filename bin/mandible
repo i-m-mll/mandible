@@ -8,6 +8,7 @@
 #   task <description>               Set session task status
 #   inbox [check|ack|watch|add]      Manage session inbox
 #   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
+#   description <subcommand>         Alias for issue description operations
 #   auth list [opts]                 List active auth requests
 #   auth request <branch> [opts]     Submit auth merge request
 #   auth merge <branch> [opts]       Execute authenticated merge
@@ -36,6 +37,7 @@ Commands:
   task <description>               Set session task status
   inbox [check|ack|watch|add]      Manage session inbox
   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
+  description <subcommand>         Alias for issue description operations
   auth list [opts]                 List active auth requests
   auth request <branch> [opts]     Submit auth merge request
   auth merge <branch> [opts]       Execute authenticated merge
@@ -64,6 +66,7 @@ case "${1:-}" in
   task)    shift; exec "$MANDIBLE_CLI_DIR/task.sh" "$@" ;;
   inbox)   shift; exec "$MANDIBLE_CLI_DIR/inbox.sh" "$@" ;;
   issue)   shift; exec "$MANDIBLE_CLI_DIR/issue.sh" "$@" ;;
+  description) shift; exec "$MANDIBLE_CLI_DIR/issue.sh" description "$@" ;;
   auth)
     shift
     case "${1:-}" in

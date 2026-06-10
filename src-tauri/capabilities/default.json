@@ -4,6 +4,7 @@
   "description": "Default capability for Mandible",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "deep-link:default"
   ]
 }

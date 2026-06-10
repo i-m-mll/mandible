@@ -18,6 +18,7 @@ mandible issue comment add <id> -m <text>
 mandible issue comment show <ref> [--json]        # ref: id, <issue>#<ordinal>, <issue>#last
 mandible issue comment history <ref> [--json] [--with-body]
 mandible issue description show <ref> [--json]
+mandible issue description edit <ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
 mandible issue description history <ref> [--json] [--with-body]
 mandible issue revision show <rev-id> [--json]
 mandible issue revision diff <old-rev-id> <new-rev-id> [--force]

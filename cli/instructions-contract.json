@@ -27,6 +27,10 @@
       "description": "Append rendered Markdown comments with real newline characters."
     },
     {
+      "name": "mandible issue description edit <issue-ref> -m <text>",
+      "description": "Edit issue descriptions while preserving body revision history."
+    },
+    {
       "name": "mandible issue label add|rm <id> <label>",
       "description": "Mirror portable issue facts such as mandible:status:<value> labels."
     },
