@@ -9,6 +9,7 @@ const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let server: http.Server | null = null;
 let requestedPaths: string[] = [];
+let requestBodies: Array<{ path: string; method: string; body: unknown }> = [];
 let tempRoots: string[] = [];
 let issueHeads: Record<string, unknown> = {};
 
@@ -141,6 +142,7 @@ function makeGitRepoWithWorktree(): { repoRoot: string; worktreeRoot: string } {
 
 function listen(): Promise<number> {
   requestedPaths = [];
+  requestBodies = [];
   issueHeads = {
     abc: {
       issue_id: "issue-1",
@@ -161,6 +163,15 @@ function listen(): Promise<number> {
     server = http.createServer((req, res) => {
       requestedPaths.push(req.url ?? "");
       res.setHeader("Content-Type", "application/json");
+
+      const readBody = async (): Promise<unknown> => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+        const raw = Buffer.concat(chunks).toString("utf8");
+        return raw ? JSON.parse(raw) : null;
+      };
 
       if (req.url?.startsWith("/api/issues?")) {
         res.end(JSON.stringify([
@@ -188,6 +199,17 @@ function listen(): Promise<number> {
       }
       if (req.method === "POST" && req.url === "/api/ledger/issues/abc/comments") {
         res.end(JSON.stringify({ id: "comment-3" }));
+        return;
+      }
+      if (req.method === "PATCH" && req.url === "/api/ledger/issues/abc") {
+        void readBody().then((body) => {
+          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+          res.end(JSON.stringify({
+            id: "issue-1",
+            display_id: "abc",
+            body: (body as { body?: string } | null)?.body ?? "",
+          }));
+        });
         return;
       }
       if (req.method === "POST" && req.url === "/api/ledger/issues/abc/worker-status") {
@@ -402,6 +424,54 @@ describe("issue CLI body revisions", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("Issue body\n");
+  });
+
+  it("edits issue descriptions through the official description namespace", async () => {
+    const port = await listen();
+    const result = await run([
+      "issue",
+      "description",
+      "edit",
+      "abc",
+      "-m",
+      "Updated body",
+      "--base-revision",
+      "rev_issue_1",
+      "--base-body-hash",
+      "aaaaaaaa",
+    ], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc");
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: {
+        body: "Updated body",
+        base_body_revision_id: "rev_issue_1",
+        base_body_hash: "aaaaaaaa",
+      },
+    });
+  });
+
+  it("supports the top-level description edit alias", async () => {
+    const port = await listen();
+    const result = await run(["description", "edit", "abc", "-m", "Alias body"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc",
+      method: "PATCH",
+      body: { body: "Alias body" },
+    });
+  });
+
+  it("rejects description edits without a body", async () => {
+    const port = await listen();
+    const result = await run(["issue", "description", "edit", "abc"], port);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("description edit <issue-ref> -m <body>");
   });
 
   it("prints compact issue body history without snapshots by default", async () => {
