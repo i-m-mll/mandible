@@ -1,7 +1,6 @@
-export type SSEPayload = {
-  type: string;
-  [key: string]: unknown;
-};
+import type { MandibleEvent } from '../../src/contracts';
+
+export type SSEPayload = MandibleEvent;
 
 export type SSEHandler = (payload: SSEPayload) => void;
 

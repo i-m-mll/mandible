@@ -78,7 +78,7 @@ export interface InboxWorkUnit {
     agent_session_id: string | null;
     agent_status: string | null;
     is_processing: boolean;
-    last_activity: unknown;
+    last_activity: number | null;
   };
 }
 
@@ -140,7 +140,7 @@ export interface SessionUpdateResponse {
 export interface MandibleSSEEvent {
   type: string;
   data: unknown;
-  timestamp: string;
+  timestamp?: string;
 }
 
 /**

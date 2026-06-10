@@ -1,5 +1,6 @@
 import { getCommitLog, getDiff, getSpec } from "../review.js";
 import { WorkScanner } from "../work-scanner.js";
+import type { ReviewSpecResponse } from "../contracts.js";
 
 type QuerySource = Record<string, string | string[] | undefined> | undefined;
 
@@ -102,13 +103,12 @@ export const registerReviewRoutes = (
       const repo = resolveRepoParam(requireParam(getQueryValue(req, "repo"), "repo"));
       const branch = getQueryValue(req, "branch") ?? "HEAD";
       const spec = await getSpec(repo, branch);
-      return jsonResponse(res, {
-        ...spec,
+      const response: ReviewSpecResponse = {
         markdown: spec.raw,
-        content: spec.raw,
         commits: [],
         meta: {},
-      });
+      };
+      return jsonResponse(res, response);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to load spec";
       return jsonResponse(res, { error: message }, 400);

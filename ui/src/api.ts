@@ -2,9 +2,28 @@ import type { InboxData } from './views/inbox';
 import type { GraphNode, GraphEdge } from './types/graph';
 import type { PresetWithNodes, PresetDiff, ConventionSettingLink, SessionValidationResult } from './types/presets';
 import type { ProjectTimelineInput, ProjectTimelineProjection } from './types/timeline';
+import type {
+  ApiList,
+  ArtifactAliasRecord as ContractArtifactAliasRecord,
+  ArtifactAliasResolutionStatus as ContractArtifactAliasResolutionStatus,
+  ArtifactLinkRecord as ContractArtifactLinkRecord,
+  ArtifactRecord as ContractArtifactRecord,
+  ArtifactResolveResult as ContractArtifactResolveResult,
+  BlockType as ContractBlockType,
+  Conversation as ContractConversation,
+  ConversationChild as ContractConversationChild,
+  ConversationSource as ContractConversationSource,
+  HookTemplate as ContractHookTemplate,
+  ReviewSpecResponse,
+  Role as ContractRole,
+  StoredConversationBlock as ContractConversationBlock,
+  WorkUnit as ContractWorkUnit,
+  WorkUnitKind as ContractWorkUnitKind,
+  WorkUnitLiveness as ContractWorkUnitLiveness,
+  WorkUnitState as ContractWorkUnitState,
+  WorkUnitWithLiveness as ContractWorkUnitWithLiveness,
+} from '../../src/contracts';
 export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
-
-export type ApiList<T> = T[] | { items?: T[]; sessions?: T[]; queue?: T[]; requests?: T[]; repos?: T[]; branches?: T[]; presets?: T[]; nodes?: T[]; diffs?: T[] };
 
 export type InstructionTargetMode = 'managed-block' | 'standalone';
 
@@ -44,9 +63,21 @@ const DEFAULT_HEADERS = {
 async function apiGet(path: string): Promise<Response> {
   const response = await fetch(path, { headers: DEFAULT_HEADERS });
   if (!response.ok) {
-    throw new Error(`GET ${path} failed: ${response.status}`);
+    await throwOnError(response, 'GET', path);
   }
   return response;
+}
+
+async function throwOnError(response: Response, method: string, path: string): Promise<never> {
+  let message = `${method} ${path} failed: ${response.status}`;
+  try {
+    const body = await response.json() as { error?: string; message?: string };
+    if (body.error) message = body.error;
+    else if (body.message) message = body.message;
+  } catch {
+    // keep the generic message when the server did not return JSON
+  }
+  throw new Error(message);
 }
 
 async function apiPost(path: string, body?: unknown): Promise<Response> {
@@ -59,15 +90,7 @@ async function apiPost(path: string, body?: unknown): Promise<Response> {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
-    let message = `POST ${path} failed: ${response.status}`;
-    try {
-      const body = await response.json() as { error?: string; message?: string };
-      if (body.error) message = body.error;
-      else if (body.message) message = body.message;
-    } catch {
-      // keep the generic message when the server did not return JSON
-    }
-    throw new Error(message);
+    await throwOnError(response, 'POST', path);
   }
   return response;
 }
@@ -82,7 +105,7 @@ async function apiPatch(path: string, body?: unknown): Promise<Response> {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
-    throw new Error(`PATCH ${path} failed: ${response.status}`);
+    await throwOnError(response, 'PATCH', path);
   }
   return response;
 }
@@ -97,7 +120,7 @@ async function apiPut(path: string, body?: unknown): Promise<Response> {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!response.ok) {
-    throw new Error(`PUT ${path} failed: ${response.status}`);
+    await throwOnError(response, 'PUT', path);
   }
   return response;
 }
@@ -108,7 +131,7 @@ async function apiDelete(path: string): Promise<Response> {
     headers: DEFAULT_HEADERS,
   });
   if (!response.ok) {
-    throw new Error(`DELETE ${path} failed: ${response.status}`);
+    await throwOnError(response, 'DELETE', path);
   }
   return response;
 }
@@ -124,6 +147,11 @@ function normalizeList<T>(payload: ApiList<T>): T[] {
     payload.requests ||
     payload.repos ||
     payload.branches ||
+    payload.work_units ||
+    payload.hooks ||
+    payload.artifacts ||
+    payload.conversations ||
+    payload.templates ||
     payload.presets ||
     payload.nodes ||
     payload.diffs ||
@@ -326,11 +354,7 @@ export async function getReviewDiff(
   return '';
 }
 
-export type ReviewSpecPayload = {
-  markdown: string;
-  commits: string[];
-  meta?: Record<string, unknown>;
-};
+export type ReviewSpecPayload = ReviewSpecResponse;
 
 export async function getReviewSpec(
   params: Record<string, string | number | boolean | undefined>,
@@ -338,22 +362,23 @@ export async function getReviewSpec(
   const response = await apiGet(`/api/review/spec${buildQuery(params)}`);
   const payload = await parseMaybeJson(response);
   if (typeof payload === 'string') {
-    return { markdown: payload, commits: [] };
+    return { markdown: payload, commits: [], meta: {} };
   }
   if (!payload || typeof payload !== 'object') {
-    return { markdown: '', commits: [] };
+    return { markdown: '', commits: [], meta: {} };
   }
   const data = payload as {
     markdown?: string;
+    raw?: string;
     spec?: string;
     commits?: string[];
     meta?: Record<string, unknown>;
     content?: string;
   };
   return {
-    markdown: data.markdown || data.spec || data.content || '',
+    markdown: data.markdown || data.raw || data.spec || data.content || '',
     commits: Array.isArray(data.commits) ? data.commits : [],
-    meta: data.meta,
+    meta: data.meta ?? {},
   };
 }
 
@@ -524,13 +549,7 @@ export async function syncSwitchboard(pairingName: string): Promise<{ errors: st
   return (await parseMaybeJson(response)) as { errors: string[] };
 }
 
-export interface HookTemplate {
-  id: string;
-  name: string;
-  hook_setup?: string;
-  hook_teardown?: string;
-  builtin?: boolean;
-}
+export type HookTemplate = ContractHookTemplate;
 
 export async function getSwitchboardTemplates(): Promise<{ templates: HookTemplate[] }> {
   const response = await apiGet('/api/switchboard/templates');
@@ -1473,7 +1492,7 @@ export async function getConversationBlocks(id: string, params?: {
   return (await parseMaybeJson(resp)) as { blocks: ConversationBlock[]; total: number };
 }
 
-export async function updateConversation(id: string, data: { starred?: number; label?: string; notes?: string }): Promise<Conversation> {
+export async function updateConversation(id: string, data: { starred?: boolean; label?: string; notes?: string }): Promise<Conversation> {
   const resp = await apiPatch(`/api/conversations/${encodeURIComponent(id)}`, data);
   return (await parseMaybeJson(resp)) as Conversation;
 }
@@ -1547,39 +1566,14 @@ export async function resumeConversation(
 
 // ── Work Units API — Bug: 8a281b3 ──
 
-export type WorkUnitKind = 'solo' | 'partition' | 'integration';
-export type WorkUnitState = 'open' | 'committed' | 'resolved' | 'abandoned';
+export type WorkUnitKind = ContractWorkUnitKind;
+export type WorkUnitState = ContractWorkUnitState;
 
-export type WorkUnitLiveness = {
-  has_live_agent: boolean;
-  agent_session_id: string | null;
-  agent_status: string | null;
-  is_processing: boolean;
-  last_activity: number | null;
-};
+export type WorkUnitLiveness = ContractWorkUnitLiveness;
 
-export type WorkUnit = {
-  id: string;
-  issue_id: string;
-  repo_id: string;
-  branch: string | null;
-  parent_branch: string | null;
-  kind: WorkUnitKind;
-  state: WorkUnitState;
-  assigned_session_id: string | null;
-  continuation: string | null;
-  continuation_by: string | null;
-  continuation_at: number | null;
-  created_at: number;
-  activated_at: number | null;
-  last_commit_at: number | null;
-  resolved_at: number | null;
-  auth_request_id: string | null;
-};
+export type WorkUnit = ContractWorkUnit;
 
-export type WorkUnitWithLiveness = WorkUnit & {
-  liveness: WorkUnitLiveness;
-};
+export type WorkUnitWithLiveness = ContractWorkUnitWithLiveness;
 
 export type WorkUnitFilters = {
   state?: WorkUnitState;
@@ -1715,56 +1709,15 @@ export async function navigateToDesktopBootstrap(): Promise<void> {
 
 // ── Conversation types ──
 
-export type BlockType = 'user_message' | 'assistant_message' | 'thinking' | 'tool_use' | 'tool_result' | 'system' | 'event';
-export type Role = 'user' | 'assistant' | 'system' | 'tool';
-export type ConversationSource = 'claude_code' | 'codex' | 'gemini';
+export type BlockType = ContractBlockType;
+export type Role = ContractRole;
+export type ConversationSource = ContractConversationSource;
 
-export type ConversationBlock = {
-  id: string;
-  conversation_id: string;
-  type: BlockType;
-  role: Role;
-  content: string;
-  position: number;
-  timestamp: string;
-  parent_id: string | null;
-  metadata_json: string;
-  dag_uuid?: string | null;
-  dag_parent_uuid?: string | null;
-};
+export type ConversationBlock = ContractConversationBlock;
 
-export type Conversation = {
-  id: string;
-  source: ConversationSource;
-  source_path: string;
-  title: string;
-  summary: string | null;
-  started_at: string;
-  ended_at: string | null;
-  block_count: number;
-  session_id: string;
-  project_path: string | null;
-  cwd: string | null;
-  branch: string | null;
-  model: string | null;
-  cli_version: string | null;
-  starred: number;
-  label: string | null;
-  notes: string | null;
-  parent_conversation_id: string | null;
-  children_count: number;
-};
+export type Conversation = ContractConversation;
 
-export type ConversationChild = {
-  id: string;
-  title: string;
-  block_count: number;
-  started_at: string;
-  ended_at: string | null;
-  source: string;
-  model: string | null;
-  duration_seconds: number | null;
-};
+export type ConversationChild = ContractConversationChild;
 
 // ── Graph API ──
 
@@ -1792,67 +1745,15 @@ export async function getGraph(
 
 // ── Artifact API ──
 
-export type ArtifactAliasResolutionStatus = 'resolved' | 'unresolved' | 'ambiguous' | 'unsupported';
+export type ArtifactAliasResolutionStatus = ContractArtifactAliasResolutionStatus;
 
-export type ArtifactAliasRecord = {
-  id: string;
-  artifact_id: string | null;
-  scheme: string;
-  alias: string;
-  normalized_ref: string;
-  locator: Record<string, unknown>;
-  resolution_status: ArtifactAliasResolutionStatus;
-  source: string;
-  created_at: number;
-  updated_at: number;
-};
+export type ArtifactAliasRecord = ContractArtifactAliasRecord;
 
-export type ArtifactLinkRecord = {
-  id: string;
-  artifact_id: string;
-  entity_type: string;
-  entity_id: string;
-  link_type: string;
-  role: string | null;
-  repo_id: string | null;
-  provider_id: string | null;
-  source: string;
-  metadata: Record<string, unknown>;
-  created_at: number;
-  updated_at: number;
-};
+export type ArtifactLinkRecord = ContractArtifactLinkRecord;
 
-export type ArtifactRecord = {
-  id: string;
-  algorithm: string;
-  content_hash: string;
-  uri: string;
-  media_type: string | null;
-  role: string | null;
-  size_bytes: number;
-  provider_id: string | null;
-  manifest_id: string | null;
-  metadata: Record<string, unknown>;
-  pinned: boolean;
-  custody_mode: 'link' | 'copy' | 'managed' | 'external';
-  home_repo_id: string | null;
-  repo_locator: Record<string, unknown>;
-  availability: 'present' | 'missing' | 'stale' | 'unchecked' | 'remote_only' | 'pinned';
-  retention: Record<string, unknown>;
-  reference: Record<string, unknown>;
-  created_at: number;
-  aliases?: ArtifactAliasRecord[];
-  links?: ArtifactLinkRecord[];
-};
+export type ArtifactRecord = ContractArtifactRecord;
 
-export type ArtifactResolveResult = {
-  status: ArtifactAliasResolutionStatus;
-  ref: string;
-  scheme: string;
-  normalized_ref: string;
-  artifact: ArtifactRecord | null;
-  alias: ArtifactAliasRecord | null;
-};
+export type ArtifactResolveResult = ContractArtifactResolveResult;
 
 export type ArtifactContentResult = {
   artifact_id: string;

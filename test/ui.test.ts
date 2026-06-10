@@ -4,6 +4,7 @@ import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
+import { getReviewSpec, patchSession, updateConversation } from '../ui/src/api';
 import {
   navigateToMandibleDeepLink,
   routeHashFromMandibleDeepLink,
@@ -530,13 +531,52 @@ describe('ReviewView', () => {
         params: { repo: 'repo', base: 'main', head: 'feat' },
         loaders: {
           diff: async () => '<div class="diff">diff</div>',
-          spec: async () => ({ markdown: 'spec text', commits: ['c1'] }),
+          spec: async () => ({ markdown: 'spec text', commits: ['c1'], meta: {} }),
         },
       }),
     );
 
     await waitFor(() => expect(screen.getByText('spec text')).toBeTruthy());
     expect(screen.getByText('c1')).toBeTruthy();
+  });
+});
+
+describe('API contract helpers', () => {
+  it('normalizes legacy review spec fields into the canonical payload', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => (
+      new Response(JSON.stringify({ raw: 'legacy spec', commits: ['c1'] }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    )));
+
+    const spec = await getReviewSpec({ repo: 'repo', branch: 'feature/x' });
+
+    expect(spec).toEqual({ markdown: 'legacy spec', commits: ['c1'], meta: {} });
+  });
+
+  it('surfaces server error bodies for PATCH helpers', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => (
+      new Response(JSON.stringify({ error: 'specific failure' }), {
+        status: 409,
+        headers: { 'content-type': 'application/json' },
+      })
+    )));
+
+    await expect(patchSession('s1', { status: 'dead' })).rejects.toThrow('specific failure');
+  });
+
+  it('sends conversation starred updates as booleans', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo, init?: RequestInit) => (
+      new Response(JSON.stringify({ id: 'c1', starred: true }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await updateConversation('c1', { starred: true });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.starred).toBe(true);
   });
 });
 

@@ -11,6 +11,7 @@ vi.mock("../src/sse", () => ({
 
 import { WorkScanner, type BranchData } from "../src/work-scanner";
 import { filterAndSortBranches } from "../src/routes/work";
+import { migrate } from "../src/db";
 
 const gitEnv = {
   ...process.env,
@@ -27,6 +28,12 @@ function run(cmd: string, cwd: string): string {
 function writeFile(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, "utf8");
+}
+
+function createMigratedDb(): InstanceType<typeof Database> {
+  const db = new Database(":memory:");
+  migrate(db);
+  return db;
 }
 
 describe.sequential("WorkScanner", () => {
@@ -78,7 +85,7 @@ describe.sequential("WorkScanner", () => {
   });
 
   it("creates schema with last_commit_date column", () => {
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     new WorkScanner({ db, repo_roots: [repoRoot] });
     const columns = db
       .prepare("PRAGMA table_info(branches)")
@@ -88,7 +95,7 @@ describe.sequential("WorkScanner", () => {
   });
 
   it("scans a repo with known branch state", () => {
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
     scanner.scanAll();
 
@@ -99,7 +106,7 @@ describe.sequential("WorkScanner", () => {
   });
 
   it("detects dirty worktrees", () => {
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
     scanner.scanAll();
 
@@ -111,7 +118,7 @@ describe.sequential("WorkScanner", () => {
   });
 
   it("computes ahead/behind counts", () => {
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
     scanner.scanAll();
 
@@ -122,7 +129,7 @@ describe.sequential("WorkScanner", () => {
   });
 
   it("handles repos with no upstream", () => {
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
     scanner.scanAll();
 
@@ -134,7 +141,7 @@ describe.sequential("WorkScanner", () => {
   });
 
   it("handles missing repos gracefully", () => {
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot, missingRepo] });
     const summary = scanner.scanAll();
 
@@ -156,7 +163,7 @@ describe.sequential("WorkScanner", () => {
 
     const homedirSpy = vi.spyOn(os, "homedir").mockReturnValue(tempHome);
     try {
-      const db = new Database(":memory:");
+      const db = createMigratedDb();
       const configPath = path.join(tempHome, ".config", "mandible", "repos.json");
       const scanner = new WorkScanner({ db, config_path: configPath, default_repo_root: dotfilesRoot });
       const roots = scanner.getRepos().map((repo) => repo.root);
@@ -233,7 +240,7 @@ describe.sequential("WorkScanner", () => {
   });
 
   it("rescans update cached data", () => {
-    const db = new Database(":memory:");
+    const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
     scanner.scanAll();
 

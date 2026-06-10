@@ -81,7 +81,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     this.now = options.now ?? (() => Date.now());
     this.broadcast = options.broadcast ?? defaultBroadcast;
     this.configDir = options.configDir ?? getMandibleConfigPath("delegated-signing");
-    this.ensureSettings();
+    this.seedDefaultDurationSetting();
   }
 
   getStatus(): AuthAutoApproveStatus {
@@ -287,16 +287,11 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     );
   }
 
-  private ensureSettings(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      INSERT OR IGNORE INTO settings (key, value, updated_at)
-      VALUES ('${AUTO_APPROVE_DURATION_SETTING}', '${DEFAULT_DURATION_MINUTES}', CAST(strftime('%s','now') * 1000 AS INTEGER));
-    `);
+  private seedDefaultDurationSetting(): void {
+    this.db.prepare(
+      `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES (?, ?, CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+    ).run(AUTO_APPROVE_DURATION_SETTING, String(DEFAULT_DURATION_MINUTES));
   }
 
   private async resolveSingleAgeRecipient(): Promise<string | null> {

@@ -17,7 +17,7 @@ export type ReviewViewProps = {
   };
 };
 
-const EMPTY_SPEC: ReviewSpecPayload = { markdown: '', commits: [] };
+const EMPTY_SPEC: ReviewSpecPayload = { markdown: '', commits: [], meta: {} };
 
 function getRepoId(repo: WorkRepo): string {
   return repo.id || repo.name || '';
