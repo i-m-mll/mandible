@@ -18,7 +18,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -135,6 +135,30 @@ function seedAuthRow(db: InstanceType<typeof Database>, seed: AuthRowSeed): void
     delivered_at: seed.delivered_at ?? null,
     exit_code: seed.exit_code ?? 0,
     head_branch: seed.head_branch ?? null
+  });
+}
+
+function registerWorkRepo(db: InstanceType<typeof Database>, repoRoot: string): void {
+  setDb(db);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_repos (
+      id TEXT NOT NULL,
+      root TEXT NOT NULL,
+      name TEXT NOT NULL,
+      default_branch TEXT NOT NULL DEFAULT '',
+      dir_exists INTEGER NOT NULL DEFAULT 1,
+      excluded INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (root)
+    );
+  `);
+  db.prepare(
+    `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
+     VALUES (@id, @root, @name, @default_branch, 1, 0)`
+  ).run({
+    id: path.basename(repoRoot),
+    root: realpathSync(repoRoot),
+    name: path.basename(repoRoot),
+    default_branch: "main",
   });
 }
 
@@ -1145,6 +1169,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
 
       const db = new Database(":memory:");
       const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
       const app = new TestRouteRegistrar();
       registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
 
@@ -1170,6 +1195,101 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
         },
       });
       expect(accepted.statusCode).toBe(201);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects injection-shaped auth merge branch names before git verification", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-injection-"));
+    try {
+      const repoRoot = path.join(tempDir, "repo");
+      const marker = path.join(tempDir, "injection-ran");
+      execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+      const git = (...args: string[]) => execFileSync(
+        "git",
+        [
+          "-C",
+          repoRoot,
+          "-c",
+          "user.name=Mandible Test",
+          "-c",
+          "user.email=test@example.invalid",
+          ...args,
+        ],
+        { stdio: "ignore" },
+      );
+      git("commit", "--allow-empty", "-m", "init");
+      git("checkout", "-b", "feature/mandible-issue");
+      git("commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234");
+      git("checkout", "main");
+
+      const db = new Database(":memory:");
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/mandible-issue --into main",
+          title: "Injection branch request",
+          cwd: repoRoot,
+          base_branch: "main",
+          head_branch: `feature/mandible-issue; touch ${marker}`,
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(String((response.body as { error?: string }).error)).toContain("Invalid 'head_branch'");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when auth merge git verification errors", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-fail-closed-"));
+    try {
+      const repoRoot = path.join(tempDir, "repo");
+      execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+      const git = (...args: string[]) => execFileSync(
+        "git",
+        [
+          "-C",
+          repoRoot,
+          "-c",
+          "user.name=Mandible Test",
+          "-c",
+          "user.email=test@example.invalid",
+          ...args,
+        ],
+        { stdio: "ignore" },
+      );
+      git("commit", "--allow-empty", "-m", "init");
+      git("checkout", "-b", "feature/mandible-issue");
+      git("commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234");
+
+      const db = new Database(":memory:");
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/mandible-issue --into missing-base",
+          title: "Verification error request",
+          cwd: repoRoot,
+          base_branch: "missing-base",
+          head_branch: "feature/mandible-issue",
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(String((response.body as { error?: string }).error)).toContain(
+        "verification failed; manual review required"
+      );
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
