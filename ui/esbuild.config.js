@@ -22,6 +22,7 @@ const buildOptions = {
   loader: {
     '.css': 'css',
   },
+  minify: !isWatch,
   logLevel: 'info',
 };
 

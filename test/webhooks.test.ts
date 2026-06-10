@@ -189,6 +189,7 @@ describe.sequential("webhook ingestion", () => {
       event_type: "pr_review",
       data: { pr: 1 },
     });
+    await new Promise((resolve) => setTimeout(resolve, 5));
     await postJson(daemon!.port, "/api/webhooks/ingest", {
       source: "ci",
       event_type: "build_passed",

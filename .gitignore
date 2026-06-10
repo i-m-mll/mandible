@@ -6,5 +6,8 @@ vendor/
 *.db-shm
 target/
 worktrees/
+coverage/
 AGENT_HANDOFF.md
 .playwright-mcp/
+.DS_Store
+.zellij-session
