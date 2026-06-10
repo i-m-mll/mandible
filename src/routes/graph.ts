@@ -1436,6 +1436,8 @@ function graphModeCounts(
   };
 }
 
+const COUNT_TABLE_ALLOWLIST = new Set(["sessions", "auth_requests", "work_units"]);
+
 function modeDescriptors(counts: Record<GraphMode, number>): GraphModeDescriptor[] {
   return GRAPH_PERSPECTIVES.map((mode) => ({
     ...mode,
@@ -1454,6 +1456,7 @@ function presetDescriptors(): GraphPresetDescriptor[] {
 }
 
 function countTableRows(table: string): number {
+  if (!COUNT_TABLE_ALLOWLIST.has(table)) return 0;
   if (!tableExists(table)) return 0;
   try {
     return (getDb().prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;

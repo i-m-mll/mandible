@@ -12,7 +12,7 @@ const DEFAULT_CACHE_DIR = path.join(os.homedir(), ".cache", "mandible");
 const DEFAULT_DB_PATH = path.join(DEFAULT_CACHE_DIR, "mandible.db");
 const SCHEMA_VERSION_KEY = "schema_version";
 
-interface Migration {
+export interface Migration {
   version: number;
   name: string;
   statements: string[];
@@ -1438,20 +1438,20 @@ const MIGRATIONS: Migration[] = [
     ]
   },
   {
-    version: 60,
+    version: 61,
     name: "ledger_hash_id_support",
     // Bug: 871f32e — SHA-256 issue/comment IDs with cached Git-style short
     // prefixes and append-only per-issue comment ordinals.
     statements: []
   },
   {
-    version: 61,
+    version: 62,
     name: "ledger_event_hash_id_support",
     // Bug: 614f8ee — SHA-256 event IDs and first-class issue lifecycle events.
     statements: []
   },
   {
-    version: 62,
+    version: 63,
     name: "preapproval_artifact_rebuild",
     // Bug: 03abda9 — generated Mandible artifacts should be rebuilt before
     // approval, not committed by a protected-branch post-merge hook.
@@ -1467,7 +1467,7 @@ const MIGRATIONS: Migration[] = [
     ]
   },
   {
-    version: 63,
+    version: 64,
     name: "untrack_local_build_artifacts",
     // Bug: 6947631 — build artifacts are local runtime output, not reviewed
     // source. Re-enable the self-merge hook as build-only and remove the
@@ -1483,7 +1483,7 @@ const MIGRATIONS: Migration[] = [
     ]
   },
   {
-    version: 64,
+    version: 65,
     name: "ledger_issue_relationship_sources",
     // Bug: b45f19b — retain source provenance for text-derived references
     // without making comment nodes part of the graph contract.
@@ -1515,7 +1515,7 @@ const MIGRATIONS: Migration[] = [
     ]
   },
   {
-    version: 65,
+    version: 66,
     name: "artifact_reference_custody",
     // Bug: e16807c — artifacts/documents may be links, copies, managed CAS
     // content, or external/provider-owned references whose source home differs
@@ -1525,7 +1525,7 @@ const MIGRATIONS: Migration[] = [
     statements: []
   },
   {
-    version: 66,
+    version: 67,
     name: "artifact_aliases_and_links",
     // Bug: e16807c — artifact rows remain content/custody identity records;
     // aliases and links carry URI locators and contextual references.
@@ -1580,7 +1580,7 @@ const MIGRATIONS: Migration[] = [
     ]
   },
   {
-    version: 67,
+    version: 68,
     name: "knowledge_backrefs",
     // Bug: c9531c — keep HumbleB KG ids as typed external references from
     // artifacts/documents; Mandible does not own document chunks, entities, or claims.
@@ -1609,7 +1609,7 @@ const MIGRATIONS: Migration[] = [
     ]
   },
   {
-    version: 68,
+    version: 69,
     name: "ledger_body_revisions",
     statements: [
       `CREATE TABLE IF NOT EXISTS ledger_body_revisions (
@@ -1649,12 +1649,12 @@ const MIGRATIONS: Migration[] = [
     ]
   },
   {
-    version: 69,
+    version: 70,
     name: "remove_legacy_issue_ref_kinds",
     statements: []
   },
   {
-    version: 70,
+    version: 71,
     name: "issue_coordination_fields",
     statements: [
       `CREATE TABLE IF NOT EXISTS issue_branches (
@@ -1673,7 +1673,7 @@ const MIGRATIONS: Migration[] = [
     ]
   },
   {
-    version: 71,
+    version: 72,
     name: "issue_checkpoints",
     statements: [
       `CREATE TABLE IF NOT EXISTS ledger_issue_checkpoints (
@@ -1694,7 +1694,7 @@ const MIGRATIONS: Migration[] = [
     ]
   },
   {
-    version: 72,
+    version: 73,
     name: "self_merge_hook_instruction_refresh_label",
     statements: [
       `CREATE TABLE IF NOT EXISTS auth_hooks (
@@ -1715,8 +1715,38 @@ const MIGRATIONS: Migration[] = [
        WHERE id = 'builtin-mandible-rebuild'
          AND command = 'bash cli/post-merge-build-dist.sh'`
     ]
+  },
+  {
+    version: 74,
+    name: "conversation_integer_timestamps",
+    // Guarded DDL/backfill runs post-migration so synthetic older test DBs that
+    // omit conversation tables and rewinded current DBs both remain valid.
+    statements: []
   }
 ];
+
+export function assertMigrationSequence(migrations: readonly Migration[] = MIGRATIONS): void {
+  const seen = new Map<number, string>();
+  const versions = migrations.map((migration) => migration.version);
+  for (const migration of migrations) {
+    const previous = seen.get(migration.version);
+    if (previous) {
+      throw new Error(
+        `Duplicate migration version ${migration.version}: ${previous}, ${migration.name}`,
+      );
+    }
+    seen.set(migration.version, migration.name);
+  }
+  const sorted = [...versions].sort((a, b) => a - b);
+  for (let index = 0; index < sorted.length; index += 1) {
+    const expected = index + 1;
+    if (sorted[index] !== expected) {
+      throw new Error(`Migration versions must be contiguous: expected ${expected}, got ${sorted[index]}`);
+    }
+  }
+}
+
+assertMigrationSequence();
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS.at(-1)?.version ?? 0;
 
@@ -1750,11 +1780,13 @@ export function openDb(dbPath: string = getDbPath()): Db {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  db.pragma("busy_timeout = 5000");
   migrate(db);
   return db;
 }
 
 export function migrate(db: Db): void {
+  assertMigrationSequence();
   db.exec(
     `CREATE TABLE IF NOT EXISTS meta (
       key   TEXT PRIMARY KEY,
@@ -1765,65 +1797,90 @@ export function migrate(db: Db): void {
   const currentVersion = getSchemaVersion(db);
   const pending = MIGRATIONS.filter((migration) => migration.version > currentVersion);
 
-  if (pending.length === 0) {
-    return;
+  if (pending.length > 0) {
+    const apply = db.transaction(() => {
+      for (const migration of pending) {
+        if (migration.version === 71) {
+          ensureIssueCoordinationColumns(db);
+        }
+        for (const statement of migration.statements) {
+          db.exec(statement);
+        }
+        setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
+      }
+    });
+
+    apply();
   }
-
-  const apply = db.transaction(() => {
-    for (const migration of pending) {
-      if (migration.version === 70) {
-        ensureIssueCoordinationColumns(db);
-      }
-      for (const statement of migration.statements) {
-        db.exec(statement);
-      }
-      setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
-    }
-  });
-
-  apply();
 
   // Run post-DDL data migrations that require Node.js logic.
   // Bug: e5a945d — batch-compress existing uncompressed content
-  if (pending.some((m) => m.version === 19)) {
-    compressExistingBlocks(db);
+  if (shouldRunPostMigration(db, "v19_compress_existing_blocks", pending, 19, () =>
+    tableExists(db, "conversation_blocks")
+  )) {
+    runPostMigration(db, "v19_compress_existing_blocks", () => compressExistingBlocks(db));
   }
   // Bug: 003179f — backfill correct repo names in session_projects
-  if (pending.some((m) => m.version === 24)) {
-    backfillProjectRepoNames(db);
+  if (shouldRunPostMigration(db, "v24_backfill_project_repo_names", pending, 24)) {
+    runPostMigration(db, "v24_backfill_project_repo_names", () => backfillProjectRepoNames(db));
   }
   // Bug: 59492fd — v24 used wrong join condition; v25 corrects remaining rows
-  if (pending.some((m) => m.version === 25)) {
-    backfillProjectRepoNamesV2(db);
+  if (shouldRunPostMigration(db, "v25_backfill_project_repo_names_v2", pending, 25)) {
+    runPostMigration(db, "v25_backfill_project_repo_names_v2", () => backfillProjectRepoNamesV2(db));
   }
   // Bug: ba9687f — backfill issue_ids from commit_message Bug: trailers
-  if (pending.some((m) => m.version === 29)) {
-    backfillIssueIds(db);
+  if (shouldRunPostMigration(db, "v29_backfill_issue_ids", pending, 29)) {
+    runPostMigration(db, "v29_backfill_issue_ids", () => backfillIssueIds(db));
   }
   // Bug: 2411ee3 — make migration 36 safe for both fresh DBs and existing DBs.
-  if (pending.some((m) => m.version === 36)) {
-    ensureConversationBlockDagColumns(db);
+  if (shouldRunPostMigration(db, "v36_ensure_conversation_block_dag_columns", pending, 36)) {
+    runPostMigration(db, "v36_ensure_conversation_block_dag_columns", () => {
+      ensureConversationBlockDagColumns(db);
+    });
   }
   // Bug: e8c1d43 — link existing work_units to canonical ledger issues.
-  if (pending.some((m) => m.version === 58)) {
-    ensureWorkUnitLedgerIssueColumn(db);
+  if (shouldRunPostMigration(db, "v58_ensure_work_unit_ledger_issue_column", pending, 58)) {
+    runPostMigration(db, "v58_ensure_work_unit_ledger_issue_column", () => {
+      ensureWorkUnitLedgerIssueColumn(db);
+    });
   }
   // Bug: 871f32e — add hash-ID display/ordinal columns safely on both fresh
   // and upgraded databases.
-  if (pending.some((m) => m.version === 60)) {
-    ensureLedgerHashIdColumns(db);
+  if (shouldRunPostMigration(db, "v61_ensure_ledger_hash_id_columns", pending, 61)) {
+    runPostMigration(db, "v61_ensure_ledger_hash_id_columns", () => {
+      ensureLedgerHashIdColumns(db);
+    });
   }
-  if (pending.some((m) => m.version === 61)) {
-    migrateLedgerEventHashIds(db);
+  if (shouldRunPostMigration(db, "v62_migrate_ledger_event_hash_ids", pending, 62, () =>
+    hasLegacyLedgerEventIds(db)
+  )) {
+    runPostMigration(db, "v62_migrate_ledger_event_hash_ids", () => migrateLedgerEventHashIds(db));
   }
-  if (pending.some((m) => m.version === 65)) {
-    ensureArtifactCustodyColumns(db);
+  if (shouldRunPostMigration(db, "v66_ensure_artifact_custody_columns", pending, 66)) {
+    runPostMigration(db, "v66_ensure_artifact_custody_columns", () => {
+      ensureArtifactCustodyColumns(db);
+    });
   }
-  if (pending.some((m) => m.version === 68)) {
-    backfillLedgerBodyRevisions(db);
+  if (shouldRunPostMigration(db, "v69_backfill_ledger_body_revisions", pending, 69)) {
+    runPostMigration(db, "v69_backfill_ledger_body_revisions", () => {
+      backfillLedgerBodyRevisions(db);
+    });
   }
-  if (pending.some((m) => m.version === 69)) {
-    removeLegacyIssueRelationshipSourceKinds(db);
+  if (shouldRunPostMigration(
+    db,
+    "v70_remove_legacy_issue_relationship_source_kinds",
+    pending,
+    70,
+    () => hasLegacyIssueRelationshipSourceKinds(db),
+  )) {
+    runPostMigration(db, "v70_remove_legacy_issue_relationship_source_kinds", () => {
+      removeLegacyIssueRelationshipSourceKinds(db);
+    });
+  }
+  if (shouldRunPostMigration(db, "v74_ensure_conversation_integer_timestamps", pending, 74)) {
+    runPostMigration(db, "v74_ensure_conversation_integer_timestamps", () => {
+      ensureConversationIntegerTimestampColumns(db);
+    });
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
   if (pending.some((m) => m.version === 26)) {
@@ -1899,6 +1956,7 @@ function compressExistingBlocks(db: Db): void {
 }
 
 function ensureConversationBlockDagColumns(db: Db): void {
+  if (!tableExists(db, "conversation_blocks")) return;
   const columns = db
     .prepare("PRAGMA table_info(conversation_blocks)")
     .all() as Array<{ name: string }>;
@@ -1915,6 +1973,83 @@ function ensureConversationBlockDagColumns(db: Db): void {
       ON conversation_blocks(conversation_id, dag_parent_uuid)
       WHERE dag_parent_uuid IS NOT NULL`
   );
+}
+
+function ensureConversationIntegerTimestampColumns(db: Db): void {
+  if (tableExists(db, "conversations")) {
+    const names = tableColumnNames(db, "conversations");
+    if (!names.has("started_at_ms")) {
+      db.exec("ALTER TABLE conversations ADD COLUMN started_at_ms INTEGER");
+    }
+    if (!names.has("ended_at_ms")) {
+      db.exec("ALTER TABLE conversations ADD COLUMN ended_at_ms INTEGER");
+    }
+    if (!names.has("created_at_ms")) {
+      db.exec("ALTER TABLE conversations ADD COLUMN created_at_ms INTEGER");
+    }
+    if (!names.has("updated_at_ms")) {
+      db.exec("ALTER TABLE conversations ADD COLUMN updated_at_ms INTEGER");
+    }
+    db.exec(
+      `UPDATE conversations
+       SET started_at_ms = CASE
+             WHEN started_at NOT GLOB '*[^0-9]*' THEN CAST(started_at AS INTEGER)
+             ELSE CAST(strftime('%s', started_at) * 1000 AS INTEGER)
+           END
+       WHERE started_at_ms IS NULL AND started_at IS NOT NULL AND started_at != ''`,
+    );
+    db.exec(
+      `UPDATE conversations
+       SET ended_at_ms = CASE
+             WHEN ended_at NOT GLOB '*[^0-9]*' THEN CAST(ended_at AS INTEGER)
+             ELSE CAST(strftime('%s', ended_at) * 1000 AS INTEGER)
+           END
+       WHERE ended_at_ms IS NULL AND ended_at IS NOT NULL AND ended_at != ''`,
+    );
+    db.exec(
+      `UPDATE conversations
+       SET created_at_ms = CASE
+             WHEN created_at NOT GLOB '*[^0-9]*' THEN CAST(created_at AS INTEGER)
+             ELSE CAST(strftime('%s', created_at) * 1000 AS INTEGER)
+           END
+       WHERE created_at_ms IS NULL AND created_at IS NOT NULL AND created_at != ''`,
+    );
+    db.exec(
+      `UPDATE conversations
+       SET updated_at_ms = CASE
+             WHEN updated_at NOT GLOB '*[^0-9]*' THEN CAST(updated_at AS INTEGER)
+             ELSE CAST(strftime('%s', updated_at) * 1000 AS INTEGER)
+           END
+       WHERE updated_at_ms IS NULL AND updated_at IS NOT NULL AND updated_at != ''`,
+    );
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_conv_started_ms
+        ON conversations(started_at_ms) WHERE started_at_ms IS NOT NULL`,
+    );
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_conv_ended_ms
+        ON conversations(ended_at_ms) WHERE ended_at_ms IS NOT NULL`,
+    );
+  }
+
+  if (tableExists(db, "conversation_blocks")) {
+    const names = tableColumnNames(db, "conversation_blocks");
+    if (!names.has("timestamp_ms")) {
+      db.exec("ALTER TABLE conversation_blocks ADD COLUMN timestamp_ms INTEGER");
+    }
+    db.exec(
+      `UPDATE conversation_blocks
+       SET timestamp_ms = CASE
+             WHEN timestamp NOT GLOB '*[^0-9]*' THEN CAST(timestamp AS INTEGER)
+             ELSE CAST(strftime('%s', timestamp) * 1000 AS INTEGER)
+           END
+       WHERE timestamp_ms IS NULL AND timestamp IS NOT NULL AND timestamp != ''`,
+    );
+    db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_blocks_timestamp_ms
+        ON conversation_blocks(timestamp_ms) WHERE timestamp_ms IS NOT NULL`,
+    );
+  }
 }
 
 function ensureWorkUnitLedgerIssueColumn(db: Db): void {
@@ -2232,6 +2367,19 @@ function removeLegacyIssueRelationshipSourceKinds(db: Db): void {
   }
 }
 
+function hasLegacyIssueRelationshipSourceKinds(db: Db): boolean {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_issue_relationship_sources'")
+    .get();
+  if (!table) return false;
+  const row = db
+    .prepare(
+      "SELECT 1 FROM ledger_issue_relationship_sources WHERE ref_kind NOT IN ('issue','comment') LIMIT 1",
+    )
+    .get();
+  return Boolean(row);
+}
+
 function migrateLedgerEventHashIds(db: Db): void {
   const table = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_events'")
@@ -2325,6 +2473,15 @@ function migrateLedgerEventHashIds(db: Db): void {
   }
 }
 
+function hasLegacyLedgerEventIds(db: Db): boolean {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_events'")
+    .get();
+  if (!table) return false;
+  const rows = db.prepare("SELECT id FROM ledger_events").all() as Array<{ id: string }>;
+  return rows.some((row) => !isSha256Hex(row.id));
+}
+
 function migratedEventType(eventType: string, payload: Record<string, unknown>): string {
   if (eventType !== "issue.updated") return eventType;
   const patch = payload.patch;
@@ -2355,6 +2512,7 @@ function parseJsonRecord(value: string): Record<string, unknown> {
  * Bug: 003179f
  */
 function backfillProjectRepoNames(db: Db): void {
+  if (!tableExists(db, "session_projects") || !tableExists(db, "sessions")) return;
   const rows = db.prepare(
     `SELECT sp.rowid, sp.repo_id, s.worktree
      FROM session_projects sp
@@ -2399,6 +2557,7 @@ function backfillProjectRepoNames(db: Db): void {
  * Bug: 59492fd
  */
 function backfillProjectRepoNamesV2(db: Db): void {
+  if (!tableExists(db, "session_projects") || !tableExists(db, "sessions")) return;
   const rows = db.prepare(
     `SELECT sp.session_id, sp.repo_id, s.cwd
      FROM session_projects sp
@@ -2452,6 +2611,10 @@ function backfillProjectRepoNamesV2(db: Db): void {
  * retroactively populates the column for pre-existing rows.
  */
 function backfillIssueIds(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns = db.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  if (!names.has("id") || !names.has("commit_message") || !names.has("issue_ids")) return;
   const rows = db.prepare(
     "SELECT id, commit_message FROM auth_requests WHERE issue_ids IS NULL AND commit_message IS NOT NULL"
   ).all() as Array<{ id: string; commit_message: string }>;
@@ -2498,6 +2661,43 @@ function getSchemaVersion(db: Db): number {
   return Number.isFinite(version) ? version : 0;
 }
 
+function shouldRunPostMigration(
+  db: Db,
+  name: string,
+  pending: readonly Migration[],
+  version: number,
+  hasIncompleteWork: () => boolean = () => true,
+): boolean {
+  if (pending.some((migration) => migration.version === version)) {
+    return true;
+  }
+  const key = postMigrationKey(name);
+  if (getMeta(db, key) === "done") {
+    return false;
+  }
+  if (!hasIncompleteWork()) {
+    setMeta(db, key, "done");
+    return false;
+  }
+  return true;
+}
+
+function runPostMigration(db: Db, name: string, run: () => void): void {
+  run();
+  setMeta(db, postMigrationKey(name), "done");
+}
+
+function postMigrationKey(name: string): string {
+  return `post_migration.${name}.complete`;
+}
+
+function getMeta(db: Db, key: string): string | null {
+  const row = db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined;
+  return row?.value ?? null;
+}
+
 function setMeta(db: Db, key: string, value: string): void {
   db.prepare(
     "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
@@ -2514,6 +2714,21 @@ function ensureIssueCoordinationColumns(db: Db): void {
   }
 }
 
+function tableExists(db: Db, table: string): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+  return Boolean(row);
+}
+
+function tableColumnNames(db: Db, table: string): Set<string> {
+  if (table !== "conversations" && table !== "conversation_blocks") {
+    throw new Error(`Unsupported table_info identifier: ${table}`);
+  }
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return new Set(columns.map((column) => column.name));
+}
+
 function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -2525,6 +2740,15 @@ export type PrefixResult =
   | { ok: true; id: string }
   | { ok: false; error: "not_found" }
   | { ok: false; error: "ambiguous"; count: number };
+
+const PREFIX_IDENTIFIER_ALLOWLIST = new Set(["auth_requests.id", "sessions.id"]);
+
+function requirePrefixIdentifier(table: string, idColumn: string): void {
+  const key = `${table}.${idColumn}`;
+  if (!PREFIX_IDENTIFIER_ALLOWLIST.has(key)) {
+    throw new Error(`Unsupported prefix lookup identifier: ${key}`);
+  }
+}
 
 /**
  * Resolve a UUID prefix to a full ID. If the prefix is already a full UUID
@@ -2538,6 +2762,7 @@ export function resolvePrefix(
   idColumn: string,
   prefix: string,
 ): PrefixResult {
+  requirePrefixIdentifier(table, idColumn);
   // Full UUID: exact match (current behavior)
   if (prefix.length >= 36) {
     const row = db

@@ -160,6 +160,87 @@ describe("auth queue", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("recovers stale executing requests with partial output on restart", () => {
+    let now = 0;
+    const db = new Database(":memory:");
+    const queue = new AuthQueue({ db, now: () => now });
+    const request = queue.submit({
+      command: "mandible auth merge feature/partial",
+      title: "Partial execution",
+      execution_mode: "remote"
+    });
+    queue.approve(request.id);
+    queue.appendOutput(request.id, "Executing merge command...\n");
+    queue.dispose();
+
+    now = 6 * 60 * 1000;
+    const events: SseEvent[] = [];
+    const restarted = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
+    try {
+      const recovered = restarted.getRequest(request.id);
+      expect(recovered?.status).toBe("completed");
+      expect(recovered?.exit_code).toBe(1);
+      expect(recovered?.error).toContain("partial output");
+      expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
+    } finally {
+      restarted.dispose();
+      db.close();
+    }
+  });
+
+  it("recovers successful executing requests and reapplies merge finalizers on restart", () => {
+    let now = 0;
+    const db = new Database(":memory:");
+    const queue = new AuthQueue({ db, now: () => now });
+    db.exec(`
+      CREATE TABLE work_units (
+        id TEXT PRIMARY KEY,
+        issue_id TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
+        branch TEXT,
+        kind TEXT NOT NULL DEFAULT 'solo',
+        state TEXT NOT NULL DEFAULT 'open',
+        created_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        auth_request_id TEXT
+      )
+    `);
+    const request = queue.submit({
+      type: "merge",
+      command: "mandible auth merge feature/recovered --into main",
+      title: "Recovered merge",
+      repo: "mandible",
+      base_branch: "main",
+      head_branch: "feature/recovered",
+      execution_mode: "remote"
+    });
+    db.prepare(
+      `INSERT INTO work_units (
+        id, issue_id, repo_id, branch, kind, state, created_at, auth_request_id
+      ) VALUES (
+        'wu-recovered', 'issue-1', 'mandible', 'feature/recovered', 'solo', 'committed', ?, ?
+      )`
+    ).run(now, request.id);
+    queue.approve(request.id);
+    queue.appendOutput(request.id, "Merge made by recursive.\n");
+    queue.dispose();
+
+    now = 6 * 60 * 1000;
+    const restarted = new AuthQueue({ db, now: () => now });
+    try {
+      const recovered = restarted.getRequest(request.id);
+      const workUnit = db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-recovered'")
+        .get() as { state: string; resolved_at: number | null };
+      expect(recovered?.status).toBe("completed");
+      expect(recovered?.exit_code).toBe(0);
+      expect(workUnit.state).toBe("resolved");
+      expect(workUnit.resolved_at).toBe(now);
+    } finally {
+      restarted.dispose();
+      db.close();
+    }
+  });
+
   it("executes in daemon mode", async () => {
     const calls: string[] = [];
     const executor = async () => {
