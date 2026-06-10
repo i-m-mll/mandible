@@ -96,6 +96,13 @@ describe("ledger issue detail projection", () => {
       author_display: "Codex",
       source: "session",
     });
+    store.addIssueCheckpoint(child.id, {
+      kind: "delegation-manifest",
+      payload: [{ issue: child.short_id, digest: "before", branch: "feature/detail", scope: "detail" }],
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+    });
     store.setWorkerStatus(child.id, "in_progress");
     store.addIssueBranch(child.id, "feature/detail");
     store.setIssueStatus(child.id, "closed", "merged");
@@ -165,9 +172,17 @@ describe("ledger issue detail projection", () => {
     expect(projection.comments).toMatchObject([
       { ordinal: 1, body: "Implementation note", author: { type: "agent", display: "Codex" }, source: "session" },
     ]);
+    expect(projection.checkpoints).toMatchObject([
+      {
+        kind: "delegation-manifest",
+        payload: [{ issue: child.short_id, digest: "before", branch: "feature/detail", scope: "detail" }],
+        author: { type: "agent", display: "Codex" },
+      },
+    ]);
     expect(projection.timeline).toMatchObject([
       { kind: "body", ordinal: 0, body: "Child body" },
       { kind: "comment", ordinal: 1, body: "Implementation note" },
+      { kind: "checkpoint", checkpoint_kind: "delegation-manifest" },
       { kind: "state", event_type: "issue.closed", status: "closed", resolution: "merged" },
       { kind: "state", event_type: "issue.reopened", status: "open", resolution: null },
     ]);

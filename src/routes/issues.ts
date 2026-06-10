@@ -12,6 +12,7 @@ import {
   LEDGER_WORKER_STATUSES,
   type LedgerIssueKind,
   type LedgerIssueBranchRole,
+  type LedgerIssueCheckpoint,
   type LedgerIssueResolution,
   type LedgerIssueStatus,
   type LedgerPriority,
@@ -246,6 +247,30 @@ function sendLedgerIssueProjection(
   } catch (error) {
     sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
   }
+}
+
+function checkpointPayload(row: LedgerIssueCheckpoint): unknown {
+  try {
+    return JSON.parse(row.payload_json) as unknown;
+  } catch {
+    return {};
+  }
+}
+
+function checkpointResponse(row: LedgerIssueCheckpoint): Record<string, unknown> {
+  return {
+    id: row.id,
+    issue_id: row.issue_id,
+    kind: row.kind,
+    payload: checkpointPayload(row),
+    author: {
+      id: row.author_actor_id,
+      type: row.author_actor_type,
+      display: row.author_display || row.author_actor_type,
+    },
+    source: row.source,
+    created_at: row.created_at,
+  };
 }
 
 function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[number] | null {
@@ -624,6 +649,73 @@ export function registerIssueRoutes(
       source: "mandible",
     });
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownPolicy.warnings);
+  });
+
+  server.post("/api/ledger/issues/:issueId/checkpoints", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    const body = getBody(req) ?? {};
+    const kind = typeof body.kind === "string" ? body.kind.trim() : "";
+    const payload = body.payload;
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    if (!kind) {
+      sendJson(res, 400, { error: "kind is required" });
+      return;
+    }
+    if (payload === undefined) {
+      sendJson(res, 400, { error: "payload is required" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    try {
+      const checkpoint = new LedgerStore(db).addIssueCheckpoint(resolved.issue_id, {
+        kind,
+        payload,
+        actor_type: "mandible_user",
+        author_display: "Mandible",
+        source: "mandible",
+      });
+      sendJson(res, 200, checkpointResponse(checkpoint));
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : "invalid checkpoint" });
+    }
+  });
+
+  server.get("/api/ledger/issues/:issueId/checkpoints", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    const kind = getQueryParam(req, "kind");
+    const latest = getQueryParam(req, "latest");
+    const store = new LedgerStore(db);
+    if (latest === "1" || latest === "true") {
+      const checkpoint = store.getLatestIssueCheckpoint(resolved.issue_id, kind);
+      if (!checkpoint) {
+        sendJson(res, 404, { error: "checkpoint not found" });
+        return;
+      }
+      sendJson(res, 200, checkpointResponse(checkpoint));
+      return;
+    }
+    const checkpoints = store
+      .listIssueCheckpoints(resolved.issue_id, kind)
+      .map(checkpointResponse);
+    sendJson(res, 200, { checkpoints });
   });
 
   server.patch?.("/api/ledger/comments/:commentId", (req, res) => {

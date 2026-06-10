@@ -494,6 +494,16 @@ function fallbackTimeline(detail: LedgerIssueDetailProjection): LedgerIssueTimel
       created_at: comment.created_at,
       updated_at: comment.updated_at,
     })),
+    ...(detail.checkpoints ?? []).map((checkpoint) => ({
+      id: checkpoint.id,
+      kind: 'checkpoint' as const,
+      checkpoint_id: checkpoint.id,
+      checkpoint_kind: checkpoint.kind,
+      payload: checkpoint.payload,
+      author: checkpoint.author,
+      source: checkpoint.source,
+      created_at: checkpoint.created_at,
+    })),
   ];
 }
 
@@ -521,7 +531,8 @@ function timelineRank(entry: RenderTimelineEntry): number {
   if (entry.kind === 'body') return 0;
   if (entry.kind === 'comment') return 1;
   if (entry.kind === 'auth') return 2;
-  return 3;
+  if (entry.kind === 'checkpoint') return 3;
+  return 4;
 }
 
 function StatusPill({
@@ -583,6 +594,21 @@ function TimelineEntryCard({
         <time>{formatRelativeTime(entry.created_at)}</time>
         <MetadataDisclosure label="Timeline metadata">
           <MetadataRows rows={stateMetadataRows(entry)} />
+        </MetadataDisclosure>
+      </div>
+    );
+  }
+  if (entry.kind === 'checkpoint') {
+    return (
+      <div className="ledger-timeline-event ledger-timeline-event--state">
+        <span className="ledger-timeline-event__dot" aria-hidden="true" />
+        <span className="ledger-timeline-event__text">
+          <strong>{checkpointEntryLabel(entry.checkpoint_kind)}</strong>
+          <span>{entry.author.display}</span>
+        </span>
+        <time>{formatRelativeTime(entry.created_at)}</time>
+        <MetadataDisclosure label="Checkpoint payload">
+          <MetadataRows rows={checkpointMetadataRows(entry)} />
         </MetadataDisclosure>
       </div>
     );
@@ -1087,10 +1113,35 @@ function stateMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'sta
   ].filter(([, value]) => Boolean(value));
 }
 
+function checkpointMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'checkpoint' }>): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ['Checkpoint ID', entry.checkpoint_id],
+    ['Kind', entry.checkpoint_kind],
+    ['Author type', entry.author.type.replace(/_/g, ' ')],
+    ['Source', entry.source || 'unknown'],
+    ['Created', formatAbsoluteTime(entry.created_at)],
+    ['Payload', formatJsonValue(entry.payload)],
+  ];
+  if (entry.author.id) rows.push(['Author ID', entry.author.id]);
+  return rows.filter(([, value]) => Boolean(value));
+}
+
 function stateEntryLabel(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state' }>): string {
   if (entry.status === 'closed') return entry.resolution ? `Closed: ${entry.resolution}` : 'Closed';
   if (entry.status === 'open') return 'Reopened';
   return 'State updated';
+}
+
+function checkpointEntryLabel(kind: string): string {
+  return `Checkpoint: ${kind}`;
+}
+
+function formatJsonValue(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function parseIssueRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string } | null {

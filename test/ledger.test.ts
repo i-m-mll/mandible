@@ -65,6 +65,7 @@ describe("ledger schema", () => {
       "ledger_events",
       "ledger_external_refs",
       "ledger_issue_aliases",
+      "ledger_issue_checkpoints",
       "ledger_issue_relationship_sources",
       "ledger_issue_relationships",
       "ledger_issues",
@@ -307,6 +308,27 @@ describe("ledger issue heads", () => {
     expect(before.short_id).toBe(issue.short_id);
     expect(before.digest).not.toBe(after.digest);
     expect(after.last_event_kind).toBe("comment.created");
+    expect(after.last_event_at).not.toBeNull();
+  });
+
+  it("changes the digest when an issue checkpoint is added", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const issue = createIssue(store, project.project.id, "Checkpoint digest target");
+    const before = getLedgerIssueHead(db, issue.id);
+
+    store.addIssueCheckpoint(issue.id, {
+      kind: "delegation-manifest",
+      payload: [{ issue: issue.short_id, digest: before.digest, branch: "feature/demo", scope: "demo" }],
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+      created_at: (before.last_event_at ?? Date.now()) + 1,
+    });
+
+    const after = getLedgerIssueHead(db, issue.id);
+    expect(before.digest).not.toBe(after.digest);
+    expect(after.last_event_kind).toBe("issue.checkpoint.created");
     expect(after.last_event_at).not.toBeNull();
   });
 });

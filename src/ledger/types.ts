@@ -182,6 +182,18 @@ export interface LedgerComment {
   deleted_at: number | null;
 }
 
+export interface LedgerIssueCheckpoint {
+  id: string;
+  issue_id: string;
+  kind: string;
+  payload_json: string;
+  author_actor_id: string | null;
+  author_actor_type: LedgerActorType;
+  author_display: string;
+  source: LedgerEventSource;
+  created_at: number;
+}
+
 export interface LedgerBodyRevision {
   id: string;
   entity_type: LedgerBodyRevisionEntityType;
@@ -317,6 +329,7 @@ export interface LedgerConflict {
 export interface LedgerIssueDetail extends LedgerIssue {
   aliases: LedgerIssueAlias[];
   comments: LedgerComment[];
+  checkpoints: LedgerIssueCheckpoint[];
   labels: LedgerLabel[];
   branches: LedgerIssueBranch[];
   outgoing_relationships: LedgerIssueRelationship[];

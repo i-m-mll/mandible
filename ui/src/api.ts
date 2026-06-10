@@ -628,6 +628,16 @@ export type LedgerIssueDetailComment = {
   updated_at: number | null;
 };
 
+export type LedgerIssueDetailCheckpoint = {
+  id: string;
+  issue_id: string;
+  kind: string;
+  payload: unknown;
+  author: LedgerIssueDetailActor;
+  source: string;
+  created_at: number;
+};
+
 export type LedgerIssueTimelineEntry =
   | {
       id: string;
@@ -660,6 +670,16 @@ export type LedgerIssueTimelineEntry =
       source: string;
       created_at: number;
       payload: Record<string, unknown>;
+    }
+  | {
+      id: string;
+      kind: 'checkpoint';
+      checkpoint_id: string;
+      checkpoint_kind: string;
+      payload: unknown;
+      author: LedgerIssueDetailActor;
+      source: string;
+      created_at: number;
     };
 
 export type LedgerIssueSummaryRef = {
@@ -834,6 +854,7 @@ export type LedgerIssueDetailProjection = {
   aliases: Array<{ kind: string; alias: string; external_id: string; source: string; primary: boolean }>;
   labels: string[];
   comments: LedgerIssueDetailComment[];
+  checkpoints: LedgerIssueDetailCheckpoint[];
   timeline: LedgerIssueTimelineEntry[];
   relationships: LedgerIssueDetailRelationship[];
   work_units: LedgerIssueDetailWorkUnit[];

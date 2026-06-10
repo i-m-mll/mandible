@@ -26,6 +26,7 @@ import type {
   LedgerIssueAlias,
   LedgerIssueBranch,
   LedgerIssueBranchRole,
+  LedgerIssueCheckpoint,
   LedgerIssueDetail,
   LedgerIssueKind,
   LedgerIssueRelationship,
@@ -94,6 +95,14 @@ export interface UpdateLedgerIssueOptions extends LedgerActorInput {
 export interface AddLedgerCommentInput extends LedgerActorInput {
   id?: string;
   body: string;
+  source?: LedgerEventSource;
+  created_at?: number;
+}
+
+export interface AddLedgerIssueCheckpointInput extends LedgerActorInput {
+  id?: string;
+  kind: string;
+  payload: unknown;
   source?: LedgerEventSource;
   created_at?: number;
 }
@@ -753,6 +762,53 @@ export class LedgerStore {
     });
     emitLedgerEvents(emitted, this.broadcaster);
     return comment;
+  }
+
+  addIssueCheckpoint(issueId: string, input: AddLedgerIssueCheckpointInput): LedgerIssueCheckpoint {
+    const issue = this.requireIssue(issueId);
+    const kind = normalizeCheckpointKind(input.kind);
+    const now = input.created_at ?? Date.now();
+    const source = input.source ?? "mandible";
+    const actor = normalizeActor(input);
+    const id = input.id ?? createLedgerId("chk", { now });
+    const payloadJson = jsonStringify(input.payload);
+    const emitted: LedgerSsePayload[] = [];
+
+    const run = this.db.transaction(() => {
+      this.db.prepare(
+        `INSERT INTO ledger_issue_checkpoints (
+          id, issue_id, kind, payload_json, author_actor_id, author_actor_type,
+          author_display, source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id,
+        issueId,
+        kind,
+        payloadJson,
+        actor.actor_id,
+        actor.actor_type,
+        input.author_display ?? "",
+        source,
+        now,
+      );
+      const event = this.insertEvent({
+        entity_type: "issue_checkpoint",
+        entity_id: id,
+        event_type: "issue.checkpoint.created",
+        actor_id: actor.actor_id,
+        actor_type: actor.actor_type,
+        source,
+        payload: { issue_id: issueId, checkpoint_id: id, kind, payload: input.payload },
+        project_id: issue.project_id,
+        occurred_at: now,
+      });
+      emitted.push({ event, payload: { issue_id: issueId, checkpoint_id: id, kind } });
+      return this.getIssueCheckpoint(id);
+    });
+
+    const checkpoint = run();
+    emitLedgerEvents(emitted, this.broadcaster);
+    return checkpoint;
   }
 
   applyImportedCommentPatch(
@@ -1534,6 +1590,7 @@ export class LedgerStore {
       comments: this.db.prepare(
         "SELECT * FROM ledger_comments WHERE issue_id = ? ORDER BY created_at",
       ).all(id) as LedgerComment[],
+      checkpoints: this.listIssueCheckpoints(id),
       labels: this.db.prepare(
         "SELECT * FROM ledger_labels WHERE issue_id = ? ORDER BY label",
       ).all(id) as LedgerLabel[],
@@ -1586,6 +1643,25 @@ export class LedgerStore {
     ).all(issueId) as LedgerIssueBranch[];
   }
 
+  listIssueCheckpoints(issueId: string, kind?: string): LedgerIssueCheckpoint[] {
+    if (kind) {
+      return this.db.prepare(
+        `SELECT * FROM ledger_issue_checkpoints
+         WHERE issue_id = ? AND kind = ?
+         ORDER BY created_at DESC, id DESC`,
+      ).all(issueId, normalizeCheckpointKind(kind)) as LedgerIssueCheckpoint[];
+    }
+    return this.db.prepare(
+      `SELECT * FROM ledger_issue_checkpoints
+       WHERE issue_id = ?
+       ORDER BY created_at DESC, id DESC`,
+    ).all(issueId) as LedgerIssueCheckpoint[];
+  }
+
+  getLatestIssueCheckpoint(issueId: string, kind?: string): LedgerIssueCheckpoint | null {
+    return this.listIssueCheckpoints(issueId, kind)[0] ?? null;
+  }
+
   listEvents(entity: { entity_type: string; entity_id: string }): LedgerEvent[] {
     return this.db.prepare(
       `SELECT * FROM ledger_events
@@ -1627,6 +1703,16 @@ export class LedgerStore {
     const row = this.db.prepare("SELECT * FROM ledger_comments WHERE id = ?").get(id) as LedgerComment | undefined;
     if (!row) {
       throw new Error(`Ledger comment not found: ${id}`);
+    }
+    return row;
+  }
+
+  getIssueCheckpoint(id: string): LedgerIssueCheckpoint {
+    const row = this.db.prepare(
+      "SELECT * FROM ledger_issue_checkpoints WHERE id = ?",
+    ).get(id) as LedgerIssueCheckpoint | undefined;
+    if (!row) {
+      throw new Error(`Ledger issue checkpoint not found: ${id}`);
     }
     return row;
   }
@@ -2184,6 +2270,14 @@ function escapeLike(value: string): string {
 
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value ?? {});
+}
+
+function normalizeCheckpointKind(kind: string): string {
+  const trimmed = kind.trim();
+  if (!/^[A-Za-z0-9._:-]+$/.test(trimmed)) {
+    throw new Error("checkpoint kind must contain only letters, numbers, dots, underscores, colons, or hyphens");
+  }
+  return trimmed;
 }
 
 function hashBody(body: string): string {

@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 1,
+  "version": 2,
   "commands": [
     {
       "name": "mandible issue report <id> [--json]",
@@ -12,7 +12,19 @@
     },
     {
       "name": "mandible issue changed --since-manifest <file> [--json]",
-      "description": "Compare current issue digests with a saved delegation manifest."
+      "description": "Compare current issue digests with a legacy saved delegation manifest file."
+    },
+    {
+      "name": "mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--json]",
+      "description": "Compare current issue digests with the latest structured checkpoint on an umbrella issue."
+    },
+    {
+      "name": "mandible issue checkpoint add <issue-ref> --kind <kind> [--payload-file <file>]",
+      "description": "Append kind-tagged structured issue state outside the comment stream."
+    },
+    {
+      "name": "mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]",
+      "description": "Read kind-tagged structured issue state without parsing comments."
     },
     {
       "name": "mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>",
@@ -59,7 +71,7 @@
   ],
   "coordination": [
     "The umbrella issue is the coordinator; sessions are disposable role holders.",
-    "Delegation manifests record `{ issue, digest, branch, scope }`; refresh digests with `mandible issue heads` before resuming.",
+    "Delegation manifests are stored as `delegation-manifest` checkpoints; refresh digests with `mandible issue heads` before resuming.",
     "Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.",
     "Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate."
   ],

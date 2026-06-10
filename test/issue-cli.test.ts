@@ -12,6 +12,7 @@ let requestedPaths: string[] = [];
 let requestBodies: Array<{ path: string; method: string; body: unknown }> = [];
 let tempRoots: string[] = [];
 let issueHeads: Record<string, unknown> = {};
+let issueCheckpoints: Record<string, unknown> = {};
 
 const issueRevision = {
   id: "rev_issue_1",
@@ -159,6 +160,21 @@ function listen(): Promise<number> {
       last_event_kind: "comment.created",
     },
   };
+  issueCheckpoints = {
+    abc: {
+      id: "checkpoint-1",
+      issue_id: "issue-1",
+      kind: "delegation-manifest",
+      payload: [
+        { issue: "abc", digest: "digest-before" },
+        { issue: "def", digest: "digest-stale" },
+        { issue: "missing", digest: "digest-missing" },
+      ],
+      author: { id: null, type: "mandible_user", display: "Mandible" },
+      source: "mandible",
+      created_at: 1_700_000_020_000,
+    },
+  };
   return new Promise((resolve) => {
     server = http.createServer((req, res) => {
       requestedPaths.push(req.url ?? "");
@@ -191,6 +207,37 @@ function listen(): Promise<number> {
           return;
         }
         res.end(JSON.stringify(head));
+        return;
+      }
+      const checkpointMatch = req.url?.match(/^\/api\/ledger\/issues\/([^/?]+)\/checkpoints(?:\?.*)?$/);
+      if (checkpointMatch) {
+        const issueRef = decodeURIComponent(checkpointMatch[1]);
+        const checkpoint = issueCheckpoints[issueRef];
+        if (req.method === "POST") {
+          void readBody().then((body) => {
+            requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+            res.end(JSON.stringify({
+              id: "checkpoint-new",
+              issue_id: "issue-1",
+              kind: (body as { kind?: string } | null)?.kind ?? "unknown",
+              payload: (body as { payload?: unknown } | null)?.payload ?? {},
+              author: { id: null, type: "mandible_user", display: "Mandible" },
+              source: "mandible",
+              created_at: 1_700_000_030_000,
+            }));
+          });
+          return;
+        }
+        if (!checkpoint) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ error: "checkpoint not found" }));
+          return;
+        }
+        if (req.url.includes("latest=true")) {
+          res.end(JSON.stringify(checkpoint));
+        } else {
+          res.end(JSON.stringify({ checkpoints: [checkpoint] }));
+        }
         return;
       }
       if (req.url === "/api/ledger/issues/abc/body/revisions") {
@@ -238,6 +285,7 @@ function listen(): Promise<number> {
             { id: "comment-1", ordinal: 1, body: "First comment" },
             { id: "comment-2", ordinal: 2, body: "Second comment" },
           ],
+          checkpoints: [],
         }));
         return;
       }
@@ -416,6 +464,74 @@ describe("issue CLI body revisions", () => {
     expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
     expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
     expect(body.missing.map((entry: { issue: string }) => entry.issue)).toEqual(["missing"]);
+  });
+
+  it("compares issue heads against the latest checkpoint on an issue", async () => {
+    const port = await listen();
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-issue",
+      "abc",
+      "--kind",
+      "delegation-manifest",
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/checkpoints?latest=true&kind=delegation-manifest");
+    const body = JSON.parse(result.stdout);
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
+    expect(body.missing.map((entry: { issue: string }) => entry.issue)).toEqual(["missing"]);
+  });
+
+  it("adds and shows issue checkpoints", async () => {
+    const port = await listen();
+    const payloadPath = path.join(os.tmpdir(), `mandible-checkpoint-${Date.now()}.json`);
+    fs.writeFileSync(payloadPath, JSON.stringify([{ issue: "abc", digest: "digest-before" }]), "utf8");
+    tempRoots.push(payloadPath);
+
+    const added = await run([
+      "issue",
+      "checkpoint",
+      "add",
+      "abc",
+      "--kind",
+      "delegation-manifest",
+      "--payload-file",
+      payloadPath,
+    ], port);
+    expect(added.status).toBe(0);
+    expect(added.stdout).toContain("checkpoint checkpoint-new delegation-manifest");
+    expect(requestBodies.at(-1)).toMatchObject({
+      path: "/api/ledger/issues/abc/checkpoints",
+      method: "POST",
+      body: {
+        kind: "delegation-manifest",
+        payload: [{ issue: "abc", digest: "digest-before" }],
+      },
+    });
+
+    const shown = await run([
+      "issue",
+      "checkpoint",
+      "show",
+      "abc",
+      "--kind",
+      "delegation-manifest",
+      "--json",
+    ], port);
+    expect(shown.status).toBe(0);
+    expect(JSON.parse(shown.stdout)).toMatchObject({
+      id: "checkpoint-1",
+      kind: "delegation-manifest",
+      payload: [
+        { issue: "abc", digest: "digest-before" },
+        { issue: "def", digest: "digest-stale" },
+        { issue: "missing", digest: "digest-missing" },
+      ],
+    });
   });
 
   it("shows only the issue description", async () => {
