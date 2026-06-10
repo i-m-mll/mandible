@@ -134,9 +134,15 @@ function resolveRepoRoot(): string {
 function runInstructions(args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const repoRoot = resolveRepoRoot();
   const script = process.env.MANDIBLE_INSTRUCTIONS_CLI || path.join(repoRoot, "cli", "instructions.sh");
+  const nodeDir = path.dirname(process.execPath);
+  const pathValue = process.env.PATH ? `${nodeDir}${path.delimiter}${process.env.PATH}` : nodeDir;
   const result = spawnSync("bash", [script, ...args], {
     cwd: repoRoot,
-    env: process.env,
+    env: {
+      ...process.env,
+      NODE_BIN: process.env.NODE_BIN || process.execPath,
+      PATH: pathValue,
+    },
     encoding: "utf8",
   });
   return {
