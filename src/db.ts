@@ -1652,6 +1652,25 @@ const MIGRATIONS: Migration[] = [
     version: 69,
     name: "remove_legacy_issue_ref_kinds",
     statements: []
+  },
+  {
+    version: 70,
+    name: "issue_coordination_fields",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS issue_branches (
+        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        branch TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'primary'
+          CHECK(role IN ('primary','superseded')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (issue_id, branch)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_issue_branches_branch
+        ON issue_branches(branch)`,
+      `CREATE INDEX IF NOT EXISTS idx_issue_branches_role
+        ON issue_branches(role)`
+    ]
   }
 ];
 
@@ -1708,6 +1727,9 @@ export function migrate(db: Db): void {
 
   const apply = db.transaction(() => {
     for (const migration of pending) {
+      if (migration.version === 70) {
+        ensureIssueCoordinationColumns(db);
+      }
       for (const statement of migration.statements) {
         db.exec(statement);
       }
@@ -2436,6 +2458,16 @@ function setMeta(db: Db, key: string, value: string): void {
   db.prepare(
     "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(key, value);
+}
+
+function ensureIssueCoordinationColumns(db: Db): void {
+  const columns = db.prepare("PRAGMA table_info(ledger_issues)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "worker_status")) {
+    db.exec(
+      `ALTER TABLE ledger_issues ADD COLUMN worker_status TEXT NOT NULL DEFAULT 'none'
+        CHECK(worker_status IN ('none','in_progress','done','blocked','pivot-needed'))`,
+    );
+  }
 }
 
 function ensureDir(dir: string): void {

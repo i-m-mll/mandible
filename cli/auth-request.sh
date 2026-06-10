@@ -37,6 +37,8 @@
 set -euo pipefail
 
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
 
 # --- Usage ---
 
@@ -108,6 +110,10 @@ fi
 if [ $(( ${#ISSUE_REFERENCES[@]} + ${#ISSUE_CLOSURES[@]} )) -eq 0 ]; then
   echo "Error: at least one --issue <id> or --closes-issue <id> is required" >&2
   exit 1
+fi
+if api_is_file_rpc && [[ $no_watch -eq 0 ]]; then
+  echo "Error: file transport does not support SSE/watch; pass --no-watch." >&2
+  exit 2
 fi
 
 # Validate auth type
@@ -598,10 +604,7 @@ tmp_response=$(mktemp)
 tmp_sse_result=$(mktemp)
 trap 'rm -f "$tmp_response" "$tmp_sse_result"' EXIT
 
-http_status=$(curl -s --max-time 5 -o "$tmp_response" -w "%{http_code}" \
-  -X POST "${MANDIBLE_BASE}/api/auth/request" \
-  -H 'Content-Type: application/json' \
-  -d "$payload" 2>/dev/null) || http_status=""
+http_status=$(api_send_capture POST "/api/auth/request" "$payload" "$tmp_response") || http_status=""
 
 response=$(cat "$tmp_response" 2>/dev/null || echo "")
 
@@ -736,7 +739,7 @@ fi
 
 # If we reach here, curl exited (timeout or connection lost) without resolving.
 # Do a single fallback poll to check final status.
-final=$(curl -sf --max-time 5 "${MANDIBLE_BASE}/api/auth/request/${request_id}" 2>/dev/null)
+final=$(api_get "/api/auth/request/${request_id}" 2>/dev/null || true)
 if [[ -n "$final" ]]; then
   status=$(printf '%s' "$final" | jq -r '.status // "unknown"')
   case "$status" in

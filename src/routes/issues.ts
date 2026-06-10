@@ -5,17 +5,24 @@ import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
   LEDGER_ISSUE_KINDS,
+  LEDGER_ISSUE_BRANCH_ROLES,
   LEDGER_ISSUE_RESOLUTIONS,
   LEDGER_ISSUE_STATUSES,
   LEDGER_PRIORITIES,
+  LEDGER_WORKER_STATUSES,
   type LedgerIssueKind,
+  type LedgerIssueBranchRole,
   type LedgerIssueResolution,
   type LedgerIssueStatus,
   type LedgerPriority,
+  type LedgerWorkerStatus,
 } from "../ledger/types.js";
 import {
   buildLedgerIssueDetailProjection,
 } from "../ledger/issue-detail.js";
+import {
+  getLedgerIssueHead,
+} from "../ledger/issue-heads.js";
 import {
   evaluateMarkdownBodyPolicy,
   getMarkdownBodyEscapePolicy,
@@ -449,6 +456,25 @@ export function registerIssueRoutes(
     sendLedgerIssueProjection(res, db, resolved.issue_id);
   });
 
+  server.get("/api/ledger/issues/:issueId/head", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    try {
+      sendJson(res, 200, getLedgerIssueHead(db, resolved.issue_id));
+    } catch (error) {
+      sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
+    }
+  });
+
   server.get("/api/ledger/issues/:issueId/body/revisions", (req, res) => {
     const issueRef = getParam(req, "issueId");
     if (!issueRef) {
@@ -730,6 +756,66 @@ export function registerIssueRoutes(
       );
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownWarnings);
+  });
+
+  server.post("/api/ledger/issues/:issueId/worker-status", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const body = getBody(req) ?? {};
+    const workerStatus = enumValue(body.worker_status ?? body.status, LEDGER_WORKER_STATUSES);
+    if (!workerStatus) {
+      sendJson(res, 400, { error: "invalid worker_status" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    new LedgerStore(db).setWorkerStatus(
+      resolved.issue_id,
+      workerStatus as LedgerWorkerStatus,
+      { actor_type: "mandible_user", author_display: "Mandible" },
+      "mandible",
+    );
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.post("/api/ledger/issues/:issueId/branches", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const body = getBody(req) ?? {};
+    const branch = typeof body.branch === "string" ? body.branch.trim() : "";
+    const role = enumValue(body.role ?? "primary", LEDGER_ISSUE_BRANCH_ROLES);
+    if (!branch) {
+      sendJson(res, 400, { error: "branch is required" });
+      return;
+    }
+    if (!role) {
+      sendJson(res, 400, { error: "invalid branch role" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    new LedgerStore(db).addIssueBranch(
+      resolved.issue_id,
+      branch,
+      role as LedgerIssueBranchRole,
+      { actor_type: "mandible_user", author_display: "Mandible" },
+      "mandible",
+    );
+    sendLedgerIssueProjection(res, db, resolved.issue_id);
   });
 
   server.post("/api/ledger/issues/:issueId/labels", (req, res) => {

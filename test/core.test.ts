@@ -77,6 +77,22 @@ async function readSseEvent(
   });
 }
 
+async function waitForNoHealth(
+  port: number,
+  timeoutMs: number = 3000,
+  intervalMs: number = 200,
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const health = await checkHealth(port);
+    if (!health) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
+}
+
 function parseSse(raw: string): SSEEvent | null {
   const lines = raw.split("\n");
   let data: string | null = null;
@@ -254,7 +270,7 @@ describe.sequential("mandible daemon", () => {
     const stopped = stopDaemon(temp!.pidFilePath);
     expect(stopped).toBe(true);
 
-    const drained = await waitForHealth(port, 10_000, 200);
-    expect(drained).toBeNull();
+    const drained = await waitForNoHealth(port, 10_000, 200);
+    expect(drained).toBe(true);
   }, 15_000);
 });

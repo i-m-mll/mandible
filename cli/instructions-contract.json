@@ -1,0 +1,67 @@
+{
+  "title": "Mandible Interface Contract",
+  "version": 1,
+  "commands": [
+    {
+      "name": "mandible issue report <id> [--json]",
+      "description": "Print deterministic issue context for handoff and planning."
+    },
+    {
+      "name": "mandible issue heads <id>... [--json]",
+      "description": "Print issue state digests for delegation manifests and resume checks."
+    },
+    {
+      "name": "mandible issue changed --since-manifest <file> [--json]",
+      "description": "Compare current issue digests with a saved delegation manifest."
+    },
+    {
+      "name": "mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>",
+      "description": "Set worker coordination status without changing open/closed lifecycle status."
+    },
+    {
+      "name": "mandible issue branch add <id> <branch> [--role primary|superseded]",
+      "description": "Link a branch to an issue as structured coordination state."
+    },
+    {
+      "name": "mandible issue comment add <issue-ref> -m <text>",
+      "description": "Append rendered Markdown comments with real newline characters."
+    },
+    {
+      "name": "mandible issue label add|rm <id> <label>",
+      "description": "Mirror portable issue facts such as mandible:status:<value> labels."
+    },
+    {
+      "name": "mandible auth list [--repo <repo>] [--head <branch>] [--base <branch>] [--status <status>] [--json]",
+      "description": "Find existing auth requests before submitting duplicates."
+    },
+    {
+      "name": "mandible auth request <branch> --title <text> --issue <id> [--closes-issue <id>] [--spec <text>] [--no-watch]",
+      "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure."
+    },
+    {
+      "name": "mandible instructions diff|install [--target <file>]",
+      "description": "Show or update the managed Mandible interface block in an agent-instruction file."
+    }
+  ],
+  "trailers": [
+    "`Mandible-Issue: <ref>` is a work-tracking reference link.",
+    "`Closes-Mandible-Issue: <ref>` is an explicit closure signal.",
+    "Commit trailers are optional interface metadata; commits without trailers are valid but unlinked."
+  ],
+  "authLifecycle": [
+    "Protected-branch merges are asynchronous: submit an auth request, stop, and let the user approve in Mandible.",
+    "Approval and merge execution are user actions. Agents do not approve, merge, or bypass the auth queue.",
+    "At most one pending auth request should exist for the same repo/head/base; check `mandible auth list` first when unsure."
+  ],
+  "coordination": [
+    "The umbrella issue is the coordinator; sessions are disposable role holders.",
+    "Delegation manifests record `{ issue, digest, branch, scope }`; refresh digests with `mandible issue heads` before resuming.",
+    "Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.",
+    "Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate."
+  ],
+  "transports": [
+    "Default CLI transport is loopback HTTP via `MANDIBLE_BASE=http://127.0.0.1:<port>`.",
+    "Sandboxed agents without loopback can use `MANDIBLE_BASE=file:///path/to/spool` for issue and auth submission/listing routes.",
+    "The file transport denies approval, merge, admin, and config routes; auth approval remains a user/dashboard action."
+  ]
+}

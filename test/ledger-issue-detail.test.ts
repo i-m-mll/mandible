@@ -90,15 +90,17 @@ describe("ledger issue detail projection", () => {
       labels: ["feature"],
       aliases: [{ alias_kind: "git_bug_human", alias: "chi1234", is_primary: true }],
     });
-	    store.addComment(child.id, {
-	      body: "Implementation note",
-	      actor_type: "agent",
-	      author_display: "Codex",
-	      source: "session",
-	    });
-	    store.setIssueStatus(child.id, "closed", "merged");
-	    store.setIssueStatus(child.id, "open", null);
-	    store.upsertIssueRelationship({
+    store.addComment(child.id, {
+      body: "Implementation note",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "session",
+    });
+    store.setWorkerStatus(child.id, "in_progress");
+    store.addIssueBranch(child.id, "feature/detail");
+    store.setIssueStatus(child.id, "closed", "merged");
+    store.setIssueStatus(child.id, "open", null);
+    store.upsertIssueRelationship({
       source_issue_id: parent.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -149,9 +151,17 @@ describe("ledger issue detail projection", () => {
       project: { repo_id: "repo", repo_name: "repo" },
       title: "Child",
       body: "Child body",
-      labels: ["feature"],
+      worker_status: "in_progress",
       sync: { state: "conflicted", open_conflicts: 1 },
     });
+    expect(projection.labels).toEqual([
+      "feature",
+      "mandible:branch:feature/detail",
+      "mandible:status:in_progress",
+    ]);
+    expect(projection.issue_branches).toMatchObject([
+      { branch: "feature/detail", role: "primary" },
+    ]);
     expect(projection.comments).toMatchObject([
       { ordinal: 1, body: "Implementation note", author: { type: "agent", display: "Codex" }, source: "session" },
     ]);

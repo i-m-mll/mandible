@@ -14,13 +14,14 @@
 #   logs <subcommand>                Inspect provider-native source logs
 #   conversations <subcommand>       Inspect DB-backed conversations
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
+#   instructions <subcommand>        Install or diff the Mandible instruction fragment
 #   search "<query>" [opts]          Search chat history across providers
 #   help                             Show this help
 
 set -euo pipefail
 
 export MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
-export MANDIBLE_BASE="http://127.0.0.1:${MANDIBLE_PORT}"
+export MANDIBLE_BASE="${MANDIBLE_BASE:-http://127.0.0.1:${MANDIBLE_PORT}}"
 
 # Resolve script's own directory robustly — no realpath (not standard on macOS)
 MANDIBLE_BIN_DIR="$(cd "$(dirname "$0")" && pwd -P)"
@@ -41,6 +42,7 @@ Commands:
   logs <subcommand>                Inspect provider-native source logs
   conversations <subcommand>       Inspect DB-backed conversations
   artifact <subcommand>            Register, resolve, link, and check artifacts
+  instructions <subcommand>        Install or diff the Mandible instruction fragment
   search "<query>" [opts]          Search chat history across providers
   help                             Show this help
 EOF
@@ -75,6 +77,7 @@ case "${1:-}" in
   logs)    shift; exec "$MANDIBLE_CLI_DIR/logs.sh" "$@" ;;
   conversations) shift; exec "$MANDIBLE_CLI_DIR/conversations.sh" "$@" ;;
   artifact) shift; exec "$MANDIBLE_CLI_DIR/artifact.sh" "$@" ;;
+  instructions) shift; exec "$MANDIBLE_CLI_DIR/instructions.sh" "$@" ;;
   search)  shift; exec "$MANDIBLE_CLI_DIR/search.sh" "$@" ;;
   help|-h|--help) usage ;;
   "") usage >&2; exit 1 ;;

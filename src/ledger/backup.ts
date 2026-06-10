@@ -3,6 +3,7 @@ export const LEDGER_BACKUP_TABLES = [
   "ledger_project_checkouts",
   "ledger_issues",
   "ledger_issue_aliases",
+  "issue_branches",
   "ledger_comments",
   "ledger_body_revisions",
   "ledger_labels",

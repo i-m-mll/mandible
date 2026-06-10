@@ -7,6 +7,10 @@ mandible issue list [--status open|closed|all|merged]        # NO --json, NO --l
 mandible issue show <id>                                      # NO --json
 mandible issue report <id> [--json]                          # exit 3 = NOT from this CLI (curl -sf exits 22 on HTTP err)
 mandible issue triage [--status open|closed|all|merged] [--label L] [--repo R] [--stale-days N] [--limit N] [--json]
+mandible issue heads <id>... [--json]
+mandible issue changed --since-manifest <file> [--json]
+mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>
+mandible issue branch add <id> <branch> [--role primary|superseded]
 mandible issue close <id> [--commit <sha>]
 mandible issue open <id>
 mandible issue label add|rm <id> <label>
@@ -63,6 +67,10 @@ mandible artifact bundle create --name N [--manifest F] [--issue <id>] [--role R
 mandible artifact bundle add <bundle-ref> <path-or-ref...> [--allow-local-only] [--allow-dirty-link] [--json]
 mandible artifact bundle show <bundle-ref> [--json]
 mandible artifact bundle check <bundle-ref> [--json]
+
+## INSTRUCTIONS
+mandible instructions diff [--target <file>]
+mandible instructions install [--target <file>]
 
 ## INBOX / TASK / MISC
 mandible inbox [check|add "text"|ack <type> <id>|watch <request-id>]

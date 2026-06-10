@@ -10,6 +10,7 @@ const CLI = path.join(process.cwd(), "bin", "mandible");
 let server: http.Server | null = null;
 let requestedPaths: string[] = [];
 let tempRoots: string[] = [];
+let issueHeads: Record<string, unknown> = {};
 
 const issueRevision = {
   id: "rev_issue_1",
@@ -62,6 +63,7 @@ function run(
   args: string[],
   port: number,
   cwd = process.cwd(),
+  extraEnv: Record<string, string> = {},
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(CLI, args, {
@@ -69,6 +71,7 @@ function run(
       env: {
         ...process.env,
         MANDIBLE_PORT: String(port),
+        ...extraEnv,
       },
     });
     let stdout = "";
@@ -85,6 +88,25 @@ function run(
       resolve({ status, stdout, stderr });
     });
   });
+}
+
+function startFileRpcResponder(
+  spoolDir: string,
+  handler: (request: Record<string, unknown>) => { status: number; body: unknown },
+): NodeJS.Timeout {
+  fs.mkdirSync(spoolDir, { recursive: true });
+  const timer = setInterval(() => {
+    for (const file of fs.readdirSync(spoolDir)) {
+      if (!file.endsWith(".request.json")) continue;
+      const requestPath = path.join(spoolDir, file);
+      const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as Record<string, unknown>;
+      const id = typeof request.id === "string" ? request.id : file.replace(/\.request\.json$/, "");
+      const response = handler(request);
+      fs.writeFileSync(path.join(spoolDir, `${id}.response.json`), JSON.stringify({ id, ...response }), "utf8");
+      fs.rmSync(requestPath, { force: true });
+    }
+  }, 10);
+  return timer;
 }
 
 function git(args: string[], cwd: string): string {
@@ -119,6 +141,22 @@ function makeGitRepoWithWorktree(): { repoRoot: string; worktreeRoot: string } {
 
 function listen(): Promise<number> {
   requestedPaths = [];
+  issueHeads = {
+    abc: {
+      issue_id: "issue-1",
+      short_id: "abc",
+      digest: "digest-before",
+      last_event_at: 1_700_000_000_000,
+      last_event_kind: "issue.created",
+    },
+    def: {
+      issue_id: "issue-2",
+      short_id: "def",
+      digest: "digest-current",
+      last_event_at: 1_700_000_010_000,
+      last_event_kind: "comment.created",
+    },
+  };
   return new Promise((resolve) => {
     server = http.createServer((req, res) => {
       requestedPaths.push(req.url ?? "");
@@ -133,6 +171,17 @@ function listen(): Promise<number> {
         ]));
         return;
       }
+      const headMatch = req.url?.match(/^\/api\/ledger\/issues\/([^/]+)\/head$/);
+      if (headMatch) {
+        const head = issueHeads[decodeURIComponent(headMatch[1])];
+        if (!head) {
+          res.statusCode = 404;
+          res.end(JSON.stringify({ error: "ledger issue not found" }));
+          return;
+        }
+        res.end(JSON.stringify(head));
+        return;
+      }
       if (req.url === "/api/ledger/issues/abc/body/revisions") {
         res.end(JSON.stringify({ revisions: [issueRevision] }));
         return;
@@ -141,10 +190,27 @@ function listen(): Promise<number> {
         res.end(JSON.stringify({ id: "comment-3" }));
         return;
       }
+      if (req.method === "POST" && req.url === "/api/ledger/issues/abc/worker-status") {
+        res.end(JSON.stringify({ id: "issue-1", display_id: "abc", worker_status: "done" }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/ledger/issues/abc/branches") {
+        res.end(JSON.stringify({
+          id: "issue-1",
+          display_id: "abc",
+          issue_branches: [{ branch: "feature/demo", role: "primary" }],
+        }));
+        return;
+      }
       if (req.url === "/api/ledger/issues/abc") {
         res.end(JSON.stringify({
           id: "issue-1",
           display_id: "abc",
+          title: "Issue title",
+          status: "open",
+          worker_status: "in_progress",
+          labels: ["feature", "mandible:status:in_progress"],
+          issue_branches: [{ branch: "feature/demo", role: "primary" }],
           body: "Issue body",
           comments: [
             { id: "comment-1", ordinal: 1, body: "First comment" },
@@ -208,6 +274,8 @@ describe("issue CLI body revisions", () => {
     expect(result.stdout).toContain("comment history <comment-ref>");
     expect(result.stdout).toContain("revision show <revision-id>");
     expect(result.stdout).toContain("revision diff <old-revision-id> <new-revision-id>");
+    expect(result.stdout).toContain("status <id> <value>");
+    expect(result.stdout).toContain("branch add <id> <branch>");
   });
 
   it("adds comments with the official comment add namespace", async () => {
@@ -216,6 +284,116 @@ describe("issue CLI body revisions", () => {
 
     expect(result.status).toBe(0);
     expect(requestedPaths).toContain("/api/ledger/issues/abc/comments");
+  });
+
+  it("sets worker status through the issue status command", async () => {
+    const port = await listen();
+    const result = await run(["issue", "status", "abc", "done"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/worker-status");
+  });
+
+  it("links branches through the issue branch namespace", async () => {
+    const port = await listen();
+    const result = await run(["issue", "branch", "add", "abc", "feature/demo"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/branches");
+  });
+
+  it("reports worker status and linked branches", async () => {
+    const port = await listen();
+    const result = await run(["issue", "report", "abc", "--json"], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.worker_status).toBe("in_progress");
+    expect(body.issue_branches).toEqual([{ branch: "feature/demo", role: "primary" }]);
+  });
+
+  it("reports through file RPC when MANDIBLE_BASE is a file URL", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-cli-"));
+    tempRoots.push(spoolDir);
+    const seen: Array<Record<string, unknown>> = [];
+    const timer = startFileRpcResponder(spoolDir, (request) => {
+      seen.push(request);
+      expect(request).toMatchObject({
+        method: "GET",
+        path: "/api/ledger/issues/abc",
+      });
+      return {
+        status: 200,
+        body: {
+          id: "issue-1",
+          display_id: "abc",
+          title: "Issue title",
+          status: "open",
+          worker_status: "in_progress",
+          labels: ["feature", "mandible:status:in_progress"],
+          issue_branches: [{ branch: "feature/demo", role: "primary" }],
+          priority: "normal",
+          kind: "feature",
+          body: "Issue body",
+          comments: [],
+        },
+      };
+    });
+
+    try {
+      const result = await run(["issue", "report", "abc", "--json"], 0, process.cwd(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(0);
+      expect(seen).toHaveLength(1);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        display_id: "abc",
+        worker_status: "in_progress",
+        issue_branches: [{ branch: "feature/demo", role: "primary" }],
+      });
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
+  it("prints issue heads as JSON", async () => {
+    const port = await listen();
+    const result = await run(["issue", "heads", "abc", "def", "--json"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/head");
+    expect(requestedPaths).toContain("/api/ledger/issues/def/head");
+    expect(JSON.parse(result.stdout)).toEqual([
+      issueHeads.abc,
+      issueHeads.def,
+    ]);
+  });
+
+  it("compares issue heads against a delegation manifest", async () => {
+    const port = await listen();
+    const manifest = path.join(os.tmpdir(), `mandible-manifest-${Date.now()}.json`);
+    fs.writeFileSync(manifest, JSON.stringify([
+      { issue: "abc", digest: "digest-before" },
+      { issue: "def", digest: "digest-stale" },
+      { issue: "missing", digest: "digest-missing" },
+    ]), "utf8");
+    tempRoots.push(manifest);
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-manifest",
+      manifest,
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
+    expect(body.missing.map((entry: { issue: string }) => entry.issue)).toEqual(["missing"]);
   });
 
   it("shows only the issue description", async () => {

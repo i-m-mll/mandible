@@ -10,6 +10,8 @@ import type {
   LedgerEventSource,
   LedgerIssue,
   LedgerIssueAlias,
+  LedgerIssueBranch,
+  LedgerIssueBranchRole,
   LedgerIssueKind,
   LedgerIssueRelationship,
   LedgerIssueResolution,
@@ -18,6 +20,7 @@ import type {
   LedgerPriority,
   LedgerRelationshipProvenance,
   LedgerRelationshipType,
+  LedgerWorkerStatus,
 } from "./types.js";
 
 export interface LedgerIssueDetailAlias {
@@ -42,6 +45,13 @@ export interface LedgerIssueDetailComment {
   source: LedgerEventSource;
   created_at: number;
   updated_at: number | null;
+}
+
+export interface LedgerIssueDetailBranch {
+  branch: string;
+  role: LedgerIssueBranchRole;
+  created_at: number;
+  updated_at: number;
 }
 
 export type LedgerIssueTimelineEntry =
@@ -235,6 +245,7 @@ export interface LedgerIssueDetailProjection {
   title: string;
   body: string;
   status: LedgerIssueStatus;
+  worker_status: LedgerWorkerStatus;
   resolution: LedgerIssueResolution | null;
   kind: LedgerIssueKind;
   priority: LedgerPriority;
@@ -245,6 +256,7 @@ export interface LedgerIssueDetailProjection {
   closed_at: number | null;
   aliases: LedgerIssueDetailAlias[];
   labels: string[];
+  issue_branches: LedgerIssueDetailBranch[];
   comments: LedgerIssueDetailComment[];
   timeline: LedgerIssueTimelineEntry[];
   relationships: LedgerIssueDetailRelationship[];
@@ -297,6 +309,7 @@ export function buildLedgerIssueDetailProjection(
     title: detail.title,
     body: detail.body,
     status: detail.status,
+    worker_status: detail.worker_status,
     resolution: detail.resolution,
     kind: detail.kind,
     priority: detail.priority,
@@ -307,6 +320,7 @@ export function buildLedgerIssueDetailProjection(
     closed_at: detail.closed_at,
     aliases,
     labels,
+    issue_branches: detail.branches.map(mapIssueBranch),
     comments,
     timeline,
     relationships,
@@ -316,6 +330,15 @@ export function buildLedgerIssueDetailProjection(
     associated_artifacts: associatedArtifacts,
     conflicts,
     sync,
+  };
+}
+
+function mapIssueBranch(branch: LedgerIssueBranch): LedgerIssueDetailBranch {
+  return {
+    branch: branch.branch,
+    role: branch.role,
+    created_at: branch.created_at,
+    updated_at: branch.updated_at,
   };
 }
 

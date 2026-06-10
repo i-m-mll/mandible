@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
 import { LEDGER_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createLedgerId } from "../src/ledger/ids.js";
+import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { runIssueReferenceBackfill } from "../src/ledger/issue-reference-backfill.js";
 import { parseIssueReferences } from "../src/ledger/issue-xrefs.js";
 import { normalizeRemoteIdentity, resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -288,6 +289,28 @@ describe("ledger IDs and project identity", () => {
   });
 });
 
+describe("ledger issue heads", () => {
+  it("changes the digest when an issue comment is added", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const issue = createIssue(store, project.project.id, "Digest target");
+    const before = getLedgerIssueHead(db, issue.id);
+
+    store.addComment(issue.id, {
+      body: "New digest-affecting comment",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+    });
+
+    const after = getLedgerIssueHead(db, issue.id);
+    expect(before.short_id).toBe(issue.short_id);
+    expect(before.digest).not.toBe(after.digest);
+    expect(after.last_event_kind).toBe("comment.created");
+    expect(after.last_event_at).not.toBeNull();
+  });
+});
+
 describe("ledger store", () => {
   it("writes issue current state, alias, event, and SSE atomically without default outbox", () => {
     const project = createProject();
@@ -464,6 +487,41 @@ describe("ledger store", () => {
       "issue.closed",
     ]);
     expect(broadcasts.filter((event) => event === "ledger:issue:closed")).toHaveLength(1);
+  });
+
+  it("sets worker status and issue branches with mirrored labels", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const issue = createIssue(store, project.project.id);
+
+    const updated = store.setWorkerStatus(issue.id, "in_progress");
+    const branch = store.addIssueBranch(issue.id, "feature/demo");
+
+    expect(updated.worker_status).toBe("in_progress");
+    expect(branch).toMatchObject({
+      issue_id: issue.id,
+      branch: "feature/demo",
+      role: "primary",
+    });
+    expect(store.listIssueBranches(issue.id)).toMatchObject([
+      { branch: "feature/demo", role: "primary" },
+    ]);
+    expect(store.getIssueDetail(issue.id).labels
+      .filter((label) => label.deleted_at === null)
+      .map((label) => label.label)
+      .sort()).toContain("mandible:status:in_progress");
+    expect(store.getIssueDetail(issue.id).labels
+      .filter((label) => label.deleted_at === null)
+      .map((label) => label.label)
+      .sort()).toContain("mandible:branch:feature/demo");
+    expect(store.listEvents({ entity_type: "issue", entity_id: issue.id })
+      .map((event) => event.event_type)).toEqual([
+        "issue.created",
+        "issue.worker_status.updated",
+        "label.updated",
+        "issue.branch.added",
+        "label.updated",
+      ]);
   });
 
   it("sets labels idempotently and records only state-changing events", () => {
@@ -724,7 +782,9 @@ describe("ledger store", () => {
 describe("ledger backup contract", () => {
   it("lists every non-reproducible ledger table for backup tooling", () => {
     const tableNames = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ledger_%'",
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table'
+         AND (name LIKE 'ledger_%' OR name = 'issue_branches')`,
     ).all() as Array<{ name: string }>;
     const backedUp = new Set<string>(LEDGER_BACKUP_TABLES);
 
