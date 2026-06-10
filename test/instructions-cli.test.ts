@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
@@ -28,6 +28,13 @@ function run(args: string[], env: Record<string, string> = {}): Promise<{
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
+}
+
+function git(cwd: string, args: string[]): void {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  }
 }
 
 afterEach(() => {
@@ -68,5 +75,48 @@ describe("instructions CLI", () => {
     expect(install.status).toBe(0);
     const target = path.join(home, ".claude", "CLAUDE.md");
     expect(fs.readFileSync(target, "utf8")).toContain("Mandible Interface Contract");
+  });
+
+  it("refuses to install into a tracked target on the protected branch", async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-protected-"));
+    tempRoots.push(repo);
+    git(repo, ["init", "-b", "main"]);
+    const target = path.join(repo, "AGENTS.md");
+    const original = "# Existing\n\nKeep this unchanged.\n";
+    fs.writeFileSync(target, original, "utf8");
+    git(repo, ["add", "AGENTS.md"]);
+
+    const install = await run(["instructions", "install", "--target", target]);
+
+    expect(install.status).toBe(3);
+    expect(install.stderr).toContain("Refusing to install Mandible instructions");
+    expect(install.stderr).toContain("--worktree <feature-worktree>");
+    expect(fs.readFileSync(target, "utf8")).toBe(original);
+  });
+
+  it("maps a protected target into a worktree path before installing", async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-source-"));
+    const worktree = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-worktree-"));
+    tempRoots.push(repo, worktree);
+    git(repo, ["init", "-b", "main"]);
+    const sourceTarget = path.join(repo, ".codex", "AGENTS.md");
+    fs.mkdirSync(path.dirname(sourceTarget), { recursive: true });
+    fs.writeFileSync(sourceTarget, "# Source\n", "utf8");
+    git(repo, ["add", ".codex/AGENTS.md"]);
+
+    const install = await run([
+      "instructions",
+      "install",
+      "--target",
+      sourceTarget,
+      "--worktree",
+      worktree,
+    ]);
+
+    expect(install.status).toBe(0);
+    const worktreeTarget = path.join(worktree, ".codex", "AGENTS.md");
+    expect(install.stdout).toContain(worktreeTarget);
+    expect(fs.readFileSync(worktreeTarget, "utf8")).toContain("Mandible Interface Contract");
+    expect(fs.readFileSync(sourceTarget, "utf8")).toBe("# Source\n");
   });
 });

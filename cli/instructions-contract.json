@@ -59,8 +59,8 @@
       "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure."
     },
     {
-      "name": "mandible instructions diff|install [--target <file>]",
-      "description": "Show or update the managed Mandible interface block in an agent-instruction file."
+      "name": "mandible instructions diff [--target <file>] | install [--target <file>] [--worktree <path>] [--force]",
+      "description": "Show or update the managed Mandible interface block in an agent-instruction file. Installs into tracked protected-branch files are refused unless --force is explicit; use --worktree to target a feature-worktree copy."
     }
   ],
   "trailers": [
