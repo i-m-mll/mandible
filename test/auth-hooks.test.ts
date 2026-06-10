@@ -28,7 +28,7 @@ function createDbWithHooks(): InstanceType<typeof Database> {
       "mandible",
       "merge",
       "bash cli/post-merge-build-dist.sh",
-      "Build Mandible locally after merge",
+      "Build Mandible and install instructions after merge",
       now,
       now,
     );
@@ -46,7 +46,7 @@ describe("AuthHookManager", () => {
     expect(builtin!.repo_pattern).toBe("mandible");
     expect(builtin!.auth_type).toBe("merge");
     expect(builtin!.command).toBe("bash cli/post-merge-build-dist.sh");
-    expect(builtin!.label).toBe("Build Mandible locally after merge");
+    expect(builtin!.label).toBe("Build Mandible and install instructions after merge");
     expect(builtin!.builtin).toBe(true);
     expect(builtin!.enabled).toBe(true);
   });
