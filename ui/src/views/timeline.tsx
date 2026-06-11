@@ -25,6 +25,7 @@ import {
 } from './timeline-time';
 import {
   buildTimelineLayout,
+  type TimelineAggregateMark,
   type TimelineDensityMode,
   type TimelineEventMark,
   type TimelineLaneCache,
@@ -37,6 +38,7 @@ import {
   type TimelineDensity,
   type TimelineEvent,
   type TimelineEventKind,
+  type TimelineIssueRef,
   type TimelineLink,
   type TimelineRootPolicy,
   type TimelineRowOccurrence,
@@ -380,6 +382,7 @@ function rowKindLabel(kind: TimelineRowOccurrence['kind']): string {
   if (kind === 'promoted_root') return 'Promoted root';
   if (kind === 'explicit_root') return 'Explicit root';
   if (kind === 'transient') return 'Transient';
+  if (kind === 'member') return 'Member';
   return 'Root';
 }
 
@@ -442,9 +445,77 @@ function eventInWindow(event: TimelineEvent, start: number, end: number): boolea
   return event.timestamp >= start && event.timestamp <= end;
 }
 
+function isGroupRow(row: TimelineRowOccurrence): boolean {
+  return Boolean(row.row_spec && row.issue === null);
+}
+
+function isResidualRow(row: TimelineRowOccurrence): boolean {
+  return row.row_spec?.scope?.type === 'residual';
+}
+
 function isInputElement(target: EventTarget | null): boolean {
   const tag = (target as HTMLElement | null)?.tagName?.toLowerCase();
   return tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button';
+}
+
+function rowKindClass(kind: TimelineRowOccurrence['kind']): string {
+  return kind;
+}
+
+function rowPrimaryLabel(row: TimelineRowOccurrence): string {
+  return row.issue?.display_id ?? row.row_spec?.id ?? row.id;
+}
+
+function rowTitle(row: TimelineRowOccurrence): string {
+  return row.issue?.title ?? row.row_spec?.title ?? 'Timeline group';
+}
+
+function rowStatus(row: TimelineRowOccurrence): string {
+  if (row.issue) {
+    return `${row.issue.status}${row.issue.resolution ? `/${row.issue.resolution}` : ''}`;
+  }
+  return isResidualRow(row) ? 'residual' : 'filter';
+}
+
+type TimelineAggregateInterval = {
+  id: string;
+  rowId: string;
+  memberRowId: string;
+  issue: TimelineIssueRef;
+  startTime: number;
+  endTime: number;
+  eventCount: number;
+};
+
+function aggregateIntervalForMember(
+  groupRow: TimelineRowOccurrence,
+  memberRow: TimelineRowOccurrence,
+  rowEvents: readonly TimelineEvent[],
+): TimelineAggregateInterval | null {
+  if (!memberRow.issue || rowEvents.length === 0) return null;
+  let startTime = Number.POSITIVE_INFINITY;
+  let endTime = Number.NEGATIVE_INFINITY;
+  for (const event of rowEvents) {
+    startTime = Math.min(startTime, event.timestamp);
+    endTime = Math.max(endTime, event.timestamp);
+  }
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return null;
+  return {
+    id: `${groupRow.id}:${memberRow.id}`,
+    rowId: groupRow.id,
+    memberRowId: memberRow.id,
+    issue: memberRow.issue,
+    startTime,
+    endTime,
+    eventCount: rowEvents.length,
+  };
+}
+
+function aggregateAccessibleLabel(interval: TimelineAggregateInterval): string {
+  const range = interval.startTime === interval.endTime
+    ? `at ${formatDateTime(interval.startTime)}`
+    : `from ${formatDateTime(interval.startTime)} to ${formatDateTime(interval.endTime)}`;
+  return `Aggregate marker for ${interval.issue.display_id} ${interval.issue.title}, ${interval.eventCount} ${interval.eventCount === 1 ? 'event' : 'events'} ${range}`;
 }
 
 export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Element {
@@ -567,10 +638,33 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const events = projection?.events ?? EMPTY_TIMELINE_EVENTS;
   const links = projection?.links ?? EMPTY_TIMELINE_LINKS;
   const linkById = useMemo(() => new Map(links.map((link) => [link.id, link])), [links]);
-  const eventsByRow = useMemo(() => {
+  const allRowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
+  const rowChildrenByParent = useMemo(() => {
+    const result = new Map<string, TimelineRowOccurrence[]>();
+    for (const row of rows) {
+      if (!row.parent_row_id) continue;
+      const children = result.get(row.parent_row_id) ?? [];
+      children.push(row);
+      result.set(row.parent_row_id, children);
+    }
+    return result;
+  }, [rows]);
+  const expandedPathSet = useMemo(() => new Set(viewState.expandedPaths), [viewState.expandedPaths]);
+  const visibleRows = useMemo(() => rows.filter((row) => {
+    let parentId = row.parent_row_id;
+    while (parentId) {
+      const parent = allRowById.get(parentId);
+      if (!parent) break;
+      if (isGroupRow(parent) && !expandedPathSet.has(parent.id)) {
+        return false;
+      }
+      parentId = parent.parent_row_id;
+    }
+    return true;
+  }), [allRowById, expandedPathSet, rows]);
+  const allEventsByRow = useMemo(() => {
     const result = new Map<string, TimelineEvent[]>();
     for (const event of events) {
-      if (!viewState.visibleEventTypes.includes(event.kind)) continue;
       const rowEvents = result.get(event.row_id) ?? [];
       rowEvents.push(event);
       result.set(event.row_id, rowEvents);
@@ -579,7 +673,30 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       rowEvents.sort((a, b) => a.timestamp - b.timestamp || a.ordinal - b.ordinal);
     }
     return result;
-  }, [events, viewState.visibleEventTypes]);
+  }, [events]);
+  const eventsByRow = useMemo(() => {
+    const result = new Map<string, TimelineEvent[]>();
+    for (const [rowId, rowEvents] of allEventsByRow) {
+      const visibleEvents = rowEvents.filter((event) => viewState.visibleEventTypes.includes(event.kind));
+      if (visibleEvents.length > 0) result.set(rowId, visibleEvents);
+    }
+    return result;
+  }, [allEventsByRow, viewState.visibleEventTypes]);
+  const aggregateIntervals = useMemo(() => {
+    const intervals: TimelineAggregateInterval[] = [];
+    for (const row of rows) {
+      if (!isGroupRow(row) || expandedPathSet.has(row.id)) continue;
+      const members = rowChildrenByParent.get(row.id) ?? [];
+      for (const member of members) {
+        const interval = aggregateIntervalForMember(row, member, allEventsByRow.get(member.id) ?? []);
+        if (interval) intervals.push(interval);
+      }
+    }
+    return intervals;
+  }, [allEventsByRow, expandedPathSet, rowChildrenByParent, rows]);
+  const aggregateIntervalById = useMemo(() => (
+    new Map(aggregateIntervals.map((interval) => [interval.id, interval]))
+  ), [aggregateIntervals]);
   const dataExtent = useMemo(() => {
     const timestamps = Array.from(eventsByRow.values()).flatMap((rowEvents) => (
       rowEvents.map((event) => event.timestamp)
@@ -611,10 +728,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     timelineScrollMetrics(renderDomain, viewport, timeViewportWidthPx)
   ), [renderDomain, timeViewportWidthPx, viewport]);
   const eventById = useMemo(() => new Map(events.map((event) => [event.id, event])), [events]);
-  const rowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
+  const rowById = allRowById;
   const timelineLayout = useMemo(() => (
     buildTimelineLayout({
-      rows: rows.map((row) => ({ id: row.id })),
+      rows: visibleRows.map((row) => ({ id: row.id })),
       events: Array.from(eventsByRow.values()).flatMap((rowEvents) => rowEvents.map((event) => ({
         id: event.id,
         rowId: event.row_id,
@@ -623,6 +740,15 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
         category: event.kind,
         importance: event.issue.priority === 'critical' ? 'critical' : 'normal',
       }))),
+      aggregates: aggregateIntervals.map((interval) => ({
+        id: interval.id,
+        rowId: interval.rowId,
+        issueId: interval.issue.id,
+        startTime: interval.startTime,
+        endTime: interval.endTime,
+        category: 'aggregate',
+        importance: interval.issue.priority === 'critical' ? 'critical' : 'normal',
+      })),
       renderDomain: { start: renderDomain.start, end: renderDomain.end },
       viewportWidthPx: scrollMetrics.surfaceWidthPx,
       density: viewState.density,
@@ -636,14 +762,15 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       rangeClusterMinCount: rangeClusterMinCountForDensity(viewState.density),
     })
   ), [
+    aggregateIntervals,
     eventsByRow,
     layoutMetrics.laneHeightPx,
     layoutMetrics.markWidthPx,
     layoutMetrics.rowMinHeightPx,
     renderDomain.end,
     renderDomain.start,
-    rows,
     scrollMetrics.surfaceWidthPx,
+    visibleRows,
     viewState.density,
     viewState.selectedEventId,
     viewState.selectedClusterId,
@@ -651,6 +778,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const eventMarkById = useMemo(() => (
     new Map(timelineLayout.eventMarks.map((mark) => [mark.eventId, mark]))
   ), [timelineLayout.eventMarks]);
+  const aggregateMarkById = useMemo(() => (
+    new Map(timelineLayout.aggregateMarks.map((mark) => [mark.aggregateId, mark]))
+  ), [timelineLayout.aggregateMarks]);
   const clusterById = useMemo(() => (
     new Map<TimelineClusterMark['id'], TimelineClusterMark>([
       ...timelineLayout.sameTimeClusters.map((cluster) => [cluster.id, cluster] as const),
@@ -799,10 +929,12 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [events, links, rows, updateState, viewState]);
 
   const promoteRow = useCallback((row: TimelineRowOccurrence) => {
+    if (!row.issue) return;
     updateState({ promotedRootIssueIds: unique([...viewState.promotedRootIssueIds, row.issue.id]) });
   }, [updateState, viewState.promotedRootIssueIds]);
 
   const removePromotedRow = useCallback((row: TimelineRowOccurrence) => {
+    if (!row.issue) return;
     updateState({ promotedRootIssueIds: viewState.promotedRootIssueIds.filter((id) => id !== row.issue.id) });
   }, [updateState, viewState.promotedRootIssueIds]);
 
@@ -810,6 +942,49 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     if (!row.source_event_id) return;
     collapseEvent(row.source_event_id);
   }, [collapseEvent]);
+
+  const rowIsDescendantOf = useCallback((rowId: string, ancestorId: string): boolean => {
+    let parentId = allRowById.get(rowId)?.parent_row_id ?? null;
+    while (parentId) {
+      if (parentId === ancestorId) return true;
+      parentId = allRowById.get(parentId)?.parent_row_id ?? null;
+    }
+    return false;
+  }, [allRowById]);
+
+  const toggleGroupRow = useCallback((row: TimelineRowOccurrence) => {
+    if (!isGroupRow(row)) return;
+    const expanded = expandedPathSet.has(row.id);
+    updateState({
+      expandedPaths: expanded
+        ? viewState.expandedPaths.filter((path) => path !== row.id)
+        : unique([...viewState.expandedPaths, row.id]),
+      selectedRowOccurrenceId: expanded
+        && viewState.selectedRowOccurrenceId
+        && rowIsDescendantOf(viewState.selectedRowOccurrenceId, row.id)
+        ? row.id
+        : viewState.selectedRowOccurrenceId,
+      selectedEventId: expanded
+        && selectedEvent
+        && rowIsDescendantOf(selectedEvent.row_id, row.id)
+        ? null
+        : viewState.selectedEventId,
+      selectedClusterId: expanded
+        && viewState.selectedRowOccurrenceId
+        && rowIsDescendantOf(viewState.selectedRowOccurrenceId, row.id)
+        ? null
+        : viewState.selectedClusterId,
+    });
+  }, [
+    expandedPathSet,
+    rowIsDescendantOf,
+    selectedEvent,
+    updateState,
+    viewState.expandedPaths,
+    viewState.selectedClusterId,
+    viewState.selectedEventId,
+    viewState.selectedRowOccurrenceId,
+  ]);
 
   const beginRowListResize = useCallback((
     event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>,
@@ -999,13 +1174,13 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   ]);
 
   const navigateRow = useCallback((direction: 1 | -1) => {
-    if (rows.length === 0) return;
+    if (visibleRows.length === 0) return;
     const index = viewState.selectedRowOccurrenceId
-      ? rows.findIndex((row) => row.id === viewState.selectedRowOccurrenceId)
+      ? visibleRows.findIndex((row) => row.id === viewState.selectedRowOccurrenceId)
       : -1;
-    const next = rows[Math.max(0, Math.min(rows.length - 1, index + direction))] ?? rows[0];
+    const next = visibleRows[Math.max(0, Math.min(visibleRows.length - 1, index + direction))] ?? visibleRows[0];
     selectRow(next);
-  }, [rows, selectRow, viewState.selectedRowOccurrenceId]);
+  }, [selectRow, viewState.selectedRowOccurrenceId, visibleRows]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1230,33 +1405,39 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
         className={`timeline-grid timeline-grid--${viewState.density}`}
         style={{ '--timeline-row-list-width': `${viewState.panes.rowListWidth}px` } as JSX.CSSProperties}
       >
-        <div className="timeline-main" ref={timelineMainRef} role="grid" aria-rowcount={rows.length}>
+        <div className="timeline-main" ref={timelineMainRef} role="grid" aria-rowcount={visibleRows.length}>
           <div className="timeline-gutter-column" aria-label="Timeline rows">
             <div className="timeline-axis__corner" aria-hidden="true" />
             <div className="timeline-gutter-stack">
-              {rows.map((row) => {
+              {visibleRows.map((row) => {
                 const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
                 const selected = selectedRow?.id === row.id;
                 const rowLayout = timelineLayout.rowLayoutById[row.id];
+                const group = isGroupRow(row);
+                const groupExpanded = group && expandedPathSet.has(row.id);
+                const memberCount = rowChildrenByParent.get(row.id)?.length ?? 0;
                 return (
                   <button
                     key={row.id}
                     type="button"
-                    className={`timeline-gutter-row timeline-gutter-row--${row.kind}${selected ? ' timeline-gutter-row--selected' : ''}`}
+                    className={`timeline-gutter-row timeline-gutter-row--${rowKindClass(row.kind)}${group ? ' timeline-gutter-row--group' : ''}${isResidualRow(row) ? ' timeline-gutter-row--residual' : ''}${selected ? ' timeline-gutter-row--selected' : ''}`}
                     style={{
                       '--depth': row.depth,
                       height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px`,
                     } as JSX.CSSProperties}
-                    onClick={() => selectRow(row)}
-                    aria-label={`${row.issue.display_id} ${row.issue.title}. ${rowKindLabel(row.kind)} row. Status ${row.issue.status}${row.issue.resolution ? `/${row.issue.resolution}` : ''}.`}
+                    onClick={() => group ? toggleGroupRow(row) : selectRow(row)}
+                    aria-expanded={group ? groupExpanded : undefined}
+                    aria-label={`${rowPrimaryLabel(row)} ${rowTitle(row)}. ${group ? `${groupExpanded ? 'Expanded' : 'Collapsed'} group with ${memberCount} ${memberCount === 1 ? 'member' : 'members'}.` : `${rowKindLabel(row.kind)} row.`} Status ${rowStatus(row)}.`}
                   >
                     <span className="timeline-gutter-row__branch" aria-hidden="true" />
-                    <span className="sr-only">{rowKindLabel(row.kind)} row</span>
-                    <strong>{row.issue.display_id}</strong>
-                    <span className="timeline-gutter-row__title">{row.issue.title}</span>
-                    <em>{row.issue.status}{row.issue.resolution ? `/${row.issue.resolution}` : ''}</em>
+                    <span className="sr-only">{group ? 'Group row' : `${rowKindLabel(row.kind)} row`}</span>
+                    <strong>{group ? `${groupExpanded ? '-' : '+'} ${rowPrimaryLabel(row)}` : rowPrimaryLabel(row)}</strong>
+                    <span className="timeline-gutter-row__title">{rowTitle(row)}</span>
+                    <em>{rowStatus(row)}</em>
                     {sourceEvent ? (
                       <span className="timeline-gutter-row__origin">from {formatDate(sourceEvent.timestamp)}</span>
+                    ) : group ? (
+                      <span className="timeline-gutter-row__origin">{memberCount} {memberCount === 1 ? 'member' : 'members'}</span>
                     ) : null}
                   </button>
                 );
@@ -1297,9 +1478,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
               ))}
             </div>
             <div className="timeline-row-stack">
-              {rows.length === 0 ? (
+              {visibleRows.length === 0 ? (
                 <div className="timeline-empty">No timeline rows match the current controls.</div>
-              ) : rows.map((row) => {
+              ) : visibleRows.map((row) => {
                 const rowEvents = eventsByRow.get(row.id) ?? [];
                 const rowLayout = timelineLayout.rowLayoutById[row.id];
                 const rowEventMarks = rowEvents
@@ -1309,6 +1490,11 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                   (cluster) => cluster.rowId === row.id && !cluster.expanded,
                 );
                 const rowRangeClusters = timelineLayout.rangeClusters.filter((cluster) => cluster.rowId === row.id);
+                const rowAggregateMarks = aggregateIntervals
+                  .map((interval) => ({ interval, mark: aggregateMarkById.get(interval.id) }))
+                  .filter((entry): entry is { interval: TimelineAggregateInterval; mark: TimelineAggregateMark } => (
+                    Boolean(entry.mark) && entry.mark.rowId === row.id
+                  ));
                 const earlier = rowEvents.filter((event) => event.timestamp < start).length;
                 const later = rowEvents.filter((event) => event.timestamp > end).length;
                 const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
@@ -1329,7 +1515,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 return (
                   <div
                     key={row.id}
-                    className={`timeline-row timeline-row--${row.kind}${sourceEvent ? ' timeline-row--has-origin' : ''}${expandedSourceMark ? ' timeline-row--source-parent' : ''}${selected ? ' timeline-row--selected' : ''}`}
+                    className={`timeline-row timeline-row--${rowKindClass(row.kind)}${isGroupRow(row) ? ' timeline-row--group' : ''}${isResidualRow(row) ? ' timeline-row--residual' : ''}${sourceEvent ? ' timeline-row--has-origin' : ''}${expandedSourceMark ? ' timeline-row--source-parent' : ''}${selected ? ' timeline-row--selected' : ''}`}
                     role="row"
                     style={{
                       '--origin-x': originXPx === null ? undefined : `${originXPx}px`,
@@ -1361,6 +1547,33 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                       >
                         <span className="timeline-cluster__range-line" aria-hidden="true" />
                         <strong>{cluster.count}</strong>
+                      </button>
+                    ))}
+                    {rowAggregateMarks.map(({ interval, mark }) => (
+                      <button
+                        key={mark.id}
+                        type="button"
+                        className="timeline-cluster timeline-cluster--range timeline-aggregate"
+                        style={{
+                          left: `${mark.xPx}px`,
+                          top: `${markLaneTopPx(mark, layoutMetrics.laneHeightPx)}px`,
+                          width: `${Math.max(mark.widthPx, 28)}px`,
+                          borderColor: 'rgba(245, 194, 92, 0.62)',
+                          background: 'rgba(46, 38, 22, 0.94)',
+                        }}
+                        onClick={() => {
+                          const member = rowById.get(interval.memberRowId);
+                          if (member) selectRow(member);
+                        }}
+                        aria-label={aggregateAccessibleLabel(interval)}
+                        title={aggregateAccessibleLabel(interval)}
+                      >
+                        <span
+                          className="timeline-cluster__range-line"
+                          style={{ borderTopColor: 'rgba(245, 194, 92, 0.72)' }}
+                          aria-hidden="true"
+                        />
+                        <strong>{shortIssueId(interval.issue.display_id)}</strong>
                       </button>
                     ))}
                     {rowSameTimeClusters.map((cluster) => (
@@ -1522,7 +1735,7 @@ function TimelineInspector({
           <dl className="timeline-meta">
             <div><dt>Time</dt><dd>{clusterTimeLabel(selectedCluster)}</dd></div>
             <div><dt>Categories</dt><dd>{clusterCategorySummaryLabel(selectedCluster.categorySummary)}</dd></div>
-            <div><dt>Row</dt><dd>{selectedRow?.issue.display_id ?? selectedCluster.rowId}</dd></div>
+            <div><dt>Row</dt><dd>{selectedRow ? rowPrimaryLabel(selectedRow) : selectedCluster.rowId}</dd></div>
             <div><dt>Selected child</dt><dd>{selectedCluster.containsSelected ? 'Yes' : 'No'}</dd></div>
           </dl>
           <div className="timeline-inspector__actions">
@@ -1587,11 +1800,11 @@ function TimelineInspector({
         <section className="timeline-inspector__section">
           <div className="timeline-inspector__header">
             <span>{rowKindLabel(selectedRow.kind)}</span>
-            <strong>{selectedRow.issue.title}</strong>
+            <strong>{rowTitle(selectedRow)}</strong>
           </div>
           <dl className="timeline-meta">
-            <div><dt>Issue</dt><dd>{selectedRow.issue.display_id}</dd></div>
-            <div><dt>Status</dt><dd>{selectedRow.issue.status}</dd></div>
+            <div><dt>{selectedRow.issue ? 'Issue' : 'Group'}</dt><dd>{rowPrimaryLabel(selectedRow)}</dd></div>
+            <div><dt>Status</dt><dd>{rowStatus(selectedRow)}</dd></div>
             <div><dt>Depth</dt><dd>{selectedRow.depth}</dd></div>
             <div><dt>Path</dt><dd>{selectedRow.path.join(' / ') || selectedRow.id}</dd></div>
           </dl>
@@ -1604,7 +1817,9 @@ function TimelineInspector({
             ) : selectedRow.kind === 'promoted_root' ? (
               <button type="button" onClick={() => onRemovePromotedRow(selectedRow)}>Remove promoted root</button>
             ) : null}
-            <a href={`#/issues?issue=${encodeURIComponent(selectedRow.issue.display_id)}`}>Open issue</a>
+            {selectedRow.issue ? (
+              <a href={`#/issues?issue=${encodeURIComponent(selectedRow.issue.display_id)}`}>Open issue</a>
+            ) : null}
           </div>
           <div className="timeline-list-fallback">
             <h3>Row events</h3>
