@@ -22,6 +22,14 @@ export interface AuthMergeExecutionContext {
   headBranch: string;
 }
 
+export interface AuthMergeReviewMetadata {
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  diffSummary: string;
+  commitMessage: string;
+}
+
 export class AuthExecutionContextError extends Error {
   constructor(message: string) {
     super(message);
@@ -30,6 +38,8 @@ export class AuthExecutionContextError extends Error {
 }
 
 const SAFE_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
+const MAX_DIFF_BYTES = 102400;
+const MAX_DIFF_BUFFER_BYTES = 50 * 1024 * 1024;
 
 export function isAuthMergeCommand(input: AuthMergeContextInput): boolean {
   const command = input.command ?? "";
@@ -69,6 +79,61 @@ export function resolveAuthMergeExecutionContext(
     repoName: repo.name,
     baseBranch,
     headBranch,
+  };
+}
+
+export function computeAuthMergeReviewMetadata(
+  repoRoot: string,
+  baseBranch: string,
+  headBranch: string
+): AuthMergeReviewMetadata {
+  const range = `refs/heads/${baseBranch}..refs/heads/${headBranch}`;
+  const shortstat = execFileSync("git", ["diff", "--shortstat", range], {
+    cwd: repoRoot,
+    encoding: "utf-8",
+    timeout: 10000,
+  }).trim();
+  const { filesChanged, additions, deletions } = parseGitShortstat(shortstat);
+
+  const fullDiff = execFileSync("git", ["diff", range], {
+    cwd: repoRoot,
+    encoding: "utf-8",
+    timeout: 10000,
+    maxBuffer: MAX_DIFF_BUFFER_BYTES,
+  });
+  const diffSummary =
+    fullDiff.length > MAX_DIFF_BYTES
+      ? `${fullDiff.slice(0, MAX_DIFF_BYTES)}\n... [truncated: ${fullDiff.length} bytes total, showing first ${MAX_DIFF_BYTES}]`
+      : fullDiff;
+
+  const commitMessage =
+    execFileSync("git", ["log", "--format=- %s", "-20", range], {
+      cwd: repoRoot,
+      encoding: "utf-8",
+      timeout: 10000,
+    }).trim() || `Merge ${headBranch}`;
+
+  return {
+    filesChanged,
+    additions,
+    deletions,
+    diffSummary,
+    commitMessage,
+  };
+}
+
+function parseGitShortstat(shortstat: string): {
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+} {
+  const filesChanged = Number(shortstat.match(/(\d+) files? changed/)?.[1] ?? 0);
+  const additions = Number(shortstat.match(/(\d+) insertions?\(\+\)/)?.[1] ?? 0);
+  const deletions = Number(shortstat.match(/(\d+) deletions?\(-\)/)?.[1] ?? 0);
+  return {
+    filesChanged: Number.isFinite(filesChanged) ? filesChanged : 0,
+    additions: Number.isFinite(additions) ? additions : 0,
+    deletions: Number.isFinite(deletions) ? deletions : 0,
   };
 }
 
@@ -116,8 +181,12 @@ function resolveRegisteredTargetRepo(
 
   const cwd = input.cwd?.trim() || null;
   if (!cwd) {
+    const repo = input.repo?.trim() ? findRegisteredRepoByRef(db, input.repo.trim()) : null;
+    if (repo) {
+      return repo;
+    }
     throw new AuthExecutionContextError(
-      "Auth merge requests require target_repo_root or cwd; raw-route submissions must identify a registered work repo."
+      "Auth merge requests require target_repo_root, repo, or cwd; raw-route submissions must identify a registered work repo."
     );
   }
 
@@ -135,6 +204,38 @@ function resolveRegisteredTargetRepo(
     );
   }
   return repo;
+}
+
+function findRegisteredRepoByRef(
+  db: Db,
+  repoRef: string
+): { root: string; name: string | null; defaultBranch: string | null } | null {
+  const normalizedRef = normalizeExistingPath(repoRef);
+  const rows = db
+    .prepare(
+      "SELECT id, root, name, default_branch FROM work_repos WHERE dir_exists = 1 AND excluded = 0"
+    )
+    .all() as Array<{ id: string; root: string; name: string | null; default_branch: string | null }>;
+  for (const row of rows) {
+    const normalizedRoot = normalizeExistingPath(row.root);
+    if (!normalizedRoot) {
+      continue;
+    }
+    if (
+      row.id === repoRef ||
+      row.name === repoRef ||
+      row.root === repoRef ||
+      normalizedRoot === normalizedRef ||
+      path.basename(normalizedRoot) === repoRef
+    ) {
+      return {
+        root: normalizedRoot,
+        name: row.name ?? null,
+        defaultBranch: row.default_branch ?? null,
+      };
+    }
+  }
+  return null;
 }
 
 function findRegisteredRepo(

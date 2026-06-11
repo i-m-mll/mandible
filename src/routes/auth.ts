@@ -1,6 +1,7 @@
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import {
+  computeAuthMergeReviewMetadata,
   isAuthMergeCommand,
   normalizeExistingPath,
   repoRootFromGitCommonDir,
@@ -50,6 +51,20 @@ export function registerAuthRoutes(
         payload.repo = payload.repo ?? resolved.repoName ?? path.basename(resolved.targetRepoRoot);
         payload.base_branch = resolved.baseBranch;
         payload.head_branch = resolved.headBranch;
+        const metadata = computeAuthMergeReviewMetadata(
+          resolved.targetRepoRoot,
+          resolved.baseBranch,
+          resolved.headBranch
+        );
+        payload.files_changed = payload.files_changed ?? metadata.filesChanged;
+        payload.additions = payload.additions ?? metadata.additions;
+        payload.deletions = payload.deletions ?? metadata.deletions;
+        if (!payload.diff_summary) {
+          payload.diff_summary = metadata.diffSummary;
+        }
+        if (!payload.commit_message) {
+          payload.commit_message = metadata.commitMessage;
+        }
       } catch (error) {
         res.status(400).json({
           error: error instanceof Error ? error.message : "Invalid auth merge execution context."
