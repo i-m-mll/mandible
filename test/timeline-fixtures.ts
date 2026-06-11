@@ -172,6 +172,17 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
   store.setIssueStatus(rootA.id, "open", null);
   store.setLabel(rootB.id, "needs-review", true, "mandible");
   store.setLabel(rootB.id, "needs-review", false, "mandible");
+  db.prepare(
+    `UPDATE ledger_events
+     SET occurred_at = ?, observed_at = ?
+     WHERE event_type = 'label.updated'
+       AND occurred_at < ?`,
+  ).run(BASE + 155, BASE + 155, BASE);
+  db.prepare(
+    `UPDATE ledger_labels
+     SET created_at = ?
+     WHERE created_at < ?`,
+  ).run(BASE + 155, BASE);
   const authCompleted = store.recordEvent({
     entity_type: "auth_request",
     entity_id: "auth_timeline_1",

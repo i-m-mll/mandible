@@ -228,6 +228,98 @@ describe("project timeline projection", () => {
     ]));
   });
 
+  it("synthesizes derived backlink events on visible target rows", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.shared.id],
+      event_kinds: ["backlink", "body", "comment", "state"],
+    });
+    const sharedRow = projection.rows.find((row) => row.issue.id === fixture.issues.shared.id);
+    const backlink = projection.events.find((event) => (
+      event.kind === "backlink"
+      && event.row_id === sharedRow?.id
+      && event.source_entity.type === "comment"
+      && event.source_entity.id === fixture.comments.rootARefs
+    ));
+
+    expect(backlink).toMatchObject({
+      row_id: sharedRow?.id,
+      issue: expect.objectContaining({ id: fixture.issues.shared.id }),
+      source_entity: {
+        type: "comment",
+        id: fixture.comments.rootARefs,
+        issue_id: fixture.issues.rootA.id,
+      },
+      kind: "backlink",
+      timestamp: 1_800_000_000_110,
+      display_headline: `Referenced by ${fixture.issues.rootA.short_id}`,
+      headline_source: "backlink",
+      body: expect.stringContaining("[issue:"),
+      link_ids: [],
+      backlink: expect.objectContaining({
+        relationship_type: "references",
+        source_issue: expect.objectContaining({ id: fixture.issues.rootA.id }),
+        target_issue: expect.objectContaining({ id: fixture.issues.shared.id }),
+        source_entity: {
+          type: "comment",
+          id: fixture.comments.rootARefs,
+          issue_id: fixture.issues.rootA.id,
+        },
+        raw_ref: expect.stringContaining("[issue:"),
+        derived: true,
+      }),
+    });
+  });
+
+  it("keeps many backlink refs as projection events with clustering metadata", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [
+        fixture.issues.shared.id,
+        fixture.issues.nested.id,
+        fixture.issues.cycle.id,
+      ],
+      event_kinds: ["backlink", "body", "comment", "state"],
+    });
+    const manyRefBacklinks = projection.events.filter((event) => (
+      event.kind === "backlink"
+      && event.source_entity.type === "comment"
+      && event.source_entity.id === fixture.comments.manyRefs
+    ));
+
+    expect(manyRefBacklinks.map((event) => event.issue.id).sort()).toEqual([
+      fixture.issues.cycle.id,
+      fixture.issues.nested.id,
+      fixture.issues.shared.id,
+    ].sort());
+    expect(manyRefBacklinks.every((event) => event.timestamp === 1_800_000_000_130)).toBe(true);
+    expect(manyRefBacklinks.every((event) => event.backlink?.relationship_source_id)).toBe(true);
+    expect(manyRefBacklinks.every((event) => event.backlink?.normalized_ref)).toBe(true);
+  });
+
+  it("can omit synthetic backlink events via event_kinds without changing rows or diagnostics", () => {
+    const withBacklinks = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.shared.id],
+      event_kinds: ["backlink", "body", "comment", "state"],
+    });
+    const withoutBacklinks = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.shared.id],
+      event_kinds: ["body", "comment", "state"],
+    });
+
+    expect(withBacklinks.events.some((event) => event.kind === "backlink")).toBe(true);
+    expect(withoutBacklinks.events.some((event) => event.kind === "backlink")).toBe(false);
+    expect(withoutBacklinks.inputs.event_kinds).toEqual(["body", "comment", "state"]);
+    expect(withoutBacklinks.rows).toEqual(withBacklinks.rows);
+    expect(withoutBacklinks.diagnostics).toEqual(withBacklinks.diagnostics);
+  });
+
   it("expands event-linked issues into path-keyed transient occurrences and preserves the time axis", () => {
     const base = buildProjectTimelineProjection(fixture.db, {
       project_id: fixture.project.id,
@@ -338,7 +430,10 @@ describe("project timeline projection", () => {
     const sharedRow = second.rows.find((row) => row.issue.id === fixture.issues.shared.id);
     expect(sharedRow).toBeTruthy();
     const sharedNestedEvent = second.events.find((event) => (
-      event.row_id === sharedRow?.id && event.source_entity.type === "comment" && event.source_entity.id === fixture.comments.sharedNested
+      event.kind === "comment"
+      && event.row_id === sharedRow?.id
+      && event.source_entity.type === "comment"
+      && event.source_entity.id === fixture.comments.sharedNested
     ));
     expect(sharedNestedEvent).toBeTruthy();
 
@@ -360,7 +455,7 @@ describe("project timeline projection", () => {
 
     const cycleRow = second.rows.find((row) => row.issue.id === fixture.issues.cycle.id);
     const cycleBackEvent = second.events.find((event) => (
-      event.row_id === cycleRow?.id && event.source_entity.type === "comment"
+      event.kind === "comment" && event.row_id === cycleRow?.id && event.source_entity.type === "comment"
     ));
     const cycleProjection = buildProjectTimelineProjection(fixture.db, {
       project_id: fixture.project.id,
@@ -535,7 +630,10 @@ describe("project timeline projection", () => {
       root_specs: [{ id: "closed-features", scope: { type: "kind", kind: "feature" } }],
       statuses: ["closed"],
     });
-    expect(memberIssueIds(closedOnly, "closed-features")).toEqual([fixture.issues.closed.id]);
+    expect(memberIssueIds(closedOnly, "closed-features")).toEqual([
+      fixture.issues.closed.id,
+      fixture.issues.authDone.id,
+    ]);
   });
 
   it("projects parent-subtree members and reports parent-label cycles without crashing", () => {
