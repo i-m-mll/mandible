@@ -70,6 +70,8 @@ type InternalRowSpec = TimelineNormalizedRowSpec & {
   anchorIssue: IssueRow | null;
   legacyKind: TimelineRowOccurrenceKind | null;
   emitMembers: boolean;
+  source: "root_policy" | "input" | "default_residual";
+  occurrenceIndex: number;
   labelIntervals: TimelineLabelMembershipInterval[];
 };
 type PredicateDiagnosticInput = {
@@ -169,8 +171,10 @@ export function buildProjectTimelineProjection(
     labelHistory,
     diagnostics: predicateDiagnostics,
   });
-  normalized.root_specs = hasRootSpecInput(input) ? rootSpecs.map(normalizedSpec) : [];
-  rootSpecs.forEach((spec, index) => {
+  normalized.root_specs = rootSpecs
+    .filter((spec) => spec.source !== "root_policy")
+    .map(normalizedSpec);
+  rootSpecs.forEach((spec) => {
     if (spec.anchorIssue) {
       addIssueRow(
         spec.anchorIssue,
@@ -178,14 +182,16 @@ export function buildProjectTimelineProjection(
         null,
         null,
         0,
-        [`root:${spec.anchorIssue.id}:${index}`],
+        spec.source === "root_policy"
+          ? [`root:${spec.anchorIssue.id}:${spec.occurrenceIndex}`]
+          : [`spec:${spec.id}:${spec.occurrenceIndex}`, `anchor:${spec.anchorIssue.id}`],
         false,
-        null,
+        spec.source === "root_policy" ? null : rowSpecRef(spec),
       );
       return;
     }
     if (!spec.emitMembers || !spec.scope) {
-      addFilterRootRow(spec, index);
+      addFilterRootRow(spec);
       return;
     }
     const memberIds = evaluateRootScope(spec, {
@@ -221,7 +227,7 @@ export function buildProjectTimelineProjection(
         to: normalized.to,
       },
     );
-    const filterRoot = addFilterRootRow(spec, index);
+    const filterRoot = addFilterRootRow(spec);
     memberIssues.forEach((issue) => {
         const cycle = filterRoot.path.includes(`issue:${issue.id}`);
         const member = addIssueRow(
@@ -441,8 +447,8 @@ export function buildProjectTimelineProjection(
     return row;
   }
 
-  function addFilterRootRow(spec: InternalRowSpec, index: number): TimelineRowOccurrence {
-    const occurrencePath = `spec:${spec.id}:${index}`;
+  function addFilterRootRow(spec: InternalRowSpec): TimelineRowOccurrence {
+    const occurrencePath = `spec:${spec.id}:${spec.occurrenceIndex}`;
     const row: TimelineRowOccurrence = {
       id: `row:${occurrencePath}`,
       issue: null,
@@ -778,22 +784,22 @@ function buildRootSpecs(input: {
   diagnostics: TimelineDiagnostic[];
 }): InternalRowSpec[] {
   const explicitSpecs = input.rawInput.root_specs ?? input.rawInput.root_row_specs;
-  if (!explicitSpecs?.length) {
-    return selectRootIssues(input.issues, input.normalized).map((issue, index) => ({
-      id: `legacy:${issue.id}:${index}`,
-      title: issue.title,
-      anchor_issue_id: issue.id,
+  const rootPolicySpecs: InternalRowSpec[] = selectRootIssues(input.issues, input.normalized).map((issue, index) => ({
+    id: `legacy:${issue.id}:${index}`,
+    title: issue.title,
+    anchor_issue_id: issue.id,
       scope: labelList(issue).includes("coordination")
         ? { type: "referenced_by", issue_id: issue.id }
         : null,
       anchorIssue: issue,
       legacyKind: rootKind(issue.id, input.normalized),
       emitMembers: false,
-      labelIntervals: [],
-    }));
-  }
+    source: "root_policy" as const,
+    occurrenceIndex: index,
+    labelIntervals: [],
+  }));
 
-  return explicitSpecs.map((spec, index) => {
+  const inputSpecs = (explicitSpecs ?? []).map((spec, index) => {
     const anchorRef = spec.anchor_issue_id ?? spec.anchor ?? null;
     const anchorIssue = typeof anchorRef === "string"
       ? input.issueById.get(resolveIssueId(anchorRef, input.issueById) ?? "") ?? null
@@ -815,6 +821,8 @@ function buildRootSpecs(input: {
       anchorIssue,
       legacyKind: null,
       emitMembers: anchorIssue === null,
+      source: "input" as const,
+      occurrenceIndex: index,
       labelIntervals: [],
     };
     if (!normalized.anchorIssue && !normalized.scope) {
@@ -826,10 +834,23 @@ function buildRootSpecs(input: {
     }
     return normalized;
   });
-}
-
-function hasRootSpecInput(input: ProjectTimelineInput): boolean {
-  return (input.root_specs?.length ?? input.root_row_specs?.length ?? 0) > 0;
+  const specs = [...rootPolicySpecs, ...inputSpecs];
+  const hasFilterRows = inputSpecs.some((spec) => spec.anchorIssue === null);
+  if (!inputSpecs.some((spec) => spec.scope && containsResidualPredicate(spec.scope))) {
+    specs.push({
+      id: uniqueSpecId("residual", specs),
+      title: "Residual issues",
+      anchor_issue_id: null,
+      scope: { type: "residual" },
+      anchorIssue: null,
+      legacyKind: null,
+      emitMembers: hasFilterRows,
+      source: "default_residual",
+      occurrenceIndex: inputSpecs.length,
+      labelIntervals: [],
+    });
+  }
+  return specs;
 }
 
 function normalizedSpec(spec: InternalRowSpec): TimelineNormalizedRowSpec {
@@ -1038,7 +1059,15 @@ function residualCoveredIssueIds(
 ): Set<string> {
   const covered = new Set<string>();
   for (const spec of specs) {
-    if (spec.id === residualSpec.id || !spec.scope || containsResidualPredicate(spec.scope)) continue;
+    if (
+      spec.source !== "input"
+      || spec.anchorIssue !== null
+      || spec.id === residualSpec.id
+      || !spec.scope
+      || containsResidualPredicate(spec.scope)
+    ) {
+      continue;
+    }
     for (const issueId of evaluatePredicate(spec.scope, context, spec.id, diagnostics)) {
       covered.add(issueId);
     }
@@ -1569,6 +1598,15 @@ function normalizePredicate(predicate: TimelineIssuePredicate | null): TimelineI
 function cleanSpecId(id: string | undefined): string | null {
   const trimmed = id?.trim();
   return trimmed ? trimmed.replace(/[^A-Za-z0-9_.:-]+/g, "-") : null;
+}
+
+function uniqueSpecId(base: string, specs: InternalRowSpec[]): string {
+  const existing = new Set(specs.map((spec) => spec.id));
+  if (!existing.has(base)) return base;
+  for (let index = 2; ; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!existing.has(candidate)) return candidate;
+  }
 }
 
 function predicateDiagnostic(input: PredicateDiagnosticInput): TimelineDiagnostic {
