@@ -38,7 +38,11 @@ import {
   type TimelineDensity,
   type TimelineEvent,
   type TimelineEventKind,
+  type TimelineFilterChip,
+  type TimelineFilterField,
+  type TimelineFilterRowSpec,
   type TimelineIssueRef,
+  type TimelineIssuePredicate,
   type TimelineLink,
   type TimelineRootPolicy,
   type TimelineRowOccurrence,
@@ -75,6 +79,9 @@ const TIMELINE_ROW_PADDING_Y_PX = 8;
 const EMPTY_TIMELINE_EVENTS: TimelineEvent[] = [];
 const EMPTY_TIMELINE_LINKS: TimelineLink[] = [];
 const EMPTY_TIMELINE_ROWS: TimelineRowOccurrence[] = [];
+const FILTER_ROW_URL_PARAM = 'rows';
+const FILTER_FIELDS: TimelineFilterField[] = ['label', 'kind', 'referenced-by', 'subtree'];
+const FILTER_FIELD_PREFIXES = ['label:', 'kind:', 'referenced-by:', 'subtree:'];
 
 export type TimelineViewProps = {
   repos: WorkRepo[];
@@ -134,12 +141,148 @@ function parseBool(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
+function isFilterField(value: string): value is TimelineFilterField {
+  return FILTER_FIELDS.includes(value as TimelineFilterField);
+}
+
+function cleanFilterValue(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function normalizeFilterChips(chips: TimelineFilterChip[]): TimelineFilterChip[] {
+  return chips
+    .map((chip) => ({
+      field: chip.field,
+      negated: chip.negated === true,
+      values: unique(chip.values.map(cleanFilterValue)),
+    }))
+    .filter((chip) => isFilterField(chip.field) && chip.values.length > 0);
+}
+
+function predicateForChip(chip: TimelineFilterChip): TimelineIssuePredicate | null {
+  const predicates = chip.values.map<TimelineIssuePredicate | null>((value) => {
+    if (chip.field === 'label') return { type: 'label', name: value };
+    if (chip.field === 'kind') return { type: 'kind', kind: value };
+    if (chip.field === 'referenced-by') return { type: 'referenced_by', issue_id: value };
+    if (chip.field === 'subtree') return { type: 'parent_subtree', issue_id: value };
+    return null;
+  }).filter((predicate): predicate is TimelineIssuePredicate => Boolean(predicate));
+  if (predicates.length === 0) return null;
+  const predicate = predicates.length === 1 ? predicates[0] : { type: 'or' as const, predicates };
+  return chip.negated ? { type: 'not', predicate } : predicate;
+}
+
+function predicateForChips(chips: TimelineFilterChip[]): TimelineIssuePredicate | null {
+  const predicates = normalizeFilterChips(chips)
+    .map(predicateForChip)
+    .filter((predicate): predicate is TimelineIssuePredicate => Boolean(predicate));
+  if (predicates.length === 0) return null;
+  return predicates.length === 1 ? predicates[0] : { type: 'and', predicates };
+}
+
+function chipLabel(chip: TimelineFilterChip): string {
+  const prefix = chip.negated ? '-' : '';
+  return `${prefix}${chip.field}:${chip.values.join(',')}`;
+}
+
+function filterRowTitle(chips: TimelineFilterChip[]): string {
+  const label = normalizeFilterChips(chips).map(chipLabel).join(' ');
+  return label || 'Custom filter';
+}
+
+function filterRowId(chips: TimelineFilterChip[], existing: readonly TimelineFilterRowSpec[] = []): string {
+  const base = filterRowTitle(chips)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 42) || 'filter';
+  const used = new Set(existing.map((row) => row.id));
+  let candidate = `local-${base}`;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `local-${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
+function rowSpecFromChips(
+  chips: TimelineFilterChip[],
+  existing: readonly TimelineFilterRowSpec[] = [],
+  id?: string,
+): TimelineFilterRowSpec | null {
+  const normalized = normalizeFilterChips(chips);
+  const scope = predicateForChips(normalized);
+  if (!scope) return null;
+  return {
+    id: id ?? filterRowId(normalized, existing),
+    title: filterRowTitle(normalized),
+    chips: normalized,
+    scope,
+  };
+}
+
+function parseFilterToken(rawToken: string): TimelineFilterChip | null {
+  const raw = rawToken.trim();
+  if (!raw) return null;
+  const negated = raw.startsWith('-');
+  const token = negated ? raw.slice(1) : raw;
+  const separator = token.indexOf(':');
+  if (separator <= 0) return null;
+  const field = token.slice(0, separator);
+  if (!isFilterField(field)) return null;
+  const values = unique(token.slice(separator + 1).split(',').map(cleanFilterValue));
+  return values.length > 0 ? { field, values, negated } : null;
+}
+
+function parseFilterRows(value: string | undefined): TimelineFilterRowSpec[] | undefined {
+  if (!value) return undefined;
+  try {
+    let parsed: Array<{ id?: unknown; chips?: unknown }>;
+    try {
+      parsed = JSON.parse(value) as Array<{ id?: unknown; chips?: unknown }>;
+    } catch {
+      parsed = JSON.parse(decodeURIComponent(value)) as Array<{ id?: unknown; chips?: unknown }>;
+    }
+    if (!Array.isArray(parsed)) return undefined;
+    const rows: TimelineFilterRowSpec[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object' || !Array.isArray(item.chips)) continue;
+      const chips = item.chips
+        .map((chip) => {
+          if (!chip || typeof chip !== 'object') return null;
+          const field = String((chip as TimelineFilterChip).field ?? '');
+          if (!isFilterField(field)) return null;
+          const values = Array.isArray((chip as TimelineFilterChip).values)
+            ? (chip as TimelineFilterChip).values.map(String)
+            : [];
+          return { field, values, negated: (chip as TimelineFilterChip).negated === true };
+        })
+        .filter((chip): chip is TimelineFilterChip => Boolean(chip));
+      const row = rowSpecFromChips(chips, rows, typeof item.id === 'string' ? item.id : undefined);
+      if (row) rows.push(row);
+    }
+    return rows;
+  } catch {
+    return undefined;
+  }
+}
+
+function serializeFilterRows(rows: readonly TimelineFilterRowSpec[]): string {
+  if (rows.length === 0) return '';
+  return JSON.stringify(rows.map((row) => ({
+    id: row.id,
+    chips: row.chips,
+  })));
+}
+
 function parseUrlState(params: Record<string, string | undefined>): TimelineUrlState {
   const eventTypes = parseCsv(params.types).filter((type): type is TimelineEventKind => (
     EVENT_TYPES.includes(type as TimelineEventKind)
   ));
   const from = safeNumber(params.from);
   const to = safeNumber(params.to);
+  const filterRows = parseFilterRows(params[FILTER_ROW_URL_PARAM]);
   return {
     projectRef: params.project,
     rootPolicy: coerceRootPolicy(params.root_policy),
@@ -154,6 +297,7 @@ function parseUrlState(params: Record<string, string | undefined>): TimelineUrlS
     density: coerceDensity(params.density),
     visibleEventTypes: eventTypes.length > 0 ? eventTypes : undefined,
     includeClosed: parseBool(params.closed),
+    filterRows,
     panes: params.inspector
       ? { ...DEFAULT_TIMELINE_VIEW_STATE.panes, inspector: parseBool(params.inspector) ?? true }
       : undefined,
@@ -221,6 +365,7 @@ function mergeTimelineState(
     expandedEventIds: url.expandedEventIds?.length ? url.expandedEventIds : local.expandedEventIds ?? base.expandedEventIds,
     expandedPaths: url.expandedPaths?.length ? url.expandedPaths : local.expandedPaths ?? base.expandedPaths,
     visibleEventTypes: url.visibleEventTypes?.length ? url.visibleEventTypes : local.visibleEventTypes ?? base.visibleEventTypes,
+    filterRows: url.filterRows ?? local.filterRows ?? base.filterRows,
     timeWindow: url.timeWindow ?? local.timeWindow ?? base.timeWindow,
     panes: mergePanes(base.panes, local.panes, url.panes),
   };
@@ -277,6 +422,24 @@ function writeStoredState(projectId: string, state: TimelineViewState): void {
     window.localStorage.setItem(storageKey(projectId), JSON.stringify(state));
   } catch {
     return;
+  }
+}
+
+function syncFilterRowsToHash(projectRef: string, filterRows: readonly TimelineFilterRowSpec[]): void {
+  if (typeof window === 'undefined') return;
+  const hash = window.location.hash || '#/timeline';
+  const [, queryPart] = hash.replace(/^#/, '').split('?');
+  const params = new URLSearchParams(queryPart ?? '');
+  if (projectRef) params.set('project', projectRef);
+  const serializedRows = serializeFilterRows(filterRows);
+  if (serializedRows) {
+    params.set(FILTER_ROW_URL_PARAM, serializedRows);
+  } else {
+    params.delete(FILTER_ROW_URL_PARAM);
+  }
+  const nextHash = `#/timeline${params.toString() ? `?${params.toString()}` : ''}`;
+  if (window.location.hash !== nextHash) {
+    window.location.hash = nextHash;
   }
 }
 
@@ -453,6 +616,21 @@ function isResidualRow(row: TimelineRowOccurrence): boolean {
   return row.row_spec?.scope?.type === 'residual';
 }
 
+function isLocalFilterRoot(row: TimelineRowOccurrence): boolean {
+  return row.id.startsWith('row:local-filter:')
+    && row.issue === null
+    && Boolean(row.row_spec)
+    && !isResidualRow(row);
+}
+
+function isLocalResidualRoot(row: TimelineRowOccurrence): boolean {
+  return row.id === 'row:local-filter:residual';
+}
+
+function isLocalFilterPath(path: string): boolean {
+  return path.startsWith('row:local-filter:');
+}
+
 function isInputElement(target: EventTarget | null): boolean {
   const tag = (target as HTMLElement | null)?.tagName?.toLowerCase();
   return tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button';
@@ -475,6 +653,190 @@ function rowStatus(row: TimelineRowOccurrence): string {
     return `${row.issue.status}${row.issue.resolution ? `/${row.issue.resolution}` : ''}`;
   }
   return isResidualRow(row) ? 'residual' : 'filter';
+}
+
+function issueKey(issue: TimelineIssueRef): string[] {
+  return [issue.id, issue.display_id].filter(Boolean);
+}
+
+function issueMatchesRef(issue: TimelineIssueRef, value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return issueKey(issue).some((key) => key.toLowerCase() === normalized);
+}
+
+function collectTimelineIssues(rows: readonly TimelineRowOccurrence[], events: readonly TimelineEvent[]): TimelineIssueRef[] {
+  const byId = new Map<string, TimelineIssueRef>();
+  for (const row of rows) {
+    if (row.issue) byId.set(row.issue.id, row.issue);
+  }
+  for (const event of events) {
+    byId.set(event.issue.id, event.issue);
+  }
+  return Array.from(byId.values()).sort((left, right) => left.display_id.localeCompare(right.display_id));
+}
+
+function issueMatchesPredicate(
+  issue: TimelineIssueRef,
+  predicate: TimelineIssuePredicate,
+  links: readonly TimelineLink[],
+): boolean {
+  if (predicate.type === 'label') {
+    return issue.labels.some((label) => label.toLowerCase() === predicate.name.toLowerCase());
+  }
+  if (predicate.type === 'kind') {
+    return issue.kind.toLowerCase() === predicate.kind.toLowerCase();
+  }
+  if (predicate.type === 'referenced_by') {
+    return links.some((link) => (
+      issueMatchesRef(link.source_issue, predicate.issue_id)
+      && link.target_issue
+      && issueMatchesRef(issue, link.target_issue.id)
+    ));
+  }
+  if (predicate.type === 'parent_subtree') {
+    if (issueMatchesRef(issue, predicate.issue_id)) return true;
+    return links.some((link) => (
+      link.relationship_type === 'parent'
+      && link.target_issue
+      && issueMatchesRef(link.source_issue, predicate.issue_id)
+      && issueMatchesRef(issue, link.target_issue.id)
+    ));
+  }
+  if (predicate.type === 'and') {
+    return predicate.predicates.every((child) => issueMatchesPredicate(issue, child, links));
+  }
+  if (predicate.type === 'or') {
+    return predicate.predicates.some((child) => issueMatchesPredicate(issue, child, links));
+  }
+  if (predicate.type === 'not') {
+    return !issueMatchesPredicate(issue, predicate.predicate, links);
+  }
+  return false;
+}
+
+function localFilterGroupRow(
+  spec: TimelineFilterRowSpec,
+  index: number,
+): TimelineRowOccurrence {
+  const id = `row:local-filter:${spec.id}`;
+  return {
+    id,
+    issue: null,
+    row_spec: {
+      id: spec.id,
+      title: spec.title,
+      anchor_issue_id: null,
+      scope: spec.scope,
+    },
+    kind: 'root',
+    parent_row_id: null,
+    source_event_id: null,
+    depth: 0,
+    path: [`rowspec:${spec.id}:${index}`],
+    expanded: true,
+    cycle: false,
+    hidden_reason: null,
+  };
+}
+
+function localResidualGroupRow(): TimelineRowOccurrence {
+  return {
+    id: 'row:local-filter:residual',
+    issue: null,
+    row_spec: {
+      id: 'residual',
+      title: 'Residual issues',
+      anchor_issue_id: null,
+      scope: { type: 'residual' },
+    },
+    kind: 'root',
+    parent_row_id: null,
+    source_event_id: null,
+    depth: 0,
+    path: ['rowspec:residual'],
+    expanded: true,
+    cycle: false,
+    hidden_reason: null,
+  };
+}
+
+function localMemberRow(
+  parent: TimelineRowOccurrence,
+  issue: TimelineIssueRef,
+  index: number,
+): TimelineRowOccurrence {
+  return {
+    id: `${parent.id}:member:${issue.id}`,
+    issue,
+    row_spec: parent.row_spec ?? null,
+    kind: 'member',
+    parent_row_id: parent.id,
+    source_event_id: null,
+    depth: 1,
+    path: [...parent.path, `issue:${issue.id}:${index}`],
+    expanded: false,
+    cycle: false,
+    hidden_reason: null,
+  };
+}
+
+function localEventForRow(event: TimelineEvent, row: TimelineRowOccurrence): TimelineEvent {
+  return {
+    ...event,
+    id: `${row.id}:event:${event.id}`,
+    row_id: row.id,
+    link_ids: [],
+  };
+}
+
+function applyLocalFilterRows(
+  baseRows: readonly TimelineRowOccurrence[],
+  baseEvents: readonly TimelineEvent[],
+  links: readonly TimelineLink[],
+  filterRows: readonly TimelineFilterRowSpec[],
+): { rows: TimelineRowOccurrence[]; events: TimelineEvent[] } {
+  if (filterRows.length === 0) {
+    return { rows: [...baseRows], events: [...baseEvents] };
+  }
+  const issues = collectTimelineIssues(baseRows, baseEvents);
+  const eventsByIssue = new Map<string, TimelineEvent[]>();
+  for (const event of baseEvents) {
+    const issueEvents = eventsByIssue.get(event.issue.id) ?? [];
+    issueEvents.push(event);
+    eventsByIssue.set(event.issue.id, issueEvents);
+  }
+  const localRows: TimelineRowOccurrence[] = [];
+  const localEvents: TimelineEvent[] = [];
+  const coveredIssueIds = new Set<string>();
+
+  filterRows.forEach((spec, index) => {
+    const group = localFilterGroupRow(spec, index);
+    localRows.push(group);
+    const members = issues.filter((issue) => issueMatchesPredicate(issue, spec.scope, links));
+    members.forEach((issue, memberIndex) => {
+      coveredIssueIds.add(issue.id);
+      const member = localMemberRow(group, issue, memberIndex);
+      localRows.push(member);
+      for (const event of eventsByIssue.get(issue.id) ?? []) {
+        localEvents.push(localEventForRow(event, member));
+      }
+    });
+  });
+
+  const residualGroup = localResidualGroupRow();
+  localRows.push(residualGroup);
+  issues.filter((issue) => !coveredIssueIds.has(issue.id)).forEach((issue, memberIndex) => {
+    const member = localMemberRow(residualGroup, issue, memberIndex);
+    localRows.push(member);
+    for (const event of eventsByIssue.get(issue.id) ?? []) {
+      localEvents.push(localEventForRow(event, member));
+    }
+  });
+
+  return {
+    rows: [...baseRows, ...localRows],
+    events: [...baseEvents, ...localEvents],
+  };
 }
 
 type TimelineAggregateInterval = {
@@ -536,6 +898,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const gestureScaleRef = useRef<number | null>(null);
   const rowListResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [timeViewportWidthPx, setTimeViewportWidthPx] = useState(FALLBACK_TIMELINE_WIDTH_PX);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [composerEditingRowId, setComposerEditingRowId] = useState<string | null>(null);
+  const [composerDraftChips, setComposerDraftChips] = useState<TimelineFilterChip[]>([]);
   const laneCacheRef = useRef<TimelineLaneCache>({});
   const requestGeneration = useRef(0);
   const appliedRouteProjectRef = useRef(initialProjectRef);
@@ -566,6 +931,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     () => projectionDepthForExpandedEvents(projection, viewState.expandedEventIds),
     [projection, viewState.expandedEventIds],
   );
+  const backendExpandedPaths = useMemo(
+    () => viewState.expandedPaths.filter((path) => !isLocalFilterPath(path)),
+    [viewState.expandedPaths],
+  );
 
   useEffect(() => {
     const nextProjectRef = defaultProjectRef(repos, urlState.projectRef);
@@ -595,6 +964,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   }, [projectRef, projection?.project.id, viewState]);
 
   useEffect(() => {
+    syncFilterRowsToHash(projectRef, viewState.filterRows);
+  }, [projectRef, viewState.filterRows]);
+
+  useEffect(() => {
     const generation = requestGeneration.current + 1;
     requestGeneration.current = generation;
     const controller = new AbortController();
@@ -606,7 +979,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       explicit_root_issue_ids: viewState.explicitRootIssueIds,
       promoted_root_issue_ids: viewState.promotedRootIssueIds,
       expanded_event_ids: viewState.expandedEventIds,
-      expanded_paths: viewState.expandedPaths,
+      expanded_paths: backendExpandedPaths,
       include_closed: viewState.includeClosed,
       depth: projectionDepth,
     }, controller.signal)
@@ -629,14 +1002,19 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     viewState.explicitRootIssueIds.join(','),
     viewState.promotedRootIssueIds.join(','),
     viewState.expandedEventIds.join(','),
-    viewState.expandedPaths.join(','),
+    backendExpandedPaths.join(','),
     viewState.includeClosed,
     projectionDepth,
   ]);
 
-  const rows = projection?.rows ?? EMPTY_TIMELINE_ROWS;
-  const events = projection?.events ?? EMPTY_TIMELINE_EVENTS;
+  const baseRows = projection?.rows ?? EMPTY_TIMELINE_ROWS;
+  const baseEvents = projection?.events ?? EMPTY_TIMELINE_EVENTS;
   const links = projection?.links ?? EMPTY_TIMELINE_LINKS;
+  const filteredProjection = useMemo(() => (
+    applyLocalFilterRows(baseRows, baseEvents, links, viewState.filterRows)
+  ), [baseEvents, baseRows, links, viewState.filterRows]);
+  const rows = filteredProjection.rows;
+  const events = filteredProjection.events;
   const linkById = useMemo(() => new Map(links.map((link) => [link.id, link])), [links]);
   const allRowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
   const rowChildrenByParent = useMemo(() => {
@@ -819,6 +1197,109 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       panes: patch.panes ?? current.panes,
     }));
   }, []);
+
+  const issueOptions = useMemo(
+    () => collectTimelineIssues(baseRows, baseEvents),
+    [baseEvents, baseRows],
+  );
+  const labelOptions = useMemo(() => (
+    unique(issueOptions.flatMap((issue) => issue.labels)).sort((left, right) => left.localeCompare(right))
+  ), [issueOptions]);
+  const kindOptions = useMemo(() => (
+    unique(issueOptions.map((issue) => issue.kind)).sort((left, right) => left.localeCompare(right))
+  ), [issueOptions]);
+  const issueValueOptions = useMemo(() => (
+    issueOptions.flatMap((issue) => [issue.display_id, issue.id]).filter(Boolean)
+  ), [issueOptions]);
+  const composerPreviewSpec = useMemo(
+    () => rowSpecFromChips(composerDraftChips, viewState.filterRows, composerEditingRowId ?? undefined),
+    [composerDraftChips, composerEditingRowId, viewState.filterRows],
+  );
+  const composerPreviewIssues = useMemo(() => (
+    composerPreviewSpec
+      ? issueOptions.filter((issue) => issueMatchesPredicate(issue, composerPreviewSpec.scope, links))
+      : []
+  ), [composerPreviewSpec, issueOptions, links]);
+
+  const openAddRowComposer = useCallback(() => {
+    setComposerOpen(true);
+    setComposerEditingRowId(null);
+    setComposerDraftChips([]);
+  }, []);
+
+  const openEditRowComposer = useCallback((row: TimelineRowOccurrence) => {
+    const specId = row.row_spec?.id;
+    const spec = specId ? viewState.filterRows.find((candidate) => candidate.id === specId) : null;
+    if (!spec) return;
+    setComposerOpen(true);
+    setComposerEditingRowId(spec.id);
+    setComposerDraftChips(spec.chips);
+  }, [viewState.filterRows]);
+
+  const closeComposer = useCallback(() => {
+    setComposerOpen(false);
+    setComposerEditingRowId(null);
+    setComposerDraftChips([]);
+  }, []);
+
+  const addComposerToken = useCallback((rawToken: string) => {
+    const chip = parseFilterToken(rawToken);
+    if (!chip) return false;
+    setComposerDraftChips((current) => [...current, chip]);
+    return true;
+  }, []);
+
+  const removeComposerChip = useCallback((index: number) => {
+    setComposerDraftChips((current) => current.filter((_, currentIndex) => currentIndex !== index));
+  }, []);
+
+  const saveComposerRow = useCallback(() => {
+    const next = rowSpecFromChips(composerDraftChips, viewState.filterRows, composerEditingRowId ?? undefined);
+    if (!next) return;
+    const nextFilterRows = composerEditingRowId
+      ? viewState.filterRows.map((row) => (row.id === composerEditingRowId ? next : row))
+      : [...viewState.filterRows, next];
+    updateState({
+      filterRows: nextFilterRows,
+      expandedPaths: unique([...viewState.expandedPaths, `row:local-filter:${next.id}`]),
+      selectedRowOccurrenceId: `row:local-filter:${next.id}`,
+      selectedEventId: null,
+      selectedClusterId: null,
+    });
+    closeComposer();
+  }, [
+    closeComposer,
+    composerDraftChips,
+    composerEditingRowId,
+    updateState,
+    viewState.expandedPaths,
+    viewState.filterRows,
+  ]);
+
+  const removeFilterRow = useCallback((row: TimelineRowOccurrence) => {
+    const specId = row.row_spec?.id;
+    if (!specId) return;
+    const removedRowId = `row:local-filter:${specId}`;
+    updateState({
+      filterRows: viewState.filterRows.filter((spec) => spec.id !== specId),
+      expandedPaths: viewState.expandedPaths.filter((path) => path !== removedRowId),
+      selectedRowOccurrenceId: viewState.selectedRowOccurrenceId?.startsWith(`${removedRowId}:`)
+        || viewState.selectedRowOccurrenceId === removedRowId
+        ? null
+        : viewState.selectedRowOccurrenceId,
+      selectedEventId: viewState.selectedEventId?.startsWith(`${removedRowId}:`) ? null : viewState.selectedEventId,
+      selectedClusterId: null,
+    });
+    if (composerEditingRowId === specId) closeComposer();
+  }, [
+    closeComposer,
+    composerEditingRowId,
+    updateState,
+    viewState.expandedPaths,
+    viewState.filterRows,
+    viewState.selectedEventId,
+    viewState.selectedRowOccurrenceId,
+  ]);
 
   const suppressTimelineScrollEvents = useCallback((durationMs = 160) => {
     suppressProgrammaticScrollRef.current = true;
@@ -1417,31 +1898,69 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 const groupExpanded = group && expandedPathSet.has(row.id);
                 const memberCount = rowChildrenByParent.get(row.id)?.length ?? 0;
                 return (
-                  <button
+                  <div
                     key={row.id}
-                    type="button"
-                    className={`timeline-gutter-row timeline-gutter-row--${rowKindClass(row.kind)}${group ? ' timeline-gutter-row--group' : ''}${isResidualRow(row) ? ' timeline-gutter-row--residual' : ''}${selected ? ' timeline-gutter-row--selected' : ''}`}
+                    className="timeline-gutter-row-shell"
                     style={{
-                      '--depth': row.depth,
                       height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px`,
                     } as JSX.CSSProperties}
-                    onClick={() => group ? toggleGroupRow(row) : selectRow(row)}
-                    aria-expanded={group ? groupExpanded : undefined}
-                    aria-label={`${rowPrimaryLabel(row)} ${rowTitle(row)}. ${group ? `${groupExpanded ? 'Expanded' : 'Collapsed'} group with ${memberCount} ${memberCount === 1 ? 'member' : 'members'}.` : `${rowKindLabel(row.kind)} row.`} Status ${rowStatus(row)}.`}
                   >
-                    <span className="timeline-gutter-row__branch" aria-hidden="true" />
-                    <span className="sr-only">{group ? 'Group row' : `${rowKindLabel(row.kind)} row`}</span>
-                    <strong>{group ? `${groupExpanded ? '-' : '+'} ${rowPrimaryLabel(row)}` : rowPrimaryLabel(row)}</strong>
-                    <span className="timeline-gutter-row__title">{rowTitle(row)}</span>
-                    <em>{rowStatus(row)}</em>
-                    {sourceEvent ? (
-                      <span className="timeline-gutter-row__origin">from {formatDate(sourceEvent.timestamp)}</span>
-                    ) : group ? (
-                      <span className="timeline-gutter-row__origin">{memberCount} {memberCount === 1 ? 'member' : 'members'}</span>
-                    ) : null}
-                  </button>
+                    <button
+                      type="button"
+                      className={`timeline-gutter-row timeline-gutter-row--${rowKindClass(row.kind)}${group ? ' timeline-gutter-row--group' : ''}${isResidualRow(row) ? ' timeline-gutter-row--residual' : ''}${selected ? ' timeline-gutter-row--selected' : ''}`}
+                      style={{
+                        '--depth': row.depth,
+                        height: `${rowLayout?.heightPx ?? layoutMetrics.rowMinHeightPx}px`,
+                      } as JSX.CSSProperties}
+                      onClick={() => group ? toggleGroupRow(row) : selectRow(row)}
+                      aria-expanded={group ? groupExpanded : undefined}
+                      aria-label={`${rowPrimaryLabel(row)} ${rowTitle(row)}. ${group ? `${groupExpanded ? 'Expanded' : 'Collapsed'} group with ${memberCount} ${memberCount === 1 ? 'member' : 'members'}.` : `${rowKindLabel(row.kind)} row.`} Status ${rowStatus(row)}.`}
+                    >
+                      <span className="timeline-gutter-row__branch" aria-hidden="true" />
+                      <span className="sr-only">{group ? 'Group row' : `${rowKindLabel(row.kind)} row`}</span>
+                      <strong>{group ? `${groupExpanded ? '-' : '+'} ${rowPrimaryLabel(row)}` : rowPrimaryLabel(row)}</strong>
+                      <span className="timeline-gutter-row__title">{rowTitle(row)}</span>
+                      <em>{rowStatus(row)}</em>
+                      {sourceEvent ? (
+                        <span className="timeline-gutter-row__origin">from {formatDate(sourceEvent.timestamp)}</span>
+                      ) : group ? (
+                        <span className="timeline-gutter-row__origin">{memberCount} {memberCount === 1 ? 'member' : 'members'}</span>
+                      ) : null}
+                    </button>
+                    <div className="timeline-gutter-row__actions">
+                      {isLocalFilterRoot(row) ? (
+                        <>
+                          <button type="button" onClick={() => openEditRowComposer(row)} aria-label={`Edit filter ${rowTitle(row)}`}>Edit</button>
+                          <button type="button" onClick={() => removeFilterRow(row)} aria-label={`Remove filter ${rowTitle(row)}`}>Remove</button>
+                        </>
+                      ) : isLocalResidualRoot(row) ? (
+                        <span>Built in</span>
+                      ) : row.issue ? (
+                        <button type="button" onClick={() => selectRow(row)} aria-label={`Row menu for ${rowPrimaryLabel(row)}`}>...</button>
+                      ) : null}
+                    </div>
+                  </div>
                 );
               })}
+              <button type="button" className="timeline-add-row-button" onClick={openAddRowComposer}>
+                + Add row
+              </button>
+              {composerOpen ? (
+                <TimelineFilterComposer
+                  chips={composerDraftChips}
+                  editing={composerEditingRowId !== null}
+                  previewIssues={composerPreviewIssues}
+                  previewTitle={composerPreviewSpec?.title ?? 'Custom filter'}
+                  labelOptions={labelOptions}
+                  kindOptions={kindOptions}
+                  issueOptions={issueValueOptions}
+                  onAddToken={addComposerToken}
+                  onRemoveChip={removeComposerChip}
+                  onCancel={closeComposer}
+                  onSave={saveComposerRow}
+                  canSave={Boolean(composerPreviewSpec)}
+                />
+              ) : null}
             </div>
             <div
               className="timeline-gutter-resize-hit"
@@ -1659,6 +2178,117 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 
       </div>
     </section>
+  );
+}
+
+type TimelineFilterComposerProps = {
+  chips: TimelineFilterChip[];
+  editing: boolean;
+  previewIssues: TimelineIssueRef[];
+  previewTitle: string;
+  labelOptions: string[];
+  kindOptions: string[];
+  issueOptions: string[];
+  onAddToken: (token: string) => boolean;
+  onRemoveChip: (index: number) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  canSave: boolean;
+};
+
+function TimelineFilterComposer({
+  chips,
+  editing,
+  previewIssues,
+  previewTitle,
+  labelOptions,
+  kindOptions,
+  issueOptions,
+  onAddToken,
+  onRemoveChip,
+  onCancel,
+  onSave,
+  canSave,
+}: TimelineFilterComposerProps): JSX.Element {
+  const [draftToken, setDraftToken] = useState('');
+  const optionValues = useMemo(() => {
+    const labels = labelOptions.map((value) => `label:${value}`);
+    const kinds = kindOptions.map((value) => `kind:${value}`);
+    const refs = issueOptions.map((value) => `referenced-by:${value}`);
+    const subtrees = issueOptions.map((value) => `subtree:${value}`);
+    return unique([...FILTER_FIELD_PREFIXES, ...labels, ...kinds, ...refs, ...subtrees]);
+  }, [issueOptions, kindOptions, labelOptions]);
+
+  const submitToken = useCallback(() => {
+    if (onAddToken(draftToken)) {
+      setDraftToken('');
+    }
+  }, [draftToken, onAddToken]);
+
+  const sampleIssues = previewIssues.slice(0, 3);
+
+  return (
+    <form
+      className="timeline-filter-composer"
+      aria-label={editing ? 'Edit timeline filter row' : 'Add timeline filter row'}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (draftToken.trim()) {
+          submitToken();
+          return;
+        }
+        if (canSave) onSave();
+      }}
+    >
+      <div className="timeline-filter-composer__chips" aria-label="Filter chips">
+        {chips.length === 0 ? <span>No filters</span> : chips.map((chip, index) => (
+          <button
+            key={`${chipLabel(chip)}:${index}`}
+            type="button"
+            className="timeline-filter-composer__chip"
+            onClick={() => onRemoveChip(index)}
+            aria-label={`Remove ${chipLabel(chip)}`}
+          >
+            {chipLabel(chip)}
+          </button>
+        ))}
+      </div>
+      <label className="timeline-filter-composer__input">
+        <span>Filter</span>
+        <input
+          value={draftToken}
+          onInput={(event) => setDraftToken((event.currentTarget as HTMLInputElement).value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && draftToken.trim()) {
+              event.preventDefault();
+              submitToken();
+            } else if (event.key === 'Backspace' && !draftToken && chips.length > 0) {
+              onRemoveChip(chips.length - 1);
+            }
+          }}
+          list="timeline-filter-token-options"
+          placeholder="label:auth -kind:question"
+          autoFocus
+        />
+      </label>
+      <datalist id="timeline-filter-token-options">
+        {optionValues.map((value) => <option key={value} value={value} />)}
+      </datalist>
+      <div className="timeline-filter-composer__preview" aria-live="polite">
+        <strong>{previewTitle}</strong>
+        <span>{previewIssues.length} {previewIssues.length === 1 ? 'member' : 'members'}</span>
+        {sampleIssues.length > 0 ? (
+          <em>{sampleIssues.map((issue) => `${issue.display_id} ${issue.title}`).join(' / ')}</em>
+        ) : (
+          <em>Empty rows are allowed.</em>
+        )}
+      </div>
+      <div className="timeline-filter-composer__actions">
+        <button type="button" onClick={submitToken} disabled={!draftToken.trim()}>Add chip</button>
+        <button type="button" onClick={onSave} disabled={!canSave}>{editing ? 'Save row' : 'Add as row'}</button>
+        <button type="button" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
   );
 }
 
