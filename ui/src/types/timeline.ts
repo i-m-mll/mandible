@@ -28,6 +28,14 @@ export type TimelineFilterRowSpec = {
   scope: TimelineIssuePredicate;
 };
 
+export type TimelineRowSpecInput = {
+  id?: string;
+  title?: string;
+  anchor?: string | null;
+  anchor_issue_id?: string | null;
+  scope?: TimelineIssuePredicate | null;
+};
+
 export type TimelineTimeWindow = {
   from: number | null;
   to: number | null;
@@ -62,6 +70,8 @@ export type ProjectTimelineInput = {
   project_id?: string;
   project_ref?: string;
   root_policy?: TimelineRootPolicy;
+  root_specs?: TimelineRowSpecInput[];
+  root_row_specs?: TimelineRowSpecInput[];
   explicit_root_issue_ids?: string[];
   promoted_root_issue_ids?: string[];
   expanded_event_ids?: string[];
@@ -75,6 +85,7 @@ export type ProjectTimelineInput = {
 export type ProjectTimelineNormalizedInput = {
   project_id: string;
   root_policy: TimelineRootPolicy;
+  root_specs: Required<Pick<TimelineRowSpecInput, 'id' | 'title' | 'anchor_issue_id' | 'scope'>>[];
   explicit_root_issue_ids: string[];
   promoted_root_issue_ids: string[];
   expanded_event_ids: string[];
