@@ -457,6 +457,22 @@ describe("auth queue", () => {
     }
   });
 
+  it("reports merge check infrastructure failures as errors, not conflicts", () => {
+    const queue = createQueue();
+    const missingCwd = path.join(os.tmpdir(), "mandible-missing-auth-check-cwd");
+
+    const check = queue.checkMergeIndependence({
+      repo: "repo",
+      base_branch: "main",
+      head_branch: "feature/demo",
+      cwd: missingCwd,
+    });
+
+    expect(check.status).toBe("error");
+    expect(check.conflicts).toEqual([]);
+    expect(check.reason).toContain("ENOENT");
+  });
+
   it("marks pending merge requests needs_rebase after post-merge revalidation", () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();

@@ -25,7 +25,7 @@ export function registerAuthRoutes(
       res.status(400).json({ error: "Invalid auth check payload." });
       return;
     }
-    const report = authQueue.checkMergeIndependence(payload);
+    const report = authQueue.checkMergeIndependence(resolveAuthCheckPayload(payload));
     res.status(200).json({ check: report });
   });
 
@@ -422,6 +422,59 @@ function parseAuthCheckPayload(body: Record<string, unknown>): AuthMergeCheckInp
     cwd: typeof body.cwd === "string" ? body.cwd : null,
     request_id: typeof body.request_id === "string" ? body.request_id : null,
   };
+}
+
+function resolveAuthCheckPayload(payload: AuthMergeCheckInput): AuthMergeCheckInput {
+  const resolved = { ...payload };
+  if (!resolved.cwd && resolved.repo) {
+    resolved.cwd = registeredAuthCheckRepoRoot(resolved.repo);
+  }
+  if (resolved.cwd && !resolved.base_branch) {
+    resolved.base_branch = detectProtectedBranch(resolved.cwd);
+  }
+  return resolved;
+}
+
+function registeredAuthCheckRepoRoot(repoRef: string): string | null {
+  const normalizedRef = normalizeExistingPath(repoRef);
+  try {
+    const rows = getDb()
+      .prepare(
+        "SELECT id, root, name FROM work_repos WHERE dir_exists = 1 AND excluded = 0"
+      )
+      .all() as Array<{ id: string; root: string; name: string }>;
+    for (const row of rows) {
+      const normalizedRoot = normalizeExistingPath(row.root);
+      if (!normalizedRoot) {
+        continue;
+      }
+      if (
+        row.id === repoRef ||
+        row.name === repoRef ||
+        row.root === repoRef ||
+        normalizedRoot === normalizedRef ||
+        path.basename(normalizedRoot) === repoRef
+      ) {
+        return normalizedRoot;
+      }
+    }
+  } catch (error) {
+    console.error("Auth check repository resolution failed:", error);
+  }
+  return null;
+}
+
+function detectProtectedBranch(cwd: string): string | null {
+  try {
+    execFileSync("git", ["show-ref", "--verify", "--quiet", "refs/heads/develop"], {
+      cwd,
+      stdio: "ignore",
+      timeout: 5000
+    });
+    return "develop";
+  } catch {
+    return "main";
+  }
 }
 
 // Bug: 297677f — parse a string array field (for issues)
