@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
+import { isAuthMergeCommand, resolveAuthMergeExecutionContext } from "./auth-context.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
 import { getDb, resolvePrefix } from "./db.js";
 import {
@@ -27,6 +28,11 @@ const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
 const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
   "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
 ];
+
+type MergeTreeResult =
+  | { status: "clean"; tree: string; files: string[]; message: string }
+  | { status: "conflict"; files: string[]; message: string }
+  | { status: "error"; files: string[]; message: string };
 
 export class AuthQueueError extends Error {
   readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict";
@@ -63,7 +69,7 @@ export interface AuthMergeConflict {
 }
 
 export interface AuthMergeCheckReport {
-  status: "clean" | "conflict" | "unknown";
+  status: "clean" | "conflict" | "error" | "unknown";
   repo: string | null;
   base_branch: string | null;
   head_branch: string | null;
@@ -489,7 +495,18 @@ export class AuthQueue {
     }
 
     const candidateTarget = this.mergeTree(cwd, baseBranch, headBranch);
-    if (!candidateTarget.clean) {
+    if (candidateTarget.status === "error") {
+      return {
+        status: "error",
+        repo,
+        base_branch: baseBranch,
+        head_branch: headBranch,
+        checked_requests: 0,
+        conflicts: [],
+        reason: candidateTarget.message
+      };
+    }
+    if (candidateTarget.status === "conflict") {
       return {
         status: "conflict",
         repo,
@@ -520,7 +537,18 @@ export class AuthQueue {
       }
       checked += 1;
       const pendingResult = this.mergeTree(cwd, simulatedBase, request.head_branch);
-      if (!pendingResult.clean) {
+      if (pendingResult.status === "error") {
+        return {
+          status: "error",
+          repo,
+          base_branch: baseBranch,
+          head_branch: headBranch,
+          checked_requests: checked,
+          conflicts: [],
+          reason: pendingResult.message
+        };
+      }
+      if (pendingResult.status === "conflict") {
         return {
           status: "conflict",
           repo,
@@ -543,7 +571,18 @@ export class AuthQueue {
         request.head_branch
       );
       const candidateAfterPending = this.mergeTree(cwd, simulatedBase, headBranch);
-      if (!candidateAfterPending.clean) {
+      if (candidateAfterPending.status === "error") {
+        return {
+          status: "error",
+          repo,
+          base_branch: baseBranch,
+          head_branch: headBranch,
+          checked_requests: checked,
+          conflicts: [],
+          reason: candidateAfterPending.message
+        };
+      }
+      if (candidateAfterPending.status === "conflict") {
         return {
           status: "conflict",
           repo,
@@ -870,7 +909,7 @@ export class AuthQueue {
 
   approve(id: string, approval?: AuthApprovalContext): AuthRequest {
     this.expireStale();
-    const request = this.requireRequest(id);
+    let request = this.requireRequest(id);
     if (request.status !== "pending") {
       throw new AuthQueueError(
         "invalid_status",
@@ -888,6 +927,22 @@ export class AuthQueue {
     }
 
     const now = this.now();
+    const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
+    if (executionContextUpdate) {
+      this.db
+        .prepare(
+          "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, updated_at = ? WHERE id = ?"
+        )
+        .run(
+          executionContextUpdate.cwd,
+          executionContextUpdate.target_repo_root,
+          executionContextUpdate.repo,
+          now,
+          id
+        );
+      request = this.requireRequest(id);
+    }
+
     this.db
       .prepare(
         "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ? WHERE id = ?"
@@ -900,6 +955,28 @@ export class AuthQueue {
     }
     this.executeInBackground(executing);
     return executing;
+  }
+
+  private resolveExecutionContextBeforeApproval(
+    request: AuthRequest
+  ): { cwd: string; target_repo_root: string; repo: string | null } | null {
+    if (request.execution_mode === "remote" || !isAuthMergeCommand(request)) {
+      return null;
+    }
+    try {
+      const resolved = resolveAuthMergeExecutionContext(this.db, request);
+      return {
+        cwd: resolved.executionCwd,
+        target_repo_root: resolved.targetRepoRoot,
+        repo: request.repo ?? resolved.repoName,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid auth merge execution context.";
+      throw new AuthQueueError(
+        "invalid_command",
+        `Auth merge request cannot be approved: ${message}`
+      );
+    }
   }
 
   autoApprovePending(approval: AuthApprovalContext): AuthRequest[] {
@@ -1324,7 +1401,7 @@ export class AuthQueue {
     cwd: string,
     base: string,
     head: string
-  ): { clean: true; tree: string; files: string[]; message: string } | { clean: false; files: string[]; message: string } {
+  ): MergeTreeResult {
     try {
       const stdout = execFileSync("git", ["merge-tree", "--write-tree", base, head], {
         cwd,
@@ -1333,13 +1410,20 @@ export class AuthQueue {
       }).trim();
       const tree = stdout.split(/\s+/)[0] ?? "";
       if (!tree) {
-        return { clean: false, files: [], message: "git merge-tree did not return a tree" };
+        return { status: "error", files: [], message: "git merge-tree did not return a tree" };
       }
-      return { clean: true, tree, files: [], message: "clean" };
+      return { status: "clean", tree, files: [], message: "clean" };
     } catch (error) {
       const output = outputFromExecError(error);
+      if (isMergeTreeInfrastructureError(error)) {
+        return {
+          status: "error",
+          files: [],
+          message: output.trim() || errorMessage(error) || "git merge-tree infrastructure error"
+        };
+      }
       return {
-        clean: false,
+        status: "conflict",
         files: conflictFilesFromMergeTreeOutput(output, cwd, base, head),
         message: output.trim() || "git merge-tree reported a conflict"
       };
@@ -1731,6 +1815,18 @@ function outputFromExecError(error: unknown): string {
   const stderr = Buffer.isBuffer(maybe.stderr) ? maybe.stderr.toString("utf8") : String(maybe.stderr ?? "");
   const message = typeof maybe.message === "string" ? maybe.message : "";
   return [stdout, stderr, message].filter(Boolean).join("\n");
+}
+
+function isMergeTreeInfrastructureError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const code = (error as { code?: unknown }).code;
+  return code === "ENOENT" || code === "EACCES" || code === "ENOTDIR";
+}
+
+function errorMessage(error: unknown): string | null {
+  return error instanceof Error ? error.message : null;
 }
 
 function conflictFilesFromMergeTreeOutput(

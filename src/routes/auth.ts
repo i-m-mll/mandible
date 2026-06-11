@@ -1,11 +1,16 @@
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
+import {
+  isAuthMergeCommand,
+  normalizeExistingPath,
+  repoRootFromGitCommonDir,
+  resolveAuthMergeExecutionContext,
+} from "../auth-context.js";
 import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
 import path from "node:path";
 
 function readBody<T>(req: RequestLike): T {
@@ -25,7 +30,7 @@ export function registerAuthRoutes(
       res.status(400).json({ error: "Invalid auth check payload." });
       return;
     }
-    const report = authQueue.checkMergeIndependence(payload);
+    const report = authQueue.checkMergeIndependence(resolveAuthCheckPayload(payload));
     res.status(200).json({ check: report });
   });
 
@@ -34,6 +39,23 @@ export function registerAuthRoutes(
     if (!payload) {
       res.status(400).json({ error: "Invalid auth request payload." });
       return;
+    }
+
+    const isAuthMerge = isAuthMergeCommand(payload);
+    if (isAuthMerge) {
+      try {
+        const resolved = resolveAuthMergeExecutionContext(getDb(), payload);
+        payload.cwd = resolved.executionCwd;
+        payload.target_repo_root = resolved.targetRepoRoot;
+        payload.repo = payload.repo ?? resolved.repoName ?? path.basename(resolved.targetRepoRoot);
+        payload.base_branch = resolved.baseBranch;
+        payload.head_branch = resolved.headBranch;
+      } catch (error) {
+        res.status(400).json({
+          error: error instanceof Error ? error.message : "Invalid auth merge execution context."
+        });
+        return;
+      }
     }
 
     const cwdRepoRoot = payload.cwd ? repoRootFromGitCommonDir(payload.cwd) : null;
@@ -57,7 +79,7 @@ export function registerAuthRoutes(
     }
 
     // Auth merge gate: verify Mandible issue references in non-merge commits.
-    if (payload.command && (payload.command.includes("auth merge") || payload.command.includes("auth-merge"))) {
+    if (isAuthMerge) {
       const gateError = verifyMandibleIssueReferences(payload);
       if (gateError) {
         res.status(400).json({ error: gateError });
@@ -424,6 +446,59 @@ function parseAuthCheckPayload(body: Record<string, unknown>): AuthMergeCheckInp
   };
 }
 
+function resolveAuthCheckPayload(payload: AuthMergeCheckInput): AuthMergeCheckInput {
+  const resolved = { ...payload };
+  if (!resolved.cwd && resolved.repo) {
+    resolved.cwd = registeredAuthCheckRepoRoot(resolved.repo);
+  }
+  if (resolved.cwd && !resolved.base_branch) {
+    resolved.base_branch = detectProtectedBranch(resolved.cwd);
+  }
+  return resolved;
+}
+
+function registeredAuthCheckRepoRoot(repoRef: string): string | null {
+  const normalizedRef = normalizeExistingPath(repoRef);
+  try {
+    const rows = getDb()
+      .prepare(
+        "SELECT id, root, name FROM work_repos WHERE dir_exists = 1 AND excluded = 0"
+      )
+      .all() as Array<{ id: string; root: string; name: string }>;
+    for (const row of rows) {
+      const normalizedRoot = normalizeExistingPath(row.root);
+      if (!normalizedRoot) {
+        continue;
+      }
+      if (
+        row.id === repoRef ||
+        row.name === repoRef ||
+        row.root === repoRef ||
+        normalizedRoot === normalizedRef ||
+        path.basename(normalizedRoot) === repoRef
+      ) {
+        return normalizedRoot;
+      }
+    }
+  } catch (error) {
+    console.error("Auth check repository resolution failed:", error);
+  }
+  return null;
+}
+
+function detectProtectedBranch(cwd: string): string | null {
+  try {
+    execFileSync("git", ["show-ref", "--verify", "--quiet", "refs/heads/develop"], {
+      cwd,
+      stdio: "ignore",
+      timeout: 5000
+    });
+    return "develop";
+  } catch {
+    return "main";
+  }
+}
+
 // Bug: 297677f — parse a string array field (for issues)
 function parseStringArray(value: unknown): string[] | null | undefined {
   if (value === null) return null;
@@ -643,19 +718,6 @@ function tailLines(text: string, n: number): string | null {
   return result || null;
 }
 
-function repoRootFromGitCommonDir(cwd: string): string | null {
-  try {
-    const gitCommonDir = execFileSync(
-      "git",
-      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { cwd, encoding: "utf-8", timeout: 5000 }
-    ).trim();
-    return gitCommonDir ? path.dirname(gitCommonDir) : null;
-  } catch {
-    return null;
-  }
-}
-
 const SAFE_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
 const FULL_GIT_SHA = /^[0-9a-f]{40}$/i;
 
@@ -674,44 +736,12 @@ function validateAuthGateBranch(field: "base_branch" | "head_branch", value: str
   return null;
 }
 
-function isRegisteredRepoRoot(repoRoot: string): boolean {
-  try {
-    const normalized = normalizeExistingPath(repoRoot);
-    if (!normalized) {
-      return false;
-    }
-    const row = getDb()
-      .prepare(
-        "SELECT root FROM work_repos WHERE root = ? AND dir_exists = 1 AND excluded = 0 LIMIT 1"
-      )
-      .get(normalized) as { root?: string } | undefined;
-    if (row?.root === normalized) {
-      return true;
-    }
-    const rows = getDb()
-      .prepare("SELECT root FROM work_repos WHERE dir_exists = 1 AND excluded = 0")
-      .all() as Array<{ root: string }>;
-    return rows.some((candidate) => normalizeExistingPath(candidate.root) === normalized);
-  } catch (error) {
-    console.error("Auth merge gate repository allowlist check failed:", error);
-    return false;
-  }
-}
-
-function normalizeExistingPath(value: string): string | null {
-  try {
-    return realpathSync(path.resolve(value));
-  } catch {
-    return null;
-  }
-}
-
 function verifyMandibleIssueReferences(
   payload: AuthRequestInput
 ): string | null {
   const { cwd, head_branch, base_branch } = payload;
   if (!cwd || !head_branch || !base_branch) {
-    return null;
+    return "Auth merge verification requires server-resolved cwd, base_branch, and head_branch; raw-route submissions must include target_repo_root or cwd.";
   }
 
   const baseError = validateAuthGateBranch("base_branch", base_branch);
@@ -720,8 +750,8 @@ function verifyMandibleIssueReferences(
   if (headError) return headError;
 
   const repoRoot = repoRootFromGitCommonDir(cwd);
-  if (!repoRoot || !isRegisteredRepoRoot(repoRoot)) {
-    return "Invalid or unregistered 'cwd' for auth merge verification; manual review required.";
+  if (!repoRoot) {
+    return "Invalid 'cwd' for auth merge verification; manual review required.";
   }
 
   try {

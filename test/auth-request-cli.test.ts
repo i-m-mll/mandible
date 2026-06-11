@@ -32,6 +32,10 @@ function git(args: string[], cwd = tempDir): string {
   return result.stdout.trim();
 }
 
+function localRepoName(): string {
+  return path.basename(tempDir);
+}
+
 function createRepo(): void {
   git(["init", "-b", "main"]);
   git(["config", "user.name", "Mandible Test"]);
@@ -56,6 +60,50 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
   fs.rmSync(homeDir, { recursive: true, force: true });
+});
+
+describe("auth request repo context validation", () => {
+  it("rejects explicit repo mismatches before request submission", () => {
+    const result = run([
+      "auth",
+      "request",
+      "feature/demo",
+      "--title",
+      "Merge feature/demo",
+      "--issue",
+      "25123f9",
+      "--repo",
+      "target-repo",
+      "--force",
+      "--no-watch",
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      `cwd git repo '${localRepoName()}' does not match target repo 'target-repo'`,
+    );
+    expect(result.stderr).toContain("Run mandible auth request from the target repo worktree");
+    expect(result.stderr).not.toContain("Mandible unreachable");
+  });
+
+  it("preserves explicit matching repo submissions", () => {
+    const result = run([
+      "auth",
+      "request",
+      "feature/demo",
+      "--title",
+      "Merge feature/demo",
+      "--issue",
+      "25123f9",
+      "--repo",
+      localRepoName(),
+      "--no-watch",
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).not.toContain("does not match target repo");
+    expect(result.stderr).toContain("Mandible unreachable");
+  });
 });
 
 describe("auth request protected-root dirty policy", () => {

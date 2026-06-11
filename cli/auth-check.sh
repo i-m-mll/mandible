@@ -57,12 +57,16 @@ fi
 
 if [[ -n "$target_override" ]]; then
   base_branch="$target_override"
+elif [[ -n "$repo" && -z "$cwd_override" ]]; then
+  base_branch=""
 else
   base_branch=$(detect_protected_branch)
 fi
 
 if [[ -n "$cwd_override" ]]; then
   target_cwd="$cwd_override"
+elif [[ -n "$repo" ]]; then
+  target_cwd=""
 else
   target_cwd=""
   current_wt=""
@@ -75,7 +79,7 @@ else
     fi
   done < <(git worktree list --porcelain 2>/dev/null)
 fi
-if [[ -z "$target_cwd" ]]; then
+if [[ -z "$target_cwd" && -z "$repo" ]]; then
   echo "Error: cannot find worktree for target branch '${base_branch}'" >&2
   exit 1
 fi
@@ -91,9 +95,9 @@ payload=$(jq -nc \
   --arg cwd "$target_cwd" \
   '{
     repo: (if $repo == "" then null else $repo end),
-    base_branch: $base_branch,
+    base_branch: (if $base_branch == "" then null else $base_branch end),
     head_branch: $head_branch,
-    cwd: $cwd
+    cwd: (if $cwd == "" then null else $cwd end)
   }')
 
 response=$(api_send POST "/api/auth/check" "$payload") || {
@@ -122,6 +126,11 @@ case "$status" in
       | "- " + .scope + ": " + (.request_id // "target") + " " + (.head_branch // "") +
         (if (.files | length) > 0 then " [" + (.files | join(", ")) + "]" else "" end)
     ' >&2
+    exit 1
+    ;;
+  error)
+    reason=$(printf '%s' "$response" | jq -r '.check.reason // "unknown"')
+    printf 'Auth check: error: %s\n' "$reason" >&2
     exit 1
     ;;
   *)

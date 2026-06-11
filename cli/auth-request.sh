@@ -196,6 +196,13 @@ safe_branch_component() {
   printf '%s' "$1" | tr '/: .' '____' | tr -cd 'A-Za-z0-9._-'
 }
 
+local_git_repo_name() {
+  local git_common repo_root
+  git_common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  repo_root=$(dirname "$git_common")
+  basename "$repo_root"
+}
+
 git_status_for_json() {
   local status="$1"
   if [[ -z "$status" ]]; then
@@ -353,6 +360,22 @@ else
   base_branch=$(detect_protected_branch)
 fi
 
+# --- Validate local git context against requested repo ---
+
+local_repo=$(local_git_repo_name || true)
+if [[ -n "$repo" ]]; then
+  if [[ -z "$local_repo" ]]; then
+    echo "Error: cannot resolve cwd git repo while target repo '${repo}' was requested." >&2
+    echo "Run mandible auth request from the target repo worktree, or submit through the daemon/API route when local git context is unavailable." >&2
+    exit 1
+  fi
+  if [[ "$local_repo" != "$repo" ]]; then
+    echo "Error: cwd git repo '${local_repo}' does not match target repo '${repo}'." >&2
+    echo "Run mandible auth request from the target repo worktree, or submit through the daemon/API route when local git context is unavailable." >&2
+    exit 1
+  fi
+fi
+
 # --- Auto-detect cwd (protected branch worktree) ---
 
 if [[ -n "$cwd_override" ]]; then
@@ -406,7 +429,7 @@ fi
 if [[ -z "$repo" ]]; then
   # Bug: 72384c5 — use --git-common-dir instead of --show-toplevel so worktrees
   # resolve to the real repo root, not the worktree directory.
-  repo=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")" 2>/dev/null) || repo=""
+  repo="$local_repo"
 fi
 
 # --- Resolve protected-root dirty policy ---
