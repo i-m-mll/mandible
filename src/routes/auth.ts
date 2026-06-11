@@ -2,6 +2,7 @@ import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import {
   isAuthMergeCommand,
+  normalizeExistingPath,
   repoRootFromGitCommonDir,
   resolveAuthMergeExecutionContext,
 } from "../auth-context.js";

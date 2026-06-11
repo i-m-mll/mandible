@@ -295,7 +295,7 @@ function parseWorktreePorcelain(output: string): Array<{ worktree: string; branc
   return entries;
 }
 
-function normalizeExistingPath(value: string): string | null {
+export function normalizeExistingPath(value: string): string | null {
   try {
     return realpathSync(path.resolve(value));
   } catch {
