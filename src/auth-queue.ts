@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
+import { isAuthMergeCommand, resolveAuthMergeExecutionContext } from "./auth-context.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
 import { getDb, resolvePrefix } from "./db.js";
 import {
@@ -870,7 +871,7 @@ export class AuthQueue {
 
   approve(id: string, approval?: AuthApprovalContext): AuthRequest {
     this.expireStale();
-    const request = this.requireRequest(id);
+    let request = this.requireRequest(id);
     if (request.status !== "pending") {
       throw new AuthQueueError(
         "invalid_status",
@@ -888,6 +889,22 @@ export class AuthQueue {
     }
 
     const now = this.now();
+    const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
+    if (executionContextUpdate) {
+      this.db
+        .prepare(
+          "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, updated_at = ? WHERE id = ?"
+        )
+        .run(
+          executionContextUpdate.cwd,
+          executionContextUpdate.target_repo_root,
+          executionContextUpdate.repo,
+          now,
+          id
+        );
+      request = this.requireRequest(id);
+    }
+
     this.db
       .prepare(
         "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ? WHERE id = ?"
@@ -900,6 +917,28 @@ export class AuthQueue {
     }
     this.executeInBackground(executing);
     return executing;
+  }
+
+  private resolveExecutionContextBeforeApproval(
+    request: AuthRequest
+  ): { cwd: string; target_repo_root: string; repo: string | null } | null {
+    if (request.execution_mode === "remote" || !isAuthMergeCommand(request)) {
+      return null;
+    }
+    try {
+      const resolved = resolveAuthMergeExecutionContext(this.db, request);
+      return {
+        cwd: resolved.executionCwd,
+        target_repo_root: resolved.targetRepoRoot,
+        repo: request.repo ?? resolved.repoName,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid auth merge execution context.";
+      throw new AuthQueueError(
+        "invalid_command",
+        `Auth merge request cannot be approved: ${message}`
+      );
+    }
   }
 
   autoApprovePending(approval: AuthApprovalContext): AuthRequest[] {
