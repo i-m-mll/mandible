@@ -193,6 +193,59 @@ function projection(overrides: Partial<ProjectTimelineProjection> = {}): Project
   return { ...base, ...overrides };
 }
 
+function projectProjection(
+  projectRef: string,
+  title: string,
+  headline: string,
+): ProjectTimelineProjection {
+  const base = projection();
+  const projectId = `prj_${projectRef}`;
+  const issue = {
+    ...base.rows[0].issue!,
+    id: `issue_${projectRef}`,
+    display_id: `${projectRef.slice(0, 3)}1234`,
+    project_id: projectId,
+    title,
+    kind: 'umbrella',
+    labels: ['coordination'],
+  };
+  const row = {
+    ...base.rows[0],
+    id: `row-${projectRef}`,
+    issue,
+  };
+  const event = {
+    ...base.events[0],
+    id: `event-${projectRef}`,
+    row_id: row.id,
+    issue,
+    display_headline: headline,
+    body: `${title} body`,
+    link_ids: [],
+  };
+  return projection({
+    project: {
+      id: projectId,
+      display_name: projectRef,
+      repo_id: projectRef,
+      repo_name: projectRef,
+      repo_root: `/repo/${projectRef}`,
+    },
+    inputs: {
+      ...base.inputs,
+      project_id: projectId,
+    },
+    rows: [row],
+    events: [event],
+    links: [],
+    diagnostics: {
+      ...base.diagnostics,
+      root_count: 1,
+      reachable_from_roots_count: 1,
+    },
+  });
+}
+
 function stubTimelineFetch(...responses: Array<ProjectTimelineProjection | Promise<ProjectTimelineProjection>>): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
     const next = responses.shift() ?? projection();
@@ -569,6 +622,38 @@ describe('Timeline route', () => {
 });
 
 describe('TimelineView', () => {
+  it('loads initial coordination roots without a transient verified-empty state', async () => {
+    let resolveInitial: (value: ProjectTimelineProjection) => void = () => undefined;
+    const initial = new Promise<ProjectTimelineProjection>((resolve) => {
+      resolveInitial = resolve;
+    });
+    const fetchMock = stubTimelineFetch(initial);
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    expect(screen.getByRole('status', { name: 'Loading timeline' })).toBeTruthy();
+    expect(screen.getByText('Loading mandible timeline...')).toBeTruthy();
+    expect(screen.queryByText('No timeline rows match the current controls.')).toBeNull();
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(1));
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.project_ref).toBe('mandible');
+    expect(body.root_policy).toBe('coordination_and_explicit');
+
+    resolveInitial(projectProjection(
+      'mandible',
+      'Mandible coordination root',
+      'Mandible default coordination root',
+    ));
+
+    await waitFor(() => expect(screen.getByText('Mandible default coordination root')).toBeTruthy());
+    expect(screen.queryByRole('status', { name: 'Loading timeline' })).toBeNull();
+    expect(screen.queryByText('No timeline rows match the current controls.')).toBeNull();
+  });
+
   it('loads the projection and merges URL state over browser-local state', async () => {
     window.localStorage.setItem(
       'mandible_timeline_view_state:v1:mandible',
@@ -1045,53 +1130,21 @@ describe('TimelineView', () => {
   });
 
   it('clears stale projection and selection immediately when selecting another project', async () => {
+    window.localStorage.setItem(
+      'mandible_timeline_view_state:v1:mandible',
+      JSON.stringify({
+        explicitRootIssueIds: ['mandible-only-root'],
+        expandedEventIds: ['mandible-only-event'],
+        expandedPaths: ['mandible-only-path'],
+      }),
+    );
     let resolveSecond: (value: ProjectTimelineProjection) => void = () => undefined;
     const second = new Promise<ProjectTimelineProjection>((resolve) => {
       resolveSecond = resolve;
     });
     const base = projection();
-    const other = projection({
-      project: {
-        ...base.project,
-        id: 'prj_humble',
-        display_name: 'humble',
-        repo_id: 'humble',
-        repo_name: 'humble',
-        repo_root: '/repo/humble',
-      },
-      rows: [
-        {
-          ...base.rows[0],
-          id: 'row-humble',
-          issue: {
-            ...base.rows[0].issue,
-            id: 'issue_humble',
-            project_id: 'prj_humble',
-            display_id: 'abc9876',
-            title: 'Humble timeline shell',
-          },
-        },
-      ],
-      events: [
-        {
-          ...base.events[0],
-          id: 'event-humble',
-          row_id: 'row-humble',
-          issue: {
-            ...base.events[0].issue,
-            id: 'issue_humble',
-            project_id: 'prj_humble',
-            display_id: 'abc9876',
-            title: 'Humble timeline shell',
-          },
-          display_headline: 'Load Humble timeline',
-          body: 'Humble body text',
-          link_ids: [],
-        },
-      ],
-      links: [],
-    });
-    stubTimelineFetch(base, second);
+    const other = projectProjection('humble', 'Humble timeline shell', 'Load Humble coordination root');
+    const fetchMock = stubTimelineFetch(base, second);
 
     render(h(TimelineView, {
       repos: [
@@ -1109,10 +1162,74 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.queryAllByText('Build shared axis')).toHaveLength(0));
     expect(screen.queryAllByText('Full body text')).toHaveLength(0);
-    expect(screen.queryByText('Syncing')).toBeNull();
+    expect(screen.getByRole('status', { name: 'Loading timeline' })).toBeTruthy();
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+    const body = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(body.project_ref).toBe('humble');
+    expect(body.root_policy).toBe('coordination_and_explicit');
+    expect(body.explicit_root_issue_ids).toEqual([]);
+    expect(body.expanded_event_ids).toEqual([]);
+    expect(body.expanded_paths).toEqual([]);
 
     resolveSecond(other);
-    await waitFor(() => expect(screen.getByText('Load Humble timeline')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Load Humble coordination root')).toBeTruthy());
+  });
+
+  it('ignores stale prior-project responses that resolve after the selected project', async () => {
+    const mandible = projectProjection(
+      'mandible',
+      'Mandible coordination root',
+      'Mandible stale response',
+    );
+    const feedbax = projectProjection(
+      'feedbax',
+      'Feedbax coordination root',
+      'Feedbax selected response',
+    );
+    let resolveMandible: () => void = () => undefined;
+    let resolveFeedbax: () => void = () => undefined;
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      return new Promise<Response>((resolve) => {
+        const finish = (projectionBody: ProjectTimelineProjection) => {
+          resolve(new Response(JSON.stringify(projectionBody), {
+            headers: { 'content-type': 'application/json' },
+          }));
+        };
+        if (body.project_ref === 'mandible') {
+          resolveMandible = () => finish(mandible);
+          return;
+        }
+        if (body.project_ref === 'feedbax') {
+          resolveFeedbax = () => finish(feedbax);
+          return;
+        }
+        finish(projection());
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(h(TimelineView, {
+      repos: [
+        { id: 'mandible', name: 'mandible' },
+        { id: 'feedbax', name: 'feedbax' },
+      ],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(1));
+    changeSelect(screen.getByLabelText('Project'), 'feedbax');
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+
+    resolveFeedbax();
+    await waitFor(() => expect(screen.getByText('Feedbax selected response')).toBeTruthy());
+    expect(screen.queryByText('Mandible stale response')).toBeNull();
+
+    resolveMandible();
+    await waitFor(() => {
+      expect(screen.getByText('Feedbax selected response')).toBeTruthy();
+      expect(screen.queryByText('Mandible stale response')).toBeNull();
+    });
   });
 
   it('keeps the last valid projection mounted while a newer same-project request is syncing', async () => {

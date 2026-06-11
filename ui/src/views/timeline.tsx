@@ -88,7 +88,7 @@ export type TimelineViewProps = {
   params?: Record<string, string | undefined>;
 };
 
-type ProjectionStatus = 'idle' | 'syncing' | 'error';
+type ProjectionStatus = 'loading' | 'syncing' | 'ready' | 'error';
 
 type TimelineUrlState = Partial<TimelineViewState> & {
   projectRef?: string;
@@ -889,7 +889,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   ));
   const [projection, setProjection] = useState<ProjectTimelineProjection | null>(null);
   const lastProjectionRef = useRef<ProjectTimelineProjection | null>(null);
-  const [status, setStatus] = useState<ProjectionStatus>('idle');
+  const [status, setStatus] = useState<ProjectionStatus>('loading');
   const [error, setError] = useState<string | null>(null);
   const timeScrollRef = useRef<HTMLDivElement | null>(null);
   const timelineMainRef = useRef<HTMLDivElement | null>(null);
@@ -911,7 +911,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     laneCacheRef.current = {};
     setProjection(null);
     setError(null);
-    setStatus('idle');
+    setStatus('loading');
   }, []);
 
   const stateForProjectSelection = useCallback((nextProjectRef: string) => (
@@ -971,7 +971,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     const generation = requestGeneration.current + 1;
     requestGeneration.current = generation;
     const controller = new AbortController();
-    setStatus(lastProjectionRef.current ? 'syncing' : 'idle');
+    setStatus(lastProjectionRef.current ? 'syncing' : 'loading');
     setError(null);
     getProjectTimeline({
       project_ref: projectRef,
@@ -987,7 +987,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
         if (requestGeneration.current !== generation) return;
         lastProjectionRef.current = next;
         setProjection(next);
-        setStatus('idle');
+        setStatus('ready');
       })
       .catch((err) => {
         if (controller.signal.aborted || requestGeneration.current !== generation) return;
@@ -1695,6 +1695,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 
   const diagnostics = useMemo(() => timelineDiagnostics(projection), [projection]);
   const diagnosticsCount = diagnostics.length;
+  const timelineLoading = status === 'loading';
+  const emptyTimelineMessage = timelineLoading
+    ? `Loading ${projectRef} timeline...`
+    : 'No timeline rows match the current controls.';
   const inspectorContent = useMemo(() => (
     <TimelineInspector
       selectedEvent={selectedEvent}
@@ -1864,6 +1868,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           {diagnosticsCount > 0 ? <span>{diagnosticsCount}</span> : null}
         </button>
         <div className="timeline-toolbar-spacer" />
+        {timelineLoading ? (
+          <div className="timeline-status" role="status" aria-label="Loading timeline" />
+        ) : null}
         {status === 'syncing' ? <div className="timeline-status" role="status" aria-label="Updating timeline" /> : null}
       </div>
 
@@ -1998,7 +2005,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
             </div>
             <div className="timeline-row-stack">
               {visibleRows.length === 0 ? (
-                <div className="timeline-empty">No timeline rows match the current controls.</div>
+                <div className="timeline-empty">{emptyTimelineMessage}</div>
               ) : visibleRows.map((row) => {
                 const rowEvents = eventsByRow.get(row.id) ?? [];
                 const rowLayout = timelineLayout.rowLayoutById[row.id];
