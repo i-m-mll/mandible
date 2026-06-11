@@ -6,10 +6,13 @@ import type {
   TimelineDiagnostic,
   TimelineDiagnostics,
   TimelineEvent,
+  TimelineIssuePredicate,
   TimelineIssueRef,
   TimelineLink,
+  TimelineNormalizedRowSpec,
   TimelineRowOccurrence,
   TimelineRowOccurrenceKind,
+  TimelineRowSpecRef,
   TimelineSourceEntityRef,
   TimelineTimeAxis,
 } from "../types.js";
@@ -22,6 +25,7 @@ import type {
   LedgerPriority,
   LedgerRelationshipType,
 } from "./types.js";
+import { LEDGER_ISSUE_KINDS } from "./types.js";
 
 type IssueRow = LedgerIssue & { labels: string };
 type ProjectRow = {
@@ -48,6 +52,27 @@ type StateEventRow = {
   occurred_at: number;
   observed_at: number;
 };
+type InternalRowSpec = TimelineNormalizedRowSpec & {
+  anchorIssue: IssueRow | null;
+  legacyKind: TimelineRowOccurrenceKind | null;
+  emitMembers: boolean;
+};
+type PredicateDiagnosticInput = {
+  kind: "invalid_predicate" | "unmatched_predicate" | "cycle";
+  message: string;
+  row_spec_id?: string;
+  issue_id?: string;
+  target_issue_id?: string;
+  predicate?: TimelineIssuePredicate;
+  path?: string[];
+};
+type PredicateEvalContext = {
+  allIssues: IssueRow[];
+  issueById: Map<string, IssueRow>;
+  relationshipSources: LedgerIssueRelationshipSource[];
+  parentChildrenByIssueId: Map<string, string[]>;
+  residualCoveredIssueIds: Set<string>;
+};
 
 const DEFAULT_DEPTH = 1;
 const MAX_DEPTH = 8;
@@ -72,6 +97,7 @@ export function buildProjectTimelineProjection(
   const depthLimits: TimelineDiagnostic[] = [];
   const filteredTargets: TimelineDiagnostic[] = [];
   const missingExpansions: TimelineDiagnostic[] = [];
+  const predicateDiagnostics: TimelineDiagnostic[] = [];
   const childRowIdsByParent = new Map<string, string[]>();
   const expandedEvents = new Set(normalized.expanded_event_ids);
   const expandedPaths = new Set(normalized.expanded_paths);
@@ -81,10 +107,76 @@ export function buildProjectTimelineProjection(
   const eventToLinks = new Map<string, TimelineLink[]>();
   const rowById = new Map<string, TimelineRowOccurrence>();
 
-  const rootIssues = selectRootIssues(issues, normalized);
-  rootIssues.forEach((issue, index) => {
-    const kind = rootKind(issue.id, normalized);
-    addRow(issue, kind, null, null, 0, [`root:${issue.id}:${index}`], false);
+  const parentChildrenByIssueId = buildParentChildrenByIssueId(issues);
+  const rootSpecs = buildRootSpecs({
+    rawInput: input,
+    normalized,
+    issues,
+    issueById,
+    relationshipSources,
+    parentChildrenByIssueId,
+    diagnostics: predicateDiagnostics,
+  });
+  normalized.root_specs = hasRootSpecInput(input) ? rootSpecs.map(normalizedSpec) : [];
+  rootSpecs.forEach((spec, index) => {
+    if (spec.anchorIssue) {
+      addIssueRow(
+        spec.anchorIssue,
+        spec.legacyKind ?? "root",
+        null,
+        null,
+        0,
+        [`root:${spec.anchorIssue.id}:${index}`],
+        false,
+        null,
+      );
+      return;
+    }
+    const filterRoot = addFilterRootRow(spec, index);
+    if (!spec.emitMembers || !spec.scope) return;
+    const memberIds = evaluateRootScope(spec, {
+      allIssues: issues,
+      issueById,
+      relationshipSources,
+      parentChildrenByIssueId,
+      residualCoveredIssueIds: residualCoveredIssueIds(rootSpecs, spec, {
+        allIssues: issues,
+        issueById,
+        relationshipSources,
+        parentChildrenByIssueId,
+        residualCoveredIssueIds: new Set<string>(),
+      }, predicateDiagnostics),
+    }, predicateDiagnostics);
+    Array.from(memberIds)
+      .map((id) => issueById.get(id))
+      .filter((issue): issue is IssueRow => (
+        !!issue && issue.deleted_at === null && statusAllowed(issue.status, normalized)
+      ))
+      .sort(compareIssues)
+      .forEach((issue) => {
+        const cycle = filterRoot.path.includes(`issue:${issue.id}`);
+        const member = addIssueRow(
+          issue,
+          "member",
+          filterRoot.id,
+          null,
+          1,
+          [`spec:${spec.id}`, `member:${issue.id}`],
+          cycle,
+          rowSpecRef(spec),
+        );
+        if (cycle) {
+          cycles.push({
+            kind: "cycle",
+            message: "RowSpec member issue is already present in this row occurrence path.",
+            row_id: member.id,
+            issue_id: issue.id,
+            target_issue_id: issue.id,
+            depth: 1,
+            path: member.path,
+          });
+        }
+      });
   });
 
   for (let cursor = 0; cursor < rows.length; cursor += 1) {
@@ -156,7 +248,7 @@ export function buildProjectTimelineProjection(
             });
           } else {
             const cycle = row.path.some((segment) => segment === `issue:${target.id}`);
-            const child = addRow(
+            const child = addIssueRow(
               target,
               "transient",
               row.id,
@@ -164,6 +256,7 @@ export function buildProjectTimelineProjection(
               childDepth,
               [...row.path, `event:${event.id}`, `issue:${target.id}`],
               cycle,
+              null,
             );
             link.expanded_row_id = child.id;
             if (cycle) {
@@ -200,12 +293,13 @@ export function buildProjectTimelineProjection(
   const orderedRows = orderRowsPreorder(rows, childRowIdsByParent);
 
   for (const row of orderedRows) {
-    visibleIssueIds.add(row.issue.id);
-    if (row.kind === "root" || row.kind === "promoted_root" || row.kind === "explicit_root") {
+    if (row.issue) visibleIssueIds.add(row.issue.id);
+    if (row.issue && (row.kind === "root" || row.kind === "promoted_root" || row.kind === "explicit_root")) {
       rootOccurrencesByIssue.set(row.issue.id, (rootOccurrencesByIssue.get(row.issue.id) ?? 0) + 1);
     }
     const rowLinks = links.filter((link) => link.source_row_id === row.id);
-    row.expanded = rowLinks.some((link) => link.expanded_row_id !== null);
+    row.expanded = rowLinks.some((link) => link.expanded_row_id !== null)
+      || (childRowIdsByParent.get(row.id)?.length ?? 0) > 0;
     rowById.set(row.id, row);
   }
 
@@ -230,10 +324,11 @@ export function buildProjectTimelineProjection(
       depthLimits,
       filteredTargets,
       missingExpansions,
+      predicateDiagnostics,
     }),
   };
 
-  function addRow(
+  function addIssueRow(
     issue: IssueRow,
     kind: TimelineRowOccurrenceKind,
     parentRowId: string | null,
@@ -241,6 +336,7 @@ export function buildProjectTimelineProjection(
     depth: number,
     path: string[],
     cycle: boolean,
+    rowSpec: TimelineRowSpecRef | null,
   ): TimelineRowOccurrence {
     const occurrencePath = path.join("/");
     const row: TimelineRowOccurrence = {
@@ -254,6 +350,7 @@ export function buildProjectTimelineProjection(
       expanded: false,
       cycle,
       hidden_reason: null,
+      ...(rowSpec ? { row_spec: rowSpec } : {}),
     };
     rows.push(row);
     if (parentRowId !== null) {
@@ -261,6 +358,25 @@ export function buildProjectTimelineProjection(
       siblings.push(row.id);
       childRowIdsByParent.set(parentRowId, siblings);
     }
+    return row;
+  }
+
+  function addFilterRootRow(spec: InternalRowSpec, index: number): TimelineRowOccurrence {
+    const occurrencePath = `spec:${spec.id}:${index}`;
+    const row: TimelineRowOccurrence = {
+      id: `row:${occurrencePath}`,
+      issue: null,
+      row_spec: rowSpecRef(spec),
+      kind: "root",
+      parent_row_id: null,
+      source_event_id: null,
+      depth: 0,
+      path: [`rowspec:${spec.id}`],
+      expanded: false,
+      cycle: false,
+      hidden_reason: null,
+    };
+    rows.push(row);
     return row;
   }
 }
@@ -303,6 +419,7 @@ function normalizeInput(
   return {
     project_id: projectId,
     root_policy: input.root_policy ?? "coordination_and_explicit",
+    root_specs: [],
     explicit_root_issue_ids: normalizeIssueIds(input.explicit_root_issue_ids, issues),
     promoted_root_issue_ids: normalizeIssueIds(input.promoted_root_issue_ids, issues),
     expanded_event_ids: uniqueStrings(input.expanded_event_ids),
@@ -385,6 +502,337 @@ function selectRootIssues(
   });
 }
 
+function buildRootSpecs(input: {
+  rawInput: ProjectTimelineInput;
+  normalized: ProjectTimelineNormalizedInput;
+  issues: IssueRow[];
+  issueById: Map<string, IssueRow>;
+  relationshipSources: LedgerIssueRelationshipSource[];
+  parentChildrenByIssueId: Map<string, string[]>;
+  diagnostics: TimelineDiagnostic[];
+}): InternalRowSpec[] {
+  const explicitSpecs = input.rawInput.root_specs ?? input.rawInput.root_row_specs;
+  if (!explicitSpecs?.length) {
+    return selectRootIssues(input.issues, input.normalized).map((issue, index) => ({
+      id: `legacy:${issue.id}:${index}`,
+      title: issue.title,
+      anchor_issue_id: issue.id,
+      scope: labelList(issue).includes("coordination")
+        ? { type: "referenced_by", issue_id: issue.id }
+        : null,
+      anchorIssue: issue,
+      legacyKind: rootKind(issue.id, input.normalized),
+      emitMembers: false,
+    }));
+  }
+
+  return explicitSpecs.map((spec, index) => {
+    const anchorRef = spec.anchor_issue_id ?? spec.anchor ?? null;
+    const anchorIssue = typeof anchorRef === "string"
+      ? input.issueById.get(resolveIssueId(anchorRef, input.issueById) ?? "") ?? null
+      : null;
+    const id = cleanSpecId(spec.id) ?? `input:${index}`;
+    if (anchorRef && !anchorIssue) {
+      input.diagnostics.push(predicateDiagnostic({
+        kind: "invalid_predicate",
+        message: "RowSpec anchor issue was not found.",
+        row_spec_id: id,
+        issue_id: anchorRef,
+      }));
+    }
+    const normalized: InternalRowSpec = {
+      id,
+      title: spec.title?.trim() || anchorIssue?.title || `Filter ${index + 1}`,
+      anchor_issue_id: anchorIssue?.id ?? null,
+      scope: normalizePredicate(spec.scope ?? null),
+      anchorIssue,
+      legacyKind: null,
+      emitMembers: anchorIssue === null,
+    };
+    if (!normalized.anchorIssue && !normalized.scope) {
+      input.diagnostics.push(predicateDiagnostic({
+        kind: "invalid_predicate",
+        message: "Anchor-less RowSpec requires a scope predicate.",
+        row_spec_id: id,
+      }));
+    }
+    return normalized;
+  });
+}
+
+function hasRootSpecInput(input: ProjectTimelineInput): boolean {
+  return (input.root_specs?.length ?? input.root_row_specs?.length ?? 0) > 0;
+}
+
+function normalizedSpec(spec: InternalRowSpec): TimelineNormalizedRowSpec {
+  return {
+    id: spec.id,
+    title: spec.title,
+    anchor_issue_id: spec.anchor_issue_id,
+    scope: spec.scope,
+  };
+}
+
+function rowSpecRef(spec: InternalRowSpec): TimelineRowSpecRef {
+  return normalizedSpec(spec);
+}
+
+function evaluateRootScope(
+  spec: InternalRowSpec,
+  context: PredicateEvalContext,
+  diagnostics: TimelineDiagnostic[],
+): Set<string> {
+  if (!spec.scope) return new Set<string>();
+  const result = evaluatePredicate(spec.scope, context, spec.id, diagnostics);
+  if (result.size === 0) {
+    diagnostics.push(predicateDiagnostic({
+      kind: "unmatched_predicate",
+      message: "RowSpec scope did not match any issues.",
+      row_spec_id: spec.id,
+      predicate: spec.scope,
+    }));
+  }
+  return result;
+}
+
+function evaluatePredicate(
+  predicate: TimelineIssuePredicate,
+  context: PredicateEvalContext,
+  rowSpecId: string,
+  diagnostics: TimelineDiagnostic[],
+): Set<string> {
+  if (!predicate || typeof predicate !== "object" || typeof predicate.type !== "string") {
+    diagnostics.push(predicateDiagnostic({
+      kind: "invalid_predicate",
+      message: "RowSpec predicate must be an object with a type.",
+      row_spec_id: rowSpecId,
+    }));
+    return new Set<string>();
+  }
+  switch (predicate.type) {
+    case "referenced_by": {
+      if (typeof predicate.issue_id !== "string") {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "referenced_by predicate requires an issue_id string.",
+          row_spec_id: rowSpecId,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      const sourceId = resolveIssueId(predicate.issue_id, context.issueById);
+      if (!sourceId) {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "referenced_by predicate source issue was not found.",
+          row_spec_id: rowSpecId,
+          issue_id: predicate.issue_id,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      return new Set(context.relationshipSources
+        .filter((source) => source.source_issue_id === sourceId)
+        .map((source) => source.target_issue_id));
+    }
+    case "label": {
+      if (typeof predicate.name !== "string") {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "label predicate requires a name string.",
+          row_spec_id: rowSpecId,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      const name = predicate.name.trim();
+      if (!name) {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "label predicate requires a non-empty name.",
+          row_spec_id: rowSpecId,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      return new Set(context.allIssues
+        .filter((issue) => labelList(issue).includes(name))
+        .map((issue) => issue.id));
+    }
+    case "kind": {
+      if (typeof predicate.kind !== "string" || !LEDGER_ISSUE_KINDS.includes(predicate.kind as LedgerIssueKind)) {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "kind predicate used an unknown issue kind.",
+          row_spec_id: rowSpecId,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      return new Set(context.allIssues
+        .filter((issue) => issue.kind === predicate.kind)
+        .map((issue) => issue.id));
+    }
+    case "parent_subtree": {
+      if (typeof predicate.issue_id !== "string") {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "parent_subtree predicate requires an issue_id string.",
+          row_spec_id: rowSpecId,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      const rootId = resolveIssueId(predicate.issue_id, context.issueById);
+      if (!rootId) {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "parent_subtree predicate root issue was not found.",
+          row_spec_id: rowSpecId,
+          issue_id: predicate.issue_id,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      return parentSubtreeIssueIds(rootId, context, rowSpecId, predicate, diagnostics);
+    }
+    case "residual":
+      return new Set(context.allIssues
+        .map((issue) => issue.id)
+        .filter((id) => !context.residualCoveredIssueIds.has(id)));
+    case "and": {
+      if (!Array.isArray(predicate.predicates) || !predicate.predicates.length) {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "and predicate requires at least one child predicate.",
+          row_spec_id: rowSpecId,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      const [first, ...rest] = predicate.predicates.map((child) => (
+        evaluatePredicate(child, context, rowSpecId, diagnostics)
+      ));
+      return rest.reduce((acc, next) => intersection(acc, next), first ?? new Set<string>());
+    }
+    case "or": {
+      if (!Array.isArray(predicate.predicates) || !predicate.predicates.length) {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "or predicate requires at least one child predicate.",
+          row_spec_id: rowSpecId,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      return predicate.predicates.reduce((acc, child) => (
+        union(acc, evaluatePredicate(child, context, rowSpecId, diagnostics))
+      ), new Set<string>());
+    }
+    case "not": {
+      if (!predicate.predicate || typeof predicate.predicate !== "object") {
+        diagnostics.push(predicateDiagnostic({
+          kind: "invalid_predicate",
+          message: "not predicate requires a child predicate.",
+          row_spec_id: rowSpecId,
+          predicate,
+        }));
+        return new Set<string>();
+      }
+      const excluded = evaluatePredicate(predicate.predicate, context, rowSpecId, diagnostics);
+      return new Set(context.allIssues.map((issue) => issue.id).filter((id) => !excluded.has(id)));
+    }
+    default:
+      diagnostics.push(predicateDiagnostic({
+        kind: "invalid_predicate",
+        message: "RowSpec predicate type is not supported.",
+        row_spec_id: rowSpecId,
+        predicate,
+      }));
+      return new Set<string>();
+  }
+}
+
+function residualCoveredIssueIds(
+  specs: InternalRowSpec[],
+  residualSpec: InternalRowSpec,
+  context: PredicateEvalContext,
+  diagnostics: TimelineDiagnostic[],
+): Set<string> {
+  const covered = new Set<string>();
+  for (const spec of specs) {
+    if (spec.id === residualSpec.id || !spec.scope || containsResidualPredicate(spec.scope)) continue;
+    for (const issueId of evaluatePredicate(spec.scope, context, spec.id, diagnostics)) {
+      covered.add(issueId);
+    }
+  }
+  return covered;
+}
+
+function containsResidualPredicate(predicate: TimelineIssuePredicate): boolean {
+  if (predicate.type === "residual") return true;
+  if (predicate.type === "and" || predicate.type === "or") {
+    return predicate.predicates.some(containsResidualPredicate);
+  }
+  if (predicate.type === "not") return containsResidualPredicate(predicate.predicate);
+  return false;
+}
+
+function buildParentChildrenByIssueId(issues: IssueRow[]): Map<string, string[]> {
+  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+  const children = new Map<string, string[]>();
+  for (const issue of issues) {
+    for (const label of labelList(issue)) {
+      if (!label.startsWith("parent:")) continue;
+      const parentId = resolveIssueId(label.slice("parent:".length), issueById);
+      if (!parentId) continue;
+      const list = children.get(parentId) ?? [];
+      list.push(issue.id);
+      children.set(parentId, list);
+    }
+  }
+  for (const list of children.values()) list.sort();
+  return children;
+}
+
+function parentSubtreeIssueIds(
+  rootId: string,
+  context: PredicateEvalContext,
+  rowSpecId: string,
+  predicate: TimelineIssuePredicate,
+  diagnostics: TimelineDiagnostic[],
+): Set<string> {
+  const result = new Set<string>();
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+
+  const visit = (issueId: string, path: string[]) => {
+    if (visiting.has(issueId)) {
+      diagnostics.push(predicateDiagnostic({
+        kind: "cycle",
+        message: "parent_subtree predicate encountered a parent-label cycle.",
+        row_spec_id: rowSpecId,
+        issue_id: issueId,
+        target_issue_id: issueId,
+        predicate,
+        path,
+      }));
+      return;
+    }
+    if (visited.has(issueId)) return;
+    visiting.add(issueId);
+    for (const childId of context.parentChildrenByIssueId.get(issueId) ?? []) {
+      result.add(childId);
+      visit(childId, [...path, `issue:${childId}`]);
+    }
+    visiting.delete(issueId);
+    visited.add(issueId);
+  };
+
+  visit(rootId, [`issue:${rootId}`]);
+  return result;
+}
+
 function rootKind(issueId: string, input: ProjectTimelineNormalizedInput): TimelineRowOccurrenceKind {
   if (input.promoted_root_issue_ids.includes(issueId)) return "promoted_root";
   if (input.explicit_root_issue_ids.includes(issueId)) return "explicit_root";
@@ -398,6 +846,7 @@ function buildEventsForRow(
   issueRefs: Map<string, TimelineIssueRef>,
   input: ProjectTimelineNormalizedInput,
 ): TimelineEvent[] {
+  if (!row.issue) return [];
   const issue = issueById.get(row.issue.id);
   if (!issue) return [];
   const result: TimelineEvent[] = [];
@@ -521,6 +970,7 @@ function buildDiagnostics(input: {
   depthLimits: TimelineDiagnostic[];
   filteredTargets: TimelineDiagnostic[];
   missingExpansions: TimelineDiagnostic[];
+  predicateDiagnostics: TimelineDiagnostic[];
 }): TimelineDiagnostics {
   const liveIssues = input.issues.filter((issue) => issue.deleted_at === null);
   const referencedTargets = new Set(input.relationshipSources.map((source) => source.target_issue_id));
@@ -550,10 +1000,16 @@ function buildDiagnostics(input: {
       .filter(([, count]) => count > 1)
       .map(([id]) => id)
       .sort(),
-    cycles: input.cycles,
+    cycles: [
+      ...input.cycles,
+      ...input.predicateDiagnostics.filter((item) => item.kind === "cycle"),
+    ],
     depth_limits: input.depthLimits,
     filtered_targets: input.filteredTargets,
     missing_expansions: input.missingExpansions,
+    predicate_diagnostics: input.predicateDiagnostics,
+    invalid_predicates: input.predicateDiagnostics.filter((item) => item.kind === "invalid_predicate"),
+    unmatched_predicates: input.predicateDiagnostics.filter((item) => item.kind === "unmatched_predicate"),
   };
 }
 
@@ -627,6 +1083,42 @@ function resolveIssueId(ref: string, issues: Map<string, IssueRow>): string | nu
     if (issue.short_id === ref) return issue.id;
   }
   return null;
+}
+
+function normalizePredicate(predicate: TimelineIssuePredicate | null): TimelineIssuePredicate | null {
+  if (!predicate || typeof predicate !== "object") return null;
+  return predicate;
+}
+
+function cleanSpecId(id: string | undefined): string | null {
+  const trimmed = id?.trim();
+  return trimmed ? trimmed.replace(/[^A-Za-z0-9_.:-]+/g, "-") : null;
+}
+
+function predicateDiagnostic(input: PredicateDiagnosticInput): TimelineDiagnostic {
+  return {
+    kind: input.kind,
+    message: input.message,
+    row_spec_id: input.row_spec_id,
+    issue_id: input.issue_id,
+    target_issue_id: input.target_issue_id,
+    predicate: input.predicate,
+    path: input.path,
+  };
+}
+
+function union(left: Set<string>, right: Set<string>): Set<string> {
+  return new Set([...left, ...right]);
+}
+
+function intersection(left: Set<string>, right: Set<string>): Set<string> {
+  return new Set([...left].filter((item) => right.has(item)));
+}
+
+function compareIssues(a: IssueRow, b: IssueRow): number {
+  if (a.created_at !== b.created_at) return a.created_at - b.created_at;
+  if (a.short_id !== b.short_id) return a.short_id.localeCompare(b.short_id);
+  return a.id.localeCompare(b.id);
 }
 
 function statusAllowed(status: LedgerIssueStatus, input: ProjectTimelineNormalizedInput): boolean {
