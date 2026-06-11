@@ -19,7 +19,7 @@ const VALID_ACTION_KINDS: AuthRequestActionKind[] = [
   "checkpoint_add",
   "link_add",
 ];
-const VALID_ACTION_STATES: AuthRequestActionState[] = ["staged", "applied", "failed", "vetoed"];
+const VALID_ACTION_STATES: AuthRequestActionState[] = ["staged", "applied", "failed", "skipped_stale", "vetoed"];
 const VALID_WORKER_STATUSES = ["none", "in_progress", "done", "blocked", "pivot-needed"];
 
 export class AuthActionValidationError extends Error {
@@ -113,6 +113,13 @@ export function listAuthRequestActions(db: Db, requestId: string): AuthRequestAc
   ).all(requestId) as Record<string, unknown>[]).map(mapAuthActionRow);
 }
 
+export function countAuthRequestActions(db: Db, requestId: string): number {
+  const row = db.prepare(
+    "SELECT COUNT(*) AS count FROM auth_request_actions WHERE auth_request_id = ?",
+  ).get(requestId) as { count?: number } | undefined;
+  return Number(row?.count ?? 0);
+}
+
 export function addAuthRequestAction(
   db: Db,
   request: AuthRequest,
@@ -160,6 +167,29 @@ export function deleteAuthRequestAction(db: Db, requestId: string, actionId: str
   const existing = requireAuthAction(db, requestId, actionId);
   db.prepare("DELETE FROM auth_request_actions WHERE id = ? AND auth_request_id = ?").run(existing.id, requestId);
   return existing;
+}
+
+export function setAuthRequestActionVeto(
+  db: Db,
+  requestId: string,
+  actionId: string,
+  vetoed: boolean,
+  now: number,
+): AuthRequestAction {
+  const existing = requireAuthAction(db, requestId, actionId);
+  if (existing.state !== "staged" && existing.state !== "vetoed") {
+    throw new AuthActionValidationError(
+      `Action is ${existing.state}, cannot change veto state.`,
+      409,
+    );
+  }
+  const nextState: AuthRequestActionState = vetoed ? "vetoed" : "staged";
+  db.prepare(
+    `UPDATE auth_request_actions
+     SET state = ?, updated_at = ?
+     WHERE id = ? AND auth_request_id = ?`,
+  ).run(nextState, now, existing.id, requestId);
+  return requireAuthAction(db, requestId, existing.id);
 }
 
 function normalizePayload(kind: AuthRequestActionKind, payload: unknown): Record<string, unknown> {

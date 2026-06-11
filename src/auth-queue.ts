@@ -5,10 +5,12 @@ import Database from "better-sqlite3";
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
 import {
   addAuthRequestAction,
+  countAuthRequestActions,
   deleteAuthRequestAction,
   insertAuthRequestActions,
   listAuthRequestActions,
   normalizeAuthActionInputs,
+  setAuthRequestActionVeto,
   updateAuthRequestAction,
 } from "./auth-actions.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
@@ -496,6 +498,11 @@ export class AuthQueue {
     return listAuthRequestActions(this.db, request.id);
   }
 
+  countActions(requestId: string): number {
+    const request = this.requireRequest(requestId);
+    return countAuthRequestActions(this.db, request.id);
+  }
+
   addAction(requestId: string, input: unknown): AuthRequestAction {
     const request = this.requireActionEditableRequest(requestId);
     const action = addAuthRequestAction(this.db, request, input, this.now());
@@ -514,6 +521,13 @@ export class AuthQueue {
     const request = this.requireActionEditableRequest(requestId);
     const action = deleteAuthRequestAction(this.db, request.id, actionId);
     this.broadcast({ event: "auth:updated", data: { request, deleted_action_id: action.id } });
+    return action;
+  }
+
+  setActionVeto(requestId: string, actionId: string, vetoed: boolean): AuthRequestAction {
+    const request = this.requireActionVetoableRequest(requestId);
+    const action = setAuthRequestActionVeto(this.db, request.id, actionId, vetoed, this.now());
+    this.broadcast({ event: "auth:updated", data: { request: this.requireRequest(request.id), action } });
     return action;
   }
 
@@ -1817,6 +1831,18 @@ export class AuthQueue {
       throw new AuthQueueError(
         "invalid_status",
         `Request is ${request.status}, cannot modify staged actions.`,
+        request.status
+      );
+    }
+    return request;
+  }
+
+  private requireActionVetoableRequest(id: string): AuthRequest {
+    const request = this.requireRequest(id);
+    if (request.status !== "pending") {
+      throw new AuthQueueError(
+        "invalid_status",
+        `Request is ${request.status}, cannot change action veto state.`,
         request.status
       );
     }

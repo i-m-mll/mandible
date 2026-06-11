@@ -177,6 +177,8 @@ export function registerAuthRoutes(
       execution_mode: request.execution_mode,
       approval_source: request.approval_source,
       approval_lease_id: request.approval_lease_id,
+      action_count: authQueue.countActions(request.id),
+      actions: authQueue.listActions(request.id),
       // Bug: 4e32923 — include scoping fields omitted from the original response literal
       target_session_id: request.target_session_id ?? null,
       delivered_at: request.delivered_at ?? null
@@ -217,6 +219,20 @@ export function registerAuthRoutes(
     try {
       const action = authQueue.deleteAction(req.params.id, req.params.actionId);
       res.status(200).json({ action_id: action.id, deleted: true });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
+  app.post("/api/auth/request/:id/actions/:actionId/veto", (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
+    if (typeof body.vetoed !== "boolean") {
+      res.status(400).json({ error: "vetoed boolean is required" });
+      return;
+    }
+    try {
+      const action = authQueue.setActionVeto(req.params.id, req.params.actionId, body.vetoed);
+      res.status(200).json({ action });
     } catch (error) {
       handleQueueError(error, res);
     }
@@ -267,9 +283,12 @@ export function registerAuthRoutes(
     }
     // Bug: 0b83252 — resolve depends_on_status for each request with a dependency
     const enriched = requests.map((r) => {
-      if (!r.depends_on_id) return { ...r, depends_on_status: null };
-      const dep = authQueue.getRequest(r.depends_on_id);
-      return { ...r, depends_on_status: dep ? dep.status : null };
+      const dep = r.depends_on_id ? authQueue.getRequest(r.depends_on_id) : null;
+      return {
+        ...r,
+        depends_on_status: dep ? dep.status : null,
+        action_count: authQueue.countActions(r.id),
+      };
     });
     res.json({ requests: enriched });
   });
@@ -289,7 +308,12 @@ export function registerAuthRoutes(
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
-    res.json({ requests });
+    res.json({
+      requests: requests.map((r) => ({
+        ...r,
+        action_count: authQueue.countActions(r.id),
+      })),
+    });
   });
 
   app.post("/api/auth/request/:id/approve", (req, res) => {

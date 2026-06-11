@@ -227,6 +227,49 @@ describe("auth request action routes", () => {
     }
   });
 
+  it("allows pending user veto toggles and denies them after completion", async () => {
+    const db = createMigratedDb();
+    try {
+      const router = new Router();
+      const queue = new AuthQueue({ db });
+      registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+
+      const request = queue.submit({
+        command: "echo route",
+        title: "Route veto",
+        actions: [{ kind: "comment_add", target_issue_ref: "abc123", payload: { body: "One" } }],
+      });
+      const action = queue.listActions(request.id)[0];
+
+      const veto = await router.invoke({
+        method: "POST",
+        url: `/api/auth/request/${request.id}/actions/${action.id}/veto`,
+        body: { vetoed: true },
+      });
+      expect(veto.status).toBe(200);
+      expect((veto.body as { action: { state: string } }).action.state).toBe("vetoed");
+
+      const restore = await router.invoke({
+        method: "POST",
+        url: `/api/auth/request/${request.id}/actions/${action.id}/veto`,
+        body: { vetoed: false },
+      });
+      expect(restore.status).toBe(200);
+      expect((restore.body as { action: { state: string } }).action.state).toBe("staged");
+
+      queue.setResult(request.id, 0, "ok");
+      const denied = await router.invoke({
+        method: "POST",
+        url: `/api/auth/request/${request.id}/actions/${action.id}/veto`,
+        body: { vetoed: true },
+      });
+      expect(denied.status).toBe(409);
+      expect(denied.body).toMatchObject({ status: "completed" });
+    } finally {
+      db.close();
+    }
+  });
+
   it("rejects invalid action payloads with a clear client error", async () => {
     const db = createMigratedDb();
     try {
