@@ -1393,6 +1393,51 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("resolves auth check cwd from registered repo metadata", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-check-route-"));
+    try {
+      const repoRoot = path.join(tempDir, "repo");
+      execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+      const git = (...args: string[]) => execFileSync(
+        "git",
+        [
+          "-C",
+          repoRoot,
+          "-c",
+          "user.name=Mandible Test",
+          "-c",
+          "user.email=test@example.invalid",
+          ...args,
+        ],
+        { stdio: "ignore" },
+      );
+      git("commit", "--allow-empty", "-m", "init");
+      git("checkout", "-b", "feature/demo");
+      git("commit", "--allow-empty", "-m", "feature");
+      git("checkout", "main");
+
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/check", {
+        body: {
+          repo: "repo",
+          head_branch: "feature/demo",
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      const report = (response.body as { check?: { status?: string; base_branch?: string | null } }).check;
+      expect(report?.status).toBe("clean");
+      expect(report?.base_branch).toBe("main");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 class TestRouteRegistrar implements RouteRegistrar {
