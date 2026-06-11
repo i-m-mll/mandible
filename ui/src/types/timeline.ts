@@ -1,7 +1,32 @@
 export type TimelineRootPolicy = 'coordination' | 'explicit' | 'coordination_and_explicit';
 export type TimelineDensity = 'compact' | 'comfortable' | 'expanded';
 export type TimelineEventKind = 'body' | 'comment' | 'state';
-export type TimelineRowOccurrenceKind = 'root' | 'promoted_root' | 'explicit_root' | 'transient';
+export type TimelineRowOccurrenceKind = 'root' | 'promoted_root' | 'explicit_root' | 'transient' | 'member';
+
+export type TimelineIssuePredicate =
+  | { type: 'referenced_by'; issue_id: string }
+  | { type: 'label'; name: string }
+  | { type: 'kind'; kind: string }
+  | { type: 'parent_subtree'; issue_id: string }
+  | { type: 'residual' }
+  | { type: 'and'; predicates: TimelineIssuePredicate[] }
+  | { type: 'or'; predicates: TimelineIssuePredicate[] }
+  | { type: 'not'; predicate: TimelineIssuePredicate };
+
+export type TimelineFilterField = 'label' | 'kind' | 'referenced-by' | 'subtree';
+
+export type TimelineFilterChip = {
+  field: TimelineFilterField;
+  values: string[];
+  negated: boolean;
+};
+
+export type TimelineFilterRowSpec = {
+  id: string;
+  title: string;
+  chips: TimelineFilterChip[];
+  scope: TimelineIssuePredicate;
+};
 
 export type TimelineTimeWindow = {
   from: number | null;
@@ -29,6 +54,7 @@ export type TimelineViewState = {
   density: TimelineDensity;
   visibleEventTypes: TimelineEventKind[];
   includeClosed: boolean;
+  filterRows: TimelineFilterRowSpec[];
   panes: TimelinePaneVisibility;
 };
 
@@ -73,6 +99,13 @@ export type TimelineIssueRef = {
   deleted: boolean;
 };
 
+export type TimelineRowSpecRef = {
+  id: string;
+  title: string;
+  anchor_issue_id: string | null;
+  scope: TimelineIssuePredicate | null;
+};
+
 export type TimelineSourceEntityRef = {
   type: 'issue_body' | 'comment' | 'issue_state';
   id: string;
@@ -81,7 +114,8 @@ export type TimelineSourceEntityRef = {
 
 export type TimelineRowOccurrence = {
   id: string;
-  issue: TimelineIssueRef;
+  issue: TimelineIssueRef | null;
+  row_spec?: TimelineRowSpecRef | null;
   kind: TimelineRowOccurrenceKind;
   parent_row_id: string | null;
   source_event_id: string | null;
@@ -188,6 +222,7 @@ export const DEFAULT_TIMELINE_VIEW_STATE: TimelineViewState = {
   density: 'comfortable',
   visibleEventTypes: ['body', 'comment', 'state'],
   includeClosed: false,
+  filterRows: [],
   panes: {
     inspector: true,
     inspectorWidth: 350,

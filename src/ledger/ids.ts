@@ -7,6 +7,7 @@ export const LEDGER_ID_PREFIXES = [
   "com",
   "evt",
   "out",
+  "edge",
   "rel",
   "cnf",
   "xref",

@@ -244,4 +244,25 @@ describe("buildTimelineLayout", () => {
       "same_time_cluster",
     );
   });
+
+  it("maps aggregate intervals with the same row x-scale as event marks", () => {
+    const result = layout([
+      event("member-event", 250),
+    ], {
+      aggregates: [{
+        id: "aggregate-a",
+        rowId: "row-a",
+        issueId: "issue-a",
+        startTime: 250,
+        endTime: 750,
+        widthPx: 28,
+      }],
+    });
+
+    expect(result.aggregateMarks).toHaveLength(1);
+    const aggregate = result.aggregateMarks[0];
+    expect(aggregate.xPx).toBe(timelineTimeToX(250, domain, 1_000));
+    expect(aggregate.widthPx).toBe(timelineTimeToX(750, domain, 1_000) - timelineTimeToX(250, domain, 1_000));
+    expect(result.eventMarks[0].xPx).toBe(timelineTimeToX(250, domain, 1_000));
+  });
 });

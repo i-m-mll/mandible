@@ -32,9 +32,21 @@ export type TimelineLayoutEventInput = {
   category?: string;
 };
 
+export type TimelineLayoutAggregateInput = {
+  id: string;
+  rowId: string;
+  issueId: string;
+  startTime: number;
+  endTime: number;
+  widthPx?: number;
+  importance?: TimelineImportance;
+  category?: string;
+};
+
 export type TimelineLayoutInput = {
   rows: TimelineLayoutRowInput[];
   events: TimelineLayoutEventInput[];
+  aggregates?: TimelineLayoutAggregateInput[];
   renderDomain: {
     start: number;
     end: number;
@@ -97,10 +109,21 @@ export type TimelineRangeCluster = TimelineLayoutMarkBase & {
   expanded: boolean;
 };
 
+export type TimelineAggregateMark = TimelineLayoutMarkBase & {
+  kind: "aggregate";
+  aggregateId: string;
+  issueId: string;
+  startTime: number;
+  endTime: number;
+  importance: TimelineImportance;
+  category: string;
+};
+
 export type TimelineLayoutMark =
   | TimelineEventMark
   | TimelineSameTimeCluster
-  | TimelineRangeCluster;
+  | TimelineRangeCluster
+  | TimelineAggregateMark;
 
 export type TimelineRowLayout = {
   rowId: string;
@@ -123,6 +146,7 @@ export type TimelineChronologicalOrderEntry = {
 export type TimelineLayoutResult = {
   marks: TimelineLayoutMark[];
   eventMarks: TimelineEventMark[];
+  aggregateMarks: TimelineAggregateMark[];
   sameTimeClusters: TimelineSameTimeCluster[];
   rangeClusters: TimelineRangeCluster[];
   rowLayouts: TimelineRowLayout[];
@@ -201,6 +225,7 @@ export function buildTimelineLayout(input: TimelineLayoutInput): TimelineLayoutR
   }));
   const rowIds = new Set(rows.map((row) => row.id));
   const eventsByRow = new Map<string, TimelineLayoutEventInput[]>();
+  const aggregatesByRow = new Map<string, TimelineLayoutAggregateInput[]>();
 
   for (const event of input.events) {
     if (!rowIds.has(event.rowId)) {
@@ -209,6 +234,14 @@ export function buildTimelineLayout(input: TimelineLayoutInput): TimelineLayoutR
     const events = eventsByRow.get(event.rowId) ?? [];
     events.push(normalizeEvent(event, markWidthPx));
     eventsByRow.set(event.rowId, events);
+  }
+  for (const aggregate of input.aggregates ?? []) {
+    if (!rowIds.has(aggregate.rowId)) {
+      continue;
+    }
+    const aggregates = aggregatesByRow.get(aggregate.rowId) ?? [];
+    aggregates.push(normalizeAggregate(aggregate, input.clusterWidthPx ?? DEFAULT_CLUSTER_WIDTH_PX));
+    aggregatesByRow.set(aggregate.rowId, aggregates);
   }
 
   const marks: TimelineLayoutMark[] = [];
@@ -243,7 +276,12 @@ export function buildTimelineLayout(input: TimelineLayoutInput): TimelineLayoutR
       zoomBucket,
     });
     expandedSameTimeClusters.push(...clustered.expandedSameTimeClusters);
-    const candidates = clustered.candidates;
+    const candidates = sortCandidates([
+      ...clustered.candidates,
+      ...sortAggregates(aggregatesByRow.get(row.id) ?? []).map((aggregate) => (
+        createAggregateMark(aggregate, input, minGapPx)
+      )),
+    ]);
     const rowMarks = packLanes(candidates, laneBudget, previousLaneByMarkId);
     const laneCount = rowMarks.length === 0
       ? 0
@@ -272,6 +310,7 @@ export function buildTimelineLayout(input: TimelineLayoutInput): TimelineLayoutR
   }
 
   const eventMarks = marks.filter((mark): mark is TimelineEventMark => mark.kind === "event");
+  const aggregateMarks = marks.filter((mark): mark is TimelineAggregateMark => mark.kind === "aggregate");
   const sameTimeClusters = [
     ...marks.filter((mark): mark is TimelineSameTimeCluster => mark.kind === "same_time_cluster"),
     ...expandedSameTimeClusters,
@@ -283,6 +322,7 @@ export function buildTimelineLayout(input: TimelineLayoutInput): TimelineLayoutR
   return {
     marks,
     eventMarks,
+    aggregateMarks,
     sameTimeClusters,
     rangeClusters,
     rowLayouts,
@@ -302,6 +342,22 @@ function normalizeEvent(
     widthPx: event.widthPx ?? defaultWidthPx,
     importance: event.importance ?? "normal",
     category: event.category ?? "event",
+  };
+}
+
+function normalizeAggregate(
+  aggregate: TimelineLayoutAggregateInput,
+  defaultWidthPx: number,
+): TimelineLayoutAggregateInput {
+  const startTime = Math.min(aggregate.startTime, aggregate.endTime);
+  const endTime = Math.max(aggregate.startTime, aggregate.endTime);
+  return {
+    ...aggregate,
+    startTime,
+    endTime,
+    widthPx: aggregate.widthPx ?? defaultWidthPx,
+    importance: aggregate.importance ?? "normal",
+    category: aggregate.category ?? "aggregate",
   };
 }
 
@@ -405,6 +461,40 @@ function createEventMark(
     widthPx,
     intervalStartPx: xPx - halfWidthWithGap,
     intervalEndPx: xPx + halfWidthWithGap,
+  };
+}
+
+function createAggregateMark(
+  aggregate: TimelineLayoutAggregateInput,
+  input: TimelineLayoutInput,
+  minGapPx: number,
+): MarkCandidate {
+  const startXPx = timelineTimeToX(aggregate.startTime, input.renderDomain, input.viewportWidthPx);
+  const endXPx = timelineTimeToX(aggregate.endTime, input.renderDomain, input.viewportWidthPx);
+  const pointWidthPx = aggregate.widthPx ?? DEFAULT_CLUSTER_WIDTH_PX;
+  const widthPx = Math.max(pointWidthPx, endXPx - startXPx);
+  const halfGap = minGapPx / 2;
+  return {
+    kind: "aggregate",
+    id: stableMarkId(
+      "aggregate",
+      aggregate.rowId,
+      aggregate.issueId,
+      aggregate.id,
+      String(aggregate.startTime),
+      String(aggregate.endTime),
+    ),
+    rowId: aggregate.rowId,
+    aggregateId: aggregate.id,
+    issueId: aggregate.issueId,
+    startTime: aggregate.startTime,
+    endTime: aggregate.endTime,
+    importance: aggregate.importance ?? "normal",
+    category: aggregate.category ?? "aggregate",
+    xPx: startXPx,
+    widthPx,
+    intervalStartPx: startXPx - halfGap,
+    intervalEndPx: startXPx + widthPx + halfGap,
   };
 }
 
@@ -604,6 +694,9 @@ function markEvents(
   if (mark.kind === "event") {
     return events.filter((event) => event.id === mark.eventId);
   }
+  if (mark.kind === "aggregate") {
+    return [];
+  }
   const eventIds = new Set(mark.eventIds);
   return events.filter((event) => eventIds.has(event.id));
 }
@@ -616,7 +709,7 @@ function buildChronologicalOrder(
   for (const mark of marks) {
     if (mark.kind === "event") {
       markByEventId.set(mark.eventId, mark);
-    } else {
+    } else if (mark.kind !== "aggregate") {
       for (const eventId of mark.eventIds) {
         markByEventId.set(eventId, mark);
       }
@@ -657,6 +750,14 @@ function sortEvents(events: TimelineLayoutEventInput[]): TimelineLayoutEventInpu
   ));
 }
 
+function sortAggregates(aggregates: TimelineLayoutAggregateInput[]): TimelineLayoutAggregateInput[] {
+  return [...aggregates].sort((left, right) => (
+    left.startTime - right.startTime
+    || left.endTime - right.endTime
+    || left.id.localeCompare(right.id)
+  ));
+}
+
 function sortCandidates<T extends MarkCandidate>(candidates: T[]): T[] {
   return [...candidates].sort((left, right) => (
     left.intervalStartPx - right.intervalStartPx
@@ -670,11 +771,17 @@ function markTime(mark: MarkCandidate): number {
   if (mark.kind === "range_cluster") {
     return mark.minTime;
   }
+  if (mark.kind === "aggregate") {
+    return mark.startTime;
+  }
   return mark.timestamp;
 }
 
 function markImportance(mark: MarkCandidate): TimelineImportance {
   if (mark.kind === "event") {
+    return mark.importance;
+  }
+  if (mark.kind === "aggregate") {
     return mark.importance;
   }
   return mark.highestImportance;

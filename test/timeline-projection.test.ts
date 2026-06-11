@@ -32,6 +32,7 @@ describe("project timeline projection", () => {
       root_policy: "coordination_and_explicit",
       statuses: ["open"],
       depth: 1,
+      event_kinds: ["auth_request", "body", "comment", "commit", "issue_state", "label"],
     });
     expect(projection.time_axis).toEqual({
       start: fixture.issues.rootA.created_at,
@@ -58,16 +59,24 @@ describe("project timeline projection", () => {
       }),
       expect.objectContaining({
         kind: "state",
-        state: { event_type: "issue.closed", status: "closed", resolution: "merged" },
+        state: expect.objectContaining({
+          event_type: "issue.closed",
+          status: "closed",
+          resolution: "merged",
+        }),
         headline_source: "state",
       }),
       expect.objectContaining({
         kind: "state",
-        state: { event_type: "issue.reopened", status: "open", resolution: null },
+        state: expect.objectContaining({
+          event_type: "issue.reopened",
+          status: "open",
+          resolution: null,
+        }),
       }),
     ]));
     expect(projection.diagnostics).toMatchObject({
-      total_issues: 8,
+      total_issues: 9,
       deleted_issues: 1,
       root_count: 2,
       reachable_from_roots_count: 2,
@@ -82,6 +91,109 @@ describe("project timeline projection", () => {
       fixture.issues.cycle.id,
       fixture.issues.nested.id,
     ]));
+  });
+
+  it("surfaces requested label and operational ledger events with inspector payloads", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.rootB.id, fixture.issues.authDone.id],
+      include_closed: true,
+    });
+    const labelEvents = projection.events.filter((event) => event.state?.event_type === "label.updated");
+    const authCompleted = projection.events.find((event) => (
+      event.state?.event_type === "auth_request.completed"
+    ));
+    const authClosed = projection.events.find((event) => (
+      event.issue.id === fixture.issues.authDone.id
+      && event.state?.event_type === "issue.closed"
+    ));
+
+    expect(labelEvents).toHaveLength(2);
+    expect(labelEvents.map((event) => [event.timestamp, event.display_headline])).toEqual([
+      [1_800_000_000_175, "Label needs-review added"],
+      [1_800_000_000_180, "Label needs-review removed"],
+    ]);
+    expect(labelEvents[0].state?.payload).toMatchObject({
+      issue_id: fixture.issues.rootB.id,
+      label: "needs-review",
+      present: true,
+    });
+    expect(authCompleted).toMatchObject({
+      issue: expect.objectContaining({ id: fixture.issues.authDone.id }),
+      source_entity: {
+        type: "issue_state",
+        id: fixture.operationalEvents.authCompleted,
+        issue_id: fixture.issues.authDone.id,
+      },
+      kind: "state",
+      timestamp: 1_800_000_000_190,
+      display_headline: "Auth request auth_timeline_1 completed",
+      state: expect.objectContaining({
+        event_type: "auth_request.completed",
+        payload: expect.objectContaining({
+          auth_request_id: "auth_timeline_1",
+          issue_id: fixture.issues.authDone.id,
+        }),
+      }),
+    });
+    expect(authClosed).toBeUndefined();
+  });
+
+  it("filters timeline event kinds and leaves noisy operational links default-off", () => {
+    fixture.db.prepare(
+      `INSERT INTO ledger_events (
+        id, entity_type, entity_id, event_type, actor_id, actor_type,
+        source, payload_json, occurred_at, observed_at
+      ) VALUES (?, ?, ?, ?, NULL, 'system', ?, ?, ?, ?)`,
+    ).run(
+      "event_session_timeline_1",
+      "session",
+      "session_timeline_1",
+      "session.issue_linked",
+      "session",
+      JSON.stringify({
+        session_id: "session_timeline_1",
+        issue_id: fixture.issues.rootB.id,
+        link_type: "worked_on",
+      }),
+      1_800_000_000_185,
+      1_800_000_000_185,
+    );
+    const defaults = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.rootB.id],
+    });
+    const labelsOnly = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.rootB.id],
+      event_kinds: ["label"],
+    });
+    const withSession = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.rootB.id],
+      event_kinds: ["label", "session"],
+    });
+
+    expect(defaults.events.some((event) => event.state?.event_type === "session.issue_linked")).toBe(false);
+    expect(labelsOnly.events.map((event) => event.state?.event_type)).toEqual([
+      "label.updated",
+      "label.updated",
+    ]);
+    expect(withSession.events.map((event) => event.state?.event_type)).toEqual([
+      "label.updated",
+      "label.updated",
+      "session.issue_linked",
+    ]);
+    expect(withSession.events.at(-1)).toMatchObject({
+      display_headline: "Session session_timeline_1 linked",
+      state: expect.objectContaining({
+        payload: expect.objectContaining({ session_id: "session_timeline_1" }),
+      }),
+    });
   });
 
   it("attaches text-derived links to body and comment events using relationship source provenance", () => {
@@ -114,6 +226,98 @@ describe("project timeline projection", () => {
         raw_ref: expect.stringContaining("[issue:"),
       }),
     ]));
+  });
+
+  it("synthesizes derived backlink events on visible target rows", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.shared.id],
+      event_kinds: ["backlink", "body", "comment", "state"],
+    });
+    const sharedRow = projection.rows.find((row) => row.issue.id === fixture.issues.shared.id);
+    const backlink = projection.events.find((event) => (
+      event.kind === "backlink"
+      && event.row_id === sharedRow?.id
+      && event.source_entity.type === "comment"
+      && event.source_entity.id === fixture.comments.rootARefs
+    ));
+
+    expect(backlink).toMatchObject({
+      row_id: sharedRow?.id,
+      issue: expect.objectContaining({ id: fixture.issues.shared.id }),
+      source_entity: {
+        type: "comment",
+        id: fixture.comments.rootARefs,
+        issue_id: fixture.issues.rootA.id,
+      },
+      kind: "backlink",
+      timestamp: 1_800_000_000_110,
+      display_headline: `Referenced by ${fixture.issues.rootA.short_id}`,
+      headline_source: "backlink",
+      body: expect.stringContaining("[issue:"),
+      link_ids: [],
+      backlink: expect.objectContaining({
+        relationship_type: "references",
+        source_issue: expect.objectContaining({ id: fixture.issues.rootA.id }),
+        target_issue: expect.objectContaining({ id: fixture.issues.shared.id }),
+        source_entity: {
+          type: "comment",
+          id: fixture.comments.rootARefs,
+          issue_id: fixture.issues.rootA.id,
+        },
+        raw_ref: expect.stringContaining("[issue:"),
+        derived: true,
+      }),
+    });
+  });
+
+  it("keeps many backlink refs as projection events with clustering metadata", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [
+        fixture.issues.shared.id,
+        fixture.issues.nested.id,
+        fixture.issues.cycle.id,
+      ],
+      event_kinds: ["backlink", "body", "comment", "state"],
+    });
+    const manyRefBacklinks = projection.events.filter((event) => (
+      event.kind === "backlink"
+      && event.source_entity.type === "comment"
+      && event.source_entity.id === fixture.comments.manyRefs
+    ));
+
+    expect(manyRefBacklinks.map((event) => event.issue.id).sort()).toEqual([
+      fixture.issues.cycle.id,
+      fixture.issues.nested.id,
+      fixture.issues.shared.id,
+    ].sort());
+    expect(manyRefBacklinks.every((event) => event.timestamp === 1_800_000_000_130)).toBe(true);
+    expect(manyRefBacklinks.every((event) => event.backlink?.relationship_source_id)).toBe(true);
+    expect(manyRefBacklinks.every((event) => event.backlink?.normalized_ref)).toBe(true);
+  });
+
+  it("can omit synthetic backlink events via event_kinds without changing rows or diagnostics", () => {
+    const withBacklinks = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.shared.id],
+      event_kinds: ["backlink", "body", "comment", "state"],
+    });
+    const withoutBacklinks = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.shared.id],
+      event_kinds: ["body", "comment", "state"],
+    });
+
+    expect(withBacklinks.events.some((event) => event.kind === "backlink")).toBe(true);
+    expect(withoutBacklinks.events.some((event) => event.kind === "backlink")).toBe(false);
+    expect(withoutBacklinks.inputs.event_kinds).toEqual(["body", "comment", "state"]);
+    expect(withoutBacklinks.rows).toEqual(withBacklinks.rows);
+    expect(withoutBacklinks.diagnostics).toEqual(withBacklinks.diagnostics);
   });
 
   it("expands event-linked issues into path-keyed transient occurrences and preserves the time axis", () => {
@@ -226,7 +430,10 @@ describe("project timeline projection", () => {
     const sharedRow = second.rows.find((row) => row.issue.id === fixture.issues.shared.id);
     expect(sharedRow).toBeTruthy();
     const sharedNestedEvent = second.events.find((event) => (
-      event.row_id === sharedRow?.id && event.source_entity.type === "comment" && event.source_entity.id === fixture.comments.sharedNested
+      event.kind === "comment"
+      && event.row_id === sharedRow?.id
+      && event.source_entity.type === "comment"
+      && event.source_entity.id === fixture.comments.sharedNested
     ));
     expect(sharedNestedEvent).toBeTruthy();
 
@@ -248,7 +455,7 @@ describe("project timeline projection", () => {
 
     const cycleRow = second.rows.find((row) => row.issue.id === fixture.issues.cycle.id);
     const cycleBackEvent = second.events.find((event) => (
-      event.row_id === cycleRow?.id && event.source_entity.type === "comment"
+      event.kind === "comment" && event.row_id === cycleRow?.id && event.source_entity.type === "comment"
     ));
     const cycleProjection = buildProjectTimelineProjection(fixture.db, {
       project_id: fixture.project.id,
@@ -303,6 +510,259 @@ describe("project timeline projection", () => {
       fixture.issues.shared.id,
     ]);
   });
+
+  it("keeps anchor RowSpecs compatible with the existing coordination root projection", () => {
+    const legacy = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "coordination",
+    });
+    const rowSpec = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "alpha",
+        anchor_issue_id: fixture.issues.rootA.id,
+        scope: { type: "referenced_by", issue_id: fixture.issues.rootA.id },
+      }],
+    });
+    const legacyAlphaRow = legacy.rows.find((row) => row.issue?.id === fixture.issues.rootA.id);
+
+    expect(rowSpec.rows).toEqual([legacyAlphaRow]);
+    expect(rowSpec.events).toEqual(legacy.events.filter((event) => event.row_id === legacyAlphaRow?.id));
+    expect(rowSpec.links).toEqual(legacy.links.filter((link) => link.source_row_id === legacyAlphaRow?.id));
+  });
+
+  it("emits anchor-less label filter roots with predicate member rows and filtered member events", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "review",
+        title: "Needs review",
+        scope: { type: "label", name: "needs-review" },
+      }],
+      from: fixture.issues.nested.created_at,
+      to: fixture.issues.nested.created_at,
+    });
+    const [root, ...members] = projection.rows;
+
+    expect(root).toMatchObject({
+      id: "row:spec:review:0",
+      issue: null,
+      kind: "root",
+      parent_row_id: null,
+      row_spec: expect.objectContaining({ id: "review", title: "Needs review" }),
+      expanded: true,
+    });
+    expect(members.map((row) => [row.kind, row.issue?.id, row.parent_row_id, row.source_event_id])).toEqual([
+      ["member", fixture.issues.shared.id, root.id, null],
+      ["member", fixture.issues.nested.id, root.id, null],
+    ]);
+    expect(projection.events.map((event) => event.issue.id)).toEqual([fixture.issues.nested.id]);
+  });
+
+  it("distinguishes current label membership from ever-in-window membership", () => {
+    const now = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "review-now",
+        title: "Currently needs review",
+        scope: { type: "label", name: "needs-review" },
+      }],
+      from: fixture.issues.rootB.created_at + 156,
+      to: fixture.issues.rootB.created_at + 156,
+    });
+    const ever = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "review-ever",
+        title: "Ever needed review",
+        scope: { type: "label", name: "needs-review", membership: "ever_in_window" },
+      }],
+      from: fixture.issues.rootB.created_at + 156,
+      to: fixture.issues.rootB.created_at + 156,
+    });
+
+    expect(memberIssueIds(now, "review-now")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+    expect(memberIssueIds(ever, "review-ever")).toEqual([
+      fixture.issues.rootB.id,
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+  });
+
+  it("exposes label membership intervals for filter RowSpec aggregate support", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "review-ever",
+        title: "Ever needed review",
+        scope: { type: "label", name: "needs-review", membership: "ever_in_window" },
+      }],
+      from: fixture.issues.rootB.created_at + 156,
+      to: fixture.issues.rootB.created_at + 156,
+    });
+    const root = projection.rows.find((row) => row.row_spec?.id === "review-ever" && row.kind === "root");
+    const rootBInterval = root?.row_spec?.label_intervals?.find((interval) => (
+      interval.issue_id === fixture.issues.rootB.id && interval.label === "needs-review"
+    ));
+
+    expect(rootBInterval).toEqual({
+      issue_id: fixture.issues.rootB.id,
+      label: "needs-review",
+      start: fixture.issues.rootB.created_at + 155,
+      end: fixture.issues.rootB.created_at + 160,
+      degraded: false,
+    });
+  });
+
+  it("keeps residual rows based on current label membership", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [
+        {
+          id: "review-ever",
+          scope: { type: "label", name: "needs-review", membership: "ever_in_window" },
+        },
+        { id: "residual", scope: { type: "residual" } },
+      ],
+      from: fixture.issues.rootB.created_at + 156,
+      to: fixture.issues.rootB.created_at + 156,
+    });
+
+    expect(memberIssueIds(projection, "review-ever")).toContain(fixture.issues.rootB.id);
+    expect(memberIssueIds(projection, "residual")).toContain(fixture.issues.rootB.id);
+    expect(memberIssueIds(projection, "residual")).not.toContain(fixture.issues.shared.id);
+    expect(memberIssueIds(projection, "residual")).not.toContain(fixture.issues.nested.id);
+  });
+
+  it("supports kind, and/or/not composition, overlapping members, and residual complement rows", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [
+        { id: "review", scope: { type: "label", name: "needs-review" } },
+        {
+          id: "review-feature",
+          scope: {
+            type: "and",
+            predicates: [
+              { type: "label", name: "needs-review" },
+              { type: "kind", kind: "feature" },
+            ],
+          },
+        },
+        {
+          id: "open-not-review",
+          scope: {
+            type: "and",
+            predicates: [
+              { type: "kind", kind: "feature" },
+              { type: "not", predicate: { type: "label", name: "needs-review" } },
+            ],
+          },
+        },
+        {
+          id: "feature-or-umbrella",
+          scope: {
+            type: "or",
+            predicates: [
+              { type: "kind", kind: "feature" },
+              { type: "kind", kind: "umbrella" },
+            ],
+          },
+        },
+        { id: "residual", scope: { type: "residual" } },
+      ],
+    });
+
+    expect(memberIssueIds(projection, "review")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+    expect(memberIssueIds(projection, "review-feature")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+    expect(memberIssueIds(projection, "open-not-review")).toEqual([
+      fixture.issues.cycle.id,
+      fixture.issues.loner.id,
+    ]);
+    expect(memberIssueIds(projection, "feature-or-umbrella")).toEqual([
+      fixture.issues.rootA.id,
+      fixture.issues.rootB.id,
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+      fixture.issues.cycle.id,
+      fixture.issues.loner.id,
+    ]);
+    expect(memberIssueIds(projection, "residual")).toEqual([]);
+
+    const sharedMemberships = projection.rows.filter((row) => (
+      row.kind === "member" && row.issue?.id === fixture.issues.shared.id
+    ));
+    expect(sharedMemberships.length).toBeGreaterThan(1);
+
+    const closedOnly = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{ id: "closed-features", scope: { type: "kind", kind: "feature" } }],
+      statuses: ["closed"],
+    });
+    expect(memberIssueIds(closedOnly, "closed-features")).toEqual([
+      fixture.issues.closed.id,
+      fixture.issues.authDone.id,
+    ]);
+  });
+
+  it("projects parent-subtree members and reports parent-label cycles without crashing", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "subtree",
+        scope: { type: "parent_subtree", issue_id: fixture.issues.rootA.short_id },
+      }],
+    });
+
+    expect(memberIssueIds(projection, "subtree")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+      fixture.issues.cycle.id,
+    ]);
+    expect(projection.diagnostics.cycles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "cycle",
+        row_spec_id: "subtree",
+        message: expect.stringContaining("parent-label cycle"),
+      }),
+    ]));
+  });
+
+  it("reports unmatched and invalid predicates as diagnostics", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [
+        { id: "missing-label", scope: { type: "label", name: "not-present" } },
+        { id: "missing-source", scope: { type: "referenced_by", issue_id: "missing" } },
+        { id: "bad-and", scope: { type: "and", predicates: [] } },
+        { id: "bad-label", scope: { type: "label" } as never },
+      ],
+    });
+
+    expect(projection.rows.map((row) => row.id)).toEqual([
+      "row:spec:missing-label:0",
+      "row:spec:missing-source:1",
+      "row:spec:bad-and:2",
+      "row:spec:bad-label:3",
+    ]);
+    expect(projection.diagnostics.unmatched_predicates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ row_spec_id: "missing-label", kind: "unmatched_predicate" }),
+    ]));
+    expect(projection.diagnostics.invalid_predicates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ row_spec_id: "missing-source", kind: "invalid_predicate" }),
+      expect.objectContaining({ row_spec_id: "bad-and", kind: "invalid_predicate" }),
+      expect.objectContaining({ row_spec_id: "bad-label", kind: "invalid_predicate" }),
+    ]));
+  });
 });
 
 function eventBySource(
@@ -319,6 +779,12 @@ function eventBySource(
 
 function linksForEvent(projection: ProjectTimelineProjection, eventId: string) {
   return projection.links.filter((link) => link.event_id === eventId);
+}
+
+function memberIssueIds(projection: ProjectTimelineProjection, specId: string) {
+  return projection.rows
+    .filter((row) => row.kind === "member" && row.row_spec?.id === specId)
+    .map((row) => row.issue?.id);
 }
 
 function captureTimelineRoute(): (body: unknown) => { statusCode: number; body: unknown } {

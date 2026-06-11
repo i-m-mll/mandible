@@ -10,6 +10,7 @@ export const LEDGER_BACKUP_TABLES = [
   "ledger_labels",
   "ledger_issue_relationships",
   "ledger_issue_relationship_sources",
+  "ledger_relationship_edges",
   "ledger_events",
   "ledger_outbox",
   "ledger_external_refs",

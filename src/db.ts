@@ -1143,6 +1143,43 @@ const MIGRATIONS: Migration[] = [
         ON ledger_issue_relationship_sources(source_entity_type, source_entity_id)`,
       `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_sources_target
         ON ledger_issue_relationship_sources(target_issue_id)`,
+      `CREATE TABLE IF NOT EXISTS ledger_relationship_edges (
+        id TEXT PRIMARY KEY,
+        source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue','comment')),
+        source_entity_id TEXT NOT NULL,
+        source_project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        target_entity_type TEXT NOT NULL CHECK(target_entity_type IN ('issue','comment')),
+        target_entity_id TEXT NOT NULL,
+        target_project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        link_type TEXT NOT NULL
+          CHECK(link_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),
+        provenance TEXT NOT NULL DEFAULT 'manual'
+          CHECK(provenance IN ('manual','imported','derived','system')),
+        note TEXT,
+        action_id TEXT NOT NULL,
+        actor_id TEXT,
+        actor_type TEXT NOT NULL
+          CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),
+        source TEXT NOT NULL
+          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        UNIQUE(source_entity_type, source_entity_id, target_entity_type, target_entity_id, link_type)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_source
+        ON ledger_relationship_edges(source_entity_type, source_entity_id, deleted_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_source_issue
+        ON ledger_relationship_edges(source_issue_id, deleted_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_target
+        ON ledger_relationship_edges(target_entity_type, target_entity_id, deleted_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_target_issue
+        ON ledger_relationship_edges(target_issue_id, deleted_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_action
+        ON ledger_relationship_edges(action_id)`,
       `CREATE TABLE IF NOT EXISTS ledger_events (
         id TEXT PRIMARY KEY,
         entity_type TEXT NOT NULL,
@@ -1722,6 +1759,49 @@ const MIGRATIONS: Migration[] = [
     // Guarded DDL/backfill runs post-migration so synthetic older test DBs that
     // omit conversation tables and rewinded current DBs both remain valid.
     statements: []
+  },
+  {
+    version: 75,
+    name: "structured_relationship_edges",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS ledger_relationship_edges (
+        id TEXT PRIMARY KEY,
+        source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue','comment')),
+        source_entity_id TEXT NOT NULL,
+        source_project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        target_entity_type TEXT NOT NULL CHECK(target_entity_type IN ('issue','comment')),
+        target_entity_id TEXT NOT NULL,
+        target_project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,
+        link_type TEXT NOT NULL
+          CHECK(link_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),
+        provenance TEXT NOT NULL DEFAULT 'manual'
+          CHECK(provenance IN ('manual','imported','derived','system')),
+        note TEXT,
+        action_id TEXT NOT NULL,
+        actor_id TEXT,
+        actor_type TEXT NOT NULL
+          CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),
+        source TEXT NOT NULL
+          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        deleted_at INTEGER,
+        UNIQUE(source_entity_type, source_entity_id, target_entity_type, target_entity_id, link_type)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_source
+        ON ledger_relationship_edges(source_entity_type, source_entity_id, deleted_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_source_issue
+        ON ledger_relationship_edges(source_issue_id, deleted_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_target
+        ON ledger_relationship_edges(target_entity_type, target_entity_id, deleted_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_target_issue
+        ON ledger_relationship_edges(target_issue_id, deleted_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_action
+        ON ledger_relationship_edges(action_id)`
+    ]
   }
 ];
 

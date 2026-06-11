@@ -92,6 +92,9 @@ export const LEDGER_RELATIONSHIP_PROVENANCES = [
 ] as const;
 export type LedgerRelationshipProvenance = (typeof LEDGER_RELATIONSHIP_PROVENANCES)[number];
 
+export const LEDGER_RELATIONSHIP_ENTITY_TYPES = ["issue", "comment"] as const;
+export type LedgerRelationshipEntityType = (typeof LEDGER_RELATIONSHIP_ENTITY_TYPES)[number];
+
 export const LEDGER_BODY_REVISION_ENTITY_TYPES = ["issue_body", "comment_body"] as const;
 export type LedgerBodyRevisionEntityType = (typeof LEDGER_BODY_REVISION_ENTITY_TYPES)[number];
 
@@ -260,6 +263,29 @@ export interface LedgerIssueRelationshipSource {
   ref_kind: "issue" | "comment";
   raw_ref: string;
   normalized_ref: string;
+  metadata_json: string;
+  created_at: number;
+  updated_at: number;
+  deleted_at: number | null;
+}
+
+export interface LedgerRelationshipEdge {
+  id: string;
+  source_entity_type: LedgerRelationshipEntityType;
+  source_entity_id: string;
+  source_project_id: string;
+  source_issue_id: string;
+  target_entity_type: LedgerRelationshipEntityType;
+  target_entity_id: string;
+  target_project_id: string;
+  target_issue_id: string;
+  link_type: LedgerRelationshipType;
+  provenance: LedgerRelationshipProvenance;
+  note: string | null;
+  action_id: string;
+  actor_id: string | null;
+  actor_type: LedgerActorType;
+  source: LedgerEventSource;
   metadata_json: string;
   created_at: number;
   updated_at: number;

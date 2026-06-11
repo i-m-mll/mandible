@@ -373,6 +373,192 @@ function rangeClusterProjection(): ProjectTimelineProjection {
   });
 }
 
+function rowSpecGroupProjection(options: { residual?: boolean } = {}): ProjectTimelineProjection {
+  const base = projection();
+  const groupId = options.residual ? 'row:spec:residual:0' : 'row:spec:review:0';
+  const specId = options.residual ? 'residual' : 'review';
+  const specTitle = options.residual ? 'Residual issues' : 'Needs review';
+  const memberA = {
+    ...base.rows[0].issue,
+    id: 'issue_member_a',
+    display_id: 'aaa1111',
+    title: 'Review member A',
+    labels: ['needs-review'],
+  };
+  const memberB = {
+    ...base.rows[0].issue,
+    id: 'issue_member_b',
+    display_id: 'bbb2222',
+    title: options.residual ? 'Residual member B' : 'Review member B',
+    labels: options.residual ? [] : ['needs-review'],
+  };
+  const group = {
+    ...base.rows[0],
+    id: groupId,
+    issue: null,
+    row_spec: {
+      id: specId,
+      title: specTitle,
+      anchor_issue_id: null,
+      scope: options.residual
+        ? { type: 'residual' as const }
+        : { type: 'label' as const, name: 'needs-review' },
+    },
+    kind: 'root' as const,
+    parent_row_id: null,
+    source_event_id: null,
+    depth: 0,
+    path: [`rowspec:${specId}`],
+    expanded: true,
+  };
+  const memberRows = [
+    {
+      ...base.rows[0],
+      id: `row:spec:${specId}:member:${memberA.id}`,
+      issue: memberA,
+      row_spec: group.row_spec,
+      kind: 'member' as const,
+      parent_row_id: groupId,
+      source_event_id: null,
+      depth: 1,
+      path: [`rowspec:${specId}`, `issue:${memberA.id}`],
+      expanded: false,
+    },
+    {
+      ...base.rows[0],
+      id: `row:spec:${specId}:member:${memberB.id}`,
+      issue: memberB,
+      row_spec: group.row_spec,
+      kind: 'member' as const,
+      parent_row_id: groupId,
+      source_event_id: null,
+      depth: 1,
+      path: [`rowspec:${specId}`, `issue:${memberB.id}`],
+      expanded: false,
+    },
+  ];
+  const events = [
+    {
+      ...base.events[0],
+      id: 'event-member-a-start',
+      row_id: memberRows[0].id,
+      issue: memberA,
+      timestamp: Date.UTC(2026, 0, 1, 12),
+      ordinal: 0,
+      display_headline: 'Review A start',
+      body: 'Review A body',
+      link_ids: [],
+    },
+    {
+      ...base.events[0],
+      id: 'event-member-a-end',
+      row_id: memberRows[0].id,
+      issue: memberA,
+      timestamp: Date.UTC(2026, 0, 2, 12),
+      ordinal: 1,
+      display_headline: 'Review A end',
+      body: 'Review A end body',
+      link_ids: [],
+    },
+    {
+      ...base.events[0],
+      id: 'event-member-b',
+      row_id: memberRows[1].id,
+      issue: memberB,
+      timestamp: Date.UTC(2026, 0, 3, 12),
+      ordinal: 0,
+      display_headline: options.residual ? 'Residual B event' : 'Review B event',
+      body: 'Review B body',
+      link_ids: [],
+    },
+  ];
+
+  return projection({
+    rows: [group, ...memberRows],
+    events,
+    links: [],
+    time_axis: {
+      start: Date.UTC(2026, 0, 1),
+      end: Date.UTC(2026, 0, 4),
+      event_count: events.length,
+    },
+  });
+}
+
+function filterComposerProjection(): ProjectTimelineProjection {
+  const base = projection();
+  const issues = [
+    {
+      ...base.rows[0].issue,
+      id: 'issue_auth_feature',
+      display_id: 'auth111',
+      title: 'Auth feature row',
+      kind: 'feature',
+      labels: ['auth', 'timeline'],
+    },
+    {
+      ...base.rows[0].issue,
+      id: 'issue_auth_question',
+      display_id: 'auth222',
+      title: 'Auth question row',
+      kind: 'question',
+      labels: ['auth'],
+    },
+    {
+      ...base.rows[0].issue,
+      id: 'issue_maintenance',
+      display_id: 'maint33',
+      title: 'Maintenance row',
+      kind: 'maintenance',
+      labels: ['ops'],
+    },
+  ];
+  const rows = issues.map((issue, index) => ({
+    ...base.rows[0],
+    id: `row-filter-${index}`,
+    issue,
+    kind: index === 0 ? 'root' as const : 'explicit_root' as const,
+    path: [`row-filter-${index}`],
+  }));
+  const events = rows.map((row, index) => ({
+    ...base.events[0],
+    id: `event-filter-${index}`,
+    row_id: row.id,
+    issue: row.issue,
+    timestamp: Date.UTC(2026, 0, index + 1, 12),
+    ordinal: 0,
+    display_headline: `${row.issue.display_id} event`,
+    body: `${row.issue.title} body`,
+    link_ids: index === 1 ? ['link-auth-reference'] : [],
+  }));
+  return projection({
+    rows,
+    events,
+    links: [{
+      ...base.links[0],
+      id: 'link-auth-reference',
+      event_id: 'event-filter-1',
+      source_row_id: rows[1].id,
+      source_issue: issues[1],
+      target_issue: issues[0],
+      raw_ref: issues[0].display_id,
+      normalized_ref: issues[0].display_id,
+      expanded_row_id: null,
+    }],
+    time_axis: {
+      start: Date.UTC(2026, 0, 1),
+      end: Date.UTC(2026, 0, 4),
+      event_count: events.length,
+    },
+    diagnostics: {
+      ...base.diagnostics,
+      total_issues: issues.length,
+      root_count: rows.length,
+      reachable_from_roots_count: rows.length,
+    },
+  });
+}
+
 describe('Timeline route', () => {
   it('parses timeline hashes as a first-class workspace', () => {
     expect(parseRouteFromHash('#/timeline?project=mandible&density=compact')).toEqual({
@@ -1265,5 +1451,202 @@ describe('TimelineView', () => {
       expect(state.timeWindow.to).toBeGreaterThanOrEqual(Date.UTC(2026, 0, 1, 12, 45));
       expect(state.timeWindow.to - state.timeWindow.from).toBeLessThan(TEST_DAY_MS);
     });
+  });
+
+  it('collapses RowSpec group rows into aggregate markers and expands member rows with persisted view state', async () => {
+    const groupProjection = rowSpecGroupProjection();
+    const fetchMock = stubTimelineFetch(groupProjection, groupProjection, groupProjection);
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    const groupToggle = await screen.findByRole('button', {
+      name: /review Needs review\. Collapsed group with 2 members/i,
+    });
+    expect(screen.queryByText('Review A start')).toBeNull();
+    const aggregates = screen.getAllByRole('button', { name: /Aggregate marker for/ });
+    expect(aggregates).toHaveLength(2);
+    expect(aggregates[0].classList.contains('timeline-cluster--range')).toBe(true);
+    const firstAggregateLeft = parseFloat((aggregates[0] as HTMLButtonElement).style.left);
+
+    fireEvent.click(aggregates[0]);
+    expect(screen.getByText('Row events')).toBeTruthy();
+    expect(screen.getByText('Review A start')).toBeTruthy();
+
+    fireEvent.click(groupToggle);
+
+    await waitFor(() => expect(document.querySelectorAll('.timeline-row')).toHaveLength(3));
+    const canvasEvents = Array.from(document.querySelectorAll('.timeline-row-canvas .timeline-event'))
+      .map((element) => element.textContent ?? '');
+    expect(canvasEvents.some((text) => text.includes('Review A start'))).toBe(true);
+    expect(canvasEvents.some((text) => text.includes('Review B event'))).toBe(true);
+    expect(screen.queryByRole('button', { name: /Aggregate marker for/ })).toBeNull();
+    await waitFor(() => {
+      const body = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body));
+      expect(body.expanded_paths).toContain('row:spec:review:0');
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(JSON.parse(String(stored)).expandedPaths).toContain('row:spec:review:0');
+    });
+
+    cleanup();
+    stubTimelineFetch(groupProjection);
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Review A start')).toBeTruthy());
+    const memberEvent = screen.getByText('Review A start').closest('button') as HTMLButtonElement;
+    expect(parseFloat(memberEvent.style.left)).toBe(firstAggregateLeft);
+  });
+
+  it('renders residual RowSpec roots distinctly through the same aggregate path', async () => {
+    stubTimelineFetch(rowSpecGroupProjection({ residual: true }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Residual issues')).toBeTruthy());
+    expect(screen.getByRole('button', {
+      name: /residual Residual issues\. Collapsed group with 2 members\. Status residual/i,
+    })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /Aggregate marker for/ })).toHaveLength(2);
+    expect(screen.queryByText('Residual B event')).toBeNull();
+  });
+
+  it('creates, edits, removes, and replays URL-shareable filter rows', async () => {
+    const composerProjection = filterComposerProjection();
+    stubTimelineFetch(composerProjection);
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('auth111 event')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
+    const filterInput = screen.getByLabelText('Filter');
+    fireEvent.input(filterInput, { target: { value: 'label:auth' } });
+    fireEvent.keyDown(filterInput, { key: 'Enter' });
+    expect(screen.getByText('2 members')).toBeTruthy();
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Add as row' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add as row' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', {
+        name: /local-label-auth label:auth\. Expanded group with 2 members/i,
+      })).toBeTruthy();
+      expect(window.location.hash).toContain('rows=');
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(JSON.parse(String(stored)).filterRows).toHaveLength(1);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit filter label:auth' }));
+    const editInput = screen.getByLabelText('Filter');
+    fireEvent.input(editInput, { target: { value: '-kind:question' } });
+    fireEvent.keyDown(editInput, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save row' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', {
+        name: /local-label-auth label:auth -kind:question\. Expanded group with 1 member/i,
+      })).toBeTruthy();
+    });
+    expect(screen.queryByText('row:local-filter:local-label-auth:member:issue_auth_question')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
+    const secondInput = screen.getByLabelText('Filter');
+    fireEvent.input(secondInput, { target: { value: 'kind:maintenance' } });
+    fireEvent.keyDown(secondInput, { key: 'Enter' });
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Add as row' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add as row' }));
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: /local-kind-maintenance kind:maintenance\. Expanded group with 1 member/i,
+    })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove filter label:auth -kind:question' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /local-label-auth label:auth/i })).toBeNull();
+      expect(screen.getByRole('button', {
+        name: /residual Residual issues\. Collapsed group with 2 members/i,
+      })).toBeTruthy();
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(JSON.parse(String(stored)).filterRows).toHaveLength(1);
+    });
+
+    const replayParams = parseRouteFromHash(window.location.hash).params;
+    cleanup();
+    stubTimelineFetch(composerProjection);
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: replayParams,
+    }));
+
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: /local-kind-maintenance kind:maintenance\. Collapsed group with 1 member/i,
+    })).toBeTruthy());
+  });
+
+  it('keeps filter composer keyboard-operable with token removal', async () => {
+    stubTimelineFetch(filterComposerProjection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('auth111 event')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
+    const input = screen.getByLabelText('Filter');
+    fireEvent.input(input, { target: { value: 'referenced-by:auth222' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getByRole('button', { name: 'Remove referenced-by:auth222' })).toBeTruthy();
+    expect(screen.getByText('1 member')).toBeTruthy();
+
+    fireEvent.keyDown(input, { key: 'Backspace' });
+    expect(screen.queryByRole('button', { name: 'Remove referenced-by:auth222' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'Add as row' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('keeps coordination root rows and ref expansion behavior intact', async () => {
+    const base = projection();
+    const expanded = projection({
+      rows: [
+        ...base.rows,
+        {
+          ...base.rows[0],
+          id: 'row-child',
+          kind: 'transient',
+          parent_row_id: 'row-root',
+          source_event_id: 'event-body',
+          depth: 1,
+          path: ['row-root', 'row-child'],
+        },
+      ],
+      links: [{ ...base.links[0], expanded_row_id: 'row-child' }],
+    });
+    stubTimelineFetch(base, expanded);
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    expect(document.querySelector('.timeline-gutter-row--root')).toBeTruthy();
+    fireEvent.click(screen.getByText('Build shared axis'));
+    fireEvent.click(screen.getByText('Expand refs'));
+
+    await waitFor(() => expect(document.querySelectorAll('.timeline-row')).toHaveLength(2));
+    expect(document.querySelector('.timeline-row--transient')).toBeTruthy();
+    expect(screen.getByText('Fold refs')).toBeTruthy();
   });
 });

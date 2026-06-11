@@ -41,6 +41,8 @@ Usage:
   mandible issue status <id> <value>                               Set worker status
   mandible issue branch add <id> <branch> [--role primary|superseded]
                                                                   Link a branch to an issue
+  mandible issue link <src> <target...> [--type t] [--note n]     Add structured issue/comment links
+  mandible issue unlink <src> <target...> [--type t]              Remove structured issue/comment links
   mandible issue close <id> [--commit <sha>]                      Close issue, recording resolving commit
   mandible issue open <id>                                        Reopen a closed issue
   mandible issue description show <issue-ref> [--json]            Show only the issue description
@@ -454,6 +456,100 @@ cmd_branch_add() {
   api_send POST "/api/ledger/issues/$(urlencode "$id")/branches" "$payload" >/dev/null \
     || die "${RED}Failed to link branch '${branch}' to ${id}${RESET}" 1
   err "${GREEN}Linked branch '${branch}' to ${id} (${role})${RESET}"
+}
+
+cmd_link() {
+  local source_ref=""
+  local link_type="references"
+  local note=""
+  local -a targets=()
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --type)
+        if (( $# < 2 )); then die "Missing value for --type." 2; fi
+        link_type="$2"
+        shift 2
+        ;;
+      --note)
+        if (( $# < 2 )); then die "Missing value for --note." 2; fi
+        note="$2"
+        shift 2
+        ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$source_ref" ]]; then
+          source_ref="$1"
+        else
+          targets+=("$1")
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$source_ref" || ${#targets[@]} -eq 0 ]]; then
+    die "Usage: mandible issue link <src> <target...> [--type t] [--note n]" 2
+  fi
+
+  require_tools
+  local targets_json payload response
+  targets_json=$(printf '%s\n' "${targets[@]}" | jq -R . | jq -s .)
+  payload=$(jq -n \
+    --arg source_ref "$source_ref" \
+    --arg link_type "$link_type" \
+    --arg note "$note" \
+    --argjson target_refs "$targets_json" \
+    '{source_ref:$source_ref, target_refs:$target_refs, link_type:$link_type}
+     + (if $note == "" then {} else {note:$note} end)')
+  response=$(api_send POST "/api/ledger/relationships" "$payload") \
+    || die "${RED}Failed to link relationship(s) from ${source_ref}${RESET}" 1
+  printf '%s\n' "$response" | jq -r '"linked \(.edges | length) relationship(s) action_id=\(.action_id)"'
+}
+
+cmd_unlink() {
+  local source_ref=""
+  local link_type="references"
+  local -a targets=()
+
+  while (( $# > 0 )); do
+    case "$1" in
+      --type)
+        if (( $# < 2 )); then die "Missing value for --type." 2; fi
+        link_type="$2"
+        shift 2
+        ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$source_ref" ]]; then
+          source_ref="$1"
+        else
+          targets+=("$1")
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$source_ref" || ${#targets[@]} -eq 0 ]]; then
+    die "Usage: mandible issue unlink <src> <target...> [--type t]" 2
+  fi
+
+  require_tools
+  local targets_json payload response
+  targets_json=$(printf '%s\n' "${targets[@]}" | jq -R . | jq -s .)
+  payload=$(jq -n \
+    --arg source_ref "$source_ref" \
+    --arg link_type "$link_type" \
+    --argjson target_refs "$targets_json" \
+    '{source_ref:$source_ref, target_refs:$target_refs, link_type:$link_type}')
+  response=$(api_send POST "/api/ledger/relationships/unlink" "$payload") \
+    || die "${RED}Failed to unlink relationship(s) from ${source_ref}${RESET}" 1
+  printf '%s\n' "$response" | jq -r '"unlinked \(.edges | length) relationship(s) action_id=\(.action_id)"'
 }
 
 print_issue_heads() {
@@ -1467,6 +1563,8 @@ case "$subcmd" in
   checkpoint) cmd_checkpoint "$@" ;;
   status)  cmd_status "$@" ;;
   branch)  cmd_branch "$@" ;;
+  link)    cmd_link "$@" ;;
+  unlink)  cmd_unlink "$@" ;;
   close)   cmd_close "$@" ;;
   open)    cmd_open "${1:-}" ;;
   description) cmd_description "$@" ;;

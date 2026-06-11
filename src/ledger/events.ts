@@ -10,6 +10,8 @@ const LEDGER_EVENT_SSE_TYPES: Record<string, string> = {
   "label.updated": "ledger:label:updated",
   "relationship.upserted": "ledger:relationship:upserted",
   "relationship.deleted": "ledger:relationship:deleted",
+  "relationship.added": "ledger:relationship:added",
+  "relationship.removed": "ledger:relationship:removed",
   "outbox.updated": "ledger:outbox:updated",
   "conflict.created": "ledger:conflict:created",
   "external_ref.recorded": "ledger:external_ref:recorded",

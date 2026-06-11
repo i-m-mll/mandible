@@ -302,6 +302,29 @@ function listen(): Promise<number> {
         }));
         return;
       }
+      if (req.method === "POST" && req.url === "/api/ledger/relationships") {
+        void readBody().then((body) => {
+          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+          res.end(JSON.stringify({
+            action_id: "edge_action",
+            edges: [
+              { id: "edge_1", source_issue_id: "issue-1", target_issue_id: "issue-2" },
+              { id: "edge_2", source_issue_id: "issue-1", target_issue_id: "issue-3" },
+            ],
+          }));
+        });
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/ledger/relationships/unlink") {
+        void readBody().then((body) => {
+          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+          res.end(JSON.stringify({
+            action_id: "edge_unlink",
+            edges: [{ id: "edge_1", deleted_at: 1_700_000_000_000 }],
+          }));
+        });
+        return;
+      }
       if (req.url === "/api/ledger/issues/abc") {
         res.end(JSON.stringify({
           id: "issue-1",
@@ -401,6 +424,58 @@ describe("issue CLI body revisions", () => {
 
     expect(result.status).toBe(0);
     expect(requestedPaths).toContain("/api/ledger/issues/abc/branches");
+  });
+
+  it("links structured issue relationships through the issue link command", async () => {
+    const port = await listen();
+    const result = await run([
+      "issue",
+      "link",
+      "abc",
+      "def",
+      "ghi",
+      "--type",
+      "references",
+      "--note",
+      "coordination context",
+    ], port);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("linked 2 relationship(s) action_id=edge_action");
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/relationships",
+      method: "POST",
+      body: {
+        source_ref: "abc",
+        target_refs: ["def", "ghi"],
+        link_type: "references",
+        note: "coordination context",
+      },
+    });
+  });
+
+  it("unlinks structured issue relationships through the issue unlink command", async () => {
+    const port = await listen();
+    const result = await run([
+      "issue",
+      "unlink",
+      "abc",
+      "def",
+      "--type",
+      "references",
+    ], port);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("unlinked 1 relationship(s) action_id=edge_unlink");
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/relationships/unlink",
+      method: "POST",
+      body: {
+        source_ref: "abc",
+        target_refs: ["def"],
+        link_type: "references",
+      },
+    });
   });
 
   it("reports worker status and linked branches", async () => {
