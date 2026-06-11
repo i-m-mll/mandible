@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
 import { LEDGER_BACKUP_TABLES } from "../src/ledger/backup.js";
 import { createLedgerId } from "../src/ledger/ids.js";
+import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { runIssueReferenceBackfill } from "../src/ledger/issue-reference-backfill.js";
 import { parseIssueReferences } from "../src/ledger/issue-xrefs.js";
@@ -77,6 +78,7 @@ describe("ledger schema", () => {
       "ledger_projects",
       "ledger_reconciliation_mismatches",
       "ledger_reconciliation_reports",
+      "ledger_relationship_edges",
       "ledger_session_issue_links",
       "ledger_sync_jobs",
       "ledger_work_unit_issue_links",
@@ -799,6 +801,111 @@ describe("ledger store", () => {
     ).all(relationship.id) as Array<{ deleted_at: number | null }>;
     expect(sources).toHaveLength(1);
     expect(sources[0].deleted_at).not.toBeNull();
+  });
+
+  it("creates structured relationship edges atomically with one action id", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const source = createIssue(store, project.project.id, "Src edge");
+    const first = createIssue(store, project.project.id, "One edge");
+    const second = createIssue(store, project.project.id, "Two edge");
+
+    const result = store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [
+        { entity_type: "issue", entity_id: first.id },
+        { entity_type: "issue", entity_id: second.id },
+      ],
+      link_type: "references",
+      note: "coordination context",
+      actor: { actor_type: "agent", actor_id: "codex" },
+    });
+
+    expect(result.edges).toHaveLength(2);
+    expect(new Set(result.edges.map((edge) => edge.action_id))).toEqual(new Set([result.action_id]));
+    expect(result.edges.map((edge) => edge.note)).toEqual(["coordination context", "coordination context"]);
+    expect(result.edges.map((edge) => edge.provenance)).toEqual(["manual", "manual"]);
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM ledger_issue_relationship_sources",
+    ).get()).toEqual({ count: 0 });
+    const events = db.prepare(
+      "SELECT event_type, payload_json FROM ledger_events WHERE entity_type = 'relationship_edge' ORDER BY occurred_at",
+    ).all() as Array<{ event_type: string; payload_json: string }>;
+    expect(events.map((event) => event.event_type)).toEqual(["relationship.added", "relationship.added"]);
+    expect(events.map((event) => JSON.parse(event.payload_json).action_id))
+      .toEqual([result.action_id, result.action_id]);
+    expect(buildLedgerIssueDetailProjection(db, source.id).timeline)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          kind: "event",
+          event_type: "relationship.added",
+          payload: expect.objectContaining({ action_id: result.action_id }),
+        }),
+      ]));
+  });
+
+  it("unlinks structured relationship edges with tombstones and removed events", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const source = createIssue(store, project.project.id, "Src unlink");
+    const target = createIssue(store, project.project.id, "Tgt unlink");
+    const linked = store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+    });
+
+    const unlinked = store.unlinkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+    });
+
+    expect(unlinked.edges).toHaveLength(1);
+    expect(unlinked.edges[0].id).toBe(linked.edges[0].id);
+    expect(unlinked.edges[0].deleted_at).not.toBeNull();
+    expect(store.listRelationshipEdges({ source_issue_id: source.id })).toEqual([]);
+    expect(store.listRelationshipEdges({ source_issue_id: source.id, include_deleted: true }))
+      .toHaveLength(1);
+    expect(store.listEvents({ entity_type: "relationship_edge", entity_id: linked.edges[0].id })
+      .map((event) => event.event_type)).toEqual(["relationship.added", "relationship.removed"]);
+  });
+
+  it("keeps comment-target edges anchored to their issue and can degrade tombstoned comments", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const source = createIssue(store, project.project.id, "Src comment");
+    const target = createIssue(store, project.project.id, "Tgt comment");
+    const comment = store.addComment(target.id, {
+      body: "Precise anchor",
+      actor_type: "agent",
+      author_display: "Codex",
+    });
+
+    const linked = store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "comment", entity_id: comment.id }],
+    });
+    expect(linked.edges[0]).toMatchObject({
+      target_entity_type: "comment",
+      target_entity_id: comment.id,
+      target_issue_id: target.id,
+    });
+
+    db.prepare("UPDATE ledger_comments SET deleted_at = ? WHERE id = ?").run(Date.now(), comment.id);
+    const degraded = store.degradeCommentTargetRelationshipEdges(comment.id, {
+      actor: { actor_type: "system" },
+      occurred_at: Date.now(),
+    });
+
+    expect(degraded).toHaveLength(1);
+    expect(degraded[0]).toMatchObject({
+      target_entity_type: "issue",
+      target_entity_id: target.id,
+      target_issue_id: target.id,
+      deleted_at: null,
+    });
+    expect(JSON.parse(degraded[0].metadata_json)).toMatchObject({
+      degraded_from_target_comment_id: comment.id,
+    });
   });
 });
 

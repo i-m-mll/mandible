@@ -37,6 +37,8 @@ import type {
   LedgerOutbox,
   LedgerOutboxStatus,
   LedgerPriority,
+  LedgerRelationshipEdge,
+  LedgerRelationshipEntityType,
   LedgerRelationshipProvenance,
   LedgerRelationshipType,
   LedgerWorkerStatus,
@@ -129,6 +131,34 @@ export interface UpsertRelationshipInput {
   source?: LedgerEventSource;
   actor?: LedgerActorInput;
   created_at?: number;
+}
+
+export interface LedgerRelationshipEntityInput {
+  entity_type: LedgerRelationshipEntityType;
+  entity_id: string;
+}
+
+export interface LinkRelationshipEdgesInput {
+  source_entity: LedgerRelationshipEntityInput;
+  target_entities: LedgerRelationshipEntityInput[];
+  link_type?: LedgerRelationshipType;
+  provenance?: LedgerRelationshipProvenance;
+  note?: string | null;
+  action_id?: string;
+  metadata?: Record<string, unknown>;
+  source?: LedgerEventSource;
+  actor?: LedgerActorInput;
+  created_at?: number;
+}
+
+export interface UnlinkRelationshipEdgesInput {
+  source_entity: LedgerRelationshipEntityInput;
+  target_entities: LedgerRelationshipEntityInput[];
+  link_type?: LedgerRelationshipType;
+  action_id?: string;
+  source?: LedgerEventSource;
+  actor?: LedgerActorInput;
+  occurred_at?: number;
 }
 
 export interface ReconcileTextIssueReferencesInput {
@@ -1192,6 +1222,325 @@ export class LedgerStore {
     return relationship;
   }
 
+  linkRelationshipEdges(input: LinkRelationshipEdgesInput): {
+    action_id: string;
+    edges: LedgerRelationshipEdge[];
+  } {
+    if (input.target_entities.length === 0) {
+      throw new Error("At least one relationship target is required");
+    }
+    const now = input.created_at ?? Date.now();
+    const actionId = input.action_id ?? createLedgerId("edge", { now });
+    const source = input.source ?? "mandible";
+    const actor = normalizeActor(input.actor ?? {});
+    const linkType = input.link_type ?? "references";
+    const provenance = input.provenance ?? "manual";
+    const note = normalizeOptionalText(input.note);
+    const metadataJson = jsonStringify(input.metadata ?? {});
+    const sourceEntity = this.resolveRelationshipEntity(input.source_entity);
+    const targetEntities = uniqueRelationshipEntities(
+      input.target_entities.map((entity) => this.resolveRelationshipEntity(entity, { target: true })),
+    );
+    const emitted: LedgerSsePayload[] = [];
+
+    const run = this.db.transaction(() => {
+      const edges: LedgerRelationshipEdge[] = [];
+      for (const targetEntity of targetEntities) {
+        const existing = this.db.prepare(
+          `SELECT * FROM ledger_relationship_edges
+           WHERE source_entity_type = ?
+             AND source_entity_id = ?
+             AND target_entity_type = ?
+             AND target_entity_id = ?
+             AND link_type = ?`,
+        ).get(
+          sourceEntity.entity_type,
+          sourceEntity.entity_id,
+          targetEntity.entity_type,
+          targetEntity.entity_id,
+          linkType,
+        ) as LedgerRelationshipEdge | undefined;
+
+        if (!existing) {
+          this.db.prepare(
+            `INSERT INTO ledger_relationship_edges (
+              id, source_entity_type, source_entity_id, source_project_id,
+              source_issue_id, target_entity_type, target_entity_id,
+              target_project_id, target_issue_id, link_type, provenance, note,
+              action_id, actor_id, actor_type, source, metadata_json,
+              created_at, updated_at, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          ).run(
+            createLedgerId("edge", { now }),
+            sourceEntity.entity_type,
+            sourceEntity.entity_id,
+            sourceEntity.project_id,
+            sourceEntity.issue_id,
+            targetEntity.entity_type,
+            targetEntity.entity_id,
+            targetEntity.project_id,
+            targetEntity.issue_id,
+            linkType,
+            provenance,
+            note,
+            actionId,
+            actor.actor_id,
+            actor.actor_type,
+            source,
+            metadataJson,
+            now,
+            now,
+          );
+        } else {
+          this.db.prepare(
+            `UPDATE ledger_relationship_edges
+             SET source_project_id = ?, source_issue_id = ?,
+                 target_project_id = ?, target_issue_id = ?,
+                 provenance = ?, note = ?, action_id = ?,
+                 actor_id = ?, actor_type = ?, source = ?,
+                 metadata_json = ?, updated_at = ?, deleted_at = NULL
+             WHERE id = ?`,
+          ).run(
+            sourceEntity.project_id,
+            sourceEntity.issue_id,
+            targetEntity.project_id,
+            targetEntity.issue_id,
+            provenance,
+            note,
+            actionId,
+            actor.actor_id,
+            actor.actor_type,
+            source,
+            metadataJson,
+            now,
+            existing.id,
+          );
+        }
+
+        const edge = this.db.prepare(
+          `SELECT * FROM ledger_relationship_edges
+           WHERE source_entity_type = ?
+             AND source_entity_id = ?
+             AND target_entity_type = ?
+             AND target_entity_id = ?
+             AND link_type = ?`,
+        ).get(
+          sourceEntity.entity_type,
+          sourceEntity.entity_id,
+          targetEntity.entity_type,
+          targetEntity.entity_id,
+          linkType,
+        ) as LedgerRelationshipEdge;
+        edges.push(edge);
+        const payload = relationshipEdgeEventPayload(edge);
+        const event = this.insertEvent({
+          entity_type: "relationship_edge",
+          entity_id: edge.id,
+          event_type: "relationship.added",
+          actor_id: actor.actor_id,
+          actor_type: actor.actor_type,
+          source,
+          payload,
+          project_id: edge.source_project_id,
+          occurred_at: now,
+        });
+        emitted.push({ event, payload });
+      }
+      return edges;
+    });
+
+    const edges = run();
+    emitLedgerEvents(emitted, this.broadcaster);
+    return { action_id: actionId, edges };
+  }
+
+  unlinkRelationshipEdges(input: UnlinkRelationshipEdgesInput): {
+    action_id: string;
+    edges: LedgerRelationshipEdge[];
+  } {
+    if (input.target_entities.length === 0) {
+      throw new Error("At least one relationship target is required");
+    }
+    const now = input.occurred_at ?? Date.now();
+    const actionId = input.action_id ?? createLedgerId("edge", { now });
+    const source = input.source ?? "mandible";
+    const actor = normalizeActor(input.actor ?? {});
+    const linkType = input.link_type ?? "references";
+    const sourceEntity = this.resolveRelationshipEntity(input.source_entity);
+    const targetEntities = uniqueRelationshipEntities(
+      input.target_entities.map((entity) => this.resolveRelationshipEntity(entity, { target: true })),
+    );
+    const emitted: LedgerSsePayload[] = [];
+
+    const run = this.db.transaction(() => {
+      const removed: LedgerRelationshipEdge[] = [];
+      for (const targetEntity of targetEntities) {
+        const edge = this.db.prepare(
+          `SELECT * FROM ledger_relationship_edges
+           WHERE source_entity_type = ?
+             AND source_entity_id = ?
+             AND target_entity_type = ?
+             AND target_entity_id = ?
+             AND link_type = ?
+             AND deleted_at IS NULL`,
+        ).get(
+          sourceEntity.entity_type,
+          sourceEntity.entity_id,
+          targetEntity.entity_type,
+          targetEntity.entity_id,
+          linkType,
+        ) as LedgerRelationshipEdge | undefined;
+        if (!edge) continue;
+        this.db.prepare(
+          `UPDATE ledger_relationship_edges
+           SET action_id = ?, updated_at = ?, deleted_at = ?
+           WHERE id = ?`,
+        ).run(actionId, now, now, edge.id);
+        const tombstone = this.db.prepare(
+          "SELECT * FROM ledger_relationship_edges WHERE id = ?",
+        ).get(edge.id) as LedgerRelationshipEdge;
+        removed.push(tombstone);
+        const payload = relationshipEdgeEventPayload(tombstone);
+        const event = this.insertEvent({
+          entity_type: "relationship_edge",
+          entity_id: tombstone.id,
+          event_type: "relationship.removed",
+          actor_id: actor.actor_id,
+          actor_type: actor.actor_type,
+          source,
+          payload,
+          project_id: tombstone.source_project_id,
+          occurred_at: now,
+        });
+        emitted.push({ event, payload });
+      }
+      return removed;
+    });
+
+    const edges = run();
+    emitLedgerEvents(emitted, this.broadcaster);
+    return { action_id: actionId, edges };
+  }
+
+  listRelationshipEdges(filters: {
+    source_issue_id?: string;
+    target_issue_id?: string;
+    source_entity?: LedgerRelationshipEntityInput;
+    target_entity?: LedgerRelationshipEntityInput;
+    include_deleted?: boolean;
+  } = {}): LedgerRelationshipEdge[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (filters.source_issue_id) {
+      where.push("source_issue_id = ?");
+      params.push(filters.source_issue_id);
+    }
+    if (filters.target_issue_id) {
+      where.push("target_issue_id = ?");
+      params.push(filters.target_issue_id);
+    }
+    if (filters.source_entity) {
+      where.push("source_entity_type = ? AND source_entity_id = ?");
+      params.push(filters.source_entity.entity_type, filters.source_entity.entity_id);
+    }
+    if (filters.target_entity) {
+      where.push("target_entity_type = ? AND target_entity_id = ?");
+      params.push(filters.target_entity.entity_type, filters.target_entity.entity_id);
+    }
+    if (!filters.include_deleted) {
+      where.push("deleted_at IS NULL");
+    }
+    const sql = `SELECT * FROM ledger_relationship_edges${
+      where.length > 0 ? ` WHERE ${where.join(" AND ")}` : ""
+    } ORDER BY created_at, id`;
+    return this.db.prepare(sql).all(...params) as LedgerRelationshipEdge[];
+  }
+
+  degradeCommentTargetRelationshipEdges(
+    commentId: string,
+    input: { actor?: LedgerActorInput; source?: LedgerEventSource; occurred_at?: number } = {},
+  ): LedgerRelationshipEdge[] {
+    const comment = this.getComment(commentId);
+    const issue = this.requireIssue(comment.issue_id);
+    const now = input.occurred_at ?? Date.now();
+    const source = input.source ?? "system";
+    const actor = normalizeActor(input.actor ?? { actor_type: "system" });
+    const emitted: LedgerSsePayload[] = [];
+
+    const run = this.db.transaction(() => {
+      const rows = this.db.prepare(
+        `SELECT * FROM ledger_relationship_edges
+         WHERE target_entity_type = 'comment'
+           AND target_entity_id = ?
+           AND deleted_at IS NULL`,
+      ).all(commentId) as LedgerRelationshipEdge[];
+      const degraded: LedgerRelationshipEdge[] = [];
+      for (const row of rows) {
+        const metadata = parseJsonObject(row.metadata_json);
+        const nextMetadata = jsonStringify({
+          ...metadata,
+          degraded_from_target_comment_id: commentId,
+        });
+        const duplicate = this.db.prepare(
+          `SELECT * FROM ledger_relationship_edges
+           WHERE source_entity_type = ?
+             AND source_entity_id = ?
+             AND target_entity_type = 'issue'
+             AND target_entity_id = ?
+             AND link_type = ?
+             AND deleted_at IS NULL
+             AND id <> ?`,
+        ).get(
+          row.source_entity_type,
+          row.source_entity_id,
+          issue.id,
+          row.link_type,
+          row.id,
+        ) as LedgerRelationshipEdge | undefined;
+        if (duplicate) {
+          this.db.prepare(
+            `UPDATE ledger_relationship_edges
+             SET metadata_json = ?, updated_at = ?, deleted_at = ?
+             WHERE id = ?`,
+          ).run(nextMetadata, now, now, row.id);
+        } else {
+          this.db.prepare(
+            `UPDATE ledger_relationship_edges
+             SET target_entity_type = 'issue',
+                 target_entity_id = ?,
+                 target_project_id = ?,
+                 target_issue_id = ?,
+                 metadata_json = ?,
+                 updated_at = ?
+             WHERE id = ?`,
+          ).run(issue.id, issue.project_id, issue.id, nextMetadata, now, row.id);
+        }
+        const edge = this.db.prepare(
+          "SELECT * FROM ledger_relationship_edges WHERE id = ?",
+        ).get(row.id) as LedgerRelationshipEdge;
+        degraded.push(edge);
+        const payload = relationshipEdgeEventPayload(edge);
+        const event = this.insertEvent({
+          entity_type: "relationship_edge",
+          entity_id: edge.id,
+          event_type: edge.deleted_at === null ? "relationship.added" : "relationship.removed",
+          actor_id: actor.actor_id,
+          actor_type: actor.actor_type,
+          source,
+          payload: { ...payload, degradation: "target_comment_tombstone" },
+          project_id: edge.source_project_id,
+          occurred_at: now,
+        });
+        emitted.push({ event, payload });
+      }
+      return degraded;
+    });
+
+    const degraded = run();
+    emitLedgerEvents(emitted, this.broadcaster);
+    return degraded;
+  }
+
   reconcileTextIssueReferences(input: ReconcileTextIssueReferencesInput): void {
     const sourceIssue = this.requireIssue(input.source_issue_id);
     const source = input.source ?? "mandible";
@@ -1978,6 +2327,44 @@ export class LedgerStore {
     return null;
   }
 
+  private resolveRelationshipEntity(
+    entity: LedgerRelationshipEntityInput,
+    options: { target?: boolean } = {},
+  ): ResolvedRelationshipEntity {
+    if (entity.entity_type === "issue") {
+      const issue = this.requireIssue(entity.entity_id);
+      if (issue.deleted_at !== null) {
+        throw new Error(`Ledger issue is deleted: ${entity.entity_id}`);
+      }
+      return {
+        entity_type: "issue",
+        entity_id: issue.id,
+        project_id: issue.project_id,
+        issue_id: issue.id,
+      };
+    }
+
+    const comment = this.getComment(entity.entity_id);
+    const issue = this.requireIssue(comment.issue_id);
+    if (comment.deleted_at !== null) {
+      if (options.target) {
+        return {
+          entity_type: "issue",
+          entity_id: issue.id,
+          project_id: issue.project_id,
+          issue_id: issue.id,
+        };
+      }
+      throw new Error(`Ledger comment is deleted: ${entity.entity_id}`);
+    }
+    return {
+      entity_type: "comment",
+      entity_id: comment.id,
+      project_id: issue.project_id,
+      issue_id: issue.id,
+    };
+  }
+
   private ensureDerivedReferenceRelationship(
     sourceIssueId: string,
     targetIssueId: string,
@@ -2270,6 +2657,61 @@ function escapeLike(value: string): string {
 
 function jsonStringify(value: unknown): string {
   return JSON.stringify(value ?? {});
+}
+
+interface ResolvedRelationshipEntity {
+  entity_type: LedgerRelationshipEntityType;
+  entity_id: string;
+  project_id: string;
+  issue_id: string;
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeOptionalText(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function uniqueRelationshipEntities(entities: ResolvedRelationshipEntity[]): ResolvedRelationshipEntity[] {
+  const seen = new Set<string>();
+  const result: ResolvedRelationshipEntity[] = [];
+  for (const entity of entities) {
+    const key = `${entity.entity_type}\0${entity.entity_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(entity);
+  }
+  return result;
+}
+
+function relationshipEdgeEventPayload(edge: LedgerRelationshipEdge): Record<string, unknown> {
+  return {
+    edge_id: edge.id,
+    source_entity_type: edge.source_entity_type,
+    source_entity_id: edge.source_entity_id,
+    source_project_id: edge.source_project_id,
+    source_issue_id: edge.source_issue_id,
+    target_entity_type: edge.target_entity_type,
+    target_entity_id: edge.target_entity_id,
+    target_project_id: edge.target_project_id,
+    target_issue_id: edge.target_issue_id,
+    link_type: edge.link_type,
+    provenance: edge.provenance,
+    note: edge.note,
+    action_id: edge.action_id,
+    metadata: parseJsonObject(edge.metadata_json),
+    deleted_at: edge.deleted_at,
+  };
 }
 
 function normalizeCheckpointKind(kind: string): string {

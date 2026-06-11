@@ -9,6 +9,8 @@ import {
   LEDGER_ISSUE_RESOLUTIONS,
   LEDGER_ISSUE_STATUSES,
   LEDGER_PRIORITIES,
+  LEDGER_RELATIONSHIP_PROVENANCES,
+  LEDGER_RELATIONSHIP_TYPES,
   LEDGER_WORKER_STATUSES,
   type LedgerIssueKind,
   type LedgerIssueBranchRole,
@@ -16,6 +18,9 @@ import {
   type LedgerIssueResolution,
   type LedgerIssueStatus,
   type LedgerPriority,
+  type LedgerRelationshipEntityType,
+  type LedgerRelationshipProvenance,
+  type LedgerRelationshipType,
   type LedgerWorkerStatus,
 } from "../ledger/types.js";
 import {
@@ -234,6 +239,42 @@ function resolveLedgerIssueId(db: Db, issueRef: string): { ok: true; issue_id: s
   if (resolved.ok) return { ok: true, issue_id: resolved.id };
   if (resolved.error === "ambiguous") return { ok: false, status: 409, error: "ambiguous issue reference" };
   return { ok: false, status: 404, error: "ledger issue not found" };
+}
+
+function resolveRelationshipEntityRef(
+  db: Db,
+  ref: string,
+): { ok: true; entity_type: LedgerRelationshipEntityType; entity_id: string }
+  | { ok: false; status: 404 | 409; error: string } {
+  const trimmed = ref.trim();
+  const store = new LedgerStore(db);
+  if (!trimmed) return { ok: false, status: 404, error: "relationship entity ref is empty" };
+  if (trimmed.includes("#")) {
+    const [issueRef, selector] = trimmed.split("#", 2);
+    if (!issueRef || !selector) return { ok: false, status: 404, error: "invalid comment reference" };
+    const resolvedIssue = resolveLedgerIssueId(db, issueRef);
+    if (!resolvedIssue.ok) return resolvedIssue;
+    const comments = store.getIssueDetail(resolvedIssue.issue_id)
+      .comments
+      .filter((comment) => comment.deleted_at === null)
+      .sort((a, b) => a.ordinal - b.ordinal);
+    const comment = selector === "last"
+      ? comments.at(-1)
+      : /^\d+$/.test(selector)
+        ? comments.find((candidate) => candidate.ordinal === Number(selector))
+        : undefined;
+    if (!comment) return { ok: false, status: 404, error: "ledger comment not found" };
+    return { ok: true, entity_type: "comment", entity_id: comment.id };
+  }
+  const resolvedIssue = resolveLedgerIssueId(db, trimmed);
+  if (resolvedIssue.ok) return { ok: true, entity_type: "issue", entity_id: resolvedIssue.issue_id };
+  if (resolvedIssue.error === "ambiguous issue reference") return resolvedIssue;
+  try {
+    const comment = store.getComment(trimmed);
+    return { ok: true, entity_type: "comment", entity_id: comment.id };
+  } catch {
+    return resolvedIssue;
+  }
 }
 
 function sendLedgerIssueProjection(
@@ -517,6 +558,113 @@ export function registerIssueRoutes(
       entity_id: resolved.issue_id,
     });
     sendJson(res, 200, { revisions });
+  });
+
+  server.post("/api/ledger/relationships", (req, res) => {
+    const body = getBody(req) ?? {};
+    const sourceRef = typeof body.source_ref === "string"
+      ? body.source_ref.trim()
+      : typeof body.source === "string"
+        ? body.source.trim()
+        : "";
+    const targetRefs = getStringArray(body.target_refs ?? body.targets ?? body.target);
+    if (!sourceRef) {
+      sendJson(res, 400, { error: "source_ref is required" });
+      return;
+    }
+    if (!targetRefs) {
+      sendJson(res, 400, { error: "target_refs are required" });
+      return;
+    }
+    const linkType = enumValue(body.link_type ?? body.type ?? "references", LEDGER_RELATIONSHIP_TYPES);
+    const provenance = enumValue(body.provenance ?? "manual", LEDGER_RELATIONSHIP_PROVENANCES);
+    if (!linkType) {
+      sendJson(res, 400, { error: "invalid link_type" });
+      return;
+    }
+    if (!provenance) {
+      sendJson(res, 400, { error: "invalid provenance" });
+      return;
+    }
+    const db = getDb();
+    const sourceEntity = resolveRelationshipEntityRef(db, sourceRef);
+    if (!sourceEntity.ok) {
+      sendJson(res, sourceEntity.status, { error: sourceEntity.error });
+      return;
+    }
+    const targetEntities = [];
+    for (const targetRef of targetRefs) {
+      const targetEntity = resolveRelationshipEntityRef(db, targetRef);
+      if (!targetEntity.ok) {
+        sendJson(res, targetEntity.status, { error: targetEntity.error, target_ref: targetRef });
+        return;
+      }
+      targetEntities.push(targetEntity);
+    }
+    try {
+      const result = new LedgerStore(db).linkRelationshipEdges({
+        source_entity: sourceEntity,
+        target_entities: targetEntities,
+        link_type: linkType as LedgerRelationshipType,
+        provenance: provenance as LedgerRelationshipProvenance,
+        note: typeof body.note === "string" ? body.note : null,
+        actor: { actor_type: "mandible_user", author_display: "Mandible" },
+        source: "mandible",
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to link relationship" });
+    }
+  });
+
+  server.post("/api/ledger/relationships/unlink", (req, res) => {
+    const body = getBody(req) ?? {};
+    const sourceRef = typeof body.source_ref === "string"
+      ? body.source_ref.trim()
+      : typeof body.source === "string"
+        ? body.source.trim()
+        : "";
+    const targetRefs = getStringArray(body.target_refs ?? body.targets ?? body.target);
+    if (!sourceRef) {
+      sendJson(res, 400, { error: "source_ref is required" });
+      return;
+    }
+    if (!targetRefs) {
+      sendJson(res, 400, { error: "target_refs are required" });
+      return;
+    }
+    const linkType = enumValue(body.link_type ?? body.type ?? "references", LEDGER_RELATIONSHIP_TYPES);
+    if (!linkType) {
+      sendJson(res, 400, { error: "invalid link_type" });
+      return;
+    }
+    const db = getDb();
+    const sourceEntity = resolveRelationshipEntityRef(db, sourceRef);
+    if (!sourceEntity.ok) {
+      sendJson(res, sourceEntity.status, { error: sourceEntity.error });
+      return;
+    }
+    const targetEntities = [];
+    for (const targetRef of targetRefs) {
+      const targetEntity = resolveRelationshipEntityRef(db, targetRef);
+      if (!targetEntity.ok) {
+        sendJson(res, targetEntity.status, { error: targetEntity.error, target_ref: targetRef });
+        return;
+      }
+      targetEntities.push(targetEntity);
+    }
+    try {
+      const result = new LedgerStore(db).unlinkRelationshipEdges({
+        source_entity: sourceEntity,
+        target_entities: targetEntities,
+        link_type: linkType as LedgerRelationshipType,
+        actor: { actor_type: "mandible_user", author_display: "Mandible" },
+        source: "mandible",
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to unlink relationship" });
+    }
   });
 
   server.get("/api/ledger/comments/:commentId/revisions", (req, res) => {

@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 2,
+  "version": 3,
   "commands": [
     {
       "name": "mandible issue report <id> [--json]",
@@ -33,6 +33,14 @@
     {
       "name": "mandible issue branch add <id> <branch> [--role primary|superseded]",
       "description": "Link a branch to an issue as structured coordination state."
+    },
+    {
+      "name": "mandible issue link <src> <target...> [--type t] [--note n]",
+      "description": "Create deliberate structured issue/comment relationship edges with shared action grouping for multi-target links."
+    },
+    {
+      "name": "mandible issue unlink <src> <target...> [--type t]",
+      "description": "Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events."
     },
     {
       "name": "mandible issue comment add <issue-ref> -m <text>",

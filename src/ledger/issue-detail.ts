@@ -100,6 +100,15 @@ export type LedgerIssueTimelineEntry =
     }
   | {
       id: string;
+      kind: "event";
+      event_type: string;
+      author: LedgerIssueDetailActor;
+      source: LedgerEventSource;
+      created_at: number;
+      payload: Record<string, unknown>;
+    }
+  | {
+      id: string;
       kind: "checkpoint";
       checkpoint_id: string;
       checkpoint_kind: string;
@@ -628,9 +637,32 @@ function buildTimeline(
     });
   }
 
+  const relationshipEvents = db.prepare(
+    `SELECT * FROM ledger_events
+     WHERE event_type IN ('relationship.added', 'relationship.removed')
+     ORDER BY occurred_at, observed_at`,
+  ).all() as LedgerEvent[];
+  for (const event of relationshipEvents) {
+    const payload = parseJsonObject(event.payload_json);
+    if (payload.source_issue_id !== issue.id && payload.target_issue_id !== issue.id) continue;
+    entries.push({
+      id: event.id,
+      kind: "event",
+      event_type: event.event_type,
+      author: {
+        id: event.actor_id,
+        type: event.actor_type,
+        display: actorTypeLabel(event.actor_type),
+      },
+      source: event.source,
+      created_at: event.occurred_at,
+      payload,
+    });
+  }
+
   return entries.sort((a, b) => {
     if (a.created_at !== b.created_at) return a.created_at - b.created_at;
-    const order = { body: 0, comment: 1, state: 2, checkpoint: 3 };
+    const order = { body: 0, comment: 1, state: 2, event: 3, checkpoint: 4 };
     return order[a.kind] - order[b.kind];
   });
 }
