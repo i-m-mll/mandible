@@ -10,7 +10,13 @@ import {
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { TimelineView as RawTimelineView, type TimelineViewProps } from '../ui/src/views/timeline';
-import type { ProjectTimelineProjection } from '../ui/src/types/timeline';
+import type {
+  ProjectTimelineInput,
+  ProjectTimelineProjection,
+  TimelineIssueRef,
+  TimelineRowOccurrence,
+  TimelineRowSpecInput,
+} from '../ui/src/types/timeline';
 
 function stubLocalStorage(): void {
   const store = new Map<string, string>();
@@ -59,6 +65,7 @@ function projection(overrides: Partial<ProjectTimelineProjection> = {}): Project
     inputs: {
       project_id: 'prj_mandible',
       root_policy: 'coordination_and_explicit',
+      root_specs: [],
       explicit_root_issue_ids: [],
       promoted_root_issue_ids: [],
       expanded_event_ids: [],
@@ -193,6 +200,59 @@ function projection(overrides: Partial<ProjectTimelineProjection> = {}): Project
   return { ...base, ...overrides };
 }
 
+function projectProjection(
+  projectRef: string,
+  title: string,
+  headline: string,
+): ProjectTimelineProjection {
+  const base = projection();
+  const projectId = `prj_${projectRef}`;
+  const issue = {
+    ...base.rows[0].issue!,
+    id: `issue_${projectRef}`,
+    display_id: `${projectRef.slice(0, 3)}1234`,
+    project_id: projectId,
+    title,
+    kind: 'umbrella',
+    labels: ['coordination'],
+  };
+  const row = {
+    ...base.rows[0],
+    id: `row-${projectRef}`,
+    issue,
+  };
+  const event = {
+    ...base.events[0],
+    id: `event-${projectRef}`,
+    row_id: row.id,
+    issue,
+    display_headline: headline,
+    body: `${title} body`,
+    link_ids: [],
+  };
+  return projection({
+    project: {
+      id: projectId,
+      display_name: projectRef,
+      repo_id: projectRef,
+      repo_name: projectRef,
+      repo_root: `/repo/${projectRef}`,
+    },
+    inputs: {
+      ...base.inputs,
+      project_id: projectId,
+    },
+    rows: [row],
+    events: [event],
+    links: [],
+    diagnostics: {
+      ...base.diagnostics,
+      root_count: 1,
+      reachable_from_roots_count: 1,
+    },
+  });
+}
+
 function stubTimelineFetch(...responses: Array<ProjectTimelineProjection | Promise<ProjectTimelineProjection>>): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
     const next = responses.shift() ?? projection();
@@ -201,6 +261,24 @@ function stubTimelineFetch(...responses: Array<ProjectTimelineProjection | Promi
         throw new DOMException('Aborted', 'AbortError');
       }
       return new Response(JSON.stringify(body), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+function stubTimelineFetchResolver(
+  resolver: (body: ProjectTimelineInput) => ProjectTimelineProjection | Promise<ProjectTimelineProjection>,
+): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as ProjectTimelineInput;
+    return Promise.resolve(resolver(body)).then((projectionBody) => {
+      if (init?.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      return new Response(JSON.stringify(projectionBody), {
         headers: { 'content-type': 'application/json' },
       });
     });
@@ -559,6 +637,166 @@ function filterComposerProjection(): ProjectTimelineProjection {
   });
 }
 
+function coordinationFilterProjection(rootSpecs: TimelineRowSpecInput[] = []): ProjectTimelineProjection {
+  const base = projection();
+  const coordinationIssue: TimelineIssueRef = {
+    ...(base.rows[0].issue as TimelineIssueRef),
+    id: 'issue_coordination',
+    display_id: 'coord00',
+    title: 'Coordination root',
+    kind: 'coordination',
+    labels: ['coordination', 'timeline'],
+  };
+  const residualIssue: TimelineIssueRef = {
+    ...(base.rows[0].issue as TimelineIssueRef),
+    id: 'issue_residual',
+    display_id: 'resid44',
+    title: 'Residual complement issue',
+    kind: 'feature',
+    labels: ['uncategorized'],
+  };
+  const projectIssues = [coordinationIssue, residualIssue];
+  const coordinationRow: TimelineRowOccurrence = {
+    ...base.rows[0],
+    id: 'row-coordination-root',
+    issue: coordinationIssue,
+    kind: 'root',
+    parent_row_id: null,
+    path: ['root:coordination'],
+    row_spec: null,
+  };
+  const rows: TimelineRowOccurrence[] = [coordinationRow];
+  const events = [{
+    ...base.events[0],
+    id: 'event-coordination-root',
+    row_id: coordinationRow.id,
+    issue: coordinationIssue,
+    display_headline: 'Coordination root event',
+    body: 'Coordination root body',
+    link_ids: [],
+  }];
+  const covered = new Set<string>();
+
+  rootSpecs.forEach((spec, index) => {
+    const specId = spec.id ?? `input:${index}`;
+    const title = spec.title ?? `Filter ${index + 1}`;
+    const groupId = `row:spec:${specId}:${index}`;
+    const group: TimelineRowOccurrence = {
+      ...base.rows[0],
+      id: groupId,
+      issue: null,
+      row_spec: {
+        id: specId,
+        title,
+        anchor_issue_id: spec.anchor_issue_id ?? spec.anchor ?? null,
+        scope: spec.scope ?? null,
+      },
+      kind: 'root',
+      parent_row_id: null,
+      source_event_id: null,
+      depth: 0,
+      path: [`rowspec:${specId}`],
+      expanded: false,
+    };
+    rows.push(group);
+    const matched = projectIssues.filter((issue) => (
+      spec.scope?.type === 'label'
+        ? issue.labels.includes(spec.scope.name)
+        : spec.scope?.type === 'kind'
+          ? issue.kind === spec.scope.kind
+          : false
+    ));
+    matched.forEach((issue, memberIndex) => {
+      covered.add(issue.id);
+      const memberRow: TimelineRowOccurrence = {
+        ...base.rows[0],
+        id: `${groupId}:member:${issue.id}`,
+        issue,
+        row_spec: group.row_spec,
+        kind: 'member',
+        parent_row_id: groupId,
+        source_event_id: null,
+        depth: 1,
+        path: [`rowspec:${specId}`, `issue:${issue.id}`],
+        expanded: false,
+      };
+      rows.push(memberRow);
+      events.push({
+        ...base.events[0],
+        id: `event-${specId}-${memberIndex}`,
+        row_id: memberRow.id,
+        issue,
+        display_headline: `${title} projected event`,
+        body: `${issue.title} projected body`,
+        link_ids: [],
+      });
+    });
+  });
+
+  const residualGroupId = `row:spec:residual:${rootSpecs.length}`;
+  const residualGroup: TimelineRowOccurrence = {
+    ...base.rows[0],
+    id: residualGroupId,
+    issue: null,
+    row_spec: {
+      id: 'residual',
+      title: 'Residual issues',
+      anchor_issue_id: null,
+      scope: { type: 'residual' },
+    },
+    kind: 'root',
+    parent_row_id: null,
+    source_event_id: null,
+    depth: 0,
+    path: ['rowspec:residual'],
+    expanded: false,
+  };
+  rows.push(residualGroup);
+  if (rootSpecs.length > 0) {
+    projectIssues.filter((issue) => !covered.has(issue.id)).forEach((issue, memberIndex) => {
+      const memberRow: TimelineRowOccurrence = {
+        ...base.rows[0],
+        id: `${residualGroupId}:member:${issue.id}`,
+        issue,
+        row_spec: residualGroup.row_spec,
+        kind: 'member',
+        parent_row_id: residualGroupId,
+        source_event_id: null,
+        depth: 1,
+        path: ['rowspec:residual', `issue:${issue.id}`],
+        expanded: false,
+      };
+      rows.push(memberRow);
+      events.push({
+        ...base.events[0],
+        id: `event-residual-${memberIndex}`,
+        row_id: memberRow.id,
+        issue,
+        display_headline: `${issue.display_id} residual event`,
+        body: `${issue.title} residual body`,
+        link_ids: [],
+      });
+    });
+  }
+
+  return projection({
+    rows,
+    events,
+    links: [],
+    time_axis: {
+      start: Date.UTC(2026, 0, 1),
+      end: Date.UTC(2026, 0, 4),
+      event_count: events.length,
+    },
+    diagnostics: {
+      ...base.diagnostics,
+      total_issues: projectIssues.length,
+      root_count: rows.filter((row) => row.parent_row_id === null).length,
+      reachable_from_roots_count: projectIssues.length,
+    },
+  });
+}
+
 describe('Timeline route', () => {
   it('parses timeline hashes as a first-class workspace', () => {
     expect(parseRouteFromHash('#/timeline?project=mandible&density=compact')).toEqual({
@@ -569,6 +807,38 @@ describe('Timeline route', () => {
 });
 
 describe('TimelineView', () => {
+  it('loads initial coordination roots without a transient verified-empty state', async () => {
+    let resolveInitial: (value: ProjectTimelineProjection) => void = () => undefined;
+    const initial = new Promise<ProjectTimelineProjection>((resolve) => {
+      resolveInitial = resolve;
+    });
+    const fetchMock = stubTimelineFetch(initial);
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    expect(screen.getByRole('status', { name: 'Loading timeline' })).toBeTruthy();
+    expect(screen.getByText('Loading mandible timeline...')).toBeTruthy();
+    expect(screen.queryByText('No timeline rows match the current controls.')).toBeNull();
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(1));
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.project_ref).toBe('mandible');
+    expect(body.root_policy).toBe('coordination_and_explicit');
+
+    resolveInitial(projectProjection(
+      'mandible',
+      'Mandible coordination root',
+      'Mandible default coordination root',
+    ));
+
+    await waitFor(() => expect(screen.getByText('Mandible default coordination root')).toBeTruthy());
+    expect(screen.queryByRole('status', { name: 'Loading timeline' })).toBeNull();
+    expect(screen.queryByText('No timeline rows match the current controls.')).toBeNull();
+  });
+
   it('loads the projection and merges URL state over browser-local state', async () => {
     window.localStorage.setItem(
       'mandible_timeline_view_state:v1:mandible',
@@ -1045,53 +1315,27 @@ describe('TimelineView', () => {
   });
 
   it('clears stale projection and selection immediately when selecting another project', async () => {
+    window.localStorage.setItem(
+      'mandible_timeline_view_state:v1:mandible',
+      JSON.stringify({
+        explicitRootIssueIds: ['mandible-only-root'],
+        expandedEventIds: ['mandible-only-event'],
+        expandedPaths: ['mandible-only-path'],
+        filterRows: [{
+          id: 'local-label-mandible-only',
+          title: 'label:mandible-only',
+          chips: [{ field: 'label', values: ['mandible-only'], negated: false }],
+          scope: { type: 'label', name: 'mandible-only' },
+        }],
+      }),
+    );
     let resolveSecond: (value: ProjectTimelineProjection) => void = () => undefined;
     const second = new Promise<ProjectTimelineProjection>((resolve) => {
       resolveSecond = resolve;
     });
     const base = projection();
-    const other = projection({
-      project: {
-        ...base.project,
-        id: 'prj_humble',
-        display_name: 'humble',
-        repo_id: 'humble',
-        repo_name: 'humble',
-        repo_root: '/repo/humble',
-      },
-      rows: [
-        {
-          ...base.rows[0],
-          id: 'row-humble',
-          issue: {
-            ...base.rows[0].issue,
-            id: 'issue_humble',
-            project_id: 'prj_humble',
-            display_id: 'abc9876',
-            title: 'Humble timeline shell',
-          },
-        },
-      ],
-      events: [
-        {
-          ...base.events[0],
-          id: 'event-humble',
-          row_id: 'row-humble',
-          issue: {
-            ...base.events[0].issue,
-            id: 'issue_humble',
-            project_id: 'prj_humble',
-            display_id: 'abc9876',
-            title: 'Humble timeline shell',
-          },
-          display_headline: 'Load Humble timeline',
-          body: 'Humble body text',
-          link_ids: [],
-        },
-      ],
-      links: [],
-    });
-    stubTimelineFetch(base, second);
+    const other = projectProjection('humble', 'Humble timeline shell', 'Load Humble coordination root');
+    const fetchMock = stubTimelineFetch(base, second);
 
     render(h(TimelineView, {
       repos: [
@@ -1109,10 +1353,75 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.queryAllByText('Build shared axis')).toHaveLength(0));
     expect(screen.queryAllByText('Full body text')).toHaveLength(0);
-    expect(screen.queryByText('Syncing')).toBeNull();
+    expect(screen.getByRole('status', { name: 'Loading timeline' })).toBeTruthy();
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+    const body = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(body.project_ref).toBe('humble');
+    expect(body.root_policy).toBe('coordination_and_explicit');
+    expect(body.explicit_root_issue_ids).toEqual([]);
+    expect(body.expanded_event_ids).toEqual([]);
+    expect(body.expanded_paths).toEqual([]);
+    expect(body.root_specs).toEqual([]);
 
     resolveSecond(other);
-    await waitFor(() => expect(screen.getByText('Load Humble timeline')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Load Humble coordination root')).toBeTruthy());
+  });
+
+  it('ignores stale prior-project responses that resolve after the selected project', async () => {
+    const mandible = projectProjection(
+      'mandible',
+      'Mandible coordination root',
+      'Mandible stale response',
+    );
+    const feedbax = projectProjection(
+      'feedbax',
+      'Feedbax coordination root',
+      'Feedbax selected response',
+    );
+    let resolveMandible: () => void = () => undefined;
+    let resolveFeedbax: () => void = () => undefined;
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      return new Promise<Response>((resolve) => {
+        const finish = (projectionBody: ProjectTimelineProjection) => {
+          resolve(new Response(JSON.stringify(projectionBody), {
+            headers: { 'content-type': 'application/json' },
+          }));
+        };
+        if (body.project_ref === 'mandible') {
+          resolveMandible = () => finish(mandible);
+          return;
+        }
+        if (body.project_ref === 'feedbax') {
+          resolveFeedbax = () => finish(feedbax);
+          return;
+        }
+        finish(projection());
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(h(TimelineView, {
+      repos: [
+        { id: 'mandible', name: 'mandible' },
+        { id: 'feedbax', name: 'feedbax' },
+      ],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(1));
+    changeSelect(screen.getByLabelText('Project'), 'feedbax');
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+
+    resolveFeedbax();
+    await waitFor(() => expect(screen.getByText('Feedbax selected response')).toBeTruthy());
+    expect(screen.queryByText('Mandible stale response')).toBeNull();
+
+    resolveMandible();
+    await waitFor(() => {
+      expect(screen.getByText('Feedbax selected response')).toBeTruthy();
+      expect(screen.queryByText('Mandible stale response')).toBeNull();
+    });
   });
 
   it('keeps the last valid projection mounted while a newer same-project request is syncing', async () => {
@@ -1502,97 +1811,116 @@ describe('TimelineView', () => {
     expect(parseFloat(memberEvent.style.left)).toBe(firstAggregateLeft);
   });
 
-  it('renders residual RowSpec roots distinctly through the same aggregate path', async () => {
-    stubTimelineFetch(rowSpecGroupProjection({ residual: true }));
+  it('renders default backend residual collapsed alongside coordination roots', async () => {
+    stubTimelineFetch(coordinationFilterProjection());
 
     render(h(TimelineView, {
       repos: [{ id: 'mandible', name: 'mandible' }],
       params: { project: 'mandible' },
     }));
 
+    await waitFor(() => expect(screen.getByText('Coordination root event')).toBeTruthy());
+    expect(screen.getByText('Coordination root')).toBeTruthy();
     await waitFor(() => expect(screen.getByText('Residual issues')).toBeTruthy());
     expect(screen.getByRole('button', {
-      name: /residual Residual issues\. Collapsed group with 2 members\. Status residual/i,
+      name: /residual Residual issues\. Collapsed group with 0 members\. Status residual/i,
     })).toBeTruthy();
-    expect(screen.getAllByRole('button', { name: /Aggregate marker for/ })).toHaveLength(2);
-    expect(screen.queryByText('Residual B event')).toBeNull();
+    expect(window.location.hash).not.toContain('rows=');
+    const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+    expect(stored ? JSON.parse(stored).filterRows ?? [] : []).toHaveLength(0);
   });
 
-  it('creates, edits, removes, and replays URL-shareable filter rows', async () => {
-    const composerProjection = filterComposerProjection();
-    stubTimelineFetch(composerProjection);
+  it('sends filter composer rows as backend projection RowSpecs and renders projected rows', async () => {
+    const fetchMock = stubTimelineFetchResolver((body) => coordinationFilterProjection(body.root_specs ?? []));
 
     render(h(TimelineView, {
       repos: [{ id: 'mandible', name: 'mandible' }],
       params: { project: 'mandible' },
     }));
 
-    await waitFor(() => expect(screen.getByText('auth111 event')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Coordination root event')).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
     const filterInput = screen.getByLabelText('Filter');
-    fireEvent.input(filterInput, { target: { value: 'label:auth' } });
+    fireEvent.input(filterInput, { target: { value: 'label:coordination' } });
     fireEvent.keyDown(filterInput, { key: 'Enter' });
-    expect(screen.getByText('2 members')).toBeTruthy();
+    expect(screen.getByText('Membership is resolved by the project timeline projection.')).toBeTruthy();
     await waitFor(() => {
       expect((screen.getByRole('button', { name: 'Add as row' }) as HTMLButtonElement).disabled).toBe(false);
     });
     fireEvent.click(screen.getByRole('button', { name: 'Add as row' }));
 
     await waitFor(() => {
+      const body = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body));
+      expect(body.root_specs).toMatchObject([{
+        id: 'local-label-coordination',
+        title: 'label:coordination',
+        anchor_issue_id: null,
+        scope: { type: 'label', name: 'coordination' },
+      }]);
+      expect(body.expanded_paths).toContain('row:spec:local-label-coordination:0');
+      expect(JSON.stringify(body)).not.toContain('row:local-filter');
       expect(screen.getByRole('button', {
-        name: /local-label-auth label:auth\. Expanded group with 2 members/i,
+        name: /local-label-coordination label:coordination\. Expanded group with 1 member/i,
       })).toBeTruthy();
+      expect(screen.getAllByText('Coordination root').length).toBeGreaterThan(0);
+      expect(screen.getByText('label:coordination projected event')).toBeTruthy();
       expect(window.location.hash).toContain('rows=');
       const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
       expect(JSON.parse(String(stored)).filterRows).toHaveLength(1);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit filter label:auth' }));
-    const editInput = screen.getByLabelText('Filter');
-    fireEvent.input(editInput, { target: { value: '-kind:question' } });
-    fireEvent.keyDown(editInput, { key: 'Enter' });
-    fireEvent.click(screen.getByRole('button', { name: 'Save row' }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', {
-        name: /local-label-auth label:auth -kind:question\. Expanded group with 1 member/i,
-      })).toBeTruthy();
-    });
-    expect(screen.queryByText('row:local-filter:local-label-auth:member:issue_auth_question')).toBeNull();
-
     fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
     const secondInput = screen.getByLabelText('Filter');
-    fireEvent.input(secondInput, { target: { value: 'kind:maintenance' } });
+    fireEvent.input(secondInput, { target: { value: 'kind:coordination' } });
     fireEvent.keyDown(secondInput, { key: 'Enter' });
     await waitFor(() => {
       expect((screen.getByRole('button', { name: 'Add as row' }) as HTMLButtonElement).disabled).toBe(false);
     });
     fireEvent.click(screen.getByRole('button', { name: 'Add as row' }));
-    await waitFor(() => expect(screen.getByRole('button', {
-      name: /local-kind-maintenance kind:maintenance\. Expanded group with 1 member/i,
-    })).toBeTruthy());
-
-    fireEvent.click(screen.getByRole('button', { name: 'Remove filter label:auth -kind:question' }));
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: /local-label-auth label:auth/i })).toBeNull();
+      const body = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body));
+      expect(body.root_specs).toMatchObject([
+        { id: 'local-label-coordination', scope: { type: 'label', name: 'coordination' } },
+        { id: 'local-kind-coordination', scope: { type: 'kind', kind: 'coordination' } },
+      ]);
+      expect(screen.getByRole('button', {
+        name: /local-kind-coordination kind:coordination\. Expanded group with 1 member/i,
+      })).toBeTruthy();
+      expect(screen.getByRole('button', {
+        name: /residual Residual issues\. Collapsed group with 1 member/i,
+      })).toBeTruthy();
+    });
+  });
+
+  it('keeps empty filter rows and residual complement backend-projected', async () => {
+    const fetchMock = stubTimelineFetchResolver((body) => coordinationFilterProjection(body.root_specs ?? []));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Coordination root event')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
+    const filterInput = screen.getByLabelText('Filter');
+    fireEvent.input(filterInput, { target: { value: 'label:not-present' } });
+    fireEvent.keyDown(filterInput, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: 'Add as row' }));
+
+    await waitFor(() => {
+      const body = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body));
+      expect(body.root_specs).toMatchObject([{
+        id: 'local-label-not-present',
+        scope: { type: 'label', name: 'not-present' },
+      }]);
+      expect(screen.getByRole('button', {
+        name: /local-label-not-present label:not-present\. Expanded group with 0 members/i,
+      })).toBeTruthy();
       expect(screen.getByRole('button', {
         name: /residual Residual issues\. Collapsed group with 2 members/i,
       })).toBeTruthy();
-      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
-      expect(JSON.parse(String(stored)).filterRows).toHaveLength(1);
+      expect(screen.queryByText('label:not-present projected event')).toBeNull();
     });
-
-    const replayParams = parseRouteFromHash(window.location.hash).params;
-    cleanup();
-    stubTimelineFetch(composerProjection);
-    render(h(TimelineView, {
-      repos: [{ id: 'mandible', name: 'mandible' }],
-      params: replayParams,
-    }));
-
-    await waitFor(() => expect(screen.getByRole('button', {
-      name: /local-kind-maintenance kind:maintenance\. Collapsed group with 1 member/i,
-    })).toBeTruthy());
   });
 
   it('keeps filter composer keyboard-operable with token removal', async () => {
@@ -1609,7 +1937,8 @@ describe('TimelineView', () => {
     fireEvent.input(input, { target: { value: 'referenced-by:auth222' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.getByRole('button', { name: 'Remove referenced-by:auth222' })).toBeTruthy();
-    expect(screen.getByText('1 member')).toBeTruthy();
+    expect(screen.getByText('Projection row')).toBeTruthy();
+    expect(screen.getByText('Membership is resolved by the project timeline projection.')).toBeTruthy();
 
     fireEvent.keyDown(input, { key: 'Backspace' });
     expect(screen.queryByRole('button', { name: 'Remove referenced-by:auth222' })).toBeNull();

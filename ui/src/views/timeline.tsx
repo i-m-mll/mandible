@@ -46,6 +46,7 @@ import {
   type TimelineLink,
   type TimelineRootPolicy,
   type TimelineRowOccurrence,
+  type TimelineRowSpecInput,
   type TimelineViewState,
 } from '../types/timeline';
 
@@ -88,7 +89,7 @@ export type TimelineViewProps = {
   params?: Record<string, string | undefined>;
 };
 
-type ProjectionStatus = 'idle' | 'syncing' | 'error';
+type ProjectionStatus = 'loading' | 'syncing' | 'ready' | 'error';
 
 type TimelineUrlState = Partial<TimelineViewState> & {
   projectRef?: string;
@@ -443,6 +444,65 @@ function syncFilterRowsToHash(projectRef: string, filterRows: readonly TimelineF
   }
 }
 
+function projectionRowSpecFromFilterRow(row: TimelineFilterRowSpec): TimelineRowSpecInput {
+  return {
+    id: row.id,
+    title: row.title,
+    anchor_issue_id: null,
+    scope: row.scope,
+  };
+}
+
+function projectedFilterRowId(row: TimelineFilterRowSpec, rows: readonly TimelineFilterRowSpec[]): string {
+  const index = rows.findIndex((candidate) => candidate.id === row.id);
+  return `row:spec:${row.id}:${Math.max(0, index)}`;
+}
+
+function projectedResidualRowId(rows: readonly TimelineFilterRowSpec[]): string {
+  return `row:spec:residual:${rows.length}`;
+}
+
+function isProjectedFilterPath(path: string, rows: readonly TimelineFilterRowSpec[]): boolean {
+  return rows.some((row) => projectedFilterRowId(row, rows) === path);
+}
+
+function isProjectedResidualPath(path: string, rows: readonly TimelineFilterRowSpec[]): boolean {
+  return path === projectedResidualRowId(rows);
+}
+
+function isFilterViewPath(path: string, rows: readonly TimelineFilterRowSpec[]): boolean {
+  return isLocalFilterPath(path) || isProjectedFilterPath(path, rows) || isProjectedResidualPath(path, rows);
+}
+
+function rebuildFilterExpandedPaths(
+  currentPaths: readonly string[],
+  currentRows: readonly TimelineFilterRowSpec[],
+  nextRows: readonly TimelineFilterRowSpec[],
+  options: { forceExpandedSpecId?: string } = {},
+): string[] {
+  const expandedSpecIds = new Set<string>();
+  for (const row of currentRows) {
+    if (
+      currentPaths.includes(`row:local-filter:${row.id}`)
+      || currentPaths.includes(projectedFilterRowId(row, currentRows))
+    ) {
+      expandedSpecIds.add(row.id);
+    }
+  }
+  if (options.forceExpandedSpecId) expandedSpecIds.add(options.forceExpandedSpecId);
+  const residualExpanded = currentPaths.includes('row:local-filter:residual')
+    || currentPaths.includes(projectedResidualRowId(currentRows));
+  const preserved = currentPaths.filter((path) => !isFilterViewPath(path, currentRows));
+  const nextFilterPaths = nextRows
+    .filter((row) => expandedSpecIds.has(row.id))
+    .map((row) => projectedFilterRowId(row, nextRows));
+  return unique([
+    ...preserved,
+    ...nextFilterPaths,
+    ...(residualExpanded ? [projectedResidualRowId(nextRows)] : []),
+  ]);
+}
+
 function repoId(repo: WorkRepo): string {
   return repo.id || repo.name || '';
 }
@@ -616,19 +676,18 @@ function isResidualRow(row: TimelineRowOccurrence): boolean {
   return row.row_spec?.scope?.type === 'residual';
 }
 
-function isLocalFilterRoot(row: TimelineRowOccurrence): boolean {
-  return row.id.startsWith('row:local-filter:')
-    && row.issue === null
-    && Boolean(row.row_spec)
-    && !isResidualRow(row);
-}
-
-function isLocalResidualRoot(row: TimelineRowOccurrence): boolean {
-  return row.id === 'row:local-filter:residual';
-}
-
 function isLocalFilterPath(path: string): boolean {
   return path.startsWith('row:local-filter:');
+}
+
+function isEditableFilterRoot(
+  row: TimelineRowOccurrence,
+  filterRows: readonly TimelineFilterRowSpec[],
+): boolean {
+  return row.issue === null
+    && Boolean(row.row_spec)
+    && !isResidualRow(row)
+    && filterRows.some((spec) => spec.id === row.row_spec?.id);
 }
 
 function isInputElement(target: EventTarget | null): boolean {
@@ -655,15 +714,6 @@ function rowStatus(row: TimelineRowOccurrence): string {
   return isResidualRow(row) ? 'residual' : 'filter';
 }
 
-function issueKey(issue: TimelineIssueRef): string[] {
-  return [issue.id, issue.display_id].filter(Boolean);
-}
-
-function issueMatchesRef(issue: TimelineIssueRef, value: string): boolean {
-  const normalized = value.trim().toLowerCase();
-  return issueKey(issue).some((key) => key.toLowerCase() === normalized);
-}
-
 function collectTimelineIssues(rows: readonly TimelineRowOccurrence[], events: readonly TimelineEvent[]): TimelineIssueRef[] {
   const byId = new Map<string, TimelineIssueRef>();
   for (const row of rows) {
@@ -673,170 +723,6 @@ function collectTimelineIssues(rows: readonly TimelineRowOccurrence[], events: r
     byId.set(event.issue.id, event.issue);
   }
   return Array.from(byId.values()).sort((left, right) => left.display_id.localeCompare(right.display_id));
-}
-
-function issueMatchesPredicate(
-  issue: TimelineIssueRef,
-  predicate: TimelineIssuePredicate,
-  links: readonly TimelineLink[],
-): boolean {
-  if (predicate.type === 'label') {
-    return issue.labels.some((label) => label.toLowerCase() === predicate.name.toLowerCase());
-  }
-  if (predicate.type === 'kind') {
-    return issue.kind.toLowerCase() === predicate.kind.toLowerCase();
-  }
-  if (predicate.type === 'referenced_by') {
-    return links.some((link) => (
-      issueMatchesRef(link.source_issue, predicate.issue_id)
-      && link.target_issue
-      && issueMatchesRef(issue, link.target_issue.id)
-    ));
-  }
-  if (predicate.type === 'parent_subtree') {
-    if (issueMatchesRef(issue, predicate.issue_id)) return true;
-    return links.some((link) => (
-      link.relationship_type === 'parent'
-      && link.target_issue
-      && issueMatchesRef(link.source_issue, predicate.issue_id)
-      && issueMatchesRef(issue, link.target_issue.id)
-    ));
-  }
-  if (predicate.type === 'and') {
-    return predicate.predicates.every((child) => issueMatchesPredicate(issue, child, links));
-  }
-  if (predicate.type === 'or') {
-    return predicate.predicates.some((child) => issueMatchesPredicate(issue, child, links));
-  }
-  if (predicate.type === 'not') {
-    return !issueMatchesPredicate(issue, predicate.predicate, links);
-  }
-  return false;
-}
-
-function localFilterGroupRow(
-  spec: TimelineFilterRowSpec,
-  index: number,
-): TimelineRowOccurrence {
-  const id = `row:local-filter:${spec.id}`;
-  return {
-    id,
-    issue: null,
-    row_spec: {
-      id: spec.id,
-      title: spec.title,
-      anchor_issue_id: null,
-      scope: spec.scope,
-    },
-    kind: 'root',
-    parent_row_id: null,
-    source_event_id: null,
-    depth: 0,
-    path: [`rowspec:${spec.id}:${index}`],
-    expanded: true,
-    cycle: false,
-    hidden_reason: null,
-  };
-}
-
-function localResidualGroupRow(): TimelineRowOccurrence {
-  return {
-    id: 'row:local-filter:residual',
-    issue: null,
-    row_spec: {
-      id: 'residual',
-      title: 'Residual issues',
-      anchor_issue_id: null,
-      scope: { type: 'residual' },
-    },
-    kind: 'root',
-    parent_row_id: null,
-    source_event_id: null,
-    depth: 0,
-    path: ['rowspec:residual'],
-    expanded: true,
-    cycle: false,
-    hidden_reason: null,
-  };
-}
-
-function localMemberRow(
-  parent: TimelineRowOccurrence,
-  issue: TimelineIssueRef,
-  index: number,
-): TimelineRowOccurrence {
-  return {
-    id: `${parent.id}:member:${issue.id}`,
-    issue,
-    row_spec: parent.row_spec ?? null,
-    kind: 'member',
-    parent_row_id: parent.id,
-    source_event_id: null,
-    depth: 1,
-    path: [...parent.path, `issue:${issue.id}:${index}`],
-    expanded: false,
-    cycle: false,
-    hidden_reason: null,
-  };
-}
-
-function localEventForRow(event: TimelineEvent, row: TimelineRowOccurrence): TimelineEvent {
-  return {
-    ...event,
-    id: `${row.id}:event:${event.id}`,
-    row_id: row.id,
-    link_ids: [],
-  };
-}
-
-function applyLocalFilterRows(
-  baseRows: readonly TimelineRowOccurrence[],
-  baseEvents: readonly TimelineEvent[],
-  links: readonly TimelineLink[],
-  filterRows: readonly TimelineFilterRowSpec[],
-): { rows: TimelineRowOccurrence[]; events: TimelineEvent[] } {
-  if (filterRows.length === 0) {
-    return { rows: [...baseRows], events: [...baseEvents] };
-  }
-  const issues = collectTimelineIssues(baseRows, baseEvents);
-  const eventsByIssue = new Map<string, TimelineEvent[]>();
-  for (const event of baseEvents) {
-    const issueEvents = eventsByIssue.get(event.issue.id) ?? [];
-    issueEvents.push(event);
-    eventsByIssue.set(event.issue.id, issueEvents);
-  }
-  const localRows: TimelineRowOccurrence[] = [];
-  const localEvents: TimelineEvent[] = [];
-  const coveredIssueIds = new Set<string>();
-
-  filterRows.forEach((spec, index) => {
-    const group = localFilterGroupRow(spec, index);
-    localRows.push(group);
-    const members = issues.filter((issue) => issueMatchesPredicate(issue, spec.scope, links));
-    members.forEach((issue, memberIndex) => {
-      coveredIssueIds.add(issue.id);
-      const member = localMemberRow(group, issue, memberIndex);
-      localRows.push(member);
-      for (const event of eventsByIssue.get(issue.id) ?? []) {
-        localEvents.push(localEventForRow(event, member));
-      }
-    });
-  });
-
-  const residualGroup = localResidualGroupRow();
-  localRows.push(residualGroup);
-  issues.filter((issue) => !coveredIssueIds.has(issue.id)).forEach((issue, memberIndex) => {
-    const member = localMemberRow(residualGroup, issue, memberIndex);
-    localRows.push(member);
-    for (const event of eventsByIssue.get(issue.id) ?? []) {
-      localEvents.push(localEventForRow(event, member));
-    }
-  });
-
-  return {
-    rows: [...baseRows, ...localRows],
-    events: [...baseEvents, ...localEvents],
-  };
 }
 
 type TimelineAggregateInterval = {
@@ -889,7 +775,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   ));
   const [projection, setProjection] = useState<ProjectTimelineProjection | null>(null);
   const lastProjectionRef = useRef<ProjectTimelineProjection | null>(null);
-  const [status, setStatus] = useState<ProjectionStatus>('idle');
+  const [status, setStatus] = useState<ProjectionStatus>('loading');
   const [error, setError] = useState<string | null>(null);
   const timeScrollRef = useRef<HTMLDivElement | null>(null);
   const timelineMainRef = useRef<HTMLDivElement | null>(null);
@@ -911,7 +797,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     laneCacheRef.current = {};
     setProjection(null);
     setError(null);
-    setStatus('idle');
+    setStatus('loading');
   }, []);
 
   const stateForProjectSelection = useCallback((nextProjectRef: string) => (
@@ -931,9 +817,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     () => projectionDepthForExpandedEvents(projection, viewState.expandedEventIds),
     [projection, viewState.expandedEventIds],
   );
-  const backendExpandedPaths = useMemo(
-    () => viewState.expandedPaths.filter((path) => !isLocalFilterPath(path)),
-    [viewState.expandedPaths],
+  const rootSpecs = useMemo(
+    () => viewState.filterRows.map(projectionRowSpecFromFilterRow),
+    [viewState.filterRows],
   );
 
   useEffect(() => {
@@ -971,7 +857,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     const generation = requestGeneration.current + 1;
     requestGeneration.current = generation;
     const controller = new AbortController();
-    setStatus(lastProjectionRef.current ? 'syncing' : 'idle');
+    setStatus(lastProjectionRef.current ? 'syncing' : 'loading');
     setError(null);
     getProjectTimeline({
       project_ref: projectRef,
@@ -979,15 +865,16 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
       explicit_root_issue_ids: viewState.explicitRootIssueIds,
       promoted_root_issue_ids: viewState.promotedRootIssueIds,
       expanded_event_ids: viewState.expandedEventIds,
-      expanded_paths: backendExpandedPaths,
+      expanded_paths: viewState.expandedPaths.filter((path) => !isLocalFilterPath(path)),
       include_closed: viewState.includeClosed,
       depth: projectionDepth,
+      root_specs: rootSpecs,
     }, controller.signal)
       .then((next) => {
         if (requestGeneration.current !== generation) return;
         lastProjectionRef.current = next;
         setProjection(next);
-        setStatus('idle');
+        setStatus('ready');
       })
       .catch((err) => {
         if (controller.signal.aborted || requestGeneration.current !== generation) return;
@@ -1002,19 +889,17 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     viewState.explicitRootIssueIds.join(','),
     viewState.promotedRootIssueIds.join(','),
     viewState.expandedEventIds.join(','),
-    backendExpandedPaths.join(','),
+    viewState.expandedPaths.join(','),
     viewState.includeClosed,
+    rootSpecs,
     projectionDepth,
   ]);
 
   const baseRows = projection?.rows ?? EMPTY_TIMELINE_ROWS;
   const baseEvents = projection?.events ?? EMPTY_TIMELINE_EVENTS;
   const links = projection?.links ?? EMPTY_TIMELINE_LINKS;
-  const filteredProjection = useMemo(() => (
-    applyLocalFilterRows(baseRows, baseEvents, links, viewState.filterRows)
-  ), [baseEvents, baseRows, links, viewState.filterRows]);
-  const rows = filteredProjection.rows;
-  const events = filteredProjection.events;
+  const rows = baseRows;
+  const events = baseEvents;
   const linkById = useMemo(() => new Map(links.map((link) => [link.id, link])), [links]);
   const allRowById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
   const rowChildrenByParent = useMemo(() => {
@@ -1215,12 +1100,6 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     () => rowSpecFromChips(composerDraftChips, viewState.filterRows, composerEditingRowId ?? undefined),
     [composerDraftChips, composerEditingRowId, viewState.filterRows],
   );
-  const composerPreviewIssues = useMemo(() => (
-    composerPreviewSpec
-      ? issueOptions.filter((issue) => issueMatchesPredicate(issue, composerPreviewSpec.scope, links))
-      : []
-  ), [composerPreviewSpec, issueOptions, links]);
-
   const openAddRowComposer = useCallback(() => {
     setComposerOpen(true);
     setComposerEditingRowId(null);
@@ -1259,10 +1138,13 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     const nextFilterRows = composerEditingRowId
       ? viewState.filterRows.map((row) => (row.id === composerEditingRowId ? next : row))
       : [...viewState.filterRows, next];
+    const nextProjectedRowId = projectedFilterRowId(next, nextFilterRows);
     updateState({
       filterRows: nextFilterRows,
-      expandedPaths: unique([...viewState.expandedPaths, `row:local-filter:${next.id}`]),
-      selectedRowOccurrenceId: `row:local-filter:${next.id}`,
+      expandedPaths: rebuildFilterExpandedPaths(viewState.expandedPaths, viewState.filterRows, nextFilterRows, {
+        forceExpandedSpecId: next.id,
+      }),
+      selectedRowOccurrenceId: nextProjectedRowId,
       selectedEventId: null,
       selectedClusterId: null,
     });
@@ -1279,15 +1161,14 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
   const removeFilterRow = useCallback((row: TimelineRowOccurrence) => {
     const specId = row.row_spec?.id;
     if (!specId) return;
-    const removedRowId = `row:local-filter:${specId}`;
+    const nextFilterRows = viewState.filterRows.filter((spec) => spec.id !== specId);
     updateState({
-      filterRows: viewState.filterRows.filter((spec) => spec.id !== specId),
-      expandedPaths: viewState.expandedPaths.filter((path) => path !== removedRowId),
-      selectedRowOccurrenceId: viewState.selectedRowOccurrenceId?.startsWith(`${removedRowId}:`)
-        || viewState.selectedRowOccurrenceId === removedRowId
+      filterRows: nextFilterRows,
+      expandedPaths: rebuildFilterExpandedPaths(viewState.expandedPaths, viewState.filterRows, nextFilterRows),
+      selectedRowOccurrenceId: viewState.selectedRowOccurrenceId === row.id
         ? null
         : viewState.selectedRowOccurrenceId,
-      selectedEventId: viewState.selectedEventId?.startsWith(`${removedRowId}:`) ? null : viewState.selectedEventId,
+      selectedEventId: null,
       selectedClusterId: null,
     });
     if (composerEditingRowId === specId) closeComposer();
@@ -1695,6 +1576,10 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 
   const diagnostics = useMemo(() => timelineDiagnostics(projection), [projection]);
   const diagnosticsCount = diagnostics.length;
+  const timelineLoading = status === 'loading';
+  const emptyTimelineMessage = timelineLoading
+    ? `Loading ${projectRef} timeline...`
+    : 'No timeline rows match the current controls.';
   const inspectorContent = useMemo(() => (
     <TimelineInspector
       selectedEvent={selectedEvent}
@@ -1864,6 +1749,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
           {diagnosticsCount > 0 ? <span>{diagnosticsCount}</span> : null}
         </button>
         <div className="timeline-toolbar-spacer" />
+        {timelineLoading ? (
+          <div className="timeline-status" role="status" aria-label="Loading timeline" />
+        ) : null}
         {status === 'syncing' ? <div className="timeline-status" role="status" aria-label="Updating timeline" /> : null}
       </div>
 
@@ -1928,12 +1816,12 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                       ) : null}
                     </button>
                     <div className="timeline-gutter-row__actions">
-                      {isLocalFilterRoot(row) ? (
+                      {isEditableFilterRoot(row, viewState.filterRows) ? (
                         <>
                           <button type="button" onClick={() => openEditRowComposer(row)} aria-label={`Edit filter ${rowTitle(row)}`}>Edit</button>
                           <button type="button" onClick={() => removeFilterRow(row)} aria-label={`Remove filter ${rowTitle(row)}`}>Remove</button>
                         </>
-                      ) : isLocalResidualRoot(row) ? (
+                      ) : isResidualRow(row) ? (
                         <span>Built in</span>
                       ) : row.issue ? (
                         <button type="button" onClick={() => selectRow(row)} aria-label={`Row menu for ${rowPrimaryLabel(row)}`}>...</button>
@@ -1949,7 +1837,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                 <TimelineFilterComposer
                   chips={composerDraftChips}
                   editing={composerEditingRowId !== null}
-                  previewIssues={composerPreviewIssues}
+                  projecting={Boolean(composerPreviewSpec)}
                   previewTitle={composerPreviewSpec?.title ?? 'Custom filter'}
                   labelOptions={labelOptions}
                   kindOptions={kindOptions}
@@ -1998,7 +1886,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
             </div>
             <div className="timeline-row-stack">
               {visibleRows.length === 0 ? (
-                <div className="timeline-empty">No timeline rows match the current controls.</div>
+                <div className="timeline-empty">{emptyTimelineMessage}</div>
               ) : visibleRows.map((row) => {
                 const rowEvents = eventsByRow.get(row.id) ?? [];
                 const rowLayout = timelineLayout.rowLayoutById[row.id];
@@ -2184,7 +2072,7 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
 type TimelineFilterComposerProps = {
   chips: TimelineFilterChip[];
   editing: boolean;
-  previewIssues: TimelineIssueRef[];
+  projecting: boolean;
   previewTitle: string;
   labelOptions: string[];
   kindOptions: string[];
@@ -2199,7 +2087,7 @@ type TimelineFilterComposerProps = {
 function TimelineFilterComposer({
   chips,
   editing,
-  previewIssues,
+  projecting,
   previewTitle,
   labelOptions,
   kindOptions,
@@ -2224,8 +2112,6 @@ function TimelineFilterComposer({
       setDraftToken('');
     }
   }, [draftToken, onAddToken]);
-
-  const sampleIssues = previewIssues.slice(0, 3);
 
   return (
     <form
@@ -2276,9 +2162,9 @@ function TimelineFilterComposer({
       </datalist>
       <div className="timeline-filter-composer__preview" aria-live="polite">
         <strong>{previewTitle}</strong>
-        <span>{previewIssues.length} {previewIssues.length === 1 ? 'member' : 'members'}</span>
-        {sampleIssues.length > 0 ? (
-          <em>{sampleIssues.map((issue) => `${issue.display_id} ${issue.title}`).join(' / ')}</em>
+        <span>{projecting ? 'Projection row' : 'Add at least one chip'}</span>
+        {projecting ? (
+          <em>Membership is resolved by the project timeline projection.</em>
         ) : (
           <em>Empty rows are allowed.</em>
         )}
