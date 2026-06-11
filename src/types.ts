@@ -117,6 +117,33 @@ export type AuthRequestOutcome =
 export type AuthExecutionMode = "daemon" | "remote";
 // Bug: dd21c1e — generalize auth queue to support action types beyond merges
 export type AuthRequestType = "merge" | "commit" | "force-push" | "branch-delete" | "config-change" | "preset-promote" | "data-delete";
+export type AuthRequestActionKind =
+  | "comment_add"
+  | "issue_close"
+  | "worker_status_set"
+  | "label_add"
+  | "label_rm"
+  | "checkpoint_add"
+  | "link_add";
+export type AuthRequestActionState = "staged" | "applied" | "failed" | "vetoed";
+
+export interface AuthRequestActionInput {
+  kind: AuthRequestActionKind;
+  target_issue_ref: string;
+  payload: Record<string, unknown>;
+}
+
+export interface AuthRequestAction extends AuthRequestActionInput {
+  id: string;
+  auth_request_id: string;
+  ordinal: number;
+  state: AuthRequestActionState;
+  target_digest: string | null;
+  staged_at: number;
+  updated_at: number;
+  applied_at: number | null;
+  outcome_detail: string | null;
+}
 
 export interface AuthRequest {
   id: string;
@@ -195,6 +222,7 @@ export interface AuthRequestInput {
   target_repo_root?: string | null;
   // Bug: 6d7411b — conversation_id persists across Claude Code resumes
   conversation_id?: string | null;
+  actions?: AuthRequestActionInput[];
 }
 
 export interface AuthOutputChunk {

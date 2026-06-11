@@ -3,6 +3,14 @@ import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
+import {
+  addAuthRequestAction,
+  deleteAuthRequestAction,
+  insertAuthRequestActions,
+  listAuthRequestActions,
+  normalizeAuthActionInputs,
+  updateAuthRequestAction,
+} from "./auth-actions.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import { isAuthMergeCommand, resolveAuthMergeExecutionContext } from "./auth-context.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
@@ -15,6 +23,7 @@ import { broadcast as defaultBroadcast } from "./sse.js";
 import type {
   AuthOutputChunk,
   AuthRequest,
+  AuthRequestAction,
   AuthRequestInput,
   AuthRequestOutcome,
   AuthRequestStatus,
@@ -443,17 +452,23 @@ export class AuthQueue {
       )`
     );
 
-    stmt.run({
-      ...request,
-      repo: request.repo ?? null,
-      base_branch: request.base_branch ?? null,
-      head_branch: request.head_branch ?? null,
-      post_merge_handoff: request.post_merge_handoff ?? null,
-      issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
-      issue_closures: request.issue_closures ? JSON.stringify(request.issue_closures) : null,
-      issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
-      issues: request.issues ? JSON.stringify(request.issues) : null
+    const actions = normalizeAuthActionInputs(payload.actions);
+    const insertRequest = this.db.transaction(() => {
+      stmt.run({
+        ...request,
+        repo: request.repo ?? null,
+        base_branch: request.base_branch ?? null,
+        head_branch: request.head_branch ?? null,
+        post_merge_handoff: request.post_merge_handoff ?? null,
+        issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
+        issue_closures: request.issue_closures ? JSON.stringify(request.issue_closures) : null,
+        issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
+        issues: request.issues ? JSON.stringify(request.issues) : null
+      });
+      insertAuthRequestActions(this.db, request, actions, now);
     });
+
+    insertRequest();
 
     this.syncLedgerLinksForRequest(request, false);
 
@@ -474,6 +489,32 @@ export class AuthQueue {
     }
 
     return request;
+  }
+
+  listActions(requestId: string): AuthRequestAction[] {
+    const request = this.requireRequest(requestId);
+    return listAuthRequestActions(this.db, request.id);
+  }
+
+  addAction(requestId: string, input: unknown): AuthRequestAction {
+    const request = this.requireActionEditableRequest(requestId);
+    const action = addAuthRequestAction(this.db, request, input, this.now());
+    this.broadcast({ event: "auth:updated", data: { request, action } });
+    return action;
+  }
+
+  updateAction(requestId: string, actionId: string, input: unknown): AuthRequestAction {
+    const request = this.requireActionEditableRequest(requestId);
+    const action = updateAuthRequestAction(this.db, request, actionId, input, this.now());
+    this.broadcast({ event: "auth:updated", data: { request, action } });
+    return action;
+  }
+
+  deleteAction(requestId: string, actionId: string): AuthRequestAction {
+    const request = this.requireActionEditableRequest(requestId);
+    const action = deleteAuthRequestAction(this.db, request.id, actionId);
+    this.broadcast({ event: "auth:updated", data: { request, deleted_action_id: action.id } });
+    return action;
   }
 
   checkMergeIndependence(input: AuthMergeCheckInput): AuthMergeCheckReport {
@@ -1768,6 +1809,18 @@ export class AuthQueue {
       return false;
     }
     return request.exit_code != null && request.exit_code !== 0;
+  }
+
+  private requireActionEditableRequest(id: string): AuthRequest {
+    const request = this.requireRequest(id);
+    if (request.status !== "pending" && !this.isFailedLike(request)) {
+      throw new AuthQueueError(
+        "invalid_status",
+        `Request is ${request.status}, cannot modify staged actions.`,
+        request.status
+      );
+    }
+    return request;
   }
 
   private requireRequest(id: string): AuthRequest {

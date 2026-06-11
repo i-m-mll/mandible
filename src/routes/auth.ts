@@ -1,4 +1,5 @@
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
+import { AuthActionValidationError } from "../auth-actions.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import {
   computeAuthMergeReviewMetadata,
@@ -180,6 +181,45 @@ export function registerAuthRoutes(
       target_session_id: request.target_session_id ?? null,
       delivered_at: request.delivered_at ?? null
     });
+  });
+
+  app.get("/api/auth/request/:id/actions", (req, res) => {
+    try {
+      res.json({ actions: authQueue.listActions(req.params.id) });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
+  app.post("/api/auth/request/:id/actions", (req, res) => {
+    try {
+      const action = authQueue.addAction(req.params.id, readBody<Record<string, unknown>>(req));
+      res.status(201).json({ action });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
+  app.put("/api/auth/request/:id/actions/:actionId", (req, res) => {
+    try {
+      const action = authQueue.updateAction(
+        req.params.id,
+        req.params.actionId,
+        readBody<Record<string, unknown>>(req),
+      );
+      res.status(200).json({ action });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
+  app.delete("/api/auth/request/:id/actions/:actionId", (req, res) => {
+    try {
+      const action = authQueue.deleteAction(req.params.id, req.params.actionId);
+      res.status(200).json({ action_id: action.id, deleted: true });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
   });
 
   app.put("/api/auth/request/:id", (req, res) => {
@@ -447,7 +487,8 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     target_session_id: typeof body.target_session_id === "string" ? body.target_session_id : null,
     target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null,
     // Bug: 6d7411b — conversation_id for cross-resume matching
-    conversation_id: typeof body.conversation_id === "string" ? body.conversation_id : null
+    conversation_id: typeof body.conversation_id === "string" ? body.conversation_id : null,
+    actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"]
   };
 }
 
@@ -700,6 +741,10 @@ function isHttpError(error: unknown): error is { status: number; message: string
 }
 
 function handleQueueError(error: unknown, res: ResponseLike): void {
+  if (error instanceof AuthActionValidationError) {
+    res.status(error.status).json({ error: error.message });
+    return;
+  }
   if (error instanceof AuthQueueError) {
     if (error.code === "not_found") {
       res.status(404).json({ error: error.message });

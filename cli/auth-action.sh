@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# mandible auth action: Manage staged auth request actions.
+
+set -euo pipefail
+
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
+
+usage() {
+  cat <<'EOF'
+Usage: mandible auth action <subcommand> [args...]
+
+Subcommands:
+  list <request-id> [--json]
+  add <request-id> --kind <kind> --issue <issue-ref> [payload options]
+  edit <request-id> <action-id> --kind <kind> --issue <issue-ref> [payload options]
+  rm <request-id> <action-id>
+
+Payload options:
+  --payload-json <json>          Raw payload object
+  --body <markdown>              comment_add body
+  --reason-comment <markdown>    issue_close reason_comment
+  --status <value>               worker_status_set value
+  --label <label>                label_add / label_rm label
+  --checkpoint-kind <kind>       checkpoint_add kind
+  --checkpoint-payload-json <j>  checkpoint_add payload
+  --target <issue-ref>           link_add target
+  --type <type>                  link_add type
+  --note <markdown>              link_add note
+EOF
+}
+
+json_payload_from_options() {
+  local kind="$1"
+  local payload_json="$2"
+  local body="$3"
+  local reason_comment="$4"
+  local status="$5"
+  local label="$6"
+  local checkpoint_kind="$7"
+  local checkpoint_payload_json="$8"
+  local target="$9"
+  local link_type="${10}"
+  local note="${11}"
+
+  if [[ -n "$payload_json" ]]; then
+    jq -e 'type == "object"' >/dev/null <<<"$payload_json" || {
+      echo "Error: --payload-json must be a JSON object" >&2
+      exit 2
+    }
+    printf '%s' "$payload_json"
+    return
+  fi
+
+  case "$kind" in
+    comment_add)
+      [[ -n "$body" ]] || { echo "Error: --body is required for comment_add" >&2; exit 2; }
+      jq -nc --arg body "$body" '{body:$body}'
+      ;;
+    issue_close)
+      jq -nc --arg reason "$reason_comment" 'if $reason == "" then {} else {reason_comment:$reason} end'
+      ;;
+    worker_status_set)
+      [[ -n "$status" ]] || { echo "Error: --status is required for worker_status_set" >&2; exit 2; }
+      jq -nc --arg value "$status" '{value:$value}'
+      ;;
+    label_add|label_rm)
+      [[ -n "$label" ]] || { echo "Error: --label is required for ${kind}" >&2; exit 2; }
+      jq -nc --arg label "$label" '{label:$label}'
+      ;;
+    checkpoint_add)
+      [[ -n "$checkpoint_kind" ]] || { echo "Error: --checkpoint-kind is required for checkpoint_add" >&2; exit 2; }
+      [[ -n "$checkpoint_payload_json" ]] || checkpoint_payload_json='{}'
+      jq -e . >/dev/null <<<"$checkpoint_payload_json" || {
+        echo "Error: --checkpoint-payload-json must be valid JSON" >&2
+        exit 2
+      }
+      jq -nc --arg kind "$checkpoint_kind" --argjson payload "$checkpoint_payload_json" '{kind:$kind,payload:$payload}'
+      ;;
+    link_add)
+      [[ -n "$target" ]] || { echo "Error: --target is required for link_add" >&2; exit 2; }
+      jq -nc --arg target "$target" --arg type "$link_type" --arg note "$note" '{
+        target: $target
+      } + (if $type == "" then {} else {type:$type} end) + (if $note == "" then {} else {note:$note} end)'
+      ;;
+    *)
+      echo "Error: unknown action kind '$kind'" >&2
+      exit 2
+      ;;
+  esac
+}
+
+build_action_body() {
+  local kind="$1"
+  local issue="$2"
+  local payload="$3"
+  [[ -n "$kind" ]] || { echo "Error: --kind is required" >&2; exit 2; }
+  [[ -n "$issue" ]] || { echo "Error: --issue is required" >&2; exit 2; }
+  jq -nc --arg kind "$kind" --arg issue "$issue" --argjson payload "$payload" \
+    '{kind:$kind,target_issue_ref:$issue,payload:$payload}'
+}
+
+parse_action_options() {
+  kind=""
+  issue=""
+  payload_json=""
+  body=""
+  reason_comment=""
+  status_value=""
+  label=""
+  checkpoint_kind=""
+  checkpoint_payload_json=""
+  target=""
+  link_type=""
+  note=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --kind) kind="$2"; shift 2 ;;
+      --issue|--target-issue) issue="$2"; shift 2 ;;
+      --payload-json) payload_json="$2"; shift 2 ;;
+      --body) body="$2"; shift 2 ;;
+      --reason-comment) reason_comment="$2"; shift 2 ;;
+      --status) status_value="$2"; shift 2 ;;
+      --label) label="$2"; shift 2 ;;
+      --checkpoint-kind) checkpoint_kind="$2"; shift 2 ;;
+      --checkpoint-payload-json) checkpoint_payload_json="$2"; shift 2 ;;
+      --target) target="$2"; shift 2 ;;
+      --type) link_type="$2"; shift 2 ;;
+      --note) note="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+  done
+}
+
+print_action_human() {
+  jq -r '
+    .actions[]? |
+    "[\(.id[0:8])] #\(.ordinal) \(.kind) \(.target_issue_ref) \(.state) digest=\(.target_digest // "-")"
+  '
+}
+
+subcommand="${1:-}"
+shift || true
+
+case "$subcommand" in
+  list)
+    request_id="${1:-}"
+    [[ -n "$request_id" ]] || { echo "Usage: mandible auth action list <request-id> [--json]" >&2; exit 2; }
+    shift
+    json=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --json) json=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+      esac
+    done
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    status=$(api_send_capture GET "/api/auth/request/${request_id}/actions" "" "$tmp") || status=""
+    if [[ ! "$status" =~ ^2 ]]; then
+      echo "Error: GET /api/auth/request/${request_id}/actions returned HTTP ${status:-000}" >&2
+      cat "$tmp" >&2
+      exit 1
+    fi
+    if [[ "$json" -eq 1 ]]; then
+      cat "$tmp"
+    else
+      print_action_human < "$tmp"
+    fi
+    ;;
+  add)
+    request_id="${1:-}"
+    [[ -n "$request_id" ]] || { echo "Usage: mandible auth action add <request-id> --kind <kind> --issue <issue-ref>" >&2; exit 2; }
+    shift
+    parse_action_options "$@"
+    payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note")
+    body_json=$(build_action_body "$kind" "$issue" "$payload")
+    api_send POST "/api/auth/request/${request_id}/actions" "$body_json"
+    ;;
+  edit)
+    request_id="${1:-}"
+    action_id="${2:-}"
+    [[ -n "$request_id" && -n "$action_id" ]] || { echo "Usage: mandible auth action edit <request-id> <action-id> --kind <kind> --issue <issue-ref>" >&2; exit 2; }
+    shift 2
+    parse_action_options "$@"
+    payload=$(json_payload_from_options "$kind" "$payload_json" "$body" "$reason_comment" "$status_value" "$label" "$checkpoint_kind" "$checkpoint_payload_json" "$target" "$link_type" "$note")
+    body_json=$(build_action_body "$kind" "$issue" "$payload")
+    api_send PUT "/api/auth/request/${request_id}/actions/${action_id}" "$body_json"
+    ;;
+  rm|delete|remove)
+    request_id="${1:-}"
+    action_id="${2:-}"
+    [[ -n "$request_id" && -n "$action_id" ]] || { echo "Usage: mandible auth action rm <request-id> <action-id>" >&2; exit 2; }
+    api_send DELETE "/api/auth/request/${request_id}/actions/${action_id}" "{}"
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    echo "Unknown auth action subcommand: $subcommand" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

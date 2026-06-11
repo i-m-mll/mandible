@@ -1802,6 +1802,30 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_ledger_relationship_edges_action
         ON ledger_relationship_edges(action_id)`
     ]
+  },
+  {
+    version: 76,
+    name: "auth_request_actions",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS auth_request_actions (
+        id TEXT PRIMARY KEY,
+        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('comment_add','issue_close','worker_status_set','label_add','label_rm','checkpoint_add','link_add')),
+        target_issue_ref TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'staged' CHECK(state IN ('staged','applied','failed','vetoed')),
+        target_digest TEXT,
+        staged_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        applied_at INTEGER,
+        outcome_detail TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_request_actions_request_ordinal
+        ON auth_request_actions(auth_request_id, ordinal)`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_request_actions_state
+        ON auth_request_actions(state, auth_request_id)`
+    ]
   }
 ];
 
