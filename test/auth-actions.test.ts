@@ -96,6 +96,212 @@ describe("auth request action schema", () => {
   });
 });
 
+describe("auth request action execution", () => {
+  it("applies staged actions once in ordinal order when a merge succeeds", () => {
+    const db = createMigratedDb();
+    try {
+      const { repoRoot, issue } = createLedgerIssue(db, "exec123");
+      let now = 10_000;
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/exec --into main",
+        title: "Execute staged actions",
+        cwd: repoRoot,
+        repo: path.basename(repoRoot),
+        actions: [
+          { kind: "comment_add", target_issue_ref: issue.short_id, payload: { body: "Closeout comment" } },
+          { kind: "label_add", target_issue_ref: issue.short_id, payload: { label: "verified" } },
+          { kind: "worker_status_set", target_issue_ref: issue.short_id, payload: { value: "done" } },
+          { kind: "checkpoint_add", target_issue_ref: issue.short_id, payload: { kind: "handoff", payload: { ok: true } } },
+          { kind: "issue_close", target_issue_ref: issue.short_id, payload: { reason_comment: "Merged cleanly" } },
+        ],
+      });
+
+      now = 11_000;
+      queue.setResult(
+        request.id,
+        0,
+        'MANDIBLE_MERGE_RESULT {"merge_sha":"abc123def456","declared_issues":["exec123"],"auto_close_issues":[]}',
+      );
+
+      expect(queue.listActions(request.id).map((action) => action.state)).toEqual([
+        "applied",
+        "applied",
+        "applied",
+        "applied",
+        "applied",
+      ]);
+      expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
+        status: "closed",
+        resolution: "merged",
+        worker_status: "done",
+      });
+      expect(
+        db.prepare("SELECT label FROM ledger_labels WHERE issue_id = ? AND label = 'verified' AND deleted_at IS NULL")
+          .get(issue.id),
+      ).toEqual({ label: "verified" });
+      expect(
+        db.prepare("SELECT body FROM ledger_comments WHERE issue_id = ? ORDER BY ordinal").all(issue.id),
+      ).toEqual([{ body: "Closeout comment" }, { body: "Merged cleanly" }]);
+      expect(
+        db.prepare("SELECT kind FROM ledger_issue_checkpoints WHERE issue_id = ?").get(issue.id),
+      ).toEqual({ kind: "handoff" });
+
+      now = 12_000;
+      const restarted = new AuthQueue({ db, now: () => now });
+      try {
+        restarted.getRequest(request.id);
+        expect(
+          db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?").get(issue.id),
+        ).toEqual({ count: 2 });
+        expect(
+          db.prepare("SELECT COUNT(*) AS count FROM ledger_issue_checkpoints WHERE issue_id = ?").get(issue.id),
+        ).toEqual({ count: 1 });
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("records failed actions and continues applying remaining staged actions", () => {
+    const db = createMigratedDb();
+    try {
+      const { repoRoot, issue } = createLedgerIssue(db, "fail123");
+      const queue = new AuthQueue({ db, now: () => 20_000 });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/fail --into main",
+        title: "Failure isolation",
+        cwd: repoRoot,
+        repo: path.basename(repoRoot),
+        actions: [
+          { kind: "comment_add", target_issue_ref: "missing123", payload: { body: "Will fail" } },
+          { kind: "label_add", target_issue_ref: issue.short_id, payload: { label: "still-applied" } },
+          { kind: "comment_add", target_issue_ref: issue.short_id, payload: { body: "Vetoed" } },
+        ],
+      });
+      const actions = queue.listActions(request.id);
+      db.prepare("UPDATE auth_request_actions SET state = 'vetoed' WHERE id = ?").run(actions[2].id);
+
+      queue.setResult(request.id, 0, "Merge made by recursive.\n");
+
+      const after = queue.listActions(request.id);
+      expect(after.map((action) => action.state)).toEqual(["failed", "applied", "vetoed"]);
+      expect(after[0].outcome_detail).toContain("could not be resolved");
+      expect(
+        db.prepare("SELECT label FROM ledger_labels WHERE issue_id = ? AND label = 'still-applied' AND deleted_at IS NULL")
+          .get(issue.id),
+      ).toEqual({ label: "still-applied" });
+      expect(
+        db.prepare("SELECT COUNT(*) AS count FROM ledger_comments WHERE issue_id = ?").get(issue.id),
+      ).toEqual({ count: 0 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("honors issue_close on_stale skip while default stale actions apply with annotation", () => {
+    const db = createMigratedDb();
+    try {
+      const first = createLedgerIssue(db, "stale1");
+      const secondIssue = new LedgerStore(db).createIssue({
+        project_id: first.issue.project_id,
+        title: "Second stale target",
+        body: "Body",
+        kind: "feature",
+        priority: "normal",
+        aliases: [{ alias_kind: "git_bug_short", alias: "stale2" }],
+      });
+      const queue = new AuthQueue({ db, now: () => 30_000 });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/stale --into main",
+        title: "Stale action handling",
+        cwd: first.repoRoot,
+        repo: path.basename(first.repoRoot),
+        actions: [
+          { kind: "issue_close", target_issue_ref: first.issue.short_id, payload: { on_stale: "skip" } },
+          { kind: "issue_close", target_issue_ref: secondIssue.short_id, payload: {} },
+        ],
+      });
+
+      new LedgerStore(db).addComment(first.issue.id, { body: "Moved", source: "mandible" });
+      new LedgerStore(db).addComment(secondIssue.id, { body: "Moved", source: "mandible" });
+      queue.setResult(request.id, 0, "Merge made by recursive.\n");
+
+      const actions = queue.listActions(request.id);
+      expect(actions[0]).toMatchObject({ state: "skipped_stale", applied_at: null });
+      expect(actions[0].outcome_detail).toContain("digest moved");
+      expect(actions[1]).toMatchObject({ state: "applied" });
+      expect(actions[1].outcome_detail).toContain("digest moved");
+      expect(new LedgerStore(db).getIssue(first.issue.id).status).toBe("open");
+      expect(new LedgerStore(db).getIssue(secondIssue.id).status).toBe("closed");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("preserves legacy issue_closures through the unified close executor", () => {
+    const db = createMigratedDb();
+    try {
+      const { repoRoot, issue } = createLedgerIssue(db, "legacy1");
+      const queue = new AuthQueue({ db, now: () => 40_000 });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/legacy --into main",
+        title: "Legacy close",
+        cwd: repoRoot,
+        repo: path.basename(repoRoot),
+        issue_closures: [issue.short_id],
+      });
+
+      queue.setResult(request.id, 0, "Merge made by recursive.\n");
+
+      expect(queue.listActions(request.id)).toEqual([]);
+      expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
+        status: "closed",
+        resolution: "merged",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("creates resolves operational links for staged issue_close actions", () => {
+    const db = createMigratedDb();
+    try {
+      const { repoRoot, issue } = createLedgerIssue(db, "link123");
+      const queue = new AuthQueue({ db, now: () => 50_000 });
+      const request = queue.submit({
+        command: "echo link",
+        title: "Link staged close",
+        cwd: repoRoot,
+        repo: path.basename(repoRoot),
+        actions: [{ kind: "issue_close", target_issue_ref: issue.short_id, payload: {} }],
+      });
+
+      expect(
+        db.prepare(
+          `SELECT link_type, metadata_json
+           FROM ledger_auth_issue_links
+           WHERE auth_request_id = ? AND issue_id = ?`,
+        ).get(request.id, issue.id),
+      ).toMatchObject({
+        link_type: "resolves",
+      });
+      const metadata = db.prepare(
+        "SELECT metadata_json FROM ledger_auth_issue_links WHERE auth_request_id = ? AND issue_id = ?",
+      ).get(request.id, issue.id) as { metadata_json: string };
+      expect(JSON.parse(metadata.metadata_json).source_fields).toContain("auth_request_actions");
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("auth request action queue persistence", () => {
   it("submits actions with target digests and edits one row without touching siblings", () => {
     const db = createMigratedDb();

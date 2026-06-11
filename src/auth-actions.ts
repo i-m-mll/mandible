@@ -19,7 +19,7 @@ const VALID_ACTION_KINDS: AuthRequestActionKind[] = [
   "checkpoint_add",
   "link_add",
 ];
-const VALID_ACTION_STATES: AuthRequestActionState[] = ["staged", "applied", "failed", "vetoed"];
+const VALID_ACTION_STATES: AuthRequestActionState[] = ["staged", "applied", "failed", "vetoed", "skipped_stale"];
 const VALID_WORKER_STATUSES = ["none", "in_progress", "done", "blocked", "pivot-needed"];
 
 export class AuthActionValidationError extends Error {
@@ -172,7 +172,11 @@ function normalizePayload(kind: AuthRequestActionKind, payload: unknown): Record
       return { body: requireMarkdownBody(record.body, "body") };
     case "issue_close": {
       const reason = optionalMarkdownBody(record.reason_comment, "reason_comment");
-      return reason == null ? {} : { reason_comment: reason };
+      const onStale = record.on_stale === undefined ? undefined : requireOnStale(record.on_stale);
+      return {
+        ...(reason == null ? {} : { reason_comment: reason }),
+        ...(onStale == null ? {} : { on_stale: onStale }),
+      };
     }
     case "worker_status_set": {
       const value = typeof record.value === "string" ? record.value.trim() : "";
@@ -223,6 +227,11 @@ function rejectEscapedNewlines(value: string, field: string): void {
   if (value.includes("\\n")) {
     throw new AuthActionValidationError(`${field} must contain real newlines, not literal \\n escapes`);
   }
+}
+
+function requireOnStale(value: unknown): "apply" | "skip" {
+  if (value === "apply" || value === "skip") return value;
+  throw new AuthActionValidationError("issue_close on_stale must be 'apply' or 'skip'");
 }
 
 function resolveTargetDigest(db: Db, request: AuthRequest, issueRef: string): string | null {

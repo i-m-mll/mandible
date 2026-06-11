@@ -1826,6 +1826,40 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_auth_request_actions_state
         ON auth_request_actions(state, auth_request_id)`
     ]
+  },
+  {
+    version: 77,
+    name: "auth_request_actions_skipped_stale_state",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS auth_request_actions_v77 (
+        id TEXT PRIMARY KEY,
+        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('comment_add','issue_close','worker_status_set','label_add','label_rm','checkpoint_add','link_add')),
+        target_issue_ref TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'staged' CHECK(state IN ('staged','applied','failed','vetoed','skipped_stale')),
+        target_digest TEXT,
+        staged_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        applied_at INTEGER,
+        outcome_detail TEXT
+      )`,
+      `INSERT OR IGNORE INTO auth_request_actions_v77 (
+        id, auth_request_id, ordinal, kind, target_issue_ref, payload,
+        state, target_digest, staged_at, updated_at, applied_at, outcome_detail
+      )
+      SELECT
+        id, auth_request_id, ordinal, kind, target_issue_ref, payload,
+        state, target_digest, staged_at, updated_at, applied_at, outcome_detail
+      FROM auth_request_actions`,
+      `DROP TABLE auth_request_actions`,
+      `ALTER TABLE auth_request_actions_v77 RENAME TO auth_request_actions`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_request_actions_request_ordinal
+        ON auth_request_actions(auth_request_id, ordinal)`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_request_actions_state
+        ON auth_request_actions(state, auth_request_id)`
+    ]
   }
 ];
 

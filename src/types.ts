@@ -125,7 +125,7 @@ export type AuthRequestActionKind =
   | "label_rm"
   | "checkpoint_add"
   | "link_add";
-export type AuthRequestActionState = "staged" | "applied" | "failed" | "vetoed";
+	export type AuthRequestActionState = "staged" | "applied" | "failed" | "vetoed" | "skipped_stale";
 
 export interface AuthRequestActionInput {
   kind: AuthRequestActionKind;
