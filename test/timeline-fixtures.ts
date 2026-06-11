@@ -18,11 +18,15 @@ export interface TimelineFixture {
     closed: LedgerIssue;
     deleted: LedgerIssue;
     loner: LedgerIssue;
+    authDone: LedgerIssue;
   };
   comments: {
     rootARefs: string;
     sharedNested: string;
     manyRefs: string;
+  };
+  operationalEvents: {
+    authCompleted: string;
   };
 }
 
@@ -96,6 +100,15 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     aliases: [{ alias_kind: "git_bug_short", alias: "loner" }],
     created_at: BASE + 80,
   });
+  const authDone = store.createIssue({
+    project_id: checkout.project.id,
+    title: "Auth completed issue",
+    body: "Auth completion should appear as an operational event.",
+    kind: "feature",
+    labels: ["feature"],
+    aliases: [{ alias_kind: "git_bug_short", alias: "authdone" }],
+    created_at: BASE + 90,
+  });
   const rootA = store.createIssue({
     project_id: checkout.project.id,
     title: "Coordination Alpha",
@@ -151,6 +164,31 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
   });
   store.setIssueStatus(rootA.id, "closed", "merged");
   store.setIssueStatus(rootA.id, "open", null);
+  store.setLabel(rootB.id, "needs-review", true, "mandible");
+  store.setLabel(rootB.id, "needs-review", false, "mandible");
+  const authCompleted = store.recordEvent({
+    entity_type: "auth_request",
+    entity_id: "auth_timeline_1",
+    event_type: "auth_request.completed",
+    actor_type: "system",
+    source: "auth_queue",
+    project_id: checkout.project.id,
+    enqueueOutbox: false,
+    payload: {
+      auth_request_id: "auth_timeline_1",
+      issue_id: authDone.id,
+      approval_source: "manual",
+      approval_lease_id: null,
+    },
+    occurred_at: BASE + 190,
+  });
+  store.setIssueStatus(
+    authDone.id,
+    "closed",
+    "merged",
+    { actor_type: "system", actor_id: null },
+    "auth_queue",
+  );
   db.prepare(
     `UPDATE ledger_events
      SET occurred_at = CASE event_type
@@ -160,6 +198,31 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
      END
      WHERE entity_type = 'issue' AND entity_id = ? AND event_type IN ('issue.closed', 'issue.reopened')`,
   ).run(BASE + 150, BASE + 160, rootA.id);
+  db.prepare(
+    `UPDATE ledger_events
+     SET occurred_at = CASE json_extract(payload_json, '$.present')
+       WHEN 1 THEN ?
+       ELSE ?
+     END,
+     observed_at = CASE json_extract(payload_json, '$.present')
+       WHEN 1 THEN ?
+       ELSE ?
+     END
+     WHERE entity_type = 'issue' AND entity_id = ? AND event_type = 'label.updated'`,
+  ).run(BASE + 175, BASE + 180, BASE + 175, BASE + 180, rootB.id);
+  db.prepare(
+    `UPDATE ledger_labels
+     SET created_at = ?, deleted_at = ?
+     WHERE issue_id = ? AND label = 'needs-review'`,
+  ).run(BASE + 175, BASE + 180, rootB.id);
+  db.prepare(
+    `UPDATE ledger_events
+     SET occurred_at = ?, observed_at = ?
+     WHERE entity_type = 'issue'
+       AND entity_id = ?
+       AND event_type = 'issue.closed'
+       AND source = 'auth_queue'`,
+  ).run(BASE + 195, BASE + 195, authDone.id);
   db.prepare("UPDATE ledger_issues SET deleted_at = ?, updated_at = ? WHERE id = ?")
     .run(BASE + 170, BASE + 170, deleted.id);
 
@@ -170,7 +233,8 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
       id: checkout.project.id,
       display_name: checkout.project.display_name,
     },
-    issues: { rootA, rootB, shared, nested, cycle, closed, deleted, loner },
+    issues: { rootA, rootB, shared, nested, cycle, closed, deleted, loner, authDone },
     comments: { rootARefs, sharedNested, manyRefs },
+    operationalEvents: { authCompleted: authCompleted.id },
   };
 }

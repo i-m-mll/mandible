@@ -245,6 +245,15 @@ export interface IssueRepoSummary {
 export type TimelineRootPolicy = "coordination" | "explicit" | "coordination_and_explicit";
 export type TimelineHeadlineSource = "title" | "markdown_heading" | "body_excerpt" | "state";
 export type TimelineSourceEntityType = "issue_body" | "comment" | "issue_state";
+export type TimelineEventKind =
+  | "body"
+  | "comment"
+  | "issue_state"
+  | "label"
+  | "commit"
+  | "auth_request"
+  | "session"
+  | "work_unit";
 export type TimelineRowOccurrenceKind = "root" | "promoted_root" | "explicit_root" | "transient";
 export type TimelineDiagnosticKind =
   | "cycle"
@@ -263,6 +272,7 @@ export interface ProjectTimelineInput {
   expanded_paths?: string[];
   include_closed?: boolean;
   statuses?: LedgerIssueStatus[];
+  event_kinds?: TimelineEventKind[];
   depth?: number;
   from?: number;
   to?: number;
@@ -277,6 +287,7 @@ export interface ProjectTimelineNormalizedInput {
   expanded_paths: string[];
   include_closed: boolean;
   statuses: LedgerIssueStatus[];
+  event_kinds: TimelineEventKind[];
   depth: number;
   from: number | null;
   to: number | null;
@@ -329,6 +340,7 @@ export interface TimelineEvent {
     event_type: string;
     status: LedgerIssueStatus | null;
     resolution: LedgerIssueResolution | null;
+    payload: Record<string, unknown>;
   } | null;
   link_ids: string[];
 }
