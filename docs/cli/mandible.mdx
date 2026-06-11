@@ -113,6 +113,8 @@ mandible issue label rm <id> <label>
 | `show` | Show issue details |
 | `report` | Print deterministic issue context for agent handoff. This is factual metadata, comments, relationships, work units, sessions, auth requests, timeline, conflicts, and sync state; it does not synthesize remaining work. |
 | `triage` | Filter issues by status, label, stale age, and limit for deterministic review queues. |
+| `link` | Create deliberate structured issue/comment relationship edges without fabricating comments. |
+| `unlink` | Tombstone deliberate structured issue/comment relationship edges and record removal events. |
 | `close` | Close an issue, recording the resolving commit SHA. Adds a ledger comment, appends a git note, and reports the resolution to the Mandible API. |
 | `open` | Reopen a closed issue |
 | `description show` | Show only the issue description, without comments or metadata in human output. |
