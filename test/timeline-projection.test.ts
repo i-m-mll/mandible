@@ -559,6 +559,84 @@ describe("project timeline projection", () => {
     expect(projection.events.map((event) => event.issue.id)).toEqual([fixture.issues.nested.id]);
   });
 
+  it("distinguishes current label membership from ever-in-window membership", () => {
+    const now = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "review-now",
+        title: "Currently needs review",
+        scope: { type: "label", name: "needs-review" },
+      }],
+      from: fixture.issues.rootB.created_at + 156,
+      to: fixture.issues.rootB.created_at + 156,
+    });
+    const ever = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "review-ever",
+        title: "Ever needed review",
+        scope: { type: "label", name: "needs-review", membership: "ever_in_window" },
+      }],
+      from: fixture.issues.rootB.created_at + 156,
+      to: fixture.issues.rootB.created_at + 156,
+    });
+
+    expect(memberIssueIds(now, "review-now")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+    expect(memberIssueIds(ever, "review-ever")).toEqual([
+      fixture.issues.rootB.id,
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+  });
+
+  it("exposes label membership intervals for filter RowSpec aggregate support", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "review-ever",
+        title: "Ever needed review",
+        scope: { type: "label", name: "needs-review", membership: "ever_in_window" },
+      }],
+      from: fixture.issues.rootB.created_at + 156,
+      to: fixture.issues.rootB.created_at + 156,
+    });
+    const root = projection.rows.find((row) => row.row_spec?.id === "review-ever" && row.kind === "root");
+    const rootBInterval = root?.row_spec?.label_intervals?.find((interval) => (
+      interval.issue_id === fixture.issues.rootB.id && interval.label === "needs-review"
+    ));
+
+    expect(rootBInterval).toEqual({
+      issue_id: fixture.issues.rootB.id,
+      label: "needs-review",
+      start: fixture.issues.rootB.created_at + 155,
+      end: fixture.issues.rootB.created_at + 160,
+      degraded: false,
+    });
+  });
+
+  it("keeps residual rows based on current label membership", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [
+        {
+          id: "review-ever",
+          scope: { type: "label", name: "needs-review", membership: "ever_in_window" },
+        },
+        { id: "residual", scope: { type: "residual" } },
+      ],
+      from: fixture.issues.rootB.created_at + 156,
+      to: fixture.issues.rootB.created_at + 156,
+    });
+
+    expect(memberIssueIds(projection, "review-ever")).toContain(fixture.issues.rootB.id);
+    expect(memberIssueIds(projection, "residual")).toContain(fixture.issues.rootB.id);
+    expect(memberIssueIds(projection, "residual")).not.toContain(fixture.issues.shared.id);
+    expect(memberIssueIds(projection, "residual")).not.toContain(fixture.issues.nested.id);
+  });
+
   it("supports kind, and/or/not composition, overlapping members, and residual complement rows", () => {
     const projection = buildProjectTimelineProjection(fixture.db, {
       project_id: fixture.project.id,

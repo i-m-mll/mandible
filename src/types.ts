@@ -257,9 +257,10 @@ export type TimelineEventKind =
   | "session"
   | "work_unit";
 export type TimelineRowOccurrenceKind = "root" | "promoted_root" | "explicit_root" | "transient" | "member";
+export type TimelineLabelMembershipMode = "now" | "ever_in_window";
 export type TimelineIssuePredicate =
   | { type: "referenced_by"; issue_id: string }
-  | { type: "label"; name: string }
+  | { type: "label"; name: string; membership?: TimelineLabelMembershipMode }
   | { type: "kind"; kind: LedgerIssueKind }
   | { type: "parent_subtree"; issue_id: string }
   | { type: "residual" }
@@ -346,6 +347,15 @@ export interface TimelineRowSpecRef {
   title: string;
   anchor_issue_id: string | null;
   scope: TimelineIssuePredicate | null;
+  label_intervals?: TimelineLabelMembershipInterval[];
+}
+
+export interface TimelineLabelMembershipInterval {
+  issue_id: string;
+  label: string;
+  start: number;
+  end: number | null;
+  degraded: boolean;
 }
 
 export interface TimelineRowOccurrence {

@@ -9,6 +9,8 @@ import type {
   TimelineEvent,
   TimelineIssuePredicate,
   TimelineIssueRef,
+  TimelineLabelMembershipInterval,
+  TimelineLabelMembershipMode,
   TimelineLink,
   TimelineNormalizedRowSpec,
   TimelineRowOccurrence,
@@ -55,10 +57,20 @@ type StateEventRow = {
   occurred_at: number;
   observed_at: number;
 };
+type LabelRow = {
+  issue_id: string;
+  label: string;
+  created_at: number;
+  deleted_at: number | null;
+};
+type LabelHistoryIndex = {
+  intervalsByLabel: Map<string, TimelineLabelMembershipInterval[]>;
+};
 type InternalRowSpec = TimelineNormalizedRowSpec & {
   anchorIssue: IssueRow | null;
   legacyKind: TimelineRowOccurrenceKind | null;
   emitMembers: boolean;
+  labelIntervals: TimelineLabelMembershipInterval[];
 };
 type PredicateDiagnosticInput = {
   kind: "invalid_predicate" | "unmatched_predicate" | "cycle";
@@ -75,6 +87,9 @@ type PredicateEvalContext = {
   relationshipSources: LedgerIssueRelationshipSource[];
   parentChildrenByIssueId: Map<string, string[]>;
   residualCoveredIssueIds: Set<string>;
+  labelHistory: LabelHistoryIndex;
+  window: { from: number | null; to: number | null };
+  labelMembershipModeOverride?: TimelineLabelMembershipMode;
 };
 
 const DEFAULT_DEPTH = 1;
@@ -123,6 +138,7 @@ export function buildProjectTimelineProjection(
   const issueRefs = new Map(issues.map((issue) => [issue.id, issueRef(issue)]));
   const normalized = normalizeInput(input, project.id, issueById);
   const relationshipSources = loadRelationshipSources(db, project.id);
+  const labelHistory = loadLabelHistory(db, project.id, issues);
   const relationshipSourcesByEventSource = groupRelationshipSources(relationshipSources);
   const referenceCounts = countActiveTargets(relationshipSources);
   const rows: TimelineRowOccurrence[] = [];
@@ -150,6 +166,7 @@ export function buildProjectTimelineProjection(
     issueById,
     relationshipSources,
     parentChildrenByIssueId,
+    labelHistory,
     diagnostics: predicateDiagnostics,
   });
   normalized.root_specs = hasRootSpecInput(input) ? rootSpecs.map(normalizedSpec) : [];
@@ -167,28 +184,45 @@ export function buildProjectTimelineProjection(
       );
       return;
     }
-    const filterRoot = addFilterRootRow(spec, index);
-    if (!spec.emitMembers || !spec.scope) return;
+    if (!spec.emitMembers || !spec.scope) {
+      addFilterRootRow(spec, index);
+      return;
+    }
     const memberIds = evaluateRootScope(spec, {
       allIssues: issues,
       issueById,
       relationshipSources,
       parentChildrenByIssueId,
+      labelHistory,
+      window: { from: normalized.from, to: normalized.to },
       residualCoveredIssueIds: residualCoveredIssueIds(rootSpecs, spec, {
         allIssues: issues,
         issueById,
         relationshipSources,
         parentChildrenByIssueId,
+        labelHistory,
+        window: { from: normalized.from, to: normalized.to },
         residualCoveredIssueIds: new Set<string>(),
+        labelMembershipModeOverride: "now",
       }, predicateDiagnostics),
     }, predicateDiagnostics);
-    Array.from(memberIds)
+    const memberIssues = Array.from(memberIds)
       .map((id) => issueById.get(id))
       .filter((issue): issue is IssueRow => (
         !!issue && issue.deleted_at === null && statusAllowed(issue.status, normalized)
       ))
-      .sort(compareIssues)
-      .forEach((issue) => {
+      .sort(compareIssues);
+    spec.labelIntervals = labelIntervalsForPredicate(
+      spec.scope,
+      new Set(memberIssues.map((issue) => issue.id)),
+      labelHistory,
+      {
+        from: normalized.from,
+        to: normalized.to,
+      },
+    );
+    const filterRoot = addFilterRootRow(spec, index);
+    memberIssues.forEach((issue) => {
         const cycle = filterRoot.path.includes(`issue:${issue.id}`);
         const member = addIssueRow(
           issue,
@@ -521,6 +555,190 @@ function loadRelationshipSources(db: Db, projectId: string): LedgerIssueRelation
   ).all(projectId) as LedgerIssueRelationshipSource[];
 }
 
+function loadLabelHistory(db: Db, projectId: string, issues: IssueRow[]): LabelHistoryIndex {
+  const labelRows = db.prepare(
+    `SELECT l.issue_id, l.label, l.created_at, l.deleted_at
+       FROM ledger_labels l
+       JOIN ledger_issues i ON i.id = l.issue_id
+      WHERE i.project_id = ?
+      ORDER BY l.issue_id ASC, l.label ASC, l.created_at ASC`,
+  ).all(projectId) as LabelRow[];
+  const labelEvents = db.prepare(
+    `SELECT e.id, e.entity_type, e.entity_id, e.event_type, e.source, e.payload_json, e.occurred_at, e.observed_at
+       FROM ledger_events e
+       JOIN ledger_issues i ON i.id = e.entity_id
+      WHERE i.project_id = ?
+        AND e.entity_type = 'issue'
+        AND e.event_type = 'label.updated'
+      ORDER BY e.entity_id ASC, e.occurred_at ASC, e.observed_at ASC, e.id ASC`,
+  ).all(projectId) as StateEventRow[];
+  const issueById = new Map(issues.map((issue) => [issue.id, issue]));
+  const eventsByIssueLabel = new Map<string, StateEventRow[]>();
+  for (const event of labelEvents) {
+    const payload = parseJsonObject(event.payload_json);
+    const label = typeof payload.label === "string" ? payload.label.trim() : "";
+    if (!label || !issueById.has(event.entity_id)) continue;
+    const key = issueLabelKey(event.entity_id, label);
+    const events = eventsByIssueLabel.get(key) ?? [];
+    events.push(event);
+    eventsByIssueLabel.set(key, events);
+  }
+
+  const keys = new Set<string>([
+    ...labelRows.map((row) => issueLabelKey(row.issue_id, row.label)),
+    ...eventsByIssueLabel.keys(),
+  ]);
+  const intervalsByLabel = new Map<string, TimelineLabelMembershipInterval[]>();
+  const rowByKey = new Map(labelRows.map((row) => [issueLabelKey(row.issue_id, row.label), row]));
+
+  for (const key of keys) {
+    const row = rowByKey.get(key);
+    const events = eventsByIssueLabel.get(key) ?? [];
+    const [issueId, label] = splitIssueLabelKey(key);
+    const issue = issueById.get(issueId);
+    if (!issue) continue;
+    const intervals = intervalsForIssueLabel({ issue, label, row, events });
+    const labelIntervals = intervalsByLabel.get(label) ?? [];
+    labelIntervals.push(...intervals);
+    intervalsByLabel.set(label, labelIntervals);
+  }
+
+  for (const intervals of intervalsByLabel.values()) intervals.sort(compareLabelIntervals);
+  return { intervalsByLabel };
+}
+
+function intervalsForIssueLabel(input: {
+  issue: IssueRow;
+  label: string;
+  row?: LabelRow;
+  events: StateEventRow[];
+}): TimelineLabelMembershipInterval[] {
+  const intervals: TimelineLabelMembershipInterval[] = [];
+  let openStart: number | null = null;
+  let openDegraded = false;
+  let sawAdd = false;
+  let sawRemove = false;
+
+  for (const event of input.events) {
+    const payload = parseJsonObject(event.payload_json);
+    if (payload.present === true) {
+      sawAdd = true;
+      if (openStart === null) {
+        openStart = event.occurred_at;
+        openDegraded = false;
+      }
+      continue;
+    }
+    if (payload.present === false) {
+      sawRemove = true;
+      if (openStart === null) {
+        intervals.push({
+          issue_id: input.issue.id,
+          label: input.label,
+          start: input.row?.created_at ?? input.issue.created_at,
+          end: event.occurred_at,
+          degraded: true,
+        });
+      } else {
+        intervals.push({
+          issue_id: input.issue.id,
+          label: input.label,
+          start: openStart,
+          end: event.occurred_at,
+          degraded: openDegraded,
+        });
+      }
+      openStart = null;
+      openDegraded = false;
+    }
+  }
+
+  if (openStart !== null) {
+    intervals.push({
+      issue_id: input.issue.id,
+      label: input.label,
+      start: openStart,
+      end: null,
+      degraded: openDegraded,
+    });
+  }
+  if (input.row && input.row.deleted_at === null && !sawAdd) {
+    intervals.push({
+      issue_id: input.issue.id,
+      label: input.label,
+      start: input.row.created_at,
+      end: null,
+      degraded: input.events.length > 0,
+    });
+  }
+  if (input.row && input.row.deleted_at !== null && input.events.length === 0) {
+    intervals.push({
+      issue_id: input.issue.id,
+      label: input.label,
+      start: input.row.created_at,
+      end: input.row.deleted_at,
+      degraded: true,
+    });
+  }
+  if (input.row && input.row.deleted_at !== null && sawAdd && !sawRemove) {
+    intervals.push({
+      issue_id: input.issue.id,
+      label: input.label,
+      start: input.row.created_at,
+      end: input.row.deleted_at,
+      degraded: true,
+    });
+  }
+
+  return intervals
+    .filter((interval) => interval.end === null || interval.start <= interval.end)
+    .sort(compareLabelIntervals);
+}
+
+function labelIntervalsForPredicate(
+  predicate: TimelineIssuePredicate | null,
+  issueIds: Set<string>,
+  labelHistory: LabelHistoryIndex,
+  window: { from: number | null; to: number | null },
+): TimelineLabelMembershipInterval[] {
+  const labels = labelsInPredicate(predicate);
+  if (labels.size === 0 || issueIds.size === 0) return [];
+  const intervals: TimelineLabelMembershipInterval[] = [];
+  for (const label of labels) {
+    for (const interval of labelHistory.intervalsByLabel.get(label) ?? []) {
+      if (!issueIds.has(interval.issue_id) || !intervalOverlapsWindow(interval, window)) continue;
+      intervals.push(interval);
+    }
+  }
+  return intervals.sort(compareLabelIntervals);
+}
+
+function labelsInPredicate(predicate: TimelineIssuePredicate | null): Set<string> {
+  const labels = new Set<string>();
+  if (!predicate) return labels;
+  if (predicate.type === "label") {
+    const name = typeof predicate.name === "string" ? predicate.name.trim() : "";
+    if (name) labels.add(name);
+  } else if (predicate.type === "and" || predicate.type === "or") {
+    for (const child of predicate.predicates) {
+      for (const label of labelsInPredicate(child)) labels.add(label);
+    }
+  } else if (predicate.type === "not") {
+    for (const label of labelsInPredicate(predicate.predicate)) labels.add(label);
+  }
+  return labels;
+}
+
+function intervalOverlapsWindow(
+  interval: TimelineLabelMembershipInterval,
+  window: { from: number | null; to: number | null },
+): boolean {
+  const end = interval.end ?? Number.POSITIVE_INFINITY;
+  if (window.from !== null && end < window.from) return false;
+  if (window.to !== null && interval.start > window.to) return false;
+  return true;
+}
+
 function groupRelationshipSources(
   sources: LedgerIssueRelationshipSource[],
 ): Map<string, LedgerIssueRelationshipSource[]> {
@@ -556,6 +774,7 @@ function buildRootSpecs(input: {
   issueById: Map<string, IssueRow>;
   relationshipSources: LedgerIssueRelationshipSource[];
   parentChildrenByIssueId: Map<string, string[]>;
+  labelHistory: LabelHistoryIndex;
   diagnostics: TimelineDiagnostic[];
 }): InternalRowSpec[] {
   const explicitSpecs = input.rawInput.root_specs ?? input.rawInput.root_row_specs;
@@ -570,6 +789,7 @@ function buildRootSpecs(input: {
       anchorIssue: issue,
       legacyKind: rootKind(issue.id, input.normalized),
       emitMembers: false,
+      labelIntervals: [],
     }));
   }
 
@@ -595,6 +815,7 @@ function buildRootSpecs(input: {
       anchorIssue,
       legacyKind: null,
       emitMembers: anchorIssue === null,
+      labelIntervals: [],
     };
     if (!normalized.anchorIssue && !normalized.scope) {
       input.diagnostics.push(predicateDiagnostic({
@@ -621,7 +842,10 @@ function normalizedSpec(spec: InternalRowSpec): TimelineNormalizedRowSpec {
 }
 
 function rowSpecRef(spec: InternalRowSpec): TimelineRowSpecRef {
-  return normalizedSpec(spec);
+  return {
+    ...normalizedSpec(spec),
+    ...(spec.labelIntervals.length > 0 ? { label_intervals: spec.labelIntervals } : {}),
+  };
 }
 
 function evaluateRootScope(
@@ -701,6 +925,12 @@ function evaluatePredicate(
           predicate,
         }));
         return new Set<string>();
+      }
+      const membership = context.labelMembershipModeOverride ?? normalizeLabelMembershipMode(predicate.membership);
+      if (membership === "ever_in_window") {
+        return new Set((context.labelHistory.intervalsByLabel.get(name) ?? [])
+          .filter((interval) => intervalOverlapsWindow(interval, context.window))
+          .map((interval) => interval.issue_id));
       }
       return new Set(context.allIssues
         .filter((issue) => labelList(issue).includes(name))
@@ -1359,6 +1589,32 @@ function union(left: Set<string>, right: Set<string>): Set<string> {
 
 function intersection(left: Set<string>, right: Set<string>): Set<string> {
   return new Set([...left].filter((item) => right.has(item)));
+}
+
+function normalizeLabelMembershipMode(value: unknown): TimelineLabelMembershipMode {
+  return value === "ever_in_window" ? "ever_in_window" : "now";
+}
+
+function issueLabelKey(issueId: string, label: string): string {
+  return `${issueId}\x1f${label}`;
+}
+
+function splitIssueLabelKey(key: string): [string, string] {
+  const separator = key.indexOf("\x1f");
+  if (separator === -1) return [key, ""];
+  return [key.slice(0, separator), key.slice(separator + 1)];
+}
+
+function compareLabelIntervals(
+  a: TimelineLabelMembershipInterval,
+  b: TimelineLabelMembershipInterval,
+): number {
+  if (a.start !== b.start) return a.start - b.start;
+  const aEnd = a.end ?? Number.POSITIVE_INFINITY;
+  const bEnd = b.end ?? Number.POSITIVE_INFINITY;
+  if (aEnd !== bEnd) return aEnd - bEnd;
+  if (a.issue_id !== b.issue_id) return a.issue_id.localeCompare(b.issue_id);
+  return a.label.localeCompare(b.label);
 }
 
 function compareIssues(a: IssueRow, b: IssueRow): number {
