@@ -303,6 +303,178 @@ describe("project timeline projection", () => {
       fixture.issues.shared.id,
     ]);
   });
+
+  it("keeps anchor RowSpecs compatible with the existing coordination root projection", () => {
+    const legacy = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "coordination",
+    });
+    const rowSpec = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "alpha",
+        anchor_issue_id: fixture.issues.rootA.id,
+        scope: { type: "referenced_by", issue_id: fixture.issues.rootA.id },
+      }],
+    });
+    const legacyAlphaRow = legacy.rows.find((row) => row.issue?.id === fixture.issues.rootA.id);
+
+    expect(rowSpec.rows).toEqual([legacyAlphaRow]);
+    expect(rowSpec.events).toEqual(legacy.events.filter((event) => event.row_id === legacyAlphaRow?.id));
+    expect(rowSpec.links).toEqual(legacy.links.filter((link) => link.source_row_id === legacyAlphaRow?.id));
+  });
+
+  it("emits anchor-less label filter roots with predicate member rows and filtered member events", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "review",
+        title: "Needs review",
+        scope: { type: "label", name: "needs-review" },
+      }],
+      from: fixture.issues.nested.created_at,
+      to: fixture.issues.nested.created_at,
+    });
+    const [root, ...members] = projection.rows;
+
+    expect(root).toMatchObject({
+      id: "row:spec:review:0",
+      issue: null,
+      kind: "root",
+      parent_row_id: null,
+      row_spec: expect.objectContaining({ id: "review", title: "Needs review" }),
+      expanded: true,
+    });
+    expect(members.map((row) => [row.kind, row.issue?.id, row.parent_row_id, row.source_event_id])).toEqual([
+      ["member", fixture.issues.shared.id, root.id, null],
+      ["member", fixture.issues.nested.id, root.id, null],
+    ]);
+    expect(projection.events.map((event) => event.issue.id)).toEqual([fixture.issues.nested.id]);
+  });
+
+  it("supports kind, and/or/not composition, overlapping members, and residual complement rows", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [
+        { id: "review", scope: { type: "label", name: "needs-review" } },
+        {
+          id: "review-feature",
+          scope: {
+            type: "and",
+            predicates: [
+              { type: "label", name: "needs-review" },
+              { type: "kind", kind: "feature" },
+            ],
+          },
+        },
+        {
+          id: "open-not-review",
+          scope: {
+            type: "and",
+            predicates: [
+              { type: "kind", kind: "feature" },
+              { type: "not", predicate: { type: "label", name: "needs-review" } },
+            ],
+          },
+        },
+        {
+          id: "feature-or-umbrella",
+          scope: {
+            type: "or",
+            predicates: [
+              { type: "kind", kind: "feature" },
+              { type: "kind", kind: "umbrella" },
+            ],
+          },
+        },
+        { id: "residual", scope: { type: "residual" } },
+      ],
+    });
+
+    expect(memberIssueIds(projection, "review")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+    expect(memberIssueIds(projection, "review-feature")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+    expect(memberIssueIds(projection, "open-not-review")).toEqual([
+      fixture.issues.cycle.id,
+      fixture.issues.loner.id,
+    ]);
+    expect(memberIssueIds(projection, "feature-or-umbrella")).toEqual([
+      fixture.issues.rootA.id,
+      fixture.issues.rootB.id,
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+      fixture.issues.cycle.id,
+      fixture.issues.loner.id,
+    ]);
+    expect(memberIssueIds(projection, "residual")).toEqual([]);
+
+    const sharedMemberships = projection.rows.filter((row) => (
+      row.kind === "member" && row.issue?.id === fixture.issues.shared.id
+    ));
+    expect(sharedMemberships.length).toBeGreaterThan(1);
+
+    const closedOnly = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{ id: "closed-features", scope: { type: "kind", kind: "feature" } }],
+      statuses: ["closed"],
+    });
+    expect(memberIssueIds(closedOnly, "closed-features")).toEqual([fixture.issues.closed.id]);
+  });
+
+  it("projects parent-subtree members and reports parent-label cycles without crashing", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [{
+        id: "subtree",
+        scope: { type: "parent_subtree", issue_id: fixture.issues.rootA.short_id },
+      }],
+    });
+
+    expect(memberIssueIds(projection, "subtree")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+      fixture.issues.cycle.id,
+    ]);
+    expect(projection.diagnostics.cycles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "cycle",
+        row_spec_id: "subtree",
+        message: expect.stringContaining("parent-label cycle"),
+      }),
+    ]));
+  });
+
+  it("reports unmatched and invalid predicates as diagnostics", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [
+        { id: "missing-label", scope: { type: "label", name: "not-present" } },
+        { id: "missing-source", scope: { type: "referenced_by", issue_id: "missing" } },
+        { id: "bad-and", scope: { type: "and", predicates: [] } },
+        { id: "bad-label", scope: { type: "label" } as never },
+      ],
+    });
+
+    expect(projection.rows.map((row) => row.id)).toEqual([
+      "row:spec:missing-label:0",
+      "row:spec:missing-source:1",
+      "row:spec:bad-and:2",
+      "row:spec:bad-label:3",
+    ]);
+    expect(projection.diagnostics.unmatched_predicates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ row_spec_id: "missing-label", kind: "unmatched_predicate" }),
+    ]));
+    expect(projection.diagnostics.invalid_predicates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ row_spec_id: "missing-source", kind: "invalid_predicate" }),
+      expect.objectContaining({ row_spec_id: "bad-and", kind: "invalid_predicate" }),
+      expect.objectContaining({ row_spec_id: "bad-label", kind: "invalid_predicate" }),
+    ]));
+  });
 });
 
 function eventBySource(
@@ -319,6 +491,12 @@ function eventBySource(
 
 function linksForEvent(projection: ProjectTimelineProjection, eventId: string) {
   return projection.links.filter((link) => link.event_id === eventId);
+}
+
+function memberIssueIds(projection: ProjectTimelineProjection, specId: string) {
+  return projection.rows
+    .filter((row) => row.kind === "member" && row.row_spec?.id === specId)
+    .map((row) => row.issue?.id);
 }
 
 function captureTimelineRoute(): (body: unknown) => { statusCode: number; body: unknown } {

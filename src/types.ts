@@ -245,18 +245,44 @@ export interface IssueRepoSummary {
 export type TimelineRootPolicy = "coordination" | "explicit" | "coordination_and_explicit";
 export type TimelineHeadlineSource = "title" | "markdown_heading" | "body_excerpt" | "state";
 export type TimelineSourceEntityType = "issue_body" | "comment" | "issue_state";
-export type TimelineRowOccurrenceKind = "root" | "promoted_root" | "explicit_root" | "transient";
+export type TimelineRowOccurrenceKind = "root" | "promoted_root" | "explicit_root" | "transient" | "member";
+export type TimelineIssuePredicate =
+  | { type: "referenced_by"; issue_id: string }
+  | { type: "label"; name: string }
+  | { type: "kind"; kind: LedgerIssueKind }
+  | { type: "parent_subtree"; issue_id: string }
+  | { type: "residual" }
+  | { type: "and"; predicates: TimelineIssuePredicate[] }
+  | { type: "or"; predicates: TimelineIssuePredicate[] }
+  | { type: "not"; predicate: TimelineIssuePredicate };
+export interface TimelineRowSpecInput {
+  id?: string;
+  title?: string;
+  anchor?: string | null;
+  anchor_issue_id?: string | null;
+  scope?: TimelineIssuePredicate | null;
+}
+export interface TimelineNormalizedRowSpec {
+  id: string;
+  title: string;
+  anchor_issue_id: string | null;
+  scope: TimelineIssuePredicate | null;
+}
 export type TimelineDiagnosticKind =
   | "cycle"
   | "depth_limit"
   | "missing_expansion_event"
   | "filtered_target"
-  | "deleted_target";
+  | "deleted_target"
+  | "invalid_predicate"
+  | "unmatched_predicate";
 
 export interface ProjectTimelineInput {
   project_id?: string;
   project_ref?: string;
   root_policy?: TimelineRootPolicy;
+  root_specs?: TimelineRowSpecInput[];
+  root_row_specs?: TimelineRowSpecInput[];
   explicit_root_issue_ids?: string[];
   promoted_root_issue_ids?: string[];
   expanded_event_ids?: string[];
@@ -271,6 +297,7 @@ export interface ProjectTimelineInput {
 export interface ProjectTimelineNormalizedInput {
   project_id: string;
   root_policy: TimelineRootPolicy;
+  root_specs: TimelineNormalizedRowSpec[];
   explicit_root_issue_ids: string[];
   promoted_root_issue_ids: string[];
   expanded_event_ids: string[];
@@ -301,9 +328,17 @@ export interface TimelineSourceEntityRef {
   issue_id: string;
 }
 
+export interface TimelineRowSpecRef {
+  id: string;
+  title: string;
+  anchor_issue_id: string | null;
+  scope: TimelineIssuePredicate | null;
+}
+
 export interface TimelineRowOccurrence {
   id: string;
-  issue: TimelineIssueRef;
+  issue: TimelineIssueRef | null;
+  row_spec?: TimelineRowSpecRef | null;
   kind: TimelineRowOccurrenceKind;
   parent_row_id: string | null;
   source_event_id: string | null;
@@ -363,6 +398,8 @@ export interface TimelineDiagnostic {
   event_id?: string;
   issue_id?: string;
   target_issue_id?: string;
+  row_spec_id?: string;
+  predicate?: TimelineIssuePredicate;
   depth?: number;
   path?: string[];
 }
@@ -381,6 +418,9 @@ export interface TimelineDiagnostics {
   depth_limits: TimelineDiagnostic[];
   filtered_targets: TimelineDiagnostic[];
   missing_expansions: TimelineDiagnostic[];
+  predicate_diagnostics: TimelineDiagnostic[];
+  invalid_predicates: TimelineDiagnostic[];
+  unmatched_predicates: TimelineDiagnostic[];
 }
 
 export interface ProjectTimelineProjection {

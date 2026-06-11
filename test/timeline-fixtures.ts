@@ -149,6 +149,12 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     author_display: "Codex",
     created_at: BASE + 140,
   });
+  store.setLabel(shared.id, "needs-review", true);
+  store.setLabel(nested.id, "needs-review", true);
+  store.setLabel(shared.id, `parent:${rootA.short_id}`, true);
+  store.setLabel(nested.id, `parent:${shared.short_id}`, true);
+  store.setLabel(cycle.id, `parent:${nested.short_id}`, true);
+  store.setLabel(shared.id, `parent:${cycle.short_id}`, true);
   store.setIssueStatus(rootA.id, "closed", "merged");
   store.setIssueStatus(rootA.id, "open", null);
   db.prepare(
