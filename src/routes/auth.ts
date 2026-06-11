@@ -1,4 +1,5 @@
 import { AuthQueue, AuthQueueError } from "../auth-queue.js";
+import { AuthActionValidationError } from "../auth-actions.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import {
   computeAuthMergeReviewMetadata,
@@ -176,10 +177,65 @@ export function registerAuthRoutes(
       execution_mode: request.execution_mode,
       approval_source: request.approval_source,
       approval_lease_id: request.approval_lease_id,
+      action_count: authQueue.countActions(request.id),
+      actions: authQueue.listActions(request.id),
       // Bug: 4e32923 — include scoping fields omitted from the original response literal
       target_session_id: request.target_session_id ?? null,
       delivered_at: request.delivered_at ?? null
     });
+  });
+
+  app.get("/api/auth/request/:id/actions", (req, res) => {
+    try {
+      res.json({ actions: authQueue.listActions(req.params.id) });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
+  app.post("/api/auth/request/:id/actions", (req, res) => {
+    try {
+      const action = authQueue.addAction(req.params.id, readBody<Record<string, unknown>>(req));
+      res.status(201).json({ action });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
+  app.put("/api/auth/request/:id/actions/:actionId", (req, res) => {
+    try {
+      const action = authQueue.updateAction(
+        req.params.id,
+        req.params.actionId,
+        readBody<Record<string, unknown>>(req),
+      );
+      res.status(200).json({ action });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
+  app.delete("/api/auth/request/:id/actions/:actionId", (req, res) => {
+    try {
+      const action = authQueue.deleteAction(req.params.id, req.params.actionId);
+      res.status(200).json({ action_id: action.id, deleted: true });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
+  app.post("/api/auth/request/:id/actions/:actionId/veto", (req, res) => {
+    const body = readBody<Record<string, unknown>>(req);
+    if (typeof body.vetoed !== "boolean") {
+      res.status(400).json({ error: "vetoed boolean is required" });
+      return;
+    }
+    try {
+      const action = authQueue.setActionVeto(req.params.id, req.params.actionId, body.vetoed);
+      res.status(200).json({ action });
+    } catch (error) {
+      handleQueueError(error, res);
+    }
   });
 
   app.put("/api/auth/request/:id", (req, res) => {
@@ -227,9 +283,12 @@ export function registerAuthRoutes(
     }
     // Bug: 0b83252 — resolve depends_on_status for each request with a dependency
     const enriched = requests.map((r) => {
-      if (!r.depends_on_id) return { ...r, depends_on_status: null };
-      const dep = authQueue.getRequest(r.depends_on_id);
-      return { ...r, depends_on_status: dep ? dep.status : null };
+      const dep = r.depends_on_id ? authQueue.getRequest(r.depends_on_id) : null;
+      return {
+        ...r,
+        depends_on_status: dep ? dep.status : null,
+        action_count: authQueue.countActions(r.id),
+      };
     });
     res.json({ requests: enriched });
   });
@@ -249,7 +308,12 @@ export function registerAuthRoutes(
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
-    res.json({ requests });
+    res.json({
+      requests: requests.map((r) => ({
+        ...r,
+        action_count: authQueue.countActions(r.id),
+      })),
+    });
   });
 
   app.post("/api/auth/request/:id/approve", (req, res) => {
@@ -447,7 +511,8 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     target_session_id: typeof body.target_session_id === "string" ? body.target_session_id : null,
     target_repo_root: typeof body.target_repo_root === "string" ? body.target_repo_root : null,
     // Bug: 6d7411b — conversation_id for cross-resume matching
-    conversation_id: typeof body.conversation_id === "string" ? body.conversation_id : null
+    conversation_id: typeof body.conversation_id === "string" ? body.conversation_id : null,
+    actions: body.actions === undefined ? undefined : body.actions as AuthRequestInput["actions"]
   };
 }
 
@@ -700,6 +765,10 @@ function isHttpError(error: unknown): error is { status: number; message: string
 }
 
 function handleQueueError(error: unknown, res: ResponseLike): void {
+  if (error instanceof AuthActionValidationError) {
+    res.status(error.status).json({ error: error.message });
+    return;
+  }
   if (error instanceof AuthQueueError) {
     if (error.code === "not_found") {
       res.status(404).json({ error: error.message });

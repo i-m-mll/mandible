@@ -3,18 +3,36 @@ import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
+import {
+  addAuthRequestAction,
+  countAuthRequestActions,
+  deleteAuthRequestAction,
+  insertAuthRequestActions,
+  listAuthRequestActions,
+  normalizeAuthActionInputs,
+  setAuthRequestActionVeto,
+  updateAuthRequestAction,
+} from "./auth-actions.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import { isAuthMergeCommand, resolveAuthMergeExecutionContext } from "./auth-context.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
 import { getDb, resolvePrefix } from "./db.js";
 import {
   applyAuthRequestLedgerCompletion,
+  resolveOperationalIssueRef,
   syncAuthRequestLedgerLinks,
 } from "./ledger/operational-links.js";
+import { getLedgerIssueHead } from "./ledger/issue-heads.js";
+import { LedgerStore } from "./ledger/store.js";
+import type {
+  LedgerRelationshipType,
+  LedgerWorkerStatus,
+} from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import type {
   AuthOutputChunk,
   AuthRequest,
+  AuthRequestAction,
   AuthRequestInput,
   AuthRequestOutcome,
   AuthRequestStatus,
@@ -27,6 +45,18 @@ const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
 // Bug: dd21c1e — valid auth request types
 const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
   "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
+];
+const VALID_WORKER_STATUSES = ["none", "in_progress", "done", "blocked", "pivot-needed"];
+const VALID_RELATIONSHIP_TYPES = [
+  "parent_child",
+  "blocks",
+  "duplicate_of",
+  "related",
+  "references",
+  "fixed_by",
+  "caused_by",
+  "implements",
+  "tests",
 ];
 
 type MergeTreeResult =
@@ -443,17 +473,23 @@ export class AuthQueue {
       )`
     );
 
-    stmt.run({
-      ...request,
-      repo: request.repo ?? null,
-      base_branch: request.base_branch ?? null,
-      head_branch: request.head_branch ?? null,
-      post_merge_handoff: request.post_merge_handoff ?? null,
-      issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
-      issue_closures: request.issue_closures ? JSON.stringify(request.issue_closures) : null,
-      issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
-      issues: request.issues ? JSON.stringify(request.issues) : null
+    const actions = normalizeAuthActionInputs(payload.actions);
+    const insertRequest = this.db.transaction(() => {
+      stmt.run({
+        ...request,
+        repo: request.repo ?? null,
+        base_branch: request.base_branch ?? null,
+        head_branch: request.head_branch ?? null,
+        post_merge_handoff: request.post_merge_handoff ?? null,
+        issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
+        issue_closures: request.issue_closures ? JSON.stringify(request.issue_closures) : null,
+        issue_ids: request.issue_ids ? JSON.stringify(request.issue_ids) : null,
+        issues: request.issues ? JSON.stringify(request.issues) : null
+      });
+      insertAuthRequestActions(this.db, request, actions, now);
     });
+
+    insertRequest();
 
     this.syncLedgerLinksForRequest(request, false);
 
@@ -474,6 +510,44 @@ export class AuthQueue {
     }
 
     return request;
+  }
+
+  listActions(requestId: string): AuthRequestAction[] {
+    const request = this.requireRequest(requestId);
+    return listAuthRequestActions(this.db, request.id);
+  }
+
+  countActions(requestId: string): number {
+    const request = this.requireRequest(requestId);
+    return countAuthRequestActions(this.db, request.id);
+  }
+
+  addAction(requestId: string, input: unknown): AuthRequestAction {
+    const request = this.requireActionEditableRequest(requestId);
+    const action = addAuthRequestAction(this.db, request, input, this.now());
+    this.broadcast({ event: "auth:updated", data: { request, action } });
+    return action;
+  }
+
+  updateAction(requestId: string, actionId: string, input: unknown): AuthRequestAction {
+    const request = this.requireActionEditableRequest(requestId);
+    const action = updateAuthRequestAction(this.db, request, actionId, input, this.now());
+    this.broadcast({ event: "auth:updated", data: { request, action } });
+    return action;
+  }
+
+  deleteAction(requestId: string, actionId: string): AuthRequestAction {
+    const request = this.requireActionEditableRequest(requestId);
+    const action = deleteAuthRequestAction(this.db, request.id, actionId);
+    this.broadcast({ event: "auth:updated", data: { request, deleted_action_id: action.id } });
+    return action;
+  }
+
+  setActionVeto(requestId: string, actionId: string, vetoed: boolean): AuthRequestAction {
+    const request = this.requireActionVetoableRequest(requestId);
+    const action = setAuthRequestActionVeto(this.db, request.id, actionId, vetoed, this.now());
+    this.broadcast({ event: "auth:updated", data: { request: this.requireRequest(request.id), action } });
+    return action;
   }
 
   checkMergeIndependence(input: AuthMergeCheckInput): AuthMergeCheckReport {
@@ -1525,13 +1599,16 @@ export class AuthQueue {
 
   private applyLedgerCompletionForRequest(request: AuthRequest): void {
     try {
+      this.executeDeferredLedgerActions(request);
       applyAuthRequestLedgerCompletion(this.db, {
         auth_request_id: request.id,
         repo_ref: request.repo ?? request.cwd ?? request.target_repo_root ?? null,
         issue_references: request.issue_references ?? null,
-        issue_closures: request.issue_closures ?? null,
+        // Legacy close columns are synthesized into transient issue_close
+        // actions above so there remains one close-on-merge execution path.
+        issue_closures: null,
         issue_ids: request.issue_ids ?? null,
-        issues: request.issues ?? null,
+        issues: null,
         commit_message: request.commit_message,
         merge_output: request.output,
         approval_source: request.approval_source,
@@ -1542,6 +1619,233 @@ export class AuthQueue {
         `[auth-queue] failed to apply ledger completion for ${request.id}: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  private executeDeferredLedgerActions(request: AuthRequest): void {
+    const persistedActions = this.tableExists("auth_request_actions")
+      ? listAuthRequestActions(this.db, request.id)
+      : [];
+    const hasPersistedActions = persistedActions.length > 0;
+    const actions = hasPersistedActions ? persistedActions : this.legacyIssueCloseActions(request);
+    for (const action of actions) {
+      if (action.state === "vetoed") {
+        this.removeActionResolveLink(request, action);
+        continue;
+      }
+      if (action.state !== "staged") {
+        continue;
+      }
+      try {
+        const outcome = this.applyDeferredLedgerAction(request, action);
+        if (!action.id.startsWith("legacy:")) {
+          this.recordActionOutcome(action.id, outcome.state, outcome.detail, outcome.appliedAt);
+        }
+      } catch (error) {
+        if (!action.id.startsWith("legacy:")) {
+          this.recordActionOutcome(
+            action.id,
+            "failed",
+            error instanceof Error ? error.message : String(error),
+            null,
+          );
+        }
+        console.warn(
+          `[auth-queue] deferred action ${action.id} failed for request ${request.id}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+  }
+
+  private applyDeferredLedgerAction(
+    request: AuthRequest,
+    action: AuthRequestAction,
+  ): { state: "applied" | "skipped_stale"; detail: string | null; appliedAt: number | null } {
+    const repoRef = request.repo ?? request.cwd ?? request.target_repo_root ?? null;
+    const resolved = resolveOperationalIssueRef(this.db, action.target_issue_ref, repoRef);
+    if (!resolved.ok) {
+      throw new Error(`target issue ${action.target_issue_ref} could not be resolved: ${resolved.error}`);
+    }
+    const store = new LedgerStore(this.db);
+    const issueId = resolved.issue_id;
+    const now = this.now();
+    const currentDigest = getLedgerIssueHead(this.db, issueId).digest;
+    const digestMoved = Boolean(action.target_digest && action.target_digest !== currentDigest);
+    if (action.kind === "issue_close" && digestMoved && action.payload.on_stale === "skip") {
+      this.removeActionResolveLink(request, action, issueId);
+      return {
+        state: "skipped_stale",
+        detail: `Skipped because target digest moved from ${action.target_digest} to ${currentDigest}`,
+        appliedAt: null,
+      };
+    }
+
+    const detail = digestMoved
+      ? `Applied after target digest moved from ${action.target_digest} to ${currentDigest}`
+      : null;
+    const actor = {
+      actor_type: "agent" as const,
+      actor_id: request.session_id ?? request.target_session_id ?? null,
+      author_display: "Mandible auth action",
+    };
+    switch (action.kind) {
+      case "comment_add":
+        if (!this.tableRowExists("ledger_comments", this.actionEntityId("comment", action.id))) {
+          store.addComment(issueId, {
+            id: this.actionEntityId("comment", action.id),
+            body: stringPayload(action.payload, "body"),
+            source: "auth_queue",
+            created_at: now,
+            ...actor,
+          });
+        }
+        break;
+      case "issue_close":
+        if (typeof action.payload.reason_comment === "string" && action.payload.reason_comment.trim()) {
+          const commentId = this.actionEntityId("comment", action.id);
+          if (!this.tableRowExists("ledger_comments", commentId)) {
+            store.addComment(issueId, {
+              id: commentId,
+              body: action.payload.reason_comment,
+              source: "auth_queue",
+              created_at: now,
+              ...actor,
+            });
+          }
+        }
+        applyAuthRequestLedgerCompletion(this.db, {
+          auth_request_id: request.id,
+          repo_ref: repoRef,
+          issue_closures: [action.target_issue_ref],
+          merge_output: request.output,
+          approval_source: request.approval_source,
+          approval_lease_id: request.approval_lease_id,
+        });
+        break;
+      case "worker_status_set": {
+        const value = stringPayload(action.payload, "value");
+        if (!VALID_WORKER_STATUSES.includes(value)) {
+          throw new Error(`invalid worker status: ${value}`);
+        }
+        store.setWorkerStatus(issueId, value as LedgerWorkerStatus, actor, "auth_queue");
+        break;
+      }
+      case "label_add":
+        store.setLabel(issueId, stringPayload(action.payload, "label"), true, "auth_queue", actor);
+        break;
+      case "label_rm":
+        store.setLabel(issueId, stringPayload(action.payload, "label"), false, "auth_queue", actor);
+        break;
+      case "checkpoint_add": {
+        const checkpointId = this.actionEntityId("chk", action.id);
+        if (!this.tableRowExists("ledger_issue_checkpoints", checkpointId)) {
+          store.addIssueCheckpoint(issueId, {
+            id: checkpointId,
+            kind: stringPayload(action.payload, "kind"),
+            payload: action.payload.payload ?? null,
+            source: "auth_queue",
+            created_at: now,
+            ...actor,
+          });
+        }
+        break;
+      }
+      case "link_add": {
+        const linkType = typeof action.payload.type === "string" ? action.payload.type : "references";
+        if (!VALID_RELATIONSHIP_TYPES.includes(linkType)) {
+          throw new Error(`invalid relationship type: ${linkType}`);
+        }
+        const target = resolveOperationalIssueRef(this.db, stringPayload(action.payload, "target"), repoRef);
+        if (!target.ok) {
+          throw new Error(`link target ${action.payload.target} could not be resolved: ${target.error}`);
+        }
+        store.linkRelationshipEdges({
+          source_entity: { entity_type: "issue", entity_id: issueId },
+          target_entities: [{ entity_type: "issue", entity_id: target.issue_id }],
+          link_type: linkType as LedgerRelationshipType,
+          note: typeof action.payload.note === "string" ? action.payload.note : null,
+          action_id: action.id,
+          source: "auth_queue",
+          actor,
+          created_at: now,
+        });
+        break;
+      }
+    }
+    return { state: "applied", detail, appliedAt: now };
+  }
+
+  private legacyIssueCloseActions(request: AuthRequest): AuthRequestAction[] {
+    const refs = request.issue_closures ?? request.issues ?? [];
+    return refs.map((ref, index) => ({
+      id: `legacy:${request.id}:${index + 1}:${ref}`,
+      auth_request_id: request.id,
+      ordinal: index + 1,
+      kind: "issue_close",
+      target_issue_ref: ref,
+      payload: {},
+      state: "staged",
+      target_digest: null,
+      staged_at: request.created_at,
+      updated_at: request.updated_at,
+      applied_at: null,
+      outcome_detail: null,
+    }));
+  }
+
+  private recordActionOutcome(
+    actionId: string,
+    state: "applied" | "failed" | "skipped_stale",
+    detail: string | null,
+    appliedAt: number | null,
+  ): void {
+    const now = this.now();
+    this.db.prepare(
+      `UPDATE auth_request_actions
+       SET state = ?, applied_at = ?, updated_at = ?, outcome_detail = ?
+       WHERE id = ? AND state = 'staged'`,
+    ).run(state, appliedAt, now, detail, actionId);
+  }
+
+  private removeActionResolveLink(request: AuthRequest, action: AuthRequestAction, issueId?: string): void {
+    if (!this.tableExists("ledger_auth_issue_links")) return;
+    let resolvedIssueId = issueId;
+    if (!resolvedIssueId) {
+      const resolved = resolveOperationalIssueRef(
+        this.db,
+        action.target_issue_ref,
+        request.repo ?? request.cwd ?? request.target_repo_root ?? null,
+      );
+      if (!resolved.ok) return;
+      resolvedIssueId = resolved.issue_id;
+    }
+    this.db.prepare(
+      `DELETE FROM ledger_auth_issue_links
+       WHERE auth_request_id = ? AND issue_id = ? AND link_type = 'resolves'
+         AND metadata_json LIKE '%auth_request_actions%'`,
+    ).run(request.id, resolvedIssueId);
+  }
+
+  private actionEntityId(prefix: string, actionId: string): string {
+    return `${prefix}_${actionId.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+  }
+
+  private tableRowExists(table: string, id: string): boolean {
+    if (!this.tableExists(table)) return false;
+    const row = this.db.prepare(`SELECT 1 AS ok FROM ${table} WHERE id = ?`).get(id);
+    return Boolean(row);
+  }
+
+  private actionOutcomeSummary(requestId: string): Array<Record<string, unknown>> {
+    if (!this.tableExists("auth_request_actions")) return [];
+    return listAuthRequestActions(this.db, requestId).map((action) => ({
+      id: action.id,
+      ordinal: action.ordinal,
+      kind: action.kind,
+      target_issue_ref: action.target_issue_ref,
+      state: action.state,
+      applied_at: action.applied_at,
+      outcome_detail: action.outcome_detail,
+    }));
   }
 
   private autoDismissDuplicates(completed: AuthRequest): void {
@@ -1756,7 +2060,8 @@ export class AuthQueue {
       target_session_id: request.target_session_id,
       // Bug: 6d7411b — emit conversation_id so the channel server can match
       // events across session restarts within the same conversation.
-      conversation_id: request.conversation_id
+      conversation_id: request.conversation_id,
+      action_outcomes: this.actionOutcomeSummary(request.id)
     };
   }
 
@@ -1768,6 +2073,30 @@ export class AuthQueue {
       return false;
     }
     return request.exit_code != null && request.exit_code !== 0;
+  }
+
+  private requireActionEditableRequest(id: string): AuthRequest {
+    const request = this.requireRequest(id);
+    if (request.status !== "pending" && !this.isFailedLike(request)) {
+      throw new AuthQueueError(
+        "invalid_status",
+        `Request is ${request.status}, cannot modify staged actions.`,
+        request.status
+      );
+    }
+    return request;
+  }
+
+  private requireActionVetoableRequest(id: string): AuthRequest {
+    const request = this.requireRequest(id);
+    if (request.status !== "pending") {
+      throw new AuthQueueError(
+        "invalid_status",
+        `Request is ${request.status}, cannot change action veto state.`,
+        request.status
+      );
+    }
+    return request;
   }
 
   private requireRequest(id: string): AuthRequest {
@@ -1795,6 +2124,14 @@ function tailLines(text: string, n: number): string | null {
   const tail = lines.slice(-n);
   const result = tail.join("\n").trim();
   return result || null;
+}
+
+function stringPayload(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${key} is required`);
+  }
+  return value;
 }
 
 function extractIssueIdsFromCommitMessage(commitMessage: string | null | undefined): string[] | null {

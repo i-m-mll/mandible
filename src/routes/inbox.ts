@@ -263,12 +263,43 @@ export function registerInboxRoutes(
       tier,
       target_session_id: row.target_session_id,
       target_repo_root: row.target_repo_root,
+      action_outcomes: authActionOutcomes(row.id),
     };
     if (includeRepo) {
       base.repo = row.repo ?? null;
       base.base_branch = row.base_branch ?? null;
     }
     return base;
+  }
+
+  function authActionOutcomes(requestId: string): Array<Record<string, unknown>> {
+    const exists = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_request_actions'",
+    ).get();
+    if (!exists) return [];
+    const rows = db.prepare(
+      `SELECT id, ordinal, kind, target_issue_ref, state, applied_at, outcome_detail
+       FROM auth_request_actions
+       WHERE auth_request_id = ?
+       ORDER BY ordinal ASC, staged_at ASC, id ASC`,
+    ).all(requestId) as Array<{
+      id: string;
+      ordinal: number;
+      kind: string;
+      target_issue_ref: string;
+      state: string;
+      applied_at: number | null;
+      outcome_detail: string | null;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      ordinal: row.ordinal,
+      kind: row.kind,
+      target_issue_ref: row.target_issue_ref,
+      state: row.state,
+      applied_at: row.applied_at,
+      outcome_detail: row.outcome_detail,
+    }));
   }
 
   // Bug: 8a281b3 — helper to get work units needing attention for inbox
@@ -592,6 +623,7 @@ export function registerInboxRoutes(
         resolved_at: row.resolved_at,
         title: row.title,
         target_session_id: row.target_session_id,
+        action_outcomes: authActionOutcomes(row.id),
       })),
     });
   });

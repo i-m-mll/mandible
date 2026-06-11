@@ -76,6 +76,11 @@ describe("file RPC transport", () => {
 
   it("keeps auth approval and admin endpoints out of the allowlist", () => {
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/auth/request/abc/actions")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/actions")).toBe(true);
+    expect(isAllowedFileRpcRoute("PUT", "/api/auth/request/abc/actions/def")).toBe(true);
+    expect(isAllowedFileRpcRoute("DELETE", "/api/auth/request/abc/actions/def")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/actions/def/veto")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/check")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/auth/queue")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/artifacts/resolve")).toBe(true);

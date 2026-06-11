@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
@@ -9,7 +10,11 @@ const CLI = path.join(process.cwd(), "bin", "mandible");
 let tempDir = "";
 let homeDir = "";
 
-function run(args: string[], cwd = tempDir): { status: number | null; stdout: string; stderr: string } {
+function run(
+  args: string[],
+  cwd = tempDir,
+  extraEnv: Record<string, string> = {},
+): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(CLI, args, {
     cwd,
     encoding: "utf8",
@@ -19,9 +24,83 @@ function run(args: string[], cwd = tempDir): { status: number | null; stdout: st
       MANDIBLE_PORT: "9",
       ZELLIJ: "",
       TMUX: "",
+      ...extraEnv,
     },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+function runAsync(
+  args: string[],
+  cwd = tempDir,
+  extraEnv: Record<string, string> = {},
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(CLI, args, {
+      cwd,
+      env: {
+        ...process.env,
+        HOME: homeDir,
+        MANDIBLE_PORT: "9",
+        ZELLIJ: "",
+        TMUX: "",
+        ...extraEnv,
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (status) => {
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
+function listenForAuthRequest(): Promise<{
+  port: number;
+  close: () => Promise<void>;
+  bodies: Record<string, unknown>[];
+}> {
+  const bodies: Record<string, unknown>[] = [];
+  const server = http.createServer((req, res) => {
+    if (req.method === "POST" && req.url === "/api/auth/request") {
+      let raw = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        bodies.push(JSON.parse(raw));
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ request_id: "req_cli_close" }));
+      });
+      return;
+    }
+    res.statusCode = 404;
+    res.end("not found");
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("test server did not bind a TCP port");
+      }
+      resolve({
+        port: address.port,
+        bodies,
+        close: () => new Promise<void>((done, reject) => {
+          server.close((error) => (error ? reject(error) : done()));
+        }),
+      });
+    });
+  });
 }
 
 function git(args: string[], cwd = tempDir): string {
@@ -103,6 +182,37 @@ describe("auth request repo context validation", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).not.toContain("does not match target repo");
     expect(result.stderr).toContain("Mandible unreachable");
+  });
+});
+
+describe("auth request staged close action sugar", () => {
+  it("sends issue_close actions while preserving legacy issue_closures", async () => {
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync([
+        "auth",
+        "request",
+        "feature/demo",
+        "--title",
+        "Merge feature/demo",
+        "--closes-issue",
+        "done456",
+        "--no-watch",
+      ], tempDir, {
+        MANDIBLE_PORT: String(server.port),
+        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(server.bodies).toHaveLength(1);
+      expect(server.bodies[0].issue_closures).toEqual(["done456"]);
+      expect(server.bodies[0].issues).toEqual(["done456"]);
+      expect(server.bodies[0].actions).toEqual([
+        { kind: "issue_close", target_issue_ref: "done456", payload: {} },
+      ]);
+    } finally {
+      await server.close();
+    }
   });
 });
 

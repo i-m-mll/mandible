@@ -157,23 +157,42 @@ describe("inbox tier query (auth_results)", () => {
     db.close();
   });
 
-  it("tier 1: owner session sees its own undelivered result", async () => {
-    seedSession(db, "owner", "/repo/A");
-    const now = Date.now();
-    seedAuthRow(db, {
-      id: "r1",
+	  it("tier 1: owner session sees its own undelivered result", async () => {
+	    seedSession(db, "owner", "/repo/A");
+	    const now = Date.now();
+	    seedAuthRow(db, {
+	      id: "r1",
       target_session_id: "owner",
       target_repo_root: "/repo/A",
-      resolved_at: now - 60_000
-    });
+	      resolved_at: now - 60_000
+	    });
+	    db.prepare(
+	      `INSERT INTO auth_request_actions (
+	        id, auth_request_id, ordinal, kind, target_issue_ref, payload,
+	        state, target_digest, staged_at, updated_at, applied_at, outcome_detail
+	      ) VALUES (
+	        'act-1', 'r1', 1, 'comment_add', 'abc123', '{"body":"Done"}',
+	        'applied', NULL, ?, ?, ?, 'ok'
+	      )`,
+	    ).run(now - 120_000, now - 60_000, now - 60_000);
 
-    const inbox = await import("../src/routes/inbox.js");
-    // Use the exported registerInboxRoutes against a tiny mock server to read
-    // the auth_results back out of the response body.
-    const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "owner" });
-    expect(result.auth_results).toHaveLength(1);
-    expect(result.auth_results[0]).toMatchObject({ id: "r1", tier: 1 });
-  });
+	    const inbox = await import("../src/routes/inbox.js");
+	    // Use the exported registerInboxRoutes against a tiny mock server to read
+	    // the auth_results back out of the response body.
+	    const result = callInbox(inbox.registerInboxRoutes, db, { session_id: "owner" });
+	    expect(result.auth_results).toHaveLength(1);
+	    expect(result.auth_results[0]).toMatchObject({ id: "r1", tier: 1 });
+	    expect(result.auth_results[0].action_outcomes).toEqual([
+	      expect.objectContaining({
+	        id: "act-1",
+	        ordinal: 1,
+	        kind: "comment_add",
+	        target_issue_ref: "abc123",
+	        state: "applied",
+	        outcome_detail: "ok",
+	      }),
+	    ]);
+	  });
 
   it("tier 2: same-project sibling sees the result after project grace window", async () => {
     seedSession(db, "owner", "/repo/A");
@@ -1649,7 +1668,7 @@ function callInbox(
   ) => void,
   _db: InstanceType<typeof Database>,
   query: Record<string, string>
-): { auth_results: Array<{ id: string; tier: number }> } {
+	): { auth_results: Array<{ id: string; tier: number; action_outcomes?: unknown[] }> } {
   let handler: ((req: unknown, res: unknown) => void) | undefined;
   const server = {
     get: (path: string, h: (req: unknown, res: unknown) => void) => {

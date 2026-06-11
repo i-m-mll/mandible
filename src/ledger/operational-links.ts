@@ -278,6 +278,7 @@ export function syncAuthRequestLedgerLinks(
   },
 ): OperationalLinkResult[] {
   const refs = new Map<string, "references" | "resolves">();
+  const actionIssueClosures = authRequestActionIssueCloseRefs(db, input.auth_request_id);
   for (const ref of input.issue_ids ?? []) refs.set(ref, "references");
   for (const ref of extractMandibleIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "references");
   for (const ref of extractMandibleClosingIssueRefsFromCommitMessage(input.commit_message)) refs.set(ref, "resolves");
@@ -285,6 +286,7 @@ export function syncAuthRequestLedgerLinks(
   for (const ref of input.issue_closures ?? []) refs.set(ref, "resolves");
   // Legacy issues were documented as close-on-merge; preserve that meaning.
   for (const ref of input.issues ?? []) refs.set(ref, "resolves");
+  for (const ref of actionIssueClosures) refs.set(ref, "resolves");
   for (const ref of extractMergeResultIssueRefs(input.merge_output)) refs.set(ref, "resolves");
 
   const results: OperationalLinkResult[] = [];
@@ -294,7 +296,7 @@ export function syncAuthRequestLedgerLinks(
       issue_ref: ref,
       repo_ref: input.repo_ref,
       link_type: linkType,
-      metadata: { source_fields: sourceFieldsForAuthRef(ref, input) },
+      metadata: { source_fields: sourceFieldsForAuthRef(ref, { ...input, action_issue_closures: actionIssueClosures }) },
       recordEvent: input.recordEvent,
     }));
   }
@@ -673,6 +675,7 @@ function sourceFieldsForAuthRef(
     issue_closures?: string[] | null;
     issue_ids?: string[] | null;
     issues?: string[] | null;
+    action_issue_closures?: string[] | null;
     commit_message?: string | null;
     merge_output?: string | null;
   },
@@ -682,10 +685,23 @@ function sourceFieldsForAuthRef(
   if ((input.issue_closures ?? []).includes(ref)) fields.push("issue_closures");
   if ((input.issue_ids ?? []).includes(ref)) fields.push("issue_ids");
   if ((input.issues ?? []).includes(ref)) fields.push("issues");
+  if ((input.action_issue_closures ?? []).includes(ref)) fields.push("auth_request_actions");
   if (extractMandibleIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message");
   if (extractMandibleClosingIssueRefsFromCommitMessage(input.commit_message).includes(ref)) fields.push("commit_message_closure");
   if (extractMergeResultIssueRefs(input.merge_output).includes(ref)) fields.push("merge_output");
   return fields;
+}
+
+function authRequestActionIssueCloseRefs(db: Db, authRequestId: string): string[] {
+  if (!tableExists(db, "auth_request_actions")) return [];
+  const rows = db.prepare(
+    `SELECT target_issue_ref
+     FROM auth_request_actions
+     WHERE auth_request_id = ?
+       AND kind = 'issue_close'
+       AND state IN ('staged', 'applied')`,
+  ).all(authRequestId) as Array<{ target_issue_ref: string }>;
+  return rows.map((row) => row.target_issue_ref).filter((ref) => ref.trim());
 }
 
 function extractMandibleIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {

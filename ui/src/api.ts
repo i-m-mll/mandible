@@ -9,6 +9,7 @@ import type {
   ArtifactLinkRecord as ContractArtifactLinkRecord,
   ArtifactRecord as ContractArtifactRecord,
   ArtifactResolveResult as ContractArtifactResolveResult,
+  AuthRequestAction as ContractAuthRequestAction,
   BlockType as ContractBlockType,
   Conversation as ContractConversation,
   ConversationChild as ContractConversationChild,
@@ -24,6 +25,7 @@ import type {
   WorkUnitWithLiveness as ContractWorkUnitWithLiveness,
 } from '../../src/contracts';
 export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
+export type AuthRequestAction = ContractAuthRequestAction;
 
 export type InstructionTargetMode = 'managed-block' | 'standalone';
 
@@ -224,6 +226,31 @@ export async function getAuthHistory<T>(limit?: number): Promise<T[]> {
   const response = await apiGet(`/api/auth/history${query}`);
   const payload = (await parseMaybeJson(response)) as ApiList<T>;
   return normalizeList(payload);
+}
+
+export async function getAuthRequestActions(requestId: string): Promise<AuthRequestAction[]> {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/actions`);
+  const payload = await parseMaybeJson(response);
+  if (payload && typeof payload === 'object' && Array.isArray((payload as { actions?: unknown }).actions)) {
+    return (payload as { actions: AuthRequestAction[] }).actions;
+  }
+  return [];
+}
+
+export async function setAuthRequestActionVeto(
+  requestId: string,
+  actionId: string,
+  vetoed: boolean,
+): Promise<AuthRequestAction> {
+  const response = await apiPost(
+    `/api/auth/request/${encodeURIComponent(requestId)}/actions/${encodeURIComponent(actionId)}/veto`,
+    { vetoed },
+  );
+  const payload = await parseMaybeJson(response);
+  if (payload && typeof payload === 'object' && (payload as { action?: unknown }).action) {
+    return (payload as { action: AuthRequestAction }).action;
+  }
+  throw new Error('Invalid action veto response.');
 }
 
 export async function approveAuthRequest(requestId: string): Promise<void> {

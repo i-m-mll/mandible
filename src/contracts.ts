@@ -128,6 +128,33 @@ export type AuthRequestType =
   | "config-change"
   | "preset-promote"
   | "data-delete";
+export type AuthRequestActionKind =
+  | "comment_add"
+  | "issue_close"
+  | "worker_status_set"
+  | "label_add"
+  | "label_rm"
+  | "checkpoint_add"
+  | "link_add";
+export type AuthRequestActionState = "staged" | "applied" | "failed" | "skipped_stale" | "vetoed";
+
+export type AuthRequestActionInput = {
+  kind: AuthRequestActionKind;
+  target_issue_ref: string;
+  payload: Record<string, unknown>;
+};
+
+export type AuthRequestAction = AuthRequestActionInput & {
+  id: string;
+  auth_request_id: string;
+  ordinal: number;
+  state: AuthRequestActionState;
+  target_digest: string | null;
+  staged_at: number;
+  updated_at: number;
+  applied_at: number | null;
+  outcome_detail: string | null;
+};
 
 export type AuthRequest = {
   id: string;

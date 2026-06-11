@@ -566,6 +566,13 @@ issue_closures_json="null"
 if [[ ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
   issue_closures_json=$(printf '%s\n' "${ISSUE_CLOSURES[@]}" | jq -R . | jq -sc .)
 fi
+actions_json=$(jq -nc --argjson closures "$issue_closures_json" '
+  ($closures // []) | map({
+    kind: "issue_close",
+    target_issue_ref: .,
+    payload: {}
+  })
+')
 
 # --- Submit to Mandible ---
 
@@ -591,6 +598,7 @@ payload=$(jq -nc \
   --arg conversation_id "$conversation_id" \
   --argjson issue_references "$issue_references_json" \
   --argjson issue_closures "$issue_closures_json" \
+  --argjson actions "$actions_json" \
   --argjson protected_root_dirty_action "$protected_root_dirty_action_json" \
   '{
     command: $command,
@@ -611,6 +619,7 @@ payload=$(jq -nc \
     issue_references: $issue_references,
     issue_closures: $issue_closures,
     issues: $issue_closures,
+    actions: $actions,
     depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
     target_session_id: (if $target_session_id == "" then null else $target_session_id end),
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
