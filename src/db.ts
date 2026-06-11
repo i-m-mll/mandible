@@ -1807,6 +1807,58 @@ const MIGRATIONS: Migration[] = [
     version: 76,
     name: "auth_request_actions",
     statements: [
+      `CREATE TABLE IF NOT EXISTS auth_requests (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        type TEXT NOT NULL DEFAULT 'merge',
+        command TEXT NOT NULL,
+        title TEXT NOT NULL,
+        cwd TEXT,
+        diff_summary TEXT,
+        commit_message TEXT,
+        spec_content TEXT,
+        repo TEXT,
+        base_branch TEXT,
+        head_branch TEXT,
+        files_changed INTEGER DEFAULT 0,
+        additions INTEGER DEFAULT 0,
+        deletions INTEGER DEFAULT 0,
+        post_merge_handoff TEXT,
+        issue_references TEXT,
+        issue_closures TEXT,
+        issue_ids TEXT,
+        issues TEXT,
+        depends_on_id TEXT,
+        execution_mode TEXT NOT NULL DEFAULT 'daemon',
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        last_executed_at INTEGER,
+        approved_at INTEGER,
+        resolved_at INTEGER,
+        skipped_at INTEGER,
+        expires_at INTEGER NOT NULL,
+        exit_code INTEGER,
+        output TEXT NOT NULL DEFAULT '',
+        error TEXT,
+        acknowledged_by TEXT,
+        target_session_id TEXT,
+        target_repo_root TEXT,
+        delivered_at INTEGER,
+        conversation_id TEXT,
+        approval_source TEXT NOT NULL DEFAULT 'manual',
+        approval_lease_id TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_requests_status_created
+        ON auth_requests(status, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_requests_queue
+        ON auth_requests(status, skipped_at, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_requests_target_session
+        ON auth_requests(target_session_id) WHERE target_session_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_requests_target_repo
+        ON auth_requests(target_repo_root) WHERE target_repo_root IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_requests_conversation_id
+        ON auth_requests(conversation_id) WHERE conversation_id IS NOT NULL`,
       `CREATE TABLE IF NOT EXISTS auth_request_actions (
         id TEXT PRIMARY KEY,
         auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,
@@ -1940,6 +1992,9 @@ export function migrate(db: Db): void {
       for (const migration of pending) {
         if (migration.version === 71) {
           ensureIssueCoordinationColumns(db);
+        }
+        if (migration.version === 76) {
+          ensureAuthRequestActionPrerequisites(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -3072,6 +3127,101 @@ function ensureIssueCoordinationColumns(db: Db): void {
       `ALTER TABLE ledger_issues ADD COLUMN worker_status TEXT NOT NULL DEFAULT 'none'
         CHECK(worker_status IN ('none','in_progress','done','blocked','pivot-needed'))`,
     );
+  }
+}
+
+function ensureAuthRequestActionPrerequisites(db: Db): void {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS auth_requests (
+      id TEXT PRIMARY KEY,
+      session_id TEXT,
+      type TEXT NOT NULL DEFAULT 'merge',
+      command TEXT NOT NULL,
+      title TEXT NOT NULL,
+      cwd TEXT,
+      diff_summary TEXT,
+      commit_message TEXT,
+      spec_content TEXT,
+      repo TEXT,
+      base_branch TEXT,
+      head_branch TEXT,
+      files_changed INTEGER DEFAULT 0,
+      additions INTEGER DEFAULT 0,
+      deletions INTEGER DEFAULT 0,
+      post_merge_handoff TEXT,
+      issue_references TEXT,
+      issue_closures TEXT,
+      issue_ids TEXT,
+      issues TEXT,
+      depends_on_id TEXT,
+      execution_mode TEXT NOT NULL DEFAULT 'daemon',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      last_executed_at INTEGER,
+      approved_at INTEGER,
+      resolved_at INTEGER,
+      skipped_at INTEGER,
+      expires_at INTEGER NOT NULL,
+      exit_code INTEGER,
+      output TEXT NOT NULL DEFAULT '',
+      error TEXT,
+      acknowledged_by TEXT,
+      target_session_id TEXT,
+      target_repo_root TEXT,
+      delivered_at INTEGER,
+      conversation_id TEXT,
+      approval_source TEXT NOT NULL DEFAULT 'manual',
+      approval_lease_id TEXT
+    )`,
+  );
+
+  const columns = tableColumnNames(db, "auth_requests");
+  const missingColumns: Array<[string, string]> = [
+    ["session_id", "TEXT"],
+    ["type", "TEXT NOT NULL DEFAULT 'merge'"],
+    ["command", "TEXT NOT NULL DEFAULT ''"],
+    ["title", "TEXT NOT NULL DEFAULT ''"],
+    ["cwd", "TEXT"],
+    ["diff_summary", "TEXT"],
+    ["commit_message", "TEXT"],
+    ["spec_content", "TEXT"],
+    ["repo", "TEXT"],
+    ["base_branch", "TEXT"],
+    ["head_branch", "TEXT"],
+    ["files_changed", "INTEGER DEFAULT 0"],
+    ["additions", "INTEGER DEFAULT 0"],
+    ["deletions", "INTEGER DEFAULT 0"],
+    ["post_merge_handoff", "TEXT"],
+    ["issue_references", "TEXT"],
+    ["issue_closures", "TEXT"],
+    ["issue_ids", "TEXT"],
+    ["issues", "TEXT"],
+    ["depends_on_id", "TEXT"],
+    ["execution_mode", "TEXT NOT NULL DEFAULT 'daemon'"],
+    ["status", "TEXT NOT NULL DEFAULT 'pending'"],
+    ["created_at", "INTEGER NOT NULL DEFAULT 0"],
+    ["updated_at", "INTEGER NOT NULL DEFAULT 0"],
+    ["last_executed_at", "INTEGER"],
+    ["approved_at", "INTEGER"],
+    ["resolved_at", "INTEGER"],
+    ["skipped_at", "INTEGER"],
+    ["expires_at", "INTEGER NOT NULL DEFAULT 0"],
+    ["exit_code", "INTEGER"],
+    ["output", "TEXT NOT NULL DEFAULT ''"],
+    ["error", "TEXT"],
+    ["acknowledged_by", "TEXT"],
+    ["target_session_id", "TEXT"],
+    ["target_repo_root", "TEXT"],
+    ["delivered_at", "INTEGER"],
+    ["conversation_id", "TEXT"],
+    ["approval_source", "TEXT NOT NULL DEFAULT 'manual'"],
+    ["approval_lease_id", "TEXT"],
+  ];
+  for (const [name, definition] of missingColumns) {
+    if (!columns.has(name)) {
+      db.exec(`ALTER TABLE auth_requests ADD COLUMN ${name} ${definition}`);
+    }
   }
 }
 
