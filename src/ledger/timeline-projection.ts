@@ -3,6 +3,7 @@ import type {
   ProjectTimelineInput,
   ProjectTimelineNormalizedInput,
   ProjectTimelineProjection,
+  TimelineEventKind,
   TimelineDiagnostic,
   TimelineDiagnostics,
   TimelineEvent,
@@ -46,8 +47,10 @@ type CommentRow = {
 };
 type StateEventRow = {
   id: string;
+  entity_type: string;
   entity_id: string;
   event_type: string;
+  source: string;
   payload_json: string;
   occurred_at: number;
   observed_at: number;
@@ -77,6 +80,34 @@ type PredicateEvalContext = {
 const DEFAULT_DEPTH = 1;
 const MAX_DEPTH = 8;
 const DEFAULT_STATUSES: LedgerIssueStatus[] = ["open"];
+const DEFAULT_EVENT_KINDS: TimelineEventKind[] = [
+  "auth_request",
+  "body",
+  "comment",
+  "commit",
+  "issue_state",
+  "label",
+];
+const VALID_EVENT_KINDS = new Set<TimelineEventKind>([
+  "auth_request",
+  "body",
+  "comment",
+  "commit",
+  "issue_state",
+  "label",
+  "session",
+  "work_unit",
+]);
+const STATE_EVENT_TYPES_BY_KIND: Record<TimelineEventKind, string[]> = {
+  auth_request: ["auth_request.issue_linked", "auth_request.completed"],
+  body: [],
+  comment: [],
+  commit: ["commit.issue_linked"],
+  issue_state: ["issue.updated", "issue.closed", "issue.reopened"],
+  label: ["label.updated"],
+  session: ["session.issue_linked"],
+  work_unit: ["work_unit.issue_linked"],
+};
 
 export function buildProjectTimelineProjection(
   db: Db,
@@ -426,6 +457,7 @@ function normalizeInput(
     expanded_paths: uniqueStrings(input.expanded_paths),
     include_closed: includeClosed,
     statuses,
+    event_kinds: normalizeEventKinds(input.event_kinds),
     depth: clampDepth(input.depth),
     from: numberOrNull(input.from),
     to: numberOrNull(input.to),
@@ -850,52 +882,73 @@ function buildEventsForRow(
   const issue = issueById.get(row.issue.id);
   if (!issue) return [];
   const result: TimelineEvent[] = [];
-  addIfInWindow(result, {
-    id: `event:${row.id}:body`,
-    row_id: row.id,
-    issue: issueRefs.get(issue.id) ?? issueRef(issue),
-    source_entity: { type: "issue_body", id: issue.id, issue_id: issue.id },
-    kind: "body",
-    timestamp: issue.created_at,
-    ordinal: 0,
-    ...headlineForText(issue.title, issue.body),
-    body: issue.body,
-    state: null,
-    link_ids: [],
-  }, input);
-
-  const comments = db.prepare(
-    `SELECT id, issue_id, ordinal, body, created_at, updated_at, deleted_at
-       FROM ledger_comments
-      WHERE issue_id = ? AND deleted_at IS NULL
-      ORDER BY ordinal ASC, created_at ASC`,
-  ).all(issue.id) as CommentRow[];
-  for (const comment of comments) {
+  if (eventKindEnabled(input, "body")) {
     addIfInWindow(result, {
-      id: `event:${row.id}:comment:${comment.id}`,
+      id: `event:${row.id}:body`,
       row_id: row.id,
       issue: issueRefs.get(issue.id) ?? issueRef(issue),
-      source_entity: { type: "comment", id: comment.id, issue_id: issue.id },
-      kind: "comment",
-      timestamp: comment.created_at,
-      ordinal: comment.ordinal,
-      ...headlineForText(issue.title, comment.body),
-      body: comment.body,
+      source_entity: { type: "issue_body", id: issue.id, issue_id: issue.id },
+      kind: "body",
+      timestamp: issue.created_at,
+      ordinal: 0,
+      ...headlineForText(issue.title, issue.body),
+      body: issue.body,
       state: null,
       link_ids: [],
     }, input);
   }
 
+  const comments = eventKindEnabled(input, "comment")
+    ? db.prepare(
+      `SELECT id, issue_id, ordinal, body, created_at, updated_at, deleted_at
+         FROM ledger_comments
+        WHERE issue_id = ? AND deleted_at IS NULL
+        ORDER BY ordinal ASC, created_at ASC`,
+    ).all(issue.id) as CommentRow[]
+    : [];
+  if (eventKindEnabled(input, "comment")) {
+    for (const comment of comments) {
+      addIfInWindow(result, {
+        id: `event:${row.id}:comment:${comment.id}`,
+        row_id: row.id,
+        issue: issueRefs.get(issue.id) ?? issueRef(issue),
+        source_entity: { type: "comment", id: comment.id, issue_id: issue.id },
+        kind: "comment",
+        timestamp: comment.created_at,
+        ordinal: comment.ordinal,
+        ...headlineForText(issue.title, comment.body),
+        body: comment.body,
+        state: null,
+        link_ids: [],
+      }, input);
+    }
+  }
+
+  const stateEventTypes = selectedStateEventTypes(input);
+  if (stateEventTypes.length === 0) return result.sort(compareTimelineEvents);
   const stateEvents = db.prepare(
-    `SELECT id, entity_id, event_type, payload_json, occurred_at, observed_at
+    `SELECT id, entity_type, entity_id, event_type, source, payload_json, occurred_at, observed_at
        FROM ledger_events
-      WHERE entity_type = 'issue'
-        AND entity_id = ?
-        AND event_type IN ('issue.updated', 'issue.closed', 'issue.reopened')
+      WHERE (
+          entity_type = 'issue'
+          AND entity_id = ?
+        )
+        AND event_type IN (${stateEventTypes.map(() => "?").join(", ")})
+      UNION ALL
+      SELECT id, entity_type, entity_id, event_type, source, payload_json, occurred_at, observed_at
+        FROM ledger_events
+       WHERE event_type IN (${stateEventTypes.map(() => "?").join(", ")})
+         AND entity_type != 'issue'
       ORDER BY occurred_at ASC, observed_at ASC, id ASC`,
-  ).all(issue.id) as StateEventRow[];
+  ).all(issue.id, ...stateEventTypes, ...stateEventTypes) as StateEventRow[];
   let stateOrdinal = comments.length + 1;
+  const hasAuthCompletion = stateEvents.some((event) => (
+    event.event_type === "auth_request.completed"
+    && stateEventBelongsToIssue(event, issue.id)
+  ));
   for (const event of stateEvents) {
+    if (!stateEventBelongsToIssue(event, issue.id)) continue;
+    if (event.event_type === "issue.closed" && event.source === "auth_queue" && hasAuthCompletion) continue;
     const parsed = parseStatePayload(event);
     if (!parsed) continue;
     addIfInWindow(result, {
@@ -913,6 +966,7 @@ function buildEventsForRow(
         event_type: event.event_type,
         status: parsed.status,
         resolution: parsed.resolution,
+        payload: parsed.payload,
       },
       link_ids: [],
     }, input);
@@ -920,6 +974,23 @@ function buildEventsForRow(
   }
 
   return result.sort(compareTimelineEvents);
+}
+
+function eventKindEnabled(input: ProjectTimelineNormalizedInput, kind: TimelineEventKind): boolean {
+  return input.event_kinds.includes(kind);
+}
+
+function selectedStateEventTypes(input: ProjectTimelineNormalizedInput): string[] {
+  const eventTypes = new Set<string>();
+  for (const kind of input.event_kinds) {
+    for (const eventType of STATE_EVENT_TYPES_BY_KIND[kind]) eventTypes.add(eventType);
+  }
+  return Array.from(eventTypes).sort();
+}
+
+function stateEventBelongsToIssue(event: StateEventRow, issueId: string): boolean {
+  if (event.entity_type === "issue") return event.entity_id === issueId;
+  return parseJsonObject(event.payload_json).issue_id === issueId;
 }
 
 function addIfInWindow(events: TimelineEvent[], event: TimelineEvent, input: ProjectTimelineNormalizedInput): void {
@@ -932,6 +1003,7 @@ function parseStatePayload(event: StateEventRow): {
   status: LedgerIssueStatus | null;
   resolution: LedgerIssueResolution | null;
   headline: string;
+  payload: Record<string, unknown>;
 } | null {
   const payload = parseJsonObject(event.payload_json);
   const patch = typeof payload.patch === "object" && payload.patch !== null && !Array.isArray(payload.patch)
@@ -947,16 +1019,75 @@ function parseStatePayload(event: StateEventRow): {
   const resolution = typeof patch.resolution === "string"
     ? patch.resolution as LedgerIssueResolution
     : null;
-  if (!status && !("resolution" in patch)) return null;
+  const label = typeof payload.label === "string" ? payload.label : "";
+  const linkType = typeof payload.link_type === "string" ? payload.link_type : "";
+  const authRequestId = typeof payload.auth_request_id === "string" ? payload.auth_request_id : "";
+  const commitSha = typeof payload.commit_sha === "string" ? payload.commit_sha : "";
+  const sessionId = typeof payload.session_id === "string" ? payload.session_id : "";
+  const workUnitId = typeof payload.work_unit_id === "string" ? payload.work_unit_id : "";
+  if (!status && !("resolution" in patch) && event.event_type === "issue.updated") return null;
   return {
     status,
     resolution,
-    headline: status === "closed"
-      ? `Closed${resolution ? ` as ${resolution}` : ""}`
-      : status === "open"
-        ? "Reopened"
-        : "Issue state changed",
+    payload,
+    headline: stateHeadline({
+      event_type: event.event_type,
+      status,
+      resolution,
+      label,
+      present: payload.present === true,
+      link_type: linkType,
+      auth_request_id: authRequestId,
+      commit_sha: commitSha,
+      session_id: sessionId,
+      work_unit_id: workUnitId,
+    }),
   };
+}
+
+function stateHeadline(input: {
+  event_type: string;
+  status: LedgerIssueStatus | null;
+  resolution: LedgerIssueResolution | null;
+  label: string;
+  present: boolean;
+  link_type: string;
+  auth_request_id: string;
+  commit_sha: string;
+  session_id: string;
+  work_unit_id: string;
+}): string {
+  if (input.event_type === "label.updated") {
+    return input.label
+      ? `Label ${input.label} ${input.present ? "added" : "removed"}`
+      : "Label updated";
+  }
+  if (input.event_type === "commit.issue_linked") {
+    return input.commit_sha
+      ? `Commit ${input.commit_sha.slice(0, 12)} linked`
+      : "Commit linked";
+  }
+  if (input.event_type === "auth_request.issue_linked") {
+    return input.auth_request_id
+      ? `Auth request ${input.auth_request_id} linked`
+      : "Auth request linked";
+  }
+  if (input.event_type === "auth_request.completed") {
+    return input.auth_request_id
+      ? `Auth request ${input.auth_request_id} completed`
+      : "Auth request completed";
+  }
+  if (input.event_type === "session.issue_linked") {
+    return input.session_id ? `Session ${input.session_id} linked` : "Session linked";
+  }
+  if (input.event_type === "work_unit.issue_linked") {
+    return input.work_unit_id ? `Work unit ${input.work_unit_id} linked` : "Work unit linked";
+  }
+  if (input.status === "closed") {
+    return `Closed${input.resolution ? ` as ${input.resolution}` : ""}`;
+  }
+  if (input.status === "open") return "Reopened";
+  return "Issue state changed";
 }
 
 function buildDiagnostics(input: {
@@ -1065,6 +1196,15 @@ function normalizeStatuses(statuses: LedgerIssueStatus[] | undefined, includeClo
     return Array.from(new Set(statuses.filter((status) => status === "open" || status === "closed"))).sort();
   }
   return includeClosed ? ["closed", "open"] : DEFAULT_STATUSES;
+}
+
+function normalizeEventKinds(kinds: TimelineEventKind[] | undefined): TimelineEventKind[] {
+  if (!kinds?.length) return [...DEFAULT_EVENT_KINDS];
+  const result: TimelineEventKind[] = [];
+  for (const kind of kinds) {
+    if (VALID_EVENT_KINDS.has(kind) && !result.includes(kind)) result.push(kind);
+  }
+  return result;
 }
 
 function normalizeIssueIds(ids: string[] | undefined, issues: Map<string, IssueRow>): string[] {

@@ -32,6 +32,7 @@ describe("project timeline projection", () => {
       root_policy: "coordination_and_explicit",
       statuses: ["open"],
       depth: 1,
+      event_kinds: ["auth_request", "body", "comment", "commit", "issue_state", "label"],
     });
     expect(projection.time_axis).toEqual({
       start: fixture.issues.rootA.created_at,
@@ -58,16 +59,24 @@ describe("project timeline projection", () => {
       }),
       expect.objectContaining({
         kind: "state",
-        state: { event_type: "issue.closed", status: "closed", resolution: "merged" },
+        state: expect.objectContaining({
+          event_type: "issue.closed",
+          status: "closed",
+          resolution: "merged",
+        }),
         headline_source: "state",
       }),
       expect.objectContaining({
         kind: "state",
-        state: { event_type: "issue.reopened", status: "open", resolution: null },
+        state: expect.objectContaining({
+          event_type: "issue.reopened",
+          status: "open",
+          resolution: null,
+        }),
       }),
     ]));
     expect(projection.diagnostics).toMatchObject({
-      total_issues: 8,
+      total_issues: 9,
       deleted_issues: 1,
       root_count: 2,
       reachable_from_roots_count: 2,
@@ -82,6 +91,109 @@ describe("project timeline projection", () => {
       fixture.issues.cycle.id,
       fixture.issues.nested.id,
     ]));
+  });
+
+  it("surfaces requested label and operational ledger events with inspector payloads", () => {
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.rootB.id, fixture.issues.authDone.id],
+      include_closed: true,
+    });
+    const labelEvents = projection.events.filter((event) => event.state?.event_type === "label.updated");
+    const authCompleted = projection.events.find((event) => (
+      event.state?.event_type === "auth_request.completed"
+    ));
+    const authClosed = projection.events.find((event) => (
+      event.issue.id === fixture.issues.authDone.id
+      && event.state?.event_type === "issue.closed"
+    ));
+
+    expect(labelEvents).toHaveLength(2);
+    expect(labelEvents.map((event) => [event.timestamp, event.display_headline])).toEqual([
+      [1_800_000_000_175, "Label needs-review added"],
+      [1_800_000_000_180, "Label needs-review removed"],
+    ]);
+    expect(labelEvents[0].state?.payload).toMatchObject({
+      issue_id: fixture.issues.rootB.id,
+      label: "needs-review",
+      present: true,
+    });
+    expect(authCompleted).toMatchObject({
+      issue: expect.objectContaining({ id: fixture.issues.authDone.id }),
+      source_entity: {
+        type: "issue_state",
+        id: fixture.operationalEvents.authCompleted,
+        issue_id: fixture.issues.authDone.id,
+      },
+      kind: "state",
+      timestamp: 1_800_000_000_190,
+      display_headline: "Auth request auth_timeline_1 completed",
+      state: expect.objectContaining({
+        event_type: "auth_request.completed",
+        payload: expect.objectContaining({
+          auth_request_id: "auth_timeline_1",
+          issue_id: fixture.issues.authDone.id,
+        }),
+      }),
+    });
+    expect(authClosed).toBeUndefined();
+  });
+
+  it("filters timeline event kinds and leaves noisy operational links default-off", () => {
+    fixture.db.prepare(
+      `INSERT INTO ledger_events (
+        id, entity_type, entity_id, event_type, actor_id, actor_type,
+        source, payload_json, occurred_at, observed_at
+      ) VALUES (?, ?, ?, ?, NULL, 'system', ?, ?, ?, ?)`,
+    ).run(
+      "event_session_timeline_1",
+      "session",
+      "session_timeline_1",
+      "session.issue_linked",
+      "session",
+      JSON.stringify({
+        session_id: "session_timeline_1",
+        issue_id: fixture.issues.rootB.id,
+        link_type: "worked_on",
+      }),
+      1_800_000_000_185,
+      1_800_000_000_185,
+    );
+    const defaults = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.rootB.id],
+    });
+    const labelsOnly = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.rootB.id],
+      event_kinds: ["label"],
+    });
+    const withSession = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.rootB.id],
+      event_kinds: ["label", "session"],
+    });
+
+    expect(defaults.events.some((event) => event.state?.event_type === "session.issue_linked")).toBe(false);
+    expect(labelsOnly.events.map((event) => event.state?.event_type)).toEqual([
+      "label.updated",
+      "label.updated",
+    ]);
+    expect(withSession.events.map((event) => event.state?.event_type)).toEqual([
+      "label.updated",
+      "label.updated",
+      "session.issue_linked",
+    ]);
+    expect(withSession.events.at(-1)).toMatchObject({
+      display_headline: "Session session_timeline_1 linked",
+      state: expect.objectContaining({
+        payload: expect.objectContaining({ session_id: "session_timeline_1" }),
+      }),
+    });
   });
 
   it("attaches text-derived links to body and comment events using relationship source provenance", () => {
