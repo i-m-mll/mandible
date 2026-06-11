@@ -18,7 +18,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -100,6 +100,33 @@ function registerWorkRepo(db: InstanceType<typeof Database>, repoRoot: string): 
     name: path.basename(repoRoot),
     default_branch: "main",
   });
+}
+
+function createAuthMergeFixtureRepo(tempDir: string): string {
+  const repoRoot = path.join(tempDir, "repo");
+  execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+  const git = (...args: string[]) => execFileSync(
+    "git",
+    [
+      "-C",
+      repoRoot,
+      "-c",
+      "user.name=Mandible Test",
+      "-c",
+      "user.email=test@example.invalid",
+      ...args,
+    ],
+    { stdio: "ignore" },
+  );
+  writeFileSync(path.join(repoRoot, "README.md"), "base\n");
+  git("add", "README.md");
+  git("commit", "-m", "init");
+  git("checkout", "-b", "feature/mandible-issue");
+  writeFileSync(path.join(repoRoot, "README.md"), "base\nfeature\n");
+  git("add", "README.md");
+  git("commit", "-m", "typed trailer\n\nMandible-Issue: abc1234");
+  git("checkout", "main");
+  return repoRoot;
 }
 
 function seedSession(db: InstanceType<typeof Database>, id: string, cwd: string): void {
@@ -1163,7 +1190,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
 
     expect(response.statusCode).toBe(400);
     expect(String((response.body as { error?: string }).error)).toContain(
-      "require target_repo_root or cwd"
+      "require target_repo_root, repo, or cwd"
     );
     db.close();
   });
@@ -1242,6 +1269,120 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       const request = queue.getRequest(requestId);
       expect(request?.cwd).toBe(realpathSync(repoRoot));
       expect(request?.target_repo_root).toBe(realpathSync(repoRoot));
+      db.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("computes missing auth merge review metadata from target_repo_root without a valid client cwd", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-metadata-target-"));
+    try {
+      const repoRoot = createAuthMergeFixtureRepo(tempDir);
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/mandible-issue --into main",
+          title: "Sandbox target repo request",
+          cwd: path.join(tempDir, "sandbox-cwd"),
+          target_repo_root: repoRoot,
+          base_branch: "main",
+          head_branch: "feature/mandible-issue",
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const requestId = (response.body as { request_id: string }).request_id;
+      const request = queue.getRequest(requestId);
+      expect(request?.cwd).toBe(realpathSync(repoRoot));
+      expect(request?.target_repo_root).toBe(realpathSync(repoRoot));
+      expect(request?.files_changed).toBe(1);
+      expect(request?.additions).toBe(1);
+      expect(request?.deletions).toBe(0);
+      expect(request?.diff_summary).toContain("diff --git");
+      expect(request?.diff_summary).toContain("+feature");
+      expect(request?.commit_message).toBe("- typed trailer");
+      db.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("computes auth merge review metadata from registered repo identity without client cwd", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-metadata-repo-"));
+    try {
+      const repoRoot = createAuthMergeFixtureRepo(tempDir);
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/mandible-issue --into main",
+          title: "Sandbox repo identity request",
+          cwd: null,
+          repo: "repo",
+          base_branch: "main",
+          head_branch: "feature/mandible-issue",
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const requestId = (response.body as { request_id: string }).request_id;
+      const request = queue.getRequest(requestId);
+      expect(request?.repo).toBe("repo");
+      expect(request?.cwd).toBe(realpathSync(repoRoot));
+      expect(request?.files_changed).toBe(1);
+      expect(request?.additions).toBe(1);
+      expect(request?.deletions).toBe(0);
+      expect(request?.diff_summary).toContain("README.md");
+      expect(request?.commit_message).toBe("- typed trailer");
+      db.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves explicit auth merge review metadata when clients provide it", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-metadata-explicit-"));
+    try {
+      const repoRoot = createAuthMergeFixtureRepo(tempDir);
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/mandible-issue --into main",
+          title: "Explicit metadata request",
+          target_repo_root: repoRoot,
+          base_branch: "main",
+          head_branch: "feature/mandible-issue",
+          files_changed: 9,
+          additions: 8,
+          deletions: 7,
+          diff_summary: "client diff",
+          commit_message: "client commit",
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const requestId = (response.body as { request_id: string }).request_id;
+      const request = queue.getRequest(requestId);
+      expect(request?.files_changed).toBe(9);
+      expect(request?.additions).toBe(8);
+      expect(request?.deletions).toBe(7);
+      expect(request?.diff_summary).toBe("client diff");
+      expect(request?.commit_message).toBe("client commit");
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
