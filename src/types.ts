@@ -243,7 +243,8 @@ export interface IssueRepoSummary {
 // --- Project Timeline projection types ---
 
 export type TimelineRootPolicy = "coordination" | "explicit" | "coordination_and_explicit";
-export type TimelineHeadlineSource = "title" | "markdown_heading" | "body_excerpt" | "state";
+export type TimelineEventKind = "body" | "comment" | "state" | "backlink";
+export type TimelineHeadlineSource = "title" | "markdown_heading" | "body_excerpt" | "state" | "backlink";
 export type TimelineSourceEntityType = "issue_body" | "comment" | "issue_state";
 export type TimelineRowOccurrenceKind = "root" | "promoted_root" | "explicit_root" | "transient";
 export type TimelineDiagnosticKind =
@@ -263,6 +264,7 @@ export interface ProjectTimelineInput {
   expanded_paths?: string[];
   include_closed?: boolean;
   statuses?: LedgerIssueStatus[];
+  event_kinds?: TimelineEventKind[];
   depth?: number;
   from?: number;
   to?: number;
@@ -277,6 +279,7 @@ export interface ProjectTimelineNormalizedInput {
   expanded_paths: string[];
   include_closed: boolean;
   statuses: LedgerIssueStatus[];
+  event_kinds: TimelineEventKind[];
   depth: number;
   from: number | null;
   to: number | null;
@@ -319,7 +322,7 @@ export interface TimelineEvent {
   row_id: string;
   issue: TimelineIssueRef;
   source_entity: TimelineSourceEntityRef;
-  kind: "body" | "comment" | "state";
+  kind: TimelineEventKind;
   timestamp: number;
   ordinal: number;
   display_headline: string;
@@ -329,6 +332,18 @@ export interface TimelineEvent {
     event_type: string;
     status: LedgerIssueStatus | null;
     resolution: LedgerIssueResolution | null;
+  } | null;
+  backlink: {
+    relationship_source_id: string;
+    relationship_id: string;
+    relationship_type: LedgerRelationshipType;
+    source_issue: TimelineIssueRef;
+    target_issue: TimelineIssueRef;
+    source_entity: TimelineSourceEntityRef;
+    ref_kind: string;
+    raw_ref: string;
+    normalized_ref: string;
+    derived: boolean;
   } | null;
   link_ids: string[];
 }

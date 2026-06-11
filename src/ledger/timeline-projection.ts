@@ -6,6 +6,7 @@ import type {
   TimelineDiagnostic,
   TimelineDiagnostics,
   TimelineEvent,
+  TimelineEventKind,
   TimelineIssueRef,
   TimelineLink,
   TimelineRowOccurrence,
@@ -52,6 +53,7 @@ type StateEventRow = {
 const DEFAULT_DEPTH = 1;
 const MAX_DEPTH = 8;
 const DEFAULT_STATUSES: LedgerIssueStatus[] = ["open"];
+const DEFAULT_EVENT_KINDS: TimelineEventKind[] = ["backlink", "body", "comment", "state"];
 
 export function buildProjectTimelineProjection(
   db: Db,
@@ -209,6 +211,17 @@ export function buildProjectTimelineProjection(
     rowById.set(row.id, row);
   }
 
+  if (normalized.event_kinds.includes("backlink")) {
+    events.push(...buildBacklinkEvents({
+      db,
+      relationshipSources,
+      orderedRows,
+      issueById,
+      issueRefs,
+      normalized,
+    }));
+  }
+
   events.sort(compareTimelineEvents);
   links.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 
@@ -309,6 +322,7 @@ function normalizeInput(
     expanded_paths: uniqueStrings(input.expanded_paths),
     include_closed: includeClosed,
     statuses,
+    event_kinds: normalizeEventKinds(input.event_kinds),
     depth: clampDepth(input.depth),
     from: numberOrNull(input.from),
     to: numberOrNull(input.to),
@@ -412,6 +426,7 @@ function buildEventsForRow(
     ...headlineForText(issue.title, issue.body),
     body: issue.body,
     state: null,
+    backlink: null,
     link_ids: [],
   }, input);
 
@@ -433,6 +448,7 @@ function buildEventsForRow(
       ...headlineForText(issue.title, comment.body),
       body: comment.body,
       state: null,
+      backlink: null,
       link_ids: [],
     }, input);
   }
@@ -465,12 +481,100 @@ function buildEventsForRow(
         status: parsed.status,
         resolution: parsed.resolution,
       },
+      backlink: null,
       link_ids: [],
     }, input);
     stateOrdinal += 1;
   }
 
   return result.sort(compareTimelineEvents);
+}
+
+function buildBacklinkEvents(input: {
+  db: Db;
+  relationshipSources: LedgerIssueRelationshipSource[];
+  orderedRows: TimelineRowOccurrence[];
+  issueById: Map<string, IssueRow>;
+  issueRefs: Map<string, TimelineIssueRef>;
+  normalized: ProjectTimelineNormalizedInput;
+}): TimelineEvent[] {
+  const backlinkEvents: TimelineEvent[] = [];
+  const targetRows = new Map<string, TimelineRowOccurrence[]>();
+  for (const row of input.orderedRows) {
+    const rows = targetRows.get(row.issue.id) ?? [];
+    rows.push(row);
+    targetRows.set(row.issue.id, rows);
+  }
+
+  for (const source of input.relationshipSources) {
+    const rows = targetRows.get(source.target_issue_id) ?? [];
+    if (rows.length === 0) continue;
+    const sourceIssue = input.issueRefs.get(source.source_issue_id);
+    const targetIssue = input.issueRefs.get(source.target_issue_id);
+    const sourceEntity = sourceEntityForRelationshipSource(source);
+    if (!sourceIssue || !targetIssue || !sourceEntity) continue;
+    const sourceTimestamp = sourceTimestampForRelationshipSource(source, input.db, input.issueById);
+    for (const row of rows) {
+      addIfInWindow(backlinkEvents, {
+        id: `event:${row.id}:backlink:${source.id}`,
+        row_id: row.id,
+        issue: targetIssue,
+        source_entity: sourceEntity,
+        kind: "backlink",
+        timestamp: sourceTimestamp,
+        ordinal: Number.MAX_SAFE_INTEGER,
+        display_headline: `Referenced by ${sourceIssue.display_id}`,
+        headline_source: "backlink",
+        body: source.raw_ref,
+        state: null,
+        backlink: {
+          relationship_source_id: source.id,
+          relationship_id: source.relationship_id,
+          relationship_type: source.relationship_type,
+          source_issue: sourceIssue,
+          target_issue: targetIssue,
+          source_entity: sourceEntity,
+          ref_kind: source.ref_kind,
+          raw_ref: source.raw_ref,
+          normalized_ref: source.normalized_ref,
+          derived: true,
+        },
+        link_ids: [],
+      }, input.normalized);
+    }
+  }
+
+  return backlinkEvents.sort(compareTimelineEvents);
+}
+
+function sourceEntityForRelationshipSource(
+  source: LedgerIssueRelationshipSource,
+): TimelineSourceEntityRef | null {
+  if (source.source_entity_type === "issue_body") {
+    return { type: "issue_body", id: source.source_entity_id, issue_id: source.source_issue_id };
+  }
+  if (source.source_entity_type === "comment") {
+    return { type: "comment", id: source.source_entity_id, issue_id: source.source_issue_id };
+  }
+  return null;
+}
+
+function sourceTimestampForRelationshipSource(
+  source: LedgerIssueRelationshipSource,
+  db: Db,
+  issueById: Map<string, IssueRow>,
+): number {
+  const sourceIssue = issueById.get(source.source_issue_id);
+  if (source.source_entity_type === "issue_body" && sourceIssue) return sourceIssue.created_at;
+  if (source.source_entity_type === "comment") {
+    const comment = db.prepare(
+      `SELECT created_at
+         FROM ledger_comments
+        WHERE id = ? AND issue_id = ? AND deleted_at IS NULL`,
+    ).get(source.source_entity_id, source.source_issue_id) as Pick<CommentRow, "created_at"> | undefined;
+    if (comment) return comment.created_at;
+  }
+  return source.created_at;
 }
 
 function addIfInWindow(events: TimelineEvent[], event: TimelineEvent, input: ProjectTimelineNormalizedInput): void {
@@ -609,6 +713,12 @@ function normalizeStatuses(statuses: LedgerIssueStatus[] | undefined, includeClo
     return Array.from(new Set(statuses.filter((status) => status === "open" || status === "closed"))).sort();
   }
   return includeClosed ? ["closed", "open"] : DEFAULT_STATUSES;
+}
+
+function normalizeEventKinds(kinds: TimelineEventKind[] | undefined): TimelineEventKind[] {
+  if (!kinds?.length) return DEFAULT_EVENT_KINDS;
+  const allowed = new Set<TimelineEventKind>(DEFAULT_EVENT_KINDS);
+  return Array.from(new Set(kinds.filter((kind) => allowed.has(kind)))).sort();
 }
 
 function normalizeIssueIds(ids: string[] | undefined, issues: Map<string, IssueRow>): string[] {
