@@ -1145,6 +1145,109 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
     }
   });
 
+  it("rejects raw auth merge submissions without cwd or target repo context", async () => {
+    const db = setupInMemoryDb();
+    const queue = new AuthQueue({ db });
+    const app = new TestRouteRegistrar();
+    registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+    const response = await app.invoke("POST", "/api/auth/request", {
+      body: {
+        command: "mandible auth merge feature/no-context --into main",
+        title: "Null cwd request",
+        cwd: null,
+        base_branch: "main",
+        head_branch: "feature/no-context",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(String((response.body as { error?: string }).error)).toContain(
+      "require target_repo_root or cwd"
+    );
+    db.close();
+  });
+
+  it("rejects auth merge submissions from unregistered sandbox cwd paths", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-sandbox-"));
+    try {
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/sandbox --into main",
+          title: "Sandbox cwd request",
+          cwd: tempDir,
+          base_branch: "main",
+          head_branch: "feature/sandbox",
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(String((response.body as { error?: string }).error)).toContain(
+        "Invalid or unregistered 'cwd'"
+      );
+      db.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves feature-worktree auth merge cwd to the base-branch worktree", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-worktree-cwd-"));
+    try {
+      const repoRoot = path.join(tempDir, "repo");
+      const featureWorktree = path.join(tempDir, "feature-wt");
+      execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+      const git = (cwd: string, ...args: string[]) => execFileSync(
+        "git",
+        [
+          "-C",
+          cwd,
+          "-c",
+          "user.name=Mandible Test",
+          "-c",
+          "user.email=test@example.invalid",
+          ...args,
+        ],
+        { stdio: "ignore" },
+      );
+      git(repoRoot, "commit", "--allow-empty", "-m", "init");
+      execFileSync("git", ["-C", repoRoot, "worktree", "add", "-b", "feature/mandible-issue", featureWorktree], {
+        stdio: "ignore",
+      });
+      git(featureWorktree, "commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234");
+
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/mandible-issue --into main",
+          title: "Feature worktree cwd request",
+          cwd: featureWorktree,
+          base_branch: "main",
+          head_branch: "feature/mandible-issue",
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const requestId = (response.body as { request_id: string }).request_id;
+      const request = queue.getRequest(requestId);
+      expect(request?.cwd).toBe(realpathSync(repoRoot));
+      expect(request?.target_repo_root).toBe(realpathSync(repoRoot));
+      db.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects injection-shaped auth merge branch names before git verification", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-injection-"));
     try {
@@ -1233,7 +1336,7 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
 
       expect(response.statusCode).toBe(400);
       expect(String((response.body as { error?: string }).error)).toContain(
-        "verification failed; manual review required"
+        "protected/default branch"
       );
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

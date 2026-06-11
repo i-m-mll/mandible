@@ -71,6 +71,17 @@ function commitOnBranch(repo: string, branch: string, changes: Record<string, st
   git(repo, ["checkout", "main"]);
 }
 
+function registerWorkRepo(
+  db: InstanceType<typeof Database>,
+  repoRoot: string,
+  defaultBranch = "main"
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
+     VALUES (?, ?, ?, ?, 1, 0)`
+  ).run(path.basename(repoRoot), fs.realpathSync(repoRoot), path.basename(repoRoot), defaultBranch);
+}
+
 describe("auth queue", () => {
   it("submits request and returns pending status", () => {
     const queue = createQueue();
@@ -268,6 +279,82 @@ describe("auth queue", () => {
     const resolved = await waitForStatus(queue, request.id, "completed");
     expect(resolved?.exit_code).toBe(0);
     expect(calls).toHaveLength(1);
+  });
+
+  it("re-resolves daemon auth merge execution cwd before approval", async () => {
+    const repo = createAuthCheckRepo();
+    const featureWorktree = path.join(os.tmpdir(), `mandible-auth-approval-${Date.now()}`);
+    const db = createMigratedDb();
+    const calls: Array<string | null | undefined> = [];
+    try {
+      git(repo, ["worktree", "add", "-b", "feature/approval-cwd", featureWorktree]);
+      git(featureWorktree, ["commit", "--allow-empty", "-m", "typed trailer\n\nMandible-Issue: abc1234"]);
+      registerWorkRepo(db, repo);
+
+      const queue = new AuthQueue({
+        db,
+        executor: async (options) => {
+          calls.push(options.cwd);
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "ok\n",
+            stderr: "",
+            output: "ok\n",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/approval-cwd --into main",
+        title: "Merge feature/approval-cwd",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/approval-cwd",
+        cwd: featureWorktree,
+      });
+
+      const approved = queue.approve(request.id);
+      expect(approved.cwd).toBe(fs.realpathSync(repo));
+      await waitForStatus(queue, request.id, "completed");
+      expect(calls).toEqual([fs.realpathSync(repo)]);
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(featureWorktree, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects daemon auth merge approval before spawning when context is incomplete", () => {
+    const calls: string[] = [];
+    const queue = createQueue({
+      executor: async () => {
+        calls.push("called");
+        return {
+          exit_code: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+          output: "",
+          started_at: Date.now(),
+          finished_at: Date.now(),
+        };
+      },
+    });
+
+    const request = queue.submit({
+      command: "mandible auth merge feature/no-context --into main",
+      title: "No context",
+    });
+
+    expect(() => queue.approve(request.id)).toThrow(AuthQueueError);
+    expect(queue.getRequest(request.id)?.status).toBe("pending");
+    expect(calls).toHaveLength(0);
   });
 
   it("auto-approves new requests while a lease is active and passes scoped env", async () => {
@@ -967,6 +1054,9 @@ describe("auth queue", () => {
       const events: SseEvent[] = [];
       let exitScheduled = false;
       let resolvedBeforeExit = false;
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
 
       // Mock setTimeout to detect when process.exit is scheduled
       const originalSetTimeout = globalThis.setTimeout;
@@ -982,7 +1072,10 @@ describe("auth queue", () => {
       globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
 
       try {
-        const queue = createQueue({
+        commitOnBranch(repo, "feature/self-fix", { "self.txt": "fix\n" });
+        registerWorkRepo(db, repo);
+        queue = new AuthQueue({
+          db,
           hookManager: createNoopHookManager(),
           broadcast: (event) => {
             events.push(event);
@@ -1008,6 +1101,7 @@ describe("auth queue", () => {
           repo: "mandible",
           base_branch: "main",
           head_branch: "feature/self-fix",
+          cwd: repo,
           execution_mode: "daemon"
         });
 
@@ -1024,11 +1118,17 @@ describe("auth queue", () => {
         expect(exitScheduled).toBe(true);
       } finally {
         globalThis.setTimeout = originalSetTimeout;
+        queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
       }
     });
 
     it("uses a 2-second delay for self-rebuild exit to allow event delivery", async () => {
       let exitDelayMs: number | undefined;
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
 
       const originalSetTimeout = globalThis.setTimeout;
       const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
@@ -1042,7 +1142,10 @@ describe("auth queue", () => {
       globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
 
       try {
-        const queue = createQueue({
+        commitOnBranch(repo, "feature/delay-test", { "delay.txt": "fix\n" });
+        registerWorkRepo(db, repo);
+        queue = new AuthQueue({
+          db,
           hookManager: createNoopHookManager(),
           executor: async () => ({
             exit_code: 0,
@@ -1061,6 +1164,7 @@ describe("auth queue", () => {
           repo: "mandible",
           base_branch: "main",
           head_branch: "feature/delay-test",
+          cwd: repo,
           execution_mode: "daemon"
         });
 
@@ -1073,6 +1177,9 @@ describe("auth queue", () => {
         expect(exitDelayMs).toBe(2000);
       } finally {
         globalThis.setTimeout = originalSetTimeout;
+        queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
       }
     });
   });
