@@ -13,6 +13,21 @@ export type TimelineIssuePredicate =
   | { type: 'or'; predicates: TimelineIssuePredicate[] }
   | { type: 'not'; predicate: TimelineIssuePredicate };
 
+export type TimelineFilterField = 'label' | 'kind' | 'referenced-by' | 'subtree';
+
+export type TimelineFilterChip = {
+  field: TimelineFilterField;
+  values: string[];
+  negated: boolean;
+};
+
+export type TimelineFilterRowSpec = {
+  id: string;
+  title: string;
+  chips: TimelineFilterChip[];
+  scope: TimelineIssuePredicate;
+};
+
 export type TimelineTimeWindow = {
   from: number | null;
   to: number | null;
@@ -39,6 +54,7 @@ export type TimelineViewState = {
   density: TimelineDensity;
   visibleEventTypes: TimelineEventKind[];
   includeClosed: boolean;
+  filterRows: TimelineFilterRowSpec[];
   panes: TimelinePaneVisibility;
 };
 
@@ -206,6 +222,7 @@ export const DEFAULT_TIMELINE_VIEW_STATE: TimelineViewState = {
   density: 'comfortable',
   visibleEventTypes: ['body', 'comment', 'state'],
   includeClosed: false,
+  filterRows: [],
   panes: {
     inspector: true,
     inspectorWidth: 350,

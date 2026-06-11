@@ -837,11 +837,18 @@ a {
   min-height: 82px;
 }
 
+.timeline-gutter-row-shell {
+  position: relative;
+  min-height: 82px;
+  width: 100%;
+}
+
 .timeline-grid--compact .timeline-row {
   min-height: 54px;
 }
 
-.timeline-grid--compact .timeline-gutter-row {
+.timeline-grid--compact .timeline-gutter-row,
+.timeline-grid--compact .timeline-gutter-row-shell {
   min-height: 54px;
 }
 
@@ -849,7 +856,8 @@ a {
   min-height: 122px;
 }
 
-.timeline-grid--expanded .timeline-gutter-row {
+.timeline-grid--expanded .timeline-gutter-row,
+.timeline-grid--expanded .timeline-gutter-row-shell {
   min-height: 122px;
 }
 
@@ -866,10 +874,11 @@ a {
   column-gap: 8px;
   row-gap: 3px;
   align-content: center;
-  width: 300px;
+  height: 100%;
+  width: 100%;
   border: 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.055);
-  padding: 8px 12px 8px calc(12px + var(--depth) * 16px);
+  padding: 8px 76px 8px calc(12px + var(--depth) * 16px);
   background: transparent;
   color: inherit;
   text-align: left;
@@ -936,6 +945,153 @@ a {
 
 .timeline-gutter-row__origin {
   margin-left: 0;
+}
+
+.timeline-gutter-row__actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 70px;
+}
+
+.timeline-gutter-row__actions button,
+.timeline-gutter-row__actions span {
+  min-height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 0 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.timeline-gutter-row__actions button {
+  cursor: pointer;
+}
+
+.timeline-gutter-row__actions span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.timeline-add-row-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(100% - 16px);
+  min-height: 34px;
+  margin: 8px;
+  border: 1px dashed rgba(154, 164, 178, 0.35);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.timeline-filter-composer {
+  display: grid;
+  gap: 8px;
+  margin: 0 8px 10px;
+  padding: 10px;
+  border: 1px solid rgba(77, 163, 255, 0.28);
+  border-radius: 7px;
+  background: rgba(10, 16, 24, 0.96);
+}
+
+.timeline-filter-composer__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 26px;
+  align-items: center;
+}
+
+.timeline-filter-composer__chips > span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.timeline-filter-composer__chip {
+  min-height: 24px;
+  border: 1px solid rgba(77, 163, 255, 0.4);
+  border-radius: 6px;
+  padding: 0 7px;
+  background: rgba(77, 163, 255, 0.14);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.timeline-filter-composer__input {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.timeline-filter-composer__input input {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: rgba(5, 8, 12, 0.95);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.timeline-filter-composer__preview {
+  display: grid;
+  gap: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.timeline-filter-composer__preview strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.timeline-filter-composer__preview em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+}
+
+.timeline-filter-composer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.timeline-filter-composer__actions button {
+  min-height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.timeline-filter-composer__actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .timeline-row-canvas {
