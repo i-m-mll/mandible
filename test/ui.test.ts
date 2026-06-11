@@ -355,6 +355,111 @@ describe('AuthQueueView', () => {
     await waitFor(() => expect(screen.getAllByText('Second auth').length).toBeGreaterThan(0));
     expect(screen.getByText('Force Dismiss')).toBeTruthy();
   });
+
+  it('renders deferred action badges and bundle details', async () => {
+    const actions = [
+      { id: 'act1', auth_request_id: 'req-actions', ordinal: 1, kind: 'issue_close', target_issue_ref: 'abc123', payload: { reason_comment: 'Done' }, state: 'staged', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null },
+      { id: 'act2', auth_request_id: 'req-actions', ordinal: 2, kind: 'comment_add', target_issue_ref: 'def456', payload: { body: 'Closeout comment body' }, state: 'staged', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null },
+      { id: 'act3', auth_request_id: 'req-actions', ordinal: 3, kind: 'label_add', target_issue_ref: 'ghi789', payload: { label: 'merged' }, state: 'staged', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null },
+      { id: 'act4', auth_request_id: 'req-actions', ordinal: 4, kind: 'worker_status_set', target_issue_ref: 'jkl012', payload: { value: 'done' }, state: 'staged', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null },
+    ];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/auth/request/req-actions/actions') {
+        return Promise.resolve(new Response(JSON.stringify({ actions }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url === '/api/issues/find/abc123') {
+        return Promise.resolve(new Response(JSON.stringify({ title: 'Close umbrella' }), { headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { headers: { 'content-type': 'application/json' } }));
+    }));
+
+    render(
+      h(AuthQueueView, {
+        queue: [
+          { id: 'req-actions', title: 'Bundled auth', repo: 'mandible', base: 'main', head: 'feature/actions', action_count: 4, actions: actions as never },
+        ],
+        outputs: {},
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    expect(screen.getByTitle('4 deferred actions')).toBeTruthy();
+    expect(screen.getByLabelText('Deferred auth actions')).toBeTruthy();
+    expect(screen.getByText('Close issue')).toBeTruthy();
+    expect(screen.getByText('Closeout comment body')).toBeTruthy();
+    expect(screen.getByText('Add merged')).toBeTruthy();
+    expect(screen.getByText('Set to done')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText('abc123 · Close umbrella')).toBeTruthy());
+  });
+
+  it('toggles pending action veto state through the API', async () => {
+    const action = { id: 'act1', auth_request_id: 'req-veto', ordinal: 1, kind: 'comment_add', target_issue_ref: 'abc123', payload: { body: 'Closeout' }, state: 'staged', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/auth/request/req-veto/actions') {
+        return Promise.resolve(new Response(JSON.stringify({ actions: [action] }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url === '/api/auth/request/req-veto/actions/act1/veto') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { vetoed?: boolean };
+        return Promise.resolve(new Response(JSON.stringify({
+          action: { ...action, state: body.vetoed ? 'vetoed' : 'staged' },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { headers: { 'content-type': 'application/json' } }));
+    }));
+
+    render(
+      h(AuthQueueView, {
+        queue: [
+          { id: 'req-veto', title: 'Veto auth', repo: 'mandible', status: 'pending', action_count: 1, actions: [action] as never },
+        ],
+        outputs: {},
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    fireEvent.click(screen.getByText('Veto'));
+    await waitFor(() => expect(screen.getByText('Restore')).toBeTruthy());
+    expect(screen.getByText('Vetoed')).toBeTruthy();
+  });
+
+  it('renders completed deferred action outcomes and omits empty bundles', () => {
+    const outcomes = [
+      { id: 'act1', auth_request_id: 'req-complete', ordinal: 1, kind: 'comment_add', target_issue_ref: 'abc123', payload: { body: 'Comment' }, state: 'applied', target_digest: null, staged_at: 1, updated_at: 1, applied_at: 2, outcome_detail: null },
+      { id: 'act2', auth_request_id: 'req-complete', ordinal: 2, kind: 'label_add', target_issue_ref: 'abc123', payload: { label: 'merged' }, state: 'failed', target_digest: null, staged_at: 1, updated_at: 1, applied_at: 2, outcome_detail: 'Label write failed' },
+      { id: 'act3', auth_request_id: 'req-complete', ordinal: 3, kind: 'issue_close', target_issue_ref: 'abc123', payload: {}, state: 'skipped_stale', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: 'Head moved' },
+      { id: 'act4', auth_request_id: 'req-complete', ordinal: 4, kind: 'worker_status_set', target_issue_ref: 'abc123', payload: { value: 'done' }, state: 'vetoed', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null },
+    ];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/auth/request/req-complete/actions') {
+        return Promise.resolve(new Response(JSON.stringify({ actions: outcomes }), { headers: { 'content-type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { headers: { 'content-type': 'application/json' } }));
+    }));
+    render(
+      h(AuthQueueView, {
+        queue: [
+          { id: 'req-complete', title: 'Completed auth', repo: 'mandible', status: 'completed', exit_code: 1, action_count: 4, actions: outcomes as never },
+          { id: 'req-empty', title: 'Plain auth', repo: 'mandible', status: 'pending' },
+        ],
+        outputs: {},
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    expect(screen.getByText('Applied')).toBeTruthy();
+    expect(screen.getAllByText('Failed').length).toBeGreaterThan(0);
+    expect(screen.getByText('Skipped stale')).toBeTruthy();
+    expect(screen.getByText('Vetoed')).toBeTruthy();
+    expect(document.querySelector('.auth-action-row--failed')).toBeTruthy();
+    fireEvent.click(screen.getByText('Plain auth'));
+    expect(screen.queryByLabelText('Deferred auth actions')).toBeNull();
+  });
 });
 
 describe('WorkOverviewView', () => {

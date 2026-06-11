@@ -7,10 +7,14 @@ import {
   disableAuthAutoApprove,
   enableAuthAutoApprove,
   fetchAuthHooks,
+  findIssue,
   getAuthAutoApproveStatus,
+  getAuthRequestActions,
   createAuthHook,
+  setAuthRequestActionVeto,
   updateAuthHook,
   deleteAuthHook,
+  type AuthRequestAction,
   type AuthAutoApproveStatus,
   type AuthHook,
 } from '../api';
@@ -63,6 +67,8 @@ export type AuthRequest = {
   depends_on_status?: string | null;
   approval_source?: string;
   approval_lease_id?: string | null;
+  action_count?: number;
+  actions?: AuthRequestAction[];
   [key: string]: unknown;
 };
 
@@ -249,9 +255,223 @@ function getStatusClass(request: AuthRequest): string {
   return `status-pill status-pill--${status.toLowerCase()}`;
 }
 
+function getActionCount(request: AuthRequest): number {
+  if (Array.isArray(request.actions)) return request.actions.length;
+  return typeof request.action_count === 'number' && Number.isFinite(request.action_count)
+    ? request.action_count
+    : 0;
+}
+
+function formatActionKind(kind: AuthRequestAction['kind']): string {
+  switch (kind) {
+    case 'comment_add': return 'Comment';
+    case 'issue_close': return 'Close issue';
+    case 'worker_status_set': return 'Worker status';
+    case 'label_add': return 'Add label';
+    case 'label_rm': return 'Remove label';
+    case 'checkpoint_add': return 'Checkpoint';
+    case 'link_add': return 'Link issue';
+    default: return String(kind);
+  }
+}
+
+function actionPayloadSummary(action: AuthRequestAction): string {
+  const payload = action.payload ?? {};
+  switch (action.kind) {
+    case 'comment_add':
+      return truncateSummary(String(payload.body ?? ''), 180);
+    case 'issue_close':
+      return payload.reason_comment
+        ? `Reason: ${truncateSummary(String(payload.reason_comment), 160)}`
+        : 'Close target issue';
+    case 'worker_status_set':
+      return `Set to ${String(payload.value ?? '')}`;
+    case 'label_add':
+      return `Add ${String(payload.label ?? '')}`;
+    case 'label_rm':
+      return `Remove ${String(payload.label ?? '')}`;
+    case 'checkpoint_add':
+      return `Checkpoint ${String(payload.kind ?? '')}`;
+    case 'link_add': {
+      const target = String(payload.target ?? '');
+      const type = payload.type ? ` as ${String(payload.type)}` : '';
+      const note = payload.note ? `: ${truncateSummary(String(payload.note), 120)}` : '';
+      return `Link ${target}${type}${note}`;
+    }
+    default:
+      return JSON.stringify(payload);
+  }
+}
+
+function actionStateLabel(state: string): string {
+  switch (state) {
+    case 'staged': return 'Staged';
+    case 'applied': return 'Applied';
+    case 'failed': return 'Failed';
+    case 'skipped_stale': return 'Skipped stale';
+    case 'vetoed': return 'Vetoed';
+    default: return state;
+  }
+}
+
+function issueTitleFromDetail(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.title === 'string') return record.title;
+  const issue = record.issue;
+  if (issue && typeof issue === 'object' && typeof (issue as { title?: unknown }).title === 'string') {
+    return (issue as { title: string }).title;
+  }
+  return null;
+}
+
 function truncateSummary(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
+}
+
+function loadExpandedActionIds(requestId: string): Set<string> {
+  try {
+    const raw = window.localStorage.getItem(`auth-action-expanded:${requestId}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function storeExpandedActionIds(requestId: string, ids: Set<string>): void {
+  try {
+    window.localStorage.setItem(`auth-action-expanded:${requestId}`, JSON.stringify(Array.from(ids)));
+  } catch {
+    // Ignore storage failures; expansion still works for the current render.
+  }
+}
+
+function AuthActionBundle({
+  request,
+  actions,
+  inFlightActionIds,
+  onToggleVeto,
+}: {
+  request: AuthRequest;
+  actions: AuthRequestAction[];
+  inFlightActionIds: Set<string>;
+  onToggleVeto: (requestId: string, action: AuthRequestAction, vetoed: boolean) => void;
+}): JSX.Element | null {
+  const requestId = getAuthId(request);
+  const repoId = request.repo ?? '';
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => loadExpandedActionIds(requestId));
+  const [targetTitles, setTargetTitles] = useState<Record<string, string>>({});
+  const status = getAuthStatus(request);
+  const canVeto = status === 'pending';
+
+  useEffect(() => {
+    setExpandedIds(loadExpandedActionIds(requestId));
+  }, [requestId]);
+
+  useEffect(() => {
+    const refs = uniqueStrings(actions.map((action) => action.target_issue_ref));
+    let active = true;
+    for (const ref of refs) {
+      if (targetTitles[ref]) continue;
+      findIssue(ref)
+        .then((detail) => {
+          if (!active) return;
+          const title = issueTitleFromDetail(detail);
+          if (!title) return;
+          setTargetTitles((prev) => ({ ...prev, [ref]: title }));
+        })
+        .catch(() => undefined);
+    }
+    return () => {
+      active = false;
+    };
+  }, [actions, targetTitles]);
+
+  if (actions.length === 0) {
+    return null;
+  }
+
+  const toggleExpanded = (actionId: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(actionId)) next.delete(actionId);
+      else next.add(actionId);
+      storeExpandedActionIds(requestId, next);
+      return next;
+    });
+  };
+
+  return (
+    <section className="auth-action-bundle" aria-label="Deferred auth actions">
+      <div className="auth-action-bundle__header">
+        <span className="auth-action-bundle__title">On merge, this request will also</span>
+        <span className="auth-action-bundle__count">{actions.length}</span>
+      </div>
+      <div className="auth-action-bundle__rows">
+        {actions.map((action) => {
+          const title = (action as AuthRequestAction & { target_issue_title?: string }).target_issue_title
+            ?? targetTitles[action.target_issue_ref]
+            ?? '';
+          const expanded = expandedIds.has(action.id);
+          const vetoed = action.state === 'vetoed';
+          const vetoBusy = inFlightActionIds.has(action.id);
+          const canToggle = canVeto && (action.state === 'staged' || action.state === 'vetoed');
+          const detail = action.outcome_detail || actionPayloadSummary(action);
+          return (
+            <div
+              key={action.id}
+              className={`auth-action-row auth-action-row--${action.state}${expanded ? ' auth-action-row--expanded' : ''}`}
+              title={action.outcome_detail ?? undefined}
+            >
+              <button
+                type="button"
+                className="auth-action-row__expand"
+                aria-expanded={expanded}
+                aria-label={`${expanded ? 'Collapse' : 'Expand'} ${formatActionKind(action.kind)} action`}
+                onClick={() => toggleExpanded(action.id)}
+              >
+                <span className={`panel__chevron${expanded ? ' panel__chevron--open' : ''}`}>
+                  {'\u25B8'}
+                </span>
+              </button>
+              <div className="auth-action-row__main">
+                <div className="auth-action-row__top">
+                  <span className="auth-action-row__kind">{formatActionKind(action.kind)}</span>
+                  <EntityPill
+                    type="issue"
+                    id={action.target_issue_ref}
+                    repoId={repoId}
+                    label={title ? `${action.target_issue_ref} · ${title}` : action.target_issue_ref}
+                  />
+                  <span className={`auth-action-row__state auth-action-row__state--${action.state}`}>
+                    {actionStateLabel(action.state)}
+                  </span>
+                </div>
+                <div className="auth-action-row__summary">{actionPayloadSummary(action)}</div>
+                {expanded && detail && (
+                  <div className="auth-action-row__detail">{detail}</div>
+                )}
+              </div>
+              {canToggle && (
+                <button
+                  type="button"
+                  className={`auth-action-row__veto${vetoed ? ' auth-action-row__veto--on' : ''}`}
+                  role="switch"
+                  aria-checked={vetoed}
+                  disabled={vetoBusy}
+                  onClick={() => onToggleVeto(requestId, action, !vetoed)}
+                >
+                  {vetoBusy ? 'Saving' : vetoed ? 'Restore' : 'Veto'}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function buildFailureSummary(request: AuthRequest, outputs: Record<string, string>): string | null {
@@ -423,6 +643,7 @@ function AuthCard({
   timestampLabel,
   branchMerged,
   onToggle,
+  actionBundle,
   actions,
   executionOutput,
   dragging,
@@ -442,6 +663,7 @@ function AuthCard({
   timestampLabel?: string;
   branchMerged?: boolean;
   onToggle?: (id: string) => void;
+  actionBundle?: JSX.Element | null;
   actions?: JSX.Element | null;
   executionOutput?: string;
   dragging?: boolean;
@@ -861,6 +1083,8 @@ function AuthCard({
             </div>
           </div>
 
+          {actionBundle}
+
           {showConsoleToggle && (
             <div className="console-output">
               <button
@@ -925,6 +1149,7 @@ function AuthCardItem({
   timestampLabel,
   branchMerged,
   onToggle,
+  actionBundle,
   actions,
   executionOutput,
   onUpdateField,
@@ -945,6 +1170,7 @@ function AuthCardItem({
   timestampLabel?: string;
   branchMerged?: boolean;
   onToggle?: (id: string) => void;
+  actionBundle?: JSX.Element | null;
   actions?: JSX.Element | null;
   executionOutput?: string;
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
@@ -968,6 +1194,7 @@ function AuthCardItem({
         timestampLabel={timestampLabel}
         branchMerged={branchMerged}
         onToggle={onToggle}
+        actionBundle={actionBundle}
         actions={actions}
         executionOutput={executionOutput}
         onUpdateField={onUpdateField}
@@ -1013,6 +1240,7 @@ function AuthSidebarItem({
 
   const authType = getAuthType(request);
   const sidebarTypeMeta = AUTH_TYPE_META[authType];
+  const actionCount = getActionCount(request);
 
   const headBranch = request.head_branch ?? request.head ?? '';
   const baseBranch = request.base_branch ?? request.base ?? '';
@@ -1043,6 +1271,11 @@ function AuthSidebarItem({
             className="auth-sidebar-item__title"
             dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
           />
+          {actionCount > 0 && (
+            <span className="auth-sidebar-item__action-badge" title={`${actionCount} deferred actions`}>
+              {actionCount}
+            </span>
+          )}
         </span>
         {repo && (
           <span className="auth-sidebar-item__repo">{repo}</span>
@@ -1555,6 +1788,29 @@ export function AuthQueueView({
     },
     [],
   );
+  const [actionLists, setActionLists] = useState<Map<string, AuthRequestAction[]>>(() => new Map());
+  const [inFlightActionIds, setInFlightActionIds] = useState<Set<string>>(() => new Set());
+  const inFlightActionIdsRef = useRef<Set<string>>(new Set());
+
+  const setActionListForRequest = useCallback((requestId: string, actions: AuthRequestAction[]) => {
+    setActionLists((prev) => {
+      const next = new Map(prev);
+      next.set(requestId, actions);
+      return next;
+    });
+  }, []);
+
+  const updateActionForRequest = useCallback((requestId: string, action: AuthRequestAction) => {
+    setActionLists((prev) => {
+      const current = prev.get(requestId) ?? [];
+      const nextActions = current.some((item) => item.id === action.id)
+        ? current.map((item) => (item.id === action.id ? action : item))
+        : [...current, action].sort((a, b) => a.ordinal - b.ordinal);
+      const next = new Map(prev);
+      next.set(requestId, nextActions);
+      return next;
+    });
+  }, []);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1712,6 +1968,30 @@ export function AuthQueueView({
   const handleDismiss = useCallback(
     (id: string) => runAction(id, onDismiss, () => showToast('Dismiss failed. Try again.')),
     [runAction, onDismiss, showToast],
+  );
+
+  const handleToggleActionVeto = useCallback(
+    (requestId: string, action: AuthRequestAction, vetoed: boolean) => {
+      if (inFlightActionIdsRef.current.has(action.id)) return;
+      setInFlightActionIds((prev) => {
+        const next = new Set(prev);
+        next.add(action.id);
+        inFlightActionIdsRef.current = next;
+        return next;
+      });
+      setAuthRequestActionVeto(requestId, action.id, vetoed)
+        .then((updated) => updateActionForRequest(requestId, updated))
+        .catch((err) => showToast(err instanceof Error ? err.message : 'Action veto update failed.'))
+        .finally(() => {
+          setInFlightActionIds((prev) => {
+            const next = new Set(prev);
+            next.delete(action.id);
+            inFlightActionIdsRef.current = next;
+            return next;
+          });
+        });
+    },
+    [showToast, updateActionForRequest],
   );
 
   const [dismissConfirmId, setDismissConfirmId] = useState<string | null>(null);
@@ -1920,6 +2200,28 @@ export function AuthQueueView({
       null
     );
   }, [selectedId, queue, historyQueue]);
+
+  useEffect(() => {
+    if (!selectedRequest) return;
+    const requestId = getAuthId(selectedRequest);
+    const inlineActions = Array.isArray(selectedRequest.actions) ? selectedRequest.actions : [];
+    if (inlineActions.length > 0) {
+      setActionListForRequest(requestId, inlineActions);
+    }
+    if (getActionCount(selectedRequest) === 0) {
+      setActionListForRequest(requestId, []);
+      return;
+    }
+    let active = true;
+    getAuthRequestActions(requestId)
+      .then((actions) => {
+        if (active) setActionListForRequest(requestId, actions);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [selectedRequest, setActionListForRequest]);
 
   // Auto-select first item when sidebar list changes and nothing is selected.
   // Bug: 2eeadd0 — Also clear selectedId when the selected item is no longer
@@ -2356,6 +2658,7 @@ export function AuthQueueView({
           const attemptCount = isFailed && retryCount > 0 ? retryCount + 1 : null;
           const failureSummary = isFailed ? buildFailureSummary(request, outputs) : null;
           const isHistory = isHistoryStatus(status, exitCode);
+          const requestActions = actionLists.get(id) ?? (Array.isArray(request.actions) ? request.actions : []);
           return (
             <AuthCard
               request={request}
@@ -2365,6 +2668,16 @@ export function AuthQueueView({
               attemptCount={attemptCount}
               branchMerged={isHistory && !isFailed && isBranchMerged(request, branchesByRepo)}
               executionOutput={outputs[id]}
+              actionBundle={
+                requestActions.length > 0 ? (
+                  <AuthActionBundle
+                    request={request}
+                    actions={requestActions}
+                    inFlightActionIds={inFlightActionIds}
+                    onToggleVeto={handleToggleActionVeto}
+                  />
+                ) : null
+              }
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}
             />
