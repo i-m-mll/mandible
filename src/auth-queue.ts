@@ -16,6 +16,12 @@ import {
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import { isAuthMergeCommand, resolveAuthMergeExecutionContext, resolveBranchHeadSha } from "./auth-context.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
+import {
+  defaultCodexThreadArchiver,
+  listCompletedWorkerThreadArchiveCandidates,
+  safeArchiveCodexThread,
+  type CodexThreadArchiver,
+} from "./codex-thread-archive.js";
 import { getDb, resolvePrefix } from "./db.js";
 import {
   applyAuthRequestLedgerCompletion,
@@ -116,6 +122,7 @@ export interface AuthQueueOptions {
   executor?: typeof executeAuthCommand;
   hookManager?: AuthHookManager;
   autoApprover?: AuthAutoApprover;
+  codexThreadArchiver?: CodexThreadArchiver;
 }
 
 export class AuthQueue {
@@ -126,6 +133,7 @@ export class AuthQueue {
   private readonly executor: typeof executeAuthCommand;
   private readonly hookManager: AuthHookManager;
   private readonly autoApprover?: AuthAutoApprover;
+  private readonly codexThreadArchiver: CodexThreadArchiver;
   private readonly inFlight = new Map<string, Promise<void>>();
   private readonly executionEnvs = new Map<string, NodeJS.ProcessEnv>();
   private executionChain: Promise<void> = Promise.resolve();
@@ -144,6 +152,7 @@ export class AuthQueue {
     this.executor = options.executor ?? executeAuthCommand;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
+    this.codexThreadArchiver = options.codexThreadArchiver ?? defaultCodexThreadArchiver;
     this.recoverStuckRequests();
     this.startExpiryTimer();
   }
@@ -1446,6 +1455,7 @@ export class AuthQueue {
         );
       }
     }
+    this.archiveCompletedWorkerThreads(finalized);
     this.markSuccessfulMergeFinalized(finalized, mergeHeadSha);
   }
 
@@ -2092,6 +2102,30 @@ export class AuthQueue {
     if (resolvedIds.size > 0) {
       console.log(
         `[auth-queue] resolved ${resolvedIds.size} work unit(s) after successful merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`
+      );
+    }
+  }
+
+  private archiveCompletedWorkerThreads(completed: AuthRequest): void {
+    if (completed.type !== "merge") {
+      return;
+    }
+    try {
+      const candidates = listCompletedWorkerThreadArchiveCandidates(this.db, completed);
+      let archived = 0;
+      for (const candidate of candidates) {
+        if (safeArchiveCodexThread(this.codexThreadArchiver, candidate.provider_session_id)) {
+          archived += 1;
+        }
+      }
+      if (archived > 0) {
+        console.log(
+          `[auth-queue] archived ${archived} completed Codex worker thread(s) after merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[auth-queue] failed to archive completed worker threads: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }

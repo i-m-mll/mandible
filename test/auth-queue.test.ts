@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { AuthHookManager } from "../src/auth-hooks.js";
 import { migrate } from "../src/db.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { LedgerStore } from "../src/ledger/store.js";
 import type { SseEvent } from "../src/types.js";
 
 function createMigratedDb(): InstanceType<typeof Database> {
@@ -80,6 +82,100 @@ function registerWorkRepo(
     `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
      VALUES (?, ?, ?, ?, 1, 0)`
   ).run(path.basename(repoRoot), fs.realpathSync(repoRoot), path.basename(repoRoot), defaultBranch);
+}
+
+function createLedgerProject(
+  db: InstanceType<typeof Database>,
+  root: string,
+): ReturnType<typeof resolveProjectForCheckout> {
+  fs.mkdirSync(root, { recursive: true });
+  return resolveProjectForCheckout(db, {
+    root,
+    name: path.basename(root),
+    defaultBranch: "main",
+    remoteUrl: "",
+  });
+}
+
+function createLedgerIssue(
+  db: InstanceType<typeof Database>,
+  projectId: string,
+  shortId: string,
+  title = `Issue ${shortId}`,
+) {
+  return new LedgerStore(db).createIssue({
+    project_id: projectId,
+    title,
+    body: "Body",
+    kind: "feature",
+    source: "mandible",
+    aliases: [{ alias_kind: "git_bug_short", alias: shortId, source: "mandible", is_primary: true }],
+  });
+}
+
+function insertMandibleSession(
+  db: InstanceType<typeof Database>,
+  id: string,
+  status: string,
+): void {
+  db.prepare(
+    "INSERT INTO sessions (id, app, status, created_at, updated_at) VALUES (?, 'codex', ?, datetime('now'), datetime('now'))",
+  ).run(id, status);
+}
+
+function insertConsoleSession(
+  db: InstanceType<typeof Database>,
+  input: {
+    id: string;
+    providerSessionId: string;
+    mandibleSessionId?: string | null;
+    status?: string;
+  },
+): void {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO console_sessions (
+      id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
+      status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
+      backend_type, allowed_tools, mandible_session_id, resume_at_message, channel_enabled
+    ) VALUES (?, ?, 'codex', '[]', ?, NULL, '{}', 120, 30,
+      ?, 0, 0, 'both', ?, ?, 'spawn', NULL, ?, NULL, 0)`,
+  ).run(
+    input.id,
+    input.id,
+    input.providerSessionId,
+    input.status ?? "stopped",
+    now,
+    now,
+    input.mandibleSessionId ?? null,
+  );
+}
+
+function insertWorkUnit(
+  db: InstanceType<typeof Database>,
+  input: {
+    id: string;
+    issueShortId: string;
+    ledgerIssueId: string;
+    repoId: string;
+    assignedSessionId: string;
+    authRequestId: string;
+  },
+): void {
+  db.prepare(
+    `INSERT INTO work_units (
+      id, issue_id, ledger_issue_id, repo_id, branch, kind, state, assigned_session_id,
+      created_at, auth_request_id
+    ) VALUES (?, ?, ?, ?, 'feature/archive-worker', 'solo', 'committed', ?, ?, ?)`,
+  ).run(
+    input.id,
+    input.issueShortId,
+    input.ledgerIssueId,
+    input.repoId,
+    input.assignedSessionId,
+    Date.now(),
+    input.authRequestId,
+  );
 }
 
 describe("auth queue", () => {
@@ -253,6 +349,98 @@ describe("auth queue", () => {
     } finally {
       restarted.dispose();
       db.close();
+    }
+  });
+
+  it("archives only reliably linked terminal Codex worker threads after successful merge", () => {
+    const archived: string[] = [];
+    const db = createMigratedDb();
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-thread-archive-"));
+    const project = createLedgerProject(db, repoRoot);
+    const issue = createLedgerIssue(db, project.project.id, "done123", "Done issue");
+    const parent = createLedgerIssue(db, project.project.id, "parent1", "Parent issue");
+    const queue = new AuthQueue({
+      db,
+      codexThreadArchiver: {
+        archive: (threadId) => archived.push(threadId),
+        unarchive: () => undefined,
+      },
+    });
+
+    try {
+      insertMandibleSession(db, "mandible-worker", "ended");
+      insertMandibleSession(db, "parent-thread", "active");
+      insertConsoleSession(db, {
+        id: "console-worker",
+        providerSessionId: "thread-worker",
+        mandibleSessionId: "mandible-worker",
+      });
+      insertConsoleSession(db, {
+        id: "console-parent",
+        providerSessionId: "parent-thread",
+        mandibleSessionId: "parent-thread",
+      });
+      insertConsoleSession(db, {
+        id: "console-running",
+        providerSessionId: "thread-running",
+        status: "running",
+      });
+      new LedgerStore(db).addIssueCheckpoint(parent.id, {
+        kind: "parent-role",
+        payload: { session_id: "parent-thread", mechanism: "thread", assumed_at: Date.now() },
+        actor_type: "mandible_user",
+        source: "mandible",
+        created_at: Date.now(),
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/archive-worker --into main",
+        title: "Archive workers",
+        repo: project.checkout.root,
+        base_branch: "main",
+        head_branch: "feature/archive-worker",
+        issue_closures: ["done123"],
+        execution_mode: "remote",
+      });
+      insertWorkUnit(db, {
+        id: "wu-worker",
+        issueShortId: "done123",
+        ledgerIssueId: issue.id,
+        repoId: project.checkout.root,
+        assignedSessionId: "console-worker",
+        authRequestId: request.id,
+      });
+      insertWorkUnit(db, {
+        id: "wu-parent",
+        issueShortId: "done123",
+        ledgerIssueId: issue.id,
+        repoId: project.checkout.root,
+        assignedSessionId: "console-parent",
+        authRequestId: request.id,
+      });
+      insertWorkUnit(db, {
+        id: "wu-running",
+        issueShortId: "done123",
+        ledgerIssueId: issue.id,
+        repoId: project.checkout.root,
+        assignedSessionId: "console-running",
+        authRequestId: request.id,
+      });
+
+      queue.setResult(request.id, 0, "MANDIBLE_MERGE_RESULT {\"merge_sha\":\"abc123\"}\n");
+
+      expect(archived).toEqual(["thread-worker"]);
+      expect(db.prepare("SELECT state FROM work_units WHERE id = 'wu-worker'").get())
+        .toEqual({ state: "resolved" });
+      expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
+        status: "closed",
+        resolution: "merged",
+      });
+    } finally {
+      queue.dispose();
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
     }
   });
 

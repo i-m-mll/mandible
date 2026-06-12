@@ -195,6 +195,8 @@ When a merge request completes successfully, Mandible automatically dismisses an
 
 On successful merge, the queue automatically resolves associated work units --- those linked to the request directly, those on the merged branch, and those linked to explicit closure issues.
 
+After resolution, Mandible archives reliably linked terminal Codex worker threads for the closed child issues. The archive target is the Codex provider thread ID from the console session; live parent-role holders, active Mandible sessions, and running console sessions are skipped.
+
 This closes the loop between the auth queue, the issue tracker, and the work-unit lifecycle.
 
 ## Stuck Request Recovery

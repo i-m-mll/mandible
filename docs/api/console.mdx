@@ -35,7 +35,7 @@ List all console sessions.
 
 ### POST /api/console/sessions
 
-Create a new console session. SDK and spawn sessions start immediately. PTY sessions for structured chat (claude, codex, gemini) wait until explicitly started unless `is_operator` is true.
+Create a new console session. SDK and spawn sessions start immediately. PTY sessions for structured chat (claude, codex, gemini) wait until explicitly started unless `is_operator` is true. Creating a Codex session with `provider_session_id` first unarchives that Codex thread so archived worker follow-ups can resume.
 
 **Request body:**
 
@@ -162,7 +162,7 @@ Resize the PTY terminal.
 
 ### POST /api/console/sessions/:id/prompt
 
-Send a prompt to an SDK or spawn session.
+Send a prompt to an SDK or spawn session. For Codex sessions with a provider thread ID, Mandible unarchives the thread before sending the prompt.
 
 **Request body:**
 
