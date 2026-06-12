@@ -3,6 +3,9 @@
 
 set -euo pipefail
 
+GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
+source "$GIT_ENV_HELPER"
+
 RESET=$'\033[0m'
 RED=$'\033[31m'
 GREEN=$'\033[32m'

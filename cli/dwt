@@ -12,6 +12,9 @@
 
 set -o pipefail
 
+GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
+source "$GIT_ENV_HELPER"
+
 # Help
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   cat >&2 <<'EOF'

@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
+source "$GIT_ENV_HELPER"
+
 err() {
   printf '%s\n' "$*" >&2
 }
