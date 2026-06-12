@@ -9,7 +9,7 @@ mandible issue report <id> [--json]                          # exit 3 = NOT from
 mandible issue triage [--status open|closed|all|merged] [--label L] [--repo R] [--stale-days N] [--limit N] [--json]
 mandible issue heads <id>... [--json]
 mandible issue changed --since-manifest <file> [--json]
-mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--json]
+mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--checkpoint <id>] [--json]
 mandible issue checkpoint add <id> --kind <kind> [--payload-file <file>]
 mandible issue checkpoint show <id> --kind <kind> [--latest|--all] [--json]
 mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>

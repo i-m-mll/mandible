@@ -96,7 +96,7 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 - `mandible issue report <id> [--json]` - Print deterministic issue context for handoff and planning.
 - `mandible issue heads <id>... [--json]` - Print issue state digests for delegation manifests and resume checks.
 - `mandible issue changed --since-manifest <file> [--json]` - Compare current issue digests with a legacy saved delegation manifest file.
-- `mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--json]` - Compare current issue digests with the latest structured checkpoint on an umbrella issue.
+- `mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--checkpoint <id>] [--json]` - Compare current issue digests and the umbrella's own head with a structured checkpoint on an umbrella issue; omit --checkpoint to use the latest checkpoint.
 - `mandible issue checkpoint add <issue-ref> --kind <kind> [--payload-file <file>]` - Append kind-tagged structured issue state outside the comment stream.
 - `mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]` - Read kind-tagged structured issue state without parsing comments.
 - `mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>` - Set worker coordination status without changing open/closed lifecycle status.
@@ -125,6 +125,7 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 
 - The umbrella issue is the coordinator; sessions are disposable role holders.
 - Delegation manifests are stored as `delegation-manifest` checkpoints; refresh digests with `mandible issue heads` before resuming.
+- `mandible issue changed --since-issue` compares the umbrella's own issue head as well as child manifest entries. Parent sessions that need their own baseline should pass `--checkpoint <id>` instead of relying on the latest shared checkpoint.
 - Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.
 - Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate.
 

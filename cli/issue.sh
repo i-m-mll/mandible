@@ -32,8 +32,8 @@ Usage:
   mandible issue triage [opts] [--json]                           Filter issues for review
   mandible issue heads <id>... [--json]                            Print issue state digests
   mandible issue changed --since-manifest <file> [--json]          Compare issue digests to a manifest
-  mandible issue changed --since-issue <id> [--kind <kind>] [--json]
-                                                                  Compare issue digests to a checkpoint payload
+  mandible issue changed --since-issue <id> [--kind <kind>] [--checkpoint <id>] [--json]
+                                                                  Compare issue digests to a checkpoint payload and the issue's own head
   mandible issue checkpoint add <id> --kind <kind> [--payload-file <file>]
                                                                   Add an issue-scoped structured checkpoint
   mandible issue checkpoint show <id> --kind <kind> [--latest|--all] [--json]
@@ -630,6 +630,7 @@ cmd_changed() {
   local manifest=""
   local since_issue=""
   local kind="delegation-manifest"
+  local checkpoint_ref=""
   local json=0
 
   while (( $# > 0 )); do
@@ -655,6 +656,13 @@ cmd_changed() {
         kind="$2"
         shift 2
         ;;
+      --checkpoint)
+        if (( $# < 2 )); then
+          die "Missing value for --checkpoint." 2
+        fi
+        checkpoint_ref="$2"
+        shift 2
+        ;;
       --json) json=1; shift ;;
       -*)
         die "Unknown option: $1" 2
@@ -668,24 +676,57 @@ cmd_changed() {
   if [[ -n "$manifest" && -n "$since_issue" ]]; then
     die "Use only one of --since-manifest or --since-issue." 2
   fi
+  if [[ -n "$checkpoint_ref" && -z "$since_issue" ]]; then
+    die "--checkpoint requires --since-issue." 2
+  fi
   if [[ -z "$manifest" && -z "$since_issue" ]]; then
-    die "Usage: mandible issue changed (--since-manifest <file> | --since-issue <id> [--kind <kind>]) [--json]" 2
+    die "Usage: mandible issue changed (--since-manifest <file> | --since-issue <id> [--kind <kind>] [--checkpoint <id>]) [--json]" 2
   fi
 
   require_tools
   local checkpoint_tmp=""
   if [[ -n "$since_issue" ]]; then
-    local checkpoint_path checkpoint_response
-    checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints?latest=true"
-    if [[ -n "$kind" ]]; then
-      checkpoint_path="${checkpoint_path}&kind=$(urlencode "$kind")"
+    local checkpoint_path checkpoint_response checkpoint_list_response checkpoint_created_at
+    if [[ -n "$checkpoint_ref" ]]; then
+      checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints"
+      if [[ -n "$kind" ]]; then
+        checkpoint_path="${checkpoint_path}?kind=$(urlencode "$kind")"
+      fi
+      checkpoint_list_response=$(api_get "$checkpoint_path") \
+        || die "${RED}Failed to fetch checkpoints for ${since_issue}${RESET}" 1
+      checkpoint_response=$(printf '%s\n' "$checkpoint_list_response" \
+        | jq -e --arg id "$checkpoint_ref" '.checkpoints[] | select(.id == $id)') \
+        || die "Checkpoint not found on ${since_issue}: ${checkpoint_ref}" 2
+    else
+      checkpoint_path="/api/ledger/issues/$(urlencode "$since_issue")/checkpoints?latest=true"
+      if [[ -n "$kind" ]]; then
+        checkpoint_path="${checkpoint_path}&kind=$(urlencode "$kind")"
+      fi
+      checkpoint_response=$(api_get "$checkpoint_path") \
+        || die "${RED}Failed to fetch checkpoint for ${since_issue}${RESET}" 1
     fi
-    checkpoint_response=$(api_get "$checkpoint_path") \
-      || die "${RED}Failed to fetch checkpoint for ${since_issue}${RESET}" 1
     checkpoint_tmp=$(mktemp)
     printf '%s\n' "$checkpoint_response" | jq -e '.payload | type == "array"' >/dev/null \
       || die "Checkpoint payload must be a manifest JSON array." 2
-    printf '%s\n' "$checkpoint_response" | jq '.payload' > "$checkpoint_tmp"
+    checkpoint_created_at=$(printf '%s\n' "$checkpoint_response" | jq -r '.created_at // empty')
+    [[ -n "$checkpoint_created_at" ]] \
+      || die "Checkpoint response must include created_at to compare the umbrella head." 2
+    local issue_head_at_checkpoint
+    issue_head_at_checkpoint=$(api_get "/api/ledger/issues/$(urlencode "$since_issue")/head?at=$(urlencode "$checkpoint_created_at")") \
+      || die "${RED}Failed to fetch historical head for ${since_issue}${RESET}" 1
+    printf '%s\n' "$checkpoint_response" | jq \
+      --arg issue "$since_issue" \
+      --arg issue_id "$(printf '%s\n' "$issue_head_at_checkpoint" | jq -r '.issue_id')" \
+      --arg short_id "$(printf '%s\n' "$issue_head_at_checkpoint" | jq -r '.short_id')" \
+      --arg digest "$(printf '%s\n' "$issue_head_at_checkpoint" | jq -r '.digest')" \
+      '
+        .payload as $payload
+        | if $payload | any((.issue // .short_id // .id // "") as $entry
+            | $entry == $issue or $entry == $issue_id or $entry == $short_id)
+          then $payload
+          else $payload + [{issue: $issue, short_id: $short_id, id: $issue_id, digest: $digest}]
+          end
+      ' > "$checkpoint_tmp"
     manifest="$checkpoint_tmp"
   fi
   if [[ ! -f "$manifest" ]]; then
