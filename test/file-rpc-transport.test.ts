@@ -75,6 +75,14 @@ describe("file RPC transport", () => {
   });
 
   it("keeps auth approval and admin endpoints out of the allowlist", () => {
+    expect(isAllowedFileRpcRoute("GET", "/api/conversations")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/conversations/sources")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/conversations/search")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1/blocks")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1/forks")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/work/repos")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/system/logs")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/auth/request/abc/actions")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/actions")).toBe(true);
@@ -101,6 +109,8 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("GET", "/r/auth/auth-1")).toBe(false);
     expect(isAllowedFileRpcRoute("GET", "/r/artifact/abcdef1")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/approve")).toBe(false);
+    expect(isAllowedFileRpcRoute("PATCH", "/api/conversations/conv-1")).toBe(false);
+    expect(isAllowedFileRpcRoute("POST", "/api/conversations/conv-1/fork")).toBe(false);
     expect(isAllowedFileRpcRoute("PUT", "/api/settings/auto_close_issues_on_merge")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/issues/scan")).toBe(false);
   });

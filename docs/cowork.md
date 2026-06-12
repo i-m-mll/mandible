@@ -27,6 +27,9 @@ Use the bash scripts directly:
 
 ```bash
 bash "${MANDIBLE_CLI_DIR}/issue.sh" triage --json --limit 20
+bash "${MANDIBLE_CLI_DIR}/issue.sh" triage --repo /mounted/repo --json --limit 20
+bash "${MANDIBLE_CLI_DIR}/conversations.sh" list --json --limit 20
+bash "${MANDIBLE_CLI_DIR}/conversations.sh" blocks <session-id> --json
 bash "${MANDIBLE_CLI_DIR}/issue.sh" new -t "Title" -m "Rendered Markdown body" --label feature
 bash "${MANDIBLE_CLI_DIR}/auth-request.sh" feature/name --title "Merge feature/name" --issue abc1234 --no-watch
 ```
@@ -69,11 +72,11 @@ that have only the spool mount and no usable CLI copy.
 
 ## Approval Boundaries
 
-The file transport allows issue, artifact, and auth-submission routes needed
-for agent coordination. It denies approval, merge, admin, and configuration
-routes. A Cowork session may prepare or submit an auth request only after the
-branch exists with host-side commits; the user still approves with their normal
-Mandible workflow.
+The file transport allows issue, artifact, conversation-index, repo-listing,
+daemon-indexed log, and auth-submission routes needed for agent coordination.
+It denies approval, merge, admin, and configuration routes. A Cowork session may
+prepare or submit an auth request only after the branch exists with host-side
+commits; the user still approves with their normal Mandible workflow.
 
 ## Distributed Install State
 

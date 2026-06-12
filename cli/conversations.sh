@@ -3,6 +3,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+source "$SCRIPT_DIR/api.sh"
+
 MANDIBLE_DB="${MANDIBLE_DB:-${HOME}/.cache/mandible/mandible.db}"
 
 usage() {
@@ -21,6 +24,179 @@ Block filters: --role ROLE --type TYPE[,TYPE...] --tool NAME --tool-kind KIND --
 EOF
 }
 
+conversation_source() {
+  case "$1" in
+    claude) echo "claude_code" ;;
+    codex|gemini) echo "$1" ;;
+    all|"") echo "" ;;
+    *) echo "Error: unknown provider '$1'. Use: claude, codex, gemini, all" >&2; exit 1 ;;
+  esac
+}
+
+conversation_resolve_id() {
+  local ident="$1"
+  local encoded response resolved
+  encoded=$(urlencode "$ident")
+  response=$(api_get "/api/conversations?session_id=${encoded}&limit=1" 2>/dev/null || true)
+  resolved=$(printf '%s' "$response" | jq -r '.conversations[0].id // empty' 2>/dev/null || true)
+  if [[ -n "$resolved" ]]; then
+    printf '%s' "$resolved"
+  else
+    printf '%s' "$ident"
+  fi
+}
+
+file_rpc_list() {
+  local provider="all" since="" limit=20 json=0 source request response
+  while (( $# > 0 )); do
+    case "$1" in
+      --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
+      --since) since="${2:?--since requires a value}"; shift 2 ;;
+      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
+      --json) json=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+  done
+  source=$(conversation_source "$provider")
+  request="/api/conversations?limit=$(urlencode "$limit")"
+  if [[ -n "$source" ]]; then request="${request}&source=$(urlencode "$source")"; fi
+  if [[ -n "$since" ]]; then request="${request}&since=$(urlencode "$since")"; fi
+  response=$(api_get "$request")
+  if (( json )); then
+    printf '%s\n' "$response" | jq '.conversations'
+  else
+    printf '%s\n' "$response" | jq -r '.conversations[] | "\(.id[0:8])\t\(.source)\t\(.started_at)\t\(.block_count)\t\(.title)"'
+  fi
+}
+
+file_rpc_show() {
+  local ident="${1:-}" json=0 blocks=0 conv_id response
+  if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; exit 2; fi
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      --blocks) blocks=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+  done
+  conv_id=$(conversation_resolve_id "$ident")
+  response=$(api_get "/api/conversations/$(urlencode "$conv_id")")
+  if (( json )); then
+    if (( blocks )); then
+      printf '%s\n' "$response" | jq .
+    else
+      printf '%s\n' "$response" | jq '{conversation: .conversation}'
+    fi
+  else
+    printf '%s\n' "$response" | jq -r '
+      .conversation as $c |
+      "\($c.id) [\($c.source)] \($c.title)",
+      "session: \($c.session_id)",
+      "started: \($c.started_at)",
+      "blocks: \($c.block_count)",
+      "cwd: \($c.cwd // "-")",
+      "source_path: \($c.source_path)"'
+    if (( blocks )); then
+      printf '%s\n' "$response" | jq -r '.blocks[0:20][] | "- \(.position) \(.type) \(.role): \((.content | gsub("\\s+"; " ")) | if length > 160 then .[0:157] + "..." else . end)"'
+    fi
+  fi
+}
+
+file_rpc_blocks() {
+  local ident="${1:-}" type_filter="" role_filter="" content_filter="" limit=100 json=0 conv_id request response
+  if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; exit 2; fi
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      --type) type_filter="${2:?--type requires a value}"; shift 2 ;;
+      --role) role_filter="${2:?--role requires a value}"; shift 2 ;;
+      --content|--contains) content_filter="${2:?--content requires a value}"; shift 2 ;;
+      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
+      --json) json=1; shift ;;
+      --tool|--tool-kind|--since|--until)
+        echo "Error: $1 is not supported through file-RPC conversation blocks yet." >&2
+        exit 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+  done
+  conv_id=$(conversation_resolve_id "$ident")
+  request="/api/conversations/$(urlencode "$conv_id")/blocks?limit=$(urlencode "$limit")"
+  if [[ -n "$type_filter" ]]; then request="${request}&type=$(urlencode "$type_filter")"; fi
+  response=$(api_get "$request")
+  if (( json )); then
+    printf '%s\n' "$response" | jq \
+      --arg role "$role_filter" \
+      --arg content "$content_filter" \
+      '[.blocks[] | select($role == "" or .role == $role) | select($content == "" or (.content | contains($content)))]'
+  else
+    printf '%s\n' "$response" | jq -r \
+      --arg role "$role_filter" \
+      --arg content "$content_filter" \
+      '.blocks[] | select($role == "" or .role == $role) | select($content == "" or (.content | contains($content))) | "\(.position)\t\(.type)\t\(.role)\t\((.content | gsub("\\s+"; " ")) | if length > 220 then .[0:217] + "..." else . end)"'
+  fi
+}
+
+file_rpc_search() {
+  local query="${1:-}" provider="all" role="" since="" limit=20 title=0 json=0 source request response
+  if [[ -z "$query" ]]; then echo "Error: search query is required." >&2; exit 1; fi
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
+      --role) role="${2:?--role requires a value}"; shift 2 ;;
+      --since) since="${2:?--since requires a value}"; shift 2 ;;
+      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
+      --title) title=1; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+  done
+  source=$(conversation_source "$provider")
+  request="/api/conversations/search?q=$(urlencode "$query")&limit=$(urlencode "$limit")"
+  if [[ -n "$source" ]]; then request="${request}&source=$(urlencode "$source")"; fi
+  if [[ -n "$role" ]]; then request="${request}&role=$(urlencode "$role")"; fi
+  if [[ -n "$since" ]]; then request="${request}&since=$(urlencode "$since")"; fi
+  if (( title )); then request="${request}&title=true"; fi
+  response=$(api_get "$request")
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      .results[] |
+      .conversation as $c |
+      ($c.source | sub("claude_code"; "claude")) as $source |
+      ($c.started_at[0:10] // "?") as $date |
+      ($c.title // "" | if length > 60 then .[0:60] + "..." else . end) as $title |
+      if .block then
+        "[\($source)] \($date) | \"\($title)\" | \(.block.role): \(.snippet)"
+      else
+        "[\($source)] \($date) | \"\(.snippet)\""
+      end'
+  fi
+}
+
+file_rpc_main() {
+  local command="${1:-}"
+  case "$command" in
+    list) shift; file_rpc_list "$@" ;;
+    show) shift; file_rpc_show "$@" ;;
+    blocks) shift; file_rpc_blocks "$@" ;;
+    search) shift; file_rpc_search "$@" ;;
+    ""|-h|--help|help) usage; exit 0 ;;
+    *) echo "Unknown conversations subcommand: $command" >&2; usage >&2; exit 1 ;;
+  esac
+}
+
+if api_is_file_rpc; then
+  file_rpc_main "$@"
+  exit $?
+fi
+
 if [[ ! -f "$MANDIBLE_DB" ]]; then
   echo "Error: Mandible database not found at $MANDIBLE_DB" >&2
   exit 1
@@ -29,11 +205,11 @@ fi
 case "${1:-}" in
   search)
     shift
-    exec "$(dirname "$0")/search.sh" "$@"
+    exec "$SCRIPT_DIR/search.sh" "$@"
     ;;
   blocks)
     shift
-    exec node "$(cd "$(dirname "$0")/.." && pwd -P)/dist/cli/conversation-blocks.js" conversations "$MANDIBLE_DB" "$@"
+    exec node "$(cd "$SCRIPT_DIR/.." && pwd -P)/dist/cli/conversation-blocks.js" conversations "$MANDIBLE_DB" "$@"
     ;;
 esac
 

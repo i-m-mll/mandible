@@ -34,6 +34,9 @@ Prefer the daemon-materialized CLI when it exists:
 
 ```bash
 bash "${MANDIBLE_CLI_DIR}/issue.sh" triage --json --limit 20
+bash "${MANDIBLE_CLI_DIR}/issue.sh" triage --repo /mounted/repo --json --limit 20
+bash "${MANDIBLE_CLI_DIR}/conversations.sh" list --json --limit 20
+bash "${MANDIBLE_CLI_DIR}/conversations.sh" blocks <session-id> --json
 bash "${MANDIBLE_CLI_DIR}/issue.sh" new -t "Title" -m "Rendered Markdown body" --label feature
 bash "${MANDIBLE_CLI_DIR}/auth-request.sh" feature/name --title "Merge feature/name" --issue abc1234 --no-watch
 ```
@@ -62,6 +65,8 @@ helper:
 
 ```bash
 python3 scripts/mandible_file_rpc.py "${MANDIBLE_CACHE_DIR}/agent-rpc" GET /api/issues
+python3 scripts/mandible_file_rpc.py "${MANDIBLE_CACHE_DIR}/agent-rpc" GET /api/conversations
+python3 scripts/mandible_file_rpc.py "${MANDIBLE_CACHE_DIR}/agent-rpc" GET /api/conversations/<conversation-id>/blocks
 python3 scripts/mandible_file_rpc.py "${MANDIBLE_CACHE_DIR}/agent-rpc" POST /api/ledger/issues/abc/comments body.json
 ```
 
@@ -87,27 +92,36 @@ atomically and leaves cleanup to the daemon.
 <!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->
 # Mandible Interface Contract
 
-Version: 2
+Version: 3
 
 This section is Mandible's interface contract. It describes daemon and CLI behavior that is the same for every install. It deliberately excludes user policy such as signing key names, branch naming schemes, editor preferences, and worktree tooling.
 
 ## Commands
 
 - `mandible issue report <id> [--json]` - Print deterministic issue context for handoff and planning.
+- `mandible umbrella status <id> [--deep] [--json]` - Print one deterministic coordinator fact packet: umbrella body/revision/head, latest delegation manifest, child summaries, parent-role holder state, and repo auth queue summary. --deep includes child bodies, latest closeouts/comments, branch/auth links, and issue state for parent resumption.
+- `mandible umbrella adopt <umbrella> <children...> [--json]` - Idempotently adopt explicit children into an umbrella, create missing parent_child edges, refresh the delegation-manifest checkpoint server-side, report body-table/link-graph drift, and return the updated umbrella status fact packet.
+- `mandible umbrella reconcile <umbrella> [--json]` - Derive children only from the canonical umbrella Children table, create missing parent_child edges, refresh the delegation-manifest checkpoint server-side, report reconciliation drift, and return the updated umbrella status fact packet.
+- `mandible umbrella manifest refresh <umbrella> [--json]` - Refresh the umbrella delegation-manifest checkpoint from current linked child issue heads server-side without changing parent_child edges, and return the updated umbrella status fact packet.
+- `mandible issue parent-role status|assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]` - Inspect or record advisory parent-role holder state; live holder conflicts require an explicit override while stale holders are informational.
 - `mandible issue heads <id>... [--json]` - Print issue state digests for delegation manifests and resume checks.
 - `mandible issue changed --since-manifest <file> [--json]` - Compare current issue digests with a legacy saved delegation manifest file.
 - `mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--checkpoint <id>] [--json]` - Compare current issue digests and the umbrella's own head with a structured checkpoint on an umbrella issue; omit --checkpoint to use the latest checkpoint.
-- `mandible issue checkpoint add <issue-ref> --kind <kind> [--payload-file <file>]` - Append kind-tagged structured issue state outside the comment stream.
+- `mandible issue checkpoint add <issue-ref> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]` - Append kind-tagged structured issue state outside the comment stream. Use --payload - or --payload-file - to read JSON from stdin.
 - `mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]` - Read kind-tagged structured issue state without parsing comments.
 - `mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>` - Set worker coordination status without changing open/closed lifecycle status.
 - `mandible issue branch add <id> <branch> [--role primary|superseded]` - Link a branch to an issue as structured coordination state.
-- `mandible issue comment add <issue-ref> -m <text>` - Append rendered Markdown comments with real newline characters.
+- `mandible issue link <src> <target...> [--type t] [--note n]` - Create deliberate structured issue/comment relationship edges with shared action grouping for multi-target links. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests.
+- `mandible issue unlink <src> <target...> [--type t]` - Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests.
+- `mandible issue comment add <issue-ref> -m <text> [--reopen]` - Append rendered Markdown comments with real newline characters and return the issue lifecycle status; --reopen atomically reopens and comments.
 - `mandible issue description edit <issue-ref> -m <text>` - Edit issue descriptions while preserving body revision history.
 - `mandible issue label add|rm <id> <label>` - Mirror portable issue facts such as mandible:status:<value> labels.
 - `mandible auth list [--repo <repo>] [--head <branch>] [--base <branch>] [--status <status>] [--json]` - Find existing auth requests before submitting duplicates.
 - `mandible auth check [--branch <branch>] [--repo <repo>] [--target <branch>] [--json]` - Report whether a merge is clean against the target and queued pairwise-independent requests.
 - `mandible auth request <branch> --title <text> --issue <id> [--closes-issue <id>] [--spec <text>] [--no-watch]` - Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure.
-- `mandible instructions diff [--target <file>] | install [--target <file>] [--worktree <path>] [--force]` - Show or update the managed Mandible interface block in an agent-instruction file. Installs into tracked protected-branch files are refused unless --force is explicit; use --worktree to target a feature-worktree copy.
+- `mandible instructions install [--target <file>] [--worktree <path>] [--force]` - Refresh configured instruction targets, or update one explicit target. Configured targets support managed-block and standalone modes; tracked protected-branch writes are refused unless --force is explicit.
+- `mandible instructions targets list|add|rm <path> [--mode managed-block|standalone]` - Configure where the generated Mandible instruction fragment is written.
+- `mandible instructions post-export get|set|clear <command>` - Configure an optional command to run after instruction targets refresh, such as a module compiler.
 
 ## Commit Trailers
 
@@ -124,15 +138,17 @@ This section is Mandible's interface contract. It describes daemon and CLI behav
 ## Coordination
 
 - The umbrella issue is the coordinator; sessions are disposable role holders.
-- Delegation manifests are stored as `delegation-manifest` checkpoints; refresh digests with `mandible issue heads` before resuming.
+- Umbrella bodies use a canonical Children table with columns issue, scope, branch, and state; `mandible umbrella reconcile` may derive children from that table only, not from arbitrary issue refs elsewhere in the body.
+- Delegation manifests are stored as `delegation-manifest` checkpoints; refresh digests with `mandible umbrella manifest refresh <umbrella>` before resuming.
 - `mandible issue changed --since-issue` compares the umbrella's own issue head as well as child manifest entries. Parent sessions that need their own baseline should pass `--checkpoint <id>` instead of relying on the latest shared checkpoint.
 - Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.
+- Successful auth merges archive reliably linked terminal Codex worker threads for closed child issues; live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.
 - Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate.
 
 ## Transports
 
 - Default CLI transport is loopback HTTP via `MANDIBLE_BASE=http://127.0.0.1:<port>`.
-- Sandboxed agents without loopback can use `MANDIBLE_BASE=file:///path/to/spool` for issue and auth submission/listing routes.
+- Sandboxed agents without loopback can use `MANDIBLE_BASE=file:///path/to/spool` for issue, auth submission/listing, coordinator, conversation index, repo listing, and daemon-indexed log routes.
 - The file transport denies approval, merge, admin, and config routes; auth approval remains a user/dashboard action.
 
 <!-- END MANDIBLE MANAGED INSTRUCTIONS -->
