@@ -55,6 +55,20 @@ export function getLedgerIssueHead(
               WHERE issue_id = @issueId
             )
           )
+          OR (
+            entity_type = 'issue_relationship'
+            AND entity_id IN (
+              SELECT id FROM ledger_issue_relationships
+              WHERE source_issue_id = @issueId OR target_issue_id = @issueId
+            )
+          )
+          OR (
+            entity_type = 'relationship_edge'
+            AND entity_id IN (
+              SELECT id FROM ledger_relationship_edges
+              WHERE source_issue_id = @issueId OR target_issue_id = @issueId
+            )
+          )
        )
      ORDER BY occurred_at, observed_at, id`,
   ).all({ issueId, at: options.at ?? null }) as IssueHeadEventRow[];

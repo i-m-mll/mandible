@@ -334,7 +334,6 @@ describe("ledger issue heads", () => {
     expect(after.last_event_kind).toBe("issue.checkpoint.created");
     expect(after.last_event_at).not.toBeNull();
   });
-
   it("can compute an issue head at a historical event cutoff", () => {
     const project = createProject();
     const store = new LedgerStore(db);
@@ -364,6 +363,71 @@ describe("ledger issue heads", () => {
     expect(historical.digest).toBe(checkpointHead.digest);
     expect(historical.digest).not.toBe(current.digest);
     expect(current.last_event_kind).toBe("comment.created");
+  });
+
+  it("changes both endpoint digests when a structured relationship edge is linked and unlinked", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const source = createIssue(store, project.project.id, "Head source");
+    const target = createIssue(store, project.project.id, "Tail target");
+    const unrelated = createIssue(store, project.project.id, "Idle unrelated");
+    const beforeSource = getLedgerIssueHead(db, source.id);
+    const beforeTarget = getLedgerIssueHead(db, target.id);
+    const beforeUnrelated = getLedgerIssueHead(db, unrelated.id);
+
+    store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+      link_type: "references",
+      created_at: Math.max(beforeSource.last_event_at ?? 0, beforeTarget.last_event_at ?? 0) + 1,
+    });
+
+    const linkedSource = getLedgerIssueHead(db, source.id);
+    const linkedTarget = getLedgerIssueHead(db, target.id);
+    expect(linkedSource.digest).not.toBe(beforeSource.digest);
+    expect(linkedTarget.digest).not.toBe(beforeTarget.digest);
+    expect(linkedSource.last_event_kind).toBe("relationship.added");
+    expect(linkedTarget.last_event_kind).toBe("relationship.added");
+    expect(getLedgerIssueHead(db, unrelated.id).digest).toBe(beforeUnrelated.digest);
+
+    store.unlinkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+      link_type: "references",
+      occurred_at: (linkedSource.last_event_at ?? 0) + 1,
+    });
+
+    const unlinkedSource = getLedgerIssueHead(db, source.id);
+    const unlinkedTarget = getLedgerIssueHead(db, target.id);
+    expect(unlinkedSource.digest).not.toBe(linkedSource.digest);
+    expect(unlinkedTarget.digest).not.toBe(linkedTarget.digest);
+    expect(unlinkedSource.last_event_kind).toBe("relationship.removed");
+    expect(unlinkedTarget.last_event_kind).toBe("relationship.removed");
+    expect(getLedgerIssueHead(db, unrelated.id).digest).toBe(beforeUnrelated.digest);
+  });
+
+  it("changes both endpoint digests when a stored issue relationship changes", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const source = createIssue(store, project.project.id, "Stored relationship source");
+    const target = createIssue(store, project.project.id, "Linked relationship target");
+    const beforeSource = getLedgerIssueHead(db, source.id);
+    const beforeTarget = getLedgerIssueHead(db, target.id);
+
+    store.upsertIssueRelationship({
+      source_issue_id: source.id,
+      target_issue_id: target.id,
+      relationship_type: "blocks",
+      provenance: "manual",
+      created_at: Math.max(beforeSource.last_event_at ?? 0, beforeTarget.last_event_at ?? 0) + 1,
+    });
+
+    const afterSource = getLedgerIssueHead(db, source.id);
+    const afterTarget = getLedgerIssueHead(db, target.id);
+    expect(afterSource.digest).not.toBe(beforeSource.digest);
+    expect(afterTarget.digest).not.toBe(beforeTarget.digest);
+    expect(afterSource.last_event_kind).toBe("relationship.upserted");
+    expect(afterTarget.last_event_kind).toBe("relationship.upserted");
   });
 });
 
