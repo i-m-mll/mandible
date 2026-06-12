@@ -35,8 +35,8 @@
       "description": "Compare current issue digests and the umbrella's own head with a structured checkpoint on an umbrella issue; omit --checkpoint to use the latest checkpoint."
     },
     {
-      "name": "mandible issue checkpoint add <issue-ref> --kind <kind> [--payload-file <file>]",
-      "description": "Append kind-tagged structured issue state outside the comment stream."
+      "name": "mandible issue checkpoint add <issue-ref> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]",
+      "description": "Append kind-tagged structured issue state outside the comment stream. Use --payload - or --payload-file - to read JSON from stdin."
     },
     {
       "name": "mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]",
@@ -52,11 +52,11 @@
     },
     {
       "name": "mandible issue link <src> <target...> [--type t] [--note n]",
-      "description": "Create deliberate structured issue/comment relationship edges with shared action grouping for multi-target links."
+      "description": "Create deliberate structured issue/comment relationship edges with shared action grouping for multi-target links. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests."
     },
     {
       "name": "mandible issue unlink <src> <target...> [--type t]",
-      "description": "Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events."
+      "description": "Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests."
     },
     {
       "name": "mandible issue comment add <issue-ref> -m <text> [--reopen]",

@@ -15,7 +15,7 @@ mandible issue triage [--status open|closed|all|merged] [--label L] [--repo R] [
 mandible issue heads <id>... [--json]
 mandible issue changed --since-manifest <file> [--json]
 mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--checkpoint <id>] [--json]
-mandible issue checkpoint add <id> --kind <kind> [--payload-file <file>]
+mandible issue checkpoint add <id> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]
 mandible issue checkpoint show <id> --kind <kind> [--latest|--all] [--json]
 mandible issue status <id> <none|in_progress|done|blocked|pivot-needed>
 mandible issue branch add <id> <branch> [--role primary|superseded]
@@ -111,6 +111,20 @@ umbrellas whose child links are missing but whose body contains the canonical
 Children table. The table format is the parent plan table with columns `issue`,
 `scope`, `branch`, and `state`; reconcile derives children only from that table,
 not from arbitrary issue refs elsewhere in the umbrella body.
+
+## Issue Relationship Types
+
+`mandible issue link` and `mandible issue unlink` accept these `--type` values:
+`parent_child`, `blocks`, `duplicate_of`, `related`, `references`, `fixed_by`,
+`caused_by`, `implements`, and `tests`. Invalid type errors print this accepted
+list. File-RPC callers may use the same link/unlink routes and will see the
+transport status/body when a route is denied.
+
+## Checkpoint Payloads
+
+`mandible issue checkpoint add` accepts `--payload '<json>'`, `--payload -` for
+JSON on stdin, and the existing `--payload-file <file-or->` form. Omitting a
+payload still records `{}`.
 
 ## Does NOT Exist (confirmed absent from source)
 

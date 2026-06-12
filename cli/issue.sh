@@ -25,6 +25,82 @@ die() {
   exit "${2:-1}"
 }
 
+RELATIONSHIP_TYPES=(
+  parent_child
+  blocks
+  duplicate_of
+  related
+  references
+  fixed_by
+  caused_by
+  implements
+  tests
+)
+ACCEPTED_RELATIONSHIP_TYPES="parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests"
+
+usage_link() {
+  cat <<'LINK_USAGE'
+Usage:
+  mandible issue link <src> <target...> [--type t] [--note n]
+
+Accepted relationship types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests
+LINK_USAGE
+}
+
+usage_unlink() {
+  cat <<'UNLINK_USAGE'
+Usage:
+  mandible issue unlink <src> <target...> [--type t]
+
+Accepted relationship types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests
+UNLINK_USAGE
+}
+
+usage_checkpoint_add() {
+  cat <<'CHECKPOINT_ADD_USAGE'
+Usage:
+  mandible issue checkpoint add <issue-ref> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]
+CHECKPOINT_ADD_USAGE
+}
+
+usage_checkpoint_show() {
+  cat <<'CHECKPOINT_SHOW_USAGE'
+Usage:
+  mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]
+CHECKPOINT_SHOW_USAGE
+}
+
+valid_relationship_type() {
+  local candidate="$1"
+  local accepted
+  for accepted in "${RELATIONSHIP_TYPES[@]}"; do
+    if [[ "$candidate" == "$accepted" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+require_relationship_type() {
+  local candidate="$1"
+  if ! valid_relationship_type "$candidate"; then
+    die "Invalid relationship type: ${candidate}. Accepted relationship types: ${ACCEPTED_RELATIONSHIP_TYPES}" 2
+  fi
+}
+
+die_api_status() {
+  local message="$1"
+  local status="$2"
+  local response="$3"
+  err "${RED}${message}${RESET}"
+  if [[ -n "$status" ]]; then
+    err "API status ${status}: ${response}"
+  elif [[ -n "$response" ]]; then
+    err "API response: ${response}"
+  fi
+  exit 1
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -37,7 +113,7 @@ Usage:
   mandible issue changed --since-manifest <file> [--json]          Compare issue digests to a manifest
   mandible issue changed --since-issue <id> [--kind <kind>] [--checkpoint <id>] [--json]
                                                                   Compare issue digests to a checkpoint payload and the issue's own head
-  mandible issue checkpoint add <id> --kind <kind> [--payload-file <file>]
+  mandible issue checkpoint add <id> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]
                                                                   Add an issue-scoped structured checkpoint
   mandible issue checkpoint show <id> --kind <kind> [--latest|--all] [--json]
                                                                   Show issue-scoped structured checkpoints
@@ -497,6 +573,10 @@ cmd_link() {
 
   while (( $# > 0 )); do
     case "$1" in
+      -h|--help)
+        usage_link
+        return 0
+        ;;
       --type)
         if (( $# < 2 )); then die "Missing value for --type." 2; fi
         link_type="$2"
@@ -522,11 +602,13 @@ cmd_link() {
   done
 
   if [[ -z "$source_ref" || ${#targets[@]} -eq 0 ]]; then
-    die "Usage: mandible issue link <src> <target...> [--type t] [--note n]" 2
+    usage_link >&2
+    exit 2
   fi
+  require_relationship_type "$link_type"
 
   require_tools
-  local targets_json payload response
+  local targets_json payload response status tmp_response
   targets_json=$(printf '%s\n' "${targets[@]}" | jq -R . | jq -s .)
   payload=$(jq -n \
     --arg source_ref "$source_ref" \
@@ -535,8 +617,13 @@ cmd_link() {
     --argjson target_refs "$targets_json" \
     '{source_ref:$source_ref, target_refs:$target_refs, link_type:$link_type}
      + (if $note == "" then {} else {note:$note} end)')
-  response=$(api_send POST "/api/ledger/relationships" "$payload") \
-    || die "${RED}Failed to link relationship(s) from ${source_ref}${RESET}" 1
+  tmp_response=$(mktemp)
+  status=$(api_send_capture POST "/api/ledger/relationships" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  if [[ ! "$status" =~ ^2 ]]; then
+    die_api_status "Failed to link relationship(s) from ${source_ref}" "$status" "$response"
+  fi
   printf '%s\n' "$response" | jq -r '"linked \(.edges | length) relationship(s) action_id=\(.action_id)"'
 }
 
@@ -547,6 +634,10 @@ cmd_unlink() {
 
   while (( $# > 0 )); do
     case "$1" in
+      -h|--help)
+        usage_unlink
+        return 0
+        ;;
       --type)
         if (( $# < 2 )); then die "Missing value for --type." 2; fi
         link_type="$2"
@@ -567,19 +658,26 @@ cmd_unlink() {
   done
 
   if [[ -z "$source_ref" || ${#targets[@]} -eq 0 ]]; then
-    die "Usage: mandible issue unlink <src> <target...> [--type t]" 2
+    usage_unlink >&2
+    exit 2
   fi
+  require_relationship_type "$link_type"
 
   require_tools
-  local targets_json payload response
+  local targets_json payload response status tmp_response
   targets_json=$(printf '%s\n' "${targets[@]}" | jq -R . | jq -s .)
   payload=$(jq -n \
     --arg source_ref "$source_ref" \
     --arg link_type "$link_type" \
     --argjson target_refs "$targets_json" \
     '{source_ref:$source_ref, target_refs:$target_refs, link_type:$link_type}')
-  response=$(api_send POST "/api/ledger/relationships/unlink" "$payload") \
-    || die "${RED}Failed to unlink relationship(s) from ${source_ref}${RESET}" 1
+  tmp_response=$(mktemp)
+  status=$(api_send_capture POST "/api/ledger/relationships/unlink" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  if [[ ! "$status" =~ ^2 ]]; then
+    die_api_status "Failed to unlink relationship(s) from ${source_ref}" "$status" "$response"
+  fi
   printf '%s\n' "$response" | jq -r '"unlinked \(.edges | length) relationship(s) action_id=\(.action_id)"'
 }
 
@@ -820,15 +918,27 @@ cmd_checkpoint() {
     add)
       local id=""
       local kind=""
+      local payload_inline=""
       local payload_file=""
 
       while (( $# > 0 )); do
         case "$1" in
+          -h|--help)
+            usage_checkpoint_add
+            return 0
+            ;;
           --kind)
             if (( $# < 2 )); then
               die "Missing value for --kind." 2
             fi
             kind="$2"
+            shift 2
+            ;;
+          --payload)
+            if (( $# < 2 )); then
+              die "Missing value for --payload." 2
+            fi
+            payload_inline="$2"
             shift 2
             ;;
           --payload-file)
@@ -853,12 +963,22 @@ cmd_checkpoint() {
       done
 
       if [[ -z "$id" || -z "$kind" ]]; then
-        die "Usage: mandible issue checkpoint add <issue-ref> --kind <kind> [--payload-file <file>]" 2
+        usage_checkpoint_add >&2
+        exit 2
+      fi
+      if [[ -n "$payload_inline" && -n "$payload_file" ]]; then
+        die "Use only one of --payload or --payload-file." 2
       fi
 
       require_tools
       local payload
-      if [[ -z "$payload_file" ]]; then
+      if [[ -n "$payload_inline" ]]; then
+        if [[ "$payload_inline" == "-" ]]; then
+          payload=$(jq -c '.')
+        else
+          payload=$(printf '%s\n' "$payload_inline" | jq -c '.')
+        fi
+      elif [[ -z "$payload_file" ]]; then
         payload='{}'
       elif [[ "$payload_file" == "-" ]]; then
         payload=$(jq -c '.')
@@ -881,6 +1001,10 @@ cmd_checkpoint() {
 
       while (( $# > 0 )); do
         case "$1" in
+          -h|--help)
+            usage_checkpoint_show
+            return 0
+            ;;
           --kind)
             if (( $# < 2 )); then
               die "Missing value for --kind." 2
@@ -906,7 +1030,8 @@ cmd_checkpoint() {
       done
 
       if [[ -z "$id" || -z "$kind" ]]; then
-        die "Usage: mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]" 2
+        usage_checkpoint_show >&2
+        exit 2
       fi
 
       require_tools
@@ -936,7 +1061,7 @@ cmd_checkpoint() {
     ""|-h|--help)
       cat <<'CHECKPOINT_USAGE'
 Usage:
-  mandible issue checkpoint add <issue-ref> --kind <kind> [--payload-file <file>]
+  mandible issue checkpoint add <issue-ref> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]
   mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]
 CHECKPOINT_USAGE
       ;;
@@ -1114,6 +1239,15 @@ cmd_parent_role_assume() {
   local json=0
   while (( $# > 0 )); do
     case "$1" in
+      -h|--help)
+        cat <<'PARENT_ROLE_ASSUME_USAGE'
+Usage:
+  mandible issue parent-role assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]
+
+If --session is omitted, Mandible tries MANDIBLE_SESSION_ID and CODEX_SESSION_ID.
+PARENT_ROLE_ASSUME_USAGE
+        return 0
+        ;;
       --session)
         if (( $# < 2 )); then die "Missing value for --session." 2; fi
         session_id="$2"; shift 2 ;;
@@ -1133,8 +1267,11 @@ cmd_parent_role_assume() {
         shift ;;
     esac
   done
-  if [[ -z "$issue_ref" || -z "$session_id" ]]; then
+  if [[ -z "$issue_ref" ]]; then
     die "Usage: mandible issue parent-role assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]" 2
+  fi
+  if [[ -z "$session_id" ]]; then
+    die "Missing parent-role session id. Pass --session <id>, or set MANDIBLE_SESSION_ID or CODEX_SESSION_ID for auto-detection." 2
   fi
   require_tools
   local payload tmp_response status response
