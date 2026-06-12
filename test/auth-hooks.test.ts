@@ -25,6 +25,21 @@ describe("AuthHookManager", () => {
     expect(builtin!.label).toBe("Build Mandible and install instructions after merge");
     expect(builtin!.builtin).toBe(true);
     expect(builtin!.enabled).toBe(true);
+
+    const dotfiles = hooks.find((h) => h.id === "builtin-dotfiles-agent-instructions");
+    expect(dotfiles).toBeDefined();
+    expect(dotfiles!.repo_pattern).toBe(".dotfiles");
+    expect(dotfiles!.auth_type).toBe("merge");
+    expect(dotfiles!.command).toContain("bin/agent-instruction-symlink-doctor");
+    expect(dotfiles!.command).toContain("bin/compile-agent-instructions");
+    expect(dotfiles!.builtin).toBe(true);
+    expect(dotfiles!.enabled).toBe(true);
+
+    const dotfilesNoDot = hooks.find((h) => h.id === "builtin-dotfiles-agent-instructions-nodot");
+    expect(dotfilesNoDot).toBeDefined();
+    expect(dotfilesNoDot!.repo_pattern).toBe("dotfiles");
+    expect(dotfilesNoDot!.builtin).toBe(true);
+    expect(dotfilesNoDot!.enabled).toBe(true);
   });
 
   it("creates a custom hook", () => {
@@ -85,6 +100,12 @@ describe("AuthHookManager", () => {
     const mandibleHooks = manager.findMatchingHooks("mandible", "merge");
     expect(mandibleHooks.length).toBeGreaterThanOrEqual(1);
     expect(mandibleHooks.some((h) => h.id === "builtin-mandible-rebuild")).toBe(true);
+
+    const dotfilesHooks = manager.findMatchingHooks(".dotfiles", "merge");
+    expect(dotfilesHooks.some((h) => h.id === "builtin-dotfiles-agent-instructions")).toBe(true);
+
+    const dotfilesNoDotHooks = manager.findMatchingHooks("dotfiles", "merge");
+    expect(dotfilesNoDotHooks.some((h) => h.id === "builtin-dotfiles-agent-instructions-nodot")).toBe(true);
 
     // Add a wildcard hook
     manager.create({
