@@ -456,7 +456,7 @@ cmd_triage() {
   fi
   query="repo=${root}&status=$(urlencode "$status")"
   api_get "/api/issues?${query}" | jq \
-    --arg label "$label" \
+    --arg label_filter "$label" \
     --arg stale_days "$stale_days" \
     --argjson limit "$limit" \
     --argjson json "$json" '
@@ -471,7 +471,7 @@ cmd_triage() {
       [ .[] as $repo
         | $repo.issues[]
         | . + {repo_name: $repo.repo_name}
-        | select($label == "" or ((.labels // []) | index($label)))
+        | select($label_filter == "" or ((.labels // []) | index($label_filter)))
         | select((stale_cutoff == null) or (epoch(.updated_at) <= stale_cutoff))
       ]
       | sort_by(.updated_at // "")

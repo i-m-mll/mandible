@@ -163,6 +163,12 @@ export class FileRpcTransport {
 
 export function isAllowedFileRpcRoute(method: string, pathname: string): boolean {
   const normalizedMethod = method.toUpperCase();
+  if (normalizedMethod === "GET" && pathname === "/api/conversations") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/conversations/sources") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/conversations/search") return true;
+  if (normalizedMethod === "GET" && /^\/api\/conversations\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && /^\/api\/conversations\/[^/]+\/blocks$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && /^\/api\/conversations\/[^/]+\/forks$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/issues") return true;
   if (normalizedMethod === "POST" && pathname === "/api/issues/resolutions") return true;
   if (normalizedMethod === "POST" && /^\/api\/issues\/[^/]+$/.test(pathname)) {
@@ -206,6 +212,8 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/link") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/check") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/snapshot") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/work/repos") return true;
   return false;
 }
 

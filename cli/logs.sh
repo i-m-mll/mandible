@@ -3,6 +3,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+source "$SCRIPT_DIR/api.sh"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -18,6 +21,126 @@ Raw provider source logs are the veridical transcript source. These commands do
 not import, reconcile, or mutate the Mandible database.
 EOF
 }
+
+logs_source() {
+  case "$1" in
+    claude) echo "claude_code" ;;
+    codex|gemini) echo "$1" ;;
+    all|"") echo "" ;;
+    *) echo "Error: unknown provider '$1'. Use: codex, claude, gemini, all" >&2; exit 1 ;;
+  esac
+}
+
+logs_resolve_conversation_id() {
+  local target="$1"
+  local encoded response resolved
+  encoded=$(urlencode "$target")
+  response=$(api_get "/api/conversations?session_id=${encoded}&limit=1" 2>/dev/null || true)
+  resolved=$(printf '%s' "$response" | jq -r '.conversations[0].id // empty' 2>/dev/null || true)
+  if [[ -n "$resolved" ]]; then
+    printf '%s' "$resolved"
+  else
+    printf '%s' "$target"
+  fi
+}
+
+file_rpc_inventory() {
+  local provider="all" since="" limit=50 json=0 source request response
+  while (( $# > 0 )); do
+    case "$1" in
+      --provider) provider="${2:?--provider requires a value}"; shift 2 ;;
+      --since) since="${2:?--since requires a value}"; shift 2 ;;
+      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
+      --json) json=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+  done
+  source=$(logs_source "$provider")
+  request="/api/conversations?limit=$(urlencode "$limit")"
+  if [[ -n "$source" ]]; then request="${request}&source=$(urlencode "$source")"; fi
+  if [[ -n "$since" ]]; then request="${request}&since=$(urlencode "$since")"; fi
+  response=$(api_get "$request")
+  if (( json )); then
+    printf '%s\n' "$response" | jq '[.conversations[] | {
+      provider: .source,
+      path: .source_path,
+      size: null,
+      mtime: (.updated_at // .started_at),
+      session_id,
+      title,
+      cwd,
+      model,
+      branch
+    }]'
+  else
+    printf '%s\n' "$response" | jq -r '.conversations[] | "\(.source)\t\((.updated_at // .started_at)[0:19])\t\(.session_id // .id)\t\(.source_path)"'
+  fi
+}
+
+file_rpc_inspect() {
+  local target="${1:-}" provider="all" head=20 parse=0 json=0 role_filter="" type_filter="" content_filter="" limit=50 conv_id request response
+  if [[ -z "$target" ]]; then echo "log path, conversation id, or session id required" >&2; exit 2; fi
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      --provider) provider="${2:?--provider requires a value}"; logs_source "$provider" >/dev/null; shift 2 ;;
+      --head) head="${2:?--head requires a value}"; shift 2 ;;
+      --parse) parse=1; shift ;;
+      --role) role_filter="${2:?--role requires a value}"; shift 2 ;;
+      --type) type_filter="${2:?--type requires a value}"; shift 2 ;;
+      --content|--contains) content_filter="${2:?--content requires a value}"; shift 2 ;;
+      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
+      --json) json=1; shift ;;
+      --tool|--tool-kind|--since|--until)
+        echo "Error: $1 is not supported through file-RPC logs inspect." >&2
+        exit 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+  done
+  conv_id=$(logs_resolve_conversation_id "$target")
+  if (( parse )); then
+    request="/api/conversations/$(urlencode "$conv_id")/blocks?limit=$(urlencode "$limit")"
+    if [[ -n "$type_filter" ]]; then request="${request}&type=$(urlencode "$type_filter")"; fi
+    response=$(api_get "$request")
+    if (( json )); then
+      printf '%s\n' "$response" | jq \
+        --arg role "$role_filter" \
+        --arg content "$content_filter" \
+        '[.blocks[] | select($role == "" or .role == $role) | select($content == "" or (.content | contains($content)))]'
+    else
+      printf '%s\n' "$response" | jq -r \
+        --arg role "$role_filter" \
+        --arg content "$content_filter" \
+        '.blocks[] | select($role == "" or .role == $role) | select($content == "" or (.content | contains($content))) | "\(.position)\t\(.type)\t\(.role)\t\((.content | gsub("\\s+"; " ")) | if length > 500 then .[0:497] + "..." else . end)"'
+    fi
+    return
+  fi
+
+  response=$(api_get "/api/conversations/$(urlencode "$conv_id")")
+  if (( json )); then
+    printf '%s\n' "$response" | jq --argjson head "$head" '{summary: .conversation, records: (.blocks[0:$head])}'
+  else
+    printf '%s\n' "$response" | jq -r --argjson head "$head" '
+      .conversation as $c |
+      "\($c.source) \($c.session_id // $c.id)",
+      "path: \($c.source_path)",
+      "mtime: \($c.updated_at // $c.started_at)",
+      "records shown: \([.blocks[0:$head][]] | length)",
+      (.blocks[0:$head][] | (.content | gsub("\\s+"; " ") | if length > 500 then .[0:497] + "..." else . end))'
+  fi
+}
+
+if api_is_file_rpc; then
+  case "${1:-}" in
+    inventory) shift; file_rpc_inventory "$@"; exit $? ;;
+    inspect) shift; file_rpc_inspect "$@"; exit $? ;;
+    missing|orphans)
+      echo "Error: logs ${1} needs host filesystem comparison and is not available through file-RPC." >&2
+      exit 2 ;;
+  esac
+fi
 
 if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
   usage

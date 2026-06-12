@@ -1430,4 +1430,58 @@ describe("issue CLI list repo scoping", () => {
       clearInterval(timer);
     }
   });
+
+  it("triages explicit repo filters through file RPC with jq 1.6-safe label variables", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-issue-triage-file-rpc-"));
+    tempRoots.push(spoolDir);
+    const seenPaths: string[] = [];
+    const timer = startFileRpcResponder(
+      spoolDir,
+      (request) => {
+        seenPaths.push(String(request.path ?? ""));
+        return {
+          status: 200,
+          body: [
+            {
+              repo_name: "mandible",
+              issues: [
+                {
+                  id: "abc",
+                  status: "open",
+                  title: "Read-only transport",
+                  updated_at: "2026-06-12T12:00:00.000Z",
+                  labels: ["feature"],
+                },
+                {
+                  id: "def",
+                  status: "open",
+                  title: "Other work",
+                  updated_at: "2026-06-12T12:00:00.000Z",
+                  labels: ["maintenance"],
+                },
+              ],
+            },
+          ],
+        };
+      },
+    );
+
+    try {
+      const result = await run(["issue", "triage", "--repo", "/repo/mandible", "--label", "feature", "--json"], 0, os.tmpdir(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([
+        expect.objectContaining({ id: "abc", title: "Read-only transport" }),
+      ]);
+      expect(result.stderr).not.toContain("jq:");
+      const triagePath = seenPaths.find((item) => item.startsWith("/api/issues?"));
+      expect(triagePath).toBeTruthy();
+      expect(new URL(`http://127.0.0.1${triagePath}`).searchParams.get("repo")).toBe("/repo/mandible");
+    } finally {
+      clearInterval(timer);
+    }
+  });
 });
