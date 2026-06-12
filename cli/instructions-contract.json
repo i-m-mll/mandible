@@ -102,6 +102,7 @@
     "Delegation manifests are stored as `delegation-manifest` checkpoints; refresh digests with `mandible issue heads` before resuming.",
     "`mandible issue changed --since-issue` compares the umbrella's own issue head as well as child manifest entries. Parent sessions that need their own baseline should pass `--checkpoint <id>` instead of relying on the latest shared checkpoint.",
     "Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.",
+    "Successful auth merges archive reliably linked terminal Codex worker threads for closed child issues; live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.",
     "Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate."
   ],
   "transports": [
