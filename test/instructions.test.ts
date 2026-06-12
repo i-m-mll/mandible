@@ -15,6 +15,7 @@ describe("Mandible instructions fragment", () => {
 
     expect(fragment).toContain("# Mandible Interface Contract");
     expect(fragment).toContain("mandible issue heads <id>...");
+    expect(fragment).toContain("mandible umbrella manifest refresh <umbrella>");
     expect(fragment).toContain("Mandible-Issue: <ref>");
     expect(fragment).toContain("worker_status");
     expect(fragment).toContain("MANDIBLE_BASE=file:///path/to/spool");

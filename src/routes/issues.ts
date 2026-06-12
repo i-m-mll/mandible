@@ -575,12 +575,12 @@ function repoAuthQueueSummary(db: Db, projection: LedgerIssueDetailProjection): 
   };
 }
 
-function buildUmbrellaStatus(db: Db, issueId: string): Record<string, unknown> {
+function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: boolean } = {}): Record<string, unknown> {
   const umbrella = buildLedgerIssueDetailProjection(db, issueId);
   const childIds = listUmbrellaChildEdgeIds(db, umbrella.id);
   const children = childIds.map((childId) => {
     const child = buildLedgerIssueDetailProjection(db, childId);
-    return {
+    const summary: Record<string, unknown> = {
       id: child.id,
       short_id: child.display_id,
       title: child.title,
@@ -593,6 +593,28 @@ function buildUmbrellaStatus(db: Db, issueId: string): Record<string, unknown> {
       auth_requests: child.auth_requests,
       latest_comment: latestComment(child),
       latest_closeout: latestCheckpoint(child, "closeout"),
+    };
+    if (!options.deep) return summary;
+    return {
+      ...summary,
+      body: child.body,
+      current_revision_id: currentIssueBodyRevisionId(db, child.id),
+      resolution: child.resolution,
+      kind: child.kind,
+      priority: child.priority,
+      source: child.source,
+      author: child.author,
+      project: child.project,
+      created_at: child.created_at,
+      updated_at: child.updated_at,
+      closed_at: child.closed_at,
+      aliases: child.aliases,
+      relationships: child.relationships,
+      work_units: child.work_units,
+      sessions: child.sessions,
+      associated_artifacts: child.associated_artifacts,
+      conflicts: child.conflicts,
+      sync: child.sync,
     };
   });
   return {
@@ -667,6 +689,20 @@ function buildUmbrellaAdoptionResponse(
       action_id: linked.action_id,
       delegation_manifest: checkpoint,
       drift: (status as Record<string, unknown>).child_drift,
+    },
+  };
+}
+
+function buildUmbrellaManifestRefreshResponse(db: Db, umbrellaId: string): Record<string, unknown> {
+  const childIds = listUmbrellaChildEdgeIds(db, umbrellaId);
+  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds);
+  const status = buildUmbrellaStatus(db, umbrellaId);
+  return {
+    ...status,
+    operation: {
+      kind: "manifest-refresh",
+      refreshed_child_refs: issueDisplayRefs(db, childIds),
+      delegation_manifest: checkpoint,
     },
   };
 }
@@ -920,7 +956,8 @@ export function registerIssueRoutes(
       return;
     }
     try {
-      sendJson(res, 200, buildUmbrellaStatus(db, resolved.issue_id));
+      const deep = getQueryParam(req, "deep") === "true";
+      sendJson(res, 200, buildUmbrellaStatus(db, resolved.issue_id, { deep }));
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
     }
@@ -977,6 +1014,27 @@ export function registerIssueRoutes(
       );
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to reconcile umbrella" });
+    }
+  });
+
+  server.post("/api/ledger/issues/:issueId/umbrella-manifest-refresh", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    try {
+      sendJson(res, 200, buildUmbrellaManifestRefreshResponse(db, resolved.issue_id));
+    } catch (error) {
+      sendJson(res, 400, {
+        error: error instanceof Error ? error.message : "failed to refresh umbrella manifest",
+      });
     }
   });
 

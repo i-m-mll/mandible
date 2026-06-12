@@ -1,4 +1,4 @@
-# Mandible CLI Cheatsheet (source-verified 2026-06-09)
+# Mandible CLI Cheatsheet (source-verified 2026-06-12)
 
 ```
 ## ISSUE
@@ -6,9 +6,10 @@ mandible issue new -t <title> -m <body> [--label <label>]...
 mandible issue list [--status open|closed|all|merged] [--repo R]  # NO --json, NO --limit
 mandible issue show <id>                                      # NO --json
 mandible issue report <id> [--json]                          # exit 3 = NOT from this CLI (curl -sf exits 22 on HTTP err)
-mandible umbrella status <id> [--json]
+mandible umbrella status <id> [--deep] [--json]
 mandible umbrella adopt <umbrella> <children...> [--json]
 mandible umbrella reconcile <umbrella> [--json]
+mandible umbrella manifest refresh <umbrella> [--json]
 mandible issue parent-role status <umbrella> [--json]
 mandible issue parent-role assume <umbrella> [--session S] [--mechanism M] [--override] [--json]
 mandible issue triage [--status open|closed|all|merged] [--label L] [--repo R] [--stale-days N] [--limit N] [--json]
@@ -111,6 +112,16 @@ umbrellas whose child links are missing but whose body contains the canonical
 Children table. The table format is the parent plan table with columns `issue`,
 `scope`, `branch`, and `state`; reconcile derives children only from that table,
 not from arbitrary issue refs elsewhere in the umbrella body.
+
+`mandible umbrella status <umbrella> --deep [--json]` keeps the default status
+surface unchanged but inlines child issue bodies, latest closeout checkpoints,
+latest comments, branch links, auth links, and issue state needed for parent
+resumption anomaly checks.
+
+`mandible umbrella manifest refresh <umbrella> [--json]` refreshes the latest
+`delegation-manifest` checkpoint from the current linked child issue heads on
+the server without changing child edges. Use it on parent resumption instead of
+assembling `issue heads` plus `issue checkpoint add` client-side.
 
 ## Issue Relationship Types
 

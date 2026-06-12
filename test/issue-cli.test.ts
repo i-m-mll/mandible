@@ -309,7 +309,10 @@ function listen(): Promise<number> {
         });
         return;
       }
-      if (req.url === "/api/ledger/issues/abc/umbrella-status") {
+      if (
+        req.url === "/api/ledger/issues/abc/umbrella-status" ||
+        req.url === "/api/ledger/issues/abc/umbrella-status?deep=true"
+      ) {
         res.end(JSON.stringify({
           umbrella: {
             id: "issue-1",
@@ -322,6 +325,30 @@ function listen(): Promise<number> {
           children: [{ id: "issue-2", short_id: "def", title: "Child", status: "open" }],
           auth_queue: { pending_requests: [], active_requests: [] },
         }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/ledger/issues/abc/umbrella-manifest-refresh") {
+        void readBody().then((body) => {
+          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+          res.end(JSON.stringify({
+            umbrella: {
+              id: "issue-1",
+              short_id: "abc",
+              title: "Umbrella",
+              status: "open",
+              current_revision_id: "rev_issue_1",
+            },
+            delegation_manifest: { id: "checkpoint-4", payload: [] },
+            children: [{ id: "issue-2", short_id: "def", title: "Child", status: "open" }],
+            child_drift: { missing_edge_refs: [], extra_edge_refs: [] },
+            operation: {
+              kind: "manifest-refresh",
+              refreshed_child_refs: ["def"],
+              delegation_manifest: { id: "checkpoint-4", payload: [] },
+            },
+            auth_queue: { pending_requests: [], active_requests: [] },
+          }));
+        });
         return;
       }
       if (req.method === "POST" && req.url === "/api/ledger/issues/abc/umbrella-adopt") {
@@ -598,6 +625,15 @@ describe("issue CLI body revisions", () => {
     }
   });
 
+  it("requests deep umbrella status when asked", async () => {
+    const port = await listen();
+    const result = await run(["umbrella", "status", "abc", "--deep", "--json"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/umbrella-status?deep=true");
+    expect(JSON.parse(result.stdout).umbrella.short_id).toBe("abc");
+  });
+
   it("adopts umbrella children with the expected payload", async () => {
     const port = await listen();
     const result = await run(["umbrella", "adopt", "abc", "def", "ghi", "--json"], port);
@@ -626,6 +662,22 @@ describe("issue CLI body revisions", () => {
     const parsed = JSON.parse(result.stdout);
     expect(parsed.umbrella.short_id).toBe("abc");
     expect(parsed.operation.created_child_refs).toEqual(["def"]);
+  });
+
+  it("refreshes an umbrella manifest server-side", async () => {
+    const port = await listen();
+    const result = await run(["umbrella", "manifest", "refresh", "abc", "--json"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc/umbrella-manifest-refresh",
+      method: "POST",
+      body: {},
+    });
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.umbrella.short_id).toBe("abc");
+    expect(parsed.operation.kind).toBe("manifest-refresh");
+    expect(parsed.operation.refreshed_child_refs).toEqual(["def"]);
   });
 
   it("surfaces live parent-role holders and requires override", async () => {
