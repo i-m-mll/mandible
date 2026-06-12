@@ -334,6 +334,37 @@ describe("ledger issue heads", () => {
     expect(after.last_event_kind).toBe("issue.checkpoint.created");
     expect(after.last_event_at).not.toBeNull();
   });
+
+  it("can compute an issue head at a historical event cutoff", () => {
+    const project = createProject();
+    const store = new LedgerStore(db);
+    const issue = createIssue(store, project.project.id, "Historical digest target");
+    const created = getLedgerIssueHead(db, issue.id);
+
+    store.addIssueCheckpoint(issue.id, {
+      kind: "delegation-manifest",
+      payload: [],
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+      created_at: (created.last_event_at ?? Date.now()) + 1,
+    });
+    const checkpointHead = getLedgerIssueHead(db, issue.id);
+
+    store.addComment(issue.id, {
+      body: "Later umbrella coordination comment",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+      created_at: (checkpointHead.last_event_at ?? Date.now()) + 1,
+    });
+    const current = getLedgerIssueHead(db, issue.id);
+    const historical = getLedgerIssueHead(db, issue.id, { at: checkpointHead.last_event_at ?? 0 });
+
+    expect(historical.digest).toBe(checkpointHead.digest);
+    expect(historical.digest).not.toBe(current.digest);
+    expect(current.last_event_kind).toBe("comment.created");
+  });
 });
 
 describe("ledger store", () => {

@@ -528,6 +528,12 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "missing issueId" });
       return;
     }
+    const atParam = getQueryParam(req, "at");
+    const at = atParam === undefined ? null : Number(atParam);
+    if (at !== null && (!Number.isFinite(at) || at < 0)) {
+      sendJson(res, 400, { error: "invalid at timestamp" });
+      return;
+    }
     const db = getDb();
     const resolved = resolveLedgerIssueId(db, issueRef);
     if (!resolved.ok) {
@@ -535,7 +541,7 @@ export function registerIssueRoutes(
       return;
     }
     try {
-      sendJson(res, 200, getLedgerIssueHead(db, resolved.issue_id));
+      sendJson(res, 200, getLedgerIssueHead(db, resolved.issue_id, at === null ? {} : { at }));
     } catch (error) {
       sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
     }
