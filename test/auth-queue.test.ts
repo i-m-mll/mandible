@@ -118,6 +118,7 @@ describe("auth queue", () => {
       repo: "mandible",
       base_branch: "main",
       head_branch: "feature/demo",
+      merge_head_sha: "1111111111111111111111111111111111111111",
       files_changed: 3,
       additions: 10,
       deletions: 2,
@@ -128,6 +129,7 @@ describe("auth queue", () => {
     expect(fetched?.repo).toBe("mandible");
     expect(fetched?.base_branch).toBe("main");
     expect(fetched?.head_branch).toBe("feature/demo");
+    expect(fetched?.merge_head_sha).toBe("1111111111111111111111111111111111111111");
     expect(fetched?.files_changed).toBe(3);
     expect(fetched?.additions).toBe(10);
     expect(fetched?.deletions).toBe(2);
@@ -245,10 +247,138 @@ describe("auth queue", () => {
         .get() as { state: string; resolved_at: number | null };
       expect(recovered?.status).toBe("completed");
       expect(recovered?.exit_code).toBe(0);
+      expect(recovered?.merge_finalized_at).toBe(now);
       expect(workUnit.state).toBe("resolved");
       expect(workUnit.resolved_at).toBe(now);
     } finally {
       restarted.dispose();
+      db.close();
+    }
+  });
+
+  it("does not replay finalized same-branch merge finalizers against newer pending requests on restart", () => {
+    let now = 1000;
+    const db = createMigratedDb();
+    const queue = new AuthQueue({ db, now: () => now });
+    const completed = queue.submit({
+      type: "merge",
+      command: "mandible auth merge integration/reused --into main",
+      title: "First wave",
+      repo: "rlrmp",
+      base_branch: "main",
+      head_branch: "integration/reused",
+      merge_head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      execution_mode: "remote"
+    });
+    queue.setResult(completed.id, 0, "ok");
+    queue.dispose();
+
+    now = 2000;
+    const secondQueue = new AuthQueue({ db, now: () => now });
+    const pending = secondQueue.submit({
+      type: "merge",
+      command: "mandible auth merge integration/reused --into main",
+      title: "Second wave",
+      repo: "rlrmp",
+      base_branch: "main",
+      head_branch: "integration/reused",
+      merge_head_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      execution_mode: "remote"
+    });
+    secondQueue.dispose();
+
+    now = 3000;
+    const restarted = new AuthQueue({ db, now: () => now });
+    try {
+      const stillPending = restarted.getRequest(pending.id);
+      const finalized = restarted.getRequest(completed.id);
+      expect(finalized?.merge_finalized_at).toBe(1000);
+      expect(stillPending?.status).toBe("pending");
+      expect(stillPending?.error).toBeNull();
+    } finally {
+      restarted.dispose();
+      db.close();
+    }
+  });
+
+  it("does not auto-dismiss same-branch pending requests with a different recorded head", () => {
+    let now = 2000;
+    const db = createMigratedDb();
+    db.prepare(
+      `INSERT INTO auth_requests (
+        id, session_id, type, command, title, repo, base_branch, head_branch,
+        merge_head_sha, status, created_at, updated_at, resolved_at, expires_at,
+        exit_code, output, execution_mode, files_changed, additions, deletions,
+        approval_source
+      ) VALUES (
+        'completed-old-head', NULL, 'merge', 'mandible auth merge feature/reused --into main',
+        'Old head', 'repo', 'main', 'feature/reused',
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'completed', 100, 1000, 1000, 10000,
+        0, 'ok', 'remote', 0, 0, 0, 'manual'
+      )`
+    ).run();
+    db.prepare(
+      `INSERT INTO auth_requests (
+        id, session_id, type, command, title, repo, base_branch, head_branch,
+        merge_head_sha, status, created_at, updated_at, expires_at, output,
+        execution_mode, files_changed, additions, deletions, approval_source
+      ) VALUES (
+        'pending-new-head', NULL, 'merge', 'mandible auth merge feature/reused --into main',
+        'New head', 'repo', 'main', 'feature/reused',
+        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'pending', 900, 900, 10000, '',
+        'remote', 0, 0, 0, 'manual'
+      )`
+    ).run();
+
+    const queue = new AuthQueue({ db, now: () => now });
+    try {
+      const pending = queue.getRequest("pending-new-head");
+      const completed = queue.getRequest("completed-old-head");
+      expect(completed?.merge_finalized_at).toBe(now);
+      expect(pending?.status).toBe("pending");
+      expect(pending?.error).toBeNull();
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
+
+  it("auto-dismisses same-branch pending requests with the same recorded head", () => {
+    let now = 2000;
+    const db = createMigratedDb();
+    db.prepare(
+      `INSERT INTO auth_requests (
+        id, session_id, type, command, title, repo, base_branch, head_branch,
+        merge_head_sha, status, created_at, updated_at, resolved_at, expires_at,
+        exit_code, output, execution_mode, files_changed, additions, deletions,
+        approval_source
+      ) VALUES (
+        'completed-same-head', NULL, 'merge', 'mandible auth merge feature/reused --into main',
+        'Merged head', 'repo', 'main', 'feature/reused',
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'completed', 100, 1000, 1000, 10000,
+        0, 'ok', 'remote', 0, 0, 0, 'manual'
+      )`
+    ).run();
+    db.prepare(
+      `INSERT INTO auth_requests (
+        id, session_id, type, command, title, repo, base_branch, head_branch,
+        merge_head_sha, status, created_at, updated_at, expires_at, output,
+        execution_mode, files_changed, additions, deletions, approval_source
+      ) VALUES (
+        'pending-same-head', NULL, 'merge', 'mandible auth merge feature/reused --into main',
+        'Duplicate head', 'repo', 'main', 'feature/reused',
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'pending', 900, 900, 10000, '',
+        'remote', 0, 0, 0, 'manual'
+      )`
+    ).run();
+
+    const queue = new AuthQueue({ db, now: () => now });
+    try {
+      const pending = queue.getRequest("pending-same-head");
+      expect(pending?.status).toBe("dismissed");
+      expect(pending?.error).toContain("Auto-dismissed");
+    } finally {
+      queue.dispose();
       db.close();
     }
   });

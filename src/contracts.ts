@@ -169,6 +169,8 @@ export type AuthRequest = {
   repo?: string;
   base_branch?: string;
   head_branch?: string;
+  merge_head_sha?: string | null;
+  merge_finalized_at?: number | null;
   files_changed?: number;
   additions?: number;
   deletions?: number;

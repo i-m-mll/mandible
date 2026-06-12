@@ -1976,6 +1976,18 @@ const MIGRATIONS: Migration[] = [
          position = excluded.position,
          updated_at = excluded.updated_at`
     ]
+  },
+  {
+    version: 79,
+    name: "auth_request_merge_finalizer_identity",
+    statements: [
+      `UPDATE auth_requests
+       SET merge_finalized_at = COALESCE(resolved_at, updated_at, created_at)
+       WHERE type = 'merge'
+         AND status = 'completed'
+         AND exit_code = 0
+         AND merge_finalized_at IS NULL`
+    ]
   }
 ];
 
@@ -2059,6 +2071,9 @@ export function migrate(db: Db): void {
         }
         if (migration.version === 76) {
           ensureAuthRequestActionPrerequisites(db);
+        }
+        if (migration.version === 79) {
+          ensureAuthRequestMergeFinalizerColumns(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -3286,6 +3301,17 @@ function ensureAuthRequestActionPrerequisites(db: Db): void {
     if (!columns.has(name)) {
       db.exec(`ALTER TABLE auth_requests ADD COLUMN ${name} ${definition}`);
     }
+  }
+}
+
+function ensureAuthRequestMergeFinalizerColumns(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns = tableColumnNames(db, "auth_requests");
+  if (!columns.has("merge_head_sha")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_head_sha TEXT");
+  }
+  if (!columns.has("merge_finalized_at")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_finalized_at INTEGER");
   }
 }
 

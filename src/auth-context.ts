@@ -20,6 +20,7 @@ export interface AuthMergeExecutionContext {
   repoName: string | null;
   baseBranch: string;
   headBranch: string;
+  headSha: string;
 }
 
 export interface AuthMergeReviewMetadata {
@@ -71,6 +72,7 @@ export function resolveAuthMergeExecutionContext(
   verifyLocalBranch(repo.root, "base_branch", baseBranch);
   verifyLocalBranch(repo.root, "head_branch", headBranch);
   verifyHeadAheadOfBase(repo.root, baseBranch, headBranch);
+  const headSha = resolveBranchHeadSha(repo.root, headBranch);
 
   const executionCwd = resolveBaseBranchWorktree(repo.root, baseBranch);
   return {
@@ -79,7 +81,28 @@ export function resolveAuthMergeExecutionContext(
     repoName: repo.name,
     baseBranch,
     headBranch,
+    headSha,
   };
+}
+
+export function resolveBranchHeadSha(repoRoot: string, branch: string): string {
+  try {
+    const sha = execFileSync(
+      "git",
+      ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`],
+      { cwd: repoRoot, encoding: "utf-8", timeout: 5000 }
+    ).trim();
+    if (sha) {
+      return sha;
+    }
+  } catch {
+    throw new AuthExecutionContextError(
+      `Unable to resolve auth merge head commit for ${branch}.`
+    );
+  }
+  throw new AuthExecutionContextError(
+    `Unable to resolve auth merge head commit for ${branch}.`
+  );
 }
 
 export function computeAuthMergeReviewMetadata(
