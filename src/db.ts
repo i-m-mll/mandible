@@ -1912,6 +1912,70 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_auth_request_actions_state
         ON auth_request_actions(state, auth_request_id)`
     ]
+  },
+  {
+    version: 78,
+    name: "dotfiles_agent_instruction_hook",
+    // Bug: 64a1f7d — dotfiles merges must refresh compiled agent
+    // instructions and repair the home-visible Claude/Codex symlinks.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS auth_hooks (
+        id            TEXT PRIMARY KEY,
+        repo_pattern  TEXT NOT NULL DEFAULT '*',
+        auth_type     TEXT NOT NULL DEFAULT 'merge',
+        command       TEXT NOT NULL,
+        label         TEXT NOT NULL DEFAULT '',
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        builtin       INTEGER NOT NULL DEFAULT 0,
+        position      INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      )`,
+      `INSERT INTO auth_hooks (id, repo_pattern, auth_type, command, label, enabled, builtin, position, created_at, updated_at)
+       VALUES (
+         'builtin-dotfiles-agent-instructions',
+         '.dotfiles',
+         'merge',
+         'if [[ -x bin/agent-instruction-symlink-doctor ]]; then bash bin/agent-instruction-symlink-doctor; elif [[ -x bin/compile-agent-instructions ]]; then bash bin/compile-agent-instructions; else echo "dotfiles agent instruction hook missing repair script" >&2; exit 1; fi',
+         'Compile agent instructions and repair home symlinks',
+         1,
+         1,
+         0,
+         CAST(strftime('%s','now') * 1000 AS INTEGER),
+         CAST(strftime('%s','now') * 1000 AS INTEGER)
+       )
+       ON CONFLICT(id) DO UPDATE SET
+         repo_pattern = excluded.repo_pattern,
+         auth_type = excluded.auth_type,
+         command = excluded.command,
+         label = excluded.label,
+         enabled = excluded.enabled,
+         builtin = excluded.builtin,
+         position = excluded.position,
+         updated_at = excluded.updated_at`,
+      `INSERT INTO auth_hooks (id, repo_pattern, auth_type, command, label, enabled, builtin, position, created_at, updated_at)
+       VALUES (
+         'builtin-dotfiles-agent-instructions-nodot',
+         'dotfiles',
+         'merge',
+         'if [[ -x bin/agent-instruction-symlink-doctor ]]; then bash bin/agent-instruction-symlink-doctor; elif [[ -x bin/compile-agent-instructions ]]; then bash bin/compile-agent-instructions; else echo "dotfiles agent instruction hook missing repair script" >&2; exit 1; fi',
+         'Compile agent instructions and repair home symlinks',
+         1,
+         1,
+         0,
+         CAST(strftime('%s','now') * 1000 AS INTEGER),
+         CAST(strftime('%s','now') * 1000 AS INTEGER)
+       )
+       ON CONFLICT(id) DO UPDATE SET
+         repo_pattern = excluded.repo_pattern,
+         auth_type = excluded.auth_type,
+         command = excluded.command,
+         label = excluded.label,
+         enabled = excluded.enabled,
+         builtin = excluded.builtin,
+         position = excluded.position,
+         updated_at = excluded.updated_at`
+    ]
   }
 ];
 

@@ -201,4 +201,53 @@ describe("instructions CLI", () => {
     expect(standaloneCleanup.status).toBe(0);
     expect(fs.existsSync(standaloneTarget)).toBe(false);
   });
+
+  it("preserves symlinked instruction targets when installing and cleaning", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-symlink-"));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instructions-symlink-home-"));
+    tempRoots.push(tempDir, home);
+
+    const managedReal = path.join(tempDir, "tracked", "AGENTS.md");
+    const managedLink = path.join(tempDir, "home", "AGENTS.md");
+    fs.mkdirSync(path.dirname(managedReal), { recursive: true });
+    fs.mkdirSync(path.dirname(managedLink), { recursive: true });
+    fs.writeFileSync(managedReal, "# Existing\n", "utf8");
+    fs.symlinkSync(managedReal, managedLink);
+
+    const managedInstall = await run(["instructions", "install", "--target", managedLink]);
+    expect(managedInstall.status).toBe(0);
+    expect(fs.lstatSync(managedLink).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(managedLink)).toBe(managedReal);
+    expect(fs.readFileSync(managedReal, "utf8")).toContain("Mandible Interface Contract");
+
+    const managedCleanup = await run([
+      "instructions",
+      "cleanup",
+      "--target",
+      managedLink,
+      "--mode",
+      "managed-block",
+    ]);
+    expect(managedCleanup.status).toBe(0);
+    expect(fs.lstatSync(managedLink).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(managedLink)).toBe(managedReal);
+    expect(fs.readFileSync(managedReal, "utf8")).toBe("# Existing\n");
+
+    const standaloneReal = path.join(tempDir, "tracked", "50-mandible.generated.md");
+    const standaloneLink = path.join(tempDir, "home", "50-mandible.generated.md");
+    fs.writeFileSync(standaloneReal, "stale\n", "utf8");
+    fs.symlinkSync(standaloneReal, standaloneLink);
+    const env = { HOME: home, MANDIBLE_DB: path.join(home, ".cache", "mandible", "mandible.db") };
+
+    const addStandalone = await run(["instructions", "targets", "add", standaloneLink, "--mode", "standalone"], env);
+    expect(addStandalone.status).toBe(0);
+
+    const standaloneInstall = await run(["instructions", "install"], env);
+    expect(standaloneInstall.status).toBe(0);
+    expect(fs.lstatSync(standaloneLink).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(standaloneLink)).toBe(standaloneReal);
+    const standaloneInstalled = fs.readFileSync(standaloneReal, "utf8");
+    expect(standaloneInstalled).toContain("Mandible Interface Contract");
+    expect(standaloneInstalled).not.toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
+  });
 });
