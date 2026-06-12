@@ -15,6 +15,7 @@ import type {
   LedgerIssueCheckpoint,
   LedgerIssueKind,
   LedgerIssueRelationship,
+  LedgerRelationshipEdge,
   LedgerIssueResolution,
   LedgerIssueStatus,
   LedgerLabel,
@@ -134,7 +135,9 @@ export interface LedgerIssueDetailRelationship {
   id: string;
   direction: "incoming" | "outgoing";
   relationship_type: LedgerRelationshipType;
+  link_type: LedgerRelationshipType;
   provenance: LedgerRelationshipProvenance;
+  note: string | null;
   confidence: string;
   metadata: Record<string, unknown>;
   created_at: number;
@@ -538,7 +541,7 @@ function buildRelationships(db: Db, issue: LedgerIssue & {
   outgoing_relationships: LedgerIssueRelationship[];
   incoming_relationships: LedgerIssueRelationship[];
 }): LedgerIssueDetailRelationship[] {
-  const rows = [
+  const relationshipRows = [
     ...issue.outgoing_relationships
       .filter((relationship) => relationship.deleted_at === null)
       .map((relationship) => ({ row: relationship, direction: "outgoing" as const, related: relationship.target_issue_id })),
@@ -547,17 +550,73 @@ function buildRelationships(db: Db, issue: LedgerIssue & {
       .map((relationship) => ({ row: relationship, direction: "incoming" as const, related: relationship.source_issue_id })),
   ];
 
-  return rows.map(({ row, direction, related }) => ({
+  const relationships: LedgerIssueDetailRelationship[] = relationshipRows.map(({ row, direction, related }) => ({
     id: row.id,
     direction,
     relationship_type: row.relationship_type,
+    link_type: row.relationship_type,
     provenance: row.provenance,
+    note: null,
     confidence: row.confidence,
     metadata: parseJsonObject(row.metadata_json),
     created_at: row.created_at,
     updated_at: row.updated_at,
     related_issue: getIssueSummary(db, related),
   }));
+
+  const edgeRows = listIssueRelationshipEdges(db, issue.id);
+  for (const { row, direction, related } of edgeRows) {
+    relationships.push({
+      id: row.id,
+      direction,
+      relationship_type: row.link_type,
+      link_type: row.link_type,
+      provenance: row.provenance,
+      note: row.note,
+      confidence: "observed",
+      metadata: parseJsonObject(row.metadata_json),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      related_issue: getIssueSummary(db, related),
+    });
+  }
+
+  return relationships;
+}
+
+function listIssueRelationshipEdges(
+  db: Db,
+  issueId: string,
+): Array<{
+  row: LedgerRelationshipEdge;
+  direction: "incoming" | "outgoing";
+  related: string;
+}> {
+  if (!tableExists(db, "ledger_relationship_edges")) return [];
+  const rows = db.prepare(
+    `SELECT * FROM ledger_relationship_edges
+     WHERE deleted_at IS NULL
+       AND (
+         source_issue_id = ?
+         OR target_issue_id = ?
+       )
+     ORDER BY created_at, id`,
+  ).all(issueId, issueId) as LedgerRelationshipEdge[];
+
+  return rows.flatMap((row) => {
+    const entries: Array<{
+      row: LedgerRelationshipEdge;
+      direction: "incoming" | "outgoing";
+      related: string;
+    }> = [];
+    if (row.source_issue_id === issueId && row.target_issue_id) {
+      entries.push({ row, direction: "outgoing", related: row.target_issue_id });
+    }
+    if (row.target_issue_id === issueId && row.source_issue_id) {
+      entries.push({ row, direction: "incoming", related: row.source_issue_id });
+    }
+    return entries;
+  });
 }
 
 function buildTimeline(

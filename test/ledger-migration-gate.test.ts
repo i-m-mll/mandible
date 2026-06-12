@@ -661,6 +661,13 @@ describe("ledger issue route gate", () => {
       relationship_type: "parent_child",
       provenance: "manual",
     });
+    const linked = store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: child.id },
+      target_entities: [{ entity_type: "issue", entity_id: umbrella.id }],
+      link_type: "related",
+      provenance: "manual",
+      note: "Deep umbrella manual relationship",
+    });
     store.addIssueCheckpoint(child.id, {
       kind: "closeout",
       payload: { worker_status: "done", branch: "feature/deep", auth_request: null },
@@ -696,6 +703,18 @@ describe("ledger issue route gate", () => {
         },
       ],
     });
+    expect((response.body as { children: Array<{ relationships: unknown[] }> }).children[0].relationships)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: linked.edges[0].id,
+          direction: "outgoing",
+          relationship_type: "related",
+          link_type: "related",
+          provenance: "manual",
+          note: "Deep umbrella manual relationship",
+          related_issue: expect.objectContaining({ display_id: umbrella.short_id }),
+        }),
+      ]));
   });
 
   it("reports umbrella children from structured relationship edges", async () => {
