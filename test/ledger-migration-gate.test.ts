@@ -638,6 +638,202 @@ describe("ledger issue route gate", () => {
     });
   });
 
+  it("reports umbrella children from structured relationship edges", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umbedge",
+      title: "Edge umbrella",
+      labels: ["umbrella"],
+    });
+    const child = store.createIssue({
+      project_id: umbrella.project_id,
+      title: "Edge child",
+      body: "Child body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "edgchi", external_id: "edgchi", is_primary: true }],
+    });
+    store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: umbrella.id },
+      target_entities: [{ entity_type: "issue", entity_id: child.id }],
+      link_type: "parent_child",
+      provenance: "manual",
+    });
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const response = await server.invoke("GET", "/api/ledger/issues/:issueId/umbrella-status", {
+      params: { issueId: "umbedge" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      children: [{ short_id: child.short_id, title: "Edge child" }],
+      child_drift: { linked_child_refs: [child.short_id] },
+    });
+  });
+
+  it("adopts umbrella children idempotently and refreshes the delegation manifest", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umbadopt",
+      title: "Adopt umbrella",
+      labels: ["umbrella"],
+    });
+    const first = store.createIssue({
+      project_id: umbrella.project_id,
+      title: "First child",
+      body: "Child body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "adopta", external_id: "adopta", is_primary: true }],
+    });
+    const second = store.createIssue({
+      project_id: umbrella.project_id,
+      title: "Second child",
+      body: "Child body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "adoptb", external_id: "adoptb", is_primary: true }],
+    });
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const adopted = await server.invoke("POST", "/api/ledger/issues/:issueId/umbrella-adopt", {
+      params: { issueId: "umbadopt" },
+      body: { child_refs: ["adopta", "adoptb"] },
+    });
+    const adoptedAgain = await server.invoke("POST", "/api/ledger/issues/:issueId/umbrella-adopt", {
+      params: { issueId: "umbadopt" },
+      body: { child_refs: ["adopta", "adoptb"] },
+    });
+
+    expect(adopted.statusCode).toBe(200);
+    expect(adopted.body).toMatchObject({
+      operation: {
+        kind: "adopt",
+        requested_child_refs: ["adopta", "adoptb"],
+        created_child_refs: [first.short_id, second.short_id],
+      },
+    });
+    expect((adopted.body as { children: Array<{ short_id: string }> }).children)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ short_id: first.short_id }),
+        expect.objectContaining({ short_id: second.short_id }),
+      ]));
+    expect(adoptedAgain.body).toMatchObject({
+      operation: {
+        kind: "adopt",
+        created_child_refs: [],
+        existing_child_refs: [first.short_id, second.short_id],
+      },
+    });
+    expect(store.listRelationshipEdges({ source_issue_id: umbrella.id })).toHaveLength(2);
+    const manifest = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest");
+    expect(manifest).not.toBeNull();
+    expect(JSON.parse(manifest!.payload_json)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ short_id: first.short_id }),
+      expect.objectContaining({ short_id: second.short_id }),
+    ]));
+  });
+
+  it("reconciles only canonical Children table rows into edges and a manifest", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umbrecon",
+      title: "Reconcile umbrella",
+      labels: ["umbrella"],
+      body: [
+        "Body reference that is not a child: [issue:notkid].",
+        "",
+        "## Children",
+        "",
+        "| issue | repo | scope | branch | state |",
+        "| --- | --- | --- | --- | --- |",
+        "| [issue:kid123] | mandible | child work | feature/kid | pending |",
+      ].join("\n"),
+    });
+    const child = store.createIssue({
+      project_id: umbrella.project_id,
+      title: "Table child",
+      body: "Child body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "kid123", external_id: "kid123", is_primary: true }],
+    });
+    const nonChild = store.createIssue({
+      project_id: umbrella.project_id,
+      title: "Referenced only",
+      body: "Referenced body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "notkid", external_id: "notkid", is_primary: true }],
+    });
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const response = await server.invoke("POST", "/api/ledger/issues/:issueId/umbrella-reconcile", {
+      params: { issueId: "umbrecon" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      children: [{ short_id: child.short_id, title: "Table child" }],
+      operation: {
+        kind: "reconcile",
+        requested_child_refs: ["kid123"],
+        created_child_refs: [child.short_id],
+      },
+    });
+    const targets = store.listRelationshipEdges({ source_issue_id: umbrella.id })
+      .map((edge) => edge.target_issue_id);
+    expect(targets).toEqual([child.id]);
+    expect(targets).not.toContain(nonChild.id);
+    const manifest = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest");
+    expect(JSON.parse(manifest!.payload_json)).toMatchObject([{ short_id: child.short_id }]);
+  });
+
+  it("refuses parent-role assumption when the child table needs explicit reconcile", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umbrole",
+      title: "Role umbrella",
+      labels: ["umbrella"],
+      body: [
+        "## Children",
+        "",
+        "| issue | scope | branch | state |",
+        "| --- | --- | --- | --- |",
+        "| [issue:rolekid] | child work | feature/role | pending |",
+      ].join("\n"),
+    });
+    store.createIssue({
+      project_id: umbrella.project_id,
+      title: "Role child",
+      body: "Child body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "rolekid", external_id: "rolekid", is_primary: true }],
+    });
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const response = await server.invoke("POST", "/api/ledger/issues/:issueId/parent-role", {
+      params: { issueId: "umbrole" },
+      body: { session_id: "sess-new", mechanism: "codex-thread" },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toMatchObject({
+      reconcile_command: `mandible umbrella reconcile ${umbrella.short_id}`,
+      child_drift: { missing_edge_refs: [expect.any(String)] },
+    });
+  });
+
   it("creates ledger-native issues through the repo route", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const server = new TestIssueServer();

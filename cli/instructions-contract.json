@@ -11,6 +11,14 @@
       "description": "Print one deterministic coordinator fact packet: umbrella body/revision/head, latest delegation manifest, child summaries, parent-role holder state, and repo auth queue summary."
     },
     {
+      "name": "mandible umbrella adopt <umbrella> <children...> [--json]",
+      "description": "Idempotently adopt explicit children into an umbrella, create missing parent_child edges, refresh the delegation-manifest checkpoint server-side, report body-table/link-graph drift, and return the updated umbrella status fact packet."
+    },
+    {
+      "name": "mandible umbrella reconcile <umbrella> [--json]",
+      "description": "Derive children only from the canonical umbrella Children table, create missing parent_child edges, refresh the delegation-manifest checkpoint server-side, report reconciliation drift, and return the updated umbrella status fact packet."
+    },
+    {
       "name": "mandible issue parent-role status|assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]",
       "description": "Inspect or record advisory parent-role holder state; live holder conflicts require an explicit override while stale holders are informational."
     },
@@ -27,8 +35,8 @@
       "description": "Compare current issue digests and the umbrella's own head with a structured checkpoint on an umbrella issue; omit --checkpoint to use the latest checkpoint."
     },
     {
-      "name": "mandible issue checkpoint add <issue-ref> --kind <kind> [--payload-file <file>]",
-      "description": "Append kind-tagged structured issue state outside the comment stream."
+      "name": "mandible issue checkpoint add <issue-ref> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]",
+      "description": "Append kind-tagged structured issue state outside the comment stream. Use --payload - or --payload-file - to read JSON from stdin."
     },
     {
       "name": "mandible issue checkpoint show <issue-ref> --kind <kind> [--latest|--all] [--json]",
@@ -44,11 +52,11 @@
     },
     {
       "name": "mandible issue link <src> <target...> [--type t] [--note n]",
-      "description": "Create deliberate structured issue/comment relationship edges with shared action grouping for multi-target links."
+      "description": "Create deliberate structured issue/comment relationship edges with shared action grouping for multi-target links. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests."
     },
     {
       "name": "mandible issue unlink <src> <target...> [--type t]",
-      "description": "Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events."
+      "description": "Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events. Accepted types: parent_child, blocks, duplicate_of, related, references, fixed_by, caused_by, implements, tests."
     },
     {
       "name": "mandible issue comment add <issue-ref> -m <text> [--reopen]",
@@ -99,9 +107,11 @@
   ],
   "coordination": [
     "The umbrella issue is the coordinator; sessions are disposable role holders.",
+    "Umbrella bodies use a canonical Children table with columns issue, scope, branch, and state; `mandible umbrella reconcile` may derive children from that table only, not from arbitrary issue refs elsewhere in the body.",
     "Delegation manifests are stored as `delegation-manifest` checkpoints; refresh digests with `mandible issue heads` before resuming.",
     "`mandible issue changed --since-issue` compares the umbrella's own issue head as well as child manifest entries. Parent sessions that need their own baseline should pass `--checkpoint <id>` instead of relying on the latest shared checkpoint.",
     "Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.",
+    "Successful auth merges archive reliably linked terminal Codex worker threads for closed child issues; live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.",
     "Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate."
   ],
   "transports": [

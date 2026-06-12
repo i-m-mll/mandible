@@ -18,6 +18,7 @@ import {
   type LedgerIssueResolution,
   type LedgerIssueStatus,
   type LedgerPriority,
+  type LedgerRelationshipEdge,
   type LedgerRelationshipEntityType,
   type LedgerRelationshipProvenance,
   type LedgerRelationshipType,
@@ -398,6 +399,145 @@ function latestComment(projection: LedgerIssueDetailProjection): unknown {
     .sort((a, b) => Number(b.created_at ?? 0) - Number(a.created_at ?? 0) || b.ordinal - a.ordinal)[0] ?? null;
 }
 
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter((value) => value.length > 0)));
+}
+
+function issueRefFromCell(cell: string): string | null {
+  const match = cell.match(/\[issue:([^\]\s]+)\]/);
+  return match?.[1] ?? null;
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isMarkdownSeparatorRow(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseCanonicalUmbrellaChildRefs(body: string): string[] {
+  const lines = body.split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => /^#{1,6}\s+Children\s*$/i.test(line.trim()));
+  if (headingIndex < 0) return [];
+
+  for (let index = headingIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    if (!line.startsWith("|")) {
+      if (/^#{1,6}\s+/.test(line)) return [];
+      continue;
+    }
+
+    const header = splitMarkdownTableRow(line).map((cell) => cell.toLowerCase());
+    const issueColumn = header.indexOf("issue");
+    if (issueColumn < 0) return [];
+    const separator = splitMarkdownTableRow(lines[index + 1] ?? "");
+    if (!isMarkdownSeparatorRow(separator)) return [];
+
+    const refs: string[] = [];
+    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+      const rowLine = lines[rowIndex].trim();
+      if (!rowLine.startsWith("|")) break;
+      const cells = splitMarkdownTableRow(rowLine);
+      const ref = issueRefFromCell(cells[issueColumn] ?? "");
+      if (ref) refs.push(ref);
+    }
+    return uniqueStrings(refs);
+  }
+
+  return [];
+}
+
+function resolveIssueRefs(db: Db, refs: string[]): {
+  ids: string[];
+  unresolved: string[];
+} {
+  const ids: string[] = [];
+  const unresolved: string[] = [];
+  const seenIds = new Set<string>();
+  for (const ref of uniqueStrings(refs)) {
+    const resolved = resolveLedgerIssueId(db, ref);
+    if (!resolved.ok) {
+      unresolved.push(ref);
+      continue;
+    }
+    if (!seenIds.has(resolved.issue_id)) {
+      ids.push(resolved.issue_id);
+      seenIds.add(resolved.issue_id);
+    }
+  }
+  return { ids, unresolved };
+}
+
+function issueDisplayRef(db: Db, issueId: string): string {
+  try {
+    return getLedgerIssueHead(db, issueId).short_id;
+  } catch {
+    return issueId;
+  }
+}
+
+function issueDisplayRefs(db: Db, issueIds: string[]): string[] {
+  return issueIds.map((issueId) => issueDisplayRef(db, issueId));
+}
+
+function listUmbrellaStructuredChildEdgeIds(db: Db, umbrellaId: string): string[] {
+  const store = new LedgerStore(db);
+  return uniqueStrings(store.listRelationshipEdges({ source_issue_id: umbrellaId })
+    .filter((edge: LedgerRelationshipEdge) =>
+      edge.link_type === "parent_child"
+      && edge.target_entity_type === "issue"
+      && typeof edge.target_issue_id === "string"
+      && edge.target_issue_id.length > 0
+    )
+    .map((edge) => edge.target_issue_id));
+}
+
+function listUmbrellaChildEdgeIds(db: Db, umbrellaId: string): string[] {
+  const edgeChildIds = listUmbrellaStructuredChildEdgeIds(db, umbrellaId);
+  const legacyChildIds = buildLedgerIssueDetailProjection(db, umbrellaId).relationships
+    .filter((relationship) =>
+      relationship.direction === "outgoing"
+      && relationship.relationship_type === "parent_child"
+      && relationship.related_issue
+    )
+    .map((relationship) => relationship.related_issue!.id);
+  return uniqueStrings([...edgeChildIds, ...legacyChildIds]);
+}
+
+function buildUmbrellaChildDrift(db: Db, umbrella: LedgerIssueDetailProjection): Record<string, unknown> {
+  const bodyRefs = parseCanonicalUmbrellaChildRefs(umbrella.body);
+  const resolvedBody = resolveIssueRefs(db, bodyRefs);
+  const linkedIds = listUmbrellaChildEdgeIds(db, umbrella.id);
+  const linkedSet = new Set(linkedIds);
+  const bodySet = new Set(resolvedBody.ids);
+  return {
+    body_child_refs: bodyRefs,
+    linked_child_refs: issueDisplayRefs(db, linkedIds),
+    missing_edge_refs: issueDisplayRefs(db, resolvedBody.ids.filter((id) => !linkedSet.has(id))),
+    extra_edge_refs: issueDisplayRefs(db, linkedIds.filter((id) => !bodySet.has(id))),
+    unresolved_child_refs: resolvedBody.unresolved,
+  };
+}
+
+function refreshDelegationManifest(db: Db, umbrellaId: string, childIds: string[]): Record<string, unknown> {
+  const payload = childIds.map((childId) => getLedgerIssueHead(db, childId));
+  const checkpoint = new LedgerStore(db).addIssueCheckpoint(umbrellaId, {
+    kind: "delegation-manifest",
+    payload,
+    actor_type: "mandible_user",
+    author_display: "Mandible",
+    source: "mandible",
+  });
+  return checkpointResponse(checkpoint);
+}
+
 function repoAuthQueueSummary(db: Db, projection: LedgerIssueDetailProjection): Record<string, unknown> {
   if (!tableExists(db, "auth_requests")) {
     return { repo: projection.project.repo_id, active_requests: [], pending_requests: [] };
@@ -437,14 +577,8 @@ function repoAuthQueueSummary(db: Db, projection: LedgerIssueDetailProjection): 
 
 function buildUmbrellaStatus(db: Db, issueId: string): Record<string, unknown> {
   const umbrella = buildLedgerIssueDetailProjection(db, issueId);
-  const childRefs = umbrella.relationships
-    .filter((relationship) =>
-      relationship.direction === "outgoing"
-      && relationship.relationship_type === "parent_child"
-      && relationship.related_issue
-    )
-    .map((relationship) => relationship.related_issue!.id);
-  const children = childRefs.map((childId) => {
+  const childIds = listUmbrellaChildEdgeIds(db, umbrella.id);
+  const children = childIds.map((childId) => {
     const child = buildLedgerIssueDetailProjection(db, childId);
     return {
       id: child.id,
@@ -475,13 +609,98 @@ function buildUmbrellaStatus(db: Db, issueId: string): Record<string, unknown> {
       parent_role: buildParentRoleStatus(db, umbrella.id),
     },
     delegation_manifest: latestCheckpoint(umbrella, "delegation-manifest"),
+    child_drift: buildUmbrellaChildDrift(db, umbrella),
     children,
     auth_queue: repoAuthQueueSummary(db, umbrella),
   };
 }
 
+function linkMissingUmbrellaChildren(db: Db, umbrellaId: string, childIds: string[], note: string): {
+  beforeIds: string[];
+  missingIds: string[];
+  action_id: string | null;
+} {
+  const beforeIds = listUmbrellaStructuredChildEdgeIds(db, umbrellaId);
+  const beforeSet = new Set(beforeIds);
+  const missingIds = childIds.filter((childId) => !beforeSet.has(childId));
+  if (missingIds.length === 0) return { beforeIds, missingIds, action_id: null };
+  const result = new LedgerStore(db).linkRelationshipEdges({
+    source_entity: { entity_type: "issue", entity_id: umbrellaId },
+    target_entities: missingIds.map((childId) => ({ entity_type: "issue", entity_id: childId })),
+    link_type: "parent_child",
+    provenance: "manual",
+    note,
+    actor: { actor_type: "mandible_user", author_display: "Mandible" },
+    source: "mandible",
+  });
+  return { beforeIds, missingIds, action_id: result.action_id };
+}
+
+function buildUmbrellaAdoptionResponse(
+  db: Db,
+  umbrellaId: string,
+  childRefs: string[],
+  kind: "adopt" | "reconcile",
+): Record<string, unknown> {
+  const resolved = resolveIssueRefs(db, childRefs);
+  const linked = linkMissingUmbrellaChildren(
+    db,
+    umbrellaId,
+    resolved.ids,
+    kind === "adopt" ? "Umbrella child adoption" : "Umbrella child-table reconciliation",
+  );
+  const childIds = listUmbrellaChildEdgeIds(db, umbrellaId);
+  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds);
+  const status = buildUmbrellaStatus(db, umbrellaId);
+  return {
+    ...status,
+    operation: {
+      kind,
+      requested_child_refs: childRefs,
+      resolved_child_refs: issueDisplayRefs(db, resolved.ids),
+      unresolved_child_refs: resolved.unresolved,
+      created_child_refs: issueDisplayRefs(db, linked.missingIds),
+      existing_child_refs: issueDisplayRefs(
+        db,
+        resolved.ids.filter((childId) => linked.beforeIds.includes(childId)),
+      ),
+      action_id: linked.action_id,
+      delegation_manifest: checkpoint,
+      drift: (status as Record<string, unknown>).child_drift,
+    },
+  };
+}
+
+function parentRoleReconcileBlocker(db: Db, umbrellaId: string): Record<string, unknown> | null {
+  const umbrella = buildLedgerIssueDetailProjection(db, umbrellaId);
+  const childRefs = parseCanonicalUmbrellaChildRefs(umbrella.body);
+  if (childRefs.length === 0) return null;
+  const drift = buildUmbrellaChildDrift(db, umbrella);
+  const missing = Array.isArray(drift.missing_edge_refs) ? drift.missing_edge_refs : [];
+  const unresolved = Array.isArray(drift.unresolved_child_refs) ? drift.unresolved_child_refs : [];
+  if (missing.length === 0 && unresolved.length === 0) return null;
+  return {
+    error: "umbrella child table is not reconciled; run `mandible umbrella reconcile <umbrella>` first",
+    reconcile_command: `mandible umbrella reconcile ${umbrella.display_id}`,
+    child_drift: drift,
+  };
+}
+
 function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[number] | null {
   return typeof value === "string" && (allowed as readonly string[]).includes(value) ? value as T[number] : null;
+}
+
+function invalidRelationshipTypeResponse(value: unknown): {
+  error: string;
+  accepted_relationship_types: readonly LedgerRelationshipType[];
+} {
+  const rendered = typeof value === "string" && value.trim()
+    ? value
+    : String(value ?? "");
+  return {
+    error: `invalid link_type: ${rendered}. Accepted relationship types: ${LEDGER_RELATIONSHIP_TYPES.join(", ")}`,
+    accepted_relationship_types: LEDGER_RELATIONSHIP_TYPES,
+  };
 }
 
 function parseSyncDirection(value: unknown): LedgerSyncDirection {
@@ -707,6 +926,60 @@ export function registerIssueRoutes(
     }
   });
 
+  server.post("/api/ledger/issues/:issueId/umbrella-adopt", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    const body = getBody(req) ?? {};
+    const childRefs = getStringArray(body.child_refs ?? body.children ?? body.child);
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    if (!childRefs) {
+      sendJson(res, 400, { error: "child_refs are required" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    try {
+      sendJson(res, 200, buildUmbrellaAdoptionResponse(db, resolved.issue_id, childRefs, "adopt"));
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to adopt children" });
+    }
+  });
+
+  server.post("/api/ledger/issues/:issueId/umbrella-reconcile", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    try {
+      const umbrella = buildLedgerIssueDetailProjection(db, resolved.issue_id);
+      sendJson(
+        res,
+        200,
+        buildUmbrellaAdoptionResponse(
+          db,
+          resolved.issue_id,
+          parseCanonicalUmbrellaChildRefs(umbrella.body),
+          "reconcile",
+        ),
+      );
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to reconcile umbrella" });
+    }
+  });
+
   server.get("/api/ledger/issues/:issueId/parent-role", (req, res) => {
     const issueRef = getParam(req, "issueId");
     if (!issueRef) {
@@ -742,6 +1015,11 @@ export function registerIssueRoutes(
     const resolved = resolveLedgerIssueId(db, issueRef);
     if (!resolved.ok) {
       sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    const reconcileBlocker = parentRoleReconcileBlocker(db, resolved.issue_id);
+    if (reconcileBlocker) {
+      sendJson(res, 409, reconcileBlocker);
       return;
     }
     const current = buildParentRoleStatus(db, resolved.issue_id);
@@ -837,10 +1115,11 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "target_refs are required" });
       return;
     }
-    const linkType = enumValue(body.link_type ?? body.type ?? "references", LEDGER_RELATIONSHIP_TYPES);
+    const requestedLinkType = body.link_type ?? body.type ?? "references";
+    const linkType = enumValue(requestedLinkType, LEDGER_RELATIONSHIP_TYPES);
     const provenance = enumValue(body.provenance ?? "manual", LEDGER_RELATIONSHIP_PROVENANCES);
     if (!linkType) {
-      sendJson(res, 400, { error: "invalid link_type" });
+      sendJson(res, 400, invalidRelationshipTypeResponse(requestedLinkType));
       return;
     }
     if (!provenance) {
@@ -894,9 +1173,10 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "target_refs are required" });
       return;
     }
-    const linkType = enumValue(body.link_type ?? body.type ?? "references", LEDGER_RELATIONSHIP_TYPES);
+    const requestedLinkType = body.link_type ?? body.type ?? "references";
+    const linkType = enumValue(requestedLinkType, LEDGER_RELATIONSHIP_TYPES);
     if (!linkType) {
-      sendJson(res, 400, { error: "invalid link_type" });
+      sendJson(res, 400, invalidRelationshipTypeResponse(requestedLinkType));
       return;
     }
     const db = getDb();

@@ -179,6 +179,8 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && /^\/api\/ledger\/issues\/[^/]+\/comments$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && /^\/api\/ledger\/issues\/[^/]+\/checkpoints$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/ledger\/issues\/[^/]+\/checkpoints$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && pathname === "/api/ledger/relationships") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/ledger/relationships/unlink") return true;
   if (normalizedMethod === "POST" && /^\/api\/ledger\/issues\/[^/]+\/worker-status$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/ledger\/issues\/[^/]+\/branches$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/ledger\/issues\/[^/]+\/labels$/.test(pathname)) return true;

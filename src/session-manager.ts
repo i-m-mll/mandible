@@ -18,6 +18,11 @@ import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend, type SDKBackendOptions } from "./backends/sdk-backend.js";
 import { SpawnBackend } from "./backends/spawn-backend.js";
 import { bridgeChannelEvents, type ChannelBridgeHandle } from "./channel-event-bridge.js";
+import {
+  defaultCodexThreadArchiver,
+  safeUnarchiveCodexThread,
+  type CodexThreadArchiver,
+} from "./codex-thread-archive.js";
 import type {
   ConsoleInteractionMode,
   ConsoleSession,
@@ -189,10 +194,17 @@ export class SessionManager {
   private channelBridges: Map<string, ChannelBridgeHandle> = new Map();
   private logger: Logger;
   private sessionRegistry: SessionRegistry | null;
+  private codexThreadArchiver: CodexThreadArchiver;
 
-  constructor(_db: unknown, logger: Logger, sessionRegistry?: SessionRegistry) {
+  constructor(
+    _db: unknown,
+    logger: Logger,
+    sessionRegistry?: SessionRegistry,
+    codexThreadArchiver: CodexThreadArchiver = defaultCodexThreadArchiver,
+  ) {
     this.logger = logger;
     this.sessionRegistry = sessionRegistry ?? null;
+    this.codexThreadArchiver = codexThreadArchiver;
   }
 
   init(): void {
@@ -246,6 +258,8 @@ export class SessionManager {
     const provider_session_id = input.provider_session_id ?? null;
     const resume_at_message = input.resume_at_message ?? null;
     const channel_enabled = input.channel_enabled ? 1 : 0;
+
+    this.unarchiveCodexThread(input.command, provider_session_id);
 
     db.prepare(
       `INSERT INTO console_sessions
@@ -349,7 +363,9 @@ export class SessionManager {
   }
 
   start(id: string): void {
-    this.requireSession(id).start();
+    const session = this.requireSession(id);
+    this.unarchiveCodexThread(session.meta.command, session.meta.provider_session_id);
+    session.start();
   }
 
   stop(id: string, signal?: string): void {
@@ -379,7 +395,9 @@ export class SessionManager {
   }
 
   sendPrompt(id: string, prompt: string): void {
-    this.requireSession(id).sendPrompt(prompt);
+    const session = this.requireSession(id);
+    this.unarchiveCodexThread(session.meta.command, session.meta.provider_session_id);
+    session.sendPrompt(prompt);
   }
 
   addWsClient(id: string, ws: WebSocket): boolean {
@@ -740,6 +758,15 @@ export class SessionManager {
       throw new Error(`session not found: ${id}`);
     }
     return session;
+  }
+
+  private unarchiveCodexThread(command: string, providerSessionId: string | null): void {
+    if (command !== "codex" || !providerSessionId) {
+      return;
+    }
+    safeUnarchiveCodexThread(this.codexThreadArchiver, providerSessionId, (message) => {
+      this.logger("warn", "codex_thread_unarchive_failed", { message, provider_session_id: providerSessionId });
+    });
   }
 
   private isPermissionAwareBackend(backend: AgenticBackend): backend is AgenticBackend & PermissionAwareBackend {

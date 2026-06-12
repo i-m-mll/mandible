@@ -324,6 +324,49 @@ function listen(): Promise<number> {
         }));
         return;
       }
+      if (req.method === "POST" && req.url === "/api/ledger/issues/abc/umbrella-adopt") {
+        void readBody().then((body) => {
+          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+          res.end(JSON.stringify({
+            umbrella: {
+              id: "issue-1",
+              short_id: "abc",
+              title: "Umbrella",
+              status: "open",
+              current_revision_id: "rev_issue_1",
+            },
+            delegation_manifest: { id: "checkpoint-2", payload: [] },
+            children: [
+              { id: "issue-2", short_id: "def", title: "Child", status: "open" },
+              { id: "issue-3", short_id: "ghi", title: "Another child", status: "open" },
+            ],
+            child_drift: { missing_edge_refs: [], extra_edge_refs: [] },
+            operation: { kind: "adopt", created_child_refs: ["def", "ghi"], existing_child_refs: [] },
+            auth_queue: { pending_requests: [], active_requests: [] },
+          }));
+        });
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/ledger/issues/abc/umbrella-reconcile") {
+        void readBody().then((body) => {
+          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+          res.end(JSON.stringify({
+            umbrella: {
+              id: "issue-1",
+              short_id: "abc",
+              title: "Umbrella",
+              status: "open",
+              current_revision_id: "rev_issue_1",
+            },
+            delegation_manifest: { id: "checkpoint-3", payload: [] },
+            children: [{ id: "issue-2", short_id: "def", title: "Child", status: "open" }],
+            child_drift: { missing_edge_refs: [], extra_edge_refs: [] },
+            operation: { kind: "reconcile", created_child_refs: ["def"], unresolved_child_refs: [] },
+            auth_queue: { pending_requests: [], active_requests: [] },
+          }));
+        });
+        return;
+      }
       if (req.url === "/api/ledger/issues/abc/parent-role") {
         if (req.method === "GET") {
           res.end(JSON.stringify({
@@ -476,6 +519,29 @@ describe("issue CLI body revisions", () => {
     expect(result.stdout).toContain("branch add <id> <branch>");
   });
 
+  it("prints help for nested issue coordination subcommands", async () => {
+    const link = await run(["issue", "link", "--help"], 9);
+    expect(link.status).toBe(0);
+    expect(link.stdout).toContain("mandible issue link <src> <target...>");
+    expect(link.stdout).toContain("Accepted relationship types:");
+
+    const unlink = await run(["issue", "unlink", "--help"], 9);
+    expect(unlink.status).toBe(0);
+    expect(unlink.stdout).toContain("mandible issue unlink <src> <target...>");
+
+    const checkpointAdd = await run(["issue", "checkpoint", "add", "--help"], 9);
+    expect(checkpointAdd.status).toBe(0);
+    expect(checkpointAdd.stdout).toContain("--payload <json-or->");
+
+    const checkpointShow = await run(["issue", "checkpoint", "show", "--help"], 9);
+    expect(checkpointShow.status).toBe(0);
+    expect(checkpointShow.stdout).toContain("mandible issue checkpoint show");
+
+    const parentRoleAssume = await run(["issue", "parent-role", "assume", "--help"], 9);
+    expect(parentRoleAssume.status).toBe(0);
+    expect(parentRoleAssume.stdout).toContain("MANDIBLE_SESSION_ID");
+  });
+
   it("adds comments with the official comment add namespace", async () => {
     const port = await listen();
     const result = await run(["issue", "comment", "add", "abc", "-m", "New comment"], port);
@@ -532,6 +598,36 @@ describe("issue CLI body revisions", () => {
     }
   });
 
+  it("adopts umbrella children with the expected payload", async () => {
+    const port = await listen();
+    const result = await run(["umbrella", "adopt", "abc", "def", "ghi", "--json"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc/umbrella-adopt",
+      method: "POST",
+      body: { child_refs: ["def", "ghi"] },
+    });
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.umbrella.short_id).toBe("abc");
+    expect(parsed.operation.created_child_refs).toEqual(["def", "ghi"]);
+  });
+
+  it("reconciles umbrella children from the canonical table", async () => {
+    const port = await listen();
+    const result = await run(["umbrella", "reconcile", "abc", "--json"], port);
+
+    expect(result.status).toBe(0);
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc/umbrella-reconcile",
+      method: "POST",
+      body: {},
+    });
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.umbrella.short_id).toBe("abc");
+    expect(parsed.operation.created_child_refs).toEqual(["def"]);
+  });
+
   it("surfaces live parent-role holders and requires override", async () => {
     const port = await listen();
     const blocked = await run([
@@ -558,6 +654,44 @@ describe("issue CLI body revisions", () => {
     ], port);
     expect(assumed.status).toBe(0);
     expect(JSON.parse(assumed.stdout).checkpoint.id).toBe("checkpoint-parent");
+  });
+
+  it("reports a specific parent-role error when no session id is available", async () => {
+    const missing = await run(["issue", "parent-role", "assume", "abc"], 9, process.cwd(), {
+      MANDIBLE_SESSION_ID: "",
+      CODEX_SESSION_ID: "",
+    });
+
+    expect(missing.status).toBe(2);
+    expect(missing.stderr).toContain("Missing parent-role session id");
+    expect(missing.stderr).toContain("Pass --session <id>");
+  });
+
+  it("auto-detects parent-role session ids from the environment", async () => {
+    const port = await listen();
+    const assumed = await run([
+      "issue",
+      "parent-role",
+      "assume",
+      "abc",
+      "--override",
+      "--json",
+    ], port, process.cwd(), {
+      MANDIBLE_SESSION_ID: "sess-env",
+      CODEX_SESSION_ID: "",
+    });
+
+    expect(assumed.status).toBe(0);
+    expect(JSON.parse(assumed.stdout).parent_role.holder.payload.session_id).toBe("sess-env");
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc/parent-role",
+      method: "POST",
+      body: {
+        session_id: "sess-env",
+        mechanism: "codex",
+        override: true,
+      },
+    });
   });
 
   it("sets worker status through the issue status command", async () => {
@@ -604,6 +738,43 @@ describe("issue CLI body revisions", () => {
     });
   });
 
+  it("names accepted relationship types for invalid issue link types", async () => {
+    const result = await run(["issue", "link", "abc", "def", "--type", "child"], 9);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Invalid relationship type: child");
+    expect(result.stderr).toContain("parent_child");
+    expect(result.stderr).toContain("references");
+  });
+
+  it("surfaces file-RPC relationship link denial status and body", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-link-file-rpc-denied-"));
+    tempRoots.push(spoolDir);
+    const timer = startFileRpcResponder(spoolDir, () => ({
+      status: 403,
+      body: {
+        error: "file_rpc_route_denied",
+        method: "POST",
+        path: "/api/ledger/relationships",
+      },
+    }));
+
+    try {
+      const result = await run(["issue", "link", "abc", "def"], 0, process.cwd(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Failed to link relationship(s) from abc");
+      expect(result.stderr).toContain("API status 403");
+      expect(result.stderr).toContain("file_rpc_route_denied");
+      expect(result.stderr).toContain("/api/ledger/relationships");
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
   it("unlinks structured issue relationships through the issue unlink command", async () => {
     const port = await listen();
     const result = await run([
@@ -626,6 +797,43 @@ describe("issue CLI body revisions", () => {
         link_type: "references",
       },
     });
+  });
+
+  it("names accepted relationship types for invalid issue unlink types", async () => {
+    const result = await run(["issue", "unlink", "abc", "def", "--type", "pulls-forward"], 9);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Invalid relationship type: pulls-forward");
+    expect(result.stderr).toContain("parent_child");
+    expect(result.stderr).toContain("references");
+  });
+
+  it("surfaces file-RPC relationship unlink denial status and body", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-unlink-file-rpc-denied-"));
+    tempRoots.push(spoolDir);
+    const timer = startFileRpcResponder(spoolDir, () => ({
+      status: 403,
+      body: {
+        error: "file_rpc_route_denied",
+        method: "POST",
+        path: "/api/ledger/relationships/unlink",
+      },
+    }));
+
+    try {
+      const result = await run(["issue", "unlink", "abc", "def"], 0, process.cwd(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Failed to unlink relationship(s) from abc");
+      expect(result.stderr).toContain("API status 403");
+      expect(result.stderr).toContain("file_rpc_route_denied");
+      expect(result.stderr).toContain("/api/ledger/relationships/unlink");
+    } finally {
+      clearInterval(timer);
+    }
   });
 
   it("reports worker status and linked branches", async () => {
@@ -950,6 +1158,21 @@ describe("issue CLI body revisions", () => {
       body: {
         kind: "delegation-manifest",
         payload: [{ issue: "abc", digest: "digest-before" }],
+      },
+    });
+
+    const addedFromStdin = await runBash(
+      `printf '%s' '[{"issue":"stdin","digest":"digest-stdin"}]' | "${CLI}" issue checkpoint add abc --kind closeout --payload -`,
+      process.cwd(),
+      { MANDIBLE_PORT: String(port) },
+    );
+    expect(addedFromStdin.status).toBe(0);
+    expect(requestBodies.at(-1)).toMatchObject({
+      path: "/api/ledger/issues/abc/checkpoints",
+      method: "POST",
+      body: {
+        kind: "closeout",
+        payload: [{ issue: "stdin", digest: "digest-stdin" }],
       },
     });
 
