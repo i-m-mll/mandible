@@ -484,6 +484,19 @@ function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[n
   return typeof value === "string" && (allowed as readonly string[]).includes(value) ? value as T[number] : null;
 }
 
+function invalidRelationshipTypeResponse(value: unknown): {
+  error: string;
+  accepted_relationship_types: readonly LedgerRelationshipType[];
+} {
+  const rendered = typeof value === "string" && value.trim()
+    ? value
+    : String(value ?? "");
+  return {
+    error: `invalid link_type: ${rendered}. Accepted relationship types: ${LEDGER_RELATIONSHIP_TYPES.join(", ")}`,
+    accepted_relationship_types: LEDGER_RELATIONSHIP_TYPES,
+  };
+}
+
 function parseSyncDirection(value: unknown): LedgerSyncDirection {
   return value === "export" || value === "full" ? value : "import";
 }
@@ -837,10 +850,11 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "target_refs are required" });
       return;
     }
-    const linkType = enumValue(body.link_type ?? body.type ?? "references", LEDGER_RELATIONSHIP_TYPES);
+    const requestedLinkType = body.link_type ?? body.type ?? "references";
+    const linkType = enumValue(requestedLinkType, LEDGER_RELATIONSHIP_TYPES);
     const provenance = enumValue(body.provenance ?? "manual", LEDGER_RELATIONSHIP_PROVENANCES);
     if (!linkType) {
-      sendJson(res, 400, { error: "invalid link_type" });
+      sendJson(res, 400, invalidRelationshipTypeResponse(requestedLinkType));
       return;
     }
     if (!provenance) {
@@ -894,9 +908,10 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "target_refs are required" });
       return;
     }
-    const linkType = enumValue(body.link_type ?? body.type ?? "references", LEDGER_RELATIONSHIP_TYPES);
+    const requestedLinkType = body.link_type ?? body.type ?? "references";
+    const linkType = enumValue(requestedLinkType, LEDGER_RELATIONSHIP_TYPES);
     if (!linkType) {
-      sendJson(res, 400, { error: "invalid link_type" });
+      sendJson(res, 400, invalidRelationshipTypeResponse(requestedLinkType));
       return;
     }
     const db = getDb();

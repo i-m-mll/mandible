@@ -92,6 +92,8 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/parent-role")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/checkpoints")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/checkpoints")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/ledger/relationships")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/ledger/relationships/unlink")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/r/issue/abc")).toBe(false);
     expect(isAllowedFileRpcRoute("GET", "/r/auth/auth-1")).toBe(false);
     expect(isAllowedFileRpcRoute("GET", "/r/artifact/abcdef1")).toBe(false);
