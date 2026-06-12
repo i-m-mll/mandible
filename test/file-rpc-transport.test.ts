@@ -87,6 +87,9 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/ingest")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/check")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/snapshot")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/umbrella-status")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/parent-role")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/parent-role")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/checkpoints")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/checkpoints")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/r/issue/abc")).toBe(false);

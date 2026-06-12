@@ -99,6 +99,7 @@ export interface AddLedgerCommentInput extends LedgerActorInput {
   body: string;
   source?: LedgerEventSource;
   created_at?: number;
+  reopen?: boolean;
 }
 
 export interface AddLedgerIssueCheckpointInput extends LedgerActorInput {
@@ -744,6 +745,31 @@ export class LedgerStore {
     });
 
     const run = this.db.transaction(() => {
+      if (input.reopen && issue.status === "closed") {
+        this.db.prepare(
+          `UPDATE ledger_issues
+           SET status = 'open', resolution = NULL, closed_at = NULL, updated_at = ?
+           WHERE id = ?`,
+        ).run(now, issueId);
+        const reopenPayload = {
+          issue_id: issueId,
+          previous_status: issue.status,
+          status: "open",
+          resolution: null,
+        };
+        const reopenEvent = this.insertEvent({
+          entity_type: "issue",
+          entity_id: issueId,
+          event_type: "issue.reopened",
+          actor_id: actor.actor_id,
+          actor_type: actor.actor_type,
+          source,
+          payload: reopenPayload,
+          project_id: issue.project_id,
+          occurred_at: now,
+        });
+        emitted.push({ event: reopenEvent, payload: reopenPayload });
+      }
       this.db.prepare(
         `INSERT INTO ledger_comments (
           id, issue_id, ordinal, body, author_actor_id, author_actor_type,

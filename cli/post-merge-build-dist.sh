@@ -3,7 +3,11 @@
 set -euo pipefail
 
 GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
-source "$GIT_ENV_HELPER"
+if [[ -f "$GIT_ENV_HELPER" ]]; then
+  source "$GIT_ENV_HELPER"
+else
+  export GIT_OPTIONAL_LOCKS=0
+fi
 
 err() {
   printf '%s\n' "$*" >&2
