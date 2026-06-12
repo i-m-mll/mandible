@@ -636,6 +636,66 @@ describe("ledger issue route gate", () => {
         pending_requests: [{ id: "auth_pending", head_branch: "feature/child" }],
       },
     });
+    expect((response.body as { children: Array<{ body?: string }> }).children[0]).not.toHaveProperty("body");
+  });
+
+  it("inlines child issue details for deep umbrella status", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umbdeep",
+      title: "Deep umbrella",
+      labels: ["umbrella"],
+    });
+    const child = store.createIssue({
+      project_id: umbrella.project_id,
+      title: "Deep child",
+      body: "Deep child body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "deepch", external_id: "deepch", is_primary: true }],
+    });
+    store.upsertIssueRelationship({
+      source_issue_id: umbrella.id,
+      target_issue_id: child.id,
+      relationship_type: "parent_child",
+      provenance: "manual",
+    });
+    store.addIssueCheckpoint(child.id, {
+      kind: "closeout",
+      payload: { worker_status: "done", branch: "feature/deep", auth_request: null },
+      actor_type: "agent",
+    });
+    store.addComment(child.id, { body: "Deep child latest comment", actor_type: "agent" });
+    store.addIssueBranch(child.id, "feature/deep");
+
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const response = await server.invoke("GET", "/api/ledger/issues/:issueId/umbrella-status", {
+      params: { issueId: "umbdeep" },
+      query: { deep: "true" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      children: [
+        {
+          short_id: child.short_id,
+          title: "Deep child",
+          body: "Deep child body",
+          current_revision_id: expect.any(String),
+          kind: "feature",
+          latest_comment: { body: "Deep child latest comment" },
+          latest_closeout: { kind: "closeout" },
+          issue_branches: [{ branch: "feature/deep" }],
+          auth_requests: [],
+          relationships: expect.any(Array),
+          sessions: expect.any(Array),
+          work_units: expect.any(Array),
+        },
+      ],
+    });
   });
 
   it("reports umbrella children from structured relationship edges", async () => {
@@ -792,6 +852,52 @@ describe("ledger issue route gate", () => {
       .map((edge) => edge.target_issue_id);
     expect(targets).toEqual([child.id]);
     expect(targets).not.toContain(nonChild.id);
+    const manifest = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest");
+    expect(JSON.parse(manifest!.payload_json)).toMatchObject([{ short_id: child.short_id }]);
+  });
+
+  it("refreshes an umbrella manifest without changing child edges", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umbmani",
+      title: "Manifest umbrella",
+      labels: ["umbrella"],
+    });
+    const child = store.createIssue({
+      project_id: umbrella.project_id,
+      title: "Manifest child",
+      body: "Child body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "manich", external_id: "manich", is_primary: true }],
+    });
+    store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: umbrella.id },
+      target_entities: [{ entity_type: "issue", entity_id: child.id }],
+      link_type: "parent_child",
+      provenance: "manual",
+    });
+    const beforeEdges = store.listRelationshipEdges({ source_issue_id: umbrella.id }).map((edge) => edge.id);
+
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const response = await server.invoke("POST", "/api/ledger/issues/:issueId/umbrella-manifest-refresh", {
+      params: { issueId: "umbmani" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      operation: {
+        kind: "manifest-refresh",
+        refreshed_child_refs: [child.short_id],
+        delegation_manifest: { kind: "delegation-manifest" },
+      },
+      children: [{ short_id: child.short_id }],
+    });
+    expect(store.listRelationshipEdges({ source_issue_id: umbrella.id }).map((edge) => edge.id))
+      .toEqual(beforeEdges);
     const manifest = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest");
     expect(JSON.parse(manifest!.payload_json)).toMatchObject([{ short_id: child.short_id }]);
   });

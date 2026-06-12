@@ -90,6 +90,7 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/umbrella-status")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-adopt")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-reconcile")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-manifest-refresh")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/parent-role")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/parent-role")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/checkpoints")).toBe(true);
