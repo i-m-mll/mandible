@@ -209,6 +209,99 @@ describe("ledger issue detail projection", () => {
     expect(projection.conflicts[0].remote_value).toEqual({ target_ref: "missing" });
   });
 
+  it("projects deliberate relationship edges from both endpoint reports", () => {
+    const sourceCheckout = createProject("source-repo");
+    const targetCheckout = createProject("target-repo");
+    const store = new LedgerStore(db);
+    const source = store.createIssue({
+      project_id: sourceCheckout.project.id,
+      title: "Source",
+      body: "Source body",
+      kind: "feature",
+      aliases: [{ alias_kind: "git_bug_human", alias: "src1234", is_primary: true }],
+    });
+    const target = store.createIssue({
+      project_id: targetCheckout.project.id,
+      title: "Target",
+      body: "Target body",
+      kind: "feature",
+      aliases: [{ alias_kind: "git_bug_human", alias: "tgt1234", is_primary: true }],
+    });
+    const derived = store.upsertIssueRelationship({
+      source_issue_id: source.id,
+      target_issue_id: target.id,
+      relationship_type: "related",
+      provenance: "derived",
+    });
+    const linked = store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+      link_type: "related",
+      provenance: "manual",
+      note: "manual coordination link",
+      metadata: { reason: "handoff" },
+    });
+    const edge = linked.edges[0];
+
+    const sourceProjection = buildLedgerIssueDetailProjection(db, source.id);
+    const targetProjection = buildLedgerIssueDetailProjection(db, target.id);
+
+    expect(sourceProjection.relationships.filter((relationship) =>
+      relationship.direction === "outgoing"
+      && relationship.relationship_type === "related"
+      && relationship.related_issue?.id === target.id
+    )).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: derived.id,
+        provenance: "derived",
+        related_issue: expect.objectContaining({
+          display_id: target.short_id,
+          project_id: targetCheckout.project.id,
+          title: "Target",
+        }),
+      }),
+      expect.objectContaining({
+        id: edge.id,
+        link_type: "related",
+        provenance: "manual",
+        note: "manual coordination link",
+        metadata: { reason: "handoff" },
+        related_issue: expect.objectContaining({
+          display_id: target.short_id,
+          project_id: targetCheckout.project.id,
+          title: "Target",
+        }),
+      }),
+    ]));
+    expect(targetProjection.relationships).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: edge.id,
+        direction: "incoming",
+        relationship_type: "related",
+        link_type: "related",
+        provenance: "manual",
+        note: "manual coordination link",
+        related_issue: expect.objectContaining({
+          display_id: source.short_id,
+          project_id: sourceCheckout.project.id,
+          title: "Source",
+        }),
+      }),
+    ]));
+
+    store.unlinkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+      link_type: "related",
+    });
+
+    const sourceAfterUnlink = buildLedgerIssueDetailProjection(db, source.id);
+    const targetAfterUnlink = buildLedgerIssueDetailProjection(db, target.id);
+    expect(sourceAfterUnlink.relationships.map((relationship) => relationship.id)).not.toContain(edge.id);
+    expect(targetAfterUnlink.relationships.map((relationship) => relationship.id)).not.toContain(edge.id);
+    expect(sourceAfterUnlink.relationships.map((relationship) => relationship.id)).toContain(derived.id);
+  });
+
   it("projects associated artifacts from explicit links and markdown refs", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
