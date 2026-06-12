@@ -213,6 +213,56 @@ try {
 NODE
 }
 
+write_target_path() {
+  "$NODE_BIN" - "$1" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+
+function pathWithRealParent(target) {
+  const parent = path.dirname(target);
+  try {
+    return path.join(fs.realpathSync.native(parent), path.basename(target));
+  } catch {
+    return target;
+  }
+}
+
+function resolveWriteTarget(target) {
+  const absolute = path.resolve(target);
+  try {
+    const stat = fs.lstatSync(absolute);
+    if (stat.isSymbolicLink()) {
+      const link = fs.readlinkSync(absolute);
+      const linkedTarget = path.resolve(path.dirname(absolute), link);
+      try {
+        return fs.realpathSync.native(linkedTarget);
+      } catch {
+        return pathWithRealParent(linkedTarget);
+      }
+    }
+  } catch {
+    // Missing targets are created at the requested path.
+  }
+
+  try {
+    return fs.realpathSync.native(absolute);
+  } catch {
+    return pathWithRealParent(absolute);
+  }
+}
+
+process.stdout.write(resolveWriteTarget(process.argv[2]));
+NODE
+}
+
+temp_for_target() {
+  local target="$1"
+  local dir
+  dir="$(dirname "$target")"
+  mkdir -p "$dir"
+  mktemp "$dir/.mandible-instructions.XXXXXX"
+}
+
 git_root_for_path() {
   local path="$1"
   local dir
@@ -331,32 +381,32 @@ NODE
 
 install_block() {
   local target="$1"
-  local tmp
-  tmp=$(mktemp)
+  local write_target tmp
+  write_target="$(write_target_path "$target")"
+  tmp="$(temp_for_target "$write_target")"
   write_desired_file "$target" "$tmp"
-  if [[ -f "$target" ]] && cmp -s "$target" "$tmp"; then
+  if [[ -f "$write_target" ]] && cmp -s "$write_target" "$tmp"; then
     rm -f "$tmp"
     printf 'Mandible instructions already current: %s\n' "$target"
     return 0
   fi
-  mkdir -p "$(dirname "$target")"
-  mv "$tmp" "$target"
+  mv "$tmp" "$write_target"
   printf 'Installed Mandible instructions: %s\n' "$target"
 }
 
 install_standalone() {
   local target="$1"
-  local tmp
-  tmp=$(mktemp)
+  local write_target tmp
+  write_target="$(write_target_path "$target")"
+  tmp="$(temp_for_target "$write_target")"
   render_fragment > "$tmp"
   printf '\n' >> "$tmp"
-  if [[ -f "$target" ]] && cmp -s "$target" "$tmp"; then
+  if [[ -f "$write_target" ]] && cmp -s "$write_target" "$tmp"; then
     rm -f "$tmp"
     printf 'Mandible instructions already current: %s\n' "$target"
     return 0
   fi
-  mkdir -p "$(dirname "$target")"
-  mv "$tmp" "$target"
+  mv "$tmp" "$write_target"
   printf 'Installed standalone Mandible instructions: %s\n' "$target"
 }
 
@@ -366,8 +416,9 @@ cleanup_block() {
     printf 'No managed Mandible instructions found: %s\n' "$target"
     return 0
   fi
-  local tmp
-  tmp=$(mktemp)
+  local write_target tmp
+  write_target="$(write_target_path "$target")"
+  tmp="$(temp_for_target "$write_target")"
   BEGIN_MARKER="$BEGIN_MARKER" END_MARKER="$END_MARKER" \
     "$NODE_BIN" - "$target" <<'NODE' > "$tmp"
 const fs = require("node:fs");
@@ -392,12 +443,12 @@ if (removeStart >= 2 && current.slice(removeStart - 2, removeStart) === "\n\n") 
 const endIndex = endStart + end.length + (current[endStart + end.length] === "\n" ? 1 : 0);
 process.stdout.write(current.slice(0, removeStart) + current.slice(endIndex));
 NODE
-  if cmp -s "$target" "$tmp"; then
+  if cmp -s "$write_target" "$tmp"; then
     rm -f "$tmp"
     printf 'No managed Mandible instructions found: %s\n' "$target"
     return 0
   fi
-  mv "$tmp" "$target"
+  mv "$tmp" "$write_target"
   printf 'Removed managed Mandible instructions: %s\n' "$target"
 }
 
