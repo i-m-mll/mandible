@@ -90,6 +90,26 @@ function mapBlock(row: BlockRow) {
   };
 }
 
+function parseSinceQuery(value: string | undefined): string | null {
+  if (!value) return null;
+  if (/^\d+d$/.test(value)) {
+    const days = Number(value.slice(0, -1));
+    return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  }
+  return value;
+}
+
+function sourceFromQuery(value: string | undefined): string | null {
+  if (!value || value === "all") return null;
+  return value === "claude" ? "claude_code" : value;
+}
+
+function blockTypeFromRole(value: string | undefined): string | null {
+  if (value === "user") return "user_message";
+  if (value === "assistant") return "assistant_message";
+  return null;
+}
+
 /** A BlockRow after decompression — content is guaranteed to be a string. */
 type DecompressedBlock = Omit<BlockRow, "content"> & { content: string };
 
@@ -324,6 +344,12 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       params.push(query.session_id);
     }
 
+    const since = parseSinceQuery(query.since);
+    if (since) {
+      conditions.push("c.started_at >= ?");
+      params.push(since);
+    }
+
     // Filter by branch
     if (query.branch) {
       conditions.push("c.branch = ?");
@@ -380,6 +406,88 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       limit,
       pages: Math.ceil(countRow.total / limit),
     });
+  });
+
+  // GET /api/conversations/search — Search the normalized conversation index.
+  server.get("/api/conversations/search", (req, res) => {
+    const query = req.query ?? {};
+    const needle = (query.q || query.query || "").trim().toLowerCase();
+    if (!needle) {
+      sendJson(res, 400, { error: "Missing search query" });
+      return;
+    }
+
+    const limit = Math.min(100, Math.max(1, parseInt(query.limit || "20", 10) || 20));
+    const source = sourceFromQuery(query.source || query.provider);
+    const since = parseSinceQuery(query.since);
+    const titleOnly = query.title === "true" || query.title === "1";
+    const blockType = blockTypeFromRole(query.role);
+
+    const convConditions: string[] = ["1=1"];
+    const convParams: unknown[] = [];
+    if (source) {
+      convConditions.push("source = ?");
+      convParams.push(source);
+    }
+    if (since) {
+      convConditions.push("started_at >= ?");
+      convParams.push(since);
+    }
+
+    const conversations = db
+      .prepare(
+        `SELECT * FROM conversations WHERE ${convConditions.join(" AND ")} ORDER BY started_at DESC`,
+      )
+      .all(...convParams) as ConversationRow[];
+
+    const results: Array<{
+      conversation: ReturnType<typeof mapConversation>;
+      block: ReturnType<typeof mapBlock> | null;
+      snippet: string;
+    }> = [];
+
+    const makeSnippet = (text: string): string | null => {
+      const index = text.toLowerCase().indexOf(needle);
+      if (index < 0) return null;
+      const start = Math.max(0, index - 80);
+      const end = Math.min(text.length, index + needle.length + 80);
+      const snippet = text.slice(start, end).replace(/\s+/g, " ").trim();
+      return `${start > 0 ? "..." : ""}${snippet}${end < text.length ? "..." : ""}`;
+    };
+
+    for (const conversation of conversations) {
+      if (results.length >= limit) break;
+      if (titleOnly) {
+        const snippet = makeSnippet(conversation.title || "");
+        if (snippet) {
+          results.push({ conversation: mapConversation(conversation), block: null, snippet });
+        }
+        continue;
+      }
+
+      const blockConditions = ["conversation_id = ?"];
+      const blockParams: unknown[] = [conversation.id];
+      if (blockType) {
+        blockConditions.push("type = ?");
+        blockParams.push(blockType);
+      }
+      const blocks = db
+        .prepare(
+          `SELECT * FROM conversation_blocks WHERE ${blockConditions.join(" AND ")} ORDER BY position ASC`,
+        )
+        .all(...blockParams) as BlockRow[];
+
+      for (const block of blocks) {
+        const mapped = mapBlock(block);
+        const snippet = makeSnippet(mapped.content);
+        if (snippet) {
+          results.push({ conversation: mapConversation(conversation), block: mapped, snippet });
+          break;
+        }
+      }
+    }
+
+    sendJson(res, 200, { results, total: results.length, limit });
   });
 
   // GET /api/conversations/:id — Full conversation with blocks + children summary

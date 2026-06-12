@@ -19,6 +19,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+source "$SCRIPT_DIR/api.sh"
+
 # --- Defaults ---
 QUERY=""
 PROVIDER="all"
@@ -76,6 +79,37 @@ if [[ -z "$QUERY" ]]; then
   echo "Error: search query is required." >&2
   usage >&2
   exit 1
+fi
+
+if api_is_file_rpc; then
+  case "$PROVIDER" in
+    claude) DB_SOURCE="claude_code" ;;
+    codex|gemini) DB_SOURCE="$PROVIDER" ;;
+    all) DB_SOURCE="" ;;
+    *) echo "Error: unknown provider '$PROVIDER'. Use: claude, gemini, codex, all" >&2; exit 1 ;;
+  esac
+  case "$ROLE" in
+    user|assistant|"") ;;
+    *) echo "Error: unknown role '$ROLE'. Use: user, assistant" >&2; exit 1 ;;
+  esac
+
+  request="/api/conversations/search?q=$(urlencode "$QUERY")&limit=$(urlencode "$LIMIT")"
+  if [[ -n "$DB_SOURCE" ]]; then request="${request}&source=$(urlencode "$DB_SOURCE")"; fi
+  if [[ -n "$ROLE" ]]; then request="${request}&role=$(urlencode "$ROLE")"; fi
+  if [[ -n "$SINCE" ]]; then request="${request}&since=$(urlencode "$SINCE")"; fi
+  if (( TITLE_ONLY )); then request="${request}&title=true"; fi
+  api_get "$request" | jq -r '
+    .results[] |
+    .conversation as $c |
+    ($c.source | sub("claude_code"; "claude")) as $source |
+    ($c.started_at[0:10] // "?") as $date |
+    ($c.title // "" | if length > 60 then .[0:60] + "..." else . end) as $title |
+    if .block then
+      "[\($source)] \($date) | \"\($title)\" | \(.block.role): \(.snippet)"
+    else
+      "[\($source)] \($date) | \"\(.snippet)\""
+    end'
+  exit 0
 fi
 
 if [[ ! -f "$MANDIBLE_DB" ]]; then

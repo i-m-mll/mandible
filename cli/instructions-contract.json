@@ -120,7 +120,7 @@
   ],
   "transports": [
     "Default CLI transport is loopback HTTP via `MANDIBLE_BASE=http://127.0.0.1:<port>`.",
-    "Sandboxed agents without loopback can use `MANDIBLE_BASE=file:///path/to/spool` for issue, auth submission/listing, and coordinator routes.",
+    "Sandboxed agents without loopback can use `MANDIBLE_BASE=file:///path/to/spool` for issue, auth submission/listing, coordinator, conversation index, repo listing, and daemon-indexed log routes.",
     "The file transport denies approval, merge, admin, and config routes; auth approval remains a user/dashboard action."
   ]
 }
