@@ -23,6 +23,7 @@
 
 set -euo pipefail
 
+export GIT_OPTIONAL_LOCKS=0
 export MANDIBLE_PORT="${MANDIBLE_PORT:-19420}"
 export MANDIBLE_BASE="${MANDIBLE_BASE:-http://127.0.0.1:${MANDIBLE_PORT}}"
 

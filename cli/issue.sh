@@ -3,6 +3,9 @@
 set -u
 set -o pipefail
 
+GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
+source "$GIT_ENV_HELPER"
+
 # Bug: fa1ac4c — CLI wrapper for manual issue operations.
 # Ledger-era implementation: ordinary issue operations use the Mandible daemon API.
 

@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
+source "$GIT_ENV_HELPER"
+
 BEGIN_MARKER="<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->"
 END_MARKER="<!-- END MANDIBLE MANAGED INSTRUCTIONS -->"
 CLI_DIR="$(cd "$(dirname "$0")" && pwd -P)"

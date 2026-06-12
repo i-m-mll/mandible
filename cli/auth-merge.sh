@@ -4,6 +4,8 @@ set -u
 set -o pipefail
 
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
+GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
+source "$GIT_ENV_HELPER"
 
 RESET=$'\033[0m'
 BOLD_WHITE=$'\033[1;37m'
@@ -118,6 +120,86 @@ parse_shortstat() {
   deletions=${deletions:-0}
 
   printf "%s %s %s" "$files" "$insertions" "$deletions"
+}
+
+git_lock_roots() {
+  local common_dir
+  local git_dir
+  common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  git_dir=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null || true)
+
+  printf "%s\n" "$common_dir"
+  if [[ -n "$git_dir" && "$git_dir" != "$common_dir" ]]; then
+    printf "%s\n" "$git_dir"
+  fi
+  if [[ -d "${common_dir}/worktrees" ]]; then
+    printf "%s\n" "${common_dir}/worktrees"
+  fi
+}
+
+git_lock_files() {
+  local root
+  git_lock_roots | sort -u | while IFS= read -r root; do
+    if [[ -n "$root" && -d "$root" ]]; then
+      find "$root" -type f -name "*.lock" -print 2>/dev/null
+    fi
+  done | sort -u
+}
+
+file_age_seconds() {
+  local path=$1
+  local mtime=""
+  local now
+  now=$(date +%s)
+  mtime=$(stat -f %m "$path" 2>/dev/null || true)
+  if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
+    mtime=$(stat -c %Y "$path" 2>/dev/null || true)
+  fi
+  if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
+    printf "unknown"
+    return 0
+  fi
+  printf "%s" "$((now - mtime))"
+}
+
+lock_owner_pids() {
+  local path=$1
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+  lsof -t -- "$path" 2>/dev/null | sort -u | paste -sd, -
+}
+
+preflight_git_locks() {
+  local locks
+  locks=$(git_lock_files)
+  if [[ -z "$locks" ]]; then
+    return 0
+  fi
+
+  err ""
+  err "  ${RED}FATAL: Git lock file(s) are present before auth merge.${RESET}"
+  err "  ${DIM_WHITE}Auth merge is aborting before dirty-tree checks, stash, signing, or merge work.${RESET}"
+  err ""
+
+  local lock
+  while IFS= read -r lock; do
+    [[ -n "$lock" ]] || continue
+    local age
+    local owners
+    age=$(file_age_seconds "$lock")
+    owners=$(lock_owner_pids "$lock")
+    err "  ${RED}${lock}${RESET}"
+    if [[ -n "$owners" ]]; then
+      err "    ${DIM_WHITE}age: ${age}s; owning pid(s): ${owners}${RESET}"
+    else
+      err "    ${DIM_WHITE}age: ${age}s; no owning process found${RESET}"
+    fi
+  done <<<"$locks"
+
+  err ""
+  err "  ${DIM_WHITE}Remove stale lock files only after verifying no git process owns them, then retry.${RESET}"
+  die "Aborting before auth merge because git lock files are present." 1
 }
 
 color_diff_line() {
@@ -520,6 +602,8 @@ main() {
   if [[ -z "$target" ]]; then
     target=$(protected_branch)
   fi
+
+  preflight_git_locks
 
   # Bug: bb2d9ef — detect MERGE_HEAD before running pre-auth-check.
   # When Mandible restarts mid-merge (e.g. a dist rebuild triggers a

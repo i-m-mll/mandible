@@ -37,6 +37,9 @@
 set -euo pipefail
 
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
+GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
+source "$GIT_ENV_HELPER"
+
 API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
 
