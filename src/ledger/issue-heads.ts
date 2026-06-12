@@ -9,6 +9,10 @@ export interface LedgerIssueHead {
   last_event_kind: string | null;
 }
 
+export interface LedgerIssueHeadOptions {
+  at?: number;
+}
+
 interface IssueHeadEventRow {
   id: string;
   event_type: string;
@@ -19,7 +23,11 @@ interface IssueHeadEventRow {
   observed_at: number;
 }
 
-export function getLedgerIssueHead(db: Db, issueId: string): LedgerIssueHead {
+export function getLedgerIssueHead(
+  db: Db,
+  issueId: string,
+  options: LedgerIssueHeadOptions = {},
+): LedgerIssueHead {
   const issue = db.prepare(
     "SELECT id, short_id FROM ledger_issues WHERE id = ? AND deleted_at IS NULL",
   ).get(issueId) as { id: string; short_id: string } | undefined;
@@ -30,23 +38,40 @@ export function getLedgerIssueHead(db: Db, issueId: string): LedgerIssueHead {
   const events = db.prepare(
     `SELECT id, event_type, entity_type, entity_id, payload_json, occurred_at, observed_at
      FROM ledger_events
-     WHERE (entity_type = 'issue' AND entity_id = @issueId)
-        OR (
-          entity_type = 'comment'
-          AND entity_id IN (
-            SELECT id FROM ledger_comments
-            WHERE issue_id = @issueId AND deleted_at IS NULL
+     WHERE (@at IS NULL OR occurred_at <= @at)
+       AND (
+          (entity_type = 'issue' AND entity_id = @issueId)
+          OR (
+            entity_type = 'comment'
+            AND entity_id IN (
+              SELECT id FROM ledger_comments
+              WHERE issue_id = @issueId AND deleted_at IS NULL
+            )
           )
-        )
-        OR (
-          entity_type = 'issue_checkpoint'
-          AND entity_id IN (
-            SELECT id FROM ledger_issue_checkpoints
-            WHERE issue_id = @issueId
+          OR (
+            entity_type = 'issue_checkpoint'
+            AND entity_id IN (
+              SELECT id FROM ledger_issue_checkpoints
+              WHERE issue_id = @issueId
+            )
           )
-        )
+          OR (
+            entity_type = 'issue_relationship'
+            AND entity_id IN (
+              SELECT id FROM ledger_issue_relationships
+              WHERE source_issue_id = @issueId OR target_issue_id = @issueId
+            )
+          )
+          OR (
+            entity_type = 'relationship_edge'
+            AND entity_id IN (
+              SELECT id FROM ledger_relationship_edges
+              WHERE source_issue_id = @issueId OR target_issue_id = @issueId
+            )
+          )
+       )
      ORDER BY occurred_at, observed_at, id`,
-  ).all({ issueId }) as IssueHeadEventRow[];
+  ).all({ issueId, at: options.at ?? null }) as IssueHeadEventRow[];
 
   const digest = createHash("sha256")
     .update(JSON.stringify(events))
