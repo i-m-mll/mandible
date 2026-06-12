@@ -52,6 +52,7 @@ export function registerAuthRoutes(
         payload.repo = payload.repo ?? resolved.repoName ?? path.basename(resolved.targetRepoRoot);
         payload.base_branch = resolved.baseBranch;
         payload.head_branch = resolved.headBranch;
+        payload.merge_head_sha = payload.merge_head_sha ?? resolved.headSha;
         const metadata = computeAuthMergeReviewMetadata(
           resolved.targetRepoRoot,
           resolved.baseBranch,
@@ -497,6 +498,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     repo: typeof body.repo === "string" ? body.repo : undefined,
     base_branch: typeof body.base_branch === "string" ? body.base_branch : undefined,
     head_branch: typeof body.head_branch === "string" ? body.head_branch : undefined,
+    merge_head_sha: typeof body.merge_head_sha === "string" ? body.merge_head_sha : null,
     files_changed: filesChanged,
     additions,
     deletions,

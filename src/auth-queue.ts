@@ -14,7 +14,7 @@ import {
   updateAuthRequestAction,
 } from "./auth-actions.js";
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
-import { isAuthMergeCommand, resolveAuthMergeExecutionContext } from "./auth-context.js";
+import { isAuthMergeCommand, resolveAuthMergeExecutionContext, resolveBranchHeadSha } from "./auth-context.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
 import { getDb, resolvePrefix } from "./db.js";
 import {
@@ -354,6 +354,8 @@ export class AuthQueue {
       repo: payload.repo,
       base_branch: payload.base_branch,
       head_branch: payload.head_branch,
+      merge_head_sha: payload.merge_head_sha ?? null,
+      merge_finalized_at: null,
       files_changed: payload.files_changed ?? 0,
       additions: payload.additions ?? 0,
       deletions: payload.deletions ?? 0,
@@ -401,6 +403,8 @@ export class AuthQueue {
         repo,
         base_branch,
         head_branch,
+        merge_head_sha,
+        merge_finalized_at,
         files_changed,
         additions,
         deletions,
@@ -442,6 +446,8 @@ export class AuthQueue {
         @repo,
         @base_branch,
         @head_branch,
+        @merge_head_sha,
+        @merge_finalized_at,
         @files_changed,
         @additions,
         @deletions,
@@ -480,6 +486,8 @@ export class AuthQueue {
         repo: request.repo ?? null,
         base_branch: request.base_branch ?? null,
         head_branch: request.head_branch ?? null,
+        merge_head_sha: request.merge_head_sha ?? null,
+        merge_finalized_at: request.merge_finalized_at,
         post_merge_handoff: request.post_merge_handoff ?? null,
         issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
         issue_closures: request.issue_closures ? JSON.stringify(request.issue_closures) : null,
@@ -1005,12 +1013,13 @@ export class AuthQueue {
     if (executionContextUpdate) {
       this.db
         .prepare(
-          "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, updated_at = ? WHERE id = ?"
+          "UPDATE auth_requests SET cwd = ?, target_repo_root = ?, repo = ?, merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?"
         )
         .run(
           executionContextUpdate.cwd,
           executionContextUpdate.target_repo_root,
           executionContextUpdate.repo,
+          executionContextUpdate.merge_head_sha,
           now,
           id
         );
@@ -1033,7 +1042,7 @@ export class AuthQueue {
 
   private resolveExecutionContextBeforeApproval(
     request: AuthRequest
-  ): { cwd: string; target_repo_root: string; repo: string | null } | null {
+  ): { cwd: string; target_repo_root: string; repo: string | null; merge_head_sha: string } | null {
     if (request.execution_mode === "remote" || !isAuthMergeCommand(request)) {
       return null;
     }
@@ -1043,6 +1052,7 @@ export class AuthQueue {
         cwd: resolved.executionCwd,
         target_repo_root: resolved.targetRepoRoot,
         repo: request.repo ?? resolved.repoName,
+        merge_head_sha: resolved.headSha,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid auth merge execution context.";
@@ -1415,26 +1425,34 @@ export class AuthQueue {
   }
 
   private afterSuccessfulMerge(completed: AuthRequest): void {
-    this.autoDismissDuplicates(completed);
-    this.revalidatePendingMergeRequests(completed);
-    this.applyLedgerCompletionForRequest(completed);
+    if (completed.type === "merge" && completed.merge_finalized_at != null) {
+      return;
+    }
+
+    const mergeHeadSha = completed.merge_head_sha ?? this.resolveMergeHeadShaForRequest(completed);
+    const finalized: AuthRequest = { ...completed, merge_head_sha: mergeHeadSha };
+
+    this.autoDismissDuplicates(finalized);
+    this.revalidatePendingMergeRequests(finalized);
+    this.applyLedgerCompletionForRequest(finalized);
     // Bug: 8a281b3 — resolve work units on successful auth merge (best-effort;
     // work_units table may not exist in test DBs or fresh installs mid-migration)
     if (this.tableExists("work_units")) {
       try {
-        this.resolveWorkUnitsOnMerge(completed);
+        this.resolveWorkUnitsOnMerge(finalized);
       } catch (err) {
         console.warn(
           `[auth-queue] failed to resolve work units after merge: ${err instanceof Error ? err.message : String(err)}`
         );
       }
     }
+    this.markSuccessfulMergeFinalized(finalized, mergeHeadSha);
   }
 
   private sweepSuccessfulMergeFinalizers(): void {
     const rows = this.db
       .prepare(
-        "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' AND exit_code = 0"
+        "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' AND exit_code = 0 AND merge_finalized_at IS NULL"
       )
       .all() as Record<string, unknown>[];
     for (const row of rows) {
@@ -1857,17 +1875,27 @@ export class AuthQueue {
     // Find sibling requests targeting the same branch merge that are still
     // actionable (pending, expired, or failed-completed). Approved requests are
     // excluded — they may already be executing and need separate handling.
+    const args: unknown[] = [
+      completed.id,
+      completed.base_branch,
+      completed.head_branch,
+    ];
+    let where = "id != ? AND base_branch = ? AND head_branch = ? ";
+    if (completed.repo) {
+      where += "AND repo = ? ";
+      args.push(completed.repo);
+    } else {
+      where += "AND repo IS NULL ";
+    }
+    where +=
+      "AND (status IN ('pending', 'expired') " +
+      "OR (status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0))";
+
     const siblings = this.db
       .prepare(
-        "SELECT * FROM auth_requests WHERE id != ? AND base_branch = ? AND head_branch = ? " +
-          "AND (status IN ('pending', 'expired') " +
-          "OR (status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0))"
+        `SELECT * FROM auth_requests WHERE ${where}`
       )
-      .all(
-        completed.id,
-        completed.base_branch,
-        completed.head_branch
-      ) as Record<string, unknown>[];
+      .all(...args) as Record<string, unknown>[];
 
     if (siblings.length === 0) {
       return;
@@ -1880,8 +1908,12 @@ export class AuthQueue {
     const reason = `Auto-dismissed: ${completed.head_branch} → ${completed.base_branch} was successfully merged by request ${completed.id.slice(0, 8)}`;
 
     for (const row of siblings) {
-      dismissStmt.run(now, now, reason, row.id);
-      const dismissed = this.getRequest(String(row.id));
+      const sibling = mapRow(row);
+      if (!this.shouldAutoDismissDuplicate(completed, sibling)) {
+        continue;
+      }
+      dismissStmt.run(now, now, reason, sibling.id);
+      const dismissed = this.getRequest(sibling.id);
       if (dismissed) {
         this.broadcast({
           event: "auth:resolved",
@@ -1892,6 +1924,67 @@ export class AuthQueue {
         );
       }
     }
+  }
+
+  private shouldAutoDismissDuplicate(completed: AuthRequest, sibling: AuthRequest): boolean {
+    if (completed.resolved_at != null && sibling.created_at > completed.resolved_at) {
+      return false;
+    }
+    if (completed.merge_head_sha && sibling.merge_head_sha) {
+      return completed.merge_head_sha === sibling.merge_head_sha ||
+        this.isMergedIntoBase(completed, sibling.merge_head_sha);
+    }
+    if (sibling.merge_head_sha) {
+      return this.isMergedIntoBase(completed, sibling.merge_head_sha);
+    }
+    return completed.resolved_at != null && sibling.created_at <= completed.resolved_at;
+  }
+
+  private isMergedIntoBase(completed: AuthRequest, sha: string): boolean {
+    if (!completed.base_branch) {
+      return false;
+    }
+    const cwd = completed.target_repo_root ?? completed.cwd;
+    if (!cwd) {
+      return false;
+    }
+    try {
+      execFileSync(
+        "git",
+        ["merge-base", "--is-ancestor", sha, `refs/heads/${completed.base_branch}`],
+        { cwd, encoding: "utf8", timeout: 5000 }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private resolveMergeHeadShaForRequest(request: AuthRequest): string | null {
+    if (!request.head_branch) {
+      return null;
+    }
+    const cwd = request.target_repo_root ?? request.cwd;
+    if (!cwd) {
+      return null;
+    }
+    try {
+      return resolveBranchHeadSha(cwd, request.head_branch);
+    } catch {
+      return null;
+    }
+  }
+
+  private markSuccessfulMergeFinalized(request: AuthRequest, mergeHeadSha: string | null): void {
+    if (request.type !== "merge") {
+      return;
+    }
+    const finalizedAt = this.now();
+    this.db
+      .prepare(
+        "UPDATE auth_requests SET merge_head_sha = COALESCE(merge_head_sha, ?), merge_finalized_at = COALESCE(merge_finalized_at, ?), updated_at = ? WHERE id = ?"
+      )
+      .run(mergeHeadSha, finalizedAt, finalizedAt, request.id);
   }
 
   /**
@@ -2264,6 +2357,8 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     repo: row.repo == null ? undefined : String(row.repo),
     base_branch: row.base_branch == null ? undefined : String(row.base_branch),
     head_branch: row.head_branch == null ? undefined : String(row.head_branch),
+    merge_head_sha: row.merge_head_sha == null ? null : String(row.merge_head_sha),
+    merge_finalized_at: row.merge_finalized_at == null ? null : Number(row.merge_finalized_at),
     files_changed: row.files_changed == null ? undefined : Number(row.files_changed),
     additions: row.additions == null ? undefined : Number(row.additions),
     deletions: row.deletions == null ? undefined : Number(row.deletions),
