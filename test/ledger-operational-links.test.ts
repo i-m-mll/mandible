@@ -330,4 +330,50 @@ describe("ledger operational links", () => {
         .get(resolvedIssue.id),
     ).toEqual({ count: 0 });
   });
+
+  it("does not replay an old auth closure after an issue is reopened", async () => {
+    const project = createProject("repo");
+    const resolvedIssue = createIssue(project.project.id, "oldbug1", "Reopened issue");
+    const store = new LedgerStore(db);
+    insertAuthRequest({
+      id: "auth_replay",
+      repo: project.checkout.root,
+      issues: ["oldbug1"],
+    });
+
+    applyAuthRequestLedgerCompletion(db, {
+      auth_request_id: "auth_replay",
+      repo_ref: project.checkout.root,
+      issues: ["oldbug1"],
+      approval_source: "manual",
+    });
+    const resolvedAt = Date.now();
+    db.prepare(
+      "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = 0 WHERE id = ?",
+    ).run(resolvedAt, resolvedAt, "auth_replay");
+
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    store.setIssueStatus(resolvedIssue.id, "open", null, { actor_type: "mandible_user" }, "mandible");
+    const reopenedAt = store
+      .listEvents({ entity_type: "issue", entity_id: resolvedIssue.id })
+      .find((event) => event.event_type === "issue.reopened")?.occurred_at;
+
+    expect(reopenedAt).toBeGreaterThan(resolvedAt);
+
+    applyAuthRequestLedgerCompletion(db, {
+      auth_request_id: "auth_replay",
+      repo_ref: project.checkout.root,
+      issues: ["oldbug1"],
+      approval_source: "manual",
+    });
+
+    expect(store.getIssue(resolvedIssue.id)).toMatchObject({
+      status: "open",
+      resolution: null,
+    });
+    const closeEvents = store
+      .listEvents({ entity_type: "issue", entity_id: resolvedIssue.id })
+      .filter((event) => event.event_type === "issue.closed");
+    expect(closeEvents).toHaveLength(1);
+  });
 });

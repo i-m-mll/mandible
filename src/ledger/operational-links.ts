@@ -325,6 +325,7 @@ export function applyAuthRequestLedgerCompletion(
   const store = new LedgerStore(db);
   const mergeResult = parseMergeResult(input.merge_output);
   const mergeSha = mergeResult?.merge_sha ?? null;
+  const completedAt = authRequestCompletedAt(db, input.auth_request_id);
   const linked = db.prepare(
     `SELECT issue_id, link_type FROM ledger_auth_issue_links
      WHERE auth_request_id = ? AND link_type IN ('resolves', 'fixed_by')`,
@@ -332,6 +333,9 @@ export function applyAuthRequestLedgerCompletion(
   const uniqueIssueIds = Array.from(new Set(linked.map((row) => row.issue_id)));
   for (const issueId of uniqueIssueIds) {
     const issue = store.getIssue(issueId);
+    if (issue.status === "open" && completedAt != null && latestIssueReopenedAt(db, issueId) > completedAt) {
+      continue;
+    }
     store.recordEvent({
       entity_type: "auth_request",
       entity_id: input.auth_request_id,
@@ -374,6 +378,30 @@ export function applyAuthRequestLedgerCompletion(
     );
   }
   return results;
+}
+
+function authRequestCompletedAt(db: Db, authRequestId: string): number | null {
+  if (!tableExists(db, "auth_requests")) return null;
+  const row = db.prepare(
+    "SELECT resolved_at, updated_at, approved_at, created_at FROM auth_requests WHERE id = ?",
+  ).get(authRequestId) as
+    | { resolved_at: number | null; updated_at: number | null; approved_at: number | null; created_at: number | null }
+    | undefined;
+  return row?.resolved_at ?? row?.updated_at ?? row?.approved_at ?? row?.created_at ?? null;
+}
+
+function latestIssueReopenedAt(db: Db, issueId: string): number {
+  if (!tableExists(db, "ledger_events")) return 0;
+  const row = db.prepare(
+    `SELECT occurred_at
+     FROM ledger_events
+     WHERE entity_type = 'issue'
+       AND entity_id = ?
+       AND event_type = 'issue.reopened'
+     ORDER BY occurred_at DESC
+     LIMIT 1`,
+  ).get(issueId) as { occurred_at: number } | undefined;
+  return row?.occurred_at ?? 0;
 }
 
 export function runOperationalLinkBackfill(db: Db): OperationalLinkReport {
