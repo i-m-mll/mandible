@@ -8,6 +8,7 @@
 #   task <description>               Set session task status
 #   inbox [check|ack|watch|add]      Manage session inbox
 #   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
+#   umbrella status <id>             Print coordinator fact packet
 #   description <subcommand>         Alias for issue description operations
 #   auth list [opts]                 List active auth requests
 #   auth action <subcommand>         Manage staged auth request actions
@@ -40,6 +41,7 @@ Commands:
   task <description>               Set session task status
   inbox [check|ack|watch|add]      Manage session inbox
   issue <subcommand>               Issue operations (close, comment, show, refs, markdown)
+  umbrella status <id>             Print coordinator fact packet
   description <subcommand>         Alias for issue description operations
   auth list [opts]                 List active auth requests
   auth action <subcommand>         Manage staged auth request actions
@@ -73,6 +75,7 @@ case "${1:-}" in
   task)    shift; exec "$MANDIBLE_CLI_DIR/task.sh" "$@" ;;
   inbox)   shift; exec "$MANDIBLE_CLI_DIR/inbox.sh" "$@" ;;
   issue)   shift; exec "$MANDIBLE_CLI_DIR/issue.sh" "$@" ;;
+  umbrella) shift; exec "$MANDIBLE_CLI_DIR/umbrella.sh" "$@" ;;
   description) shift; exec "$MANDIBLE_CLI_DIR/issue.sh" description "$@" ;;
   auth)
     shift

@@ -3,7 +3,11 @@
 set -euo pipefail
 
 GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
-source "$GIT_ENV_HELPER"
+if [[ -f "$GIT_ENV_HELPER" ]]; then
+  source "$GIT_ENV_HELPER"
+else
+  export GIT_OPTIONAL_LOCKS=0
+fi
 
 BEGIN_MARKER="<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->"
 END_MARKER="<!-- END MANDIBLE MANAGED INSTRUCTIONS -->"
@@ -81,7 +85,18 @@ let Database;
 try {
   Database = require("better-sqlite3");
 } catch {
-  Database = require(path.join(root, "node_modules", "better-sqlite3"));
+  const searchPaths = [path.join(root, "node_modules")];
+  for (const entry of String(process.env.NODE_PATH || "").split(path.delimiter).filter(Boolean)) {
+    searchPaths.push(entry);
+    let current = path.basename(entry) === "node_modules" ? path.dirname(entry) : entry;
+    for (let depth = 0; depth < 6; depth += 1) {
+      searchPaths.push(path.join(current, "node_modules"));
+      const next = path.dirname(current);
+      if (next === current) break;
+      current = next;
+    }
+  }
+  Database = require(require.resolve("better-sqlite3", { paths: searchPaths }));
 }
 
 const dbPath = process.env.MANDIBLE_DB || path.join(os.homedir(), ".cache", "mandible", "mandible.db");

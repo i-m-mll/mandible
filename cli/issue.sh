@@ -29,7 +29,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   mandible issue new -t <title> -m <body> [--label <label>]...   Create a new issue
-  mandible issue list [--status open|closed|all]                  List issues (default: open)
+  mandible issue list [--status open|closed|all] [--repo <repo>]   List issues (default: open)
   mandible issue show <id>                                        Show issue details
   mandible issue report <id> [--json]                             Print deterministic issue context
   mandible issue triage [opts] [--json]                           Filter issues for review
@@ -53,7 +53,8 @@ Usage:
                                                                   Edit the issue description
   mandible issue description history <issue-ref> [--json] [--with-body]
                                                                   Show issue description revision history
-  mandible issue comment add <issue-ref> -m <text>                 Add a comment
+  mandible issue comment add <issue-ref> -m <text> [--reopen]      Add a comment
+  mandible issue parent-role <status|assume> <umbrella> [opts]     Inspect or record parent-role holder state
   mandible issue comment show <comment-ref> [--json]               Show one comment
   mandible issue comment history <comment-ref> [--json] [--with-body]
                                                                   Show one comment revision history
@@ -96,6 +97,22 @@ repo_ref() {
   fi
 
   repo_root
+}
+
+repo_filter_response() {
+  local repo="$1"
+  api_get "/api/issues?repo=$(urlencode "$repo")"
+}
+
+require_inferred_repo_ref() {
+  local repo response
+  repo="$(repo_ref)"
+  response=$(repo_filter_response "$repo") \
+    || die "${RED}Failed to resolve current repository scope${RESET}" 1
+  if ! printf '%s\n' "$response" | jq -e 'length > 0' >/dev/null; then
+    die "cwd does not resolve to a registered repo; pass --repo <path|id>" 1
+  fi
+  printf '%s\n' "$repo"
 }
 
 labels_json() {
@@ -175,9 +192,14 @@ cmd_close() {
 cmd_comment_add() {
   local id=""
   local message=""
+  local reopen=0
 
   while (( $# > 0 )); do
     case "$1" in
+      --reopen)
+        reopen=1
+        shift
+        ;;
       -m)
         if (( $# < 2 )); then
           die "Missing value for -m." 2
@@ -200,13 +222,18 @@ cmd_comment_add() {
   done
 
   if [[ -z "$id" || -z "$message" ]]; then
-    die "Usage: mandible issue comment add <issue-ref> -m <text>" 2
+    die "Usage: mandible issue comment add <issue-ref> -m <text> [--reopen]" 2
   fi
 
   require_tools
-  local payload
-  payload=$(jq -n --arg message "$message" '{message:$message}')
-  api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$payload" >/dev/null
+  local payload response
+  payload=$(jq -n --arg message "$message" --arg reopen "$reopen" \
+    '{message:$message} + (if $reopen == "1" then {reopen:true} else {} end)')
+  response=$(api_send POST "/api/ledger/issues/$(urlencode "$id")/comments" "$payload") \
+    || die "${RED}Failed to add comment to ${id}${RESET}" 1
+  printf '%s\n' "$response" | jq -r '
+    "comment \(((.comments // []) | sort_by(.created_at // 0) | last | .id) // "-") issue_status=\(.status // "unknown")"
+  '
 }
 
 cmd_show() {
@@ -344,11 +371,12 @@ cmd_triage() {
   fi
 
   require_tools
-  local root query
+  local root query inferred_repo
   if [[ -n "$repo" ]]; then
     root=$(urlencode "$repo")
   else
-    root=$(urlencode "$(repo_ref)")
+    inferred_repo=$(require_inferred_repo_ref) || exit $?
+    root=$(urlencode "$inferred_repo")
   fi
   query="repo=${root}&status=$(urlencode "$status")"
   api_get "/api/issues?${query}" | jq \
@@ -973,6 +1001,7 @@ cmd_new() {
 
 cmd_list() {
   local status="open"
+  local repo=""
 
   while (( $# > 0 )); do
     case "$1" in
@@ -981,6 +1010,13 @@ cmd_list() {
           die "Missing value for --status." 2
         fi
         status="$2"
+        shift 2
+        ;;
+      --repo)
+        if (( $# < 2 )); then
+          die "Missing value for --repo." 2
+        fi
+        repo="$2"
         shift 2
         ;;
       -*)
@@ -998,10 +1034,133 @@ cmd_list() {
   esac
 
   require_tools
-  local root query
-  root=$(urlencode "$(repo_ref)")
+  local root query inferred_repo
+  if [[ -n "$repo" ]]; then
+    root=$(urlencode "$repo")
+  else
+    inferred_repo=$(require_inferred_repo_ref) || exit $?
+    root=$(urlencode "$inferred_repo")
+  fi
   query="repo=${root}&status=$(urlencode "$status")"
   api_get "/api/issues?${query}" | jq -r '.[] as $repo | $repo.issues[] | "\(.id)\t\(.status)\t\($repo.repo_name)\t\(.title)"'
+}
+
+cmd_parent_role() {
+  local action="${1:-}"
+  shift || true
+
+  case "$action" in
+    status) cmd_parent_role_status "$@" ;;
+    assume) cmd_parent_role_assume "$@" ;;
+    ""|-h|--help)
+      cat <<'PARENT_ROLE_USAGE'
+Usage:
+  mandible issue parent-role status <umbrella> [--json]
+  mandible issue parent-role assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]
+PARENT_ROLE_USAGE
+      ;;
+    *)
+      die "Unknown parent-role action: $action (expected status or assume)" 2
+      ;;
+  esac
+}
+
+cmd_parent_role_status() {
+  local issue_ref=""
+  local json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then
+          issue_ref="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+  if [[ -z "$issue_ref" ]]; then
+    die "Usage: mandible issue parent-role status <umbrella> [--json]" 2
+  fi
+  require_tools
+  local response
+  response=$(api_get "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role") \
+    || die "${RED}Failed to fetch parent-role status for ${issue_ref}${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq '.'
+  else
+    printf '%s\n' "$response" | jq -r '
+      if .live_holder then
+        "live holder: \(.live_holder.session_id // "-") (\(.live_holder.mechanism // "-"))"
+      elif .holder then
+        "stale holder: \(.holder.session_id // "-") (\(.holder.mechanism // "-"))"
+      else
+        "no parent-role holder"
+      end
+    '
+  fi
+}
+
+cmd_parent_role_assume() {
+  local issue_ref=""
+  local session_id="${MANDIBLE_SESSION_ID:-${CODEX_SESSION_ID:-}}"
+  local mechanism="codex"
+  local override=0
+  local json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --session)
+        if (( $# < 2 )); then die "Missing value for --session." 2; fi
+        session_id="$2"; shift 2 ;;
+      --mechanism)
+        if (( $# < 2 )); then die "Missing value for --mechanism." 2; fi
+        mechanism="$2"; shift 2 ;;
+      --override) override=1; shift ;;
+      --json) json=1; shift ;;
+      -*)
+        die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$issue_ref" ]]; then
+          issue_ref="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift ;;
+    esac
+  done
+  if [[ -z "$issue_ref" || -z "$session_id" ]]; then
+    die "Usage: mandible issue parent-role assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]" 2
+  fi
+  require_tools
+  local payload tmp_response status response
+  payload=$(jq -n \
+    --arg session_id "$session_id" \
+    --arg mechanism "$mechanism" \
+    --arg override "$override" \
+    '{session_id:$session_id, mechanism:$mechanism, override:($override == "1")}')
+  tmp_response=$(mktemp)
+  status=$(api_send_capture POST "/api/ledger/issues/$(urlencode "$issue_ref")/parent-role" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  if [[ "$status" =~ ^2 ]]; then
+    if (( json )); then
+      printf '%s\n' "$response" | jq '.'
+    else
+      printf '%s\n' "$response" | jq -r '"parent-role assumed checkpoint=\(.checkpoint.id) holder=\(.parent_role.holder.payload.session_id)"'
+    fi
+    return 0
+  fi
+  if [[ "$status" == "409" ]]; then
+    printf '%s\n' "$response" | jq -r '"live parent-role holder exists: \(.live_holder.session_id // "-") (\(.live_holder.mechanism // "-")); rerun with --override to retake"' >&2
+    return 3
+  fi
+  printf '%s\n' "$response" >&2
+  return 1
 }
 
 cmd_label() {
@@ -1606,6 +1765,7 @@ case "$subcmd" in
   changed) cmd_changed "$@" ;;
   checkpoint) cmd_checkpoint "$@" ;;
   status)  cmd_status "$@" ;;
+  parent-role) cmd_parent_role "$@" ;;
   branch)  cmd_branch "$@" ;;
   link)    cmd_link "$@" ;;
   unlink)  cmd_unlink "$@" ;;

@@ -25,6 +25,7 @@ import {
 } from "../ledger/types.js";
 import {
   buildLedgerIssueDetailProjection,
+  type LedgerIssueDetailProjection,
 } from "../ledger/issue-detail.js";
 import {
   getLedgerIssueHead,
@@ -314,6 +315,171 @@ function checkpointResponse(row: LedgerIssueCheckpoint): Record<string, unknown>
   };
 }
 
+function currentIssueBodyRevisionId(db: Db, issueId: string): string | null {
+  const row = db.prepare(
+    `SELECT id FROM ledger_body_revisions
+     WHERE entity_type = 'issue_body' AND entity_id = ?
+     ORDER BY revision_no DESC
+     LIMIT 1`,
+  ).get(issueId) as { id?: string } | undefined;
+  return row?.id ?? null;
+}
+
+function sessionLiveness(db: Db, sessionId: string | null): Record<string, unknown> {
+  if (!sessionId || !tableExists(db, "sessions")) {
+    return { has_live_agent: false, agent_session_id: sessionId, agent_status: null, last_activity: null };
+  }
+  const row = db.prepare(
+    "SELECT status, updated_at, last_active FROM sessions WHERE id = ?",
+  ).get(sessionId) as { status?: string; updated_at?: string; last_active?: string | null } | undefined;
+  if (!row) {
+    return { has_live_agent: false, agent_session_id: sessionId, agent_status: null, last_activity: null };
+  }
+  const status = row.status ?? "unknown";
+  return {
+    has_live_agent: status === "active" || status === "idle",
+    agent_session_id: sessionId,
+    agent_status: status,
+    last_activity: row.last_active ?? row.updated_at ?? null,
+  };
+}
+
+function parentRoleHolders(db: Db, issueId: string): Array<Record<string, unknown>> {
+  const store = new LedgerStore(db);
+  return store.listIssueCheckpoints(issueId, "parent-role")
+    .map((row) => {
+      const payload = checkpointPayload(row);
+      const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload)
+        ? payload as Record<string, unknown>
+        : {};
+      const sessionId = typeof payloadRecord.session_id === "string" ? payloadRecord.session_id : null;
+      return {
+        checkpoint_id: row.id,
+        issue_id: row.issue_id,
+        kind: row.kind,
+        payload,
+        session_id: sessionId,
+        mechanism: typeof payloadRecord.mechanism === "string" ? payloadRecord.mechanism : null,
+        assumed_at: typeof payloadRecord.assumed_at === "number" ? payloadRecord.assumed_at : row.created_at,
+        created_at: row.created_at,
+        liveness: sessionLiveness(db, sessionId),
+      };
+    })
+    .sort((a, b) =>
+      Number(b.assumed_at ?? 0) - Number(a.assumed_at ?? 0)
+      || Number(b.created_at ?? 0) - Number(a.created_at ?? 0)
+      || String(b.checkpoint_id ?? "").localeCompare(String(a.checkpoint_id ?? ""))
+    );
+}
+
+function buildParentRoleStatus(db: Db, issueId: string): Record<string, unknown> {
+  const holders = parentRoleHolders(db, issueId);
+  const liveHolder = holders.find((holder) =>
+    Boolean((holder.liveness as Record<string, unknown> | undefined)?.has_live_agent)
+  ) ?? null;
+  return {
+    issue_id: issueId,
+    holder: holders[0] ?? null,
+    live_holder: liveHolder,
+    stale_holders: holders.filter((holder) =>
+      !Boolean((holder.liveness as Record<string, unknown> | undefined)?.has_live_agent)
+    ),
+    holders,
+  };
+}
+
+function latestCheckpoint(projection: LedgerIssueDetailProjection, kind: string): unknown {
+  return projection.checkpoints.find((checkpoint) => checkpoint.kind === kind) ?? null;
+}
+
+function latestComment(projection: LedgerIssueDetailProjection): unknown {
+  return projection.comments
+    .slice()
+    .sort((a, b) => Number(b.created_at ?? 0) - Number(a.created_at ?? 0) || b.ordinal - a.ordinal)[0] ?? null;
+}
+
+function repoAuthQueueSummary(db: Db, projection: LedgerIssueDetailProjection): Record<string, unknown> {
+  if (!tableExists(db, "auth_requests")) {
+    return { repo: projection.project.repo_id, active_requests: [], pending_requests: [] };
+  }
+  const repoAliases = new Set([
+    projection.project.repo_id,
+    projection.project.repo_name,
+    projection.project.repo_root,
+  ].filter((value): value is string => typeof value === "string" && value.length > 0));
+  const rows = db.prepare(
+    `SELECT id, type, title, status, repo, base_branch, head_branch, created_at, updated_at, resolved_at
+     FROM auth_requests
+     ORDER BY created_at DESC`,
+  ).all() as Array<Record<string, unknown>>;
+  const activeStatuses = new Set(["pending", "approved", "executing", "failed", "expired", "needs_rebase"]);
+  const active = rows
+    .filter((row) => repoAliases.has(String(row.repo ?? "")) && activeStatuses.has(String(row.status ?? "")))
+    .map((row) => ({
+      id: String(row.id ?? ""),
+      type: String(row.type ?? "merge"),
+      title: String(row.title ?? ""),
+      status: String(row.status ?? ""),
+      repo: row.repo ?? null,
+      base_branch: row.base_branch ?? null,
+      head_branch: row.head_branch ?? null,
+      created_at: row.created_at ?? null,
+      updated_at: row.updated_at ?? null,
+      resolved_at: row.resolved_at ?? null,
+    }));
+  return {
+    repo: projection.project.repo_id,
+    repo_aliases: Array.from(repoAliases),
+    active_requests: active,
+    pending_requests: active.filter((row) => row.status === "pending"),
+  };
+}
+
+function buildUmbrellaStatus(db: Db, issueId: string): Record<string, unknown> {
+  const umbrella = buildLedgerIssueDetailProjection(db, issueId);
+  const childRefs = umbrella.relationships
+    .filter((relationship) =>
+      relationship.direction === "outgoing"
+      && relationship.relationship_type === "parent_child"
+      && relationship.related_issue
+    )
+    .map((relationship) => relationship.related_issue!.id);
+  const children = childRefs.map((childId) => {
+    const child = buildLedgerIssueDetailProjection(db, childId);
+    return {
+      id: child.id,
+      short_id: child.display_id,
+      title: child.title,
+      status: child.status,
+      worker_status: child.worker_status,
+      labels: child.labels,
+      head: getLedgerIssueHead(db, child.id),
+      issue_branches: child.issue_branches,
+      branches: child.issue_branches,
+      auth_requests: child.auth_requests,
+      latest_comment: latestComment(child),
+      latest_closeout: latestCheckpoint(child, "closeout"),
+    };
+  });
+  return {
+    umbrella: {
+      id: umbrella.id,
+      short_id: umbrella.display_id,
+      title: umbrella.title,
+      status: umbrella.status,
+      worker_status: umbrella.worker_status,
+      labels: umbrella.labels,
+      body: umbrella.body,
+      current_revision_id: currentIssueBodyRevisionId(db, umbrella.id),
+      head: getLedgerIssueHead(db, umbrella.id),
+      parent_role: buildParentRoleStatus(db, umbrella.id),
+    },
+    delegation_manifest: latestCheckpoint(umbrella, "delegation-manifest"),
+    children,
+    auth_queue: repoAuthQueueSummary(db, umbrella),
+  };
+}
+
 function enumValue<T extends readonly string[]>(value: unknown, allowed: T): T[number] | null {
   return typeof value === "string" && (allowed as readonly string[]).includes(value) ? value as T[number] : null;
 }
@@ -520,6 +686,95 @@ export function registerIssueRoutes(
       return;
     }
     sendLedgerIssueProjection(res, db, resolved.issue_id);
+  });
+
+  server.get("/api/ledger/issues/:issueId/umbrella-status", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    try {
+      sendJson(res, 200, buildUmbrellaStatus(db, resolved.issue_id));
+    } catch (error) {
+      sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
+    }
+  });
+
+  server.get("/api/ledger/issues/:issueId/parent-role", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    sendJson(res, 200, buildParentRoleStatus(db, resolved.issue_id));
+  });
+
+  server.post("/api/ledger/issues/:issueId/parent-role", (req, res) => {
+    const issueRef = getParam(req, "issueId");
+    const body = getBody(req) ?? {};
+    const sessionId = typeof body.session_id === "string" ? body.session_id.trim() : "";
+    const mechanism = typeof body.mechanism === "string" && body.mechanism.trim()
+      ? body.mechanism.trim()
+      : "unknown";
+    const override = body.override === true;
+    if (!issueRef) {
+      sendJson(res, 400, { error: "missing issueId" });
+      return;
+    }
+    if (!sessionId) {
+      sendJson(res, 400, { error: "session_id is required" });
+      return;
+    }
+    const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueRef);
+    if (!resolved.ok) {
+      sendJson(res, resolved.status, { error: resolved.error });
+      return;
+    }
+    const current = buildParentRoleStatus(db, resolved.issue_id);
+    const liveHolder = current.live_holder as Record<string, unknown> | null;
+    if (liveHolder && liveHolder.session_id !== sessionId && !override) {
+      sendJson(res, 409, {
+        error: "parent role already held by a live session; pass override to retake",
+        live_holder: liveHolder,
+        parent_role: current,
+      });
+      return;
+    }
+    const now = Date.now();
+    const checkpoint = new LedgerStore(db).addIssueCheckpoint(resolved.issue_id, {
+      kind: "parent-role",
+      payload: {
+        session_id: sessionId,
+        mechanism,
+        assumed_at: now,
+        override,
+        previous_live_holder: liveHolder,
+      },
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+      source: "mandible",
+      created_at: now,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      checkpoint: checkpointResponse(checkpoint),
+      parent_role: buildParentRoleStatus(db, resolved.issue_id),
+      override_required: false,
+    });
   });
 
   server.get("/api/ledger/issues/:issueId/head", (req, res) => {
@@ -801,6 +1056,7 @@ export function registerIssueRoutes(
       actor_type: "mandible_user",
       author_display: "Mandible",
       source: "mandible",
+      reopen: body?.reopen === true,
     });
     sendLedgerIssueProjection(res, db, resolved.issue_id, markdownPolicy.warnings);
   });
@@ -1308,6 +1564,7 @@ export function registerIssueRoutes(
         body: message,
         actor_type: "mandible_user",
         author_display: "Mandible",
+        reopen: body?.reopen === true,
       });
       sendJson(res, 200, withMarkdownBodyWarnings({ ok: true, source: "ledger" }, markdownPolicy.warnings));
       return;

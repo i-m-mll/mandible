@@ -495,6 +495,149 @@ describe("ledger issue route gate", () => {
     expect(detail.labels.map((row) => row.label)).toContain("reviewed");
   });
 
+  it("atomically reopens and comments through the ledger comment route", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue, store } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Closed writable" });
+    store.setIssueStatus(issue.id, "closed", "fixed");
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const response = await server.invoke("POST", "/api/ledger/issues/:issueId/comments", {
+      params: { issueId: "abc123" },
+      body: { message: "Scope extension", reopen: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      status: "open",
+      resolution: null,
+      comments: [{ body: "Scope extension" }],
+    });
+    const events = store.listEvents({ entity_type: "issue", entity_id: issue.id }).map((event) => event.event_type);
+    expect(events).toContain("issue.reopened");
+  });
+
+  it("records advisory parent-role holders and requires override for live holders", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue, store } = createLedgerIssue({ repo: repoInfo, alias: "umb123", title: "Umbrella" });
+    db.prepare(
+      "INSERT INTO sessions (id, app, status, created_at, updated_at, last_active) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(
+      "sess-live",
+      "codex",
+      "active",
+      "2026-06-12T12:00:00.000Z",
+      "2026-06-12T12:05:00.000Z",
+      "2026-06-12T12:05:00.000Z",
+    );
+    store.addIssueCheckpoint(issue.id, {
+      kind: "parent-role",
+      payload: { session_id: "sess-live", mechanism: "codex", assumed_at: 1 },
+      actor_type: "agent",
+    });
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const status = await server.invoke("GET", "/api/ledger/issues/:issueId/parent-role", {
+      params: { issueId: "umb123" },
+    });
+    const blocked = await server.invoke("POST", "/api/ledger/issues/:issueId/parent-role", {
+      params: { issueId: "umb123" },
+      body: { session_id: "sess-new", mechanism: "codex" },
+    });
+    const retaken = await server.invoke("POST", "/api/ledger/issues/:issueId/parent-role", {
+      params: { issueId: "umb123" },
+      body: { session_id: "sess-new", mechanism: "codex", override: true },
+    });
+
+    expect(status.body).toMatchObject({
+      live_holder: { session_id: "sess-live", liveness: { has_live_agent: true } },
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.body).toMatchObject({ live_holder: { session_id: "sess-live" } });
+    expect(retaken.statusCode).toBe(200);
+    expect(retaken.body).toMatchObject({
+      ok: true,
+      parent_role: { holder: { session_id: "sess-new" } },
+    });
+  });
+
+  it("builds a deterministic umbrella status fact packet", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umb123",
+      title: "Umbrella",
+      labels: ["umbrella"],
+    });
+    const child = store.createIssue({
+      project_id: umbrella.project_id,
+      title: "Child",
+      body: "Child body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "chi123", external_id: "chi123", is_primary: true }],
+    });
+    store.upsertIssueRelationship({
+      source_issue_id: umbrella.id,
+      target_issue_id: child.id,
+      relationship_type: "parent_child",
+      provenance: "manual",
+    });
+    store.addIssueCheckpoint(umbrella.id, {
+      kind: "delegation-manifest",
+      payload: [{ issue: child.short_id, digest: "before", branch: "feature/child" }],
+      actor_type: "agent",
+    });
+    store.addIssueCheckpoint(child.id, {
+      kind: "closeout",
+      payload: { worker_status: "done", branch: "feature/child", auth_request: null },
+      actor_type: "agent",
+    });
+    store.addComment(child.id, { body: "Finished child", actor_type: "agent" });
+    store.setWorkerStatus(child.id, "done");
+    store.addIssueBranch(child.id, "feature/child");
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO auth_requests (
+        id, type, command, title, repo, base_branch, head_branch,
+        execution_mode, status, created_at, updated_at, expires_at, output, approval_source
+      ) VALUES (
+        'auth_pending', 'merge', 'git merge feature/child', 'Merge child',
+        ?, 'main', 'feature/child', 'daemon', 'pending', ?, ?, ?, '', 'manual'
+      )`,
+    ).run(repoInfo.id, now, now, now + 60_000);
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const response = await server.invoke("GET", "/api/ledger/issues/:issueId/umbrella-status", {
+      params: { issueId: "umb123" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toMatchObject({
+      umbrella: {
+        short_id: umbrella.short_id,
+        title: "Umbrella",
+        current_revision_id: expect.any(String),
+      },
+      delegation_manifest: { kind: "delegation-manifest" },
+      children: [
+        {
+          short_id: child.short_id,
+          title: "Child",
+          worker_status: "done",
+          issue_branches: [{ branch: "feature/child" }],
+          latest_comment: { body: "Finished child" },
+          latest_closeout: { kind: "closeout" },
+        },
+      ],
+      auth_queue: {
+        pending_requests: [{ id: "auth_pending", head_branch: "feature/child" }],
+      },
+    });
+  });
+
   it("creates ledger-native issues through the repo route", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const server = new TestIssueServer();

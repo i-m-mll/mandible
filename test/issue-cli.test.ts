@@ -294,7 +294,63 @@ function listen(): Promise<number> {
         return;
       }
       if (req.method === "POST" && req.url === "/api/ledger/issues/abc/comments") {
-        res.end(JSON.stringify({ id: "comment-3" }));
+        void readBody().then((body) => {
+          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+          const reopen = (body as { reopen?: boolean } | null)?.reopen === true;
+          res.end(JSON.stringify({
+            id: "issue-1",
+            display_id: "abc",
+            title: "Issue title",
+            status: reopen ? "open" : "closed",
+            comments: [
+              { id: "comment-3", ordinal: 3, body: (body as { message?: string } | null)?.message ?? "", created_at: 3 },
+            ],
+          }));
+        });
+        return;
+      }
+      if (req.url === "/api/ledger/issues/abc/umbrella-status") {
+        res.end(JSON.stringify({
+          umbrella: {
+            id: "issue-1",
+            short_id: "abc",
+            title: "Umbrella",
+            status: "open",
+            current_revision_id: "rev_issue_1",
+          },
+          delegation_manifest: { id: "checkpoint-1", payload: [] },
+          children: [{ id: "issue-2", short_id: "def", title: "Child", status: "open" }],
+          auth_queue: { pending_requests: [], active_requests: [] },
+        }));
+        return;
+      }
+      if (req.url === "/api/ledger/issues/abc/parent-role") {
+        if (req.method === "GET") {
+          res.end(JSON.stringify({
+            issue_id: "issue-1",
+            holder: null,
+            live_holder: null,
+            stale_holders: [],
+            holders: [],
+          }));
+          return;
+        }
+        void readBody().then((body) => {
+          requestBodies.push({ path: req.url ?? "", method: req.method ?? "", body });
+          if ((body as { override?: boolean } | null)?.override !== true) {
+            res.statusCode = 409;
+            res.end(JSON.stringify({
+              error: "parent role already held by a live session; pass override to retake",
+              live_holder: { session_id: "sess-live", mechanism: "codex" },
+            }));
+            return;
+          }
+          res.end(JSON.stringify({
+            ok: true,
+            checkpoint: { id: "checkpoint-parent", kind: "parent-role" },
+            parent_role: { holder: { payload: { session_id: (body as { session_id?: string } | null)?.session_id } } },
+          }));
+        });
         return;
       }
       if (req.method === "PATCH" && req.url === "/api/ledger/issues/abc") {
@@ -425,7 +481,83 @@ describe("issue CLI body revisions", () => {
     const result = await run(["issue", "comment", "add", "abc", "-m", "New comment"], port);
 
     expect(result.status).toBe(0);
+    expect(result.stdout).toContain("issue_status=closed");
     expect(requestedPaths).toContain("/api/ledger/issues/abc/comments");
+  });
+
+  it("adds comments with an atomic reopen flag", async () => {
+    const port = await listen();
+    const result = await run(["issue", "comment", "add", "abc", "-m", "Reopen comment", "--reopen"], port);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("issue_status=open");
+    expect(requestBodies).toContainEqual({
+      path: "/api/ledger/issues/abc/comments",
+      method: "POST",
+      body: { message: "Reopen comment", reopen: true },
+    });
+  });
+
+  it("prints umbrella status through file RPC", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-umbrella-file-rpc-"));
+    tempRoots.push(spoolDir);
+    const seen: Array<Record<string, unknown>> = [];
+    const timer = startFileRpcResponder(spoolDir, (request) => {
+      seen.push(request);
+      return {
+        status: 200,
+        body: {
+          umbrella: { id: "issue-1", short_id: "abc", title: "Umbrella", status: "open" },
+          delegation_manifest: null,
+          children: [],
+          auth_queue: { pending_requests: [], active_requests: [] },
+        },
+      };
+    });
+
+    try {
+      const result = await run(["umbrella", "status", "abc", "--json"], 0, process.cwd(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(0);
+      expect(seen[0]).toMatchObject({
+        method: "GET",
+        path: "/api/ledger/issues/abc/umbrella-status",
+      });
+      expect(JSON.parse(result.stdout).umbrella.short_id).toBe("abc");
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
+  it("surfaces live parent-role holders and requires override", async () => {
+    const port = await listen();
+    const blocked = await run([
+      "issue",
+      "parent-role",
+      "assume",
+      "abc",
+      "--session",
+      "sess-new",
+    ], port);
+
+    expect(blocked.status).toBe(3);
+    expect(blocked.stderr).toContain("live parent-role holder exists: sess-live");
+
+    const assumed = await run([
+      "issue",
+      "parent-role",
+      "assume",
+      "abc",
+      "--session",
+      "sess-new",
+      "--override",
+      "--json",
+    ], port);
+    expect(assumed.status).toBe(0);
+    expect(JSON.parse(assumed.stdout).checkpoint.id).toBe("checkpoint-parent");
   });
 
   it("sets worker status through the issue status command", async () => {
@@ -977,7 +1109,10 @@ describe("issue CLI list repo scoping", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("abc\topen\tmandible\tWorktree issue");
 
-    const listPath = requestedPaths.find((item) => item.startsWith("/api/issues?"));
+    const listPath = requestedPaths.find((item) => {
+      if (!item.startsWith("/api/issues?")) return false;
+      return new URL(`http://127.0.0.1${item}`).searchParams.get("status") === "open";
+    });
     expect(listPath).toBeTruthy();
     const url = new URL(`http://127.0.0.1${listPath}`);
     expect(url.searchParams.get("repo")).toBe(repoRoot);
@@ -992,11 +1127,32 @@ describe("issue CLI list repo scoping", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("abc\topen\tmandible\tWorktree issue");
 
-    const listPath = requestedPaths.find((item) => item.startsWith("/api/issues?"));
+    const listPath = requestedPaths.find((item) => {
+      if (!item.startsWith("/api/issues?")) return false;
+      return new URL(`http://127.0.0.1${item}`).searchParams.get("status") === "open";
+    });
     expect(listPath).toBeTruthy();
     const url = new URL(`http://127.0.0.1${listPath}`);
     expect(url.searchParams.get("repo")).toBe(repoRoot);
     expect(url.searchParams.get("repo")).not.toBe(worktreeRoot);
     expect(url.searchParams.get("status")).toBe("open");
+  });
+
+  it("fails loudly when inferred cwd does not resolve to a registered repo", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-issue-list-file-rpc-"));
+    tempRoots.push(spoolDir);
+    const timer = startFileRpcResponder(spoolDir, () => ({ status: 200, body: [] }));
+
+    try {
+      const result = await run(["issue", "list"], 0, os.tmpdir(), {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("cwd does not resolve to a registered repo; pass --repo <path|id>");
+    } finally {
+      clearInterval(timer);
+    }
   });
 });

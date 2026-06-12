@@ -7,6 +7,14 @@
       "description": "Print deterministic issue context for handoff and planning."
     },
     {
+      "name": "mandible umbrella status <id> [--json]",
+      "description": "Print one deterministic coordinator fact packet: umbrella body/revision/head, latest delegation manifest, child summaries, parent-role holder state, and repo auth queue summary."
+    },
+    {
+      "name": "mandible issue parent-role status|assume <umbrella> [--session <id>] [--mechanism <name>] [--override] [--json]",
+      "description": "Inspect or record advisory parent-role holder state; live holder conflicts require an explicit override while stale holders are informational."
+    },
+    {
       "name": "mandible issue heads <id>... [--json]",
       "description": "Print issue state digests for delegation manifests and resume checks."
     },
@@ -43,8 +51,8 @@
       "description": "Tombstone deliberate structured issue/comment relationship edges and emit relationship removal events."
     },
     {
-      "name": "mandible issue comment add <issue-ref> -m <text>",
-      "description": "Append rendered Markdown comments with real newline characters."
+      "name": "mandible issue comment add <issue-ref> -m <text> [--reopen]",
+      "description": "Append rendered Markdown comments with real newline characters and return the issue lifecycle status; --reopen atomically reopens and comments."
     },
     {
       "name": "mandible issue description edit <issue-ref> -m <text>",

@@ -66,6 +66,18 @@ function listenWithQueue(queue: unknown): Promise<number> {
         res.end(JSON.stringify(queue));
         return;
       }
+      if (req.url?.startsWith("/api/issues?")) {
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify([
+          {
+            repo_id: "mandible",
+            repo_name: "mandible",
+            repo_root: "/tmp/registered/mandible",
+            issues: [],
+          },
+        ]));
+        return;
+      }
       res.statusCode = 404;
       res.end("not found");
     });
@@ -153,6 +165,19 @@ describe("auth list CLI", () => {
     expect(payload.requests[0].repo).toBe("mandible");
     expect(payload.requests[0].head_branch).toBe("feature/auth-list-cli");
     expect(payload.requests[0].status).toBe("pending");
+  });
+
+  it("matches explicit repo paths to queued repo aliases", async () => {
+    const port = await listenWithQueue(queue);
+    const result = await run(
+      ["auth", "list", "--repo", "/tmp/registered/mandible", "--json"],
+      port,
+    );
+
+    expect(result.status).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.requests).toHaveLength(1);
+    expect(payload.requests[0].repo).toBe("mandible");
   });
 
   it("lists auth requests through file RPC", async () => {

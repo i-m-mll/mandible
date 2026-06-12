@@ -72,8 +72,16 @@ response=$(api_get "$url" 2>/dev/null) || {
 jq_filter='.requests'
 jq_args=()
 if [[ -n "$repo_filter" ]]; then
-  jq_filter="${jq_filter} | map(select(.repo == \$repo))"
+  repo_aliases_json="[]"
+  repo_lookup=$(api_get "/api/issues?repo=$(urlencode "$repo_filter")" 2>/dev/null || true)
+  if [[ -n "$repo_lookup" ]]; then
+    repo_aliases_json=$(printf '%s' "$repo_lookup" \
+      | jq -c '[.[] | .repo_id, .repo_name, .repo_root | select(. != null and . != "")] | unique' 2>/dev/null \
+      || printf '[]')
+  fi
+  jq_filter="${jq_filter} | map(select(.repo as \$repo_value | \$repo_value == \$repo or ((\$repo_aliases | index(\$repo_value)) != null)))"
   jq_args+=(--arg repo "$repo_filter")
+  jq_args+=(--argjson repo_aliases "$repo_aliases_json")
 fi
 if [[ -n "$head_filter" ]]; then
   jq_filter="${jq_filter} | map(select(.head_branch == \$head))"

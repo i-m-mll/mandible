@@ -3,9 +3,12 @@
 ```
 ## ISSUE
 mandible issue new -t <title> -m <body> [--label <label>]...
-mandible issue list [--status open|closed|all|merged]        # NO --json, NO --limit
+mandible issue list [--status open|closed|all|merged] [--repo R]  # NO --json, NO --limit
 mandible issue show <id>                                      # NO --json
 mandible issue report <id> [--json]                          # exit 3 = NOT from this CLI (curl -sf exits 22 on HTTP err)
+mandible umbrella status <id> [--json]
+mandible issue parent-role status <umbrella> [--json]
+mandible issue parent-role assume <umbrella> [--session S] [--mechanism M] [--override] [--json]
 mandible issue triage [--status open|closed|all|merged] [--label L] [--repo R] [--stale-days N] [--limit N] [--json]
 mandible issue heads <id>... [--json]
 mandible issue changed --since-manifest <file> [--json]
@@ -19,7 +22,7 @@ mandible issue unlink <src> <target...> [--type t]
 mandible issue close <id> [--commit <sha>]
 mandible issue open <id>
 mandible issue label add|rm <id> <label>
-mandible issue comment add <id> -m <text>
+mandible issue comment add <id> -m <text> [--reopen]
 mandible issue comment show <ref> [--json]        # ref: id, <issue>#<ordinal>, <issue>#last
 mandible issue comment history <ref> [--json] [--with-body]
 mandible issue description show <ref> [--json]
