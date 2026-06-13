@@ -5,6 +5,7 @@
 mandible issue new -t <title> -m <body> [--label <label>]...
 mandible issue list [--status open|closed|all|merged] [--repo R]  # NO --json, NO --limit
 mandible issue show <id>                                      # NO --json
+mandible issue title <id> [--json] [--graceful]
 mandible issue report <id> [--json]                          # exit 3 = NOT from this CLI (curl -sf exits 22 on HTTP err)
 mandible umbrella status <id> [--deep] [--json]
 mandible umbrella adopt <umbrella> <children...> [--json]
@@ -45,6 +46,19 @@ mandible auth request <branch> --title <text> [--issue <id>]... [--closes-issue 
   [--cwd P] [--target B] [--depends-on ID] [--dirty-policy block|allow-untracked|stash|branch-off]
   [--timeout N] [--no-watch] [--force|-f]
 mandible auth merge <branch> [opts]    # executes the merge; invoked by daemon
+
+## LEDGER MECHANISM CLIENT
+source cli/ledger-client.sh
+mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--kind solo|partition|integration] [--session S] [--graceful]
+mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--graceful]
+mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
+mandible work-unit resolve --id WU [--auth-request-id AR] [--graceful]
+mandible work-unit release --issue I --repo R [--graceful]
+mandible issue-file path [cwd]
+mandible issue-file read [cwd]
+mandible issue-file write [--cwd P] I...
+mandible commit trailer [I...]
+mandible session link-issue SESSION --issue I --repo R [--repo-name N] [--graceful]
 
 ## LOGS  (raw provider files, not DB)
 mandible logs inventory [--provider codex|claude|gemini|all] [--since Nd|YYYY-MM-DD] [--limit N] [--json]
@@ -136,6 +150,29 @@ transport status/body when a route is denied.
 `mandible issue checkpoint add` accepts `--payload '<json>'`, `--payload -` for
 JSON on stdin, and the existing `--payload-file <file-or->` form. Omitting a
 payload still records `{}`.
+
+## Ledger Mechanism Client
+
+`cli/ledger-client.sh` is the sourceable Mandible-owned client for policy-free
+ledger mechanism operations. It routes through `cli/api.sh`, so the same
+functions work over loopback HTTP and `MANDIBLE_BASE=file://...` file-RPC. The
+supported sourceable functions are `mandible_work_unit_claim`,
+`mandible_work_unit_activate`, `mandible_work_unit_find`,
+`mandible_work_unit_resolve`, `mandible_work_unit_release`,
+`mandible_issue_title`, `mandible_session_link_issue`,
+`mandible_issue_file_path`, `mandible_issue_file_read`,
+`mandible_issue_file_write`, and `mandible_commit_trailers`.
+
+The client takes explicit mechanism inputs such as issue, repo, branch, session,
+and work-unit IDs. It does not encode worktree layout, branch naming, signing,
+attribution, model, or profile policy. Callers that should continue when the
+daemon or file-RPC spool is unavailable can pass `--graceful` or set
+`MANDIBLE_LEDGER_GRACEFUL=1`.
+
+`.issue` files are newline-delimited issue refs at the git root. Blank lines and
+`#` comments are ignored when reading. `mandible commit trailer` renders only
+`Mandible-Issue:` trailers; any co-author or attribution trailers remain
+caller-supplied policy.
 
 ## Does NOT Exist (confirmed absent from source)
 

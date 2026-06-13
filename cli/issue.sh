@@ -15,6 +15,8 @@ GREEN=$'\033[32m'
 
 API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
+CLIENT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/ledger-client.sh"
+source "$CLIENT_HELPER"
 
 err() {
   printf "%b\n" "$*" >&2
@@ -107,6 +109,7 @@ Usage:
   mandible issue new -t <title> -m <body> [--label <label>]...   Create a new issue
   mandible issue list [--status open|closed|all] [--repo <repo>]   List issues (default: open)
   mandible issue show <id>                                        Show issue details
+  mandible issue title <id> [--json] [--graceful]                 Print issue title
   mandible issue report <id> [--json]                             Print deterministic issue context
   mandible issue triage [opts] [--json]                           Filter issues for review
   mandible issue heads <id>... [--json]                            Print issue state digests
@@ -1896,6 +1899,7 @@ case "$subcmd" in
   new)     cmd_new "$@" ;;
   list)    cmd_list "$@" ;;
   show)    cmd_show "${1:-}" ;;
+  title)   mandible_issue_title "$@" ;;
   report)  cmd_report "$@" ;;
   triage)  cmd_triage "$@" ;;
   heads)   cmd_heads "$@" ;;

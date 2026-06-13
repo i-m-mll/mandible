@@ -55,6 +55,9 @@ describe("file RPC transport", () => {
     router.post("/api/work-units/claim", (req, res) => {
       res.json({ ambient_identity: req.ambient_identity });
     });
+    router.post("/api/work-units/release", (req, res) => {
+      res.json({ ambient_identity: req.ambient_identity, body: req.body });
+    });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -68,6 +71,17 @@ describe("file RPC transport", () => {
       }),
       "utf8",
     );
+    fs.writeFileSync(
+      path.join(tempDir, "req-release.request.json"),
+      JSON.stringify({
+        id: "req-release",
+        method: "POST",
+        path: "/api/work-units/release",
+        ambient_identity: { provider: "codex", provider_session_id: "thread-release-rpc" },
+        body: { issue_id: "abc123", repo_id: "mandible" },
+      }),
+      "utf8",
+    );
 
     await transport.processOnce();
 
@@ -75,6 +89,12 @@ describe("file RPC transport", () => {
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
       ambient_identity: { provider: "codex", provider_session_id: "thread-file-rpc" },
+    });
+    const release = JSON.parse(fs.readFileSync(path.join(tempDir, "req-release.response.json"), "utf8"));
+    expect(release.status).toBe(200);
+    expect(release.body).toEqual({
+      ambient_identity: { provider: "codex", provider_session_id: "thread-release-rpc" },
+      body: { issue_id: "abc123", repo_id: "mandible" },
     });
   });
 
@@ -110,9 +130,12 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1/blocks")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1/forks")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/work/repos")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/work-units")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/work-units/claim")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/work-units/activate")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/work-units/release")).toBe(true);
     expect(isAllowedFileRpcRoute("PATCH", "/api/work-units/wu-1")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/sessions/session-1/issues")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/system/logs")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/auth/request/abc/actions")).toBe(true);
@@ -142,6 +165,7 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/approve")).toBe(false);
     expect(isAllowedFileRpcRoute("PATCH", "/api/conversations/conv-1")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/conversations/conv-1/fork")).toBe(false);
+    expect(isAllowedFileRpcRoute("DELETE", "/api/sessions/session-1/issues")).toBe(false);
     expect(isAllowedFileRpcRoute("PUT", "/api/settings/auto_close_issues_on_merge")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/issues/scan")).toBe(false);
   });

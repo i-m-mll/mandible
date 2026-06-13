@@ -19,6 +19,10 @@
 #   conversations <subcommand>       Inspect DB-backed conversations
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
 #   instructions <subcommand>        Install or diff the Mandible instruction fragment
+#   work-unit <subcommand>           Policy-free work-unit lifecycle client
+#   issue-file <subcommand>          Read/write the .issue helper file
+#   commit trailer [issue...]        Render Mandible-Issue trailers
+#   session link-issue <id> ...      Link sessions to issues
 #   search "<query>" [opts]          Search chat history across providers
 #   help                             Show this help
 
@@ -52,6 +56,10 @@ Commands:
   conversations <subcommand>       Inspect DB-backed conversations
   artifact <subcommand>            Register, resolve, link, and check artifacts
   instructions <subcommand>        Install or diff the Mandible instruction fragment
+  work-unit <subcommand>           Policy-free work-unit lifecycle client
+  issue-file <subcommand>          Read/write the .issue helper file
+  commit trailer [issue...]        Render Mandible-Issue trailers
+  session link-issue <id> ...      Link sessions to issues
   search "<query>" [opts]          Search chat history across providers
   help                             Show this help
 EOF
@@ -93,6 +101,10 @@ case "${1:-}" in
   conversations) shift; exec "$MANDIBLE_CLI_DIR/conversations.sh" "$@" ;;
   artifact) shift; exec "$MANDIBLE_CLI_DIR/artifact.sh" "$@" ;;
   instructions) shift; exec "$MANDIBLE_CLI_DIR/instructions.sh" "$@" ;;
+  work-unit) shift; exec "$MANDIBLE_CLI_DIR/work-unit.sh" "$@" ;;
+  issue-file) shift; exec "$MANDIBLE_CLI_DIR/issue-file.sh" "$@" ;;
+  commit) shift; exec "$MANDIBLE_CLI_DIR/commit.sh" "$@" ;;
+  session) shift; exec "$MANDIBLE_CLI_DIR/session.sh" "$@" ;;
   search)  shift; exec "$MANDIBLE_CLI_DIR/search.sh" "$@" ;;
   help|-h|--help) usage ;;
   "") usage >&2; exit 1 ;;

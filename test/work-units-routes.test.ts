@@ -106,6 +106,41 @@ describe("work unit routes", () => {
     ).toEqual({ provider: "codex", provider_session_id: "thread-patch" });
   });
 
+  it("persists explicit ambient identity from release requests", async () => {
+    const claim = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/claim",
+      body: {
+        issue_id: "abc123",
+        repo_id: "mandible",
+        branch: "feature/abc123-demo",
+      },
+    });
+    expect(claim.status).toBe(201);
+    const claimBody = claim.body as { id: string };
+
+    const release = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/release",
+      ambient_identity: { provider: "codex", provider_session_id: "thread-release" },
+      body: {
+        issue_id: "abc123",
+        repo_id: "mandible",
+      },
+    });
+
+    expect(release.status).toBe(200);
+    expect(release.body).toMatchObject({ ok: true, released: 1 });
+    expect(
+      db.prepare("SELECT state, assigned_session_id, provider, provider_session_id FROM work_units WHERE id = ?").get(claimBody.id),
+    ).toEqual({
+      state: "open",
+      assigned_session_id: null,
+      provider: "codex",
+      provider_session_id: "thread-release",
+    });
+  });
+
   it("persists explicit ambient identity from HTTP headers", async () => {
     const server = http.createServer((req, res) => {
       void router.handle(req, res);
