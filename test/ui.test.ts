@@ -108,6 +108,13 @@ describe('App routing', () => {
     });
   });
 
+  it('routes removed Switchboard hashes to the default graph workspace', () => {
+    expect(parseRouteFromHash('#/switchboard')).toEqual({
+      tab: 'graph',
+      params: {},
+    });
+  });
+
   it('maps mandible issue deep links onto the existing Issues hash route', () => {
     expect(routeHashFromMandibleDeepLink('mandible:///issues?issue=dfc924a')).toBe(
       '#/issues?issue=dfc924a',

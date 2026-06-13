@@ -364,11 +364,3 @@ export type ArtifactResolveResult = {
   artifact: ArtifactRecord | null;
   alias: ArtifactAliasRecord | null;
 };
-
-export type HookTemplate = {
-  id: string;
-  name: string;
-  hook_setup?: string;
-  hook_teardown?: string;
-  builtin?: boolean;
-};

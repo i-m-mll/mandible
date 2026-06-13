@@ -2,7 +2,7 @@
 
 Mandible is a local-first agent control plane and conversation browser. It provides:
 - An async auth queue for protected-branch merges (agent submits, user authenticates via YubiKey)
-- A web dashboard (sessions, issues, conversations, switchboard, console)
+- A web dashboard (sessions, issues, conversations, console)
 - A daemon that manages the local issue ledger, legacy git-bug sync, session lifecycle, and inbox delivery
 - A Tauri native window wrapper (Level 1: thin launcher; Level 2: bundled sidecar, see issue fdc0e8a)
 
@@ -193,7 +193,6 @@ Key open issues by area:
 - Auth queue UX: 40a3976, 0a803ab, 831cb3e, a7ef2fe, 2bce9cb
 - Dashboard UI: aee671a, c58f784, b011e5b, 76ea6c6, 7a95348, e7a8bad
 - Console: aea2c67, 3da19be
-- Switchboard: b538b26, ab0a8f0, f03feda
 - Infrastructure/bugs: 6e31c5f, 215897e, 4594641, 00b046e, f8d050b, 1ed1d90
 - Tauri/desktop: fdc0e8a, dffc52f
 - Long-term/future: 0af826a, dfaf93c, 4aa3e17, 5bc113d
