@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
-import { linkWorkUnitToLedgerIssue } from "../ledger/operational-links.js";
+import { linkWorkUnitToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
 import type { RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
@@ -8,6 +8,7 @@ import type { WorkUnit, WorkUnitState } from "../types.js";
 import { readBody, sendJson } from "./http.js";
 import {
   mapWorkUnitRow as mapRow,
+  normalizeWorkUnitSessionId,
   computeLiveness,
   enrichWithLiveness,
   type WorkUnitLiveness,
@@ -53,6 +54,14 @@ interface PatchInput {
 
 const VALID_STATES: Set<string> = new Set(["open", "committed", "resolved", "abandoned"]);
 
+type ExistingWorkUnit = {
+  id: string;
+  state: string;
+  branch: string | null;
+  ledger_issue_id: string | null;
+  assigned_session_id: string | null;
+};
+
 function linkLedgerIssue(
   db: ReturnType<typeof getDb>,
   workUnitId: string,
@@ -65,6 +74,19 @@ function linkLedgerIssue(
       issue_ref: issueId,
       repo_ref: repoId,
     });
+    return result.ok ? result.issue_id : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveLedgerIssueId(
+  db: ReturnType<typeof getDb>,
+  issueId: string,
+  repoId: string,
+): string | null {
+  try {
+    const result = resolveOperationalIssueRef(db, issueId, repoId);
     return result.ok ? result.issue_id : null;
   } catch {
     return null;
@@ -91,14 +113,18 @@ export function registerWorkUnitRoutes(
       return;
     }
 
-    // Check for existing open/committed work unit for this issue+repo
-    const existing = db
-      .prepare(
-        "SELECT id, state, ledger_issue_id FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')"
-      )
-      .get(body.issue_id, body.repo_id) as { id: string; state: string; ledger_issue_id: string | null } | undefined;
+    const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
+    const existing = findExistingClaimWorkUnit(db, body.issue_id, body.repo_id, body.branch ?? null);
 
     if (existing) {
+      if (!existing.branch && body.branch) {
+        db.prepare("UPDATE work_units SET branch = ?, parent_branch = COALESCE(parent_branch, ?) WHERE id = ?")
+          .run(body.branch, body.parent_branch ?? null, existing.id);
+      }
+      if (assignedSessionId && existing.assigned_session_id !== assignedSessionId) {
+        db.prepare("UPDATE work_units SET assigned_session_id = ? WHERE id = ?")
+          .run(assignedSessionId, existing.id);
+      }
       const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, body.repo_id) ?? existing.ledger_issue_id;
       sendJson(res, 200, {
         id: existing.id,
@@ -125,7 +151,7 @@ export function registerWorkUnitRoutes(
       body.branch ?? null,
       body.parent_branch ?? null,
       kind,
-      body.assigned_session_id ?? null,
+      assignedSessionId,
       now,
     );
 
@@ -147,13 +173,9 @@ export function registerWorkUnitRoutes(
     }
 
     const now = Date.now();
+    const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
 
-    // Find existing open work unit for this issue+repo
-    const existing = db
-      .prepare(
-        "SELECT id, state, ledger_issue_id FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed') ORDER BY created_at DESC LIMIT 1"
-      )
-      .get(body.issue_id, body.repo_id) as { id: string; state: string; ledger_issue_id: string | null } | undefined;
+    const existing = findExistingActivateWorkUnit(db, body.issue_id, body.repo_id, body.branch ?? null);
 
     if (existing) {
       // Update to committed state, update timestamps
@@ -168,9 +190,9 @@ export function registerWorkUnitRoutes(
         updates.push("branch = ?");
         params.push(body.branch);
       }
-      if (body.assigned_session_id) {
+      if ("assigned_session_id" in body) {
         updates.push("assigned_session_id = ?");
-        params.push(body.assigned_session_id);
+        params.push(assignedSessionId);
       }
       params.push(existing.id);
 
@@ -191,7 +213,7 @@ export function registerWorkUnitRoutes(
         body.issue_id,
         body.repo_id,
         body.branch ?? null,
-        body.assigned_session_id ?? null,
+        assignedSessionId,
         now,
         now,
         now,
@@ -326,7 +348,7 @@ export function registerWorkUnitRoutes(
 
     if ("assigned_session_id" in body) {
       updates.push("assigned_session_id = ?");
-      params.push(body.assigned_session_id ?? null);
+      params.push(normalizeWorkUnitSessionId(body.assigned_session_id));
     }
 
     if ("continuation" in body) {
@@ -366,4 +388,89 @@ export function registerWorkUnitRoutes(
     const workUnit = mapRow(updatedRow);
     sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
   });
+}
+
+function findExistingClaimWorkUnit(
+  db: ReturnType<typeof getDb>,
+  issueId: string,
+  repoId: string,
+  branch: string | null,
+): ExistingWorkUnit | undefined {
+  const lookup = buildWorkUnitLookup(db, issueId, repoId);
+  if (branch) {
+    const byBranch = db
+      .prepare(
+        `SELECT id, state, branch, ledger_issue_id, assigned_session_id
+         FROM work_units
+         WHERE ${lookup.identity}
+           AND (branch = ? OR branch IS NULL)
+           AND state IN ('open', 'committed')
+         ORDER BY CASE WHEN branch = ? THEN 0 ELSE 1 END, created_at DESC
+         LIMIT 1`
+      )
+      .get(...lookup.params, branch, branch) as ExistingWorkUnit | undefined;
+    if (byBranch) return byBranch;
+  }
+
+  return db
+    .prepare(
+      `SELECT id, state, branch, ledger_issue_id, assigned_session_id
+       FROM work_units
+       WHERE ${lookup.identity}
+         AND state IN ('open', 'committed')
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get(...lookup.params) as ExistingWorkUnit | undefined;
+}
+
+function findExistingActivateWorkUnit(
+  db: ReturnType<typeof getDb>,
+  issueId: string,
+  repoId: string,
+  branch: string | null,
+): ExistingWorkUnit | undefined {
+  const lookup = buildWorkUnitLookup(db, issueId, repoId);
+  if (branch) {
+    const byBranch = db
+      .prepare(
+        `SELECT id, state, branch, ledger_issue_id, assigned_session_id
+         FROM work_units
+         WHERE ${lookup.identity}
+           AND (branch = ? OR branch IS NULL)
+           AND state IN ('open', 'committed', 'abandoned')
+         ORDER BY CASE WHEN branch = ? THEN 0 ELSE 1 END, created_at DESC
+         LIMIT 1`
+      )
+      .get(...lookup.params, branch, branch) as ExistingWorkUnit | undefined;
+    if (byBranch) return byBranch;
+  }
+
+  return db
+    .prepare(
+      `SELECT id, state, branch, ledger_issue_id, assigned_session_id
+       FROM work_units
+       WHERE ${lookup.identity}
+         AND state IN ('open', 'committed')
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get(...lookup.params) as ExistingWorkUnit | undefined;
+}
+
+function buildWorkUnitLookup(
+  db: ReturnType<typeof getDb>,
+  issueId: string,
+  repoId: string,
+): { identity: string; params: unknown[] } {
+  const ledgerIssueId = resolveLedgerIssueId(db, issueId, repoId);
+  return ledgerIssueId
+    ? {
+        identity: "(ledger_issue_id = ? OR (issue_id = ? AND repo_id = ?))",
+        params: [ledgerIssueId, issueId, repoId],
+      }
+    : {
+        identity: "(issue_id = ? AND repo_id = ?)",
+        params: [issueId, repoId],
+      };
 }

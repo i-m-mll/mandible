@@ -1988,6 +1988,14 @@ const MIGRATIONS: Migration[] = [
          AND exit_code = 0
          AND merge_finalized_at IS NULL`
     ]
+  },
+  {
+    version: 80,
+    name: "work_unit_assigned_session_normalization",
+    // Some legacy migration tests start from partial schemas that do not yet
+    // include work_units. Guard this with a post-migration helper instead of
+    // unconditional DDL/DML.
+    statements: []
   }
 ];
 
@@ -2124,6 +2132,13 @@ export function migrate(db: Db): void {
   )) {
     runPostMigration(db, "v58_ensure_work_unit_ledger_issue_column", () => {
       ensureWorkUnitLedgerIssueColumn(db);
+    });
+  }
+  if (shouldRunPostMigration(db, "v80_ensure_work_unit_assigned_session_normalization", pending, 80, () =>
+    needsWorkUnitAssignedSessionNormalization(db)
+  )) {
+    runPostMigration(db, "v80_ensure_work_unit_assigned_session_normalization", () => {
+      ensureWorkUnitAssignedSessionNormalization(db);
     });
   }
   // Bug: 871f32e — add hash-ID display/ordinal columns safely on both fresh
@@ -2422,6 +2437,45 @@ function needsWorkUnitLedgerIssueColumn(db: Db): boolean {
   if (!tableExists(db, "work_units")) return false;
   const names = tableColumnNames(db, "work_units");
   return !names.has("ledger_issue_id") || !indexExists(db, "idx_work_units_ledger_issue");
+}
+
+function ensureWorkUnitAssignedSessionNormalization(db: Db): void {
+  if (!tableExists(db, "work_units")) return;
+  db.exec(
+    `UPDATE work_units
+     SET assigned_session_id = NULL
+     WHERE assigned_session_id IS NOT NULL
+       AND trim(assigned_session_id) = ''`
+  );
+  db.exec(
+    `CREATE TRIGGER IF NOT EXISTS trg_work_units_assigned_session_insert_normalize
+     AFTER INSERT ON work_units
+     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''
+     BEGIN
+       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;
+     END`
+  );
+  db.exec(
+    `CREATE TRIGGER IF NOT EXISTS trg_work_units_assigned_session_update_normalize
+     AFTER UPDATE OF assigned_session_id ON work_units
+     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''
+     BEGIN
+       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;
+     END`
+  );
+}
+
+function needsWorkUnitAssignedSessionNormalization(db: Db): boolean {
+  if (!tableExists(db, "work_units")) return false;
+  const emptyRow = db.prepare(
+    `SELECT 1 FROM work_units
+     WHERE assigned_session_id IS NOT NULL
+       AND trim(assigned_session_id) = ''
+     LIMIT 1`
+  ).get();
+  return Boolean(emptyRow) ||
+    !triggerExists(db, "trg_work_units_assigned_session_insert_normalize") ||
+    !triggerExists(db, "trg_work_units_assigned_session_update_normalize");
 }
 
 function ensureLedgerHashIdColumns(db: Db): void {
@@ -3345,6 +3399,13 @@ function indexExists(db: Db, index: string): boolean {
   const row = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(index);
+  return Boolean(row);
+}
+
+function triggerExists(db: Db, trigger: string): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+    .get(trigger);
   return Boolean(row);
 }
 
