@@ -960,10 +960,19 @@ function BackupSection(): JSX.Element {
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
+  const [destinationInput, setDestinationInput] = useState('');
+  const [savingDestination, setSavingDestination] = useState(false);
+  const [destinationFeedback, setDestinationFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     getBackupStatus().then(setStatus).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (status?.destination) {
+      setDestinationInput(status.destination);
+    }
+  }, [status?.destination]);
 
   const handleToggle = useCallback(async () => {
     if (!status) return;
@@ -989,6 +998,25 @@ function BackupSection(): JSX.Element {
       // ignore
     }
   }, []);
+
+  const handleDestinationSave = useCallback(async () => {
+    const destination = destinationInput.trim();
+    if (!destination) {
+      setDestinationFeedback('Destination is required');
+      return;
+    }
+    setSavingDestination(true);
+    setDestinationFeedback(null);
+    try {
+      await updateBackupSettings({ destination });
+      setStatus((prev) => prev ? { ...prev, destination } : prev);
+      setDestinationFeedback('Saved');
+    } catch (err) {
+      setDestinationFeedback(err instanceof Error ? err.message : 'Failed to save destination');
+    } finally {
+      setSavingDestination(false);
+    }
+  }, [destinationInput]);
 
   const handleRunNow = useCallback(async () => {
     setRunning(true);
@@ -1016,7 +1044,7 @@ function BackupSection(): JSX.Element {
       <div className="settings-view__section-header">
         <h3 className="settings-view__section-title">Backup</h3>
         <p className="settings-view__section-desc">
-          Automatic metadata dump to private/backups/.
+          Automatic metadata dump to a configured Mandible backup file.
         </p>
       </div>
 
@@ -1025,7 +1053,7 @@ function BackupSection(): JSX.Element {
         <div className="settings-view__toggle-row">
           <div className="settings-view__toggle-info">
             <h3 className="settings-view__section-title">Automatic backup</h3>
-            <p className="settings-view__section-desc">Run mandible-backup on a schedule.</p>
+            <p className="settings-view__section-desc">Run Mandible's metadata dump on a schedule.</p>
           </div>
           <Toggle
             enabled={enabled}
@@ -1052,6 +1080,34 @@ function BackupSection(): JSX.Element {
             </select>
           </div>
         )}
+
+        <div className="settings-view__text-row">
+          <div className="settings-view__text-info">
+            <span className="settings-view__text-label">Destination</span>
+          </div>
+          <div className="settings-view__text-controls">
+            <input
+              className="settings-view__input settings-view__input--wide"
+              type="text"
+              value={destinationInput}
+              onInput={(e) => setDestinationInput((e.target as HTMLInputElement).value)}
+              disabled={status === null || savingDestination}
+            />
+            <button
+              type="button"
+              className="btn btn--sm"
+              onClick={handleDestinationSave}
+              disabled={status === null || savingDestination || destinationInput.trim() === status?.destination}
+            >
+              {savingDestination ? '...' : 'Save'}
+            </button>
+            {destinationFeedback && (
+              <span className="settings-view__feedback">
+                {destinationFeedback}
+              </span>
+            )}
+          </div>
+        </div>
 
         {/* Status row */}
         <div className="settings-view__number-row">

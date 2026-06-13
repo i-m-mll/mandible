@@ -75,15 +75,18 @@ These settings affect the shell environment, not the dashboard itself. Changes r
 
 ## Backup
 
-Automatic metadata dumps to `private/backups/`.
+Automatic metadata dumps to the configured Mandible backup file.
 
 | Setting | Type | Description |
 |---------|------|-------------|
-| Automatic backup | Toggle | Run `mandible-backup` on a schedule. |
+| Automatic backup | Toggle | Run Mandible's in-process metadata dump on a schedule. |
 | Interval | Select | 6h, 12h, or 24h. |
+| Destination | Text | Output path for the metadata dump. |
 | Run Now | Button | Trigger an immediate backup. |
 
 Status shows when the last backup ran and its file size.
+
+Restore is deferred until Mandible has a tested restore round trip.
 
 ## Runtime
 

@@ -1321,6 +1321,7 @@ export async function getMessageParams(
 export type BackupStatus = {
   enabled: boolean;
   interval_hours: number;
+  destination: string;
   last_run_at: number | null;
   last_size_bytes: number | null;
   last_error: string | null;
@@ -1331,14 +1332,27 @@ export async function getBackupStatus(): Promise<BackupStatus> {
   return (await parseMaybeJson(response)) as BackupStatus;
 }
 
-export async function runBackupNow(): Promise<{ ok: boolean; size_bytes?: number; error?: string }> {
+export async function runBackupNow(): Promise<{
+  ok: boolean;
+  size_bytes?: number;
+  path?: string;
+  destination?: string;
+  error?: string;
+}> {
   const response = await apiPost('/api/backup/run');
-  return (await parseMaybeJson(response)) as { ok: boolean; size_bytes?: number; error?: string };
+  return (await parseMaybeJson(response)) as {
+    ok: boolean;
+    size_bytes?: number;
+    path?: string;
+    destination?: string;
+    error?: string;
+  };
 }
 
 export async function updateBackupSettings(settings: {
   enabled?: boolean;
   interval_hours?: number;
+  destination?: string;
 }): Promise<void> {
   const response = await fetch('/api/backup/settings', {
     method: 'PUT',
