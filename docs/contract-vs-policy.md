@@ -27,12 +27,19 @@ What Mandible defines, for every install:
   action in Mandible's UI — it does not depend on any external credential
   system.
 - **Trailer linkage (optional).** Commits may carry `Mandible-Issue: <ref>`
-  trailers. Mandible parses them to link commits, sessions, and work units to
-  issues. Trailers are an *interface format*, not a requirement: commits
-  without them are fully valid and simply unlinked.
+  trailers for work/reference links and `Closes-Mandible-Issue: <ref>` only for
+  explicit closure. Mandible owns this grammar and parses it to link commits,
+  sessions, and work units to issues. `mandible commit trailer` renders the
+  grammar-correct Mandible trailers; whether a caller emits them, and which
+  attribution trailers accompany them, is policy. Commits without Mandible
+  trailers are fully valid and simply unlinked.
 - **Work units and sessions.** Dispatch state (open → committed → resolved)
-  joins issues, branches, and agent sessions. Registration hooks (`.issue`
-  files, session APIs) are optional enrichment with graceful absence.
+  joins issues, branches, and agent sessions. Mandible owns the policy-free
+  ledger mechanism client (`mandible work-unit ...`, `mandible issue-file ...`,
+  `mandible session link-issue ...`, and `mandible issue title ...`) with
+  explicit inputs such as issue, repo, branch, and session IDs. Worktree layout,
+  branch naming, signing, attribution, and command ceremony stay outside the
+  client.
 - **Artifact registry.** `mandible artifact` records repo- or
   custody-backed artifacts with explicit recoverability semantics.
 - **Coordination primitives.** Issue head digests (`issue heads`,
@@ -48,6 +55,10 @@ What Mandible defines, for every install:
   Mandible-spawned SDK sessions receive the same fragment directly. The
   fragment describes the contract only — it never contains user policy, and
   where/how it is delivered is user policy.
+- **Optional interface formats.** Mandible publishes formats and client entry
+  points that other tools may adopt: trailers, `.issue` files, issue-branch
+  links, work-unit mutations, and session-issue links. Adoption is policy;
+  conformance is required only for callers that choose to use a given format.
 - **Transports.** The daemon serves HTTP on loopback and a file-RPC spool
   directory for network-isolated (sandboxed) agents. Both dispatch through the
   same router; the file transport excludes approval/admin routes.
@@ -71,21 +82,27 @@ signed with the user's configured identity, never an agent's.
 
 - How commits on feature branches are authored, signed, or attributed.
 - Which signing keys exist, what they are named, or where they live.
-- Worktree tooling, branch-naming schemes, or merge ceremony below the
-  protected branch.
+- Worktree tooling, branch-naming schemes, commit command names, signing
+  profiles, attribution profiles, or merge ceremony below the protected branch.
 - The content of the user's agent-instruction files outside Mandible's marked
   section.
+- Named user policy profiles or the selection of those profiles.
 
 ## Policy layers (worked examples)
 
 **Reference profile (the dotfiles layer this repo is developed against).**
 Protected merges signed by a hardware key (YubiKey); feature commits signed by
-a file-based agent key (`id_ed25519_agents`), selected by the `agent-commit`
-wrapper and by env-scoped `GIT_CONFIG_*` overrides in agent shells;
-`agent-commit` adds `Mandible-Issue:` trailers and attribution, and pings the
-work-unit API; worktrees managed by `wt`/`wt-merge`/`dwt` with `.worktree.yaml`
-shared links. None of these tools are part of Mandible; Mandible consumes
-their outputs (trailers, `.issue` files, branch names) when present.
+a file-based agent key (`id_ed25519_agents`), selected by dotfiles policy and
+by env-scoped `GIT_CONFIG_*` overrides in agent shells; `commit-linked` is the
+primary issue-linked commit command and `agent-commit` is a compatibility shim.
+The wrapper asks the Mandible client to resolve issue titles, render
+`Mandible-Issue:` trailers, read `.issue` files, link sessions, and activate
+work units; it keeps staging, signing, summary conventions, and co-author
+attribution in dotfiles policy. Worktrees are managed by `wt`/`wt-merge`/`wt rm`
+with `.worktree.yaml` shared links, while `dwt` remains a compatibility alias
+for removal. These tools are policy consumers of Mandible's optional interface
+formats; Mandible consumes their resulting trailers, `.issue` files, branch
+links, and work-unit mutations when present.
 
 **Solo developer, no signing.** Plain `git commit`, no trailers, no wrapper
 tooling. The ledger, dashboard, sessions, and artifacts work fully; commits
@@ -110,7 +127,8 @@ the security boundary; it only changes the quality of the audit trail.
 
 | Absent on host | Effect |
 |---|---|
-| `agent-commit` / trailer tooling | Commits unlinked from issues; work units not auto-activated. Everything else intact. |
+| Mandible ledger mechanism client unavailable to a policy wrapper | The wrapper should degrade according to its own policy: commit may continue without automatic title lookup, trailer rendering, session linking, or work-unit activation if configured graceful. The daemon, ledger, and auth queue remain intact. |
+| Issue-linked commit policy tooling (`commit-linked` / `agent-commit`) absent | Plain git commits still work. Commits are unlinked unless a caller supplies Mandible trailers by another route, and work units are not auto-activated by the commit workflow. |
 | Any signing identity | Ledger, queue, artifacts, sessions fine; `auth merge` preflight refuses to execute merges. |
 | Dotfiles / instruction files | `mandible instructions install` produces a working interface fragment; target locations, delivery modes, and post-export compilers are user policy. |
 | Network access to loopback (sandboxed agent) | Use the file-RPC transport; approval/admin routes remain UI-only. |
@@ -120,6 +138,10 @@ the security boundary; it only changes the quality of the audit trail.
 
 - New interface ⇒ implement in the daemon/CLI, describe it in the instructions
   fragment (generated, not hand-copied), and keep it policy-free.
+- New commit-message linkage ⇒ split it three ways: grammar is Mandible's
+  contract, rendering a grammar-correct Mandible trailer block is Mandible
+  client mechanism, and the decision to emit trailers plus any attribution or
+  closure policy belongs to the caller.
 - New convention that references user-specific names (keys, paths, tools) ⇒ it
   is policy; it belongs in the user's configuration layer, and Mandible may
   *recognize* its artifacts but must not require them.

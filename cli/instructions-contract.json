@@ -111,8 +111,16 @@
       "description": "Release active work units for an abandoned issue/repo lane without encoding worktree layout policy."
     },
     {
-      "name": "mandible issue-file path|read|write",
-      "description": "Resolve, read, or write the .issue helper file. The file contains newline-delimited issue refs; blank lines and # comments are ignored when reading."
+      "name": "mandible issue-file path [cwd]",
+      "description": "Resolve the git-root .issue helper file path for a caller-supplied or current working directory."
+    },
+    {
+      "name": "mandible issue-file read [cwd]",
+      "description": "Read newline-delimited issue refs from the git-root .issue helper file. Blank lines and # comments are ignored."
+    },
+    {
+      "name": "mandible issue-file write [--cwd <path>] <issue>...",
+      "description": "Write newline-delimited issue refs to the git-root .issue helper file for policy wrapper auto-discovery."
     },
     {
       "name": "mandible commit trailer [issue...]",

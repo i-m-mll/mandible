@@ -80,7 +80,9 @@ The branch was deleted, the issue was closed without a merge, or the work was ex
 
 ## How work units are created
 
-Work units are registered through the `wt` (worktree) command when an issue ID is provided:
+Work units are registered by the worktree policy tool through the Mandible
+ledger mechanism client. In the reference dotfiles profile, `wt` calls
+`mandible work-unit claim` when an issue ID is provided:
 
 ```bash
 wt feature/my-feature --issue abc1234
@@ -89,10 +91,39 @@ wt feature/my-feature --issue abc1234
 This:
 
 1. Creates a git worktree for the feature branch
-2. Registers a work unit in Mandible linking the issue, branch, and repo
-3. Writes an `.issue` file in the worktree root for auto-discovery
+2. Calls `mandible work-unit claim` with explicit issue, repo, branch, parent
+   branch, kind, and session inputs
+3. Writes an `.issue` file through `mandible issue-file write` for
+   auto-discovery
 
-The `.issue` file allows `agent-commit` to automatically find the issue ID without requiring `--issue` on every commit.
+The `.issue` file allows `commit-linked` (and its compatibility shim
+`agent-commit`) to automatically find the issue ID without requiring `--issue`
+on every commit. The file format is a Mandible interface: newline-delimited
+issue refs at the git root, with blank lines and `#` comments ignored on read.
+The command that creates worktrees, the branch naming scheme, and whether to
+require issue-linked commits are policy.
+
+## Ledger mechanism client
+
+Mandible exposes policy-free commands for callers that manage branches,
+commits, or sessions:
+
+```bash
+mandible work-unit claim --issue I --repo R [--branch B] [--parent-branch B] [--kind solo|partition|integration] [--session S] [--graceful]
+mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--graceful]
+mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
+mandible work-unit resolve --id WU [--auth-request-id AR] [--graceful]
+mandible work-unit release --issue I --repo R [--graceful]
+mandible issue-file path [cwd]
+mandible issue-file read [cwd]
+mandible issue-file write [--cwd P] I...
+mandible session link-issue SESSION --issue I --repo R [--repo-name N] [--graceful]
+```
+
+These commands take mechanism inputs and do not encode worktree layout, signing,
+attribution, provider/model profile, or local command naming. Callers that
+should continue when Mandible is unavailable can use `--graceful` or set
+`MANDIBLE_LEDGER_GRACEFUL=1`.
 
 ## Liveness
 
