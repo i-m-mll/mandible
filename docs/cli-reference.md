@@ -54,6 +54,7 @@ mandible work-unit activate --issue I --repo R [--branch B] [--session S] [--gra
 mandible work-unit find --repo R (--issue I | --branch B) [--state open|committed|resolved|abandoned] [--graceful]
 mandible work-unit resolve --id WU [--auth-request-id AR] [--graceful]
 mandible work-unit release --issue I --repo R [--graceful]
+mandible issue title <id> [--json] [--graceful]
 mandible issue-file path [cwd]
 mandible issue-file read [cwd]
 mandible issue-file write [--cwd P] I...
@@ -172,7 +173,8 @@ daemon or file-RPC spool is unavailable can pass `--graceful` or set
 `.issue` files are newline-delimited issue refs at the git root. Blank lines and
 `#` comments are ignored when reading. `mandible commit trailer` renders only
 `Mandible-Issue:` trailers; any co-author or attribution trailers remain
-caller-supplied policy.
+caller-supplied policy. `mandible issue title` exists so policy wrappers can
+derive default commit summaries without directly reading issue storage.
 
 ## Does NOT Exist (confirmed absent from source)
 

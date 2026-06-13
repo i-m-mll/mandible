@@ -135,6 +135,64 @@ derived diffs; they do not restore, edit, or roll back issue descriptions or
 comments. Compatibility aliases `body-history` and `comment-history` are still
 accepted but are not the preferred command names.
 
+### mandible work-unit
+
+Policy-free ledger mechanism client for worktree and commit wrappers. These
+commands are Mandible-owned mechanism; worktree layout, branch naming, signing,
+and attribution policy belong to callers such as dotfiles.
+
+```
+mandible work-unit claim --issue <id> --repo <repo> [--branch <branch>] [--parent-branch <branch>] [--kind solo|partition|integration] [--session <id>] [--graceful]
+mandible work-unit activate --issue <id> --repo <repo> [--branch <branch>] [--session <id>] [--graceful]
+mandible work-unit find --repo <repo> (--issue <id> | --branch <branch>) [--state open|committed|resolved|abandoned] [--graceful]
+mandible work-unit resolve --id <work-unit-id> [--auth-request-id <id>] [--graceful]
+mandible work-unit release --issue <id> --repo <repo> [--graceful]
+```
+
+**Subcommands:**
+
+| Command | Description |
+|---|---|
+| `claim` | Create or reuse a branch-based work unit using explicit issue/repo/branch/session inputs |
+| `activate` | Mark the matching work unit committed, or auto-claim it in committed state |
+| `find` | Find work units by repo plus issue or branch, with optional state filtering |
+| `resolve` | Patch a work unit to resolved after a successful merge, optionally linking the auth request |
+| `release` | Release active work units for an abandoned issue/repo lane |
+
+### mandible issue-file
+
+Resolve, read, or write the git-root `.issue` helper file. The format is
+newline-delimited issue refs; blank lines and `#` comments are ignored when
+reading.
+
+```
+mandible issue-file path [cwd]
+mandible issue-file read [cwd]
+mandible issue-file write [--cwd <path>] <issue>...
+```
+
+### mandible commit trailer
+
+Render Mandible-owned commit trailers for explicit issues, or from the nearest
+worktree `.issue` file when no issues are passed.
+
+```
+mandible commit trailer [issue...]
+```
+
+This command renders only `Mandible-Issue:` trailers. `Closes-Mandible-Issue:`
+usage, co-author trailers, summaries, signing, and attribution profiles are
+caller policy.
+
+### mandible session link-issue
+
+Link an existing Mandible session to an issue/repo pair through the supported
+client surface.
+
+```
+mandible session link-issue <session-id> --issue <id> --repo <repo> [--repo-name <name>] [--graceful]
+```
+
 ### mandible auth list
 
 List active auth requests from the Mandible daemon.
@@ -264,7 +322,9 @@ mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
 8. Verifies the merge is not empty (tree differs from parent).
 9. Auto-closes issues referenced via explicit `Closes-Mandible-Issue:` trailers in merged commits.
 10. Closes issues declared in the auth request's `issue_closures` field.
-11. Cleans up merged branch worktrees (via `dwt`).
+11. Cleans up merged branch worktrees through the configured worktree removal
+    policy (`wt rm` in the reference dotfiles profile; `dwt` is a compatibility
+    alias there).
 
 Mandible's core merge preflight does not call user dotfiles scripts. Local
 conventions such as worktree symlink hygiene belong in explicit policy hooks
