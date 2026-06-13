@@ -32,6 +32,8 @@ export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
     kind: (row.kind as WorkUnit["kind"]) ?? "solo",
     state: (row.state as WorkUnit["state"]) ?? "open",
     assigned_session_id: normalizeWorkUnitSessionId(row.assigned_session_id),
+    provider: typeof row.provider === "string" && row.provider.trim() ? row.provider : null,
+    provider_session_id: normalizeWorkUnitSessionId(row.provider_session_id),
     continuation: typeof row.continuation === "string" ? row.continuation : null,
     continuation_by: typeof row.continuation_by === "string" ? row.continuation_by : null,
     continuation_at: typeof row.continuation_at === "number" ? row.continuation_at : null,

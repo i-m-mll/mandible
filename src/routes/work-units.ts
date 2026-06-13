@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
+import {
+  normalizeAmbientProviderIdentity,
+  type AmbientProviderIdentity,
+} from "../ambient-provider-identity.js";
 import { getDb } from "../db.js";
 import { linkWorkUnitToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
-import type { RouteRegistrar } from "../server.js";
+import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { WorkUnit, WorkUnitState } from "../types.js";
@@ -29,6 +33,9 @@ interface ClaimInput {
   parent_branch?: string | null;
   kind?: string;
   assigned_session_id?: string | null;
+  provider?: string | null;
+  provider_session_id?: string | null;
+  ambient_identity?: unknown;
 }
 
 interface ActivateInput {
@@ -36,6 +43,9 @@ interface ActivateInput {
   repo_id: string;
   branch?: string | null;
   assigned_session_id?: string | null;
+  provider?: string | null;
+  provider_session_id?: string | null;
+  ambient_identity?: unknown;
 }
 
 interface ReleaseInput {
@@ -50,6 +60,9 @@ interface PatchInput {
   continuation_by?: string | null;
   continuation_at?: number | null;
   auth_request_id?: string | null;
+  provider?: string | null;
+  provider_session_id?: string | null;
+  ambient_identity?: unknown;
 }
 
 const VALID_STATES: Set<string> = new Set(["open", "committed", "resolved", "abandoned"]);
@@ -114,16 +127,27 @@ export function registerWorkUnitRoutes(
     }
 
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
+    const ambientIdentity = workUnitAmbientIdentity(req, body);
     const existing = findExistingClaimWorkUnit(db, body.issue_id, body.repo_id, body.branch ?? null);
 
     if (existing) {
+      const updates: string[] = [];
+      const params: unknown[] = [];
       if (!existing.branch && body.branch) {
-        db.prepare("UPDATE work_units SET branch = ?, parent_branch = COALESCE(parent_branch, ?) WHERE id = ?")
-          .run(body.branch, body.parent_branch ?? null, existing.id);
+        updates.push("branch = ?", "parent_branch = COALESCE(parent_branch, ?)");
+        params.push(body.branch, body.parent_branch ?? null);
       }
       if (assignedSessionId && existing.assigned_session_id !== assignedSessionId) {
-        db.prepare("UPDATE work_units SET assigned_session_id = ? WHERE id = ?")
-          .run(assignedSessionId, existing.id);
+        updates.push("assigned_session_id = ?");
+        params.push(assignedSessionId);
+      }
+      if (ambientIdentity) {
+        updates.push("provider = ?", "provider_session_id = ?");
+        params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+      }
+      if (updates.length > 0) {
+        params.push(existing.id);
+        db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`).run(...params);
       }
       const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, body.repo_id) ?? existing.ledger_issue_id;
       sendJson(res, 200, {
@@ -142,8 +166,10 @@ export function registerWorkUnitRoutes(
       : "solo";
 
     db.prepare(
-      `INSERT INTO work_units (id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`
+      `INSERT INTO work_units (
+        id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id,
+        provider, provider_session_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`
     ).run(
       id,
       body.issue_id,
@@ -152,6 +178,8 @@ export function registerWorkUnitRoutes(
       body.parent_branch ?? null,
       kind,
       assignedSessionId,
+      ambientIdentity?.provider ?? null,
+      ambientIdentity?.provider_session_id ?? null,
       now,
     );
 
@@ -174,6 +202,7 @@ export function registerWorkUnitRoutes(
 
     const now = Date.now();
     const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
+    const ambientIdentity = workUnitAmbientIdentity(req, body);
 
     const existing = findExistingActivateWorkUnit(db, body.issue_id, body.repo_id, body.branch ?? null);
 
@@ -194,6 +223,10 @@ export function registerWorkUnitRoutes(
         updates.push("assigned_session_id = ?");
         params.push(assignedSessionId);
       }
+      if (ambientIdentity) {
+        updates.push("provider = ?", "provider_session_id = ?");
+        params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+      }
       params.push(existing.id);
 
       db.prepare(
@@ -206,14 +239,18 @@ export function registerWorkUnitRoutes(
       // No existing work unit — create one in committed state (auto-claim)
       const id = randomUUID();
       db.prepare(
-        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, assigned_session_id, created_at, activated_at, last_commit_at)
-         VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?)`
+        `INSERT INTO work_units (
+          id, issue_id, repo_id, branch, kind, state, assigned_session_id,
+          provider, provider_session_id, created_at, activated_at, last_commit_at
+        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.issue_id,
         body.repo_id,
         body.branch ?? null,
         assignedSessionId,
+        ambientIdentity?.provider ?? null,
+        ambientIdentity?.provider_session_id ?? null,
         now,
         now,
         now,
@@ -328,6 +365,7 @@ export function registerWorkUnitRoutes(
     }
 
     const body = readBody<PatchInput>(req);
+    const ambientIdentity = workUnitAmbientIdentity(req, body);
     const updates: string[] = [];
     const params: unknown[] = [];
 
@@ -371,6 +409,11 @@ export function registerWorkUnitRoutes(
       params.push(body.auth_request_id ?? null);
     }
 
+    if (ambientIdentity) {
+      updates.push("provider = ?", "provider_session_id = ?");
+      params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+    }
+
     if (updates.length === 0) {
       sendJson(res, 400, { error: "No fields to update" });
       return;
@@ -387,6 +430,16 @@ export function registerWorkUnitRoutes(
 
     const workUnit = mapRow(updatedRow);
     sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
+  });
+}
+
+function workUnitAmbientIdentity(
+  req: RequestLike,
+  body: { provider?: string | null; provider_session_id?: string | null; ambient_identity?: unknown },
+): AmbientProviderIdentity | null {
+  return req.ambient_identity ?? normalizeAmbientProviderIdentity(body.ambient_identity) ?? normalizeAmbientProviderIdentity({
+    provider: body.provider,
+    provider_session_id: body.provider_session_id,
   });
 }
 

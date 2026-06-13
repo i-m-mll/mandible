@@ -582,6 +582,8 @@ const MIGRATIONS: Migration[] = [
         kind TEXT NOT NULL DEFAULT 'solo',
         state TEXT NOT NULL DEFAULT 'open',
         assigned_session_id TEXT,
+        provider TEXT,
+        provider_session_id TEXT,
         continuation TEXT,
         continuation_by TEXT,
         continuation_at INTEGER,
@@ -1996,6 +1998,13 @@ const MIGRATIONS: Migration[] = [
     // include work_units. Guard this with a post-migration helper instead of
     // unconditional DDL/DML.
     statements: []
+  },
+  {
+    version: 81,
+    name: "work_unit_provider_identity",
+    // Bug: 353a3b7 — ambient provider identity for externally dispatched worker archiving.
+    // Guarded below for partial legacy schemas.
+    statements: []
   }
 ];
 
@@ -2139,6 +2148,13 @@ export function migrate(db: Db): void {
   )) {
     runPostMigration(db, "v80_ensure_work_unit_assigned_session_normalization", () => {
       ensureWorkUnitAssignedSessionNormalization(db);
+    });
+  }
+  if (shouldRunPostMigration(db, "v81_ensure_work_unit_provider_identity", pending, 81, () =>
+    needsWorkUnitProviderIdentity(db)
+  )) {
+    runPostMigration(db, "v81_ensure_work_unit_provider_identity", () => {
+      ensureWorkUnitProviderIdentity(db);
     });
   }
   // Bug: 871f32e — add hash-ID display/ordinal columns safely on both fresh
@@ -2476,6 +2492,30 @@ function needsWorkUnitAssignedSessionNormalization(db: Db): boolean {
   return Boolean(emptyRow) ||
     !triggerExists(db, "trg_work_units_assigned_session_insert_normalize") ||
     !triggerExists(db, "trg_work_units_assigned_session_update_normalize");
+}
+
+function ensureWorkUnitProviderIdentity(db: Db): void {
+  if (!tableExists(db, "work_units")) return;
+  const names = tableColumnNames(db, "work_units");
+  if (!names.has("provider")) {
+    db.exec("ALTER TABLE work_units ADD COLUMN provider TEXT");
+  }
+  if (!names.has("provider_session_id")) {
+    db.exec("ALTER TABLE work_units ADD COLUMN provider_session_id TEXT");
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_work_units_provider_session
+      ON work_units(provider, provider_session_id)
+      WHERE provider IS NOT NULL AND provider_session_id IS NOT NULL`
+  );
+}
+
+function needsWorkUnitProviderIdentity(db: Db): boolean {
+  if (!tableExists(db, "work_units")) return false;
+  const names = tableColumnNames(db, "work_units");
+  return !names.has("provider") ||
+    !names.has("provider_session_id") ||
+    !indexExists(db, "idx_work_units_provider_session");
 }
 
 function ensureLedgerHashIdColumns(db: Db): void {

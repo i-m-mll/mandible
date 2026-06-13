@@ -801,6 +801,8 @@ export type LedgerIssueDetailWorkUnit = {
   kind: string;
   state: string;
   assigned_session_id: string | null;
+  provider: string | null;
+  provider_session_id: string | null;
   continuation: string | null;
   continuation_by: string | null;
   continuation_at: number | null;

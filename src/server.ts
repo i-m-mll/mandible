@@ -2,6 +2,10 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  normalizeAmbientProviderIdentity,
+  type AmbientProviderIdentity,
+} from "./ambient-provider-identity.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
 import type { HealthResponse, Logger, StartupCommitInfo } from "./types.js";
@@ -37,6 +41,7 @@ export interface RequestLike {
   params: Record<string, string>;
   query: Record<string, string>;
   body: unknown;
+  ambient_identity?: AmbientProviderIdentity | null;
 }
 
 export interface ResponseLike {
@@ -55,6 +60,7 @@ export interface RouterInvokeRequest {
   method: string;
   url: string;
   body?: unknown;
+  ambient_identity?: unknown;
 }
 
 export interface RouterInvokeResponse {
@@ -177,7 +183,13 @@ export class Router implements RouteRegistrar {
 
   async invoke(input: RouterInvokeRequest): Promise<RouterInvokeResponse> {
     const response = new CapturedResponse();
-    const handled = await this.dispatch(input.method, input.url, input.body, response);
+    const handled = await this.dispatch(
+      input.method,
+      input.url,
+      input.body,
+      response,
+      input.ambient_identity,
+    );
     if (!handled) {
       return { status: 404, body: { error: "not_found" } };
     }
@@ -196,7 +208,7 @@ export class Router implements RouteRegistrar {
         try { body = JSON.parse(rawBody); } catch { body = rawBody; }
       }
     }
-    return this.dispatch(method, req.url ?? "/", body, new HttpResponse(res));
+    return this.dispatch(method, req.url ?? "/", body, new HttpResponse(res), ambientIdentityFromHeaders(req.headers));
   }
 
   private async dispatch(
@@ -204,10 +216,14 @@ export class Router implements RouteRegistrar {
     requestUrl: string,
     body: unknown,
     response: ResponseLike,
+    ambientIdentity?: unknown,
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
     const url = new URL(requestUrl, "http://localhost");
     const pathname = url.pathname;
+    const requestAmbientIdentity = UNSAFE_METHODS.has(normalizedMethod)
+      ? normalizeAmbientProviderIdentity(ambientIdentity)
+      : null;
 
     for (const route of this.routes) {
       if (route.method !== normalizedMethod) continue;
@@ -224,7 +240,14 @@ export class Router implements RouteRegistrar {
         query[key] = value;
       });
 
-      const request: RequestLike = { method: normalizedMethod, url: requestUrl, params, query, body };
+      const request: RequestLike = {
+        method: normalizedMethod,
+        url: requestUrl,
+        params,
+        query,
+        body,
+        ambient_identity: requestAmbientIdentity,
+      };
 
       try {
         await route.handler(request, response);
@@ -241,6 +264,20 @@ export class Router implements RouteRegistrar {
 
     return false;
   }
+}
+
+function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientProviderIdentity | null {
+  const provider = headerValue(headers["x-mandible-ambient-provider"]);
+  const providerSessionId = headerValue(headers["x-mandible-ambient-provider-session-id"]);
+  return normalizeAmbientProviderIdentity({
+    provider,
+    provider_session_id: providerSessionId,
+  });
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 // --- Server creation ---

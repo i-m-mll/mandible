@@ -115,12 +115,13 @@
     "Delegation manifests are stored as `delegation-manifest` checkpoints; refresh digests with `mandible umbrella manifest refresh <umbrella>` before resuming.",
     "`mandible issue changed --since-issue` compares the umbrella's own issue head as well as child manifest entries. Parent sessions that need their own baseline should pass `--checkpoint <id>` instead of relying on the latest shared checkpoint.",
     "Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.",
-    "Successful auth merges archive reliably linked terminal Codex worker threads for closed child issues; live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.",
+    "Mutating work-unit requests may carry allowlisted ambient provider identity as `{provider, provider_session_id}`; Mandible persists only those fields on work units and never stores the caller environment.",
+    "Successful auth merges archive reliably linked terminal Codex worker threads for closed child issues. Resolved work units with `provider=codex` and a provider session id can archive directly without `console_sessions`; legacy console-session links still work. Live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.",
     "Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate."
   ],
   "transports": [
     "Default CLI transport is loopback HTTP via `MANDIBLE_BASE=http://127.0.0.1:<port>`.",
-    "Sandboxed agents without loopback can use `MANDIBLE_BASE=file:///path/to/spool` for issue, auth submission/listing, coordinator, conversation index, repo listing, and daemon-indexed log routes.",
+    "Sandboxed agents without loopback can use `MANDIBLE_BASE=file:///path/to/spool` for issue, auth submission/listing, work-unit mutation, coordinator, conversation index, repo listing, and daemon-indexed log routes.",
     "The file transport denies approval, merge, admin, and config routes; auth approval remains a user/dashboard action."
   ]
 }

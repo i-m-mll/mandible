@@ -50,6 +50,34 @@ describe("file RPC transport", () => {
     });
   });
 
+  it("passes explicit ambient identity through allowed file-RPC work-unit mutations", async () => {
+    const router = new Router();
+    router.post("/api/work-units/claim", (req, res) => {
+      res.json({ ambient_identity: req.ambient_identity });
+    });
+    const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
+
+    fs.writeFileSync(
+      path.join(tempDir, "req-work.request.json"),
+      JSON.stringify({
+        id: "req-work",
+        method: "POST",
+        path: "/api/work-units/claim",
+        ambient_identity: { provider: "codex", provider_session_id: "thread-file-rpc" },
+        body: { issue_id: "abc123", repo_id: "mandible" },
+      }),
+      "utf8",
+    );
+
+    await transport.processOnce();
+
+    const response = JSON.parse(fs.readFileSync(path.join(tempDir, "req-work.response.json"), "utf8"));
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      ambient_identity: { provider: "codex", provider_session_id: "thread-file-rpc" },
+    });
+  });
+
   it("denies routes outside the file transport allowlist", async () => {
     const router = new Router();
     router.post("/api/auth/request/:id/approve", (_req, res) => {
@@ -82,6 +110,9 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1/blocks")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1/forks")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/work/repos")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/work-units/claim")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/work-units/activate")).toBe(true);
+    expect(isAllowedFileRpcRoute("PATCH", "/api/work-units/wu-1")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/system/logs")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/auth/request/abc/actions")).toBe(true);

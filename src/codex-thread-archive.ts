@@ -9,7 +9,7 @@ export interface CodexThreadArchiver {
 
 export interface WorkerThreadArchiveCandidate {
   provider_session_id: string;
-  console_session_id: string;
+  console_session_id: string | null;
   mandible_session_id: string | null;
   issue_id: string;
   work_unit_id: string | null;
@@ -67,7 +67,7 @@ export function listCompletedWorkerThreadArchiveCandidates(
   db: Db,
   request: AuthRequest,
 ): WorkerThreadArchiveCandidate[] {
-  if (!tableExists(db, "console_sessions") || !tableExists(db, "work_units")) {
+  if (!tableExists(db, "work_units")) {
     return [];
   }
 
@@ -79,12 +79,16 @@ export function listCompletedWorkerThreadArchiveCandidates(
   const liveParentSessionIds = activeParentRoleSessionIds(db);
   const byProviderId = new Map<string, WorkerThreadArchiveCandidate>();
 
+  for (const row of directCandidateRowsFromWorkUnits(db, issueIds)) {
+    addDirectWorkUnitCandidate(db, byProviderId, row, liveParentSessionIds);
+  }
+
   for (const row of candidateRowsFromWorkUnits(db, issueIds)) {
     addCandidate(byProviderId, row, liveParentSessionIds);
   }
 
-  if (tableExists(db, "ledger_session_issue_links") || tableExists(db, "session_issues")) {
-    for (const row of candidateRowsFromIssueSessions(db, issueIds)) {
+  if (tableExists(db, "console_sessions") && tableExists(db, "session_issues")) {
+    for (const row of candidateRowsFromLegacyIssueSessions(db, issueIds)) {
       addCandidate(byProviderId, row, liveParentSessionIds);
     }
   }
@@ -92,6 +96,25 @@ export function listCompletedWorkerThreadArchiveCandidates(
   return Array.from(byProviderId.values()).sort((a, b) =>
     a.provider_session_id.localeCompare(b.provider_session_id),
   );
+}
+
+function addDirectWorkUnitCandidate(
+  db: Db,
+  byProviderId: Map<string, WorkerThreadArchiveCandidate>,
+  row: DirectWorkUnitCandidateRow,
+  liveParentSessionIds: Set<string>,
+): void {
+  const providerSessionId = stringOrNull(row.provider_session_id);
+  if (row.provider !== "codex" || !providerSessionId) return;
+  if (liveParentSessionIds.has(providerSessionId) || isProviderSessionLive(db, providerSessionId)) return;
+
+  byProviderId.set(providerSessionId, {
+    provider_session_id: providerSessionId,
+    console_session_id: null,
+    mandible_session_id: null,
+    issue_id: String(row.issue_id),
+    work_unit_id: String(row.work_unit_id),
+  });
 }
 
 function addCandidate(
@@ -157,7 +180,50 @@ interface CandidateRow {
   work_unit_id: unknown;
 }
 
+interface DirectWorkUnitCandidateRow {
+  provider: string | null;
+  provider_session_id: string | null;
+  issue_id: string;
+  work_unit_id: string;
+}
+
+function directCandidateRowsFromWorkUnits(db: Db, issueIds: Set<string>): DirectWorkUnitCandidateRow[] {
+  const rows: DirectWorkUnitCandidateRow[] = [];
+  const workUnitRows = db.prepare(
+    `SELECT id, issue_id, ledger_issue_id, provider, provider_session_id
+     FROM work_units
+     WHERE state = 'resolved'
+       AND provider = 'codex'
+       AND provider_session_id IS NOT NULL`,
+  ).all() as Array<{
+    id: string;
+    issue_id: string;
+    ledger_issue_id?: string | null;
+    provider: string | null;
+    provider_session_id: string | null;
+  }>;
+
+  for (const workUnit of workUnitRows) {
+    const issueId = workUnit.ledger_issue_id && issueIds.has(workUnit.ledger_issue_id)
+      ? workUnit.ledger_issue_id
+      : issueIds.has(workUnit.issue_id)
+        ? workUnit.issue_id
+        : null;
+    if (!issueId) continue;
+    rows.push({
+      provider: workUnit.provider,
+      provider_session_id: workUnit.provider_session_id,
+      issue_id: issueId,
+      work_unit_id: workUnit.id,
+    });
+  }
+  return rows;
+}
+
 function candidateRowsFromWorkUnits(db: Db, issueIds: Set<string>): CandidateRow[] {
+  if (!tableExists(db, "console_sessions")) {
+    return [];
+  }
   const rows: CandidateRow[] = [];
   const workUnitRows = db.prepare(
     `SELECT id, issue_id, ledger_issue_id, assigned_session_id
@@ -188,27 +254,16 @@ function candidateRowsFromWorkUnits(db: Db, issueIds: Set<string>): CandidateRow
   return rows;
 }
 
-function candidateRowsFromIssueSessions(db: Db, issueIds: Set<string>): CandidateRow[] {
+function candidateRowsFromLegacyIssueSessions(db: Db, issueIds: Set<string>): CandidateRow[] {
   const rows: CandidateRow[] = [];
   const linkedSessions = new Map<string, string>();
 
-  if (tableExists(db, "ledger_session_issue_links")) {
-    const linkRows = db.prepare(
-      "SELECT session_id, issue_id FROM ledger_session_issue_links",
-    ).all() as Array<{ session_id: string; issue_id: string }>;
-    for (const row of linkRows) {
-      if (issueIds.has(row.issue_id)) linkedSessions.set(row.session_id, row.issue_id);
-    }
-  }
-
-  if (tableExists(db, "session_issues")) {
-    const legacyRows = db.prepare(
-      "SELECT session_id, issue_id FROM session_issues",
-    ).all() as Array<{ session_id: string; issue_id: string }>;
-    for (const row of legacyRows) {
-      if (issueIds.has(row.issue_id) && !linkedSessions.has(row.session_id)) {
-        linkedSessions.set(row.session_id, row.issue_id);
-      }
+  const legacyRows = db.prepare(
+    "SELECT session_id, issue_id FROM session_issues",
+  ).all() as Array<{ session_id: string; issue_id: string }>;
+  for (const row of legacyRows) {
+    if (issueIds.has(row.issue_id) && !linkedSessions.has(row.session_id)) {
+      linkedSessions.set(row.session_id, row.issue_id);
     }
   }
 
@@ -277,6 +332,39 @@ function isSessionLive(db: Db, sessionId: string): boolean {
     "SELECT status FROM sessions WHERE id = ?",
   ).get(sessionId) as { status?: string | null } | undefined;
   return isLiveSessionStatus(row?.status);
+}
+
+function isProviderSessionLive(db: Db, providerSessionId: string): boolean {
+  if (isSessionLive(db, providerSessionId)) return true;
+  if (!tableExists(db, "console_sessions")) return false;
+  const rows = tableExists(db, "sessions")
+    ? db.prepare(
+      `SELECT cs.status AS console_status, s.status AS mandible_status
+       FROM console_sessions cs
+       LEFT JOIN sessions s ON s.id = COALESCE(cs.mandible_session_id, ?)
+       WHERE cs.id = ?
+          OR cs.mandible_session_id = ?
+          OR cs.provider_session_id = ?`,
+    ).all(
+      providerSessionId,
+      providerSessionId,
+      providerSessionId,
+      providerSessionId,
+    ) as Array<{ console_status?: string | null; mandible_status?: string | null }>
+    : db.prepare(
+      `SELECT cs.status AS console_status, NULL AS mandible_status
+       FROM console_sessions cs
+       WHERE cs.id = ?
+          OR cs.mandible_session_id = ?
+          OR cs.provider_session_id = ?`,
+    ).all(
+      providerSessionId,
+      providerSessionId,
+      providerSessionId,
+    ) as Array<{ console_status?: string | null; mandible_status?: string | null }>;
+  return rows.some((row) =>
+    isLiveSessionStatus(row.console_status) || isLiveSessionStatus(row.mandible_status)
+  );
 }
 
 function isLiveSessionStatus(value: unknown): boolean {
