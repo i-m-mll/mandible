@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
-import { LEDGER_BACKUP_TABLES } from "../src/ledger/backup.js";
+import {
+  LEDGER_BACKUP_TABLES,
+  METADATA_BACKUP_TABLES,
+  REPRODUCIBLE_OR_RUNTIME_TABLES,
+} from "../src/ledger/backup.js";
 import { createLedgerId } from "../src/ledger/ids.js";
 import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
@@ -1005,16 +1009,25 @@ describe("ledger store", () => {
 });
 
 describe("ledger backup contract", () => {
-  it("lists every non-reproducible ledger table for backup tooling", () => {
+  it("keeps the legacy ledger table list inside the metadata backup set", () => {
+    expect(METADATA_BACKUP_TABLES).toEqual(expect.arrayContaining(LEDGER_BACKUP_TABLES));
+  });
+
+  it("classifies every live metadata table so schema drift is visible", () => {
     const tableNames = db.prepare(
       `SELECT name FROM sqlite_master
        WHERE type = 'table'
-         AND (name LIKE 'ledger_%' OR name = 'issue_branches')`,
+         AND name NOT LIKE 'sqlite_%'
+       ORDER BY name`,
     ).all() as Array<{ name: string }>;
-    const backedUp = new Set<string>(LEDGER_BACKUP_TABLES);
+    const backedUp = new Set<string>(METADATA_BACKUP_TABLES);
+    const excluded = new Set<string>(REPRODUCIBLE_OR_RUNTIME_TABLES);
+    const unclassified = tableNames
+      .map((table) => table.name)
+      .filter((table) => !backedUp.has(table) && !excluded.has(table));
 
-    for (const table of tableNames) {
-      expect(backedUp.has(table.name)).toBe(true);
-    }
+    expect(unclassified, "metadata backup table classification drift").toEqual([]);
+    expect(backedUp.has("conversation_blocks")).toBe(false);
+    expect(excluded.has("conversation_blocks")).toBe(true);
   });
 });
