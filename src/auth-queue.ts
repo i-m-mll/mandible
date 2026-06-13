@@ -2002,7 +2002,8 @@ export class AuthQueue {
    * associated work units:
    * 1. Work units whose auth_request_id matches the completed request
    * 2. Work units whose branch matches the auth request's head_branch
-   * 3. Work units linked to explicit auth closure issue IDs
+   * 3. Work units whose branch tip is now contained in the merged base branch
+   * 4. Work units linked to explicit auth closure issue IDs
    * Bug: 8a281b3
    */
   private resolveWorkUnitsOnMerge(completed: AuthRequest): void {
@@ -2041,7 +2042,17 @@ export class AuthQueue {
       }
     }
 
-    // 3. Match by explicit close-on-merge issue IDs. Mandible-Issue trailers and
+    // 3. Match child feature branches that were merged through an integration
+    // branch. auth-merge may delete those branches before the branch scanner
+    // runs, so prefer the scanner's last_commit_hash snapshot when present.
+    for (const row of this.workUnitsMergedByRequest(completed)) {
+      if (!resolvedIds.has(row.id)) {
+        resolveStmt.run(now, row.id);
+        resolvedIds.add(row.id);
+      }
+    }
+
+    // 4. Match by explicit close-on-merge issue IDs. Mandible-Issue trailers and
     // issue_references are provenance links, not completion signals.
     const closesIssues = completed.issue_closures ?? completed.issues ?? [];
     const allIssueIds = [...closesIssues];
@@ -2068,7 +2079,7 @@ export class AuthQueue {
       }
     }
 
-    // 4. Match by canonical ledger links, covering auth requests that were
+    // 5. Match by canonical ledger links, covering auth requests that were
     // linked by ledger issue ID rather than by legacy git-bug prefixes.
     if (
       this.tableExists("ledger_auth_issue_links") &&
@@ -2103,6 +2114,119 @@ export class AuthQueue {
       console.log(
         `[auth-queue] resolved ${resolvedIds.size} work unit(s) after successful merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`
       );
+    }
+  }
+
+  private workUnitsMergedByRequest(completed: AuthRequest): Array<{ id: string }> {
+    if (completed.type !== "merge" || !completed.base_branch) {
+      return [];
+    }
+    const candidates = this.db.prepare(
+      `SELECT
+         wu.id,
+         wu.repo_id,
+         wu.branch,
+         b.repo_root,
+         b.last_commit_hash
+       FROM work_units wu
+       LEFT JOIN branches b ON b.branch = wu.branch
+       WHERE wu.state IN ('open', 'committed')
+         AND wu.branch IS NOT NULL
+         AND (wu.auth_request_id IS NULL OR wu.auth_request_id = ?)
+       ORDER BY wu.id`
+    ).all(completed.id) as Array<{
+      id: string;
+      repo_id: string;
+      branch: string;
+      repo_root: string | null;
+      last_commit_hash: string | null;
+    }>;
+
+    const repoRoots = this.authRequestRepoRoots(completed);
+    const resolved = new Set<string>();
+    for (const row of candidates) {
+      if (row.branch === completed.head_branch) {
+        continue;
+      }
+      if (!this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots)) {
+        continue;
+      }
+      const roots = [...repoRoots];
+      if (row.repo_root) roots.unshift(row.repo_root);
+      const uniqueRoots = [...new Set(roots.filter(Boolean))];
+      if (uniqueRoots.some((root) => this.workUnitBranchWasMerged(root, row.branch, row.last_commit_hash, completed))) {
+        resolved.add(row.id);
+      }
+    }
+    return [...resolved].map((id) => ({ id }));
+  }
+
+  private authRequestRepoRoots(completed: AuthRequest): string[] {
+    const roots = new Set<string>();
+    for (const value of [completed.target_repo_root, completed.cwd]) {
+      if (value) roots.add(value);
+    }
+    if (completed.repo) {
+      try {
+        const rows = this.db.prepare(
+          `SELECT root FROM work_repos
+           WHERE id = ? OR name = ? OR root = ?`
+        ).all(completed.repo, completed.repo, completed.repo) as Array<{ root: string }>;
+        for (const row of rows) roots.add(row.root);
+      } catch {
+        // work_repos is unavailable in some lightweight tests.
+      }
+    }
+    return [...roots];
+  }
+
+  private workUnitRepoMatchesRequest(repoId: string, completed: AuthRequest, repoRoots: string[]): boolean {
+    if (!completed.repo && repoRoots.length === 0) {
+      return true;
+    }
+    if (repoId === completed.repo || repoRoots.includes(repoId)) {
+      return true;
+    }
+    const suffix = `/${repoId}`;
+    return Boolean(completed.repo?.endsWith(suffix)) || repoRoots.some((root) => root.endsWith(suffix));
+  }
+
+  private workUnitBranchWasMerged(
+    repoRoot: string,
+    branch: string,
+    lastCommitHash: string | null,
+    completed: AuthRequest,
+  ): boolean {
+    const targets = [
+      completed.merge_head_sha,
+      completed.base_branch ? `refs/heads/${completed.base_branch}` : null,
+    ].filter((value): value is string => Boolean(value));
+
+    const candidates = [
+      lastCommitHash && /^[0-9a-f]{40}$/i.test(lastCommitHash) ? lastCommitHash : null,
+      `refs/heads/${branch}`,
+    ].filter((value): value is string => Boolean(value));
+
+    for (const candidate of candidates) {
+      for (const target of targets) {
+        if (this.gitIsAncestor(repoRoot, candidate, target)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private gitIsAncestor(cwd: string, candidate: string, target: string): boolean {
+    try {
+      execFileSync("git", ["merge-base", "--is-ancestor", candidate, target], {
+        cwd,
+        encoding: "utf8",
+        timeout: 5000,
+      });
+      return true;
+    } catch {
+      return false;
     }
   }
 

@@ -352,6 +352,54 @@ describe("auth queue", () => {
     }
   });
 
+  it("resolves child branch work units after an integration branch merge", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/child-work", { "child.txt": "child\n" });
+      const childHead = git(repo, ["rev-parse", "feature/child-work"]);
+      git(repo, ["checkout", "-b", "integration/child-batch", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/child-work", "-m", "merge child work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/child-batch"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "integration/child-batch", "-m", "merge integration"]);
+
+      registerWorkRepo(db, repo);
+      db.prepare(
+        `INSERT INTO branches (repo_root, branch, last_commit_hash)
+         VALUES (?, 'feature/child-work', ?)`
+      ).run(fs.realpathSync(repo), childHead);
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-child', 'child123', ?, 'feature/child-work', 'partition', 'committed', ?)`
+      ).run(path.basename(repo), now);
+
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/child-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/child-batch",
+        merge_head_sha: integrationHead,
+        execution_mode: "remote",
+      });
+
+      now = 1000;
+      queue.setResult(request.id, 0, "ok");
+
+      expect(db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-child'").get())
+        .toEqual({ state: "resolved", resolved_at: now });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("archives only reliably linked terminal Codex worker threads after successful merge", () => {
     const archived: string[] = [];
     const db = createMigratedDb();

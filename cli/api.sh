@@ -20,6 +20,30 @@ api_file_rpc_dir() {
   esac
 }
 
+api_ambient_provider() {
+  if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
+    printf 'codex'
+  fi
+}
+
+api_ambient_session_id() {
+  if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
+    printf '%s' "$CODEX_THREAD_ID"
+  fi
+}
+
+api_curl_ambient_headers() {
+  local method="$1"
+  local provider session_id
+  [[ "$method" != "GET" ]] || return 0
+  provider=$(api_ambient_provider)
+  session_id=$(api_ambient_session_id)
+  [[ -n "$provider" && -n "$session_id" ]] || return 0
+  printf '%s\0%s\0%s\0%s\0' \
+    '-H' "X-Mandible-Ambient-Provider: ${provider}" \
+    '-H' "X-Mandible-Ambient-Provider-Session-Id: ${session_id}"
+}
+
 urlencode() {
   jq -rn --arg value "$1" '$value|@uri'
 }
@@ -50,10 +74,17 @@ api_capture() {
   local request_path="$2"
   local data="$3"
   local output_file="$4"
+  local ambient_headers=()
 
   if api_is_file_rpc; then
     api_file_rpc_exchange "$method" "$request_path" "$data" "$output_file"
     return
+  fi
+
+  if [[ "$method" != "GET" ]]; then
+    while IFS= read -r -d '' header_arg; do
+      ambient_headers+=("$header_arg")
+    done < <(api_curl_ambient_headers "$method")
   fi
 
   if [[ "$method" == "GET" ]]; then
@@ -65,6 +96,7 @@ api_capture() {
   curl -s --max-time 15 -o "$output_file" -w "%{http_code}" \
     -X "$method" "$(api_base)$request_path" \
     -H 'Content-Type: application/json' \
+    "${ambient_headers[@]}" \
     -d "$data" 2>/dev/null || printf ''
 }
 
@@ -79,6 +111,7 @@ api_request() {
   local request_path="$2"
   local data="${3:-}"
   local tmp_response response_status
+  local ambient_headers=()
 
   if api_is_file_rpc; then
     tmp_response=$(mktemp)
@@ -95,8 +128,12 @@ api_request() {
   if [[ "$method" == "GET" ]]; then
     curl -sf --max-time 15 "$(api_base)$request_path"
   else
+    while IFS= read -r -d '' header_arg; do
+      ambient_headers+=("$header_arg")
+    done < <(api_curl_ambient_headers "$method")
     curl -sf --max-time 15 -X "$method" "$(api_base)$request_path" \
       -H 'Content-Type: application/json' \
+      "${ambient_headers[@]}" \
       -d "$data"
   fi
 }
@@ -107,6 +144,7 @@ api_file_rpc_exchange() {
   local data="${3:-}"
   local output_file="$4"
   local dir request_id request_tmp request_file response_file deadline response response_status
+  local provider session_id
 
   dir=$(api_file_rpc_dir)
   mkdir -p "$dir"
@@ -114,20 +152,32 @@ api_file_rpc_exchange() {
   request_tmp="${dir}/${request_id}.request.json.tmp"
   request_file="${dir}/${request_id}.request.json"
   response_file="${dir}/${request_id}.response.json"
+  provider=$(api_ambient_provider)
+  session_id=$(api_ambient_session_id)
 
   if [[ -n "$data" ]]; then
     jq -n \
       --arg id "$request_id" \
       --arg method "$method" \
       --arg path "$request_path" \
+      --arg provider "$provider" \
+      --arg provider_session_id "$session_id" \
       --argjson body "$data" \
-      '{id:$id, method:$method, path:$path, body:$body}' > "$request_tmp"
+      '{id:$id, method:$method, path:$path, body:$body}
+       + (if $method != "GET" and $provider != "" and $provider_session_id != ""
+          then {ambient_identity:{provider:$provider, provider_session_id:$provider_session_id}}
+          else {} end)' > "$request_tmp"
   else
     jq -n \
       --arg id "$request_id" \
       --arg method "$method" \
       --arg path "$request_path" \
-      '{id:$id, method:$method, path:$path}' > "$request_tmp"
+      --arg provider "$provider" \
+      --arg provider_session_id "$session_id" \
+      '{id:$id, method:$method, path:$path}
+       + (if $method != "GET" and $provider != "" and $provider_session_id != ""
+          then {ambient_identity:{provider:$provider, provider_session_id:$provider_session_id}}
+          else {} end)' > "$request_tmp"
   fi
   mv "$request_tmp" "$request_file"
 

@@ -31,7 +31,9 @@ export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
     parent_branch: typeof row.parent_branch === "string" ? row.parent_branch : null,
     kind: (row.kind as WorkUnit["kind"]) ?? "solo",
     state: (row.state as WorkUnit["state"]) ?? "open",
-    assigned_session_id: typeof row.assigned_session_id === "string" ? row.assigned_session_id : null,
+    assigned_session_id: normalizeWorkUnitSessionId(row.assigned_session_id),
+    provider: typeof row.provider === "string" && row.provider.trim() ? row.provider : null,
+    provider_session_id: normalizeWorkUnitSessionId(row.provider_session_id),
     continuation: typeof row.continuation === "string" ? row.continuation : null,
     continuation_by: typeof row.continuation_by === "string" ? row.continuation_by : null,
     continuation_at: typeof row.continuation_at === "number" ? row.continuation_at : null,
@@ -41,6 +43,12 @@ export function mapWorkUnitRow(row: Record<string, unknown>): WorkUnit {
     resolved_at: typeof row.resolved_at === "number" ? row.resolved_at : null,
     auth_request_id: typeof row.auth_request_id === "string" ? row.auth_request_id : null,
   };
+}
+
+export function normalizeWorkUnitSessionId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**

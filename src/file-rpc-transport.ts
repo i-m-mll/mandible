@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { normalizeAmbientProviderIdentity } from "./ambient-provider-identity.js";
 import type { Logger } from "./types.js";
 import type { Router, RouterInvokeResponse } from "./server.js";
 
@@ -15,6 +16,7 @@ export interface FileRpcRequest {
   url?: string;
   query?: Record<string, unknown>;
   body?: unknown;
+  ambient_identity?: unknown;
 }
 
 export interface FileRpcTransportOptions {
@@ -91,7 +93,7 @@ export class FileRpcTransport {
       const requestId = safeRequestId(request.id, requestPath);
       const method = typeof request.method === "string" ? request.method.toUpperCase() : "GET";
       const requestUrl = buildRequestUrl(request);
-      const response = await this.dispatch(method, requestUrl, request.body);
+      const response = await this.dispatch(method, requestUrl, request.body, request.ambient_identity);
       this.writeResponse(requestId, response);
       fs.rmSync(requestPath, { force: true });
       this.logger?.("info", "file_rpc_request", {
@@ -117,7 +119,12 @@ export class FileRpcTransport {
     }
   }
 
-  private async dispatch(method: string, requestUrl: string, body: unknown): Promise<RouterInvokeResponse> {
+  private async dispatch(
+    method: string,
+    requestUrl: string,
+    body: unknown,
+    ambientIdentity?: unknown,
+  ): Promise<RouterInvokeResponse> {
     const pathname = new URL(requestUrl, "http://localhost").pathname;
     if (!isAllowedFileRpcRoute(method, pathname)) {
       return {
@@ -126,7 +133,12 @@ export class FileRpcTransport {
       };
     }
     try {
-      return await this.router.invoke({ method, url: requestUrl, body });
+      return await this.router.invoke({
+        method,
+        url: requestUrl,
+        body,
+        ambient_identity: normalizeAmbientProviderIdentity(ambientIdentity),
+      });
     } catch (error) {
       return {
         status: 500,
@@ -213,6 +225,9 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/check") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/snapshot") return true;
   if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/work-units/claim") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/work-units/activate") return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/work-units\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/work/repos") return true;
   return false;
 }

@@ -1,13 +1,18 @@
 import { randomUUID } from "node:crypto";
+import {
+  normalizeAmbientProviderIdentity,
+  type AmbientProviderIdentity,
+} from "../ambient-provider-identity.js";
 import { getDb } from "../db.js";
-import { linkWorkUnitToLedgerIssue } from "../ledger/operational-links.js";
-import type { RouteRegistrar } from "../server.js";
+import { linkWorkUnitToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
+import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { WorkUnit, WorkUnitState } from "../types.js";
 import { readBody, sendJson } from "./http.js";
 import {
   mapWorkUnitRow as mapRow,
+  normalizeWorkUnitSessionId,
   computeLiveness,
   enrichWithLiveness,
   type WorkUnitLiveness,
@@ -28,6 +33,9 @@ interface ClaimInput {
   parent_branch?: string | null;
   kind?: string;
   assigned_session_id?: string | null;
+  provider?: string | null;
+  provider_session_id?: string | null;
+  ambient_identity?: unknown;
 }
 
 interface ActivateInput {
@@ -35,6 +43,9 @@ interface ActivateInput {
   repo_id: string;
   branch?: string | null;
   assigned_session_id?: string | null;
+  provider?: string | null;
+  provider_session_id?: string | null;
+  ambient_identity?: unknown;
 }
 
 interface ReleaseInput {
@@ -49,9 +60,20 @@ interface PatchInput {
   continuation_by?: string | null;
   continuation_at?: number | null;
   auth_request_id?: string | null;
+  provider?: string | null;
+  provider_session_id?: string | null;
+  ambient_identity?: unknown;
 }
 
 const VALID_STATES: Set<string> = new Set(["open", "committed", "resolved", "abandoned"]);
+
+type ExistingWorkUnit = {
+  id: string;
+  state: string;
+  branch: string | null;
+  ledger_issue_id: string | null;
+  assigned_session_id: string | null;
+};
 
 function linkLedgerIssue(
   db: ReturnType<typeof getDb>,
@@ -65,6 +87,19 @@ function linkLedgerIssue(
       issue_ref: issueId,
       repo_ref: repoId,
     });
+    return result.ok ? result.issue_id : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveLedgerIssueId(
+  db: ReturnType<typeof getDb>,
+  issueId: string,
+  repoId: string,
+): string | null {
+  try {
+    const result = resolveOperationalIssueRef(db, issueId, repoId);
     return result.ok ? result.issue_id : null;
   } catch {
     return null;
@@ -91,14 +126,29 @@ export function registerWorkUnitRoutes(
       return;
     }
 
-    // Check for existing open/committed work unit for this issue+repo
-    const existing = db
-      .prepare(
-        "SELECT id, state, ledger_issue_id FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')"
-      )
-      .get(body.issue_id, body.repo_id) as { id: string; state: string; ledger_issue_id: string | null } | undefined;
+    const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
+    const ambientIdentity = workUnitAmbientIdentity(req, body);
+    const existing = findExistingClaimWorkUnit(db, body.issue_id, body.repo_id, body.branch ?? null);
 
     if (existing) {
+      const updates: string[] = [];
+      const params: unknown[] = [];
+      if (!existing.branch && body.branch) {
+        updates.push("branch = ?", "parent_branch = COALESCE(parent_branch, ?)");
+        params.push(body.branch, body.parent_branch ?? null);
+      }
+      if (assignedSessionId && existing.assigned_session_id !== assignedSessionId) {
+        updates.push("assigned_session_id = ?");
+        params.push(assignedSessionId);
+      }
+      if (ambientIdentity) {
+        updates.push("provider = ?", "provider_session_id = ?");
+        params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+      }
+      if (updates.length > 0) {
+        params.push(existing.id);
+        db.prepare(`UPDATE work_units SET ${updates.join(", ")} WHERE id = ?`).run(...params);
+      }
       const ledgerIssueId = linkLedgerIssue(db, existing.id, body.issue_id, body.repo_id) ?? existing.ledger_issue_id;
       sendJson(res, 200, {
         id: existing.id,
@@ -116,8 +166,10 @@ export function registerWorkUnitRoutes(
       : "solo";
 
     db.prepare(
-      `INSERT INTO work_units (id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`
+      `INSERT INTO work_units (
+        id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id,
+        provider, provider_session_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`
     ).run(
       id,
       body.issue_id,
@@ -125,7 +177,9 @@ export function registerWorkUnitRoutes(
       body.branch ?? null,
       body.parent_branch ?? null,
       kind,
-      body.assigned_session_id ?? null,
+      assignedSessionId,
+      ambientIdentity?.provider ?? null,
+      ambientIdentity?.provider_session_id ?? null,
       now,
     );
 
@@ -147,13 +201,10 @@ export function registerWorkUnitRoutes(
     }
 
     const now = Date.now();
+    const assignedSessionId = normalizeWorkUnitSessionId(body.assigned_session_id);
+    const ambientIdentity = workUnitAmbientIdentity(req, body);
 
-    // Find existing open work unit for this issue+repo
-    const existing = db
-      .prepare(
-        "SELECT id, state, ledger_issue_id FROM work_units WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed') ORDER BY created_at DESC LIMIT 1"
-      )
-      .get(body.issue_id, body.repo_id) as { id: string; state: string; ledger_issue_id: string | null } | undefined;
+    const existing = findExistingActivateWorkUnit(db, body.issue_id, body.repo_id, body.branch ?? null);
 
     if (existing) {
       // Update to committed state, update timestamps
@@ -168,9 +219,13 @@ export function registerWorkUnitRoutes(
         updates.push("branch = ?");
         params.push(body.branch);
       }
-      if (body.assigned_session_id) {
+      if ("assigned_session_id" in body) {
         updates.push("assigned_session_id = ?");
-        params.push(body.assigned_session_id);
+        params.push(assignedSessionId);
+      }
+      if (ambientIdentity) {
+        updates.push("provider = ?", "provider_session_id = ?");
+        params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
       }
       params.push(existing.id);
 
@@ -184,14 +239,18 @@ export function registerWorkUnitRoutes(
       // No existing work unit — create one in committed state (auto-claim)
       const id = randomUUID();
       db.prepare(
-        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, assigned_session_id, created_at, activated_at, last_commit_at)
-         VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?)`
+        `INSERT INTO work_units (
+          id, issue_id, repo_id, branch, kind, state, assigned_session_id,
+          provider, provider_session_id, created_at, activated_at, last_commit_at
+        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.issue_id,
         body.repo_id,
         body.branch ?? null,
-        body.assigned_session_id ?? null,
+        assignedSessionId,
+        ambientIdentity?.provider ?? null,
+        ambientIdentity?.provider_session_id ?? null,
         now,
         now,
         now,
@@ -306,6 +365,7 @@ export function registerWorkUnitRoutes(
     }
 
     const body = readBody<PatchInput>(req);
+    const ambientIdentity = workUnitAmbientIdentity(req, body);
     const updates: string[] = [];
     const params: unknown[] = [];
 
@@ -326,7 +386,7 @@ export function registerWorkUnitRoutes(
 
     if ("assigned_session_id" in body) {
       updates.push("assigned_session_id = ?");
-      params.push(body.assigned_session_id ?? null);
+      params.push(normalizeWorkUnitSessionId(body.assigned_session_id));
     }
 
     if ("continuation" in body) {
@@ -349,6 +409,11 @@ export function registerWorkUnitRoutes(
       params.push(body.auth_request_id ?? null);
     }
 
+    if (ambientIdentity) {
+      updates.push("provider = ?", "provider_session_id = ?");
+      params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+    }
+
     if (updates.length === 0) {
       sendJson(res, 400, { error: "No fields to update" });
       return;
@@ -366,4 +431,99 @@ export function registerWorkUnitRoutes(
     const workUnit = mapRow(updatedRow);
     sendJson(res, 200, enrichWithLiveness(workUnit, sessionRegistry, sessionManager));
   });
+}
+
+function workUnitAmbientIdentity(
+  req: RequestLike,
+  body: { provider?: string | null; provider_session_id?: string | null; ambient_identity?: unknown },
+): AmbientProviderIdentity | null {
+  return req.ambient_identity ?? normalizeAmbientProviderIdentity(body.ambient_identity) ?? normalizeAmbientProviderIdentity({
+    provider: body.provider,
+    provider_session_id: body.provider_session_id,
+  });
+}
+
+function findExistingClaimWorkUnit(
+  db: ReturnType<typeof getDb>,
+  issueId: string,
+  repoId: string,
+  branch: string | null,
+): ExistingWorkUnit | undefined {
+  const lookup = buildWorkUnitLookup(db, issueId, repoId);
+  if (branch) {
+    const byBranch = db
+      .prepare(
+        `SELECT id, state, branch, ledger_issue_id, assigned_session_id
+         FROM work_units
+         WHERE ${lookup.identity}
+           AND (branch = ? OR branch IS NULL)
+           AND state IN ('open', 'committed')
+         ORDER BY CASE WHEN branch = ? THEN 0 ELSE 1 END, created_at DESC
+         LIMIT 1`
+      )
+      .get(...lookup.params, branch, branch) as ExistingWorkUnit | undefined;
+    if (byBranch) return byBranch;
+  }
+
+  return db
+    .prepare(
+      `SELECT id, state, branch, ledger_issue_id, assigned_session_id
+       FROM work_units
+       WHERE ${lookup.identity}
+         AND state IN ('open', 'committed')
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get(...lookup.params) as ExistingWorkUnit | undefined;
+}
+
+function findExistingActivateWorkUnit(
+  db: ReturnType<typeof getDb>,
+  issueId: string,
+  repoId: string,
+  branch: string | null,
+): ExistingWorkUnit | undefined {
+  const lookup = buildWorkUnitLookup(db, issueId, repoId);
+  if (branch) {
+    const byBranch = db
+      .prepare(
+        `SELECT id, state, branch, ledger_issue_id, assigned_session_id
+         FROM work_units
+         WHERE ${lookup.identity}
+           AND (branch = ? OR branch IS NULL)
+           AND state IN ('open', 'committed', 'abandoned')
+         ORDER BY CASE WHEN branch = ? THEN 0 ELSE 1 END, created_at DESC
+         LIMIT 1`
+      )
+      .get(...lookup.params, branch, branch) as ExistingWorkUnit | undefined;
+    if (byBranch) return byBranch;
+  }
+
+  return db
+    .prepare(
+      `SELECT id, state, branch, ledger_issue_id, assigned_session_id
+       FROM work_units
+       WHERE ${lookup.identity}
+         AND state IN ('open', 'committed')
+       ORDER BY created_at DESC
+       LIMIT 1`
+    )
+    .get(...lookup.params) as ExistingWorkUnit | undefined;
+}
+
+function buildWorkUnitLookup(
+  db: ReturnType<typeof getDb>,
+  issueId: string,
+  repoId: string,
+): { identity: string; params: unknown[] } {
+  const ledgerIssueId = resolveLedgerIssueId(db, issueId, repoId);
+  return ledgerIssueId
+    ? {
+        identity: "(ledger_issue_id = ? OR (issue_id = ? AND repo_id = ?))",
+        params: [ledgerIssueId, issueId, repoId],
+      }
+    : {
+        identity: "(issue_id = ? AND repo_id = ?)",
+        params: [issueId, repoId],
+      };
 }
