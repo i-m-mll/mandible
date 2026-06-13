@@ -22,7 +22,7 @@ Open the dashboard at [http://localhost:19420](http://localhost:19420).
 
 The daemon performs several initialization steps:
 
-1. **Database creation** --- If `~/.cache/mandible/mandible.db` doesn't exist, it creates the database and runs all schema migrations (currently 31 migrations covering sessions, auth requests, conversations, work units, console sessions, switchboard, and more).
+1. **Database creation** --- If `~/.cache/mandible/mandible.db` doesn't exist, it creates the database and runs all schema migrations for sessions, auth requests, conversations, work units, console sessions, and more.
 
 2. **Session discovery** --- Scans running processes for known agent patterns (Claude, Codex, Gemini) and matches them against registered repository worktrees. Any running agents found are registered as sessions.
 
@@ -90,7 +90,6 @@ Aggregated Mandible ledger issues from all registered repositories. Grouped by r
 - **Graph** --- D3 force-directed knowledge graph connecting sessions, issues, and auth requests
 - **Review** --- side-by-side or unified diff viewer for any repo/base/head combination
 - **Inbox** --- continuations (session handoff notes), auth results, and open issues needing attention
-- **Switchboard** --- symlink pairing manager with setup/teardown hooks
 - **Settings** --- reaper timeouts, notification preferences, theme, quiet hours, pre-tool hooks
 
 ## Registering repositories

@@ -23,7 +23,6 @@ import { registerInboxRoutes } from "./routes/inbox.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
-import { registerSwitchboardRoutes } from "./routes/switchboard.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerGraphRoutes } from "./routes/graph.js";
 import { registerProviderRoutes } from "./routes/providers.js";
@@ -97,7 +96,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
   registerSystemRoutes(router, workScanner);
-  registerSwitchboardRoutes(router);
   registerBackupRoutes(router);
 
   const sessionDiscovery = new SessionDiscovery(db, sessionRegistry, workScanner, logger);

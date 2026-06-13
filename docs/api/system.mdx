@@ -119,6 +119,7 @@ Get backup scheduler status.
 {
   "enabled": true,
   "interval_hours": 6,
+  "destination": "/Users/user/.cache/mandible/backups/mandible-metadata.sql",
   "last_run_at": 1711234567890,
   "last_size_bytes": 524288,
   "last_error": null
@@ -127,19 +128,23 @@ Get backup scheduler status.
 
 ### POST /api/backup/run
 
-Trigger an immediate backup.
+Trigger an immediate in-process metadata backup.
 
 **Response:** `200 OK`
 
 ```json
-{ "ok": true, "size_bytes": 524288 }
+{ "ok": true, "size_bytes": 524288, "path": "/Users/user/.cache/mandible/backups/mandible-metadata.sql", "destination": "/Users/user/.cache/mandible/backups/mandible-metadata.sql" }
 ```
 
 Or on failure:
 
 ```json
-{ "ok": false, "error": "mandible-backup not found" }
+{ "ok": false, "error": "EACCES: permission denied, open '...'" }
 ```
+
+The dump contains Mandible-owned metadata tables and excludes large rebuildable
+content such as `conversation_blocks`. Restore is deferred until Mandible has a
+tested restore round trip.
 
 ### PUT /api/backup/settings
 
@@ -151,6 +156,7 @@ Update backup configuration. Reschedules the backup timer.
 |---|---|---|
 | `enabled` | boolean | Enable/disable scheduled backups |
 | `interval_hours` | number | Hours between backups |
+| `destination` | string | Metadata backup output file |
 
 **Response:** `200 OK`
 
@@ -161,7 +167,7 @@ Update backup configuration. Reschedules the backup timer.
 ```bash
 curl -X PUT http://localhost:19420/api/backup/settings \
   -H 'Content-Type: application/json' \
-  -d '{"enabled": true, "interval_hours": 12}'
+  -d '{"enabled": true, "interval_hours": 12, "destination": "/Users/user/.cache/mandible/backups/mandible-metadata.sql"}'
 ```
 
 ## Administrative

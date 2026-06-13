@@ -2,9 +2,8 @@ import type { AuthRequest } from './views/auth';
 import type { InboxData } from './views/inbox';
 import type { IssueRepoSummary } from './views/issues';
 import type { SessionRecord } from './views/sessions';
-import type { SwitchboardItem, SwitchboardPairing } from './views/switchboard';
 import type { WorkBranch, WorkRepo } from './views/work';
-import type { Conversation, HookTemplate } from './api';
+import type { Conversation } from './api';
 import type { SSEPayload } from './sse-client';
 import type { Preset, PresetNode, UndoCommand } from './types/presets';
 
@@ -63,12 +62,6 @@ type AppState = {
   daemonReload: DaemonReloadInfo | null;
   settings: Record<string, string>;
   conversations: Conversation[];
-  switchboardPairings: SwitchboardPairing[];
-  switchboardSelected: string | null;
-  switchboardItems: SwitchboardItem[];
-  switchboardItemsLoading: boolean;
-  switchboardConsistencyErrors: Array<{ item: string; error: string }>;
-  switchboardTemplates: HookTemplate[];
   inboxData: InboxData | null;
   inboxLoading: boolean;
   consoleSessions: ConsoleSession[];
@@ -112,16 +105,6 @@ type Action =
   | { type: 'updateSetting'; key: string; value: string }
   | { type: 'setConversations'; conversations: Conversation[] }
   | { type: 'upsertConversation'; conversation: Conversation }
-  | { type: 'setSwitchboardPairings'; pairings: SwitchboardPairing[] }
-  | { type: 'setSwitchboardSelected'; name: string | null }
-  | { type: 'setSwitchboardItems'; items: SwitchboardItem[] }
-  | { type: 'setSwitchboardItemsLoading'; loading: boolean }
-  | { type: 'setSwitchboardConsistencyErrors'; errors: Array<{ item: string; error: string }> }
-  | { type: 'upsertSwitchboardPairing'; pairing: SwitchboardPairing }
-  | { type: 'removeSwitchboardPairing'; name: string }
-  | { type: 'updateSwitchboardItem'; item: SwitchboardItem }
-  | { type: 'setSwitchboardTemplates'; templates: HookTemplate[] }
-  | { type: 'upsertSwitchboardTemplate'; template: HookTemplate }
   | { type: 'setInboxData'; data: InboxData }
   | { type: 'setInboxLoading'; loading: boolean }
   | { type: 'ackInboxContinuation'; sessionId: string }
@@ -168,12 +151,6 @@ const initialState: AppState = {
   daemonReload: null,
   settings: {},
   conversations: [],
-  switchboardPairings: [],
-  switchboardSelected: null,
-  switchboardItems: [],
-  switchboardItemsLoading: false,
-  switchboardConsistencyErrors: [],
-  switchboardTemplates: [],
   inboxData: null,
   inboxLoading: false,
   consoleSessions: [],
@@ -320,42 +297,6 @@ function appReducer(state: AppState, action: AppAction): AppState {
       const getId = (c: Conversation) => c.id;
       const updated = upsertById(state.conversations, getId, action.conversation);
       return { ...state, conversations: updated };
-    }
-    case 'setSwitchboardPairings':
-      return { ...state, switchboardPairings: action.pairings };
-    case 'setSwitchboardSelected':
-      return { ...state, switchboardSelected: action.name };
-    case 'setSwitchboardItems':
-      return { ...state, switchboardItems: action.items };
-    case 'setSwitchboardItemsLoading':
-      return { ...state, switchboardItemsLoading: action.loading };
-    case 'setSwitchboardConsistencyErrors':
-      return { ...state, switchboardConsistencyErrors: action.errors };
-    case 'upsertSwitchboardPairing': {
-      const getName = (p: SwitchboardPairing) => p.name;
-      const updated = upsertById(state.switchboardPairings, getName, action.pairing);
-      return { ...state, switchboardPairings: updated };
-    }
-    case 'removeSwitchboardPairing':
-      return {
-        ...state,
-        switchboardPairings: state.switchboardPairings.filter((p) => p.name !== action.name),
-        switchboardSelected: state.switchboardSelected === action.name ? null : state.switchboardSelected,
-        switchboardItems: state.switchboardSelected === action.name ? [] : state.switchboardItems,
-        switchboardConsistencyErrors: state.switchboardSelected === action.name ? [] : state.switchboardConsistencyErrors,
-      };
-    case 'updateSwitchboardItem': {
-      const updated = state.switchboardItems.map((item) =>
-        item.name === action.item.name ? action.item : item
-      );
-      return { ...state, switchboardItems: updated };
-    }
-    case 'setSwitchboardTemplates':
-      return { ...state, switchboardTemplates: action.templates };
-    case 'upsertSwitchboardTemplate': {
-      const getId = (t: HookTemplate) => t.id;
-      const updated = upsertById(state.switchboardTemplates, getId, action.template);
-      return { ...state, switchboardTemplates: updated };
     }
     case 'setInboxData':
       return { ...state, inboxData: action.data, inboxLoading: false };
@@ -882,7 +823,7 @@ const CACHE_VERSION = 2;
 type CachedFields = Pick<
   AppState,
   'sessions' | 'authQueue' | 'authHistory' | 'workRepos' | 'workBranches' | 'issueRepos' | 'conversations'
-  | 'inboxData' | 'consoleSessions' | 'settings' | 'switchboardPairings' | 'switchboardTemplates'
+  | 'inboxData' | 'consoleSessions' | 'settings'
 >;
 
 // Bug: 9860b1c, b794add — Filter stale resolved auth items on cache load so they
@@ -962,8 +903,6 @@ function saveCachedState(state: AppState): void {
       inboxData: state.inboxData,
       consoleSessions: state.consoleSessions,
       settings: state.settings,
-      switchboardPairings: state.switchboardPairings,
-      switchboardTemplates: state.switchboardTemplates,
     };
     window.localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, state: toCache }));
   } catch {

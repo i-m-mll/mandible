@@ -1,26 +1,17 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { spawnSync } from "node:child_process";
-
 import { getDb } from "../db.js";
+import {
+  getDefaultMetadataBackupPath,
+  writeMetadataBackup,
+} from "../ledger/backup.js";
 import type { RouteRegistrar } from "../server.js";
 import { getBoolSetting, getIntSetting, getStrSetting } from "./settings.js";
 
 // Bug: 4cf8cbb — scheduled backup with Settings tab control
 
-const BACKUP_SCRIPT = path.join(os.homedir(), ".dotfiles", "bin", "mandible-backup");
-const BACKUP_OUTPUT = path.join(
-  os.homedir(),
-  ".dotfiles",
-  "private",
-  "backups",
-  "mandible-metadata.sql"
-);
-
 export type BackupStatus = {
   enabled: boolean;
   interval_hours: number;
+  destination: string;
   last_run_at: number | null;
   last_size_bytes: number | null;
   last_error: string | null;
@@ -29,6 +20,7 @@ export type BackupStatus = {
 function getBackupStatus(): BackupStatus {
   const enabled = getBoolSetting("backup.enabled", true);
   const interval_hours = getIntSetting("backup.interval_hours", 6);
+  const destination = getStrSetting("backup.destination", "") || getDefaultMetadataBackupPath();
 
   const lastRunStr = getStrSetting("backup.last_run_at", "");
   const last_run_at = lastRunStr ? parseInt(lastRunStr, 10) : null;
@@ -38,7 +30,7 @@ function getBackupStatus(): BackupStatus {
 
   const last_error = getStrSetting("backup.last_error", "") || null;
 
-  return { enabled, interval_hours, last_run_at, last_size_bytes, last_error };
+  return { enabled, interval_hours, destination, last_run_at, last_size_bytes, last_error };
 }
 
 function writeSetting(key: string, value: string): void {
@@ -50,47 +42,31 @@ function writeSetting(key: string, value: string): void {
   ).run(key, value, now);
 }
 
-/**
- * Run mandible-backup synchronously and record the result in settings.
- * Returns { ok, size_bytes?, error? }.
- */
-function runBackup(): { ok: boolean; size_bytes?: number; error?: string } {
-  if (!fs.existsSync(BACKUP_SCRIPT)) {
-    const error = `mandible-backup not found at ${BACKUP_SCRIPT}`;
-    writeSetting("backup.last_error", error);
-    writeSetting("backup.last_run_at", String(Date.now()));
-    return { ok: false, error };
-  }
-
-  const result = spawnSync(BACKUP_SCRIPT, [], {
-    timeout: 30_000,
-    encoding: "utf8",
-  });
-
+function runBackup(): {
+  ok: boolean;
+  size_bytes?: number;
+  path?: string;
+  destination?: string;
+  error?: string;
+} {
   const now = Date.now();
   writeSetting("backup.last_run_at", String(now));
-
-  if (result.error || result.status !== 0) {
-    const errorMsg =
-      result.error?.message ??
-      result.stderr?.trim() ??
-      `exit code ${result.status ?? "unknown"}`;
+  const destination = getStrSetting("backup.destination", "") || getDefaultMetadataBackupPath();
+  try {
+    const result = writeMetadataBackup(getDb(), destination);
+    writeSetting("backup.last_size_bytes", String(result.size_bytes));
+    writeSetting("backup.last_error", "");
+    return {
+      ok: true,
+      size_bytes: result.size_bytes,
+      path: result.path,
+      destination: result.path,
+    };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
     writeSetting("backup.last_error", errorMsg);
     return { ok: false, error: errorMsg };
   }
-
-  // Record file size from stat (reliable even if output format changes)
-  let size_bytes: number | undefined;
-  try {
-    const stat = fs.statSync(BACKUP_OUTPUT);
-    size_bytes = stat.size;
-    writeSetting("backup.last_size_bytes", String(size_bytes));
-  } catch {
-    // Non-fatal: file might not exist yet on first run failure
-  }
-
-  writeSetting("backup.last_error", "");
-  return { ok: true, size_bytes };
 }
 
 // ── Scheduler ────────────────────────────────────────────────────────────────
@@ -160,7 +136,11 @@ export function registerBackupRoutes(server: RouteRegistrar): void {
 
   // PUT /api/backup/settings
   server.put("/api/backup/settings", (req, res) => {
-    const body = (req.body ?? {}) as { enabled?: unknown; interval_hours?: unknown };
+    const body = (req.body ?? {}) as {
+      enabled?: unknown;
+      interval_hours?: unknown;
+      destination?: unknown;
+    };
 
     if (body.enabled !== undefined) {
       if (typeof body.enabled !== "boolean") {
@@ -176,6 +156,14 @@ export function registerBackupRoutes(server: RouteRegistrar): void {
         return;
       }
       writeSetting("backup.interval_hours", String(body.interval_hours));
+    }
+
+    if (body.destination !== undefined) {
+      if (typeof body.destination !== "string" || body.destination.trim() === "") {
+        res.status(400).json({ error: "destination must be a non-empty string" });
+        return;
+      }
+      writeSetting("backup.destination", body.destination.trim());
     }
 
     // Reschedule with updated settings

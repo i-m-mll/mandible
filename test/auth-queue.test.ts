@@ -926,6 +926,50 @@ describe("auth queue", () => {
     expect(check.reason).toContain("ENOENT");
   });
 
+  it("reports tracked dirty worktree state as a merge preflight error", () => {
+    const repo = createAuthCheckRepo();
+    const queue = createQueue();
+    try {
+      commitOnBranch(repo, "feature/demo", { "feature.txt": "feature\n" });
+      writeFile(repo, "shared.txt", "dirty\n");
+
+      const check = queue.checkMergeIndependence({
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/demo",
+        cwd: repo,
+      });
+
+      expect(check.status).toBe("error");
+      expect(check.reason).toContain("tracked worktree changes are present");
+      expect(check.reason).toContain("shared.txt");
+      expect(check.conflicts).toEqual([]);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects merge request submission when shared preflight reports an error", () => {
+    const repo = createAuthCheckRepo();
+    const queue = createQueue();
+    try {
+      commitOnBranch(repo, "feature/demo", { "feature.txt": "feature\n" });
+      writeFile(repo, "shared.txt", "dirty\n");
+
+      expect(() => queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/demo --into main",
+        title: "Merge feature/demo",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/demo",
+        cwd: repo,
+      })).toThrow(/merge preflight failed/);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("marks pending merge requests needs_rebase after post-merge revalidation", () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();

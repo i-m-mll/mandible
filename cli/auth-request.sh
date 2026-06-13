@@ -43,6 +43,9 @@ source "$GIT_ENV_HELPER"
 API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
 source "$API_HELPER"
 
+AUTH_PREFLIGHT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/auth-preflight.sh"
+source "$AUTH_PREFLIGHT_HELPER"
+
 # --- Usage ---
 
 usage() {
@@ -476,19 +479,10 @@ protected_root_dirty_action_json=$(ensure_clean_with_dirty_policy \
   "$target_cwd" "$base_branch" "$branch" "$dirty_policy" "$dirty_branch_prefix" "$configured_include_untracked")
 append_dirty_action_to_spec "$protected_root_dirty_action_json"
 
-# --- Pre-flight: check for merge conflicts ---
-# Run a dry-run merge to catch conflicts before submitting the request.
-# The actual merge check also happens in auth-merge, but catching it here
-# lets the agent fail fast rather than waiting for user YubiKey auth.
-# Bug: be8b0ed — pre-submission conflict check missing from auth-request
-
-pre_auth_check="${HOME}/.dotfiles/bin/pre-auth-check"
-if [[ -x "$pre_auth_check" ]]; then
-  if ! "$pre_auth_check" "$target_cwd" "$branch" "$base_branch" 2>&1; then
-    echo "Error: pre-submission conflict check failed. Resolve conflicts before submitting." >&2
-    exit 1
-  fi
-fi
+# --- Pre-flight: check merge cleanliness through Mandible ---
+# This is the same read-only preflight used by `mandible auth check` and the
+# merge executor. It deliberately does not call user dotfiles policy scripts.
+mandible_auth_merge_preflight "$target_cwd" "$branch" "$base_branch" "$repo"
 
 # --- Auto-detect diff stats ---
 

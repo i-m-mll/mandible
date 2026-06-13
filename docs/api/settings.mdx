@@ -15,7 +15,8 @@ Get all settings as a key-value object.
   "theme": "dark",
   "protected_branches": "main,develop",
   "backup.enabled": "true",
-  "backup.interval_hours": "6"
+  "backup.interval_hours": "6",
+  "backup.destination": "/Users/user/.cache/mandible/backups/mandible-metadata.sql"
 }
 ```
 
@@ -77,4 +78,5 @@ curl -X PUT http://localhost:19420/api/settings/theme \
 | `auto_close_issues_on_merge` | `true` | Auto-close issues from explicit `Closes-Mandible-Issue:` trailers after merge |
 | `backup.enabled` | `true` | Enable scheduled backups |
 | `backup.interval_hours` | `6` | Hours between backups |
+| `backup.destination` | Mandible data directory | Metadata backup output file |
 | `console_pinned_sessions` | `[]` | JSON array of pinned console session IDs |

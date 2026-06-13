@@ -80,12 +80,14 @@ Duplicates are detected by two signals:
 
 ### Pairwise Independence
 
-For merge requests, Mandible checks Git merge-tree results before queueing.
-The candidate branch must merge cleanly into the target branch. It must also
-remain clean after the already queued merge requests for the same repo and
-target branch are simulated in queue order. Independent branches may sit in
-the queue together. A conflicting branch is rejected with a file-level clash
-report and should be rebased or consolidated onto an integration branch.
+For merge requests, Mandible runs the same read-only merge preflight used by
+`mandible auth check` before queueing. The protected worktree must not have
+tracked dirty state or an in-progress merge, and the candidate branch must
+merge cleanly into the target branch. It must also remain clean after the
+already queued merge requests for the same repo and target branch are simulated
+in queue order. Independent branches may sit in the queue together. A
+conflicting branch is rejected with a file-level clash report and should be
+rebased or consolidated onto an integration branch.
 
 ### Mandible Issue Reference Verification
 
