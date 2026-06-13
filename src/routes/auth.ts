@@ -790,6 +790,10 @@ function handleQueueError(error: unknown, res: ResponseLike): void {
       res.status(409).json({ error: error.message, check: error.details });
       return;
     }
+    if (error.code === "merge_check_failed") {
+      res.status(422).json({ error: error.message, check: error.details });
+      return;
+    }
   }
 
   res.status(500).json({ error: "Unexpected auth queue error." });

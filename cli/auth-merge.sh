@@ -7,6 +7,9 @@ set -o pipefail
 GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
 source "$GIT_ENV_HELPER"
 
+AUTH_PREFLIGHT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/auth-preflight.sh"
+source "$AUTH_PREFLIGHT_HELPER"
+
 RESET=$'\033[0m'
 BOLD_WHITE=$'\033[1;37m'
 DIM_WHITE=$'\033[2;37m'
@@ -54,35 +57,6 @@ repeat_char() {
 
 branch_exists() {
   git show-ref --verify --quiet "refs/heads/$1"
-}
-
-resolve_pre_auth_check() {
-  local script_dir=$1
-  local candidate=""
-
-  if [[ -n "${MANDIBLE_PRE_AUTH_CHECK:-}" && -x "${MANDIBLE_PRE_AUTH_CHECK:-}" ]]; then
-    printf "%s" "$MANDIBLE_PRE_AUTH_CHECK"
-    return 0
-  fi
-
-  if candidate=$(command -v pre-auth-check 2>/dev/null); then
-    if [[ -x "$candidate" ]]; then
-      printf "%s" "$candidate"
-      return 0
-    fi
-  fi
-
-  for candidate in \
-    "${HOME:-}/.dotfiles/bin/pre-auth-check" \
-    "${script_dir}/pre-auth-check" \
-    "${script_dir}/../bin/pre-auth-check"; do
-    if [[ -n "$candidate" && -x "$candidate" ]]; then
-      printf "%s" "$candidate"
-      return 0
-    fi
-  done
-
-  return 1
 }
 
 protected_branch() {
@@ -605,10 +579,10 @@ main() {
 
   preflight_git_locks
 
-  # Bug: bb2d9ef — detect MERGE_HEAD before running pre-auth-check.
+  # Bug: bb2d9ef — detect MERGE_HEAD before running merge preflight.
   # When Mandible restarts mid-merge (e.g. a dist rebuild triggers a
   # process restart), the executor re-runs auth-merge from scratch.
-  # pre-auth-check sees staged mid-merge files and fails with "dirty tree".
+  # Normal preflight sees staged mid-merge files and fails with "dirty tree".
   # Instead: detect the in-progress merge and resume it with --continue.
   local merge_head_file
   merge_head_file="$(git rev-parse --git-dir)/MERGE_HEAD"
@@ -666,33 +640,6 @@ main() {
     fi
   fi
 
-  # Pre-flight: ensure working tree is clean and merge will succeed
-  local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local pre_auth_check=""
-  if pre_auth_check=$(resolve_pre_auth_check "$script_dir"); then
-    if ! bash "$pre_auth_check" "$(pwd)" "${sources[0]:-}" "$target"; then
-      die "Pre-auth-check failed." 1
-    fi
-  else
-    # Fallback: simple staged/index check (pre-auth-check not found).
-    # Bug: b55d384 — untracked files alone must not block auth merge. Git will
-    # refuse the actual merge if an untracked file would be overwritten; staged
-    # changes are the risky state because they can be included or disturbed.
-    local status_output
-    status_output=$(git status --porcelain)
-    local staged_status
-    staged_status=$(printf '%s\n' "$status_output" | grep -E '^[^ ?]' || true)
-    if [[ -n "$staged_status" ]]; then
-      err "Working tree has staged changes:"
-      printf '%s\n' "$staged_status" | head -20 >&2
-      die "Unstage or preserve staged changes before merging." 1
-    fi
-    if [[ -n "$status_output" ]]; then
-      err "${DIM_WHITE}pre-auth-check not found; proceeding with untracked/unstaged files present.${RESET}"
-    fi
-  fi
-
   if [[ ${#sources[@]} -eq 0 ]]; then
     usage >&2
     exit 2
@@ -713,6 +660,13 @@ main() {
       die "Source branch '$source' does not exist." 2
     fi
   done
+
+  # Pre-flight: ensure tracked worktree state and the candidate merge are clean.
+  # The definition lives behind `mandible auth check`; this path does not call
+  # user dotfiles policy scripts or weaker local fallbacks.
+  if ! mandible_auth_merge_preflight "$(pwd)" "${sources[0]}" "$target"; then
+    exit 1
+  fi
 
   local current_branch
   current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)

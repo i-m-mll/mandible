@@ -13,8 +13,9 @@ Auth request statuses: `pending`, `executing`, `approved`, `needs_rebase`, `comp
 ### POST /api/auth/check
 
 Check whether a merge request is clean against its target branch and queued
-pairwise-independent merge requests. The check uses Git merge-tree objects and
-does not write to the worktree.
+pairwise-independent merge requests. The check is read-only: it rejects tracked
+dirty worktree state and in-progress merges before using Git merge-tree objects
+without writing to the worktree.
 
 **Request body:**
 
@@ -79,6 +80,7 @@ Submit a new auth request.
 **Error responses:**
 - `400` — Invalid payload
 - `409` — Duplicate request exists, or merge-tree independence check found a conflict
+- `422` — Merge preflight could not run safely, such as tracked dirty state or merge-check infrastructure failure
 
 ```bash
 curl -X POST http://localhost:19420/api/auth/request \

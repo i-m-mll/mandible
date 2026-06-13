@@ -67,9 +67,33 @@ function listenForAuthRequest(): Promise<{
   port: number;
   close: () => Promise<void>;
   bodies: Record<string, unknown>[];
+  checkBodies: Record<string, unknown>[];
 }> {
   const bodies: Record<string, unknown>[] = [];
+  const checkBodies: Record<string, unknown>[] = [];
   const server = http.createServer((req, res) => {
+    if (req.method === "POST" && req.url === "/api/auth/check") {
+      let raw = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        raw += chunk;
+      });
+      req.on("end", () => {
+        checkBodies.push(JSON.parse(raw));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          check: {
+            status: "clean",
+            repo: localRepoName(),
+            base_branch: "main",
+            head_branch: "feature/demo",
+            checked_requests: 0,
+            conflicts: [],
+          }
+        }));
+      });
+      return;
+    }
     if (req.method === "POST" && req.url === "/api/auth/request") {
       let raw = "";
       req.setEncoding("utf8");
@@ -95,6 +119,7 @@ function listenForAuthRequest(): Promise<{
       resolve({
         port: address.port,
         bodies,
+        checkBodies,
         close: () => new Promise<void>((done, reject) => {
           server.close((error) => (error ? reject(error) : done()));
         }),
@@ -181,7 +206,8 @@ describe("auth request repo context validation", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).not.toContain("does not match target repo");
-    expect(result.stderr).toContain("Mandible unreachable");
+    expect(result.stderr).toContain("could not reach Mandible daemon");
+    expect(result.stderr).toContain("Mandible merge preflight failed");
   });
 });
 
@@ -204,12 +230,56 @@ describe("auth request staged close action sugar", () => {
       });
 
       expect(result.status).toBe(0);
+      expect(server.checkBodies).toHaveLength(1);
+      expect(server.checkBodies[0]).toMatchObject({
+        repo: localRepoName(),
+        base_branch: "main",
+        head_branch: "feature/demo",
+      });
+      expect(fs.realpathSync(String(server.checkBodies[0].cwd))).toBe(fs.realpathSync(tempDir));
       expect(server.bodies).toHaveLength(1);
       expect(server.bodies[0].issue_closures).toEqual(["done456"]);
       expect(server.bodies[0].issues).toEqual(["done456"]);
       expect(server.bodies[0].actions).toEqual([
         { kind: "issue_close", target_issue_ref: "done456", payload: {} },
       ]);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe("auth request Mandible merge preflight", () => {
+  it("ignores dotfiles pre-auth-check and uses the Mandible auth check route", async () => {
+    const dotfilesBin = path.join(homeDir, ".dotfiles", "bin");
+    fs.mkdirSync(dotfilesBin, { recursive: true });
+    fs.writeFileSync(path.join(dotfilesBin, "pre-auth-check"), [
+      "#!/usr/bin/env bash",
+      "echo dotfiles pre-auth-check should not run >&2",
+      "exit 99",
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync([
+        "auth",
+        "request",
+        "feature/demo",
+        "--title",
+        "Merge feature/demo",
+        "--issue",
+        "148e602",
+        "--no-watch",
+      ], tempDir, {
+        MANDIBLE_PORT: String(server.port),
+        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain("dotfiles pre-auth-check should not run");
+      expect(server.checkBodies).toHaveLength(1);
+      expect(server.bodies).toHaveLength(1);
     } finally {
       await server.close();
     }

@@ -167,9 +167,10 @@ current pairwise-independent auth queue.
 mandible auth check [--branch <branch>] [--repo <name>] [--target <branch>] [--cwd <path>] [--json]
 ```
 
-The check uses Git's merge-tree machinery and does not write to the worktree.
-It reports target conflicts first, then the queued request that makes the
-candidate conflict in queue order.
+The check is read-only: it verifies that no tracked worktree changes or
+in-progress merge state would be disturbed, then uses Git's merge-tree
+machinery without writing to the worktree. It reports target conflicts first,
+then the queued request that makes the candidate conflict in queue order.
 
 ### mandible auth request
 
@@ -220,16 +221,19 @@ The script auto-detects:
 1. Validates CWD is on the protected branch
 2. Validates the source branch exists
 3. Verifies the branch has unique commits
-4. Checks that the protected branch worktree is clean (auto-fixes if possible)
-5. Runs `pre-auth-check` for dry-run merge conflict detection
+4. Applies the explicit protected-root dirty policy without discarding files
+5. Runs Mandible's shared auth check for tracked dirtiness and dry-run conflict detection
 
 **Resolution watching:**
 
 Unless `--no-watch` is specified, connects to the SSE stream at `/api/events?topic=auth:` and waits for `auth:resolved` events matching the request ID. Falls back to a single poll on connection loss.
 
-**Fallback on Mandible unreachable:**
+**Fallback on submission interruption:**
 
-If the daemon is not running, spawns `mandible auth merge` in a Zellij pane (preferred) or tmux pane.
+`mandible auth request` requires the daemon-owned preflight. If the daemon
+becomes unreachable after preflight but before request submission completes,
+the CLI can still print or spawn the equivalent `mandible auth merge` command
+for manual recovery.
 
 ### mandible auth merge
 
@@ -252,7 +256,7 @@ mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
 
 1. Strips agent git config overrides (merges use user's YubiKey, not agent key).
 2. Detects and resumes in-progress merges (`MERGE_HEAD`).
-3. Runs pre-auth-check for clean working tree and conflict detection.
+3. Runs Mandible's shared auth check for tracked dirtiness and conflict detection.
 4. Shows a summary box with diff stats per source branch.
 5. Prompts for confirmation (reads from `/dev/tty`).
 6. Performs `git merge --no-ff --no-edit -S` (signed merge).
@@ -261,6 +265,11 @@ mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
 9. Auto-closes issues referenced via explicit `Closes-Mandible-Issue:` trailers in merged commits.
 10. Closes issues declared in the auth request's `issue_closures` field.
 11. Cleans up merged branch worktrees (via `dwt`).
+
+Mandible's core merge preflight does not call user dotfiles scripts. Local
+conventions such as worktree symlink hygiene belong in explicit policy hooks
+or repo-local workflow configuration, separate from the merge-cleanliness
+predicate.
 
 ### mandible search
 
