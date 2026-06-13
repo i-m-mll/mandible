@@ -51,6 +51,9 @@ interface ActivateInput {
 interface ReleaseInput {
   issue_id: string;
   repo_id: string;
+  provider?: string | null;
+  provider_session_id?: string | null;
+  ambient_identity?: unknown;
 }
 
 interface PatchInput {
@@ -274,11 +277,20 @@ export function registerWorkUnitRoutes(
       return;
     }
 
+    const lookup = buildWorkUnitLookup(db, body.issue_id, body.repo_id);
+    const ambientIdentity = workUnitAmbientIdentity(req, body);
+    const updates = ["state = 'open'", "assigned_session_id = NULL"];
+    const params: unknown[] = [];
+    if (ambientIdentity) {
+      updates.push("provider = ?", "provider_session_id = ?");
+      params.push(ambientIdentity.provider, ambientIdentity.provider_session_id);
+    }
     const result = db
       .prepare(
-        "UPDATE work_units SET state = 'open', assigned_session_id = NULL WHERE issue_id = ? AND repo_id = ? AND state IN ('open', 'committed')"
+        `UPDATE work_units SET ${updates.join(", ")}
+         WHERE ${lookup.identity} AND state IN ('open', 'committed')`
       )
-      .run(body.issue_id, body.repo_id);
+      .run(...params, ...lookup.params);
 
     if (result.changes === 0) {
       sendJson(res, 404, { error: "No active work unit found for this issue and repo" });

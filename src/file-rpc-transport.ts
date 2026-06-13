@@ -227,7 +227,10 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/claim") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/activate") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/work-units/release") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/work-units") return true;
   if (normalizedMethod === "PATCH" && /^\/api\/work-units\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/sessions\/[^/]+\/issues$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/work/repos") return true;
   return false;
 }

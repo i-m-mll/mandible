@@ -7,6 +7,10 @@
       "description": "Print deterministic issue context for handoff and planning."
     },
     {
+      "name": "mandible issue title <id> [--json] [--graceful]",
+      "description": "Resolve an issue title for caller-supplied commit-message defaults. --graceful makes daemon-unreachable failures non-fatal."
+    },
+    {
       "name": "mandible umbrella status <id> [--deep] [--json]",
       "description": "Print one deterministic coordinator fact packet: umbrella body/revision/head, latest delegation manifest, child summaries, parent-role holder state, and repo auth queue summary. --deep includes child bodies, latest closeouts/comments, branch/auth links, and issue state for parent resumption."
     },
@@ -87,6 +91,46 @@
       "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure."
     },
     {
+      "name": "mandible work-unit claim --issue <id> --repo <repo> [--branch <branch>] [--parent-branch <branch>] [--kind solo|partition|integration] [--session <id>] [--graceful]",
+      "description": "Create or reuse a branch-based work unit using explicit mechanism inputs only. --graceful makes daemon-unreachable failures non-fatal."
+    },
+    {
+      "name": "mandible work-unit activate --issue <id> --repo <repo> [--branch <branch>] [--session <id>] [--graceful]",
+      "description": "Mark the matching work unit committed, or auto-claim it in committed state, using explicit mechanism inputs only."
+    },
+    {
+      "name": "mandible work-unit find --repo <repo> (--issue <id> | --branch <branch>) [--state <state>] [--graceful]",
+      "description": "Find work units by repo plus issue or branch, with optional state filtering."
+    },
+    {
+      "name": "mandible work-unit resolve --id <work-unit-id> [--auth-request-id <id>] [--graceful]",
+      "description": "Patch a work unit to resolved after a successful merge, optionally linking the auth request."
+    },
+    {
+      "name": "mandible work-unit release --issue <id> --repo <repo> [--graceful]",
+      "description": "Release active work units for an abandoned issue/repo lane without encoding worktree layout policy."
+    },
+    {
+      "name": "mandible issue-file path [cwd]",
+      "description": "Resolve the git-root .issue helper file path for a caller-supplied or current working directory."
+    },
+    {
+      "name": "mandible issue-file read [cwd]",
+      "description": "Read newline-delimited issue refs from the git-root .issue helper file. Blank lines and # comments are ignored."
+    },
+    {
+      "name": "mandible issue-file write [--cwd <path>] <issue>...",
+      "description": "Write newline-delimited issue refs to the git-root .issue helper file for policy wrapper auto-discovery."
+    },
+    {
+      "name": "mandible commit trailer [issue...]",
+      "description": "Render Mandible-Issue trailers for explicit issues, or from the nearest worktree .issue file when no issues are passed."
+    },
+    {
+      "name": "mandible session link-issue <session-id> --issue <id> --repo <repo> [--repo-name <name>] [--graceful]",
+      "description": "Link an existing Mandible session to an issue/repo pair through the supported client surface."
+    },
+    {
       "name": "mandible instructions install [--target <file>] [--worktree <path>] [--force]",
       "description": "Refresh configured instruction targets, or update one explicit target. Configured targets support managed-block and standalone modes; tracked protected-branch writes are refused unless --force is explicit."
     },
@@ -117,7 +161,8 @@
     "Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.",
     "Mutating work-unit requests may carry allowlisted ambient provider identity as `{provider, provider_session_id}`; Mandible persists only those fields on work units and never stores the caller environment.",
     "Successful auth merges archive reliably linked terminal Codex worker threads for closed child issues. Resolved work units with `provider=codex` and a provider session id can archive directly without `console_sessions`; legacy console-session links still work. Live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.",
-    "Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate."
+    "Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate.",
+    "The sourceable policy-free ledger mechanism client is `cli/ledger-client.sh`; it exposes `mandible_work_unit_claim`, `mandible_work_unit_activate`, `mandible_work_unit_find`, `mandible_work_unit_resolve`, `mandible_work_unit_release`, `mandible_issue_title`, `mandible_session_link_issue`, `mandible_issue_file_path`, `mandible_issue_file_read`, `mandible_issue_file_write`, and `mandible_commit_trailers`."
   ],
   "transports": [
     "Default CLI transport is loopback HTTP via `MANDIBLE_BASE=http://127.0.0.1:<port>`.",
