@@ -20,7 +20,7 @@ mandible auth request feature/add-dark-mode \
   --no-watch
 ```
 
-The `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close.
+The `mandible auth request` CLI automatically detects the protected branch and repository, computes diff stats, extracts issue IDs from commit trailers, verifies all commits have issue references, runs Mandible's read-only merge preflight, checks for duplicate requests, and submits everything to the Mandible API. Use `--issue` for reference-only issue context and `--closes-issue` only for issues the merge should close.
 
 The `--no-watch` flag is standard — it means the CLI exits after submission rather than watching for the result via SSE. Auth results are delivered asynchronously via the inbox.
 
@@ -63,6 +63,12 @@ Supported policies:
 When `stash` or `branch-off` is used, the CLI prints the stash/branch/worktree
 details and appends the same JSON summary to the auth request spec so the
 calling agent and dashboard can report what happened.
+
+After the explicit dirty policy is resolved, request submission and approved
+merge execution both use the same Mandible auth check for tracked dirty state
+and merge-tree conflict prediction. User-specific worktree hygiene, such as
+symlink repair, should be configured as an explicit policy hook rather than as
+part of the core merge predicate.
 
 ### What Gets Submitted
 

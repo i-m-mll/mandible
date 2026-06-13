@@ -96,7 +96,7 @@ api_capture() {
   curl -s --max-time 15 -o "$output_file" -w "%{http_code}" \
     -X "$method" "$(api_base)$request_path" \
     -H 'Content-Type: application/json' \
-    "${ambient_headers[@]}" \
+    "${ambient_headers[@]+"${ambient_headers[@]}"}" \
     -d "$data" 2>/dev/null || printf ''
 }
 
@@ -133,7 +133,7 @@ api_request() {
     done < <(api_curl_ambient_headers "$method")
     curl -sf --max-time 15 -X "$method" "$(api_base)$request_path" \
       -H 'Content-Type: application/json' \
-      "${ambient_headers[@]}" \
+      "${ambient_headers[@]+"${ambient_headers[@]}"}" \
       -d "$data"
   fi
 }

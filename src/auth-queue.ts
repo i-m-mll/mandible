@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
@@ -71,12 +73,12 @@ type MergeTreeResult =
   | { status: "error"; files: string[]; message: string };
 
 export class AuthQueueError extends Error {
-  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict";
+  readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed";
   readonly status?: AuthRequestStatus;
   readonly details?: unknown;
 
   constructor(
-    code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict",
+    code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed",
     message: string,
     status?: AuthRequestStatus,
     details?: unknown
@@ -348,6 +350,14 @@ export class AuthQueue {
         mergeCheck
       );
     }
+    if (mergeCheck.status === "error") {
+      throw new AuthQueueError(
+        "merge_check_failed",
+        `Auth request merge preflight failed: ${mergeCheck.reason ?? "unknown error"}`,
+        undefined,
+        mergeCheck
+      );
+    }
 
     const now = this.now();
     const request: AuthRequest = {
@@ -582,6 +592,19 @@ export class AuthQueue {
         checked_requests: 0,
         conflicts: [],
         reason: "base_branch, head_branch, and cwd are required for merge checks"
+      };
+    }
+
+    const worktreeReady = this.checkMergeWorktreeReady(cwd);
+    if (worktreeReady.status === "error") {
+      return {
+        status: "error",
+        repo,
+        base_branch: baseBranch,
+        head_branch: headBranch,
+        checked_requests: 0,
+        conflicts: [],
+        reason: worktreeReady.message
       };
     }
 
@@ -1528,6 +1551,44 @@ export class AuthQueue {
         status: "conflict",
         files: conflictFilesFromMergeTreeOutput(output, cwd, base, head),
         message: output.trim() || "git merge-tree reported a conflict"
+      };
+    }
+  }
+
+  private checkMergeWorktreeReady(cwd: string): { status: "clean" } | { status: "error"; message: string } {
+    try {
+      const gitDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], {
+        cwd,
+        encoding: "utf8",
+      }).trim();
+      if (gitDir && existsSync(join(gitDir, "MERGE_HEAD"))) {
+        return {
+          status: "error",
+          message: "merge already in progress; resume or abort it before running merge preflight"
+        };
+      }
+
+      const status = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+      }).replace(/\r?\n$/, "");
+      if (!status.trim()) {
+        return { status: "clean" };
+      }
+      const files = status
+        .split(/\r?\n/)
+        .filter((line) => line.trim())
+        .slice(0, 20)
+        .map((line) => line.length > 3 ? line.slice(3) : line.trim());
+      return {
+        status: "error",
+        message: `tracked worktree changes are present: ${files.join(", ")}`
+      };
+    } catch (error) {
+      return {
+        status: "error",
+        message: errorMessage(error) || "could not inspect worktree status"
       };
     }
   }
