@@ -89,10 +89,6 @@ D3 force-directed graph connecting session, issue, and auth-request nodes with c
 
 Collects continuations (handoff notes from ended sessions), auth results (merge outcomes with linked issues), and open issues. Items are acknowledged individually or in bulk.
 
-### Switchboard
-
-Manages symlink-based feature flags between source and target directories with setup/teardown hooks. Used for things like publishing draft content by toggling symlinks.
-
 ### Zone 2 Self-Modification Infrastructure
 
 Mandible's runtime is split into two zones:
@@ -173,9 +169,9 @@ Channel-connected sessions get tool-mediated access to inbox, issues, work units
 |  |  Router -> Route modules:                   |  |
 |  |    auth, auth-hooks, sessions, presets,     |  |
 |  |    console, conversations, chats, inbox,    |  |
-|  |    issues, work-units, work, graph,         |  |
-|  |    switchboard, review, runtime, settings,  |  |
-|  |    system, backup, webhooks                 |  |
+|  |    issues, work-units, work, graph, review, |  |
+|  |    runtime, settings, system, backup,       |  |
+|  |    webhooks                                 |  |
 |  |                                             |  |
 |  |  Core services:                             |  |
 |  |    SSE Manager     - real-time broadcast    |  |

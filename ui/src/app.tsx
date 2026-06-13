@@ -18,15 +18,6 @@ import {
   getRepoBranches,
   getSessions,
   getSettings,
-  getSwitchboardItems,
-  getSwitchboardPairings,
-  getSwitchboardTemplates,
-  createSwitchboardTemplate,
-  addSwitchboardPairing,
-  deleteSwitchboardPairing,
-  updateSwitchboardPairing,
-  toggleSwitchboardItem,
-  syncSwitchboard,
   getWorkRepos,
   triggerWorkScan,
   rejectAuthRequest,
@@ -55,8 +46,6 @@ import { ReviewView } from './views/review';
 import type { SessionRecord } from './views/sessions';
 import { ConversationsView } from './views/conversations';
 import { SettingsView } from './views/settings';
-import { SwitchboardView } from './views/switchboard';
-import type { HookTemplate, PairingHooks, SwitchboardItem, SwitchboardPairing } from './views/switchboard';
 import { WorkOverviewView } from './views/work';
 import type { WorkBranch, WorkRepo } from './views/work';
 import { LogsView } from './views/logs';
@@ -76,7 +65,6 @@ import {
   PresetsIcon,
   GraphIcon,
   TimelineIcon,
-  SwitchboardIcon,
   LogsIcon,
   ProjectsIcon,
   DiffIcon,
@@ -364,22 +352,6 @@ function App(): JSX.Element {
       })
       .catch(() => undefined);
 
-    getSwitchboardPairings<SwitchboardPairing>()
-      .then((pairings) => {
-        if (active) {
-          dispatch({ type: 'setSwitchboardPairings', pairings });
-        }
-      })
-      .catch(() => undefined);
-
-    getSwitchboardTemplates()
-      .then(({ templates }) => {
-        if (active) {
-          dispatch({ type: 'setSwitchboardTemplates', templates });
-        }
-      })
-      .catch(() => undefined);
-
     dispatch({ type: 'setInboxLoading', loading: true });
     getInboxGlobal()
       .then((data) => {
@@ -621,8 +593,6 @@ function App(): JSX.Element {
     state.inboxData,
     state.consoleSessions,
     state.settings,
-    state.switchboardPairings,
-    state.switchboardTemplates,
   ]);
 
   const badges = useMemo(() => selectBadgeCounts(state), [state]);
@@ -741,85 +711,6 @@ function App(): JSX.Element {
   const handleSettingsSave = async (key: string, value: string) => {
     await updateSetting(key, value);
     dispatch({ type: 'updateSetting', key, value });
-  };
-
-  const handleSelectPairing = async (name: string | null) => {
-    if (name === null) {
-      dispatch({ type: 'setSwitchboardSelected', name: null });
-      dispatch({ type: 'setSwitchboardItems', items: [] });
-      dispatch({ type: 'setSwitchboardConsistencyErrors', errors: [] });
-      return;
-    }
-    dispatch({ type: 'setSwitchboardSelected', name });
-    dispatch({ type: 'setSwitchboardItemsLoading', loading: true });
-    try {
-      const result = await getSwitchboardItems<SwitchboardItem>(name);
-      dispatch({ type: 'setSwitchboardItems', items: result.items });
-      dispatch({ type: 'setSwitchboardConsistencyErrors', errors: result.consistencyErrors ?? [] });
-    } catch {
-      dispatch({ type: 'setSwitchboardItems', items: [] });
-      dispatch({ type: 'setSwitchboardConsistencyErrors', errors: [] });
-    } finally {
-      dispatch({ type: 'setSwitchboardItemsLoading', loading: false });
-    }
-  };
-
-  const handleAddPairing = async (name: string, source: string, target: string, hooks?: PairingHooks) => {
-    await addSwitchboardPairing(name, source, target, hooks);
-    const pairings = await getSwitchboardPairings<SwitchboardPairing>();
-    dispatch({ type: 'setSwitchboardPairings', pairings });
-  };
-
-  const handleDeletePairing = async (name: string) => {
-    await deleteSwitchboardPairing(name);
-    dispatch({ type: 'removeSwitchboardPairing', name });
-  };
-
-  const handleUpdatePairing = async (name: string, source: string, target: string, hooks?: PairingHooks) => {
-    await updateSwitchboardPairing(name, source, target, hooks);
-    const pairings = await getSwitchboardPairings<SwitchboardPairing>();
-    dispatch({ type: 'setSwitchboardPairings', pairings });
-  };
-
-  const handleToggleItem = async (pairingName: string, item: string) => {
-    const result = await toggleSwitchboardItem(pairingName, item);
-    // Re-fetch items to get accurate state after toggle
-    try {
-      const fetched = await getSwitchboardItems<SwitchboardItem>(pairingName);
-      dispatch({ type: 'setSwitchboardItems', items: fetched.items });
-      dispatch({ type: 'setSwitchboardConsistencyErrors', errors: fetched.consistencyErrors ?? [] });
-    } catch {
-      // Fallback: update the single item optimistically
-      const newState = result.state as SwitchboardItem['state'];
-      const existing = state.switchboardItems.find((i) => i.name === item);
-      if (existing) {
-        dispatch({ type: 'updateSwitchboardItem', item: { ...existing, state: newState } });
-      }
-    }
-  };
-
-  const handleSyncPairing = async (pairingName: string) => {
-    await syncSwitchboard(pairingName);
-    // Re-fetch items after sync
-    try {
-      const result = await getSwitchboardItems<SwitchboardItem>(pairingName);
-      dispatch({ type: 'setSwitchboardItems', items: result.items });
-      dispatch({ type: 'setSwitchboardConsistencyErrors', errors: result.consistencyErrors ?? [] });
-    } catch {
-      // ignore
-    }
-  };
-
-  const handleSaveTemplate = async (name: string, hookSetup: string, hookTeardown: string) => {
-    const template = await createSwitchboardTemplate(name, {
-      hook_setup: hookSetup || undefined,
-      hook_teardown: hookTeardown || undefined,
-    });
-    dispatch({ type: 'upsertSwitchboardTemplate', template: template as HookTemplate });
-    // Refresh the full list to stay in sync
-    getSwitchboardTemplates()
-      .then(({ templates }) => dispatch({ type: 'setSwitchboardTemplates', templates }))
-      .catch(() => undefined);
   };
 
   const handleAckContinuation = async (sessionId: string) => {
@@ -1044,13 +935,6 @@ function App(): JSX.Element {
       icon: PresetsIcon,
     },
     {
-      tab: 'switchboard',
-      href: '#/switchboard',
-      label: 'Switchboard',
-      title: 'Switchboard',
-      icon: SwitchboardIcon,
-    },
-    {
       tab: 'logs',
       href: '#/logs',
       label: 'Logs',
@@ -1245,23 +1129,6 @@ function App(): JSX.Element {
             repos={state.workRepos}
             branchesByRepo={state.workBranches}
             onRescan={handleRescan}
-          />
-        )}
-        {route.tab === 'switchboard' && (
-          <SwitchboardView
-            pairings={state.switchboardPairings}
-            selectedPairing={state.switchboardSelected}
-            items={state.switchboardItems}
-            itemsLoading={state.switchboardItemsLoading}
-            consistencyErrors={state.switchboardConsistencyErrors}
-            templates={state.switchboardTemplates}
-            onSelectPairing={handleSelectPairing}
-            onAddPairing={handleAddPairing}
-            onUpdatePairing={handleUpdatePairing}
-            onDeletePairing={handleDeletePairing}
-            onToggleItem={handleToggleItem}
-            onSync={handleSyncPairing}
-            onSaveTemplate={handleSaveTemplate}
           />
         )}
         {route.tab === 'issues' && (

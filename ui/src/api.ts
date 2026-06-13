@@ -14,7 +14,6 @@ import type {
   Conversation as ContractConversation,
   ConversationChild as ContractConversationChild,
   ConversationSource as ContractConversationSource,
-  HookTemplate as ContractHookTemplate,
   ReviewSpecResponse,
   Role as ContractRole,
   StoredConversationBlock as ContractConversationBlock,
@@ -504,110 +503,6 @@ export async function pushRepo(repoId: string, scope: "current" | "all_ahead"): 
 export async function getPushStatus(): Promise<unknown> {
   const response = await apiGet("/api/work/push/status");
   return parseMaybeJson(response);
-}
-
-// ── Switchboard API ──
-
-export async function getSwitchboardPairings<T>(): Promise<T[]> {
-  const response = await apiGet('/api/switchboard/pairings');
-  const payload = (await parseMaybeJson(response)) as { pairings?: T[] } | T[];
-  if (Array.isArray(payload)) return payload;
-  return (payload as { pairings?: T[] }).pairings ?? [];
-}
-
-export async function addSwitchboardPairing(
-  name: string,
-  source: string,
-  target: string,
-  hooks?: { hook_setup?: string; hook_teardown?: string },
-): Promise<void> {
-  const response = await fetch('/api/switchboard/pairings', {
-    method: 'POST',
-    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, source, target, ...hooks }),
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error((payload as { error?: string }).error ?? `POST /api/switchboard/pairings failed: ${response.status}`);
-  }
-}
-
-export async function deleteSwitchboardPairing(name: string): Promise<void> {
-  await apiDelete(`/api/switchboard/pairings/${encodeURIComponent(name)}`);
-}
-
-export async function updateSwitchboardPairing(
-  name: string,
-  source: string,
-  target: string,
-  hooks?: { hook_setup?: string; hook_teardown?: string },
-): Promise<void> {
-  const response = await fetch(`/api/switchboard/pairings/${encodeURIComponent(name)}`, {
-    method: 'PATCH',
-    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source, target, ...hooks }),
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error((payload as { error?: string }).error ?? `PATCH /api/switchboard/pairings/${name} failed: ${response.status}`);
-  }
-}
-
-export async function getSwitchboardItems<T>(name: string): Promise<{ pairing: unknown; items: T[]; consistencyErrors?: Array<{ item: string; error: string }> }> {
-  const response = await apiGet(`/api/switchboard/pairings/${encodeURIComponent(name)}/items`);
-  return (await parseMaybeJson(response)) as { pairing: unknown; items: T[]; consistencyErrors?: Array<{ item: string; error: string }> };
-}
-
-export async function toggleSwitchboardItem(pairingName: string, item: string): Promise<{ state: string }> {
-  const response = await fetch(`/api/switchboard/pairings/${encodeURIComponent(pairingName)}/toggle`, {
-    method: 'POST',
-    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ item }),
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error((payload as { error?: string }).error ?? `toggle failed: ${response.status}`);
-  }
-  return (await response.json()) as { state: string };
-}
-
-export async function syncSwitchboard(pairingName: string): Promise<{ errors: string[] }> {
-  const response = await apiPost(`/api/switchboard/pairings/${encodeURIComponent(pairingName)}/sync`);
-  return (await parseMaybeJson(response)) as { errors: string[] };
-}
-
-export type HookTemplate = ContractHookTemplate;
-
-export async function getSwitchboardTemplates(): Promise<{ templates: HookTemplate[] }> {
-  const response = await apiGet('/api/switchboard/templates');
-  return (await parseMaybeJson(response)) as { templates: HookTemplate[] };
-}
-
-export async function createSwitchboardTemplate(
-  name: string,
-  hooks: { hook_setup?: string; hook_teardown?: string },
-): Promise<HookTemplate> {
-  const response = await fetch('/api/switchboard/templates', {
-    method: 'POST',
-    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, ...hooks }),
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error((payload as { error?: string }).error ?? `POST /api/switchboard/templates failed: ${response.status}`);
-  }
-  return (await response.json()) as HookTemplate;
-}
-
-export async function deleteSwitchboardTemplate(id: string): Promise<void> {
-  const response = await fetch(`/api/switchboard/templates/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-    headers: DEFAULT_HEADERS,
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error((payload as { error?: string }).error ?? `DELETE /api/switchboard/templates/${id} failed: ${response.status}`);
-  }
 }
 
 // ── Inbox API ──

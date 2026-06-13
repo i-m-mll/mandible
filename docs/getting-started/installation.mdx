@@ -80,7 +80,6 @@ On first start, the daemon creates a SQLite database at `~/.cache/mandible/mandi
 - Work unit state
 - Console session configuration
 - Settings and preferences
-- Switchboard pairings
 - Push history
 
 The database uses WAL (Write-Ahead Logging) mode for fast concurrent reads from the dashboard while the daemon writes. Schema migrations are applied automatically on startup --- you never need to run them manually.
