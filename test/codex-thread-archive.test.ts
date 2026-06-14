@@ -1,8 +1,22 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
-import { listCompletedWorkerThreadArchiveCandidates } from "../src/codex-thread-archive.js";
+import {
+  CodexCliThreadArchiver,
+  listCompletedWorkerThreadArchiveCandidates,
+  safeArchiveCodexThread,
+} from "../src/codex-thread-archive.js";
 import type { AuthRequest } from "../src/types.js";
+
+interface ExecCall {
+  file: string;
+  args: string[];
+  options: {
+    input?: string | Buffer;
+    stdio?: unknown;
+    timeout?: number;
+  };
+}
 
 function requestFor(issueRef: string): AuthRequest {
   return {
@@ -38,6 +52,86 @@ function createWorkUnitsOnlyDb(): InstanceType<typeof Database> {
   `);
   return db;
 }
+
+function appServerFrame(message: Record<string, unknown>): Buffer {
+  const body = JSON.stringify(message);
+  return Buffer.from(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`, "utf8");
+}
+
+function createMockExec(response: string | Buffer = appServerFrame({ id: 1, result: {} })) {
+  const calls: ExecCall[] = [];
+  const exec = ((file: string, args: string[], options: ExecCall["options"]) => {
+    calls.push({ file, args: [...args], options });
+    return response;
+  }) as unknown as typeof import("node:child_process").execFileSync;
+  return { exec, calls };
+}
+
+function decodeAppServerInput(input: string | Buffer | undefined): Record<string, unknown> {
+  expect(input).toBeDefined();
+  const raw = Buffer.isBuffer(input) ? input.toString("utf8") : String(input);
+  const match = raw.match(/^Content-Length: (\d+)\r\n\r\n([\s\S]*)$/);
+  expect(match).not.toBeNull();
+  const [, contentLength, body] = match as RegExpMatchArray;
+  expect(Buffer.byteLength(body, "utf8")).toBe(Number(contentLength));
+  return JSON.parse(body) as Record<string, unknown>;
+}
+
+describe("Codex CLI thread archiver", () => {
+  it("archives through the Codex app-server proxy", () => {
+    const { exec, calls } = createMockExec();
+    const archiver = new CodexCliThreadArchiver(exec);
+
+    archiver.archive("thread-123");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].file).toBe("codex");
+    expect(calls[0].args).toEqual(["app-server", "proxy"]);
+    expect(calls[0].args).not.toEqual(["archive", "thread-123"]);
+    expect(calls[0].options.stdio).toBe("pipe");
+    expect(calls[0].options.timeout).toBe(15_000);
+    expect(decodeAppServerInput(calls[0].options.input)).toEqual({
+      id: 1,
+      method: "thread/archive",
+      params: { threadId: "thread-123" },
+    });
+  });
+
+  it("unarchives through the Codex app-server proxy", () => {
+    const { exec, calls } = createMockExec();
+    const archiver = new CodexCliThreadArchiver(exec);
+
+    archiver.unarchive("thread-456");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].file).toBe("codex");
+    expect(calls[0].args).toEqual(["app-server", "proxy"]);
+    expect(calls[0].args).not.toEqual(["unarchive", "thread-456"]);
+    expect(decodeAppServerInput(calls[0].options.input)).toEqual({
+      id: 1,
+      method: "thread/unarchive",
+      params: { threadId: "thread-456" },
+    });
+  });
+
+  it("keeps archive failures behind the safe wrapper", () => {
+    const { exec } = createMockExec(appServerFrame({
+      id: 1,
+      error: { code: 1, message: "missing app-server socket" },
+    }));
+    const logs: string[] = [];
+
+    expect(safeArchiveCodexThread(
+      new CodexCliThreadArchiver(exec),
+      "thread-789",
+      (message) => logs.push(message),
+    )).toBe(false);
+
+    expect(logs).toEqual([
+      "[codex-thread-archive] failed to archive thread-789: codex app-server thread/archive failed: missing app-server socket",
+    ]);
+  });
+});
 
 describe("codex thread archive candidates", () => {
   it("uses resolved Codex work-unit provider identity without console_sessions", () => {
