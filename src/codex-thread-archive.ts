@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import type { Db } from "./db.js";
 import type { AuthRequest } from "./types.js";
 
+const CODEX_APP_SERVER_REQUEST_ID = 1;
+
 export interface CodexThreadArchiver {
   archive(threadId: string): void;
   unarchive(threadId: string): void;
@@ -15,21 +17,31 @@ export interface WorkerThreadArchiveCandidate {
   work_unit_id: string | null;
 }
 
+type CodexProxyRunner = typeof execFileSync;
+type CodexThreadArchiveMethod = "thread/archive" | "thread/unarchive";
+
 export class CodexCliThreadArchiver implements CodexThreadArchiver {
+  constructor(private readonly execFile: CodexProxyRunner = execFileSync) {}
+
   archive(threadId: string): void {
-    this.run("archive", threadId);
+    this.run("thread/archive", threadId);
   }
 
   unarchive(threadId: string): void {
-    this.run("unarchive", threadId);
+    this.run("thread/unarchive", threadId);
   }
 
-  private run(action: "archive" | "unarchive", threadId: string): void {
-    execFileSync("codex", [action, threadId], {
-      encoding: "utf8",
+  private run(method: CodexThreadArchiveMethod, threadId: string): void {
+    const response = this.execFile("codex", ["app-server", "proxy"], {
+      input: encodeAppServerMessage({
+        id: CODEX_APP_SERVER_REQUEST_ID,
+        method,
+        params: { threadId },
+      }),
       stdio: "pipe",
       timeout: 15_000,
     });
+    assertSuccessfulAppServerResponse(method, response);
   }
 }
 
@@ -453,4 +465,84 @@ function tableHasColumn(db: Db, table: string, column: string): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function encodeAppServerMessage(message: Record<string, unknown>): string {
+  const body = JSON.stringify(message);
+  return `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`;
+}
+
+function assertSuccessfulAppServerResponse(
+  method: CodexThreadArchiveMethod,
+  output: string | Buffer,
+): void {
+  const messages = decodeAppServerMessages(output);
+  if (messages.length === 0) {
+    throw new Error(`codex app-server ${method} returned no response`);
+  }
+
+  const response = messages.find((message) =>
+    isRecord(message) && message.id === CODEX_APP_SERVER_REQUEST_ID
+  );
+  if (!response) {
+    throw new Error(`codex app-server ${method} returned no matching response`);
+  }
+
+  if (isRecord(response) && isRecord(response.error)) {
+    const message = typeof response.error.message === "string"
+      ? response.error.message
+      : JSON.stringify(response.error);
+    throw new Error(`codex app-server ${method} failed: ${message}`);
+  }
+}
+
+function decodeAppServerMessages(output: string | Buffer): unknown[] {
+  const bytes = Buffer.isBuffer(output) ? output : Buffer.from(output, "utf8");
+  const messages: unknown[] = [];
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    while (offset < bytes.length && isAsciiWhitespace(bytes[offset])) {
+      offset += 1;
+    }
+    if (offset >= bytes.length) break;
+
+    const headerEnd = bytes.indexOf("\r\n\r\n", offset, "utf8");
+    if (headerEnd === -1) {
+      return decodeNewlineDelimitedJson(bytes.subarray(offset).toString("utf8"));
+    }
+
+    const headers = bytes.subarray(offset, headerEnd).toString("utf8").split("\r\n");
+    const contentLengthHeader = headers.find((header) => /^content-length:/i.test(header));
+    const match = contentLengthHeader?.match(/^content-length:\s*(\d+)\s*$/i);
+    if (!match) {
+      throw new Error("codex app-server proxy response is missing Content-Length");
+    }
+
+    const bodyStart = headerEnd + 4;
+    const bodyLength = Number(match[1]);
+    const bodyEnd = bodyStart + bodyLength;
+    if (bodyEnd > bytes.length) {
+      throw new Error("codex app-server proxy response ended before Content-Length bytes");
+    }
+
+    messages.push(JSON.parse(bytes.subarray(bodyStart, bodyEnd).toString("utf8")));
+    offset = bodyEnd;
+  }
+
+  return messages;
+}
+
+function decodeNewlineDelimitedJson(output: string): unknown[] {
+  const trimmed = output.trim();
+  if (!trimmed) return [];
+  return trimmed.split(/\r?\n/).map((line) => JSON.parse(line));
+}
+
+function isAsciiWhitespace(byte: number | undefined): boolean {
+  return byte === 0x09 || byte === 0x0a || byte === 0x0d || byte === 0x20;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
