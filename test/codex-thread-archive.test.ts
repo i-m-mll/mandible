@@ -13,6 +13,15 @@ function requestFor(issueRef: string): AuthRequest {
   } as AuthRequest;
 }
 
+function requestWithoutClosures(): AuthRequest {
+  return {
+    id: "auth-1",
+    type: "merge",
+    issues: [],
+    issue_closures: [],
+  } as AuthRequest;
+}
+
 function createWorkUnitsOnlyDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   db.exec(`
@@ -23,7 +32,8 @@ function createWorkUnitsOnlyDb(): InstanceType<typeof Database> {
       state TEXT NOT NULL,
       assigned_session_id TEXT,
       provider TEXT,
-      provider_session_id TEXT
+      provider_session_id TEXT,
+      auth_request_id TEXT
     )
   `);
   return db;
@@ -45,6 +55,28 @@ describe("codex thread archive candidates", () => {
           mandible_session_id: null,
           issue_id: "done123",
           work_unit_id: "wu-direct",
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("uses resolved request-linked Codex work units even when issues stay open", () => {
+    const db = createWorkUnitsOnlyDb();
+    try {
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id, auth_request_id)
+         VALUES ('wu-open', 'open123', 'resolved', 'codex', 'thread-open', 'auth-1')`,
+      ).run();
+
+      expect(listCompletedWorkerThreadArchiveCandidates(db, requestWithoutClosures())).toEqual([
+        {
+          provider_session_id: "thread-open",
+          console_session_id: null,
+          mandible_session_id: null,
+          issue_id: "open123",
+          work_unit_id: "wu-open",
         },
       ]);
     } finally {

@@ -2070,7 +2070,14 @@ export class AuthQueue {
   private resolveWorkUnitsOnMerge(completed: AuthRequest): void {
     const now = this.now();
     const resolveStmt = this.db.prepare(
-      "UPDATE work_units SET state = 'resolved', resolved_at = ? WHERE id = ? AND state IN ('open', 'committed')"
+      `UPDATE work_units
+       SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?)
+       WHERE id = ? AND state IN ('open', 'committed')`
+    );
+    const recoverMergedStmt = this.db.prepare(
+      `UPDATE work_units
+       SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?)
+       WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
     );
 
     const resolvedIds = new Set<string>();
@@ -2083,7 +2090,7 @@ export class AuthQueue {
       .all(completed.id) as Array<{ id: string }>;
 
     for (const row of byAuthId) {
-      resolveStmt.run(now, row.id);
+      resolveStmt.run(now, completed.id, row.id);
       resolvedIds.add(row.id);
     }
 
@@ -2097,7 +2104,7 @@ export class AuthQueue {
 
       for (const row of byBranch) {
         if (!resolvedIds.has(row.id)) {
-          resolveStmt.run(now, row.id);
+          resolveStmt.run(now, completed.id, row.id);
           resolvedIds.add(row.id);
         }
       }
@@ -2108,7 +2115,7 @@ export class AuthQueue {
     // runs, so prefer the scanner's last_commit_hash snapshot when present.
     for (const row of this.workUnitsMergedByRequest(completed)) {
       if (!resolvedIds.has(row.id)) {
-        resolveStmt.run(now, row.id);
+        recoverMergedStmt.run(now, completed.id, row.id);
         resolvedIds.add(row.id);
       }
     }
@@ -2133,7 +2140,7 @@ export class AuthQueue {
         );
         for (const row of matching) {
           if (!resolvedIds.has(row.id)) {
-            resolveStmt.run(now, row.id);
+            resolveStmt.run(now, completed.id, row.id);
             resolvedIds.add(row.id);
           }
         }
@@ -2165,7 +2172,7 @@ export class AuthQueue {
 
       for (const row of byLedgerIssue) {
         if (!resolvedIds.has(row.id)) {
-          resolveStmt.run(now, row.id);
+          resolveStmt.run(now, completed.id, row.id);
           resolvedIds.add(row.id);
         }
       }
@@ -2191,7 +2198,7 @@ export class AuthQueue {
          b.last_commit_hash
        FROM work_units wu
        LEFT JOIN branches b ON b.branch = wu.branch
-       WHERE wu.state IN ('open', 'committed')
+       WHERE wu.state IN ('open', 'committed', 'abandoned')
          AND wu.branch IS NOT NULL
          AND (wu.auth_request_id IS NULL OR wu.auth_request_id = ?)
        ORDER BY wu.id`
@@ -2212,10 +2219,14 @@ export class AuthQueue {
       if (!this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots)) {
         continue;
       }
+      const branchSnapshotMatchesRequest = row.repo_root
+        ? this.workUnitRepoMatchesRequest(row.repo_root, completed, repoRoots)
+        : true;
       const roots = [...repoRoots];
-      if (row.repo_root) roots.unshift(row.repo_root);
+      if (row.repo_root && branchSnapshotMatchesRequest) roots.unshift(row.repo_root);
       const uniqueRoots = [...new Set(roots.filter(Boolean))];
-      if (uniqueRoots.some((root) => this.workUnitBranchWasMerged(root, row.branch, row.last_commit_hash, completed))) {
+      const lastCommitHash = branchSnapshotMatchesRequest ? row.last_commit_hash : null;
+      if (uniqueRoots.some((root) => this.workUnitBranchWasMerged(root, row.branch, lastCommitHash, completed))) {
         resolved.add(row.id);
       }
     }
