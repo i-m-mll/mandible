@@ -71,25 +71,31 @@ export function listCompletedWorkerThreadArchiveCandidates(
     return [];
   }
 
-  const issueIds = completedIssueIds(db, request);
-  if (issueIds.size === 0) {
-    return [];
-  }
-
   const liveParentSessionIds = activeParentRoleSessionIds(db);
   const byProviderId = new Map<string, WorkerThreadArchiveCandidate>();
 
-  for (const row of directCandidateRowsFromWorkUnits(db, issueIds)) {
+  for (const row of directCandidateRowsFromRequestWorkUnits(db, request.id)) {
     addDirectWorkUnitCandidate(db, byProviderId, row, liveParentSessionIds);
   }
 
-  for (const row of candidateRowsFromWorkUnits(db, issueIds)) {
+  for (const row of candidateRowsFromRequestWorkUnits(db, request.id)) {
     addCandidate(byProviderId, row, liveParentSessionIds);
   }
 
-  if (tableExists(db, "console_sessions") && tableExists(db, "session_issues")) {
-    for (const row of candidateRowsFromLegacyIssueSessions(db, issueIds)) {
+  const issueIds = completedIssueIds(db, request);
+  if (issueIds.size > 0) {
+    for (const row of directCandidateRowsFromWorkUnits(db, issueIds)) {
+      addDirectWorkUnitCandidate(db, byProviderId, row, liveParentSessionIds);
+    }
+
+    for (const row of candidateRowsFromWorkUnits(db, issueIds)) {
       addCandidate(byProviderId, row, liveParentSessionIds);
+    }
+
+    if (tableExists(db, "console_sessions") && tableExists(db, "session_issues")) {
+      for (const row of candidateRowsFromLegacyIssueSessions(db, issueIds)) {
+        addCandidate(byProviderId, row, liveParentSessionIds);
+      }
     }
   }
 
@@ -187,6 +193,20 @@ interface DirectWorkUnitCandidateRow {
   work_unit_id: string;
 }
 
+function directCandidateRowsFromRequestWorkUnits(db: Db, requestId: string): DirectWorkUnitCandidateRow[] {
+  if (!tableHasColumn(db, "work_units", "auth_request_id")) {
+    return [];
+  }
+  return db.prepare(
+    `SELECT id AS work_unit_id, COALESCE(ledger_issue_id, issue_id) AS issue_id, provider, provider_session_id
+     FROM work_units
+     WHERE state = 'resolved'
+       AND auth_request_id = ?
+       AND provider = 'codex'
+       AND provider_session_id IS NOT NULL`,
+  ).all(requestId) as DirectWorkUnitCandidateRow[];
+}
+
 function directCandidateRowsFromWorkUnits(db: Db, issueIds: Set<string>): DirectWorkUnitCandidateRow[] {
   const rows: DirectWorkUnitCandidateRow[] = [];
   const workUnitRows = db.prepare(
@@ -216,6 +236,37 @@ function directCandidateRowsFromWorkUnits(db: Db, issueIds: Set<string>): Direct
       issue_id: issueId,
       work_unit_id: workUnit.id,
     });
+  }
+  return rows;
+}
+
+function candidateRowsFromRequestWorkUnits(db: Db, requestId: string): CandidateRow[] {
+  if (!tableExists(db, "console_sessions") || !tableHasColumn(db, "work_units", "auth_request_id")) {
+    return [];
+  }
+  const rows: CandidateRow[] = [];
+  const workUnitRows = db.prepare(
+    `SELECT id, issue_id, ledger_issue_id, assigned_session_id
+     FROM work_units
+     WHERE state = 'resolved'
+       AND auth_request_id = ?
+       AND assigned_session_id IS NOT NULL`,
+  ).all(requestId) as Array<{
+    id: string;
+    issue_id: string;
+    ledger_issue_id?: string | null;
+    assigned_session_id: string | null;
+  }>;
+
+  for (const workUnit of workUnitRows) {
+    const issueId = workUnit.ledger_issue_id ?? workUnit.issue_id;
+    if (!issueId || !workUnit.assigned_session_id) continue;
+
+    rows.push(...consoleSessionRowsForLink(db, {
+      issueId,
+      workUnitId: workUnit.id,
+      sessionId: workUnit.assigned_session_id,
+    }));
   }
   return rows;
 }
@@ -392,6 +443,12 @@ function tableExists(db: Db, table: string): boolean {
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
   ).get(table);
   return Boolean(row);
+}
+
+function tableHasColumn(db: Db, table: string, column: string): boolean {
+  if (!tableExists(db, table)) return false;
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some((row) => row.name === column);
 }
 
 function errorMessage(error: unknown): string {
