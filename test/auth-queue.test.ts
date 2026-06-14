@@ -450,6 +450,60 @@ describe("auth queue", () => {
     }
   });
 
+  it("does not recover stale abandoned work units that were already contained in base", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      git(repo, ["checkout", "-b", "integration/unrelated-batch", "main"]);
+      writeFile(repo, "unrelated.txt", "unrelated\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "integration work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/unrelated-batch"]);
+
+      commitOnBranch(repo, "feature/stale-abandoned", { "stale.txt": "stale\n" });
+      const staleHead = git(repo, ["rev-parse", "feature/stale-abandoned"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/stale-abandoned", "-m", "merge stale work"]);
+      git(repo, ["branch", "-D", "feature/stale-abandoned"]);
+      git(repo, ["merge", "--no-ff", "integration/unrelated-batch", "-m", "merge integration"]);
+
+      registerWorkRepo(db, repo);
+      db.prepare(
+        `INSERT INTO branches (repo_root, branch, last_commit_hash)
+         VALUES (?, 'feature/stale-abandoned', ?)`
+      ).run(fs.realpathSync(repo), staleHead);
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-stale-abandoned', 'stale123', ?, 'feature/stale-abandoned', 'partition', 'abandoned', ?)`
+      ).run(path.basename(repo), now);
+
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/unrelated-batch --into main",
+        title: "Merge unrelated integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/unrelated-batch",
+        merge_head_sha: integrationHead,
+        execution_mode: "remote",
+      });
+
+      now = 1000;
+      queue.setResult(request.id, 0, "ok");
+
+      expect(db.prepare(
+        "SELECT state, resolved_at, auth_request_id FROM work_units WHERE id = 'wu-stale-abandoned'",
+      ).get()).toEqual({ state: "abandoned", resolved_at: null, auth_request_id: null });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("archives only reliably linked terminal Codex worker threads after successful merge", () => {
     const archived: string[] = [];
     const db = createMigratedDb();

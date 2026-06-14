@@ -2193,6 +2193,7 @@ export class AuthQueue {
       `SELECT
          wu.id,
          wu.repo_id,
+         wu.state,
          wu.branch,
          b.repo_root,
          b.last_commit_hash
@@ -2205,6 +2206,7 @@ export class AuthQueue {
     ).all(completed.id) as Array<{
       id: string;
       repo_id: string;
+      state: string;
       branch: string;
       repo_root: string | null;
       last_commit_hash: string | null;
@@ -2226,7 +2228,13 @@ export class AuthQueue {
       if (row.repo_root && branchSnapshotMatchesRequest) roots.unshift(row.repo_root);
       const uniqueRoots = [...new Set(roots.filter(Boolean))];
       const lastCommitHash = branchSnapshotMatchesRequest ? row.last_commit_hash : null;
-      if (uniqueRoots.some((root) => this.workUnitBranchWasMerged(root, row.branch, lastCommitHash, completed))) {
+      if (uniqueRoots.some((root) => this.workUnitBranchWasMerged(
+        root,
+        row.branch,
+        lastCommitHash,
+        completed,
+        { requestHeadOnly: row.state === "abandoned" },
+      ))) {
         resolved.add(row.id);
       }
     }
@@ -2268,11 +2276,19 @@ export class AuthQueue {
     branch: string,
     lastCommitHash: string | null,
     completed: AuthRequest,
+    options: { requestHeadOnly?: boolean } = {},
   ): boolean {
-    const targets = [
-      completed.merge_head_sha,
-      completed.base_branch ? `refs/heads/${completed.base_branch}` : null,
-    ].filter((value): value is string => Boolean(value));
+    // Abandoned work needs request-specific evidence; base ancestry alone can
+    // match stale work that landed before this auth request.
+    const targets = options.requestHeadOnly
+      ? [
+          completed.merge_head_sha,
+          !completed.merge_head_sha && completed.head_branch ? `refs/heads/${completed.head_branch}` : null,
+        ].filter((value): value is string => Boolean(value))
+      : [
+          completed.merge_head_sha,
+          completed.base_branch ? `refs/heads/${completed.base_branch}` : null,
+        ].filter((value): value is string => Boolean(value));
 
     const candidates = [
       lastCommitHash && /^[0-9a-f]{40}$/i.test(lastCommitHash) ? lastCommitHash : null,
@@ -2294,6 +2310,7 @@ export class AuthQueue {
       execFileSync("git", ["merge-base", "--is-ancestor", candidate, target], {
         cwd,
         encoding: "utf8",
+        stdio: "pipe",
         timeout: 5000,
       });
       return true;
