@@ -272,6 +272,15 @@ export function registerAuthRoutes(
     }
   });
 
+  app.post("/api/auth/request/:id/replay-codex-archives", (req, res) => {
+    try {
+      const result = authQueue.replayCodexThreadArchives(req.params.id);
+      res.status(200).json(result);
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  });
+
   app.get("/api/auth/queue", (req, res) => {
     const query = req.query ?? {};
     // Bug: dd21c1e — optional ?type=X filter

@@ -2,8 +2,6 @@ import { execFileSync } from "node:child_process";
 import type { Db } from "./db.js";
 import type { AuthRequest } from "./types.js";
 
-const CODEX_APP_SERVER_REQUEST_ID = 1;
-
 export interface CodexThreadArchiver {
   archive(threadId: string): void;
   unarchive(threadId: string): void;
@@ -17,31 +15,29 @@ export interface WorkerThreadArchiveCandidate {
   work_unit_id: string | null;
 }
 
-type CodexProxyRunner = typeof execFileSync;
-type CodexThreadArchiveMethod = "thread/archive" | "thread/unarchive";
+type CodexCommandRunner = typeof execFileSync;
+type CodexThreadArchiveCommand = "archive" | "unarchive";
+
+interface RankedArchiveCandidate extends WorkerThreadArchiveCandidate {
+  rank: number;
+}
 
 export class CodexCliThreadArchiver implements CodexThreadArchiver {
-  constructor(private readonly execFile: CodexProxyRunner = execFileSync) {}
+  constructor(private readonly execFile: CodexCommandRunner = execFileSync) {}
 
   archive(threadId: string): void {
-    this.run("thread/archive", threadId);
+    this.run("archive", threadId);
   }
 
   unarchive(threadId: string): void {
-    this.run("thread/unarchive", threadId);
+    this.run("unarchive", threadId);
   }
 
-  private run(method: CodexThreadArchiveMethod, threadId: string): void {
-    const response = this.execFile("codex", ["app-server", "proxy"], {
-      input: encodeAppServerMessage({
-        id: CODEX_APP_SERVER_REQUEST_ID,
-        method,
-        params: { threadId },
-      }),
+  private run(command: CodexThreadArchiveCommand, threadId: string): void {
+    this.execFile("codex", [command, threadId], {
       stdio: "pipe",
       timeout: 15_000,
     });
-    assertSuccessfulAppServerResponse(method, response);
   }
 }
 
@@ -83,62 +79,53 @@ export function listCompletedWorkerThreadArchiveCandidates(
     return [];
   }
 
-  const liveParentSessionIds = activeParentRoleSessionIds(db);
-  const byProviderId = new Map<string, WorkerThreadArchiveCandidate>();
+  const parentRoleSessionIds = allParentRoleSessionIds(db);
+  const byProviderId = new Map<string, RankedArchiveCandidate>();
+  const closureIssueIds = completedIssueIds(db, request);
 
   for (const row of directCandidateRowsFromRequestWorkUnits(db, request.id)) {
-    addDirectWorkUnitCandidate(db, byProviderId, row, liveParentSessionIds);
+    addDirectWorkUnitCandidate(db, byProviderId, row, parentRoleSessionIds);
   }
 
   for (const row of candidateRowsFromRequestWorkUnits(db, request.id)) {
-    addCandidate(byProviderId, row, liveParentSessionIds);
+    addCandidate(byProviderId, row, parentRoleSessionIds);
   }
 
-  const issueIds = completedIssueIds(db, request);
-  if (issueIds.size > 0) {
-    for (const row of directCandidateRowsFromWorkUnits(db, issueIds)) {
-      addDirectWorkUnitCandidate(db, byProviderId, row, liveParentSessionIds);
-    }
-
-    for (const row of candidateRowsFromWorkUnits(db, issueIds)) {
-      addCandidate(byProviderId, row, liveParentSessionIds);
-    }
-
+  if (closureIssueIds.size > 0) {
     if (tableExists(db, "console_sessions") && tableExists(db, "session_issues")) {
-      for (const row of candidateRowsFromLegacyIssueSessions(db, issueIds)) {
-        addCandidate(byProviderId, row, liveParentSessionIds);
+      for (const row of candidateRowsFromLegacyIssueSessions(db, closureIssueIds)) {
+        addCandidate(byProviderId, row, parentRoleSessionIds);
       }
     }
   }
 
-  return Array.from(byProviderId.values()).sort((a, b) =>
-    a.provider_session_id.localeCompare(b.provider_session_id),
-  );
+  return selectConservativeArchiveCandidates(Array.from(byProviderId.values()), closureIssueIds);
 }
 
 function addDirectWorkUnitCandidate(
   db: Db,
-  byProviderId: Map<string, WorkerThreadArchiveCandidate>,
+  byProviderId: Map<string, RankedArchiveCandidate>,
   row: DirectWorkUnitCandidateRow,
-  liveParentSessionIds: Set<string>,
+  parentRoleSessionIds: Set<string>,
 ): void {
   const providerSessionId = stringOrNull(row.provider_session_id);
   if (row.provider !== "codex" || !providerSessionId) return;
-  if (liveParentSessionIds.has(providerSessionId) || isProviderSessionLive(db, providerSessionId)) return;
+  if (parentRoleSessionIds.has(providerSessionId) || isProviderSessionLive(db, providerSessionId)) return;
 
-  byProviderId.set(providerSessionId, {
+  addRankedCandidate(byProviderId, {
     provider_session_id: providerSessionId,
     console_session_id: null,
     mandible_session_id: null,
     issue_id: String(row.issue_id),
     work_unit_id: String(row.work_unit_id),
+    rank: 10,
   });
 }
 
 function addCandidate(
-  byProviderId: Map<string, WorkerThreadArchiveCandidate>,
+  byProviderId: Map<string, RankedArchiveCandidate>,
   row: CandidateRow,
-  liveParentSessionIds: Set<string>,
+  parentRoleSessionIds: Set<string>,
 ): void {
   const providerSessionId = stringOrNull(row.provider_session_id);
   const consoleSessionId = stringOrNull(row.console_session_id);
@@ -148,20 +135,66 @@ function addCandidate(
 
   const mandibleSessionId = stringOrNull(row.mandible_session_id);
   if (
-    liveParentSessionIds.has(providerSessionId) ||
-    liveParentSessionIds.has(consoleSessionId) ||
-    (mandibleSessionId != null && liveParentSessionIds.has(mandibleSessionId))
+    parentRoleSessionIds.has(providerSessionId) ||
+    parentRoleSessionIds.has(consoleSessionId) ||
+    (mandibleSessionId != null && parentRoleSessionIds.has(mandibleSessionId))
   ) {
     return;
   }
 
-  byProviderId.set(providerSessionId, {
+  addRankedCandidate(byProviderId, {
     provider_session_id: providerSessionId,
     console_session_id: consoleSessionId,
     mandible_session_id: mandibleSessionId,
     issue_id: String(row.issue_id),
     work_unit_id: stringOrNull(row.work_unit_id),
+    rank: 0,
   });
+}
+
+function addRankedCandidate(
+  byProviderId: Map<string, RankedArchiveCandidate>,
+  candidate: RankedArchiveCandidate,
+): void {
+  const existing = byProviderId.get(candidate.provider_session_id);
+  if (!existing || compareRankedArchiveCandidates(candidate, existing) < 0) {
+    byProviderId.set(candidate.provider_session_id, candidate);
+  }
+}
+
+function selectConservativeArchiveCandidates(
+  candidates: RankedArchiveCandidate[],
+  closureIssueIds: Set<string>,
+): WorkerThreadArchiveCandidate[] {
+  const byClosureIssue = new Map<string, RankedArchiveCandidate>();
+  const selected: RankedArchiveCandidate[] = [];
+
+  for (const candidate of candidates) {
+    if (!closureIssueIds.has(candidate.issue_id)) {
+      selected.push(candidate);
+      continue;
+    }
+    const existing = byClosureIssue.get(candidate.issue_id);
+    if (!existing || compareRankedArchiveCandidates(candidate, existing) < 0) {
+      byClosureIssue.set(candidate.issue_id, candidate);
+    }
+  }
+
+  selected.push(...byClosureIssue.values());
+  return selected
+    .sort((a, b) => a.provider_session_id.localeCompare(b.provider_session_id))
+    .map(({ rank: _rank, ...candidate }) => candidate);
+}
+
+function compareRankedArchiveCandidates(
+  a: RankedArchiveCandidate,
+  b: RankedArchiveCandidate,
+): number {
+  return (
+    a.rank - b.rank ||
+    String(a.work_unit_id ?? "").localeCompare(String(b.work_unit_id ?? "")) ||
+    a.provider_session_id.localeCompare(b.provider_session_id)
+  );
 }
 
 function completedIssueIds(db: Db, request: AuthRequest): Set<string> {
@@ -219,39 +252,6 @@ function directCandidateRowsFromRequestWorkUnits(db: Db, requestId: string): Dir
   ).all(requestId) as DirectWorkUnitCandidateRow[];
 }
 
-function directCandidateRowsFromWorkUnits(db: Db, issueIds: Set<string>): DirectWorkUnitCandidateRow[] {
-  const rows: DirectWorkUnitCandidateRow[] = [];
-  const workUnitRows = db.prepare(
-    `SELECT id, issue_id, ledger_issue_id, provider, provider_session_id
-     FROM work_units
-     WHERE state = 'resolved'
-       AND provider = 'codex'
-       AND provider_session_id IS NOT NULL`,
-  ).all() as Array<{
-    id: string;
-    issue_id: string;
-    ledger_issue_id?: string | null;
-    provider: string | null;
-    provider_session_id: string | null;
-  }>;
-
-  for (const workUnit of workUnitRows) {
-    const issueId = workUnit.ledger_issue_id && issueIds.has(workUnit.ledger_issue_id)
-      ? workUnit.ledger_issue_id
-      : issueIds.has(workUnit.issue_id)
-        ? workUnit.issue_id
-        : null;
-    if (!issueId) continue;
-    rows.push({
-      provider: workUnit.provider,
-      provider_session_id: workUnit.provider_session_id,
-      issue_id: issueId,
-      work_unit_id: workUnit.id,
-    });
-  }
-  return rows;
-}
-
 function candidateRowsFromRequestWorkUnits(db: Db, requestId: string): CandidateRow[] {
   if (!tableExists(db, "console_sessions") || !tableHasColumn(db, "work_units", "auth_request_id")) {
     return [];
@@ -272,40 +272,6 @@ function candidateRowsFromRequestWorkUnits(db: Db, requestId: string): Candidate
 
   for (const workUnit of workUnitRows) {
     const issueId = workUnit.ledger_issue_id ?? workUnit.issue_id;
-    if (!issueId || !workUnit.assigned_session_id) continue;
-
-    rows.push(...consoleSessionRowsForLink(db, {
-      issueId,
-      workUnitId: workUnit.id,
-      sessionId: workUnit.assigned_session_id,
-    }));
-  }
-  return rows;
-}
-
-function candidateRowsFromWorkUnits(db: Db, issueIds: Set<string>): CandidateRow[] {
-  if (!tableExists(db, "console_sessions")) {
-    return [];
-  }
-  const rows: CandidateRow[] = [];
-  const workUnitRows = db.prepare(
-    `SELECT id, issue_id, ledger_issue_id, assigned_session_id
-     FROM work_units
-     WHERE state = 'resolved'
-       AND assigned_session_id IS NOT NULL`,
-  ).all() as Array<{
-    id: string;
-    issue_id: string;
-    ledger_issue_id?: string | null;
-    assigned_session_id: string | null;
-  }>;
-
-  for (const workUnit of workUnitRows) {
-    const issueId = workUnit.ledger_issue_id && issueIds.has(workUnit.ledger_issue_id)
-      ? workUnit.ledger_issue_id
-      : issueIds.has(workUnit.issue_id)
-        ? workUnit.issue_id
-        : null;
     if (!issueId || !workUnit.assigned_session_id) continue;
 
     rows.push(...consoleSessionRowsForLink(db, {
@@ -369,7 +335,7 @@ function consoleSessionRowsForLink(
   ) as CandidateRow[];
 }
 
-function activeParentRoleSessionIds(db: Db): Set<string> {
+function allParentRoleSessionIds(db: Db): Set<string> {
   const ids = new Set<string>();
   if (!tableExists(db, "ledger_issue_checkpoints")) return ids;
 
@@ -383,10 +349,38 @@ function activeParentRoleSessionIds(db: Db): Set<string> {
   for (const row of rows) {
     const payload = parseJsonObject(row.payload_json);
     const sessionId = typeof payload?.session_id === "string" ? payload.session_id : null;
-    if (!sessionId || !isSessionLive(db, sessionId)) continue;
-    ids.add(sessionId);
+    const providerSessionId = typeof payload?.provider_session_id === "string"
+      ? payload.provider_session_id
+      : null;
+    if (sessionId) ids.add(sessionId);
+    if (providerSessionId) ids.add(providerSessionId);
   }
+  expandConsoleSessionAliases(db, ids);
   return ids;
+}
+
+function expandConsoleSessionAliases(db: Db, ids: Set<string>): void {
+  if (!tableExists(db, "console_sessions") || ids.size === 0) return;
+  const rows = db.prepare(
+    `SELECT id, mandible_session_id, provider_session_id
+     FROM console_sessions
+     WHERE id = ?
+        OR mandible_session_id = ?
+        OR provider_session_id = ?`,
+  );
+  for (const id of [...ids]) {
+    const matches = rows.all(id, id, id) as Array<{
+      id?: string | null;
+      mandible_session_id?: string | null;
+      provider_session_id?: string | null;
+    }>;
+    for (const match of matches) {
+      for (const value of [match.id, match.mandible_session_id, match.provider_session_id]) {
+        const normalized = stringOrNull(value);
+        if (normalized) ids.add(normalized);
+      }
+    }
+  }
 }
 
 function isSessionLive(db: Db, sessionId: string): boolean {
@@ -465,84 +459,4 @@ function tableHasColumn(db: Db, table: string, column: string): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function encodeAppServerMessage(message: Record<string, unknown>): string {
-  const body = JSON.stringify(message);
-  return `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`;
-}
-
-function assertSuccessfulAppServerResponse(
-  method: CodexThreadArchiveMethod,
-  output: string | Buffer,
-): void {
-  const messages = decodeAppServerMessages(output);
-  if (messages.length === 0) {
-    throw new Error(`codex app-server ${method} returned no response`);
-  }
-
-  const response = messages.find((message) =>
-    isRecord(message) && message.id === CODEX_APP_SERVER_REQUEST_ID
-  );
-  if (!response) {
-    throw new Error(`codex app-server ${method} returned no matching response`);
-  }
-
-  if (isRecord(response) && isRecord(response.error)) {
-    const message = typeof response.error.message === "string"
-      ? response.error.message
-      : JSON.stringify(response.error);
-    throw new Error(`codex app-server ${method} failed: ${message}`);
-  }
-}
-
-function decodeAppServerMessages(output: string | Buffer): unknown[] {
-  const bytes = Buffer.isBuffer(output) ? output : Buffer.from(output, "utf8");
-  const messages: unknown[] = [];
-  let offset = 0;
-
-  while (offset < bytes.length) {
-    while (offset < bytes.length && isAsciiWhitespace(bytes[offset])) {
-      offset += 1;
-    }
-    if (offset >= bytes.length) break;
-
-    const headerEnd = bytes.indexOf("\r\n\r\n", offset, "utf8");
-    if (headerEnd === -1) {
-      return decodeNewlineDelimitedJson(bytes.subarray(offset).toString("utf8"));
-    }
-
-    const headers = bytes.subarray(offset, headerEnd).toString("utf8").split("\r\n");
-    const contentLengthHeader = headers.find((header) => /^content-length:/i.test(header));
-    const match = contentLengthHeader?.match(/^content-length:\s*(\d+)\s*$/i);
-    if (!match) {
-      throw new Error("codex app-server proxy response is missing Content-Length");
-    }
-
-    const bodyStart = headerEnd + 4;
-    const bodyLength = Number(match[1]);
-    const bodyEnd = bodyStart + bodyLength;
-    if (bodyEnd > bytes.length) {
-      throw new Error("codex app-server proxy response ended before Content-Length bytes");
-    }
-
-    messages.push(JSON.parse(bytes.subarray(bodyStart, bodyEnd).toString("utf8")));
-    offset = bodyEnd;
-  }
-
-  return messages;
-}
-
-function decodeNewlineDelimitedJson(output: string): unknown[] {
-  const trimmed = output.trim();
-  if (!trimmed) return [];
-  return trimmed.split(/\r?\n/).map((line) => JSON.parse(line));
-}
-
-function isAsciiWhitespace(byte: number | undefined): boolean {
-  return byte === 0x09 || byte === 0x0a || byte === 0x0d || byte === 0x20;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

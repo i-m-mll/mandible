@@ -14,6 +14,7 @@
 #   auth action <subcommand>         Manage staged auth request actions
 #   auth check [opts]                Check queued merge independence
 #   auth request <branch> [opts]     Submit auth merge request
+#   auth replay-archives <id>        Replay Codex archive attempts
 #   auth merge <branch> [opts]       Execute authenticated merge
 #   logs <subcommand>                Inspect provider-native source logs
 #   conversations <subcommand>       Inspect DB-backed conversations
@@ -51,6 +52,7 @@ Commands:
   auth action <subcommand>         Manage staged auth request actions
   auth check [opts]                Check queued merge independence
   auth request <branch> [opts]     Submit auth merge request
+  auth replay-archives <id>        Replay Codex archive attempts
   auth merge <branch> [opts]       Execute authenticated merge
   logs <subcommand>                Inspect provider-native source logs
   conversations <subcommand>       Inspect DB-backed conversations
@@ -74,6 +76,7 @@ Subcommands:
   action <subcommand>         Manage staged auth request actions
   check [opts]                Check queued merge independence
   request <branch> [opts]     Submit auth merge request
+  replay-archives <id>        Replay Codex archive attempts
   merge <branch> [opts]       Execute authenticated merge
 EOF
 }
@@ -93,6 +96,7 @@ case "${1:-}" in
       action)  shift; exec "$MANDIBLE_CLI_DIR/auth-action.sh" "$@" ;;
       check)   shift; exec "$MANDIBLE_CLI_DIR/auth-check.sh" "$@" ;;
       request) shift; exec "$MANDIBLE_CLI_DIR/auth-request.sh" "$@" ;;
+      replay-archives) shift; exec "$MANDIBLE_CLI_DIR/auth-replay-archives.sh" "$@" ;;
       merge)   shift; exec "$MANDIBLE_CLI_DIR/auth-merge.sh" "$@" ;;
       *) echo "Unknown auth subcommand: ${1:-}" >&2; usage >&2; exit 1 ;;
     esac

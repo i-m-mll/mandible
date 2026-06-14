@@ -91,6 +91,10 @@
       "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure."
     },
     {
+      "name": "mandible auth replay-archives <request-id> [--json]",
+      "description": "Replay Codex thread archive attempts for a completed successful merge auth request without rerunning the merge or deferred issue actions."
+    },
+    {
       "name": "mandible work-unit claim --issue <id> --repo <repo> [--branch <branch>] [--parent-branch <branch>] [--kind solo|partition|integration] [--session <id>] [--graceful]",
       "description": "Create or reuse a branch-based work unit using explicit mechanism inputs only. --graceful makes daemon-unreachable failures non-fatal."
     },
