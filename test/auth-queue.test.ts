@@ -402,6 +402,7 @@ describe("auth queue", () => {
 
   it("recovers abandoned child work units when containment proves they landed", () => {
     let now = 0;
+    const archived: string[] = [];
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     try {
@@ -420,11 +421,22 @@ describe("auth queue", () => {
          VALUES (?, 'feature/abandoned-child', ?)`
       ).run(fs.realpathSync(repo), childHead);
       db.prepare(
-        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
-         VALUES ('wu-abandoned-child', 'child123', ?, 'feature/abandoned-child', 'partition', 'abandoned', ?)`
+        `INSERT INTO work_units (
+          id, issue_id, repo_id, branch, kind, state, provider, provider_session_id, created_at
+        ) VALUES (
+          'wu-abandoned-child', 'child123', ?, 'feature/abandoned-child', 'partition',
+          'abandoned', 'codex', 'thread-abandoned-child', ?
+        )`
       ).run(path.basename(repo), now);
 
-      const queue = new AuthQueue({ db, now: () => now });
+      const queue = new AuthQueue({
+        db,
+        now: () => now,
+        codexThreadArchiver: {
+          archive: (threadId) => archived.push(threadId),
+          unarchive: () => undefined,
+        },
+      });
       const request = queue.submit({
         type: "merge",
         command: "mandible auth merge integration/abandoned-batch --into main",
@@ -442,7 +454,75 @@ describe("auth queue", () => {
 
       expect(db.prepare(
         "SELECT state, resolved_at, auth_request_id FROM work_units WHERE id = 'wu-abandoned-child'",
+      ).get()).toEqual({ state: "resolved", resolved_at: now, auth_request_id: null });
+      expect(archived).toEqual([]);
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("links and archives branch-contained recovered work units that match explicit closure issues", () => {
+    let now = 0;
+    const archived: string[] = [];
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      const project = createLedgerProject(db, repo);
+      const issue = createLedgerIssue(db, project.project.id, "child123", "Child issue");
+      commitOnBranch(repo, "feature/closed-child", { "child.txt": "child\n" });
+      const childHead = git(repo, ["rev-parse", "feature/closed-child"]);
+      git(repo, ["checkout", "-b", "integration/closed-batch", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/closed-child", "-m", "merge child work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/closed-batch"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "integration/closed-batch", "-m", "merge integration"]);
+      git(repo, ["branch", "-D", "feature/closed-child"]);
+
+      registerWorkRepo(db, repo);
+      db.prepare(
+        `INSERT INTO branches (repo_root, branch, last_commit_hash)
+         VALUES (?, 'feature/closed-child', ?)`
+      ).run(fs.realpathSync(repo), childHead);
+      db.prepare(
+        `INSERT INTO work_units (
+          id, issue_id, ledger_issue_id, repo_id, branch, kind, state, provider,
+          provider_session_id, created_at
+        ) VALUES (
+          'wu-closed-child', 'child123', ?, ?, 'feature/closed-child', 'partition',
+          'abandoned', 'codex', 'thread-closed-child', ?
+        )`
+      ).run(issue.id, path.basename(repo), now);
+
+      const queue = new AuthQueue({
+        db,
+        now: () => now,
+        codexThreadArchiver: {
+          archive: (threadId) => archived.push(threadId),
+          unarchive: () => undefined,
+        },
+      });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/closed-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/closed-batch",
+        merge_head_sha: integrationHead,
+        issue_closures: [issue.id],
+        execution_mode: "remote",
+      });
+
+      now = 1000;
+      queue.setResult(request.id, 0, "ok");
+
+      expect(db.prepare(
+        "SELECT state, resolved_at, auth_request_id FROM work_units WHERE id = 'wu-closed-child'",
       ).get()).toEqual({ state: "resolved", resolved_at: now, auth_request_id: request.id });
+      expect(archived).toEqual(["thread-closed-child"]);
       queue.dispose();
     } finally {
       db.close();
@@ -585,6 +665,76 @@ describe("auth queue", () => {
       expect(archived).toEqual(["thread-worker"]);
       expect(db.prepare("SELECT state FROM work_units WHERE id = 'wu-worker'").get())
         .toEqual({ state: "resolved" });
+      expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
+        status: "closed",
+        resolution: "merged",
+      });
+    } finally {
+      queue.dispose();
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("replays Codex archive attempts for a completed merge without rerunning merge finalizers", () => {
+    const archived: string[] = [];
+    const db = createMigratedDb();
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-thread-archive-replay-"));
+    const project = createLedgerProject(db, repoRoot);
+    const issue = createLedgerIssue(db, project.project.id, "done123", "Done issue");
+    const queue = new AuthQueue({
+      db,
+      codexThreadArchiver: {
+        archive: (threadId) => archived.push(threadId),
+        unarchive: () => undefined,
+      },
+    });
+
+    try {
+      insertMandibleSession(db, "mandible-worker", "ended");
+      insertConsoleSession(db, {
+        id: "console-worker",
+        providerSessionId: "thread-worker",
+        mandibleSessionId: "mandible-worker",
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/archive-worker --into main",
+        title: "Archive workers",
+        repo: project.checkout.root,
+        base_branch: "main",
+        head_branch: "feature/archive-worker",
+        issue_closures: ["done123"],
+        execution_mode: "remote",
+      });
+      insertWorkUnit(db, {
+        id: "wu-worker",
+        issueShortId: "done123",
+        ledgerIssueId: issue.id,
+        repoId: project.checkout.root,
+        assignedSessionId: "console-worker",
+        authRequestId: request.id,
+      });
+
+      queue.setResult(request.id, 0, "MANDIBLE_MERGE_RESULT {\"merge_sha\":\"abc123\"}\n");
+      const finalizedAt = queue.getRequest(request.id)?.merge_finalized_at;
+      const replay = queue.replayCodexThreadArchives(request.id);
+
+      expect(archived).toEqual(["thread-worker", "thread-worker"]);
+      expect(replay).toMatchObject({
+        request_id: request.id,
+        archived: 1,
+        candidates: [
+          {
+            provider_session_id: "thread-worker",
+            issue_id: issue.id,
+            work_unit_id: "wu-worker",
+            archived: true,
+          },
+        ],
+      });
+      expect(queue.getRequest(request.id)?.merge_finalized_at).toBe(finalizedAt);
       expect(new LedgerStore(db).getIssue(issue.id)).toMatchObject({
         status: "closed",
         resolution: "merged",

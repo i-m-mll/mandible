@@ -116,6 +116,19 @@ export interface AuthMergeCheckReport {
   reason?: string;
 }
 
+export interface CodexArchiveReplayResult {
+  request_id: string;
+  archived: number;
+  candidates: Array<{
+    provider_session_id: string;
+    console_session_id: string | null;
+    mandible_session_id: string | null;
+    issue_id: string;
+    work_unit_id: string | null;
+    archived: boolean;
+  }>;
+}
+
 export interface AuthQueueOptions {
   db?: InstanceType<typeof Database>;
   now?: () => number;
@@ -336,6 +349,21 @@ export class AuthQueue {
     }
 
     return null;
+  }
+
+  replayCodexThreadArchives(requestId: string): CodexArchiveReplayResult {
+    const request = this.getRequest(requestId);
+    if (!request) {
+      throw new AuthQueueError("not_found", "Request not found.");
+    }
+    if (request.type !== "merge" || request.status !== "completed" || request.exit_code !== 0) {
+      throw new AuthQueueError(
+        "invalid_status",
+        "Codex archive replay requires a completed successful merge request.",
+        request.status,
+      );
+    }
+    return this.archiveCompletedWorkerThreads(request, { logSummary: false });
   }
 
   submit(payload: AuthRequestInput): AuthRequest {
@@ -2076,11 +2104,17 @@ export class AuthQueue {
     );
     const recoverMergedStmt = this.db.prepare(
       `UPDATE work_units
+       SET state = 'resolved', resolved_at = ?
+       WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
+    );
+    const recoverClosedMergedStmt = this.db.prepare(
+      `UPDATE work_units
        SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?)
        WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
     );
 
     const resolvedIds = new Set<string>();
+    const explicitClosureIssueRefs = this.explicitClosureIssueRefs(completed);
 
     // 1. Match by auth_request_id
     const byAuthId = this.db
@@ -2115,15 +2149,18 @@ export class AuthQueue {
     // runs, so prefer the scanner's last_commit_hash snapshot when present.
     for (const row of this.workUnitsMergedByRequest(completed)) {
       if (!resolvedIds.has(row.id)) {
-        recoverMergedStmt.run(now, completed.id, row.id);
+        if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
+          recoverClosedMergedStmt.run(now, completed.id, row.id);
+        } else {
+          recoverMergedStmt.run(now, row.id);
+        }
         resolvedIds.add(row.id);
       }
     }
 
     // 4. Match by explicit close-on-merge issue IDs. Mandible-Issue trailers and
     // issue_references are provenance links, not completion signals.
-    const closesIssues = completed.issue_closures ?? completed.issues ?? [];
-    const allIssueIds = [...closesIssues];
+    const allIssueIds = [...explicitClosureIssueRefs];
 
     // Bug: f3dbb3e — bidirectional prefix match: the work unit may store a
     // short prefix of the issue ID, or the auth request may have a short prefix.
@@ -2185,13 +2222,19 @@ export class AuthQueue {
     }
   }
 
-  private workUnitsMergedByRequest(completed: AuthRequest): Array<{ id: string }> {
+  private workUnitsMergedByRequest(completed: AuthRequest): Array<{
+    id: string;
+    issue_id: string;
+    ledger_issue_id: string | null;
+  }> {
     if (completed.type !== "merge" || !completed.base_branch) {
       return [];
     }
     const candidates = this.db.prepare(
       `SELECT
          wu.id,
+         wu.issue_id,
+         wu.ledger_issue_id,
          wu.repo_id,
          wu.state,
          wu.branch,
@@ -2205,6 +2248,8 @@ export class AuthQueue {
        ORDER BY wu.id`
     ).all(completed.id) as Array<{
       id: string;
+      issue_id: string;
+      ledger_issue_id: string | null;
       repo_id: string;
       state: string;
       branch: string;
@@ -2213,7 +2258,11 @@ export class AuthQueue {
     }>;
 
     const repoRoots = this.authRequestRepoRoots(completed);
-    const resolved = new Set<string>();
+    const resolved = new Map<string, {
+      id: string;
+      issue_id: string;
+      ledger_issue_id: string | null;
+    }>();
     for (const row of candidates) {
       if (row.branch === completed.head_branch) {
         continue;
@@ -2235,10 +2284,61 @@ export class AuthQueue {
         completed,
         { requestHeadOnly: row.state === "abandoned" },
       ))) {
-        resolved.add(row.id);
+        resolved.set(row.id, {
+          id: row.id,
+          issue_id: row.issue_id,
+          ledger_issue_id: row.ledger_issue_id,
+        });
       }
     }
-    return [...resolved].map((id) => ({ id }));
+    return [...resolved.values()];
+  }
+
+  private explicitClosureIssueRefs(completed: AuthRequest): Set<string> {
+    const refs = new Set<string>();
+    for (const value of completed.issue_closures ?? completed.issues ?? []) {
+      if (value) refs.add(value);
+    }
+    if (!this.tableExists("ledger_issues") || refs.size === 0) {
+      return refs;
+    }
+
+    const resolvedRefs = new Set(refs);
+    for (const ref of refs) {
+      try {
+        const rows = this.tableExists("ledger_issue_aliases")
+          ? this.db.prepare(
+            `SELECT id FROM ledger_issues WHERE id = ? OR short_id = ?
+             UNION
+             SELECT issue_id AS id FROM ledger_issue_aliases WHERE alias = ?`,
+          ).all(ref, ref, ref) as Array<{ id: string }>
+          : this.db.prepare(
+            "SELECT id FROM ledger_issues WHERE id = ? OR short_id = ?",
+          ).all(ref, ref) as Array<{ id: string }>;
+        for (const row of rows) {
+          resolvedRefs.add(row.id);
+        }
+      } catch {
+        // Lightweight test DBs may not have all ledger compatibility tables.
+      }
+    }
+    return resolvedRefs;
+  }
+
+  private workUnitMatchesIssueRefs(
+    workUnit: { issue_id: string | null; ledger_issue_id: string | null },
+    issueRefs: Set<string>,
+  ): boolean {
+    if (issueRefs.size === 0) return false;
+    for (const candidate of [workUnit.issue_id, workUnit.ledger_issue_id]) {
+      if (!candidate) continue;
+      for (const issueRef of issueRefs) {
+        if (issueRef === candidate || issueRef.startsWith(candidate) || candidate.startsWith(issueRef)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private authRequestRepoRoots(completed: AuthRequest): string[] {
@@ -2319,21 +2419,31 @@ export class AuthQueue {
     }
   }
 
-  private archiveCompletedWorkerThreads(completed: AuthRequest): void {
+  private archiveCompletedWorkerThreads(
+    completed: AuthRequest,
+    options: { logSummary?: boolean } = {},
+  ): CodexArchiveReplayResult {
+    const result: CodexArchiveReplayResult = {
+      request_id: completed.id,
+      archived: 0,
+      candidates: [],
+    };
     if (completed.type !== "merge") {
-      return;
+      return result;
     }
+    const logSummary = options.logSummary ?? true;
     try {
       const candidates = listCompletedWorkerThreadArchiveCandidates(this.db, completed);
-      let archived = 0;
       for (const candidate of candidates) {
-        if (safeArchiveCodexThread(this.codexThreadArchiver, candidate.provider_session_id)) {
-          archived += 1;
+        const archived = safeArchiveCodexThread(this.codexThreadArchiver, candidate.provider_session_id);
+        if (archived) {
+          result.archived += 1;
         }
+        result.candidates.push({ ...candidate, archived });
       }
-      if (archived > 0) {
+      if (logSummary && result.archived > 0) {
         console.log(
-          `[auth-queue] archived ${archived} completed Codex worker thread(s) after merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`
+          `[auth-queue] archived ${result.archived} completed Codex worker thread(s) after merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`
         );
       }
     } catch (err) {
@@ -2341,6 +2451,7 @@ export class AuthQueue {
         `[auth-queue] failed to archive completed worker threads: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+    return result;
   }
 
   private tableExists(table: string): boolean {

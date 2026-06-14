@@ -53,12 +53,7 @@ function createWorkUnitsOnlyDb(): InstanceType<typeof Database> {
   return db;
 }
 
-function appServerFrame(message: Record<string, unknown>): Buffer {
-  const body = JSON.stringify(message);
-  return Buffer.from(`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`, "utf8");
-}
-
-function createMockExec(response: string | Buffer = appServerFrame({ id: 1, result: {} })) {
+function createMockExec(response: string | Buffer = "") {
   const calls: ExecCall[] = [];
   const exec = ((file: string, args: string[], options: ExecCall["options"]) => {
     calls.push({ file, args: [...args], options });
@@ -67,18 +62,8 @@ function createMockExec(response: string | Buffer = appServerFrame({ id: 1, resu
   return { exec, calls };
 }
 
-function decodeAppServerInput(input: string | Buffer | undefined): Record<string, unknown> {
-  expect(input).toBeDefined();
-  const raw = Buffer.isBuffer(input) ? input.toString("utf8") : String(input);
-  const match = raw.match(/^Content-Length: (\d+)\r\n\r\n([\s\S]*)$/);
-  expect(match).not.toBeNull();
-  const [, contentLength, body] = match as RegExpMatchArray;
-  expect(Buffer.byteLength(body, "utf8")).toBe(Number(contentLength));
-  return JSON.parse(body) as Record<string, unknown>;
-}
-
 describe("Codex CLI thread archiver", () => {
-  it("archives through the Codex app-server proxy", () => {
+  it("archives through the top-level Codex CLI command", () => {
     const { exec, calls } = createMockExec();
     const archiver = new CodexCliThreadArchiver(exec);
 
@@ -86,18 +71,14 @@ describe("Codex CLI thread archiver", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].file).toBe("codex");
-    expect(calls[0].args).toEqual(["app-server", "proxy"]);
-    expect(calls[0].args).not.toEqual(["archive", "thread-123"]);
+    expect(calls[0].args).toEqual(["archive", "thread-123"]);
+    expect(calls[0].args).not.toEqual(["app-server", "proxy"]);
+    expect(calls[0].options.input).toBeUndefined();
     expect(calls[0].options.stdio).toBe("pipe");
     expect(calls[0].options.timeout).toBe(15_000);
-    expect(decodeAppServerInput(calls[0].options.input)).toEqual({
-      id: 1,
-      method: "thread/archive",
-      params: { threadId: "thread-123" },
-    });
   });
 
-  it("unarchives through the Codex app-server proxy", () => {
+  it("unarchives through the top-level Codex CLI command", () => {
     const { exec, calls } = createMockExec();
     const archiver = new CodexCliThreadArchiver(exec);
 
@@ -105,20 +86,15 @@ describe("Codex CLI thread archiver", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].file).toBe("codex");
-    expect(calls[0].args).toEqual(["app-server", "proxy"]);
-    expect(calls[0].args).not.toEqual(["unarchive", "thread-456"]);
-    expect(decodeAppServerInput(calls[0].options.input)).toEqual({
-      id: 1,
-      method: "thread/unarchive",
-      params: { threadId: "thread-456" },
-    });
+    expect(calls[0].args).toEqual(["unarchive", "thread-456"]);
+    expect(calls[0].args).not.toEqual(["app-server", "proxy"]);
+    expect(calls[0].options.input).toBeUndefined();
   });
 
   it("keeps archive failures behind the safe wrapper", () => {
-    const { exec } = createMockExec(appServerFrame({
-      id: 1,
-      error: { code: 1, message: "missing app-server socket" },
-    }));
+    const exec = (() => {
+      throw new Error("codex archive failed");
+    }) as unknown as typeof import("node:child_process").execFileSync;
     const logs: string[] = [];
 
     expect(safeArchiveCodexThread(
@@ -128,18 +104,18 @@ describe("Codex CLI thread archiver", () => {
     )).toBe(false);
 
     expect(logs).toEqual([
-      "[codex-thread-archive] failed to archive thread-789: codex app-server thread/archive failed: missing app-server socket",
+      "[codex-thread-archive] failed to archive thread-789: codex archive failed",
     ]);
   });
 });
 
 describe("codex thread archive candidates", () => {
-  it("uses resolved Codex work-unit provider identity without console_sessions", () => {
+  it("uses request-linked resolved Codex work-unit provider identity without console_sessions", () => {
     const db = createWorkUnitsOnlyDb();
     try {
       db.prepare(
-        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id)
-         VALUES ('wu-direct', 'done123', 'resolved', 'codex', 'thread-direct')`,
+        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id, auth_request_id)
+         VALUES ('wu-direct', 'done123', 'resolved', 'codex', 'thread-direct', 'auth-1')`,
       ).run();
 
       expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([
@@ -151,6 +127,20 @@ describe("codex thread archive candidates", () => {
           work_unit_id: "wu-direct",
         },
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not select stale resolved work units solely because an issue is declared closed", () => {
+    const db = createWorkUnitsOnlyDb();
+    try {
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id)
+         VALUES ('wu-stale', 'done123', 'resolved', 'codex', 'thread-stale')`,
+      ).run();
+
+      expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([]);
     } finally {
       db.close();
     }
@@ -247,6 +237,134 @@ describe("codex thread archive candidates", () => {
       ).run();
 
       expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("excludes stale parent-role provider sessions", () => {
+    const db = createWorkUnitsOnlyDb();
+    try {
+      db.exec(`
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          status TEXT
+        );
+        CREATE TABLE ledger_issue_checkpoints (
+          kind TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+      `);
+      db.prepare("INSERT INTO sessions (id, status) VALUES ('thread-parent', 'ended')").run();
+      db.prepare(
+        `INSERT INTO ledger_issue_checkpoints (kind, payload_json, created_at)
+         VALUES ('parent-role', ?, 1)`,
+      ).run(JSON.stringify({ session_id: "thread-parent" }));
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, state, provider, provider_session_id, auth_request_id)
+         VALUES ('wu-parent', 'done123', 'resolved', 'codex', 'thread-parent', 'auth-1')`,
+      ).run();
+
+      expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("recovers worker assigned sessions instead of archiving a parent provider id", () => {
+    const db = createWorkUnitsOnlyDb();
+    try {
+      db.exec(`
+        CREATE TABLE console_sessions (
+          id TEXT PRIMARY KEY,
+          provider_session_id TEXT,
+          mandible_session_id TEXT,
+          command TEXT,
+          status TEXT
+        );
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          status TEXT
+        );
+        CREATE TABLE ledger_issue_checkpoints (
+          kind TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+      `);
+      db.prepare(
+        `INSERT INTO ledger_issue_checkpoints (kind, payload_json, created_at)
+         VALUES ('parent-role', ?, 1)`,
+      ).run(JSON.stringify({ session_id: "thread-parent" }));
+      db.prepare(
+        `INSERT INTO console_sessions (id, provider_session_id, command, status)
+         VALUES ('console-worker', 'thread-worker', 'codex', 'stopped')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO work_units (
+           id, issue_id, state, assigned_session_id, provider, provider_session_id, auth_request_id
+         ) VALUES (
+           'wu-child', 'done123', 'resolved', 'console-worker', 'codex', 'thread-parent', 'auth-1'
+         )`,
+      ).run();
+
+      expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([
+        {
+          provider_session_id: "thread-worker",
+          console_session_id: "console-worker",
+          mandible_session_id: null,
+          issue_id: "done123",
+          work_unit_id: "wu-child",
+        },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps one best archive candidate per declared closure issue", () => {
+    const db = createWorkUnitsOnlyDb();
+    try {
+      db.exec(`
+        CREATE TABLE console_sessions (
+          id TEXT PRIMARY KEY,
+          provider_session_id TEXT,
+          mandible_session_id TEXT,
+          command TEXT,
+          status TEXT
+        );
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          status TEXT
+        );
+      `);
+      db.prepare(
+        `INSERT INTO console_sessions (id, provider_session_id, command, status)
+         VALUES ('console-worker-a', 'thread-worker-a', 'codex', 'stopped')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO console_sessions (id, provider_session_id, command, status)
+         VALUES ('console-worker-b', 'thread-worker-b', 'codex', 'stopped')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, state, assigned_session_id, provider, provider_session_id, auth_request_id)
+         VALUES ('wu-b', 'done123', 'resolved', 'console-worker-b', 'codex', 'thread-direct-b', 'auth-1')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, state, assigned_session_id, provider, provider_session_id, auth_request_id)
+         VALUES ('wu-a', 'done123', 'resolved', 'console-worker-a', 'codex', 'thread-direct-a', 'auth-1')`,
+      ).run();
+
+      expect(listCompletedWorkerThreadArchiveCandidates(db, requestFor("done123"))).toEqual([
+        {
+          provider_session_id: "thread-worker-a",
+          console_session_id: "console-worker-a",
+          mandible_session_id: null,
+          issue_id: "done123",
+          work_unit_id: "wu-a",
+        },
+      ]);
     } finally {
       db.close();
     }
