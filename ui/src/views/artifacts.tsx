@@ -19,6 +19,7 @@ type ArtifactsViewProps = {
   initialArtifactId?: string;
   initialRef?: string;
   initialRepo?: string;
+  sidebarHidden?: boolean;
 };
 
 type ArtifactFilters = {
@@ -43,7 +44,7 @@ const EMPTY_FILTERS: ArtifactFilters = {
   location: '',
 };
 
-export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: ArtifactsViewProps): JSX.Element {
+export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, sidebarHidden = false }: ArtifactsViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 320,
     minWidth: 240,
@@ -211,73 +212,77 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo }: Ar
 
   return (
     <div className="artifacts-view">
-      <aside
-        className="artifacts-sidebar"
-        style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
-      >
-        <div className="artifacts-filter">
-          <input
-            className="artifacts-filter__input"
-            value={filters.q}
-            placeholder="Search artifacts"
-            onInput={(e) => updateFilter('q', e.currentTarget.value)}
-          />
-          {filters.q && (
-            <button type="button" className="artifacts-filter__clear" onClick={() => updateFilter('q', '')}>
-              ×
-            </button>
-          )}
-          <button
-            type="button"
-            className={`artifacts-filter__advanced-trigger${advancedOpen ? ' artifacts-filter__advanced-trigger--active' : ''}`}
-            onClick={() => setAdvancedOpen((open) => !open)}
-            aria-label="Artifact filters"
-            title="Artifact filters"
-            aria-expanded={advancedOpen}
+      {!sidebarHidden ? (
+        <>
+          <aside
+            className="artifacts-sidebar"
+            style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
           >
-            <FilterIcon />
-          </button>
-        </div>
-        {advancedOpen && (
-          <div className="artifacts-advanced">
-            <FacetSelect label="Location" value={filters.scheme} options={facetOptions.schemes} onChange={(value) => updateFilter('scheme', value)} />
-            <FacetSelect label="Custody" value={filters.custody} options={facetOptions.custodies} onChange={(value) => updateFilter('custody', value)} />
-            <FacetSelect label="Availability" value={filters.availability} options={facetOptions.availabilities} onChange={(value) => updateFilter('availability', value)} />
-            <FacetSelect label="Repo" value={filters.repo} options={facetOptions.repos} onChange={(value) => updateFilter('repo', value)} />
-            <FacetSelect label="Provider" value={filters.provider} options={facetOptions.providers} onChange={(value) => updateFilter('provider', value)} />
-            <FacetSelect label="Role" value={filters.role} options={facetOptions.roles} onChange={(value) => updateFilter('role', value)} />
-            <input
-              className="artifacts-advanced__input"
-              value={filters.location}
-              placeholder="Path or locator"
-              onInput={(e) => updateFilter('location', e.currentTarget.value)}
-            />
-            <button type="button" className="btn btn--ghost btn--sm" onClick={clearFilters}>Clear</button>
-          </div>
-        )}
-        <div className="artifacts-sidebar__list">
-          {loading && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
-          {!loading && artifacts.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
-          {artifacts.map((artifact) => (
-            <button
-              key={artifact.id}
-              type="button"
-              className={`artifacts-sidebar__item${artifact.id === selectedId ? ' artifacts-sidebar__item--active' : ''}`}
-              onClick={() => selectArtifact(artifact)}
-            >
-              <span className="artifacts-sidebar__name">{artifactTitle(artifact)}</span>
-              <span className="artifacts-sidebar__meta">
-                {artifact.home_repo_id || artifact.provider_id || artifact.custody_mode}
-              </span>
-              <span className="artifacts-sidebar__badges">
-                <em>{artifact.role || artifact.media_type || 'artifact'}</em>
-                <em>{artifact.availability}</em>
-              </span>
-            </button>
-          ))}
-        </div>
-      </aside>
-      <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
+            <div className="artifacts-filter">
+              <input
+                className="artifacts-filter__input"
+                value={filters.q}
+                placeholder="Search artifacts"
+                onInput={(e) => updateFilter('q', e.currentTarget.value)}
+              />
+              {filters.q && (
+                <button type="button" className="artifacts-filter__clear" onClick={() => updateFilter('q', '')}>
+                  ×
+                </button>
+              )}
+              <button
+                type="button"
+                className={`artifacts-filter__advanced-trigger${advancedOpen ? ' artifacts-filter__advanced-trigger--active' : ''}`}
+                onClick={() => setAdvancedOpen((open) => !open)}
+                aria-label="Artifact filters"
+                title="Artifact filters"
+                aria-expanded={advancedOpen}
+              >
+                <FilterIcon />
+              </button>
+            </div>
+            {advancedOpen && (
+              <div className="artifacts-advanced">
+                <FacetSelect label="Location" value={filters.scheme} options={facetOptions.schemes} onChange={(value) => updateFilter('scheme', value)} />
+                <FacetSelect label="Custody" value={filters.custody} options={facetOptions.custodies} onChange={(value) => updateFilter('custody', value)} />
+                <FacetSelect label="Availability" value={filters.availability} options={facetOptions.availabilities} onChange={(value) => updateFilter('availability', value)} />
+                <FacetSelect label="Repo" value={filters.repo} options={facetOptions.repos} onChange={(value) => updateFilter('repo', value)} />
+                <FacetSelect label="Provider" value={filters.provider} options={facetOptions.providers} onChange={(value) => updateFilter('provider', value)} />
+                <FacetSelect label="Role" value={filters.role} options={facetOptions.roles} onChange={(value) => updateFilter('role', value)} />
+                <input
+                  className="artifacts-advanced__input"
+                  value={filters.location}
+                  placeholder="Path or locator"
+                  onInput={(e) => updateFilter('location', e.currentTarget.value)}
+                />
+                <button type="button" className="btn btn--ghost btn--sm" onClick={clearFilters}>Clear</button>
+              </div>
+            )}
+            <div className="artifacts-sidebar__list">
+              {loading && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
+              {!loading && artifacts.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
+              {artifacts.map((artifact) => (
+                <button
+                  key={artifact.id}
+                  type="button"
+                  className={`artifacts-sidebar__item${artifact.id === selectedId ? ' artifacts-sidebar__item--active' : ''}`}
+                  onClick={() => selectArtifact(artifact)}
+                >
+                  <span className="artifacts-sidebar__name">{artifactTitle(artifact)}</span>
+                  <span className="artifacts-sidebar__meta">
+                    {artifact.home_repo_id || artifact.provider_id || artifact.custody_mode}
+                  </span>
+                  <span className="artifacts-sidebar__badges">
+                    <em>{artifact.role || artifact.media_type || 'artifact'}</em>
+                    <em>{artifact.availability}</em>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </aside>
+          <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
+        </>
+      ) : null}
       <main className="artifacts-detail">
         {error && <div className="artifacts-error">{error}</div>}
         {detailLoading && <div className="artifacts-empty">Loading artifact...</div>}

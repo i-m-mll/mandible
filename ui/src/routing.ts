@@ -3,20 +3,32 @@ export type Route = {
   params: Record<string, string>;
 };
 
-export const LEFT_SIDEBAR_QUERY_PARAM = 'sidebar';
-export const LEFT_SIDEBAR_HIDDEN_VALUE = 'hidden';
+export const VIEW_SIDEBAR_QUERY_PARAM = 'sidebar';
+export const VIEW_SIDEBAR_HIDDEN_VALUE = 'hidden';
 
-export function isLeftSidebarHidden(route: Route): boolean {
-  return route.params[LEFT_SIDEBAR_QUERY_PARAM] === LEFT_SIDEBAR_HIDDEN_VALUE;
+export function isViewSidebarHidden(route: Route): boolean {
+  return route.params[VIEW_SIDEBAR_QUERY_PARAM] === VIEW_SIDEBAR_HIDDEN_VALUE;
 }
 
-export function hashWithLeftSidebarVisible(hashValue: string): string {
+function hashWithSidebarParam(hashValue: string, value: string | null): string {
   const hash = hashValue || '#/graph';
   const [pathPart, queryPart] = hash.replace(/^#/, '').split('?');
   const params = new URLSearchParams(queryPart ?? '');
-  params.delete(LEFT_SIDEBAR_QUERY_PARAM);
+  if (value === null) {
+    params.delete(VIEW_SIDEBAR_QUERY_PARAM);
+  } else {
+    params.set(VIEW_SIDEBAR_QUERY_PARAM, value);
+  }
   const query = params.toString();
   return `#${pathPart || '/graph'}${query ? `?${query}` : ''}`;
+}
+
+export function hashWithViewSidebarHidden(hashValue: string): string {
+  return hashWithSidebarParam(hashValue, VIEW_SIDEBAR_HIDDEN_VALUE);
+}
+
+export function hashWithViewSidebarVisible(hashValue: string): string {
+  return hashWithSidebarParam(hashValue, null);
 }
 
 export function parseRouteFromHash(hashValue: string): Route {
