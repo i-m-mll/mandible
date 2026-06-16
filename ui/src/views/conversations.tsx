@@ -528,6 +528,7 @@ export type ConversationsViewProps = {
   initialConversationId: string | null;
   initialSessionId: string | null;
   initialPresetId?: string | null;
+  sidebarHidden?: boolean;
   onSelectSession: (sessionId: string) => void;
   onNewSession: (input: {
     label: string;
@@ -2307,26 +2308,6 @@ function FolderIcon({ size = 13, open = false }: { size?: number; open?: boolean
   );
 }
 
-function ShelfIcon({ size = 17 }: { size?: number }): JSX.Element {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <rect x="3.5" y="4" width="17" height="16" rx="3" />
-      <path d="M6.6 6.8h2.2v10.4H6.6z" fill="currentColor" stroke="none" opacity="0.22" />
-      <path d="M8.5 4v16" />
-    </svg>
-  );
-}
-
 function ChatEntryItem({
   entry,
   isSelected,
@@ -2479,6 +2460,7 @@ export function ConversationsView({
   initialConversationId,
   initialSessionId,
   initialPresetId,
+  sidebarHidden = false,
   onSelectSession,
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
@@ -2497,7 +2479,6 @@ export function ConversationsView({
   const [hideEmpty, setHideEmpty] = useState(true);
   const [sort, setSort] = useState<'date' | 'blocks'>('date');
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<ChatSectionId>>(new Set());
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
@@ -2880,18 +2861,9 @@ export function ConversationsView({
 
   return (
     <div className="chat-history-view">
-      {!sidebarCollapsed && (
+      {!sidebarHidden && (
         <div className="chat-history-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
           <div className="chat-sidebar-top">
-            <button
-              type="button"
-              className="icon-btn chat-sidebar-shelf-btn"
-              onClick={() => setSidebarCollapsed(true)}
-              title="Hide chat list"
-              aria-label="Hide chat list"
-            >
-              <ShelfIcon />
-            </button>
             <div className="chat-history-search-row">
               <button
                 type="button"
@@ -3071,21 +3043,10 @@ export function ConversationsView({
       )}
 
       {/* Drag handle */}
-      {!sidebarCollapsed && <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />}
+      {!sidebarHidden && <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />}
 
       {/* Detail pane */}
       <div className="chat-history-detail">
-        {sidebarCollapsed && (
-          <button
-            type="button"
-            className="icon-btn chat-sidebar-reveal"
-            onClick={() => setSidebarCollapsed(false)}
-            title="Show chat list"
-            aria-label="Show chat list"
-          >
-            <ShelfIcon />
-          </button>
-        )}
         {selection?.type === 'conversation' ? (
           <ConversationDetail
             conversationId={selection.id}
@@ -3093,7 +3054,7 @@ export function ConversationsView({
             onNavigate={(id) => setSelection({ type: 'conversation', id })}
             consoleSessions={consoleSessions}
             workRepos={workRepos}
-            sidebarCollapsed={sidebarCollapsed}
+            sidebarCollapsed={false}
           />
         ) : selection?.type === 'session' && selectedLiveSession ? (
           <LiveSessionDetail
