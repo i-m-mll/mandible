@@ -5,13 +5,18 @@ import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
+import { App } from '../ui/src/app';
 import { getReviewSpec, patchSession, updateConversation } from '../ui/src/api';
 import {
   installTauriDeepLinkHandler,
   navigateToMandibleDeepLink,
   routeHashFromMandibleDeepLink,
 } from '../ui/src/deep-links';
-import { parseRouteFromHash } from '../ui/src/routing';
+import {
+  hashWithLeftSidebarVisible,
+  isLeftSidebarHidden,
+  parseRouteFromHash,
+} from '../ui/src/routing';
 import {
   AppShellProvider,
   RightSidebarIcon,
@@ -34,8 +39,41 @@ import {
   type IssueRepoSummary,
 } from '../ui/src/views/issues';
 
+vi.mock('@xyflow/react', () => ({
+  Background: () => null,
+  Controls: () => null,
+  MiniMap: () => null,
+  ReactFlow: (props: { children?: JSX.Element | JSX.Element[] }) => props.children ?? null,
+  ViewportPortal: (props: { children?: JSX.Element | JSX.Element[] }) => props.children ?? null,
+}));
+
+vi.mock('@xterm/xterm', () => ({
+  Terminal: class {
+    loadAddon(): void {}
+    open(): void {}
+    write(): void {}
+    writeln(): void {}
+    clear(): void {}
+    focus(): void {}
+    dispose(): void {}
+    onData(): { dispose: () => void } {
+      return { dispose: () => undefined };
+    }
+    onResize(): { dispose: () => void } {
+      return { dispose: () => undefined };
+    }
+  },
+}));
+
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: class {
+    fit(): void {}
+  },
+}));
+
 afterEach(() => {
   cleanup();
+  window.history.replaceState(null, '', '/');
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.doUnmock('@tauri-apps/plugin-deep-link');
@@ -85,6 +123,63 @@ function stubFetch(): void {
   vi.stubGlobal('fetch', mockFetch);
 }
 
+function stubEventSource(): void {
+  class MockEventSource {
+    readyState = 1;
+    onerror: (() => void) | null = null;
+    onopen: (() => void) | null = null;
+
+    constructor(_url: string) {}
+
+    addEventListener(): void {}
+    removeEventListener(): void {}
+    close(): void {
+      this.readyState = 2;
+    }
+  }
+
+  vi.stubGlobal('EventSource', MockEventSource);
+}
+
+function stubAppShellFetch(): void {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/api/issues/dotfiles/e70757d/ledger-detail')) {
+      return Promise.resolve(
+        new Response(JSON.stringify({ error: 'not needed for shell test' }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
+    if (url === '/api/issues') {
+      return Promise.resolve(
+        new Response(JSON.stringify({
+          repos: [{
+            repo_id: 'dotfiles',
+            repo_name: 'dotfiles',
+            open_count: 1,
+            closed_count: 0,
+            issues: [{
+              id: 'e70757d',
+              display_id: 'e70757d',
+              title: 'Deep linked issue',
+              status: 'open',
+            }],
+          }],
+        }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify([]), {
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+  }));
+}
+
 describe('SessionsView', () => {
   it('renders session data and triggers navigate', () => {
     const onNavigate = vi.fn();
@@ -117,6 +212,27 @@ describe('App routing', () => {
       tab: 'graph',
       params: {},
     });
+  });
+
+  it('parses sidebar=hidden as the route-scoped left navigation hide request', () => {
+    const route = parseRouteFromHash('#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden');
+
+    expect(route).toEqual({
+      tab: 'issues',
+      params: {
+        repo: 'dotfiles',
+        issue: 'e70757d',
+        sidebar: 'hidden',
+      },
+    });
+    expect(isLeftSidebarHidden(route)).toBe(true);
+    expect(isLeftSidebarHidden(parseRouteFromHash('#/issues?sidebar=visible'))).toBe(false);
+  });
+
+  it('removes only the sidebar visibility parameter when revealing the left navigation', () => {
+    expect(hashWithLeftSidebarVisible('#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden')).toBe(
+      '#/issues?repo=dotfiles&issue=e70757d',
+    );
   });
 
   it('maps mandible issue deep links onto the existing Issues hash route', () => {
@@ -258,6 +374,25 @@ describe('app shell', () => {
     fireEvent.click(screen.getByLabelText('Collapse inspector'));
     expect(screen.getByLabelText('Show inspector')).toBeTruthy();
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
+  });
+
+  it('hides the app rail for sidebar=hidden URLs and reveals it by removing the URL parameter', async () => {
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(
+      null,
+      '',
+      '#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden',
+    );
+
+    render(h(App, {}));
+
+    expect(screen.queryByLabelText('Main navigation')).toBeNull();
+    const reveal = screen.getByLabelText('Show navigation sidebar');
+    fireEvent.click(reveal);
+
+    await waitFor(() => expect(screen.getByLabelText('Main navigation')).toBeTruthy());
+    expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
   });
 });
 
