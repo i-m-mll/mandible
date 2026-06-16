@@ -81,6 +81,7 @@ export type AuthQueueViewProps = {
   selectedAuthId?: string | null;
   /** Deep-link: select and scroll to a specific request on mount (from graph node click). */
   initialRequestId?: string;
+  sidebarHidden?: boolean;
   onSelectAuth?: (id: string | null) => void;
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
@@ -1561,6 +1562,7 @@ export function AuthQueueView({
   onRetry,
   onDismiss,
   onUpdateField,
+  sidebarHidden = false,
 }: AuthQueueViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
     defaultWidth: 320,
@@ -2432,40 +2434,42 @@ export function AuthQueueView({
         </div>
       )}
 
-      {/* LEFT sidebar */}
-      <div className="auth-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-        <div
-          className="auth-sidebar__search"
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setFilterMenuOpen(false);
-            }
-          }}
-        >
-          <input
-            type="text"
-            className="auth-sidebar__search-input"
-            placeholder="Search auth requests..."
-            value={authSearch}
-            onInput={(event) => setAuthSearch(event.currentTarget.value)}
-          />
-          {authSearch && (
-            <button type="button" className="auth-sidebar__search-clear" aria-label="Clear auth search" title="Clear" onClick={() => setAuthSearch('')}>
-              <ClearIcon />
-            </button>
-          )}
-          <button
-            type="button"
-            className={`auth-sidebar__advanced-trigger${filterMenuOpen ? ' auth-sidebar__advanced-trigger--active' : ''}`}
-            aria-label="Advanced auth filters"
-            title="Advanced auth filters"
-            onClick={() => setFilterMenuOpen((prev) => !prev)}
-          >
-            <FilterIcon />
-          </button>
-          {activeFilterSummary && <div className="auth-sidebar__filter-summary">{activeFilterSummary}</div>}
-          {filterMenuOpen && (
-            <div className="auth-filter-menu">
+      {!sidebarHidden ? (
+        <>
+          {/* LEFT sidebar */}
+          <div className="auth-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
+            <div
+              className="auth-sidebar__search"
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setFilterMenuOpen(false);
+                }
+              }}
+            >
+              <input
+                type="text"
+                className="auth-sidebar__search-input"
+                placeholder="Search auth requests..."
+                value={authSearch}
+                onInput={(event) => setAuthSearch(event.currentTarget.value)}
+              />
+              {authSearch && (
+                <button type="button" className="auth-sidebar__search-clear" aria-label="Clear auth search" title="Clear" onClick={() => setAuthSearch('')}>
+                  <ClearIcon />
+                </button>
+              )}
+              <button
+                type="button"
+                className={`auth-sidebar__advanced-trigger${filterMenuOpen ? ' auth-sidebar__advanced-trigger--active' : ''}`}
+                aria-label="Advanced auth filters"
+                title="Advanced auth filters"
+                onClick={() => setFilterMenuOpen((prev) => !prev)}
+              >
+                <FilterIcon />
+              </button>
+              {activeFilterSummary && <div className="auth-sidebar__filter-summary">{activeFilterSummary}</div>}
+              {filterMenuOpen && (
+                <div className="auth-filter-menu">
               <div className="auth-filter-menu__header">
                 <span>Filters</span>
                 <button type="button" className="auth-filter-menu__clear" onClick={clearAuthFilters}>Clear</button>
@@ -2585,62 +2589,64 @@ export function AuthQueueView({
                   </div>
                 </div>
               )}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        <div className="auth-sidebar__list">
-          {filteredSidebarItems.length === 0 ? (
-            <div className="auth-sidebar__empty">
-              {authSearch
-                ? 'No requests match the search.'
-                : typeFilter !== 'all'
-                  ? `No ${AUTH_TYPE_META[typeFilter].label.toLowerCase()} requests.`
-                  : branchFilter
-                    ? `No requests for branch ${branchFilter.split('/').pop() ?? branchFilter}.`
-                    : repoFilter
-                      ? `No requests for ${repoFilter.includes('/') ? repoFilter.split('/')[1] : repoFilter}.`
-                      : filterMode === 'active'
-                        ? 'No active requests.'
-                        : filterMode === 'historical'
-                          ? 'No historical requests.'
-                          : 'No auth requests.'}
+            <div className="auth-sidebar__list">
+              {filteredSidebarItems.length === 0 ? (
+                <div className="auth-sidebar__empty">
+                  {authSearch
+                    ? 'No requests match the search.'
+                    : typeFilter !== 'all'
+                      ? `No ${AUTH_TYPE_META[typeFilter].label.toLowerCase()} requests.`
+                      : branchFilter
+                        ? `No requests for branch ${branchFilter.split('/').pop() ?? branchFilter}.`
+                        : repoFilter
+                          ? `No requests for ${repoFilter.includes('/') ? repoFilter.split('/')[1] : repoFilter}.`
+                          : filterMode === 'active'
+                            ? 'No active requests.'
+                            : filterMode === 'historical'
+                              ? 'No historical requests.'
+                              : 'No auth requests.'}
+                </div>
+              ) : (
+                filteredSidebarItems.map((request) => (
+                  <AuthSidebarItem
+                    key={getAuthId(request)}
+                    request={request}
+                    selected={getAuthId(request) === selectedId}
+                    onSelect={handleSelect}
+                  />
+                ))
+              )}
             </div>
-          ) : (
-            filteredSidebarItems.map((request) => (
-              <AuthSidebarItem
-                key={getAuthId(request)}
-                request={request}
-                selected={getAuthId(request) === selectedId}
-                onSelect={handleSelect}
-              />
-            ))
-          )}
-        </div>
 
-        <div className="auth-auto-approve">
-          <div className="auth-auto-approve__text">
-            <span className="auth-auto-approve__label">Auto-approve</span>
-            <span className="auth-auto-approve__status">
-              {autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
-            </span>
+            <div className="auth-auto-approve">
+              <div className="auth-auto-approve__text">
+                <span className="auth-auto-approve__label">Auto-approve</span>
+                <span className="auth-auto-approve__status">
+                  {autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
+                </span>
+              </div>
+              <button
+                type="button"
+                className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
+                role="switch"
+                aria-checked={Boolean(autoApproveStatus?.enabled)}
+                aria-label="Toggle auth auto-approve"
+                disabled={autoApproveBusy || !autoApproveStatus}
+                onClick={() => void handleAutoApproveToggle()}
+              >
+                <span className="auth-auto-approve__knob" />
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
-            role="switch"
-            aria-checked={Boolean(autoApproveStatus?.enabled)}
-            aria-label="Toggle auth auto-approve"
-            disabled={autoApproveBusy || !autoApproveStatus}
-            onClick={() => void handleAutoApproveToggle()}
-          >
-            <span className="auth-auto-approve__knob" />
-          </button>
-        </div>
-      </div>
 
-      {/* Drag handle */}
-      <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
+          {/* Drag handle */}
+          <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
+        </>
+      ) : null}
 
       {/* RIGHT detail panel */}
       <div className="auth-detail" style={{ position: 'relative' }}>

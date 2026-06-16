@@ -13,8 +13,9 @@ import {
   routeHashFromMandibleDeepLink,
 } from '../ui/src/deep-links';
 import {
-  hashWithLeftSidebarVisible,
-  isLeftSidebarHidden,
+  hashWithViewSidebarHidden,
+  hashWithViewSidebarVisible,
+  isViewSidebarHidden,
   parseRouteFromHash,
 } from '../ui/src/routing';
 import {
@@ -214,7 +215,7 @@ describe('App routing', () => {
     });
   });
 
-  it('parses sidebar=hidden as the route-scoped left navigation hide request', () => {
+  it('parses sidebar=hidden as the route-scoped view sidebar hide request', () => {
     const route = parseRouteFromHash('#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden');
 
     expect(route).toEqual({
@@ -225,14 +226,15 @@ describe('App routing', () => {
         sidebar: 'hidden',
       },
     });
-    expect(isLeftSidebarHidden(route)).toBe(true);
-    expect(isLeftSidebarHidden(parseRouteFromHash('#/issues?sidebar=visible'))).toBe(false);
+    expect(isViewSidebarHidden(route)).toBe(true);
+    expect(isViewSidebarHidden(parseRouteFromHash('#/issues?sidebar=visible'))).toBe(false);
   });
 
-  it('removes only the sidebar visibility parameter when revealing the left navigation', () => {
-    expect(hashWithLeftSidebarVisible('#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden')).toBe(
+  it('updates only the sidebar visibility parameter', () => {
+    expect(hashWithViewSidebarVisible('#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden')).toBe(
       '#/issues?repo=dotfiles&issue=e70757d',
     );
+    expect(hashWithViewSidebarHidden('#/auth?request=abc')).toBe('#/auth?request=abc&sidebar=hidden');
   });
 
   it('maps mandible issue deep links onto the existing Issues hash route', () => {
@@ -376,7 +378,7 @@ describe('app shell', () => {
     expect(screen.queryByLabelText('Test inspector')).toBeNull();
   });
 
-  it('hides the app rail for sidebar=hidden URLs and reveals it by removing the URL parameter', async () => {
+  it('keeps the app rail visible while sidebar=hidden hides the view sidebar', async () => {
     stubAppShellFetch();
     stubEventSource();
     window.history.replaceState(
@@ -387,11 +389,12 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    expect(screen.queryByLabelText('Main navigation')).toBeNull();
-    const reveal = screen.getByLabelText('Show navigation sidebar');
+    expect(screen.getByLabelText('Main navigation')).toBeTruthy();
+    expect(screen.queryByPlaceholderText('Filter issues...')).toBeNull();
+    const reveal = screen.getByLabelText('Show view sidebar');
     fireEvent.click(reveal);
 
-    await waitFor(() => expect(screen.getByLabelText('Main navigation')).toBeTruthy());
+    await waitFor(() => expect(screen.getByPlaceholderText('Filter issues...')).toBeTruthy());
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
   });
 });

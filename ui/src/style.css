@@ -138,28 +138,6 @@ a {
   outline: none;
 }
 
-.app-header__text-button {
-  min-height: 32px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  padding: 0 10px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.app-header__text-button:hover,
-.app-header__text-button:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
-  outline: none;
-}
-
 .app-layout {
   flex: 1;
   min-height: 0;
@@ -174,20 +152,12 @@ a {
   overflow: visible;
 }
 
-.app-layout--rail-hidden {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 .app-layout--right-sidebar-open {
   grid-template-columns: 208px minmax(0, 1fr) var(--app-right-sidebar-width, 350px);
 }
 
 .app-layout--rail-icons.app-layout--right-sidebar-open {
   grid-template-columns: 56px minmax(0, 1fr) var(--app-right-sidebar-width, 350px);
-}
-
-.app-layout--rail-hidden.app-layout--right-sidebar-open {
-  grid-template-columns: minmax(0, 1fr) var(--app-right-sidebar-width, 350px);
 }
 
 .app-right-sidebar {
@@ -273,6 +243,24 @@ a {
   gap: 14px;
   overflow: hidden auto;
   padding-right: 2px;
+}
+
+.app-rail__sidebar-controls {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.app-rail__sidebar-toggle {
+  width: 100%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.app-rail__sidebar-toggle--active {
+  color: var(--text-primary);
 }
 
 .app-rail__group {
@@ -395,6 +383,11 @@ a {
   width: 40px;
   justify-content: center;
   padding-inline: 0;
+}
+
+.app-layout--rail-icons .app-rail__sidebar-controls {
+  align-items: center;
+  width: 100%;
 }
 
 .app-layout--rail-icons .app-rail__badge {
@@ -6894,14 +6887,8 @@ tr:hover .work-actions__trigger {
 .chat-sidebar-top {
   position: relative;
   flex: 0 0 auto;
-  padding: 10px 10px 10px 38px;
+  padding: 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.chat-sidebar-shelf-btn {
-  position: absolute;
-  left: 6px;
-  top: 10px;
 }
 
 .chat-sidebar-new {
@@ -7486,17 +7473,6 @@ tr:hover .work-actions__trigger {
   overflow: hidden;
   padding: 0;
   display: flex;
-}
-
-.chat-sidebar-reveal {
-  position: absolute;
-  left: 12px;
-  top: 8px;
-  z-index: 20;
-}
-
-.conv-detail--shelf-collapsed .conv-detail__header {
-  padding-left: 54px;
 }
 
 .conv-load-error {

@@ -93,6 +93,7 @@ export type IssuesViewProps = {
   initialIssueId?: string;
   initialCommentId?: string;
   defaultFilter?: string;
+  sidebarHidden?: boolean;
 };
 
 // --- Helpers ---
@@ -260,6 +261,7 @@ export function IssuesView({
   initialIssueId,
   initialCommentId,
   defaultFilter,
+  sidebarHidden = false,
 }: IssuesViewProps): JSX.Element {
   const normalizedDefaultFilter = useMemo(
     () => normalizeIssueDefaultFilter(defaultFilter),
@@ -583,46 +585,46 @@ export function IssuesView({
 
   return (
     <div className="issues-view">
-      {/* Left sidebar panel */}
-      <div className="issues-tree" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-        <div className="sidebar-drag-handle issues-tree__resize-handle" onMouseDown={handleMouseDown} />
-        <div
-          className="issues-filter"
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setFilterMenuOpen(false);
-            }
-          }}
-        >
-          <input
-            type="text"
-            className="issues-filter__input"
-            placeholder="Filter issues..."
-            value={filter}
-            onInput={(e) => setIssueFilter(e.currentTarget.value)}
-          />
-          {filter && (
+      {!sidebarHidden ? (
+        <div className="issues-tree" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
+          <div className="sidebar-drag-handle issues-tree__resize-handle" onMouseDown={handleMouseDown} />
+          <div
+            className="issues-filter"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setFilterMenuOpen(false);
+              }
+            }}
+          >
+            <input
+              type="text"
+              className="issues-filter__input"
+              placeholder="Filter issues..."
+              value={filter}
+              onInput={(e) => setIssueFilter(e.currentTarget.value)}
+            />
+            {filter && (
+              <button
+                type="button"
+                className="issues-filter__clear"
+                aria-label="Clear issue filter"
+                title="Clear issue filter"
+                onClick={() => setIssueFilter('')}
+              >
+                <ClearIcon />
+              </button>
+            )}
             <button
               type="button"
-              className="issues-filter__clear"
-              aria-label="Clear issue filter"
-              title="Clear issue filter"
-              onClick={() => setIssueFilter('')}
+              className={`issues-filter__advanced-trigger${filterMenuOpen ? ' issues-filter__advanced-trigger--active' : ''}`}
+              aria-label="Advanced issue filters"
+              title="Advanced issue filters"
+              onClick={() => setFilterMenuOpen((prev) => !prev)}
             >
-              <ClearIcon />
+              <FilterIcon />
             </button>
-          )}
-          <button
-            type="button"
-            className={`issues-filter__advanced-trigger${filterMenuOpen ? ' issues-filter__advanced-trigger--active' : ''}`}
-            aria-label="Advanced issue filters"
-            title="Advanced issue filters"
-            onClick={() => setFilterMenuOpen((prev) => !prev)}
-          >
-            <FilterIcon />
-          </button>
-          {filterMenuOpen && (
-            <div className="issues-filter-menu">
+            {filterMenuOpen && (
+              <div className="issues-filter-menu">
               <div className="issues-filter-menu__header">
                 <span>Filters</span>
                 <button
@@ -678,9 +680,9 @@ export function IssuesView({
                   ))}
                 </div>
               </div>
-            </div>
-          )}
-        </div>
+              </div>
+            )}
+          </div>
 
         {/* Repo filter */}
         <div
@@ -794,6 +796,7 @@ export function IssuesView({
           </div>
         )}
       </div>
+      ) : null}
 
       {/* Right detail panel */}
       <div className="issues-detail">
