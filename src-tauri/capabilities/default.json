@@ -3,6 +3,12 @@
   "identifier": "default",
   "description": "Default capability for Mandible",
   "windows": ["main"],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:19420",
+      "http://localhost:19420"
+    ]
+  },
   "permissions": [
     "core:default",
     "deep-link:default"
