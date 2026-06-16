@@ -29,7 +29,12 @@ import {
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
 import { installTauriDeepLinkHandler } from './deep-links';
-import { parseRouteFromHash, type Route } from './routing';
+import {
+  hashWithLeftSidebarVisible,
+  isLeftSidebarHidden,
+  parseRouteFromHash,
+  type Route,
+} from './routing';
 import {
   AppShellProvider,
   RightSidebarIcon,
@@ -190,6 +195,13 @@ function App(): JSX.Element {
       }
     }
     navigateToHash('#/settings');
+  }, [navigateToHash]);
+
+  const showLeftSidebar = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    navigateToHash(hashWithLeftSidebarVisible(window.location.hash || '#/graph'));
   }, [navigateToHash]);
 
   const handleSettingsClose = useCallback(() => {
@@ -990,6 +1002,7 @@ function App(): JSX.Element {
   );
   const rightSidebarAvailable = Boolean(rightSidebar?.content);
   const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
+  const leftSidebarHidden = isLeftSidebarHidden(route);
   const rightSidebarToggleLabel = rightSidebar
     ? rightSidebar.open
       ? `Collapse ${rightSidebar.title}`
@@ -1065,6 +1078,17 @@ function App(): JSX.Element {
         </div>
         <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
         <div className="app-header__actions">
+          {leftSidebarHidden ? (
+            <button
+              type="button"
+              className="app-header__text-button"
+              onClick={showLeftSidebar}
+              aria-label="Show navigation sidebar"
+              title="Show navigation sidebar"
+            >
+              Show navigation
+            </button>
+          ) : null}
           {rightSidebarAvailable ? (
             <button
               type="button"
@@ -1081,30 +1105,32 @@ function App(): JSX.Element {
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
+          className={`app-layout app-layout--rail-${railDisplayMode}${leftSidebarHidden ? ' app-layout--rail-hidden' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
           style={rightSidebarOpen && rightSidebar ? {
             '--app-right-sidebar-width': `${rightSidebar.width}px`,
           } as JSX.CSSProperties : undefined}
         >
-          <aside className="app-rail" data-tauri-drag-region>
-          <nav className="app-rail__nav" aria-label="Main navigation">
-            <div className="app-rail__group">
-              {primaryNavItems.map(renderRailItem)}
-            </div>
-            <div className="app-rail__group app-rail__group--secondary">
-              {secondaryNavItems.map(renderRailItem)}
-            </div>
-          </nav>
-          <nav className="app-rail__footer" aria-label="Settings">
-            {renderRailItem({
-              tab: 'settings',
-              href: '#/settings',
-              label: 'Settings',
-              title: 'Settings',
-              icon: SettingsIcon,
-            })}
-          </nav>
-        </aside>
+          {!leftSidebarHidden ? (
+            <aside className="app-rail" data-tauri-drag-region>
+              <nav className="app-rail__nav" aria-label="Main navigation">
+                <div className="app-rail__group">
+                  {primaryNavItems.map(renderRailItem)}
+                </div>
+                <div className="app-rail__group app-rail__group--secondary">
+                  {secondaryNavItems.map(renderRailItem)}
+                </div>
+              </nav>
+              <nav className="app-rail__footer" aria-label="Settings">
+                {renderRailItem({
+                  tab: 'settings',
+                  href: '#/settings',
+                  label: 'Settings',
+                  title: 'Settings',
+                  icon: SettingsIcon,
+                })}
+              </nav>
+            </aside>
+          ) : null}
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}`}
         >
