@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capability for Mandible","local":true,"windows":["main"],"permissions":["core:default","deep-link:default"]}}
+{"default":{"identifier":"default","description":"Default capability for Mandible","remote":{"urls":["http://127.0.0.1:19420","http://localhost:19420"]},"local":true,"windows":["main"],"permissions":["core:default","deep-link:default"]}}

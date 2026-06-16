@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
@@ -6,6 +7,7 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
 import { getReviewSpec, patchSession, updateConversation } from '../ui/src/api';
 import {
+  installTauriDeepLinkHandler,
   navigateToMandibleDeepLink,
   routeHashFromMandibleDeepLink,
 } from '../ui/src/deep-links';
@@ -36,6 +38,8 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.doUnmock('@tauri-apps/plugin-deep-link');
+  delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
 });
 
 function changeSelect(select: HTMLElement, value: string): void {
@@ -148,6 +152,47 @@ describe('App routing', () => {
 
     expect(navigateToMandibleDeepLink('mandible:///issues', navigate)).toBe(false);
     expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  it('enables Tauri deep-link APIs for the daemon-served loopback dashboard', () => {
+    const capability = JSON.parse(
+      readFileSync('src-tauri/capabilities/default.json', 'utf8'),
+    ) as { remote?: { urls?: string[] }; permissions?: string[] };
+
+    expect(capability.remote?.urls).toContain('http://127.0.0.1:19420');
+    expect(capability.remote?.urls).toContain('http://localhost:19420');
+    expect(capability.permissions).toContain('deep-link:default');
+  });
+
+  it('registers the warm deep-link listener before reading the cold-start URL', async () => {
+    const calls: string[] = [];
+    const cleanup = vi.fn(() => calls.push('cleanup'));
+    const onOpenUrl = vi.fn(async (handler: (urls: string[]) => void) => {
+      calls.push('listen');
+      handler(['mandible:///auth?request=warm']);
+      return cleanup;
+    });
+    const getCurrent = vi.fn(async () => {
+      calls.push('current');
+      return ['mandible:///issues?issue=cold'];
+    });
+    vi.doMock('@tauri-apps/plugin-deep-link', () => ({ getCurrent, onOpenUrl }));
+    (window as Window & { __TAURI__?: unknown }).__TAURI__ = {};
+
+    const navigate = vi.fn((hash: string) => calls.push(`navigate:${hash}`));
+    const removeListener = await installTauriDeepLinkHandler(navigate);
+
+    expect(calls).toEqual([
+      'listen',
+      'navigate:#/auth?request=warm',
+      'current',
+      'navigate:#/issues?issue=cold',
+    ]);
+    expect(onOpenUrl).toHaveBeenCalledOnce();
+    expect(getCurrent).toHaveBeenCalledOnce();
+
+    removeListener();
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 });
 

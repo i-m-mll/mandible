@@ -96,6 +96,12 @@ export async function installTauriDeepLinkHandler(
     }
   };
 
-  navigateAll(await deepLink.getCurrent());
-  return deepLink.onOpenUrl(navigateAll);
+  const removeListener = await deepLink.onOpenUrl(navigateAll);
+  try {
+    navigateAll(await deepLink.getCurrent());
+  } catch (error) {
+    removeListener();
+    throw error;
+  }
+  return removeListener;
 }
