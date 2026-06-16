@@ -138,6 +138,28 @@ a {
   outline: none;
 }
 
+.app-header__text-button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.app-header__text-button:hover,
+.app-header__text-button:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+
 .app-layout {
   flex: 1;
   min-height: 0;
@@ -152,12 +174,20 @@ a {
   overflow: visible;
 }
 
+.app-layout--rail-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .app-layout--right-sidebar-open {
   grid-template-columns: 208px minmax(0, 1fr) var(--app-right-sidebar-width, 350px);
 }
 
 .app-layout--rail-icons.app-layout--right-sidebar-open {
   grid-template-columns: 56px minmax(0, 1fr) var(--app-right-sidebar-width, 350px);
+}
+
+.app-layout--rail-hidden.app-layout--right-sidebar-open {
+  grid-template-columns: minmax(0, 1fr) var(--app-right-sidebar-width, 350px);
 }
 
 .app-right-sidebar {
