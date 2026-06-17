@@ -412,6 +412,45 @@ describe('app shell', () => {
     await waitFor(() => expect(screen.getByPlaceholderText('Filter issues...')).toBeTruthy());
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
   });
+
+  it('renders Graph bottom detail without a registration loop', async () => {
+    stubEventSource();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/graph?')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({
+            mode: 'activity',
+            nodes: [{
+              id: 'repo:mandible',
+              type: 'repo',
+              label: 'mandible',
+              status: 'active',
+              repo: 'mandible',
+            }],
+            edges: [],
+          }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState(null, '', '#/graph');
+
+    render(h(App, {}));
+
+    await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
+    expect(screen.getByLabelText('Graph detail')).toBeTruthy();
+    expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
+      .toBeLessThan(5);
+  });
 });
 
 describe('SettingsView', () => {

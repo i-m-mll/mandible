@@ -956,7 +956,7 @@ function App(): JSX.Element {
     dispatch({ type: 'setSelectedInboxItemId', id });
   };
 
-  const handleGraphNavigate = (type: GraphNodeType, id: string, repoId?: string) => {
+  const handleGraphNavigate = useCallback((type: GraphNodeType, id: string, repoId?: string) => {
     switch (type) {
       case 'issue': {
         // id is the full graph node ID "issue:<repo_id>:<issue_human_id>"; extract parts
@@ -985,7 +985,7 @@ function App(): JSX.Element {
       default:
         break;
     }
-  };
+  }, [navigateToHash]);
 
   const primaryNavItems: NavItem[] = [
     {
