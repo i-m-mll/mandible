@@ -1378,7 +1378,7 @@ a {
   width: 100%;
   border: 0;
   border-bottom: 1px solid var(--neutral-alpha-055);
-  padding: 8px 76px 8px calc(12px + var(--depth) * 16px);
+  padding: 8px 42px 8px calc(8px + var(--depth) * 16px);
   background: transparent;
   color: inherit;
   text-align: left;
