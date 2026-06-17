@@ -1,27 +1,27 @@
 import { createContext, type ComponentChildren } from 'preact';
 import { useContext, useEffect } from 'preact/hooks';
 
-export type AppRightSidebarDescriptor = {
+export type AppBottomPanelDescriptor = {
   id: string;
   title: string;
   ariaLabel: string;
   open: boolean;
-  width: number;
-  minWidth?: number;
-  maxWidth?: number;
+  height: number;
+  minHeight?: number;
+  maxHeight?: number;
   onOpenChange(open: boolean): void;
-  onWidthChange(width: number): void;
+  onHeightChange(height: number): void;
   content: JSX.Element | null;
 };
 
 export type AppShellContextValue = {
-  rightSidebar: AppRightSidebarDescriptor | null;
-  registerRightSidebar(descriptor: AppRightSidebarDescriptor): () => void;
+  bottomPanel: AppBottomPanelDescriptor | null;
+  registerBottomPanel(descriptor: AppBottomPanelDescriptor): () => void;
 };
 
 const noopContext: AppShellContextValue = {
-  rightSidebar: null,
-  registerRightSidebar: () => () => undefined,
+  bottomPanel: null,
+  registerBottomPanel: () => () => undefined,
 };
 
 const AppShellContext = createContext<AppShellContextValue>(noopContext);
@@ -44,20 +44,20 @@ export function useAppShell(): AppShellContextValue {
   return useContext(AppShellContext);
 }
 
-export function useRegisterAppRightSidebar(
-  descriptor: AppRightSidebarDescriptor | null,
+export function useRegisterAppBottomPanel(
+  descriptor: AppBottomPanelDescriptor | null,
 ): void {
-  const { registerRightSidebar } = useAppShell();
+  const { registerBottomPanel } = useAppShell();
 
   useEffect(() => {
     if (!descriptor) {
       return undefined;
     }
-    return registerRightSidebar(descriptor);
-  }, [descriptor, registerRightSidebar]);
+    return registerBottomPanel(descriptor);
+  }, [descriptor, registerBottomPanel]);
 }
 
-export function RightSidebarIcon({ open, size = 18 }: { open: boolean; size?: number }): JSX.Element {
+export function BottomPanelIcon({ open, size = 18 }: { open: boolean; size?: number }): JSX.Element {
   return (
     <svg
       width={size}
@@ -72,8 +72,8 @@ export function RightSidebarIcon({ open, size = 18 }: { open: boolean; size?: nu
       focusable="false"
     >
       <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M15 4v16" />
-      {open ? <path d="M17.5 8.5h1.5M17.5 12h1.5M17.5 15.5h1.5" /> : null}
+      <path d="M3 15h18" />
+      {open ? <path d="M8.5 17.5h7M10.5 12h3" /> : null}
     </svg>
   );
 }
