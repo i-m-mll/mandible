@@ -203,6 +203,7 @@ interface GraphViewProps {
   refreshToken?: number
   initialMode?: string
   initialFocus?: string
+  sidebarHidden?: boolean
 }
 
 const FLOW_NODE_WIDTH = 190;
@@ -877,7 +878,13 @@ function DetailPane({
   );
 }
 
-export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus }: GraphViewProps): JSX.Element {
+export function GraphView({
+  onNavigate,
+  refreshToken,
+  initialMode,
+  initialFocus,
+  sidebarHidden = false,
+}: GraphViewProps): JSX.Element {
   const routeMode = coerceGraphMode(initialMode);
   const [payload, setPayload] = useState<GraphPayload>({ nodes: [], edges: [], mode: DEFAULT_GRAPH_PRESET });
   const [loading, setLoading] = useState(true);
@@ -1042,117 +1049,119 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     : '';
 
   return (
-    <div className="graph-view">
-      <div className="graph-topbar">
-        <div className="graph-spec-row graph-spec-row--lens">
-          <span className="graph-spec-row__label">Lens</span>
-          <div className="graph-lens-strip" aria-label="Graph lens presets">
-            {lenses.map((item) => (
-              <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
-            ))}
-          </div>
-        </div>
-        <div className="graph-spec-row graph-spec-row--scope">
-          <span className="graph-spec-row__label">Scope</span>
-          <div className="graph-toolbar__combobox-group">
-            <TokenMultiSelect
-              placeholder="All repos"
-              options={repos}
-              selected={spec.repos}
-              onChange={(repos) => updateSpec({ repos })}
-            />
-            <TokenMultiSelect
-              placeholder="All branches"
-              options={branches}
-              selected={spec.branches}
-              onChange={(branches) => updateSpec({ branches })}
-              disabled={branches.length === 0}
-            />
-          </div>
-        </div>
-        <div className="graph-spec-row graph-spec-row--legend">
-          <span className="graph-spec-row__label">Nodes</span>
-          <div className="graph-legend-stack">
-            <div className="graph-legend-strip" aria-label="Visible node families">
-              {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
-              {nodeLegend.map((item) => (
-                <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+    <div className={`graph-view${sidebarHidden ? ' graph-view--sidebar-hidden' : ''}`}>
+      {!sidebarHidden ? (
+        <aside className="graph-sidebar" aria-label="Graph controls">
+          <div className="graph-spec-row graph-spec-row--lens">
+            <span className="graph-spec-row__label">Lens</span>
+            <div className="graph-lens-strip" aria-label="Graph lens presets">
+              {lenses.map((item) => (
+                <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
               ))}
             </div>
-            {spec.preset === 'issue' && nodeLegend.length === 1 && nodeLegend[0]?.id === 'issue' && (
-              <div className="graph-row-note">
-                Only issue nodes are shown in this lens by default; auth and session evidence stays attached to issue details.
+          </div>
+          <div className="graph-spec-row graph-spec-row--scope">
+            <span className="graph-spec-row__label">Scope</span>
+            <div className="graph-toolbar__combobox-group">
+              <TokenMultiSelect
+                placeholder="All repos"
+                options={repos}
+                selected={spec.repos}
+                onChange={(repos) => updateSpec({ repos })}
+              />
+              <TokenMultiSelect
+                placeholder="All branches"
+                options={branches}
+                selected={spec.branches}
+                onChange={(branches) => updateSpec({ branches })}
+                disabled={branches.length === 0}
+              />
+            </div>
+          </div>
+          <div className="graph-spec-row graph-spec-row--legend">
+            <span className="graph-spec-row__label">Nodes</span>
+            <div className="graph-legend-stack">
+              <div className="graph-legend-strip" aria-label="Visible node families">
+                {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
+                {nodeLegend.map((item) => (
+                  <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+                ))}
               </div>
-            )}
-          </div>
-        </div>
-        <div className="graph-spec-row graph-spec-row--legend">
-          <span className="graph-spec-row__label">Edges</span>
-          <div className="graph-legend-stack">
-            <div className="graph-legend-strip" aria-label="Visible edge families">
-              {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
-              {edgeLegend.map((item) => (
-                <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
-              ))}
-            </div>
-            <div className="graph-row-note">
-              Hierarchy edges place parent and umbrella issues; reference and evidence edges add context without changing the issue tree.
+              {spec.preset === 'issue' && nodeLegend.length === 1 && nodeLegend[0]?.id === 'issue' && (
+                <div className="graph-row-note">
+                  Only issue nodes are shown in this lens by default; auth and session evidence stays attached to issue details.
+                </div>
+              )}
             </div>
           </div>
-        </div>
-        <div className="graph-toolbar" aria-label="Graph filters and size">
-          <div className="graph-control-group">
-            <span className="graph-control-group__label">Time</span>
-            <div className="graph-toolbar__toggle-group">
-              {(['1d', '3d', '7d', 'all'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`graph-toolbar__toggle${spec.since === value ? ' graph-toolbar__toggle--active' : ''}`}
-                  onClick={() => updateSpec({ since: value })}
-                >
-                  {value}
-                </button>
-              ))}
+          <div className="graph-spec-row graph-spec-row--legend">
+            <span className="graph-spec-row__label">Edges</span>
+            <div className="graph-legend-stack">
+              <div className="graph-legend-strip" aria-label="Visible edge families">
+                {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
+                {edgeLegend.map((item) => (
+                  <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+                ))}
+              </div>
+              <div className="graph-row-note">
+                Hierarchy edges place parent and umbrella issues; reference and evidence edges add context without changing the issue tree.
+              </div>
             </div>
           </div>
-          <div className="graph-control-group">
-            <span className="graph-control-group__label">Status</span>
-            <div className="graph-toolbar__toggle-group">
-              {(['open', 'all'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`graph-toolbar__toggle${spec.status === value ? ' graph-toolbar__toggle--active' : ''}`}
-                  onClick={() => updateSpec({ status: value })}
-                >
-                  {value}
-                </button>
-              ))}
+          <div className="graph-toolbar" aria-label="Graph filters and size">
+            <div className="graph-control-group">
+              <span className="graph-control-group__label">Time</span>
+              <div className="graph-toolbar__toggle-group">
+                {(['1d', '3d', '7d', 'all'] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`graph-toolbar__toggle${spec.since === value ? ' graph-toolbar__toggle--active' : ''}`}
+                    onClick={() => updateSpec({ since: value })}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="graph-control-group">
+              <span className="graph-control-group__label">Status</span>
+              <div className="graph-toolbar__toggle-group">
+                {(['open', 'all'] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`graph-toolbar__toggle${spec.status === value ? ' graph-toolbar__toggle--active' : ''}`}
+                    onClick={() => updateSpec({ status: value })}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="graph-control-group" aria-label="Graph size">
+              <span className="graph-control-group__label">Size</span>
+              <div className="graph-toolbar__toggle-group">
+                {GRAPH_SIZE_OPTIONS.map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={`graph-toolbar__toggle${spec.limit === value ? ' graph-toolbar__toggle--active' : ''}`}
+                    onClick={() => updateSpec({ limit: value })}
+                  >
+                    {value.toLocaleString()}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-          <div className="graph-control-group" aria-label="Graph size">
-            <span className="graph-control-group__label">Size</span>
-            <div className="graph-toolbar__toggle-group">
-              {GRAPH_SIZE_OPTIONS.map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`graph-toolbar__toggle${spec.limit === value ? ' graph-toolbar__toggle--active' : ''}`}
-                  onClick={() => updateSpec({ limit: value })}
-                >
-                  {value.toLocaleString()}
-                </button>
-              ))}
-            </div>
+          <div className="graph-display-summary" aria-live="polite">
+            <strong>{activeLensSummary}</strong>
+            <span>{graphDisplaySummary}</span>
+            {graphLimitSummary && <span>{graphLimitSummary}</span>}
           </div>
-        </div>
-        <div className="graph-display-summary" aria-live="polite">
-          <strong>{activeLensSummary}</strong>
-          <span>{graphDisplaySummary}</span>
-          {graphLimitSummary && <span>{graphLimitSummary}</span>}
-        </div>
-      </div>
+        </aside>
+      ) : null}
 
       <div className="graph-workspace">
         <div className="graph-canvas-wrap">

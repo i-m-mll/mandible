@@ -157,7 +157,15 @@ type NavItem = {
   icon: (props: { size?: number }) => JSX.Element;
 };
 
-const VIEW_SIDEBAR_TABS = new Set<Route['tab']>(['auth', 'issues', 'artifacts', 'console']);
+const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
+  'console',
+  'graph',
+  'timeline',
+  'auth',
+  'issues',
+  'artifacts',
+  'inbox',
+]);
 
 function SunIcon({ size = 18 }: { size?: number }): JSX.Element {
   return (
@@ -1318,6 +1326,7 @@ function App(): JSX.Element {
             data={state.inboxData}
             loading={state.inboxLoading}
             selectedItemId={state.selectedInboxItemId}
+            sidebarHidden={viewSidebarHidden}
             onSelectItem={handleSelectInboxItem}
             onAckContinuation={handleAckContinuation}
             onAckAuthResult={handleAckAuthResult}
@@ -1354,12 +1363,14 @@ function App(): JSX.Element {
             refreshToken={graphRefreshToken}
             initialMode={route.params.mode}
             initialFocus={route.params.focus}
+            sidebarHidden={viewSidebarHidden}
           />
         )}
         {route.tab === 'timeline' && (
           <TimelineView
             repos={state.workRepos}
             params={route.params}
+            sidebarHidden={viewSidebarHidden}
           />
         )}
         {route.tab === 'presets' && (
