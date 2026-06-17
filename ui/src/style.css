@@ -758,6 +758,16 @@ a {
   padding-inline: 6px;
 }
 
+:root[data-theme='light'] .app-rail__badge {
+  background: rgba(11, 99, 206, 0.18);
+  color: var(--accent-blue);
+}
+
+:root[data-theme='light'] .app-rail__badge.tab-badge--auth {
+  background: rgba(154, 91, 0, 0.2);
+  color: var(--accent-yellow);
+}
+
 .app-layout--rail-icons .app-rail {
   align-items: center;
   padding-inline: 6px;
@@ -787,6 +797,17 @@ a {
   min-width: 16px;
   padding: 1px 4px;
   font-size: 10px;
+}
+
+:root[data-theme='light'] .app-layout--rail-icons .app-rail__badge {
+  background: rgba(11, 99, 206, 0.88);
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9);
+}
+
+:root[data-theme='light'] .app-layout--rail-icons .app-rail__badge.tab-badge--auth {
+  background: rgba(154, 91, 0, 0.88);
+  color: #fff;
 }
 
 .daemon-toast {
@@ -11854,12 +11875,13 @@ tr:hover .work-actions__trigger {
 
 .graph-control-group {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr);
+  grid-template-columns: 52px auto;
   align-items: center;
   gap: 6px;
   color: var(--text-muted);
   font-size: 12px;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
 }
 
 .graph-control-group__label {
@@ -12033,6 +12055,8 @@ tr:hover .work-actions__trigger {
 
 .graph-toolbar__toggle-group {
   display: flex;
+  width: max-content;
+  max-width: 100%;
   border: 1px solid var(--neutral-alpha-10);
   border-radius: 8px;
   overflow: hidden;
