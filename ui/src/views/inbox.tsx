@@ -6,8 +6,40 @@ import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
 import { spawnIssueAgent } from '../api';
+import { appColors } from '../theme';
 
 marked.setOptions({ async: false, gfm: true, breaks: false });
+
+const INBOX_TONES = {
+  continuation: {
+    fg: appColors.inboxContinuation,
+    bg: appColors.inboxContinuationBg,
+  },
+  handoff: {
+    fg: appColors.inboxHandoff,
+    bg: appColors.inboxHandoffBg,
+  },
+  issue: {
+    fg: appColors.inboxIssue,
+    bg: appColors.inboxIssueBg,
+  },
+  presetDiff: {
+    fg: appColors.inboxPresetDiff,
+    bg: appColors.inboxPresetDiffBg,
+  },
+  authCompleted: {
+    fg: appColors.authResultCompleted,
+    bg: appColors.authResultCompletedBg,
+  },
+  authProblem: {
+    fg: appColors.authResultProblem,
+    bg: appColors.authResultProblemBg,
+  },
+  authNeutral: {
+    fg: appColors.authResultNeutral,
+    bg: appColors.authResultNeutralBg,
+  },
+} as const;
 
 /**
  * Strip dangerous tags and attributes from HTML produced by marked.
@@ -134,15 +166,15 @@ function formatRelativeTime(value: string | number | null): string {
 }
 
 function itemBorderColor(item: UnifiedItem): string {
-  if (item.type === 'continuation') return '#60a5fa';
-  if (item.type === 'work_unit_continuation') return '#f59e0b'; // amber for work-unit handoff
-  if (item.type === 'issue') return '#a78bfa';
-  if (item.type === 'preset_diff') return '#f5c25c'; // accent-yellow for preset diffs
+  if (item.type === 'continuation') return INBOX_TONES.continuation.fg;
+  if (item.type === 'work_unit_continuation') return INBOX_TONES.handoff.fg;
+  if (item.type === 'issue') return INBOX_TONES.issue.fg;
+  if (item.type === 'preset_diff') return INBOX_TONES.presetDiff.fg;
   const ar = item.raw as InboxAuthResult;
-  if (ar.status === 'completed') return '#34d399';
-  if (ar.status === 'rejected' || ar.status === 'expired' || ar.status === 'needs_rebase') return '#f87171';
-  if (ar.status === 'dismissed') return '#9ca3af';
-  return '#9ca3af';
+  if (ar.status === 'completed') return INBOX_TONES.authCompleted.fg;
+  if (ar.status === 'rejected' || ar.status === 'expired' || ar.status === 'needs_rebase') return INBOX_TONES.authProblem.fg;
+  if (ar.status === 'dismissed') return INBOX_TONES.authNeutral.fg;
+  return INBOX_TONES.authNeutral.fg;
 }
 
 function itemTypeBadge(item: UnifiedItem): string {
@@ -156,6 +188,20 @@ function itemTypeBadge(item: UnifiedItem): string {
 
 function itemTypeBadgeColor(item: UnifiedItem): string {
   return itemBorderColor(item);
+}
+
+function authResultTone(status: string): { fg: string; bg: string } {
+  if (status === 'completed') return INBOX_TONES.authCompleted;
+  if (status === 'rejected' || status === 'expired' || status === 'needs_rebase') {
+    return INBOX_TONES.authProblem;
+  }
+  return INBOX_TONES.authNeutral;
+}
+
+function presetDiffTone(status: string): { fg: string; bg: string } {
+  if (status === 'accepted') return INBOX_TONES.authCompleted;
+  if (status === 'rejected') return INBOX_TONES.authProblem;
+  return INBOX_TONES.presetDiff;
 }
 
 function buildUnifiedItems(data: InboxData): UnifiedItem[] {
@@ -435,7 +481,7 @@ function ContinuationDetail({
       <div className="inbox-detail__header">
         <span
           className="inbox-detail__type-badge"
-          style={{ color: '#60a5fa', background: '#60a5fa22' }}
+          style={{ color: INBOX_TONES.continuation.fg, background: INBOX_TONES.continuation.bg }}
         >
           Continuation
         </span>
@@ -484,12 +530,7 @@ function AuthResultDetail({
   item: InboxAuthResult;
   onAck: (id: string) => Promise<void>;
 }): JSX.Element {
-  const statusColor =
-    item.status === 'completed'
-      ? '#34d399'
-      : item.status === 'rejected' || item.status === 'expired' || item.status === 'needs_rebase'
-        ? '#f87171'
-        : '#9ca3af';
+  const statusTone = authResultTone(item.status);
   const statusLabel = item.status === 'needs_rebase'
     ? 'Needs rebase'
     : item.status.charAt(0).toUpperCase() + item.status.slice(1);
@@ -499,7 +540,7 @@ function AuthResultDetail({
       <div className="inbox-detail__header">
         <span
           className="inbox-detail__type-badge"
-          style={{ color: statusColor, background: `${statusColor}22` }}
+          style={{ color: statusTone.fg, background: statusTone.bg }}
         >
           {statusLabel}
         </span>
@@ -590,7 +631,7 @@ function WorkUnitContinuationDetail({
       <div className="inbox-detail__header">
         <span
           className="inbox-detail__type-badge"
-          style={{ color: '#f59e0b', background: '#f59e0b22' }}
+          style={{ color: INBOX_TONES.handoff.fg, background: INBOX_TONES.handoff.bg }}
         >
           Handoff
         </span>
@@ -652,7 +693,7 @@ function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
       <div className="inbox-detail__header">
         <span
           className="inbox-detail__type-badge"
-          style={{ color: '#a78bfa', background: '#a78bfa22' }}
+          style={{ color: INBOX_TONES.issue.fg, background: INBOX_TONES.issue.bg }}
         >
           Issue
         </span>
@@ -694,15 +735,13 @@ function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
 
 // Bug: 11f4f47 — Preset diff detail panel
 function PresetDiffDetail({ item }: { item: InboxPresetDiff }): JSX.Element {
-  const statusColor = item.status === 'accepted' ? '#34d399'
-    : item.status === 'rejected' ? '#f87171'
-    : '#f5c25c';
+  const statusTone = presetDiffTone(item.status);
   return (
     <div className="inbox-detail__content">
       <div className="inbox-detail__header">
         <span
           className="inbox-detail__type-badge"
-          style={{ color: statusColor, background: `${statusColor}22` }}
+          style={{ color: statusTone.fg, background: statusTone.bg }}
         >
           Preset Diff
         </span>
@@ -711,7 +750,7 @@ function PresetDiffDetail({ item }: { item: InboxPresetDiff }): JSX.Element {
       <div className="inbox-detail__meta">
         <div className="inbox-detail__meta-row">
           <span className="inbox-detail__meta-label">Status</span>
-          <span className="inbox-detail__meta-value" style={{ color: statusColor }}>
+          <span className="inbox-detail__meta-value" style={{ color: statusTone.fg }}>
             {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
           </span>
         </div>

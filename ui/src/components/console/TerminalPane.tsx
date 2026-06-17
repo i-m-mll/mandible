@@ -17,6 +17,7 @@ import { PtyBanner } from './PtyBanner';
 import { LivePresetPills } from './LivePresetPills';
 import { MessageInfoPanel } from './MessageInfoPanel';
 import { ContextIndicator } from '../presets/ContextIndicator';
+import { appColors, getTerminalTheme } from '../../theme';
 import {
   getConversation,
   getConversations,
@@ -448,11 +449,7 @@ export function TerminalPane({
       fontFamily: 'var(--font-mono)',
       fontSize: 13,
       lineHeight: 1.2,
-      theme: {
-        background: '#0b0f14',
-        foreground: '#e6edf3',
-        cursor: '#4da3ff',
-      },
+      theme: getTerminalTheme(containerRef.current),
       cursorBlink: true,
       scrollback: 5000,
       allowProposedApi: false,
@@ -1165,7 +1162,7 @@ export function TerminalPane({
                 borderRadius: '8px',
                 background: 'var(--accent-blue)',
                 border: 'none',
-                color: '#fff',
+                color: appColors.fgInverse,
                 cursor: 'pointer',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
@@ -1187,7 +1184,7 @@ export function TerminalPane({
                 borderRadius: '8px',
                 background: 'var(--accent-blue)',
                 border: 'none',
-                color: '#fff',
+                color: appColors.fgInverse,
                 cursor: 'pointer',
                 fontSize: '14px',
                 fontFamily: 'var(--font-sans)',
@@ -1285,7 +1282,7 @@ export function TerminalPane({
                     padding: '8px 16px',
                     borderRadius: '6px',
                     background: prompt.trim() ? 'var(--accent-blue)' : 'var(--bg-muted)',
-                    color: '#fff',
+                    color: appColors.fgInverse,
                     border: 'none',
                     cursor: prompt.trim() ? 'pointer' : 'default',
                     fontSize: '13px',

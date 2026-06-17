@@ -25,6 +25,7 @@ import {
   type LedgerIssueDetailProjection,
 } from '../api';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
+import { appColors } from '../theme';
 
 type GraphFetchParams = {
   mode: GraphMode
@@ -254,10 +255,10 @@ function nodeColor(node: GraphNode): string {
     if (node.labels?.includes('error')) return 'var(--accent-red)';
     if (node.labels?.includes('feature')) return 'var(--accent-blue)';
     if (node.labels?.includes('umbrella')) return 'var(--accent-purple)';
-    return 'rgba(230,237,243,0.86)';
+    return appColors.textPrimarySoft;
   }
   if (node.type === 'session') {
-    return node.active || node.status === 'active' ? 'var(--accent-green)' : 'rgba(154,164,178,0.64)';
+    return node.active || node.status === 'active' ? 'var(--accent-green)' : appColors.graphNodeMutedStrong;
   }
   if (node.type === 'auth_request') {
     if (node.status === 'pending' || node.status === 'executing') return 'var(--accent-yellow)';
@@ -269,7 +270,7 @@ function nodeColor(node: GraphNode): string {
   if (node.type === 'provider_manifest') return '#c4b5fd';
   if (node.type === 'artifact') return '#f7c873';
   if (node.type === 'run' || node.type === 'analysis') return '#8be9b5';
-  return 'rgba(230,237,243,0.76)';
+  return appColors.textPrimaryMuted;
 }
 
 function firstEntries(value: Record<string, unknown> | undefined, limit = 4): Array<[string, unknown]> {
@@ -1186,12 +1187,12 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
               <ViewportPortal>
                 <ManualGraphEdges edges={flowEdgeList} />
               </ViewportPortal>
-              <Background color="rgba(154,164,178,0.12)" gap={18} />
+              <Background color={appColors.graphBackgroundGrid} gap={18} />
               <MiniMap
                 pannable
                 zoomable
                 nodeColor={(node) => nodeColor((node.data as { node: GraphNode }).node)}
-                maskColor="rgba(11,15,20,0.64)"
+                maskColor={appColors.graphMinimapMask}
               />
               <Controls showInteractive={false} />
             </ReactFlow>
