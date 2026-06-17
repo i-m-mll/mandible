@@ -3,7 +3,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { marked } from 'marked';
 
 import { getProjectTimeline } from '../api';
-import { useRegisterAppRightSidebar } from '../app-shell';
+import { useRegisterAppBottomPanel } from '../app-shell';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 import { sanitizeMarkdown } from '../sanitize';
 import type { WorkRepo } from './work';
 import {
@@ -87,6 +88,7 @@ const FILTER_FIELD_PREFIXES = ['label:', 'kind:', 'referenced-by:', 'subtree:'];
 export type TimelineViewProps = {
   repos: WorkRepo[];
   params?: Record<string, string | undefined>;
+  sidebarHidden?: boolean;
 };
 
 type ProjectionStatus = 'loading' | 'syncing' | 'ready' | 'error';
@@ -704,6 +706,7 @@ function rowPrimaryLabel(row: TimelineRowOccurrence): string {
 }
 
 function rowTitle(row: TimelineRowOccurrence): string {
+  if (isResidualRow(row)) return 'Everything else';
   return row.issue?.title ?? row.row_spec?.title ?? 'Timeline group';
 }
 
@@ -766,7 +769,12 @@ function aggregateAccessibleLabel(interval: TimelineAggregateInterval): string {
   return `Aggregate marker for ${interval.issue.display_id} ${interval.issue.title}, ${interval.eventCount} ${interval.eventCount === 1 ? 'event' : 'events'} ${range}`;
 }
 
-export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Element {
+export function TimelineView({ repos, params = {}, sidebarHidden = false }: TimelineViewProps): JSX.Element {
+  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
+    defaultWidth: 320,
+    minWidth: 260,
+    storageKey: 'mandible_timeline_sidebar_width:v1',
+  });
   const urlState = useMemo(() => parseUrlState(params), [params]);
   const initialProjectRef = defaultProjectRef(repos, urlState.projectRef);
   const [projectRef, setProjectRef] = useState(initialProjectRef);
@@ -1621,159 +1629,173 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
     visibleSelectedRowEvents,
     zoomToCluster,
   ]);
-  const rightSidebarDescriptor = useMemo(() => ({
+  const bottomPanelDescriptor = useMemo(() => ({
     id: 'timeline-inspector',
     title: 'inspector',
     ariaLabel: 'Timeline inspector',
     open: viewState.panes.inspector,
-    width: viewState.panes.inspectorWidth,
-    minWidth: MIN_INSPECTOR_WIDTH,
-    maxWidth: MAX_INSPECTOR_WIDTH,
+    height: viewState.panes.inspectorWidth,
+    minHeight: MIN_INSPECTOR_WIDTH,
+    maxHeight: MAX_INSPECTOR_WIDTH,
     onOpenChange: (open: boolean) => {
       updateState({ panes: { ...viewState.panes, inspector: open } });
     },
-    onWidthChange: (width: number) => {
+    onHeightChange: (height: number) => {
       updateState({
         panes: {
           ...viewState.panes,
-          inspectorWidth: normalizeInspectorWidth(width),
+          inspectorWidth: normalizeInspectorWidth(height),
         },
       });
     },
     content: inspectorContent,
   }), [inspectorContent, updateState, viewState.panes]);
 
-  useRegisterAppRightSidebar(rightSidebarDescriptor);
+  useRegisterAppBottomPanel(bottomPanelDescriptor);
 
   return (
     <section className="timeline-workspace" aria-label="Project timeline">
-      <div className="timeline-toolbar">
-        <label className="timeline-control">
-          <span>Project</span>
-          <select
-            value={projectRef}
-            onChange={(event) => handleProjectChange((event.currentTarget as HTMLSelectElement).value)}
-          >
-            {repos.length === 0 ? <option value={projectRef}>{projectRef}</option> : repos.map((repo) => (
-              <option key={repoId(repo)} value={repoId(repo)}>{repoTitle(repo)}</option>
-            ))}
-          </select>
-        </label>
-        <label className="timeline-control">
-          <span>Roots</span>
-          <select
-            value={viewState.rootPolicy}
-            onChange={(event) => updateState({ rootPolicy: (event.currentTarget as HTMLSelectElement).value as TimelineRootPolicy })}
-          >
-            <option value="coordination_and_explicit">Coordination + explicit</option>
-            <option value="coordination">Coordination</option>
-            <option value="explicit">Explicit</option>
-          </select>
-        </label>
-        <label className="timeline-control timeline-control--wide">
-          <span>Explicit</span>
-          <input
-            value={serializeCsv(viewState.explicitRootIssueIds)}
-            onChange={(event) => updateState({ explicitRootIssueIds: parseCsv((event.currentTarget as HTMLInputElement).value) })}
-            placeholder="issue ids"
-          />
-        </label>
-        <label className="timeline-control">
-          <span>Density</span>
-          <select
-            value={viewState.density}
-            onChange={(event) => updateState({ density: (event.currentTarget as HTMLSelectElement).value as TimelineDensity })}
-          >
-            <option value="compact">Compact</option>
-            <option value="comfortable">Comfortable</option>
-            <option value="expanded">Expanded</option>
-          </select>
-        </label>
-        <label className="timeline-control">
-          <span>From</span>
-          <input
-            type="date"
-            value={dateInputValue(viewport.from)}
-            onChange={(event) => editDateBoundary('from', (event.currentTarget as HTMLInputElement).value)}
-          />
-        </label>
-        <label className="timeline-control">
-          <span>To</span>
-          <input
-            type="date"
-            value={dateInputValue(viewport.to)}
-            onChange={(event) => editDateBoundary('to', (event.currentTarget as HTMLInputElement).value)}
-          />
-        </label>
-        <div className="timeline-zoom-group" aria-label="Timeline zoom">
-          <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(2)} aria-label="Zoom out" title="Zoom out">-</button>
-          <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(0.5)} aria-label="Zoom in" title="Zoom in">+</button>
-          <button type="button" className="timeline-button" onClick={fitProject}>Fit all</button>
-        </div>
-        <div className="timeline-toggle-group" aria-label="Event types">
-          {EVENT_TYPES.map((kind) => {
-            const active = viewState.visibleEventTypes.includes(kind);
-            return (
-              <button
-                key={kind}
-                type="button"
-                className={active ? 'timeline-chip timeline-chip--active' : 'timeline-chip'}
-                onClick={() => updateState({
-                  visibleEventTypes: active
-                    ? viewState.visibleEventTypes.filter((item) => item !== kind)
-                    : [...viewState.visibleEventTypes, kind],
+      <div className={`timeline-layout${sidebarHidden ? ' timeline-layout--sidebar-hidden' : ''}`}>
+        {!sidebarHidden ? (
+          <>
+            <aside
+              className="timeline-sidebar"
+              aria-label="Timeline controls"
+              style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
+            >
+            <div className="timeline-toolbar">
+              <label className="timeline-control">
+                <span>Project</span>
+                <select
+                  value={projectRef}
+                  onChange={(event) => handleProjectChange((event.currentTarget as HTMLSelectElement).value)}
+                >
+                  {repos.length === 0 ? <option value={projectRef}>{projectRef}</option> : repos.map((repo) => (
+                    <option key={repoId(repo)} value={repoId(repo)}>{repoTitle(repo)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="timeline-control">
+                <span>Roots</span>
+                <select
+                  value={viewState.rootPolicy}
+                  onChange={(event) => updateState({ rootPolicy: (event.currentTarget as HTMLSelectElement).value as TimelineRootPolicy })}
+                >
+                  <option value="coordination_and_explicit">Coordination + explicit</option>
+                  <option value="coordination">Coordination</option>
+                  <option value="explicit">Explicit</option>
+                </select>
+              </label>
+              <label className="timeline-control timeline-control--wide">
+                <span>Explicit</span>
+                <input
+                  value={serializeCsv(viewState.explicitRootIssueIds)}
+                  onChange={(event) => updateState({ explicitRootIssueIds: parseCsv((event.currentTarget as HTMLInputElement).value) })}
+                  placeholder="issue ids"
+                />
+              </label>
+              <label className="timeline-control">
+                <span>Density</span>
+                <select
+                  value={viewState.density}
+                  onChange={(event) => updateState({ density: (event.currentTarget as HTMLSelectElement).value as TimelineDensity })}
+                >
+                  <option value="compact">Compact</option>
+                  <option value="comfortable">Comfortable</option>
+                  <option value="expanded">Expanded</option>
+                </select>
+              </label>
+              <label className="timeline-control">
+                <span>From</span>
+                <input
+                  type="date"
+                  value={dateInputValue(viewport.from)}
+                  onChange={(event) => editDateBoundary('from', (event.currentTarget as HTMLInputElement).value)}
+                />
+              </label>
+              <label className="timeline-control">
+                <span>To</span>
+                <input
+                  type="date"
+                  value={dateInputValue(viewport.to)}
+                  onChange={(event) => editDateBoundary('to', (event.currentTarget as HTMLInputElement).value)}
+                />
+              </label>
+              <div className="timeline-zoom-group" aria-label="Timeline zoom">
+                <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(2)} aria-label="Zoom out" title="Zoom out">-</button>
+                <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(0.5)} aria-label="Zoom in" title="Zoom in">+</button>
+                <button type="button" className="timeline-button" onClick={fitProject}>Fit all</button>
+              </div>
+              <div className="timeline-toggle-group" aria-label="Event types">
+                {EVENT_TYPES.map((kind) => {
+                  const active = viewState.visibleEventTypes.includes(kind);
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      className={active ? 'timeline-chip timeline-chip--active' : 'timeline-chip'}
+                      onClick={() => updateState({
+                        visibleEventTypes: active
+                          ? viewState.visibleEventTypes.filter((item) => item !== kind)
+                          : [...viewState.visibleEventTypes, kind],
+                      })}
+                    >
+                      {eventKindLabel(kind)}
+                    </button>
+                  );
                 })}
+              </div>
+              <label className="timeline-check">
+                <input
+                  type="checkbox"
+                  checked={viewState.includeClosed}
+                  onChange={(event) => updateState({ includeClosed: (event.currentTarget as HTMLInputElement).checked })}
+                />
+                <span>Closed</span>
+              </label>
+              <button type="button" className="timeline-button" onClick={fitSelected} disabled={!selectedRow && !selectedEvent}>Focus</button>
+              <button
+                type="button"
+                className="timeline-diagnostics-button"
+                onClick={() => updateState({ panes: { ...viewState.panes, diagnostics: !viewState.panes.diagnostics } })}
+                aria-expanded={viewState.panes.diagnostics}
+                aria-label={diagnosticsCount > 0 ? `Diagnostics (${diagnosticsCount})` : 'Diagnostics'}
               >
-                {eventKindLabel(kind)}
+                Diagnostics
+                {diagnosticsCount > 0 ? <span>{diagnosticsCount}</span> : null}
               </button>
-            );
-          })}
-        </div>
-        <label className="timeline-check">
-          <input
-            type="checkbox"
-            checked={viewState.includeClosed}
-            onChange={(event) => updateState({ includeClosed: (event.currentTarget as HTMLInputElement).checked })}
-          />
-          <span>Closed</span>
-        </label>
-        <button type="button" className="timeline-button" onClick={fitSelected} disabled={!selectedRow && !selectedEvent}>Focus</button>
-        <button
-          type="button"
-          className="timeline-diagnostics-button"
-          onClick={() => updateState({ panes: { ...viewState.panes, diagnostics: !viewState.panes.diagnostics } })}
-          aria-expanded={viewState.panes.diagnostics}
-          aria-label={diagnosticsCount > 0 ? `Diagnostics (${diagnosticsCount})` : 'Diagnostics'}
-        >
-          Diagnostics
-          {diagnosticsCount > 0 ? <span>{diagnosticsCount}</span> : null}
-        </button>
-        <div className="timeline-toolbar-spacer" />
-        {timelineLoading ? (
-          <div className="timeline-status" role="status" aria-label="Loading timeline" />
+              <div className="timeline-status-row" aria-live="polite">
+                {timelineLoading ? (
+                  <div className="timeline-status" role="status" aria-label="Loading timeline" />
+                ) : null}
+                {status === 'syncing' ? <div className="timeline-status" role="status" aria-label="Updating timeline" /> : null}
+              </div>
+            </div>
+
+            {viewState.panes.diagnostics ? (
+              <div className="timeline-diagnostics-panel" role="region" aria-label="Timeline diagnostics">
+                {diagnostics.length === 0 ? (
+                  <span>No diagnostics.</span>
+                ) : diagnostics.map((diagnostic) => (
+                  <span key={diagnostic.key}>
+                    <strong>{diagnostic.kind}</strong>
+                    {diagnostic.message}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            </aside>
+            <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
+          </>
         ) : null}
-        {status === 'syncing' ? <div className="timeline-status" role="status" aria-label="Updating timeline" /> : null}
-      </div>
 
-      {viewState.panes.diagnostics ? (
-        <div className="timeline-diagnostics-panel" role="region" aria-label="Timeline diagnostics">
-          {diagnostics.length === 0 ? (
-            <span>No diagnostics.</span>
-          ) : diagnostics.map((diagnostic) => (
-            <span key={diagnostic.key}>
-              <strong>{diagnostic.kind}</strong>
-              {diagnostic.message}
-            </span>
-          ))}
-        </div>
-      ) : null}
+        <div className={`timeline-canvas${error ? ' timeline-canvas--with-banner' : ''}`}>
+          {error ? <div className="timeline-sync-banner">Timeline refresh failed. Showing the last loaded timeline. {error}</div> : null}
 
-      {error ? <div className="timeline-sync-banner">Timeline refresh failed. Showing the last loaded timeline. {error}</div> : null}
-
-      <div
-        className={`timeline-grid timeline-grid--${viewState.density}`}
-        style={{ '--timeline-row-list-width': `${viewState.panes.rowListWidth}px` } as JSX.CSSProperties}
-      >
+          <div
+            className={`timeline-grid timeline-grid--${viewState.density}`}
+            style={{ '--timeline-row-list-width': `${viewState.panes.rowListWidth}px` } as JSX.CSSProperties}
+          >
         <div className="timeline-main" ref={timelineMainRef} role="grid" aria-rowcount={visibleRows.length}>
           <div className="timeline-gutter-column" aria-label="Timeline rows">
             <div className="timeline-axis__corner" aria-hidden="true" />
@@ -1815,18 +1837,12 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
                         <span className="timeline-gutter-row__origin">{memberCount} {memberCount === 1 ? 'member' : 'members'}</span>
                       ) : null}
                     </button>
-                    <div className="timeline-gutter-row__actions">
-                      {isEditableFilterRoot(row, viewState.filterRows) ? (
-                        <>
-                          <button type="button" onClick={() => openEditRowComposer(row)} aria-label={`Edit filter ${rowTitle(row)}`}>Edit</button>
-                          <button type="button" onClick={() => removeFilterRow(row)} aria-label={`Remove filter ${rowTitle(row)}`}>Remove</button>
-                        </>
-                      ) : isResidualRow(row) ? (
-                        <span>Built in</span>
-                      ) : row.issue ? (
-                        <button type="button" onClick={() => selectRow(row)} aria-label={`Row menu for ${rowPrimaryLabel(row)}`}>...</button>
-                      ) : null}
-                    </div>
+                    {isEditableFilterRoot(row, viewState.filterRows) ? (
+                      <div className="timeline-gutter-row__actions">
+                        <button type="button" onClick={() => openEditRowComposer(row)} aria-label={`Edit filter ${rowTitle(row)}`}>Edit</button>
+                        <button type="button" onClick={() => removeFilterRow(row)} aria-label={`Remove filter ${rowTitle(row)}`}>Remove</button>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
@@ -2062,8 +2078,9 @@ export function TimelineView({ repos, params = {} }: TimelineViewProps): JSX.Ele
             </div>
             </div>
           </div>
+          </div>
         </div>
-
+      </div>
       </div>
     </section>
   );

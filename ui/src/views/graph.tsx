@@ -25,6 +25,9 @@ import {
   type LedgerIssueDetailProjection,
 } from '../api';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
+import { appColors } from '../theme';
+import { useSidebarResize } from '../hooks/useSidebarResize';
+import { useRegisterAppBottomPanel } from '../app-shell';
 
 type GraphFetchParams = {
   mode: GraphMode
@@ -202,12 +205,18 @@ interface GraphViewProps {
   refreshToken?: number
   initialMode?: string
   initialFocus?: string
+  sidebarHidden?: boolean
 }
 
 const FLOW_NODE_WIDTH = 190;
 const FLOW_NODE_HEIGHT = 118;
 const GRAPH_SIZE_OPTIONS = [120, 250, 500, 1000] as const;
 const DEFAULT_GRAPH_PRESET: GraphMode = 'issue';
+const GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY = 'mandible_graph_detail_panel_open:v1';
+const GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY = 'mandible_graph_detail_panel_height:v1';
+const DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT = 340;
+const MIN_GRAPH_DETAIL_PANEL_HEIGHT = 240;
+const MAX_GRAPH_DETAIL_PANEL_HEIGHT = 520;
 
 const MODE_LABELS: Record<GraphMode, string> = {
   activity: 'Activity',
@@ -242,6 +251,30 @@ function compactId(id: string): string {
   return parts[parts.length - 1]?.slice(0, 12) || id.slice(0, 12);
 }
 
+function readStoredBoolean(key: string, fallback: boolean): boolean {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const stored = window.localStorage.getItem(key);
+    if (stored === null) return fallback;
+    return stored === 'true';
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredNumber(key: string, fallback: number, min: number, max: number): number {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const stored = window.localStorage.getItem(key);
+    if (stored === null) return fallback;
+    const value = Number.parseInt(stored, 10);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, value));
+  } catch {
+    return fallback;
+  }
+}
+
 function reactFlowId(id: string): string {
   return `rf_${Array.from(id).map((char) => (
     /[A-Za-z0-9-]/.test(char) ? char : `_${char.charCodeAt(0).toString(16)}_`
@@ -254,10 +287,10 @@ function nodeColor(node: GraphNode): string {
     if (node.labels?.includes('error')) return 'var(--accent-red)';
     if (node.labels?.includes('feature')) return 'var(--accent-blue)';
     if (node.labels?.includes('umbrella')) return 'var(--accent-purple)';
-    return 'rgba(230,237,243,0.86)';
+    return appColors.textPrimarySoft;
   }
   if (node.type === 'session') {
-    return node.active || node.status === 'active' ? 'var(--accent-green)' : 'rgba(154,164,178,0.64)';
+    return node.active || node.status === 'active' ? 'var(--accent-green)' : appColors.graphNodeMutedStrong;
   }
   if (node.type === 'auth_request') {
     if (node.status === 'pending' || node.status === 'executing') return 'var(--accent-yellow)';
@@ -269,7 +302,7 @@ function nodeColor(node: GraphNode): string {
   if (node.type === 'provider_manifest') return '#c4b5fd';
   if (node.type === 'artifact') return '#f7c873';
   if (node.type === 'run' || node.type === 'analysis') return '#8be9b5';
-  return 'rgba(230,237,243,0.76)';
+  return appColors.textPrimaryMuted;
 }
 
 function firstEntries(value: Record<string, unknown> | undefined, limit = 4): Array<[string, unknown]> {
@@ -876,7 +909,18 @@ function DetailPane({
   );
 }
 
-export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus }: GraphViewProps): JSX.Element {
+export function GraphView({
+  onNavigate,
+  refreshToken,
+  initialMode,
+  initialFocus,
+  sidebarHidden = false,
+}: GraphViewProps): JSX.Element {
+  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
+    defaultWidth: 320,
+    minWidth: 260,
+    storageKey: 'mandible_graph_sidebar_width:v1',
+  });
   const routeMode = coerceGraphMode(initialMode);
   const [payload, setPayload] = useState<GraphPayload>({ nodes: [], edges: [], mode: DEFAULT_GRAPH_PRESET });
   const [loading, setLoading] = useState(true);
@@ -890,10 +934,40 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     branches: [],
   });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [detailPanelOpen, setDetailPanelOpen] = useState(() => (
+    readStoredBoolean(GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY, true)
+  ));
+  const [detailPanelHeight, setDetailPanelHeight] = useState(() => (
+    readStoredNumber(
+      GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY,
+      DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT,
+      MIN_GRAPH_DETAIL_PANEL_HEIGHT,
+      MAX_GRAPH_DETAIL_PANEL_HEIGHT,
+    )
+  ));
+  const lastFocusedNodeOpenedRef = useRef<string | null>(null);
 
   useEffect(() => {
     setSpec((current) => ({ ...current, preset: routeMode, nodeTypes: undefined, edgeTypes: undefined }));
   }, [routeMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY, String(detailPanelOpen));
+    } catch {
+      // Ignore storage failures; the in-memory state remains authoritative for this session.
+    }
+  }, [detailPanelOpen]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY, String(detailPanelHeight));
+    } catch {
+      // Ignore storage failures; the in-memory state remains authoritative for this session.
+    }
+  }, [detailPanelHeight]);
 
   useEffect(() => {
     let active = true;
@@ -914,7 +988,14 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
         setPayload(data);
         if (initialFocus && data.nodes.some((node) => node.id === initialFocus)) {
           setSelectedNodeId(initialFocus);
+          if (lastFocusedNodeOpenedRef.current !== initialFocus) {
+            setDetailPanelOpen(true);
+            lastFocusedNodeOpenedRef.current = initialFocus;
+          }
         } else if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
+          if (!initialFocus) {
+            lastFocusedNodeOpenedRef.current = null;
+          }
           setSelectedNodeId(data.nodes[0].id);
         }
       })
@@ -990,19 +1071,38 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     [layoutResult.nodes, selectedNodeId],
   );
   const flowEdgeList = layoutResult.edges;
+  // Selection stays in React Flow state; the key only tracks structure that should refit.
   const flowSignature = useMemo(
     () => [
       spec.preset,
-      selectedNodeId ?? '',
-      flowNodes.map((node) => node.id).join(','),
+      layoutResult.nodes.map((node) => node.id).join(','),
       flowEdgeList.map((edge) => edge.id).join(','),
     ].join(':'),
-    [flowEdgeList, flowNodes, spec.preset, selectedNodeId],
+    [flowEdgeList, layoutResult.nodes, spec.preset],
   );
   const selectedNode = useMemo(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
     [visibleNodes, selectedNodeId],
   );
+
+  const detailPanelContent = useMemo(() => (
+    <DetailPane node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
+  ), [onNavigate, selectedNode, visibleEdges]);
+
+  const detailPanelDescriptor = useMemo(() => ({
+    id: 'graph-detail',
+    title: 'Graph detail',
+    ariaLabel: 'Graph detail',
+    open: detailPanelOpen,
+    height: detailPanelHeight,
+    minHeight: MIN_GRAPH_DETAIL_PANEL_HEIGHT,
+    maxHeight: MAX_GRAPH_DETAIL_PANEL_HEIGHT,
+    onOpenChange: setDetailPanelOpen,
+    onHeightChange: setDetailPanelHeight,
+    content: selectedNode ? detailPanelContent : null,
+  }), [detailPanelContent, detailPanelHeight, detailPanelOpen, selectedNode]);
+
+  useRegisterAppBottomPanel(detailPanelDescriptor);
 
   const updateSpec = (patch: Partial<GraphSpecState>) => {
     setSpec((current) => ({ ...current, ...patch }));
@@ -1041,117 +1141,126 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
     : '';
 
   return (
-    <div className="graph-view">
-      <div className="graph-topbar">
-        <div className="graph-spec-row graph-spec-row--lens">
-          <span className="graph-spec-row__label">Lens</span>
-          <div className="graph-lens-strip" aria-label="Graph lens presets">
-            {lenses.map((item) => (
-              <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
-            ))}
-          </div>
-        </div>
-        <div className="graph-spec-row graph-spec-row--scope">
-          <span className="graph-spec-row__label">Scope</span>
-          <div className="graph-toolbar__combobox-group">
-            <TokenMultiSelect
-              placeholder="All repos"
-              options={repos}
-              selected={spec.repos}
-              onChange={(repos) => updateSpec({ repos })}
-            />
-            <TokenMultiSelect
-              placeholder="All branches"
-              options={branches}
-              selected={spec.branches}
-              onChange={(branches) => updateSpec({ branches })}
-              disabled={branches.length === 0}
-            />
-          </div>
-        </div>
-        <div className="graph-spec-row graph-spec-row--legend">
-          <span className="graph-spec-row__label">Nodes</span>
-          <div className="graph-legend-stack">
-            <div className="graph-legend-strip" aria-label="Visible node families">
-              {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
-              {nodeLegend.map((item) => (
-                <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
-              ))}
-            </div>
-            {spec.preset === 'issue' && nodeLegend.length === 1 && nodeLegend[0]?.id === 'issue' && (
-              <div className="graph-row-note">
-                Only issue nodes are shown in this lens by default; auth and session evidence stays attached to issue details.
+    <div className={`graph-view${sidebarHidden ? ' graph-view--sidebar-hidden' : ''}`}>
+      {!sidebarHidden ? (
+        <>
+          <aside
+            className="graph-sidebar"
+            aria-label="Graph controls"
+            style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
+          >
+            <div className="graph-spec-row graph-spec-row--scope">
+              <span className="graph-spec-row__label">Scope</span>
+              <div className="graph-toolbar__combobox-group">
+                <TokenMultiSelect
+                  placeholder="All repos"
+                  options={repos}
+                  selected={spec.repos}
+                  onChange={(repos) => updateSpec({ repos })}
+                />
+                <TokenMultiSelect
+                  placeholder="All branches"
+                  options={branches}
+                  selected={spec.branches}
+                  onChange={(branches) => updateSpec({ branches })}
+                  disabled={branches.length === 0}
+                />
               </div>
-            )}
-          </div>
-        </div>
-        <div className="graph-spec-row graph-spec-row--legend">
-          <span className="graph-spec-row__label">Edges</span>
-          <div className="graph-legend-stack">
-            <div className="graph-legend-strip" aria-label="Visible edge families">
-              {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
-              {edgeLegend.map((item) => (
-                <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
-              ))}
             </div>
-            <div className="graph-row-note">
-              Hierarchy edges place parent and umbrella issues; reference and evidence edges add context without changing the issue tree.
+            <div className="graph-toolbar" aria-label="Graph filters and size">
+              <div className="graph-control-group">
+                <span className="graph-control-group__label">Time</span>
+                <div className="graph-toolbar__toggle-group">
+                  {(['1d', '3d', '7d', 'all'] as const).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`graph-toolbar__toggle${spec.since === value ? ' graph-toolbar__toggle--active' : ''}`}
+                      onClick={() => updateSpec({ since: value })}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="graph-control-group">
+                <span className="graph-control-group__label">Status</span>
+                <div className="graph-toolbar__toggle-group">
+                  {(['open', 'all'] as const).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`graph-toolbar__toggle${spec.status === value ? ' graph-toolbar__toggle--active' : ''}`}
+                      onClick={() => updateSpec({ status: value })}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="graph-control-group" aria-label="Graph size">
+                <span className="graph-control-group__label">Size</span>
+                <div className="graph-toolbar__toggle-group">
+                  {GRAPH_SIZE_OPTIONS.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={`graph-toolbar__toggle${spec.limit === value ? ' graph-toolbar__toggle--active' : ''}`}
+                      onClick={() => updateSpec({ limit: value })}
+                    >
+                      {value.toLocaleString()}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        <div className="graph-toolbar" aria-label="Graph filters and size">
-          <div className="graph-control-group">
-            <span className="graph-control-group__label">Time</span>
-            <div className="graph-toolbar__toggle-group">
-              {(['1d', '3d', '7d', 'all'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`graph-toolbar__toggle${spec.since === value ? ' graph-toolbar__toggle--active' : ''}`}
-                  onClick={() => updateSpec({ since: value })}
-                >
-                  {value}
-                </button>
-              ))}
+            <div className="graph-spec-row graph-spec-row--lens">
+              <span className="graph-spec-row__label">Lens</span>
+              <div className="graph-lens-strip" aria-label="Graph lens presets">
+                {lenses.map((item) => (
+                  <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
+                ))}
+              </div>
             </div>
-          </div>
-          <div className="graph-control-group">
-            <span className="graph-control-group__label">Status</span>
-            <div className="graph-toolbar__toggle-group">
-              {(['open', 'all'] as const).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`graph-toolbar__toggle${spec.status === value ? ' graph-toolbar__toggle--active' : ''}`}
-                  onClick={() => updateSpec({ status: value })}
-                >
-                  {value}
-                </button>
-              ))}
+            <div className="graph-spec-row graph-spec-row--legend">
+              <span className="graph-spec-row__label">Nodes</span>
+              <div className="graph-legend-stack">
+                <div className="graph-legend-strip" aria-label="Visible node families">
+                  {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
+                  {nodeLegend.map((item) => (
+                    <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+                  ))}
+                </div>
+                {spec.preset === 'issue' && nodeLegend.length === 1 && nodeLegend[0]?.id === 'issue' && (
+                  <div className="graph-row-note">
+                    Only issue nodes are shown in this lens by default; auth and session evidence stays attached to issue details.
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-          <div className="graph-control-group" aria-label="Graph size">
-            <span className="graph-control-group__label">Size</span>
-            <div className="graph-toolbar__toggle-group">
-              {GRAPH_SIZE_OPTIONS.map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`graph-toolbar__toggle${spec.limit === value ? ' graph-toolbar__toggle--active' : ''}`}
-                  onClick={() => updateSpec({ limit: value })}
-                >
-                  {value.toLocaleString()}
-                </button>
-              ))}
+            <div className="graph-spec-row graph-spec-row--legend">
+              <span className="graph-spec-row__label">Edges</span>
+              <div className="graph-legend-stack">
+                <div className="graph-legend-strip" aria-label="Visible edge families">
+                  {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
+                  {edgeLegend.map((item) => (
+                    <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+                  ))}
+                </div>
+                <div className="graph-row-note">
+                  Hierarchy edges place parent and umbrella issues; reference and evidence edges add context without changing the issue tree.
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        <div className="graph-display-summary" aria-live="polite">
-          <strong>{activeLensSummary}</strong>
-          <span>{graphDisplaySummary}</span>
-          {graphLimitSummary && <span>{graphLimitSummary}</span>}
-        </div>
-      </div>
+            <div className="graph-display-summary" aria-live="polite">
+              <strong>{activeLensSummary}</strong>
+              <span>{graphDisplaySummary}</span>
+              {graphLimitSummary && <span>{graphLimitSummary}</span>}
+            </div>
+          </aside>
+          <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
+        </>
+      ) : null}
 
       <div className="graph-workspace">
         <div className="graph-canvas-wrap">
@@ -1166,8 +1275,9 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
           {!loading && !error && flowNodes.length > 0 && (
             <ReactFlow
               key={flowSignature}
-              defaultNodes={flowNodes}
+              nodes={flowNodes}
               defaultEdges={[]}
+              proOptions={{ hideAttribution: true }}
               fitView
               fitViewOptions={{ padding: 0.16 }}
               minZoom={0.2}
@@ -1175,7 +1285,10 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
               nodesDraggable={false}
               nodesConnectable={false}
               elementsSelectable
-              onNodeClick={(_event, node) => setSelectedNodeId((node.data as { node: GraphNode }).node.id)}
+              onNodeClick={(_event, node) => {
+                setSelectedNodeId((node.data as { node: GraphNode }).node.id);
+                setDetailPanelOpen(true);
+              }}
               onNodeDoubleClick={(_event, node) => {
                 const graphNode = (node.data as { node: GraphNode }).node;
                 if (graphNode && (graphNode.type === 'issue' || graphNode.type === 'session' || graphNode.type === 'auth_request' || graphNode.type === 'artifact' || graphNode.type === 'report')) {
@@ -1186,19 +1299,17 @@ export function GraphView({ onNavigate, refreshToken, initialMode, initialFocus 
               <ViewportPortal>
                 <ManualGraphEdges edges={flowEdgeList} />
               </ViewportPortal>
-              <Background color="rgba(154,164,178,0.12)" gap={18} />
+              <Background color={appColors.graphBackgroundGrid} gap={18} />
               <MiniMap
                 pannable
                 zoomable
                 nodeColor={(node) => nodeColor((node.data as { node: GraphNode }).node)}
-                maskColor="rgba(11,15,20,0.64)"
+                maskColor={appColors.graphMinimapMask}
               />
               <Controls showInteractive={false} />
             </ReactFlow>
           )}
         </div>
-
-        <DetailPane node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
       </div>
     </div>
   );

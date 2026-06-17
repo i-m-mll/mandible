@@ -6,7 +6,7 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 import { parseRouteFromHash } from '../ui/src/routing';
 import {
   AppShellProvider,
-  type AppRightSidebarDescriptor,
+  type AppBottomPanelDescriptor,
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { TimelineView as RawTimelineView, type TimelineViewProps } from '../ui/src/views/timeline';
@@ -288,32 +288,34 @@ function stubTimelineFetchResolver(
 }
 
 function TimelineView(props: TimelineViewProps): JSX.Element {
-  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
-  const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
-    setRightSidebar(descriptor);
-    return () => setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+  const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
+  const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
+    setBottomPanel(descriptor);
+    return () => setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
   }, []);
   const shell = useMemo<AppShellContextValue>(() => ({
-    rightSidebar,
-    registerRightSidebar,
-  }), [registerRightSidebar, rightSidebar]);
-  const toggleLabel = rightSidebar?.open ? `Collapse ${rightSidebar.title}` : `Show ${rightSidebar?.title ?? 'inspector'}`;
+    bottomPanel,
+    registerBottomPanel,
+  }), [bottomPanel, registerBottomPanel]);
+  const toggleLabel = bottomPanel?.open ? `Collapse ${bottomPanel.title}` : `Show ${bottomPanel?.title ?? 'inspector'}`;
 
   return (
     <AppShellProvider value={shell}>
       <div className="app-header">
-        {rightSidebar?.content ? (
+        {bottomPanel?.content ? (
           <button
             type="button"
             aria-label={toggleLabel}
-            onClick={() => rightSidebar.onOpenChange(!rightSidebar.open)}
+            onClick={() => bottomPanel.onOpenChange(!bottomPanel.open)}
           />
         ) : null}
       </div>
       <RawTimelineView {...props} />
-      {rightSidebar?.open && rightSidebar.content ? (
-        <aside className="app-right-sidebar" aria-label={rightSidebar.ariaLabel}>
-          {rightSidebar.content}
+      {bottomPanel?.open && bottomPanel.content ? (
+        <aside className="app-bottom-panel" aria-label={bottomPanel.ariaLabel}>
+          <div className="app-bottom-panel__content">
+            {bottomPanel.content}
+          </div>
         </aside>
       ) : null}
     </AppShellProvider>
@@ -837,6 +839,22 @@ describe('TimelineView', () => {
     await waitFor(() => expect(screen.getByText('Mandible default coordination root')).toBeTruthy());
     expect(screen.queryByRole('status', { name: 'Loading timeline' })).toBeNull();
     expect(screen.queryByText('No timeline rows match the current controls.')).toBeNull();
+  });
+
+  it('hides timeline sidebar controls without removing the timeline canvas', async () => {
+    stubTimelineFetch(projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+      sidebarHidden: true,
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+
+    expect(document.querySelector('.timeline-sidebar')).toBeNull();
+    expect(document.querySelector('.timeline-layout--sidebar-hidden')).toBeTruthy();
+    expect(document.querySelector('.timeline-grid')).toBeTruthy();
   });
 
   it('loads the projection and merges URL state over browser-local state', async () => {
@@ -1821,9 +1839,9 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.getByText('Coordination root event')).toBeTruthy());
     expect(screen.getByText('Coordination root')).toBeTruthy();
-    await waitFor(() => expect(screen.getByText('Residual issues')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Everything else')).toBeTruthy());
     expect(screen.getByRole('button', {
-      name: /residual Residual issues\. Collapsed group with 0 members\. Status residual/i,
+      name: /residual Everything else\. Collapsed group with 0 members\. Status residual/i,
     })).toBeTruthy();
     expect(window.location.hash).not.toContain('rows=');
     const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
@@ -1887,7 +1905,7 @@ describe('TimelineView', () => {
         name: /local-kind-coordination kind:coordination\. Expanded group with 1 member/i,
       })).toBeTruthy();
       expect(screen.getByRole('button', {
-        name: /residual Residual issues\. Collapsed group with 1 member/i,
+        name: /residual Everything else\. Collapsed group with 1 member/i,
       })).toBeTruthy();
     });
   });
@@ -1917,7 +1935,7 @@ describe('TimelineView', () => {
         name: /local-label-not-present label:not-present\. Expanded group with 0 members/i,
       })).toBeTruthy();
       expect(screen.getByRole('button', {
-        name: /residual Residual issues\. Collapsed group with 2 members/i,
+        name: /residual Everything else\. Collapsed group with 2 members/i,
       })).toBeTruthy();
       expect(screen.queryByText('label:not-present projected event')).toBeNull();
     });

@@ -38,9 +38,9 @@ import {
 } from './routing';
 import {
   AppShellProvider,
-  RightSidebarIcon,
+  BottomPanelIcon,
   ViewSidebarIcon,
-  type AppRightSidebarDescriptor,
+  type AppBottomPanelDescriptor,
   type AppShellContextValue,
 } from './app-shell';
 import { AuthQueueView } from './views/auth';
@@ -62,6 +62,7 @@ import { TimelineView } from './views/timeline';
 import { PresetsView } from './views/presets';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
+import { normalizeAppThemeMode, resolveAppThemeMode, type AppThemeMode } from './theme';
 import {
   ChatIcon,
   IssuesIcon,
@@ -69,6 +70,7 @@ import {
   AuthIcon,
   ArtifactsIcon,
   SettingsIcon,
+  MonitorIcon,
   PresetsIcon,
   GraphIcon,
   TimelineIcon,
@@ -80,6 +82,16 @@ import {
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
+const THEME_COLOR_BY_RESOLVED_THEME = {
+  dark: '#0b0f14',
+  light: '#f5f7fb',
+} as const;
+const APP_THEME_MODE_LABELS: Record<AppThemeMode, string> = {
+  system: 'System',
+  light: 'Light',
+  dark: 'Dark',
+};
+const APP_THEME_MODE_CYCLE: AppThemeMode[] = ['system', 'light', 'dark'];
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -111,6 +123,29 @@ function setLastSeenCommit(hash: string): void {
   }
 }
 
+function updateRootAppTheme(modeValue: string | undefined): () => void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return () => undefined;
+  }
+  const mode = normalizeAppThemeMode(modeValue);
+  const query = window.matchMedia('(prefers-color-scheme: dark)');
+  const metaThemeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  const apply = () => {
+    const resolvedTheme = resolveAppThemeMode(mode, query.matches);
+    document.documentElement.dataset.themeMode = mode;
+    document.documentElement.dataset.theme = resolvedTheme;
+    if (metaThemeColor) {
+      metaThemeColor.content = THEME_COLOR_BY_RESOLVED_THEME[resolvedTheme];
+    }
+  };
+  apply();
+  if (mode !== 'system') {
+    return () => undefined;
+  }
+  query.addEventListener('change', apply);
+  return () => query.removeEventListener('change', apply);
+}
+
 
 type NavItem = {
   tab: Route['tab'];
@@ -122,7 +157,61 @@ type NavItem = {
   icon: (props: { size?: number }) => JSX.Element;
 };
 
-const VIEW_SIDEBAR_TABS = new Set<Route['tab']>(['auth', 'issues', 'artifacts', 'console']);
+const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
+  'console',
+  'graph',
+  'timeline',
+  'auth',
+  'issues',
+  'artifacts',
+  'inbox',
+]);
+
+function SunIcon({ size = 18 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" />
+      <path d="m19.07 4.93-1.41 1.41" />
+    </svg>
+  );
+}
+
+function MoonIcon({ size = 18 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3a6 6 0 0 0 9 7.4A9 9 0 1 1 12 3Z" />
+    </svg>
+  );
+}
+
+function SunMoonIcon({ size = 18 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 2v2" />
+      <path d="M14.837 16.385a6 6 0 1 1-7.223-7.222c.624-.147.97.66.715 1.248a4 4 0 0 0 5.26 5.259c.589-.255 1.396.09 1.248.715" />
+      <path d="M16 12a4 4 0 0 0-4-4" />
+      <path d="m19 5-1.256 1.256" />
+      <path d="M20 12h2" />
+    </svg>
+  );
+}
+
+function AppThemeModeIcon({ mode, size = 18 }: { mode: AppThemeMode; size?: number }): JSX.Element {
+  if (mode === 'light') {
+    return <SunIcon size={size} />;
+  }
+  if (mode === 'dark') {
+    return <MoonIcon size={size} />;
+  }
+  return <SunMoonIcon size={size} />;
+}
 
 function parseHashRoute(): Route {
   if (typeof window === 'undefined') {
@@ -166,19 +255,22 @@ function App(): JSX.Element {
   // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
   const [rebuilding, setRebuilding] = useState(false);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
-  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
+  const [themeModeSaving, setThemeModeSaving] = useState(false);
 
-  const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
-    setRightSidebar(descriptor);
+  const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
+    setBottomPanel(descriptor);
     return () => {
-      setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+      setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
     };
   }, []);
 
   const appShellContext = useMemo<AppShellContextValue>(() => ({
-    rightSidebar,
-    registerRightSidebar,
-  }), [registerRightSidebar, rightSidebar]);
+    bottomPanel,
+    registerBottomPanel,
+  }), [bottomPanel, registerBottomPanel]);
+
+  useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
 
   const navigateToHash = useCallback((hash: string) => {
     if (typeof window === 'undefined') {
@@ -736,6 +828,23 @@ function App(): JSX.Element {
     dispatch({ type: 'updateSetting', key, value });
   };
 
+  const handleRailThemeCycle = async () => {
+    if (themeModeSaving) {
+      return;
+    }
+    const currentMode = normalizeAppThemeMode(state.settings.app_theme);
+    const currentIndex = APP_THEME_MODE_CYCLE.indexOf(currentMode);
+    const nextMode = APP_THEME_MODE_CYCLE[(currentIndex + 1) % APP_THEME_MODE_CYCLE.length];
+    setThemeModeSaving(true);
+    try {
+      await handleSettingsSave('app_theme', nextMode);
+    } catch {
+      return;
+    } finally {
+      setThemeModeSaving(false);
+    }
+  };
+
   const handleAckContinuation = async (sessionId: string) => {
     try {
       await acknowledgeInboxItem('continuation', sessionId);
@@ -847,7 +956,7 @@ function App(): JSX.Element {
     dispatch({ type: 'setSelectedInboxItemId', id });
   };
 
-  const handleGraphNavigate = (type: GraphNodeType, id: string, repoId?: string) => {
+  const handleGraphNavigate = useCallback((type: GraphNodeType, id: string, repoId?: string) => {
     switch (type) {
       case 'issue': {
         // id is the full graph node ID "issue:<repo_id>:<issue_human_id>"; extract parts
@@ -876,7 +985,7 @@ function App(): JSX.Element {
       default:
         break;
     }
-  };
+  }, [navigateToHash]);
 
   const primaryNavItems: NavItem[] = [
     {
@@ -1011,30 +1120,38 @@ function App(): JSX.Element {
       icon: SettingsIcon,
     }].find((item) => item.tab === route.tab)?.title ?? 'Mandible'
   );
-  const rightSidebarAvailable = Boolean(rightSidebar?.content);
-  const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
+  const bottomPanelAvailable = Boolean(bottomPanel?.content);
+  const bottomPanelOpen = Boolean(bottomPanelAvailable && bottomPanel?.open);
   const viewSidebarAvailable = VIEW_SIDEBAR_TABS.has(route.tab);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
+  const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
-  const rightSidebarToggleLabel = rightSidebar
-    ? rightSidebar.open
-      ? `Collapse ${rightSidebar.title}`
-      : `Show ${rightSidebar.title}`
-    : 'Show details sidebar';
+  const bottomPanelToggleLabel = bottomPanel
+    ? bottomPanel.open
+      ? `Collapse ${bottomPanel.title}`
+      : `Show ${bottomPanel.title}`
+    : 'Show detail panel';
+  const appThemeMode = normalizeAppThemeMode(state.settings.app_theme);
+  const appThemeModeIndex = APP_THEME_MODE_CYCLE.indexOf(appThemeMode);
+  const nextAppThemeMode = APP_THEME_MODE_CYCLE[(appThemeModeIndex + 1) % APP_THEME_MODE_CYCLE.length];
+  const appThemeModeLabel = APP_THEME_MODE_LABELS[appThemeMode];
+  const nextAppThemeModeLabel = APP_THEME_MODE_LABELS[nextAppThemeMode];
+  const appThemeModeControlLabel = `App theme: ${appThemeModeLabel}. Switch to ${nextAppThemeModeLabel}.`;
+  const appThemeModeTooltipLabel = 'App theme';
 
-  const startRightSidebarResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
-    if (!rightSidebar) {
+  const startBottomPanelResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
+    if (!bottomPanel) {
       return;
     }
     event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = rightSidebar.width;
-    const minWidth = rightSidebar.minWidth ?? 280;
-    const maxWidth = rightSidebar.maxWidth ?? 560;
+    const startY = event.clientY;
+    const startHeight = bottomPanel.height;
+    const minHeight = bottomPanel.minHeight ?? 220;
+    const maxHeight = bottomPanel.maxHeight ?? 520;
     const handleMove = (moveEvent: MouseEvent) => {
-      const viewportMax = Math.floor(window.innerWidth * 0.6);
-      const nextWidth = clamp(startWidth + startX - moveEvent.clientX, minWidth, Math.min(maxWidth, viewportMax));
-      rightSidebar.onWidthChange(nextWidth);
+      const viewportMax = Math.floor(window.innerHeight * 0.55);
+      const nextHeight = clamp(startHeight + startY - moveEvent.clientY, minHeight, Math.min(maxHeight, viewportMax));
+      bottomPanel.onHeightChange(nextHeight);
     };
     const handleUp = () => {
       window.removeEventListener('mousemove', handleMove);
@@ -1042,7 +1159,7 @@ function App(): JSX.Element {
     };
     window.addEventListener('mousemove', handleMove);
     window.addEventListener('mouseup', handleUp);
-  }, [rightSidebar]);
+  }, [bottomPanel]);
 
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
   if (rebuilding) {
@@ -1091,25 +1208,25 @@ function App(): JSX.Element {
         </div>
         <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
         <div className="app-header__actions">
-          {rightSidebarAvailable ? (
+          {bottomPanelAvailable ? (
             <button
               type="button"
-              className={`app-header__icon-button${rightSidebarOpen ? ' app-header__icon-button--active' : ''}`}
-              onClick={() => rightSidebar?.onOpenChange(!rightSidebar.open)}
-              aria-label={rightSidebarToggleLabel}
-              aria-pressed={rightSidebarOpen}
-              title={rightSidebarToggleLabel}
+              className={`app-header__icon-button${bottomPanelOpen ? ' app-header__icon-button--active' : ''}`}
+              onClick={() => bottomPanel?.onOpenChange(!bottomPanel.open)}
+              aria-label={bottomPanelToggleLabel}
+              aria-pressed={bottomPanelOpen}
+              title={bottomPanelToggleLabel}
             >
-              <RightSidebarIcon open={rightSidebarOpen} />
+              <BottomPanelIcon open={bottomPanelOpen} />
             </button>
           ) : null}
         </div>
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
-          style={rightSidebarOpen && rightSidebar ? {
-            '--app-right-sidebar-width': `${rightSidebar.width}px`,
+          className={`app-layout app-layout--rail-${railDisplayMode}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${bottomPanelOpen ? ' app-layout--bottom-panel-open' : ''}`}
+          style={bottomPanelOpen && bottomPanel ? {
+            '--app-bottom-panel-height': `${bottomPanel.height}px`,
           } as JSX.CSSProperties : undefined}
         >
           <aside className="app-rail" data-tauri-drag-region>
@@ -1140,6 +1257,21 @@ function App(): JSX.Element {
                 </div>
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
+                <button
+                  type="button"
+                  className={`app-rail__item app-rail__theme-toggle app-rail__theme-toggle--${appThemeMode}`}
+                  onClick={() => void handleRailThemeCycle()}
+                  disabled={themeModeSaving}
+                  data-theme-mode={appThemeMode}
+                  aria-label={appThemeModeControlLabel}
+                  title={appThemeModeTooltipLabel}
+                >
+                  <span className="app-rail__icon">
+                    <AppThemeModeIcon mode={appThemeMode} size={18} />
+                  </span>
+                  {railDisplayMode === 'both' && <span className="app-rail__label">{appThemeModeLabel}</span>}
+                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{appThemeModeTooltipLabel}</span>}
+                </button>
                 {renderRailItem({
                   tab: 'settings',
                   href: '#/settings',
@@ -1150,7 +1282,7 @@ function App(): JSX.Element {
               </nav>
           </aside>
         <main
-          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}`}
+          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}`}
         >
         {route.tab === 'auth' && (
           <AuthQueueView
@@ -1209,6 +1341,7 @@ function App(): JSX.Element {
             data={state.inboxData}
             loading={state.inboxLoading}
             selectedItemId={state.selectedInboxItemId}
+            sidebarHidden={viewSidebarHidden}
             onSelectItem={handleSelectInboxItem}
             onAckContinuation={handleAckContinuation}
             onAckAuthResult={handleAckAuthResult}
@@ -1245,12 +1378,14 @@ function App(): JSX.Element {
             refreshToken={graphRefreshToken}
             initialMode={route.params.mode}
             initialFocus={route.params.focus}
+            sidebarHidden={viewSidebarHidden}
           />
         )}
         {route.tab === 'timeline' && (
           <TimelineView
             repos={state.workRepos}
             params={route.params}
+            sidebarHidden={viewSidebarHidden}
           />
         )}
         {route.tab === 'presets' && (
@@ -1260,21 +1395,21 @@ function App(): JSX.Element {
           />
         )}
         </main>
-          {rightSidebarOpen && rightSidebar ? (
+          {bottomPanelOpen && bottomPanel ? (
             <aside
-              className="app-right-sidebar"
-              aria-label={rightSidebar.ariaLabel}
-              style={{ width: `${rightSidebar.width}px` }}
+              className="app-bottom-panel"
+              aria-label={bottomPanel.ariaLabel}
+              style={{ height: `${bottomPanel.height}px` }}
             >
               <div
-                className="app-right-sidebar__resize"
+                className="app-bottom-panel__resize"
                 role="separator"
-                aria-orientation="vertical"
-                aria-label={`Resize ${rightSidebar.title}`}
-                onMouseDown={startRightSidebarResize}
+                aria-orientation="horizontal"
+                aria-label={`Resize ${bottomPanel.title}`}
+                onMouseDown={startBottomPanelResize}
               />
-              <div className="app-right-sidebar__content">
-                {rightSidebar.content}
+              <div className="app-bottom-panel__content">
+                {bottomPanel.content}
               </div>
             </aside>
           ) : null}

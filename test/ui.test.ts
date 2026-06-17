@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/preact';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
 
@@ -20,9 +20,9 @@ import {
 } from '../ui/src/routing';
 import {
   AppShellProvider,
-  RightSidebarIcon,
-  useRegisterAppRightSidebar,
-  type AppRightSidebarDescriptor,
+  BottomPanelIcon,
+  useRegisterAppBottomPanel,
+  type AppBottomPanelDescriptor,
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { AuthQueueView } from '../ui/src/views/auth';
@@ -40,13 +40,66 @@ import {
   type IssueRepoSummary,
 } from '../ui/src/views/issues';
 
-vi.mock('@xyflow/react', () => ({
-  Background: () => null,
-  Controls: () => null,
-  MiniMap: () => null,
-  ReactFlow: (props: { children?: JSX.Element | JSX.Element[] }) => props.children ?? null,
-  ViewportPortal: (props: { children?: JSX.Element | JSX.Element[] }) => props.children ?? null,
+type ReactFlowMockNode = {
+  id: string
+  data?: {
+    node?: {
+      label?: string
+    }
+  }
+}
+
+type ReactFlowMockProps = {
+  children?: JSX.Element | JSX.Element[]
+  nodes?: ReactFlowMockNode[]
+  defaultNodes?: ReactFlowMockNode[]
+  onNodeClick?: (event: MouseEvent, node: ReactFlowMockNode) => void
+}
+
+const reactFlowMockState = vi.hoisted(() => ({
+  mountCount: 0,
+  unmountCount: 0,
 }));
+
+vi.mock('@xyflow/react', async () => {
+  const { Component, h } = await vi.importActual<typeof import('preact')>('preact');
+
+  class MockReactFlow extends Component<ReactFlowMockProps> {
+    componentDidMount(): void {
+      reactFlowMockState.mountCount += 1;
+    }
+
+    componentWillUnmount(): void {
+      reactFlowMockState.unmountCount += 1;
+    }
+
+    render(props: ReactFlowMockProps): JSX.Element {
+      const nodes = props.nodes ?? props.defaultNodes ?? [];
+      return h(
+        'div',
+        { 'data-testid': 'react-flow-mock' },
+        ...nodes.map((node) => h(
+          'button',
+          {
+            type: 'button',
+            'aria-label': `Select graph node ${node.id}`,
+            onClick: (event: MouseEvent) => props.onNodeClick?.(event, node),
+          },
+          node.data?.node?.label ?? node.id,
+        )),
+        props.children,
+      );
+    }
+  }
+
+  return {
+    Background: () => null,
+    Controls: () => null,
+    MiniMap: () => null,
+    ReactFlow: MockReactFlow,
+    ViewportPortal: (props: { children?: JSX.Element | JSX.Element[] }) => props.children ?? null,
+  };
+});
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -71,6 +124,21 @@ vi.mock('@xterm/addon-fit', () => ({
     fit(): void {}
   },
 }));
+
+beforeEach(() => {
+  reactFlowMockState.mountCount = 0;
+  reactFlowMockState.unmountCount = 0;
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })));
+});
 
 afterEach(() => {
   cleanup();
@@ -316,55 +384,57 @@ describe('App routing', () => {
 
 describe('app shell', () => {
   function RegisteredSidebar(): JSX.Element {
-    const descriptor = useMemo<AppRightSidebarDescriptor>(() => ({
-      id: 'test-sidebar',
+    const descriptor = useMemo<AppBottomPanelDescriptor>(() => ({
+      id: 'test-panel',
       title: 'inspector',
       ariaLabel: 'Test inspector',
       open: true,
-      width: 360,
+      height: 360,
       onOpenChange: () => undefined,
-      onWidthChange: () => undefined,
+      onHeightChange: () => undefined,
       content: h('div', {}, 'Inspector content'),
     }), []);
 
-    useRegisterAppRightSidebar(descriptor);
+    useRegisterAppBottomPanel(descriptor);
     return h('main', {}, 'Workspace');
   }
 
   function ShellProbe(): JSX.Element {
-    const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
-    const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
-      setRightSidebar(descriptor);
-      return () => setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+    const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
+    const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
+      setBottomPanel(descriptor);
+      return () => setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
     }, []);
     const shell = useMemo<AppShellContextValue>(() => ({
-      rightSidebar,
-      registerRightSidebar,
-    }), [registerRightSidebar, rightSidebar]);
+      bottomPanel,
+      registerBottomPanel,
+    }), [bottomPanel, registerBottomPanel]);
 
     return h(AppShellProvider, { value: shell }, [
       h('header', { className: 'app-header' }, [
         h('span', { className: 'app-header__brand-text' }, 'Mandible'),
         h('span', { className: 'app-header__route' }, 'Timeline'),
-        rightSidebar?.content
+        bottomPanel?.content
           ? h('button', {
             type: 'button',
-            'aria-label': rightSidebar.open ? `Collapse ${rightSidebar.title}` : `Show ${rightSidebar.title}`,
-            onClick: () => setRightSidebar({
-              ...rightSidebar,
-              open: !rightSidebar.open,
+            'aria-label': bottomPanel.open ? `Collapse ${bottomPanel.title}` : `Show ${bottomPanel.title}`,
+            onClick: () => setBottomPanel({
+              ...bottomPanel,
+              open: !bottomPanel.open,
             }),
-          }, h(RightSidebarIcon, { open: rightSidebar.open }))
+          }, h(BottomPanelIcon, { open: bottomPanel.open }))
           : null,
       ]),
       h(RegisteredSidebar, {}),
-      rightSidebar?.open && rightSidebar.content
-        ? h('aside', { className: 'app-right-sidebar', 'aria-label': rightSidebar.ariaLabel }, rightSidebar.content)
+      bottomPanel?.open && bottomPanel.content
+        ? h('aside', { className: 'app-bottom-panel', 'aria-label': bottomPanel.ariaLabel }, [
+          h('div', { className: 'app-bottom-panel__content' }, bottomPanel.content),
+        ])
         : null,
     ]);
   }
 
-  it('renders shared header identity, route title, and registered right sidebar toggle', async () => {
+  it('renders shared header identity, route title, and registered bottom panel toggle', async () => {
     render(h(ShellProbe, {}));
 
     expect(screen.getByText('Mandible')).toBeTruthy();
@@ -396,6 +466,104 @@ describe('app shell', () => {
 
     await waitFor(() => expect(screen.getByPlaceholderText('Filter issues...')).toBeTruthy());
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
+  });
+
+  it('renders Graph bottom detail without a registration loop', async () => {
+    stubEventSource();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/graph?')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({
+            mode: 'activity',
+            nodes: [{
+              id: 'repo:mandible',
+              type: 'repo',
+              label: 'mandible',
+              status: 'active',
+              repo: 'mandible',
+            }],
+            edges: [],
+          }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    window.history.replaceState(null, '', '#/graph');
+
+    render(h(App, {}));
+
+    await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
+    expect(screen.getByLabelText('Graph detail')).toBeTruthy();
+    expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
+      .toBeLessThan(5);
+  });
+
+  it('updates Graph selection without remounting the flow canvas', async () => {
+    stubEventSource();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/graph?')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({
+            mode: 'activity',
+            nodes: [
+              {
+                id: 'alpha',
+                type: 'repo',
+                label: 'alpha',
+                status: 'active',
+                repo: 'mandible',
+              },
+              {
+                id: 'beta',
+                type: 'repo',
+                label: 'beta',
+                status: 'active',
+                repo: 'mandible',
+              },
+            ],
+            edges: [{
+              id: 'alpha-beta',
+              type: 'related',
+              source: 'alpha',
+              target: 'beta',
+            }],
+          }), {
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify([]), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }));
+    window.history.replaceState(null, '', '#/graph');
+
+    render(h(App, {}));
+
+    await waitFor(() => expect(screen.getByLabelText('Collapse Graph detail')).toBeTruthy());
+    expect(within(screen.getByLabelText('Graph detail')).getByRole('heading', { name: 'alpha' }))
+      .toBeTruthy();
+    expect(reactFlowMockState.mountCount).toBe(1);
+
+    fireEvent.click(screen.getByLabelText('Select graph node rf_beta'));
+
+    await waitFor(() => expect(
+      within(screen.getByLabelText('Graph detail')).getByRole('heading', { name: 'beta' }),
+    ).toBeTruthy());
+    expect(reactFlowMockState.mountCount).toBe(1);
+    expect(reactFlowMockState.unmountCount).toBe(0);
   });
 });
 
@@ -764,6 +932,22 @@ describe('issue deep links', () => {
 
     expect(repoId).toBe('mandible');
     expect(issueId).toBe('4c26383');
+  });
+
+  it('resolves partial repo summaries without requiring repo roots', () => {
+    const repoId = resolveIssueRepoDeepLink(
+      [{
+        repo_id: 'dotfiles',
+        repo_name: 'dotfiles',
+        open_count: 1,
+        merged_count: 0,
+        closed_count: 0,
+        issues: [],
+      }],
+      'dotfiles',
+    );
+
+    expect(repoId).toBe('dotfiles');
   });
 });
 
