@@ -62,6 +62,7 @@ import { TimelineView } from './views/timeline';
 import { PresetsView } from './views/presets';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
+import { normalizeAppThemeMode, resolveAppThemeMode } from './theme';
 import {
   ChatIcon,
   IssuesIcon,
@@ -80,6 +81,10 @@ import {
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
+const THEME_COLOR_BY_RESOLVED_THEME = {
+  dark: '#0b0f14',
+  light: '#f5f7fb',
+} as const;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -109,6 +114,29 @@ function setLastSeenCommit(hash: string): void {
   } catch {
     return;
   }
+}
+
+function updateRootAppTheme(modeValue: string | undefined): () => void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return () => undefined;
+  }
+  const mode = normalizeAppThemeMode(modeValue);
+  const query = window.matchMedia('(prefers-color-scheme: dark)');
+  const metaThemeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  const apply = () => {
+    const resolvedTheme = resolveAppThemeMode(mode, query.matches);
+    document.documentElement.dataset.themeMode = mode;
+    document.documentElement.dataset.theme = resolvedTheme;
+    if (metaThemeColor) {
+      metaThemeColor.content = THEME_COLOR_BY_RESOLVED_THEME[resolvedTheme];
+    }
+  };
+  apply();
+  if (mode !== 'system') {
+    return () => undefined;
+  }
+  query.addEventListener('change', apply);
+  return () => query.removeEventListener('change', apply);
 }
 
 
@@ -179,6 +207,8 @@ function App(): JSX.Element {
     rightSidebar,
     registerRightSidebar,
   }), [registerRightSidebar, rightSidebar]);
+
+  useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
 
   const navigateToHash = useCallback((hash: string) => {
     if (typeof window === 'undefined') {

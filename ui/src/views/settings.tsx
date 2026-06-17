@@ -29,6 +29,7 @@ import {
   type RuntimeStatus,
 } from '../api';
 import { AuthHooksPanel } from './auth';
+import { APP_THEME_MODES, normalizeAppThemeMode } from '../theme';
 
 export type SettingsViewProps = {
   settings: Record<string, string>;
@@ -51,6 +52,11 @@ const THEMES = [
   'gruvbox',
   'nord',
 ];
+const APP_THEME_LABELS: Record<string, string> = {
+  system: 'System',
+  dark: 'Dark',
+  light: 'Light',
+};
 const PROMPTS = ['powerlevel10k', 'starship'];
 const MULTIPLEXERS = ['zellij', 'tmux', 'both', 'none'];
 const RESUME_CONFLICT_POLICIES = ['prompt', 'auto_fork', 'allow_concurrent'];
@@ -1698,11 +1704,30 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
         <div className="settings-view__section-header">
           <h3 className="settings-view__section-title">Appearance</h3>
           <p className="settings-view__section-desc">
-            Shell theme, prompt, and multiplexer. Changes take effect in new shell sessions.
+            App display and shell launch defaults.
           </p>
         </div>
 
         <div className="settings-view__section-body">
+          <div className="settings-view__select-row">
+            <div className="settings-view__select-info">
+              <span className="settings-view__select-label">App theme</span>
+              <span className="settings-view__select-desc">Follow the system appearance or pin Mandible to dark or light</span>
+            </div>
+            <select
+              className="settings-view__select"
+              value={normalizeAppThemeMode(settings.app_theme)}
+              onChange={async (e) => {
+                try {
+                  await onSave('app_theme', normalizeAppThemeMode((e.target as HTMLSelectElement).value));
+                } catch { /* ignore */ }
+              }}
+            >
+              {APP_THEME_MODES.map((mode) => (
+                <option key={mode} value={mode}>{APP_THEME_LABELS[mode]}</option>
+              ))}
+            </select>
+          </div>
           {/* Bug: 914e9d7 — Header tab display mode */}
           <div className="settings-view__select-row">
             <div className="settings-view__select-info">

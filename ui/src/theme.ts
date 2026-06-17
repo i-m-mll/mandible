@@ -54,6 +54,23 @@ export const appColors = {
 } as const;
 
 export type AppColor = keyof typeof appColors;
+export const APP_THEME_MODES = ['system', 'dark', 'light'] as const;
+export type AppThemeMode = typeof APP_THEME_MODES[number];
+export type ResolvedAppTheme = 'dark' | 'light';
+
+export function normalizeAppThemeMode(value: string | undefined): AppThemeMode {
+  if (value === 'dark' || value === 'light' || value === 'system') {
+    return value;
+  }
+  return 'system';
+}
+
+export function resolveAppThemeMode(mode: AppThemeMode, prefersDark: boolean): ResolvedAppTheme {
+  if (mode === 'dark' || mode === 'light') {
+    return mode;
+  }
+  return prefersDark ? 'dark' : 'light';
+}
 
 function resolveCssToken(tokenName: string, fallback: string, scope?: Element | null): string {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
