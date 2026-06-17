@@ -1071,14 +1071,14 @@ export function GraphView({
     [layoutResult.nodes, selectedNodeId],
   );
   const flowEdgeList = layoutResult.edges;
+  // Selection stays in React Flow state; the key only tracks structure that should refit.
   const flowSignature = useMemo(
     () => [
       spec.preset,
-      selectedNodeId ?? '',
-      flowNodes.map((node) => node.id).join(','),
+      layoutResult.nodes.map((node) => node.id).join(','),
       flowEdgeList.map((edge) => edge.id).join(','),
     ].join(':'),
-    [flowEdgeList, flowNodes, spec.preset, selectedNodeId],
+    [flowEdgeList, layoutResult.nodes, spec.preset],
   );
   const selectedNode = useMemo(
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
@@ -1275,7 +1275,7 @@ export function GraphView({
           {!loading && !error && flowNodes.length > 0 && (
             <ReactFlow
               key={flowSignature}
-              defaultNodes={flowNodes}
+              nodes={flowNodes}
               defaultEdges={[]}
               proOptions={{ hideAttribution: true }}
               fitView
