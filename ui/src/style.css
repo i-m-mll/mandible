@@ -9037,6 +9037,20 @@ tr:hover .work-actions__trigger {
   color: var(--text-primary);
 }
 
+:root[data-theme='light'] .block-copy-btn {
+  background: var(--surface-popover);
+  border-color: var(--neutral-alpha-12);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-header);
+}
+
+:root[data-theme='light'] .block-copy-btn:hover,
+:root[data-theme='light'] .block-copy-btn:focus-visible {
+  background: var(--bg-hover);
+  border-color: var(--neutral-alpha-18);
+  color: var(--text-primary);
+}
+
 .block-copy-btn svg {
   width: 12px;
   height: 12px;
