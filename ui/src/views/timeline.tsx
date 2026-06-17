@@ -1775,7 +1775,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
           </aside>
         ) : null}
 
-        <div className="timeline-canvas">
+        <div className={`timeline-canvas${error ? ' timeline-canvas--with-banner' : ''}`}>
           {error ? <div className="timeline-sync-banner">Timeline refresh failed. Showing the last loaded timeline. {error}</div> : null}
 
           <div
