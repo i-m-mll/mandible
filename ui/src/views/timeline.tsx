@@ -706,6 +706,7 @@ function rowPrimaryLabel(row: TimelineRowOccurrence): string {
 }
 
 function rowTitle(row: TimelineRowOccurrence): string {
+  if (isResidualRow(row)) return 'Everything else';
   return row.issue?.title ?? row.row_spec?.title ?? 'Timeline group';
 }
 
@@ -1836,18 +1837,12 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
                         <span className="timeline-gutter-row__origin">{memberCount} {memberCount === 1 ? 'member' : 'members'}</span>
                       ) : null}
                     </button>
-                    <div className="timeline-gutter-row__actions">
-                      {isEditableFilterRoot(row, viewState.filterRows) ? (
-                        <>
-                          <button type="button" onClick={() => openEditRowComposer(row)} aria-label={`Edit filter ${rowTitle(row)}`}>Edit</button>
-                          <button type="button" onClick={() => removeFilterRow(row)} aria-label={`Remove filter ${rowTitle(row)}`}>Remove</button>
-                        </>
-                      ) : isResidualRow(row) ? (
-                        <span>Built in</span>
-                      ) : row.issue ? (
-                        <button type="button" onClick={() => selectRow(row)} aria-label={`Row menu for ${rowPrimaryLabel(row)}`}>...</button>
-                      ) : null}
-                    </div>
+                    {isEditableFilterRoot(row, viewState.filterRows) ? (
+                      <div className="timeline-gutter-row__actions">
+                        <button type="button" onClick={() => openEditRowComposer(row)} aria-label={`Edit filter ${rowTitle(row)}`}>Edit</button>
+                        <button type="button" onClick={() => removeFilterRow(row)} aria-label={`Remove filter ${rowTitle(row)}`}>Remove</button>
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
