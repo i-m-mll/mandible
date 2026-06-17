@@ -1277,6 +1277,7 @@ export function GraphView({
               key={flowSignature}
               defaultNodes={flowNodes}
               defaultEdges={[]}
+              proOptions={{ hideAttribution: true }}
               fitView
               fitViewOptions={{ padding: 0.16 }}
               minZoom={0.2}
