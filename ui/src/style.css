@@ -12732,6 +12732,22 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   background: var(--neutral-alpha-05);
 }
 
+:root[data-theme='light'] .message-actions {
+  background: var(--surface-popover);
+  border-color: var(--neutral-alpha-12);
+  box-shadow: var(--shadow-header);
+}
+
+:root[data-theme='light'] .message-actions__btn {
+  color: var(--text-muted);
+}
+
+:root[data-theme='light'] .message-actions__btn:hover,
+:root[data-theme='light'] .message-actions__btn:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
 /* Bug: 02d701a — Overflow menu (three-dot / ellipsis) */
 
 .message-actions__overflow-wrap {
@@ -12776,6 +12792,22 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 .message-actions__overflow-item:hover {
   color: var(--text-primary);
   background: var(--neutral-alpha-06);
+}
+
+:root[data-theme='light'] .message-actions__overflow-menu {
+  background: var(--surface-popover);
+  border-color: var(--neutral-alpha-12);
+  box-shadow: var(--shadow-header);
+}
+
+:root[data-theme='light'] .message-actions__overflow-item {
+  color: var(--text-muted);
+}
+
+:root[data-theme='light'] .message-actions__overflow-item:hover,
+:root[data-theme='light'] .message-actions__overflow-item:focus-visible {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 /* Bug: 02d701a — Metadata row below action buttons */
