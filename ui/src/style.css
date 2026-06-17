@@ -534,20 +534,40 @@ a {
   display: grid;
   grid-template-columns: 208px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
+  position: relative;
   overflow: hidden;
+  --app-rail-shadow-x: 208px;
 }
 
 .app-layout--rail-icons {
   grid-template-columns: 56px minmax(0, 1fr);
   overflow: visible;
+  --app-rail-shadow-x: 56px;
 }
 
 .app-layout--bottom-panel-open {
+  --app-bottom-panel-active-height: var(--app-bottom-panel-height, 340px);
   grid-template-rows: minmax(0, 1fr) var(--app-bottom-panel-height, 340px);
 }
 
 .app-layout--view-sidebar-open .app-rail {
   box-shadow: none;
+}
+
+.app-layout--bottom-panel-open .app-rail {
+  box-shadow: none;
+}
+
+.app-layout--bottom-panel-open:not(.app-layout--view-sidebar-open)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: var(--app-bottom-panel-active-height);
+  left: var(--app-rail-shadow-x);
+  z-index: 31;
+  width: 1px;
+  pointer-events: none;
+  box-shadow: var(--shadow-rail);
 }
 
 .app-bottom-panel {
@@ -589,6 +609,7 @@ a {
   }
 
   .app-layout--bottom-panel-open {
+    --app-bottom-panel-active-height: min(var(--app-bottom-panel-height, 340px), 42vh);
     grid-template-rows: minmax(0, 1fr) min(var(--app-bottom-panel-height, 340px), 42vh);
   }
 
