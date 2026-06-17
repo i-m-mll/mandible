@@ -191,6 +191,18 @@ function MoonIcon({ size = 18 }: { size?: number }): JSX.Element {
   );
 }
 
+function SunMoonIcon({ size = 18 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 2v2" />
+      <path d="M14.837 16.385a6 6 0 1 1-7.223-7.222c.624-.147.97.66.715 1.248a4 4 0 0 0 5.26 5.259c.589-.255 1.396.09 1.248.715" />
+      <path d="M16 12a4 4 0 0 0-4-4" />
+      <path d="m19 5-1.256 1.256" />
+      <path d="M20 12h2" />
+    </svg>
+  );
+}
+
 function AppThemeModeIcon({ mode, size = 18 }: { mode: AppThemeMode; size?: number }): JSX.Element {
   if (mode === 'light') {
     return <SunIcon size={size} />;
@@ -198,7 +210,7 @@ function AppThemeModeIcon({ mode, size = 18 }: { mode: AppThemeMode; size?: numb
   if (mode === 'dark') {
     return <MoonIcon size={size} />;
   }
-  return <MonitorIcon size={size} />;
+  return <SunMoonIcon size={size} />;
 }
 
 function parseHashRoute(): Route {
@@ -1124,6 +1136,7 @@ function App(): JSX.Element {
   const appThemeModeLabel = APP_THEME_MODE_LABELS[appThemeMode];
   const nextAppThemeModeLabel = APP_THEME_MODE_LABELS[nextAppThemeMode];
   const appThemeModeControlLabel = `App theme: ${appThemeModeLabel}. Switch to ${nextAppThemeModeLabel}.`;
+  const appThemeModeTooltipLabel = 'App theme';
 
   const startRightSidebarResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
     if (!rightSidebar) {
@@ -1250,13 +1263,13 @@ function App(): JSX.Element {
                   disabled={themeModeSaving}
                   data-theme-mode={appThemeMode}
                   aria-label={appThemeModeControlLabel}
-                  title={appThemeModeControlLabel}
+                  title={appThemeModeTooltipLabel}
                 >
                   <span className="app-rail__icon">
                     <AppThemeModeIcon mode={appThemeMode} size={18} />
                   </span>
                   {railDisplayMode === 'both' && <span className="app-rail__label">{appThemeModeLabel}</span>}
-                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{appThemeModeControlLabel}</span>}
+                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{appThemeModeTooltipLabel}</span>}
                 </button>
                 {renderRailItem({
                   tab: 'settings',
