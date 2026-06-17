@@ -236,8 +236,6 @@
 }
 
 :root[data-theme='light'] .app-toast,
-:root[data-theme='light'] .timeline-sidebar,
-:root[data-theme='light'] .timeline-toolbar,
 :root[data-theme='light'] .timeline-main,
 :root[data-theme='light'] .timeline-axis__corner,
 :root[data-theme='light'] .timeline-axis__track,
@@ -447,7 +445,6 @@ a {
   padding: 0 14px;
   background: var(--surface-header);
   border-bottom: 1px solid var(--border-muted);
-  box-shadow: var(--shadow-header);
   z-index: 60;
 }
 
@@ -546,6 +543,10 @@ a {
 
 .app-layout--rail-icons.app-layout--right-sidebar-open {
   grid-template-columns: 56px minmax(0, 1fr) var(--app-right-sidebar-width, 350px);
+}
+
+.app-layout--view-sidebar-open .app-rail {
+  box-shadow: none;
 }
 
 .app-right-sidebar {
@@ -931,6 +932,22 @@ a {
   padding: 0;
 }
 
+.app-content--graph {
+  padding: 0;
+}
+
+.app-layout--view-sidebar-open .auth-sidebar,
+.app-layout--view-sidebar-open .inbox-sidebar,
+.app-layout--view-sidebar-open .issues-tree,
+.app-layout--view-sidebar-open .artifacts-sidebar,
+.app-layout--view-sidebar-open .chat-history-sidebar,
+.app-layout--view-sidebar-open .graph-sidebar,
+.app-layout--view-sidebar-open .timeline-sidebar {
+  position: relative;
+  z-index: 2;
+  box-shadow: var(--shadow-rail);
+}
+
 /* Project Timeline workspace */
 .timeline-workspace {
   height: 100%;
@@ -944,26 +961,31 @@ a {
 .timeline-layout {
   min-height: 0;
   min-width: 0;
-  display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  display: flex;
   overflow: hidden;
 }
 
 .timeline-layout--sidebar-hidden {
-  grid-template-columns: minmax(0, 1fr);
+  display: block;
+}
+
+.timeline-layout--sidebar-hidden .timeline-canvas {
+  height: 100%;
 }
 
 .timeline-sidebar {
   min-height: 0;
   min-width: 0;
+  width: 320px;
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  background: rgba(11, 15, 20, 0.92);
+  background: var(--bg-secondary);
   border-right: 1px solid var(--neutral-alpha-08);
 }
 
 .timeline-canvas {
+  flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
@@ -3780,7 +3802,7 @@ tr:last-child td {
 .auth-sidebar__search-input {
   width: 100%;
   height: 34px;
-  background: rgba(0, 0, 0, 0.22);
+  background: var(--bg-primary);
   border: 1px solid var(--neutral-alpha-08);
   border-radius: 6px;
   color: var(--text-primary);
@@ -11563,29 +11585,30 @@ tr:hover .work-actions__trigger {
   height: 100%;
   min-height: 0;
   min-width: 0;
-  display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
-  gap: 12px;
+  display: flex;
   overflow: hidden;
 }
 
 .graph-view--sidebar-hidden {
-  grid-template-columns: minmax(0, 1fr);
+  display: block;
+}
+
+.graph-view--sidebar-hidden .graph-workspace {
+  height: 100%;
 }
 
 .graph-sidebar {
   min-height: 0;
   min-width: 0;
+  width: 320px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 12px;
-  width: 100%;
   padding: 14px;
-  border: 1px solid var(--neutral-alpha-06);
-  border-radius: 8px;
-  background: rgba(21, 29, 39, 0.72);
+  border-right: 1px solid var(--neutral-alpha-08);
+  background: var(--bg-secondary);
   box-sizing: border-box;
 }
 
@@ -11731,11 +11754,14 @@ tr:hover .work-actions__trigger {
 }
 
 .graph-workspace {
+  flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(360px, 1fr) 320px;
   gap: 12px;
+  padding: 28px 32px 48px;
+  overflow: hidden;
 }
 
 .graph-detail-pane {

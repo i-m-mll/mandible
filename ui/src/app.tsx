@@ -1124,6 +1124,7 @@ function App(): JSX.Element {
   const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
   const viewSidebarAvailable = VIEW_SIDEBAR_TABS.has(route.tab);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
+  const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
   const rightSidebarToggleLabel = rightSidebar
     ? rightSidebar.open
@@ -1223,7 +1224,7 @@ function App(): JSX.Element {
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
+          className={`app-layout app-layout--rail-${railDisplayMode}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
           style={rightSidebarOpen && rightSidebar ? {
             '--app-right-sidebar-width': `${rightSidebar.width}px`,
           } as JSX.CSSProperties : undefined}
@@ -1281,7 +1282,7 @@ function App(): JSX.Element {
               </nav>
           </aside>
         <main
-          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}`}
+          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}`}
         >
         {route.tab === 'auth' && (
           <AuthQueueView
