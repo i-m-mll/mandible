@@ -2,6 +2,7 @@ import * as d3 from 'd3';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { GraphEdge, GraphNode, GraphNodeType, SimGraphEdge, SimGraphNode } from '../../types/graph';
 import { GraphTooltip } from './GraphTooltip';
+import { appColors } from '../../theme';
 
 export interface GraphCanvasProps {
   nodes: GraphNode[]
@@ -22,7 +23,7 @@ function getNodeColor(node: GraphNode): string {
       if (node.active || node.status === 'running' || node.status === 'active') {
         return 'var(--accent-green)';
       }
-      return 'rgba(154,164,178,0.5)';
+      return appColors.graphNodeMuted;
     case 'auth_request':
       if (node.status === 'pending') return 'var(--accent-yellow)';
       if (node.status === 'approved' || node.status === 'completed') return 'var(--accent-green)';
@@ -33,9 +34,9 @@ function getNodeColor(node: GraphNode): string {
       if (node.labels?.includes('error')) return 'var(--accent-red)';
       if (node.labels?.includes('feature')) return 'var(--accent-blue)';
       if (node.labels?.includes('deferred')) return 'var(--text-muted)';
-      return 'rgba(255,255,255,0.85)';
+      return appColors.graphNodeDefault;
     default:
-      return 'rgba(255,255,255,0.5)';
+      return appColors.graphNodeDefaultMuted;
   }
 }
 
@@ -71,8 +72,8 @@ function NodeShape({ node, selected, onClick, onMouseEnter, onMouseLeave }: Node
   const labelText = truncate(node.label);
 
   const strokeProps = selected
-    ? { stroke: 'white', strokeWidth: 2 }
-    : { stroke: 'rgba(255,255,255,0.15)', strokeWidth: 1 };
+    ? { stroke: appColors.graphSelectionStroke, strokeWidth: 2 }
+    : { stroke: appColors.graphNodeStroke, strokeWidth: 1 };
 
   let shape: JSX.Element;
   let labelY: number;
@@ -137,7 +138,7 @@ function NodeShape({ node, selected, onClick, onMouseEnter, onMouseLeave }: Node
         textAnchor="middle"
         y={labelY}
         fontSize={fontSize}
-        fill="rgba(230,237,243,0.75)"
+        fill={appColors.graphLabel}
         style={{ pointerEvents: 'none', userSelect: 'none' }}
       >
         {labelText}
@@ -162,27 +163,27 @@ function EdgeLine({ edge }: EdgeLineProps): JSX.Element | null {
 
   switch (edge.type) {
     case 'session_issue':
-      stroke = 'rgba(77,163,255,0.4)';
+      stroke = appColors.graphEdgeSession;
       strokeWidth = 1.5;
       markerEnd = 'url(#graph-arrow)';
       break;
     case 'umbrella_child':
-      stroke = 'rgba(168,85,247,0.4)';
+      stroke = appColors.graphEdgeUmbrella;
       strokeWidth = 1;
       strokeDasharray = '4 3';
       break;
     case 'auth_issue':
-      stroke = 'rgba(245,194,92,0.4)';
+      stroke = appColors.graphEdgeAuth;
       strokeWidth = 1;
       strokeDasharray = '2 4';
       break;
     case 'session_parent':
-      stroke = 'rgba(154,164,178,0.25)';
+      stroke = appColors.graphEdgeParent;
       strokeWidth = 1;
       strokeDasharray = '3 3';
       break;
     default:
-      stroke = 'rgba(154,164,178,0.2)';
+      stroke = appColors.graphEdgeMuted;
       strokeWidth = 1;
   }
 
@@ -356,7 +357,7 @@ export function GraphCanvas({ nodes, edges, onNavigate }: GraphCanvasProps): JSX
             markerHeight="6"
             orient="auto"
           >
-            <path d="M0,-5L10,0L0,5" fill="rgba(77,163,255,0.5)" />
+            <path d="M0,-5L10,0L0,5" fill={appColors.graphArrow} />
           </marker>
         </defs>
         <g className="graph-viewport">

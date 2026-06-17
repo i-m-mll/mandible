@@ -110,8 +110,8 @@ export function ImportPresetDialog({
 
         {hasCollision && (
           <div style={{
-            background: 'rgba(245, 194, 92, 0.1)',
-            border: '1px solid rgba(245, 194, 92, 0.25)',
+            background: 'var(--status-warning-bg-soft)',
+            border: '1px solid var(--status-warning-border-soft)',
             borderRadius: '8px',
             padding: '8px 12px',
             fontSize: '12px',
@@ -123,8 +123,8 @@ export function ImportPresetDialog({
 
         {error && (
           <div style={{
-            background: 'rgba(242, 107, 107, 0.1)',
-            border: '1px solid rgba(242, 107, 107, 0.25)',
+            background: 'var(--status-danger-bg-soft)',
+            border: '1px solid var(--status-danger-border-soft)',
             borderRadius: '8px',
             padding: '8px 12px',
             fontSize: '12px',
