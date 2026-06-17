@@ -20,9 +20,9 @@ import {
 } from '../ui/src/routing';
 import {
   AppShellProvider,
-  RightSidebarIcon,
-  useRegisterAppRightSidebar,
-  type AppRightSidebarDescriptor,
+  BottomPanelIcon,
+  useRegisterAppBottomPanel,
+  type AppBottomPanelDescriptor,
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { AuthQueueView } from '../ui/src/views/auth';
@@ -329,55 +329,57 @@ describe('App routing', () => {
 
 describe('app shell', () => {
   function RegisteredSidebar(): JSX.Element {
-    const descriptor = useMemo<AppRightSidebarDescriptor>(() => ({
-      id: 'test-sidebar',
+    const descriptor = useMemo<AppBottomPanelDescriptor>(() => ({
+      id: 'test-panel',
       title: 'inspector',
       ariaLabel: 'Test inspector',
       open: true,
-      width: 360,
+      height: 360,
       onOpenChange: () => undefined,
-      onWidthChange: () => undefined,
+      onHeightChange: () => undefined,
       content: h('div', {}, 'Inspector content'),
     }), []);
 
-    useRegisterAppRightSidebar(descriptor);
+    useRegisterAppBottomPanel(descriptor);
     return h('main', {}, 'Workspace');
   }
 
   function ShellProbe(): JSX.Element {
-    const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
-    const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
-      setRightSidebar(descriptor);
-      return () => setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+    const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
+    const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
+      setBottomPanel(descriptor);
+      return () => setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
     }, []);
     const shell = useMemo<AppShellContextValue>(() => ({
-      rightSidebar,
-      registerRightSidebar,
-    }), [registerRightSidebar, rightSidebar]);
+      bottomPanel,
+      registerBottomPanel,
+    }), [bottomPanel, registerBottomPanel]);
 
     return h(AppShellProvider, { value: shell }, [
       h('header', { className: 'app-header' }, [
         h('span', { className: 'app-header__brand-text' }, 'Mandible'),
         h('span', { className: 'app-header__route' }, 'Timeline'),
-        rightSidebar?.content
+        bottomPanel?.content
           ? h('button', {
             type: 'button',
-            'aria-label': rightSidebar.open ? `Collapse ${rightSidebar.title}` : `Show ${rightSidebar.title}`,
-            onClick: () => setRightSidebar({
-              ...rightSidebar,
-              open: !rightSidebar.open,
+            'aria-label': bottomPanel.open ? `Collapse ${bottomPanel.title}` : `Show ${bottomPanel.title}`,
+            onClick: () => setBottomPanel({
+              ...bottomPanel,
+              open: !bottomPanel.open,
             }),
-          }, h(RightSidebarIcon, { open: rightSidebar.open }))
+          }, h(BottomPanelIcon, { open: bottomPanel.open }))
           : null,
       ]),
       h(RegisteredSidebar, {}),
-      rightSidebar?.open && rightSidebar.content
-        ? h('aside', { className: 'app-right-sidebar', 'aria-label': rightSidebar.ariaLabel }, rightSidebar.content)
+      bottomPanel?.open && bottomPanel.content
+        ? h('aside', { className: 'app-bottom-panel', 'aria-label': bottomPanel.ariaLabel }, [
+          h('div', { className: 'app-bottom-panel__content' }, bottomPanel.content),
+        ])
         : null,
     ]);
   }
 
-  it('renders shared header identity, route title, and registered right sidebar toggle', async () => {
+  it('renders shared header identity, route title, and registered bottom panel toggle', async () => {
     render(h(ShellProbe, {}));
 
     expect(screen.getByText('Mandible')).toBeTruthy();

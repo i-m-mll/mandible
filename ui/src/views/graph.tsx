@@ -27,6 +27,7 @@ import {
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { appColors } from '../theme';
 import { useSidebarResize } from '../hooks/useSidebarResize';
+import { useRegisterAppBottomPanel } from '../app-shell';
 
 type GraphFetchParams = {
   mode: GraphMode
@@ -211,6 +212,11 @@ const FLOW_NODE_WIDTH = 190;
 const FLOW_NODE_HEIGHT = 118;
 const GRAPH_SIZE_OPTIONS = [120, 250, 500, 1000] as const;
 const DEFAULT_GRAPH_PRESET: GraphMode = 'issue';
+const GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY = 'mandible_graph_detail_panel_open:v1';
+const GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY = 'mandible_graph_detail_panel_height:v1';
+const DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT = 340;
+const MIN_GRAPH_DETAIL_PANEL_HEIGHT = 240;
+const MAX_GRAPH_DETAIL_PANEL_HEIGHT = 520;
 
 const MODE_LABELS: Record<GraphMode, string> = {
   activity: 'Activity',
@@ -243,6 +249,30 @@ function typeLabel(type: string): string {
 function compactId(id: string): string {
   const parts = id.split(':');
   return parts[parts.length - 1]?.slice(0, 12) || id.slice(0, 12);
+}
+
+function readStoredBoolean(key: string, fallback: boolean): boolean {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const stored = window.localStorage.getItem(key);
+    if (stored === null) return fallback;
+    return stored === 'true';
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredNumber(key: string, fallback: number, min: number, max: number): number {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const stored = window.localStorage.getItem(key);
+    if (stored === null) return fallback;
+    const value = Number.parseInt(stored, 10);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(max, Math.max(min, value));
+  } catch {
+    return fallback;
+  }
 }
 
 function reactFlowId(id: string): string {
@@ -904,10 +934,40 @@ export function GraphView({
     branches: [],
   });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [detailPanelOpen, setDetailPanelOpen] = useState(() => (
+    readStoredBoolean(GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY, true)
+  ));
+  const [detailPanelHeight, setDetailPanelHeight] = useState(() => (
+    readStoredNumber(
+      GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY,
+      DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT,
+      MIN_GRAPH_DETAIL_PANEL_HEIGHT,
+      MAX_GRAPH_DETAIL_PANEL_HEIGHT,
+    )
+  ));
+  const lastFocusedNodeOpenedRef = useRef<string | null>(null);
 
   useEffect(() => {
     setSpec((current) => ({ ...current, preset: routeMode, nodeTypes: undefined, edgeTypes: undefined }));
   }, [routeMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY, String(detailPanelOpen));
+    } catch {
+      // Ignore storage failures; the in-memory state remains authoritative for this session.
+    }
+  }, [detailPanelOpen]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY, String(detailPanelHeight));
+    } catch {
+      // Ignore storage failures; the in-memory state remains authoritative for this session.
+    }
+  }, [detailPanelHeight]);
 
   useEffect(() => {
     let active = true;
@@ -928,7 +988,14 @@ export function GraphView({
         setPayload(data);
         if (initialFocus && data.nodes.some((node) => node.id === initialFocus)) {
           setSelectedNodeId(initialFocus);
+          if (lastFocusedNodeOpenedRef.current !== initialFocus) {
+            setDetailPanelOpen(true);
+            lastFocusedNodeOpenedRef.current = initialFocus;
+          }
         } else if (data.nodes.length > 0 && !data.nodes.some((node) => node.id === selectedNodeId)) {
+          if (!initialFocus) {
+            lastFocusedNodeOpenedRef.current = null;
+          }
           setSelectedNodeId(data.nodes[0].id);
         }
       })
@@ -1017,6 +1084,25 @@ export function GraphView({
     () => visibleNodes.find((node) => node.id === selectedNodeId) ?? visibleNodes[0] ?? null,
     [visibleNodes, selectedNodeId],
   );
+
+  const detailPanelContent = useMemo(() => (
+    <DetailPane node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
+  ), [onNavigate, selectedNode, visibleEdges]);
+
+  const detailPanelDescriptor = useMemo(() => ({
+    id: 'graph-detail',
+    title: 'Graph detail',
+    ariaLabel: 'Graph detail',
+    open: detailPanelOpen,
+    height: detailPanelHeight,
+    minHeight: MIN_GRAPH_DETAIL_PANEL_HEIGHT,
+    maxHeight: MAX_GRAPH_DETAIL_PANEL_HEIGHT,
+    onOpenChange: setDetailPanelOpen,
+    onHeightChange: setDetailPanelHeight,
+    content: selectedNode ? detailPanelContent : null,
+  }), [detailPanelContent, detailPanelHeight, detailPanelOpen, selectedNode]);
+
+  useRegisterAppBottomPanel(detailPanelDescriptor);
 
   const updateSpec = (patch: Partial<GraphSpecState>) => {
     setSpec((current) => ({ ...current, ...patch }));
@@ -1198,7 +1284,10 @@ export function GraphView({
               nodesDraggable={false}
               nodesConnectable={false}
               elementsSelectable
-              onNodeClick={(_event, node) => setSelectedNodeId((node.data as { node: GraphNode }).node.id)}
+              onNodeClick={(_event, node) => {
+                setSelectedNodeId((node.data as { node: GraphNode }).node.id);
+                setDetailPanelOpen(true);
+              }}
               onNodeDoubleClick={(_event, node) => {
                 const graphNode = (node.data as { node: GraphNode }).node;
                 if (graphNode && (graphNode.type === 'issue' || graphNode.type === 'session' || graphNode.type === 'auth_request' || graphNode.type === 'artifact' || graphNode.type === 'report')) {
@@ -1220,8 +1309,6 @@ export function GraphView({
             </ReactFlow>
           )}
         </div>
-
-        <DetailPane node={selectedNode} edges={visibleEdges} onNavigate={onNavigate} />
       </div>
     </div>
   );

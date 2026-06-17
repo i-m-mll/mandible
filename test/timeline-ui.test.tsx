@@ -6,7 +6,7 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 import { parseRouteFromHash } from '../ui/src/routing';
 import {
   AppShellProvider,
-  type AppRightSidebarDescriptor,
+  type AppBottomPanelDescriptor,
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { TimelineView as RawTimelineView, type TimelineViewProps } from '../ui/src/views/timeline';
@@ -288,32 +288,34 @@ function stubTimelineFetchResolver(
 }
 
 function TimelineView(props: TimelineViewProps): JSX.Element {
-  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
-  const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
-    setRightSidebar(descriptor);
-    return () => setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+  const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
+  const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
+    setBottomPanel(descriptor);
+    return () => setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
   }, []);
   const shell = useMemo<AppShellContextValue>(() => ({
-    rightSidebar,
-    registerRightSidebar,
-  }), [registerRightSidebar, rightSidebar]);
-  const toggleLabel = rightSidebar?.open ? `Collapse ${rightSidebar.title}` : `Show ${rightSidebar?.title ?? 'inspector'}`;
+    bottomPanel,
+    registerBottomPanel,
+  }), [bottomPanel, registerBottomPanel]);
+  const toggleLabel = bottomPanel?.open ? `Collapse ${bottomPanel.title}` : `Show ${bottomPanel?.title ?? 'inspector'}`;
 
   return (
     <AppShellProvider value={shell}>
       <div className="app-header">
-        {rightSidebar?.content ? (
+        {bottomPanel?.content ? (
           <button
             type="button"
             aria-label={toggleLabel}
-            onClick={() => rightSidebar.onOpenChange(!rightSidebar.open)}
+            onClick={() => bottomPanel.onOpenChange(!bottomPanel.open)}
           />
         ) : null}
       </div>
       <RawTimelineView {...props} />
-      {rightSidebar?.open && rightSidebar.content ? (
-        <aside className="app-right-sidebar" aria-label={rightSidebar.ariaLabel}>
-          {rightSidebar.content}
+      {bottomPanel?.open && bottomPanel.content ? (
+        <aside className="app-bottom-panel" aria-label={bottomPanel.ariaLabel}>
+          <div className="app-bottom-panel__content">
+            {bottomPanel.content}
+          </div>
         </aside>
       ) : null}
     </AppShellProvider>

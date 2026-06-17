@@ -128,6 +128,8 @@
   --shadow-header: 0 10px 24px rgba(0, 0, 0, 0.18);
   --shadow-chrome: var(--shadow-header);
   --shadow-rail: 10px 0 30px rgba(0, 0, 0, 0.18);
+  --shadow-panel-top: 0 -10px 24px rgba(0, 0, 0, 0.18);
+  --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
 }
 
 :root[data-theme='light'] {
@@ -233,6 +235,8 @@
   --shadow-header: 0 10px 24px rgba(15, 23, 42, 0.08);
   --shadow-chrome: var(--shadow-header);
   --shadow-rail: 10px 0 30px rgba(15, 23, 42, 0.08);
+  --shadow-panel-top: 0 -10px 24px rgba(15, 23, 42, 0.08);
+  --shadow-content-top: inset 0 18px 24px -28px rgba(15, 23, 42, 0.2);
 }
 
 :root[data-theme='light'] .app-toast,
@@ -529,6 +533,7 @@ a {
   min-width: 0;
   display: grid;
   grid-template-columns: 208px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -537,39 +542,40 @@ a {
   overflow: visible;
 }
 
-.app-layout--right-sidebar-open {
-  grid-template-columns: 208px minmax(0, 1fr) var(--app-right-sidebar-width, 350px);
-}
-
-.app-layout--rail-icons.app-layout--right-sidebar-open {
-  grid-template-columns: 56px minmax(0, 1fr) var(--app-right-sidebar-width, 350px);
+.app-layout--bottom-panel-open {
+  grid-template-rows: minmax(0, 1fr) var(--app-bottom-panel-height, 340px);
 }
 
 .app-layout--view-sidebar-open .app-rail {
   box-shadow: none;
 }
 
-.app-right-sidebar {
+.app-bottom-panel {
+  grid-column: 2;
+  grid-row: 2;
   position: relative;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
-  border-left: 1px solid var(--border-muted);
+  overflow: hidden;
+  border-top: 1px solid var(--border-muted);
   background: var(--surface-sidebar);
+  box-shadow: var(--shadow-panel-top);
 }
 
-.app-right-sidebar__resize {
+.app-bottom-panel__resize {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: -5px;
   left: 0;
+  right: 0;
   z-index: 2;
-  width: 8px;
-  cursor: col-resize;
+  height: 10px;
+  cursor: row-resize;
 }
 
-.app-right-sidebar__content {
-  min-height: 100%;
+.app-bottom-panel__content {
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
 }
 
 @media (max-width: 800px) {
@@ -582,32 +588,18 @@ a {
     display: none;
   }
 
-  .app-layout--right-sidebar-open,
-  .app-layout--rail-icons.app-layout--right-sidebar-open {
-    grid-template-columns: 56px minmax(0, 1fr);
+  .app-layout--bottom-panel-open {
+    grid-template-rows: minmax(0, 1fr) min(var(--app-bottom-panel-height, 340px), 42vh);
   }
 
-  .app-right-sidebar {
-    position: fixed;
-    top: 48px;
-    right: 0;
-    bottom: 0;
-    z-index: 88;
-    width: min(var(--app-right-sidebar-width, 350px), calc(100vw - 56px)) !important;
-    max-width: calc(100vw - 56px);
-    box-shadow: var(--shadow-soft);
-  }
-
-  .tauri-window .app-right-sidebar {
-    top: max(48px, env(titlebar-area-height, 48px));
-  }
-
-  .app-right-sidebar__resize {
-    display: none;
+  .app-bottom-panel__resize {
+    top: 0;
+    height: 8px;
   }
 }
 
 .app-rail {
+  grid-row: 1 / -1;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -906,6 +898,7 @@ a {
 }
 
 .app-content {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -913,7 +906,18 @@ a {
   min-width: 0;
 }
 
+.app-content::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  height: 24px;
+  pointer-events: none;
+  box-shadow: var(--shadow-content-top);
+}
+
 .app-content > * {
+  position: relative;
   min-height: 0;
   min-width: 0;
 }
@@ -11761,10 +11765,8 @@ tr:hover .work-actions__trigger {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(360px, 1fr) 320px;
-  gap: 12px;
-  padding: 28px 32px 48px;
+  display: flex;
+  padding: 0;
   overflow: hidden;
 }
 
@@ -11801,12 +11803,14 @@ tr:hover .work-actions__trigger {
 }
 
 .graph-canvas-wrap {
+  flex: 1;
   min-height: 0;
+  min-width: 0;
   position: relative;
-  border-radius: 8px;
+  border-radius: 0;
   overflow: hidden;
-  background: #0d131a;
-  border: 1px solid var(--neutral-alpha-06);
+  background: var(--bg-primary);
+  border: 0;
 }
 
 .graph-canvas-wrap .react-flow {
@@ -12253,6 +12257,18 @@ tr:hover .work-actions__trigger {
 
 .graph-detail-pane {
   padding: 14px;
+}
+
+.app-bottom-panel .graph-detail-pane {
+  min-height: 100%;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.app-bottom-panel .graph-detail-pane--ledger {
+  padding: 0;
 }
 
 .graph-detail-pane__empty {

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { marked } from 'marked';
 
 import { getProjectTimeline } from '../api';
-import { useRegisterAppRightSidebar } from '../app-shell';
+import { useRegisterAppBottomPanel } from '../app-shell';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { sanitizeMarkdown } from '../sanitize';
 import type { WorkRepo } from './work';
@@ -1628,29 +1628,29 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     visibleSelectedRowEvents,
     zoomToCluster,
   ]);
-  const rightSidebarDescriptor = useMemo(() => ({
+  const bottomPanelDescriptor = useMemo(() => ({
     id: 'timeline-inspector',
     title: 'inspector',
     ariaLabel: 'Timeline inspector',
     open: viewState.panes.inspector,
-    width: viewState.panes.inspectorWidth,
-    minWidth: MIN_INSPECTOR_WIDTH,
-    maxWidth: MAX_INSPECTOR_WIDTH,
+    height: viewState.panes.inspectorWidth,
+    minHeight: MIN_INSPECTOR_WIDTH,
+    maxHeight: MAX_INSPECTOR_WIDTH,
     onOpenChange: (open: boolean) => {
       updateState({ panes: { ...viewState.panes, inspector: open } });
     },
-    onWidthChange: (width: number) => {
+    onHeightChange: (height: number) => {
       updateState({
         panes: {
           ...viewState.panes,
-          inspectorWidth: normalizeInspectorWidth(width),
+          inspectorWidth: normalizeInspectorWidth(height),
         },
       });
     },
     content: inspectorContent,
   }), [inspectorContent, updateState, viewState.panes]);
 
-  useRegisterAppRightSidebar(rightSidebarDescriptor);
+  useRegisterAppBottomPanel(bottomPanelDescriptor);
 
   return (
     <section className="timeline-workspace" aria-label="Project timeline">

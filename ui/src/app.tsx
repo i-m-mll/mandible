@@ -38,9 +38,9 @@ import {
 } from './routing';
 import {
   AppShellProvider,
-  RightSidebarIcon,
+  BottomPanelIcon,
   ViewSidebarIcon,
-  type AppRightSidebarDescriptor,
+  type AppBottomPanelDescriptor,
   type AppShellContextValue,
 } from './app-shell';
 import { AuthQueueView } from './views/auth';
@@ -255,20 +255,20 @@ function App(): JSX.Element {
   // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
   const [rebuilding, setRebuilding] = useState(false);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
-  const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const [themeModeSaving, setThemeModeSaving] = useState(false);
 
-  const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
-    setRightSidebar(descriptor);
+  const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
+    setBottomPanel(descriptor);
     return () => {
-      setRightSidebar((current) => (current?.id === descriptor.id ? null : current));
+      setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
     };
   }, []);
 
   const appShellContext = useMemo<AppShellContextValue>(() => ({
-    rightSidebar,
-    registerRightSidebar,
-  }), [registerRightSidebar, rightSidebar]);
+    bottomPanel,
+    registerBottomPanel,
+  }), [bottomPanel, registerBottomPanel]);
 
   useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
 
@@ -1120,17 +1120,17 @@ function App(): JSX.Element {
       icon: SettingsIcon,
     }].find((item) => item.tab === route.tab)?.title ?? 'Mandible'
   );
-  const rightSidebarAvailable = Boolean(rightSidebar?.content);
-  const rightSidebarOpen = Boolean(rightSidebarAvailable && rightSidebar?.open);
+  const bottomPanelAvailable = Boolean(bottomPanel?.content);
+  const bottomPanelOpen = Boolean(bottomPanelAvailable && bottomPanel?.open);
   const viewSidebarAvailable = VIEW_SIDEBAR_TABS.has(route.tab);
   const viewSidebarHidden = Boolean(viewSidebarAvailable && isViewSidebarHidden(route));
   const viewSidebarOpen = Boolean(viewSidebarAvailable && !viewSidebarHidden);
   const viewSidebarToggleLabel = viewSidebarHidden ? 'Show view sidebar' : 'Hide view sidebar';
-  const rightSidebarToggleLabel = rightSidebar
-    ? rightSidebar.open
-      ? `Collapse ${rightSidebar.title}`
-      : `Show ${rightSidebar.title}`
-    : 'Show details sidebar';
+  const bottomPanelToggleLabel = bottomPanel
+    ? bottomPanel.open
+      ? `Collapse ${bottomPanel.title}`
+      : `Show ${bottomPanel.title}`
+    : 'Show detail panel';
   const appThemeMode = normalizeAppThemeMode(state.settings.app_theme);
   const appThemeModeIndex = APP_THEME_MODE_CYCLE.indexOf(appThemeMode);
   const nextAppThemeMode = APP_THEME_MODE_CYCLE[(appThemeModeIndex + 1) % APP_THEME_MODE_CYCLE.length];
@@ -1139,19 +1139,19 @@ function App(): JSX.Element {
   const appThemeModeControlLabel = `App theme: ${appThemeModeLabel}. Switch to ${nextAppThemeModeLabel}.`;
   const appThemeModeTooltipLabel = 'App theme';
 
-  const startRightSidebarResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
-    if (!rightSidebar) {
+  const startBottomPanelResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
+    if (!bottomPanel) {
       return;
     }
     event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = rightSidebar.width;
-    const minWidth = rightSidebar.minWidth ?? 280;
-    const maxWidth = rightSidebar.maxWidth ?? 560;
+    const startY = event.clientY;
+    const startHeight = bottomPanel.height;
+    const minHeight = bottomPanel.minHeight ?? 220;
+    const maxHeight = bottomPanel.maxHeight ?? 520;
     const handleMove = (moveEvent: MouseEvent) => {
-      const viewportMax = Math.floor(window.innerWidth * 0.6);
-      const nextWidth = clamp(startWidth + startX - moveEvent.clientX, minWidth, Math.min(maxWidth, viewportMax));
-      rightSidebar.onWidthChange(nextWidth);
+      const viewportMax = Math.floor(window.innerHeight * 0.55);
+      const nextHeight = clamp(startHeight + startY - moveEvent.clientY, minHeight, Math.min(maxHeight, viewportMax));
+      bottomPanel.onHeightChange(nextHeight);
     };
     const handleUp = () => {
       window.removeEventListener('mousemove', handleMove);
@@ -1159,7 +1159,7 @@ function App(): JSX.Element {
     };
     window.addEventListener('mousemove', handleMove);
     window.addEventListener('mouseup', handleUp);
-  }, [rightSidebar]);
+  }, [bottomPanel]);
 
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
   if (rebuilding) {
@@ -1208,25 +1208,25 @@ function App(): JSX.Element {
         </div>
         <div className="app-header__route" aria-live="polite">{currentRouteTitle}</div>
         <div className="app-header__actions">
-          {rightSidebarAvailable ? (
+          {bottomPanelAvailable ? (
             <button
               type="button"
-              className={`app-header__icon-button${rightSidebarOpen ? ' app-header__icon-button--active' : ''}`}
-              onClick={() => rightSidebar?.onOpenChange(!rightSidebar.open)}
-              aria-label={rightSidebarToggleLabel}
-              aria-pressed={rightSidebarOpen}
-              title={rightSidebarToggleLabel}
+              className={`app-header__icon-button${bottomPanelOpen ? ' app-header__icon-button--active' : ''}`}
+              onClick={() => bottomPanel?.onOpenChange(!bottomPanel.open)}
+              aria-label={bottomPanelToggleLabel}
+              aria-pressed={bottomPanelOpen}
+              title={bottomPanelToggleLabel}
             >
-              <RightSidebarIcon open={rightSidebarOpen} />
+              <BottomPanelIcon open={bottomPanelOpen} />
             </button>
           ) : null}
         </div>
       </header>
       <AppShellProvider value={appShellContext}>
         <div
-          className={`app-layout app-layout--rail-${railDisplayMode}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${rightSidebarOpen ? ' app-layout--right-sidebar-open' : ''}`}
-          style={rightSidebarOpen && rightSidebar ? {
-            '--app-right-sidebar-width': `${rightSidebar.width}px`,
+          className={`app-layout app-layout--rail-${railDisplayMode}${viewSidebarOpen ? ' app-layout--view-sidebar-open' : ''}${bottomPanelOpen ? ' app-layout--bottom-panel-open' : ''}`}
+          style={bottomPanelOpen && bottomPanel ? {
+            '--app-bottom-panel-height': `${bottomPanel.height}px`,
           } as JSX.CSSProperties : undefined}
         >
           <aside className="app-rail" data-tauri-drag-region>
@@ -1395,21 +1395,21 @@ function App(): JSX.Element {
           />
         )}
         </main>
-          {rightSidebarOpen && rightSidebar ? (
+          {bottomPanelOpen && bottomPanel ? (
             <aside
-              className="app-right-sidebar"
-              aria-label={rightSidebar.ariaLabel}
-              style={{ width: `${rightSidebar.width}px` }}
+              className="app-bottom-panel"
+              aria-label={bottomPanel.ariaLabel}
+              style={{ height: `${bottomPanel.height}px` }}
             >
               <div
-                className="app-right-sidebar__resize"
+                className="app-bottom-panel__resize"
                 role="separator"
-                aria-orientation="vertical"
-                aria-label={`Resize ${rightSidebar.title}`}
-                onMouseDown={startRightSidebarResize}
+                aria-orientation="horizontal"
+                aria-label={`Resize ${bottomPanel.title}`}
+                onMouseDown={startBottomPanelResize}
               />
-              <div className="app-right-sidebar__content">
-                {rightSidebar.content}
+              <div className="app-bottom-panel__content">
+                {bottomPanel.content}
               </div>
             </aside>
           ) : null}
