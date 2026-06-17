@@ -669,6 +669,7 @@ a {
 }
 
 .app-rail__item {
+  appearance: none;
   position: relative;
   min-width: 0;
   min-height: 38px;
@@ -677,11 +678,19 @@ a {
   gap: 10px;
   padding: 8px 10px;
   border-radius: 8px;
+  background: transparent;
   color: var(--text-muted);
+  font: inherit;
   font-size: 13px;
   line-height: 1.2;
+  text-decoration: none;
   transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
   border: 1px solid transparent;
+}
+
+.app-rail__item:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .app-rail__item:hover:not(.app-rail__item--active) {
