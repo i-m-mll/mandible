@@ -12268,7 +12268,7 @@ tr:hover .work-actions__trigger {
 }
 
 .app-bottom-panel .graph-detail-pane--ledger {
-  padding: 0;
+  padding: 14px;
 }
 
 .graph-detail-pane__empty {
