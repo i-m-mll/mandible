@@ -1149,14 +1149,6 @@ export function GraphView({
             aria-label="Graph controls"
             style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
           >
-            <div className="graph-spec-row graph-spec-row--lens">
-              <span className="graph-spec-row__label">Lens</span>
-              <div className="graph-lens-strip" aria-label="Graph lens presets">
-                {lenses.map((item) => (
-                  <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
-                ))}
-              </div>
-            </div>
             <div className="graph-spec-row graph-spec-row--scope">
               <span className="graph-spec-row__label">Scope</span>
               <div className="graph-toolbar__combobox-group">
@@ -1173,36 +1165,6 @@ export function GraphView({
                   onChange={(branches) => updateSpec({ branches })}
                   disabled={branches.length === 0}
                 />
-              </div>
-            </div>
-            <div className="graph-spec-row graph-spec-row--legend">
-              <span className="graph-spec-row__label">Nodes</span>
-              <div className="graph-legend-stack">
-                <div className="graph-legend-strip" aria-label="Visible node families">
-                  {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
-                  {nodeLegend.map((item) => (
-                    <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
-                  ))}
-                </div>
-                {spec.preset === 'issue' && nodeLegend.length === 1 && nodeLegend[0]?.id === 'issue' && (
-                  <div className="graph-row-note">
-                    Only issue nodes are shown in this lens by default; auth and session evidence stays attached to issue details.
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="graph-spec-row graph-spec-row--legend">
-              <span className="graph-spec-row__label">Edges</span>
-              <div className="graph-legend-stack">
-                <div className="graph-legend-strip" aria-label="Visible edge families">
-                  {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
-                  {edgeLegend.map((item) => (
-                    <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
-                  ))}
-                </div>
-                <div className="graph-row-note">
-                  Hierarchy edges place parent and umbrella issues; reference and evidence edges add context without changing the issue tree.
-                </div>
               </div>
             </div>
             <div className="graph-toolbar" aria-label="Graph filters and size">
@@ -1249,6 +1211,44 @@ export function GraphView({
                       {value.toLocaleString()}
                     </button>
                   ))}
+                </div>
+              </div>
+            </div>
+            <div className="graph-spec-row graph-spec-row--lens">
+              <span className="graph-spec-row__label">Lens</span>
+              <div className="graph-lens-strip" aria-label="Graph lens presets">
+                {lenses.map((item) => (
+                  <LensButton key={item.id} lens={item} current={spec.preset} onSelect={selectPreset} />
+                ))}
+              </div>
+            </div>
+            <div className="graph-spec-row graph-spec-row--legend">
+              <span className="graph-spec-row__label">Nodes</span>
+              <div className="graph-legend-stack">
+                <div className="graph-legend-strip" aria-label="Visible node families">
+                  {nodeLegend.length === 0 && <div className="graph-legend-strip__empty">No node families</div>}
+                  {nodeLegend.map((item) => (
+                    <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+                  ))}
+                </div>
+                {spec.preset === 'issue' && nodeLegend.length === 1 && nodeLegend[0]?.id === 'issue' && (
+                  <div className="graph-row-note">
+                    Only issue nodes are shown in this lens by default; auth and session evidence stays attached to issue details.
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="graph-spec-row graph-spec-row--legend">
+              <span className="graph-spec-row__label">Edges</span>
+              <div className="graph-legend-stack">
+                <div className="graph-legend-strip" aria-label="Visible edge families">
+                  {edgeLegend.length === 0 && <div className="graph-legend-strip__empty">No edge families</div>}
+                  {edgeLegend.map((item) => (
+                    <LegendButton key={item.id} item={item} onToggle={toggleLegendItem} />
+                  ))}
+                </div>
+                <div className="graph-row-note">
+                  Hierarchy edges place parent and umbrella issues; reference and evidence edges add context without changing the issue tree.
                 </div>
               </div>
             </div>
