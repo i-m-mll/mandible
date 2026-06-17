@@ -1245,9 +1245,10 @@ function App(): JSX.Element {
               <nav className="app-rail__footer" aria-label="Settings">
                 <button
                   type="button"
-                  className="app-rail__item"
+                  className={`app-rail__item app-rail__theme-toggle app-rail__theme-toggle--${appThemeMode}`}
                   onClick={() => void handleRailThemeCycle()}
                   disabled={themeModeSaving}
+                  data-theme-mode={appThemeMode}
                   aria-label={appThemeModeControlLabel}
                   title={appThemeModeControlLabel}
                 >
