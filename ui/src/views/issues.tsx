@@ -30,14 +30,15 @@ export type IssueSummary = {
 export type IssueRepoSummary = {
   repo_id: string;
   repo_name: string;
-  repo_root: string;
+  repo_root?: string | null;
   open_count: number;
   merged_count: number;
   closed_count: number;
   issues: IssueSummary[];
 };
 
-function pathBasename(value: string): string {
+function pathBasename(value: string | null | undefined): string {
+  if (typeof value !== 'string') return '';
   const normalized = value.trim().replace(/[\\/]+$/, '');
   const parts = normalized.split(/[\\/]+/).filter(Boolean);
   return parts[parts.length - 1] ?? normalized;
@@ -54,7 +55,7 @@ export function resolveIssueRepoDeepLink(
 
   const repoMatches = (repo: IssueRepoSummary, value: string, ignoreCase: boolean): boolean => {
     const candidates = [repo.repo_id, repo.repo_name, repo.repo_root, pathBasename(repo.repo_root)]
-      .filter(Boolean);
+      .filter((candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '');
     return candidates.some((candidate) => (
       ignoreCase
         ? candidate.toLowerCase() === value.toLowerCase()

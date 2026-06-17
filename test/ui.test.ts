@@ -778,6 +778,22 @@ describe('issue deep links', () => {
     expect(repoId).toBe('mandible');
     expect(issueId).toBe('4c26383');
   });
+
+  it('resolves partial repo summaries without requiring repo roots', () => {
+    const repoId = resolveIssueRepoDeepLink(
+      [{
+        repo_id: 'dotfiles',
+        repo_name: 'dotfiles',
+        open_count: 1,
+        merged_count: 0,
+        closed_count: 0,
+        issues: [],
+      }],
+      'dotfiles',
+    );
+
+    expect(repoId).toBe('dotfiles');
+  });
 });
 
 describe('useSidebarResize', () => {
