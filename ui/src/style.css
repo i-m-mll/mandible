@@ -130,6 +130,190 @@
   --shadow-rail: 10px 0 30px rgba(0, 0, 0, 0.18);
 }
 
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg-primary: #f5f7fb;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --text-primary: #17202a;
+  --text-muted: #5f6b7a;
+  --text-secondary: var(--text-muted);
+  --fg-default: var(--text-primary);
+  --fg-muted: var(--text-muted);
+  --fg-subtle: rgba(23, 32, 42, 0.72);
+  --fg-inverse: #ffffff;
+  --text-on-accent: var(--fg-inverse);
+  --text-primary-soft: rgba(23, 32, 42, 0.88);
+  --text-primary-muted: rgba(23, 32, 42, 0.76);
+  --text-primary-subtle: rgba(23, 32, 42, 0.72);
+  --accent-green: #047857;
+  --accent-yellow: #9a5b00;
+  --accent-red: #b42318;
+  --accent-blue: #0b63ce;
+  --accent-purple: #7c3aed;
+  --status-success-bg: rgba(4, 120, 87, 0.12);
+  --status-success-bg-strong: rgba(4, 120, 87, 0.2);
+  --status-success-border: rgba(4, 120, 87, 0.26);
+  --status-warning-bg: rgba(154, 91, 0, 0.12);
+  --status-warning-bg-soft: rgba(154, 91, 0, 0.07);
+  --status-warning-border: rgba(154, 91, 0, 0.28);
+  --status-warning-border-soft: rgba(154, 91, 0, 0.2);
+  --status-danger-bg: rgba(180, 35, 24, 0.11);
+  --status-danger-bg-soft: rgba(180, 35, 24, 0.06);
+  --status-danger-border: rgba(180, 35, 24, 0.24);
+  --status-danger-border-soft: rgba(180, 35, 24, 0.18);
+  --status-info-bg: rgba(11, 99, 206, 0.11);
+  --status-info-bg-soft: rgba(11, 99, 206, 0.06);
+  --status-info-border: rgba(11, 99, 206, 0.24);
+  --status-purple-bg: rgba(124, 58, 237, 0.11);
+  --status-purple-border: rgba(124, 58, 237, 0.24);
+  --inbox-continuation: #0b63ce;
+  --inbox-continuation-bg: rgba(11, 99, 206, 0.11);
+  --inbox-handoff: #9a5b00;
+  --inbox-handoff-bg: rgba(154, 91, 0, 0.12);
+  --inbox-issue: #6d28d9;
+  --inbox-issue-bg: rgba(109, 40, 217, 0.11);
+  --inbox-preset-diff: var(--accent-yellow);
+  --inbox-preset-diff-bg: var(--status-warning-bg);
+  --auth-result-completed: #047857;
+  --auth-result-completed-bg: rgba(4, 120, 87, 0.12);
+  --auth-result-problem: #b42318;
+  --auth-result-problem-bg: rgba(180, 35, 24, 0.11);
+  --auth-result-neutral: #5f6b7a;
+  --auth-result-neutral-bg: rgba(95, 107, 122, 0.12);
+  --surface-app: var(--bg-primary);
+  --surface-app-glow: #e7eef8;
+  --surface-header: rgba(255, 255, 255, 0.96);
+  --surface-rail: rgba(255, 255, 255, 0.94);
+  --surface-sidebar: rgba(250, 252, 255, 0.96);
+  --surface-toolbar: rgba(250, 252, 255, 0.92);
+  --surface-popover: rgba(255, 255, 255, 0.98);
+  --surface-code: rgba(15, 23, 42, 0.06);
+  --scrim-modal: rgba(15, 23, 42, 0.34);
+  --bg-inset: rgba(241, 245, 249, 0.9);
+  --bg-overlay: rgba(15, 23, 42, 0.34);
+  --neutral-alpha-01: rgba(15, 23, 42, 0.01);
+  --neutral-alpha-02: rgba(15, 23, 42, 0.02);
+  --neutral-alpha-025: rgba(15, 23, 42, 0.025);
+  --neutral-alpha-03: rgba(15, 23, 42, 0.03);
+  --neutral-alpha-035: rgba(15, 23, 42, 0.035);
+  --neutral-alpha-04: rgba(15, 23, 42, 0.04);
+  --neutral-alpha-045: rgba(15, 23, 42, 0.045);
+  --neutral-alpha-05: rgba(15, 23, 42, 0.05);
+  --neutral-alpha-055: rgba(15, 23, 42, 0.055);
+  --neutral-alpha-06: rgba(15, 23, 42, 0.06);
+  --neutral-alpha-07: rgba(15, 23, 42, 0.07);
+  --neutral-alpha-08: rgba(15, 23, 42, 0.08);
+  --neutral-alpha-10: rgba(15, 23, 42, 0.1);
+  --neutral-alpha-12: rgba(15, 23, 42, 0.12);
+  --neutral-alpha-15: rgba(15, 23, 42, 0.15);
+  --neutral-alpha-16: rgba(15, 23, 42, 0.16);
+  --neutral-alpha-18: rgba(15, 23, 42, 0.18);
+  --neutral-alpha-20: rgba(15, 23, 42, 0.2);
+  --focus-ring: rgba(11, 99, 206, 0.64);
+  --terminal-bg: #ffffff;
+  --terminal-fg: #17202a;
+  --terminal-cursor: var(--accent-blue);
+  --graph-node-muted: rgba(95, 107, 122, 0.48);
+  --graph-node-muted-strong: rgba(95, 107, 122, 0.62);
+  --graph-node-default: rgba(23, 32, 42, 0.84);
+  --graph-node-default-muted: rgba(23, 32, 42, 0.5);
+  --graph-label: rgba(23, 32, 42, 0.78);
+  --graph-selection-stroke: #17202a;
+  --graph-node-stroke: rgba(15, 23, 42, 0.18);
+  --graph-edge-session: rgba(11, 99, 206, 0.42);
+  --graph-edge-umbrella: rgba(124, 58, 237, 0.38);
+  --graph-edge-auth: rgba(154, 91, 0, 0.4);
+  --graph-edge-parent: rgba(95, 107, 122, 0.28);
+  --graph-edge-muted: rgba(95, 107, 122, 0.22);
+  --graph-arrow: rgba(11, 99, 206, 0.56);
+  --graph-background-grid: rgba(95, 107, 122, 0.16);
+  --graph-minimap-mask: rgba(245, 247, 251, 0.68);
+  --shadow-soft: 0 16px 40px rgba(15, 23, 42, 0.12);
+  --shadow-header: 0 10px 24px rgba(15, 23, 42, 0.08);
+  --shadow-chrome: var(--shadow-header);
+  --shadow-rail: 10px 0 30px rgba(15, 23, 42, 0.08);
+}
+
+:root[data-theme='light'] .app-toast,
+:root[data-theme='light'] .timeline-toolbar,
+:root[data-theme='light'] .timeline-main,
+:root[data-theme='light'] .timeline-axis__corner,
+:root[data-theme='light'] .timeline-axis__track,
+:root[data-theme='light'] .timeline-gutter-column {
+  background: var(--surface-toolbar);
+}
+
+:root[data-theme='light'] .timeline-main {
+  background: rgba(226, 232, 240, 0.62);
+}
+
+:root[data-theme='light'] .timeline-gutter-row:hover,
+:root[data-theme='light'] .timeline-gutter-row--selected {
+  background: rgba(226, 232, 240, 0.92);
+}
+
+:root[data-theme='light'] .timeline-filter-composer,
+:root[data-theme='light'] .timeline-filter-composer__input input,
+:root[data-theme='light'] .timeline-row-canvas {
+  background-color: var(--bg-inset);
+}
+
+:root[data-theme='light'] .timeline-row-canvas {
+  background:
+    linear-gradient(90deg, var(--neutral-alpha-045) 1px, transparent 1px) 0 0 / 25% 100%,
+    rgba(241, 245, 249, 0.7);
+}
+
+:root[data-theme='light'] .timeline-cluster {
+  background: rgba(255, 255, 255, 0.94);
+}
+
+:root[data-theme='light'] .timeline-cluster--selected {
+  outline-color: rgba(11, 99, 206, 0.58);
+}
+
+:root[data-theme='light'] .graph-detail-pane,
+:root[data-theme='light'] .graph-canvas-wrap,
+:root[data-theme='light'] .graph-token-select__menu,
+:root[data-theme='light'] .graph-flow-node {
+  background: var(--surface-popover);
+}
+
+:root[data-theme='light'] .graph-canvas-wrap {
+  background: #eef3f8;
+}
+
+:root[data-theme='light'] .graph-token-select__menu,
+:root[data-theme='light'] .graph-flow-node {
+  box-shadow: var(--shadow-soft);
+}
+
+:root[data-theme='light'] .graph-token-select__remove,
+:root[data-theme='light'] .graph-flow-node__metrics {
+  color: var(--text-primary-muted);
+}
+
+:root[data-theme='light'] .graph-manual-edges marker path {
+  stroke: var(--text-primary-muted);
+}
+
+:root[data-theme='light'] .channel-events-pane__card-json,
+:root[data-theme='light'] .session-event__payload,
+:root[data-theme='light'] .code-preview,
+:root[data-theme='light'] .diff-preview,
+:root[data-theme='light'] pre,
+:root[data-theme='light'] code {
+  background: var(--surface-code);
+}
+
+:root[data-theme='light'] .new-session-dialog-overlay,
+:root[data-theme='light'] .settings-view__confirm-overlay,
+:root[data-theme='light'] .modal-backdrop,
+:root[data-theme='light'] .dialog-backdrop {
+  background: var(--scrim-modal);
+}
+
 * {
   box-sizing: border-box;
 }

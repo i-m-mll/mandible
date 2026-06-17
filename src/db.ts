@@ -2005,6 +2005,15 @@ const MIGRATIONS: Migration[] = [
     // Bug: 353a3b7 — ambient provider identity for externally dispatched worker archiving.
     // Guarded below for partial legacy schemas.
     statements: []
+  },
+  {
+    version: 82,
+    name: "setting_app_theme_default",
+    // Issue: cb307ed — App UI theme is separate from shell/dotfiles theme.
+    statements: [
+      `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('app_theme', 'system', CAST(strftime('%s','now') * 1000 AS INTEGER))`
+    ]
   }
 ];
 

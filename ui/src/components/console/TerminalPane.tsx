@@ -493,6 +493,25 @@ export function TerminalPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, showDebugTerminal]);
 
+  useEffect(() => {
+    if (!showDebugTerminal) return;
+    if (typeof document === 'undefined') return;
+    const applyTheme = () => {
+      const term = termRef.current;
+      const container = containerRef.current;
+      if (term && container) {
+        term.options.theme = getTerminalTheme(container);
+      }
+    };
+    applyTheme();
+    const observer = new MutationObserver(applyTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    return () => observer.disconnect();
+  }, [showDebugTerminal]);
+
   // Open WebSocket for PTY — re-runs on sessionId change or manual reconnect (reconnectNonce)
   useEffect(() => {
     if (!showDebugTerminal) {
