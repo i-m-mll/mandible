@@ -124,6 +124,7 @@ export interface InboxViewProps {
   data: InboxData | null;
   loading: boolean;
   selectedItemId?: string | null;
+  sidebarHidden?: boolean;
   onSelectItem?: (id: string | null) => void;
   onAckContinuation: (sessionId: string) => Promise<void>;
   onAckAuthResult: (requestId: string) => Promise<void>;
@@ -787,6 +788,7 @@ export function InboxView({
   data,
   loading,
   selectedItemId,
+  sidebarHidden = false,
   onSelectItem,
   onAckContinuation,
   onAckAuthResult,
@@ -858,64 +860,68 @@ export function InboxView({
   }
 
   return (
-    <div className="inbox-sidebar-layout">
+    <div className={`inbox-sidebar-layout${sidebarHidden ? ' inbox-sidebar-layout--sidebar-hidden' : ''}`}>
       {/* LEFT SIDEBAR */}
-      <div className="inbox-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
-        {/* Filter chips + autocomplete */}
-        <div className="inbox-sidebar__chip-row">
-          <ChipInput
-            chips={chips}
-            suggestions={suggestions}
-            onAdd={handleAddChip}
-            onRemove={handleRemoveChip}
-          />
-        </div>
-
-        {/* Sort/actions bar */}
-        <div className="inbox-sidebar__actions-bar">
-          <span className="inbox-sidebar__sort-label">Sort: Date ▾</span>
-          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              style={{ fontSize: '11px', padding: '3px 10px' }}
-              onClick={() => void handleAckAll()}
-              disabled={(data?.continuations.length ?? 0) + (data?.auth_results.length ?? 0) === 0}
-            >
-              Ack All
-            </button>
-            <button
-              type="button"
-              className="btn btn--ghost"
-              style={{ fontSize: '11px', padding: '3px 10px' }}
-              onClick={onRefresh}
-            >
-              ↻
-            </button>
-          </div>
-        </div>
-
-        {/* Item list */}
-        <div className="inbox-sidebar__list">
-          {filteredItems.length === 0 ? (
-            <div className="inbox-sidebar__empty">
-              {allItems.length === 0 ? 'Inbox is clear.' : 'No items match the current filters.'}
-            </div>
-          ) : (
-            filteredItems.map((item) => (
-              <InboxSidebarItem
-                key={item.id}
-                item={item}
-                selected={selectedItemId === item.id}
-                onSelect={(id) => onSelectItem?.(id)}
+      {!sidebarHidden ? (
+        <>
+          <div className="inbox-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
+            {/* Filter chips + autocomplete */}
+            <div className="inbox-sidebar__chip-row">
+              <ChipInput
+                chips={chips}
+                suggestions={suggestions}
+                onAdd={handleAddChip}
+                onRemove={handleRemoveChip}
               />
-            ))
-          )}
-        </div>
-      </div>
+            </div>
 
-      {/* Drag handle */}
-      <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
+            {/* Sort/actions bar */}
+            <div className="inbox-sidebar__actions-bar">
+              <span className="inbox-sidebar__sort-label">Sort: Date ▾</span>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  style={{ fontSize: '11px', padding: '3px 10px' }}
+                  onClick={() => void handleAckAll()}
+                  disabled={(data?.continuations.length ?? 0) + (data?.auth_results.length ?? 0) === 0}
+                >
+                  Ack All
+                </button>
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  style={{ fontSize: '11px', padding: '3px 10px' }}
+                  onClick={onRefresh}
+                >
+                  ↻
+                </button>
+              </div>
+            </div>
+
+            {/* Item list */}
+            <div className="inbox-sidebar__list">
+              {filteredItems.length === 0 ? (
+                <div className="inbox-sidebar__empty">
+                  {allItems.length === 0 ? 'Inbox is clear.' : 'No items match the current filters.'}
+                </div>
+              ) : (
+                filteredItems.map((item) => (
+                  <InboxSidebarItem
+                    key={item.id}
+                    item={item}
+                    selected={selectedItemId === item.id}
+                    onSelect={(id) => onSelectItem?.(id)}
+                  />
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Drag handle */}
+          <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
+        </>
+      ) : null}
 
       {/* RIGHT DETAIL PANEL */}
       <div className="inbox-detail">

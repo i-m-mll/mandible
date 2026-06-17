@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/preact';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
 
@@ -71,6 +71,19 @@ vi.mock('@xterm/addon-fit', () => ({
     fit(): void {}
   },
 }));
+
+beforeEach(() => {
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })));
+});
 
 afterEach(() => {
   cleanup();

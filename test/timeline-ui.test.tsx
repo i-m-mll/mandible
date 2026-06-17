@@ -839,6 +839,22 @@ describe('TimelineView', () => {
     expect(screen.queryByText('No timeline rows match the current controls.')).toBeNull();
   });
 
+  it('hides timeline sidebar controls without removing the timeline canvas', async () => {
+    stubTimelineFetch(projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+      sidebarHidden: true,
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+
+    expect(document.querySelector('.timeline-sidebar')).toBeNull();
+    expect(document.querySelector('.timeline-layout--sidebar-hidden')).toBeTruthy();
+    expect(document.querySelector('.timeline-grid')).toBeTruthy();
+  });
+
   it('loads the projection and merges URL state over browser-local state', async () => {
     window.localStorage.setItem(
       'mandible_timeline_view_state:v1:mandible',

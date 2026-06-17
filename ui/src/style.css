@@ -236,6 +236,7 @@
 }
 
 :root[data-theme='light'] .app-toast,
+:root[data-theme='light'] .timeline-sidebar,
 :root[data-theme='light'] .timeline-toolbar,
 :root[data-theme='light'] .timeline-main,
 :root[data-theme='light'] .timeline-axis__corner,
@@ -927,19 +928,47 @@ a {
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   color: var(--text-primary);
+}
+
+.timeline-layout {
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.timeline-layout--sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.timeline-sidebar {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: rgba(11, 15, 20, 0.92);
+  border-right: 1px solid var(--neutral-alpha-08);
+}
+
+.timeline-canvas {
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .timeline-toolbar {
   min-width: 0;
   display: flex;
-  align-items: end;
-  gap: 8px;
-  flex-wrap: wrap;
-  padding: 14px 16px 12px;
-  background: rgba(11, 15, 20, 0.92);
-  border-bottom: 1px solid var(--neutral-alpha-08);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding: 14px;
 }
 
 .timeline-control {
@@ -952,7 +981,7 @@ a {
 }
 
 .timeline-control--wide {
-  min-width: 190px;
+  min-width: 0;
 }
 
 .timeline-control span {
@@ -979,6 +1008,21 @@ a {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.timeline-sidebar .timeline-toggle-group,
+.timeline-sidebar .timeline-zoom-group {
+  align-items: stretch;
+}
+
+.timeline-sidebar .timeline-toggle-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.timeline-sidebar .timeline-zoom-group {
+  display: grid;
+  grid-template-columns: 32px 32px minmax(0, 1fr);
 }
 
 .timeline-chip,
@@ -1041,6 +1085,12 @@ a {
   min-width: 8px;
 }
 
+.timeline-status-row {
+  min-height: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
 .timeline-status {
   margin-left: auto;
   display: inline-flex;
@@ -1099,12 +1149,13 @@ a {
 .timeline-diagnostics-panel {
   min-height: 34px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-direction: column;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 8px 16px;
-  background: rgba(12, 17, 24, 0.9);
-  border-bottom: 1px solid var(--neutral-alpha-08);
+  padding: 10px 14px 14px;
+  background: rgba(12, 17, 24, 0.54);
+  border-top: 1px solid var(--neutral-alpha-08);
   color: var(--text-muted);
   font-size: 12px;
 }
@@ -4236,6 +4287,12 @@ tr:last-child td {
   height: calc(100vh - 80px);
   gap: 0;
   margin: -28px -32px -48px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.inbox-sidebar-layout--sidebar-hidden .inbox-detail {
+  min-width: 0;
 }
 
 .inbox-sidebar {
@@ -11492,19 +11549,31 @@ tr:hover .work-actions__trigger {
 .graph-view {
   height: 100%;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
   gap: 12px;
   overflow: hidden;
 }
 
-.graph-topbar {
-  flex-shrink: 0;
+.graph-view--sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.graph-sidebar {
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: 12px;
   width: 100%;
+  padding: 14px;
+  border: 1px solid var(--neutral-alpha-06);
+  border-radius: 8px;
+  background: rgba(21, 29, 39, 0.72);
+  box-sizing: border-box;
 }
 
 .graph-spec-row {
@@ -11649,8 +11718,8 @@ tr:hover .work-actions__trigger {
 }
 
 .graph-workspace {
-  flex: 1;
   min-height: 0;
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(360px, 1fr) 320px;
   gap: 12px;
@@ -11676,7 +11745,6 @@ tr:hover .work-actions__trigger {
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.4;
-  padding-left: 52px;
 }
 
 .graph-display-summary strong,
@@ -11709,12 +11777,11 @@ tr:hover .work-actions__trigger {
 
 .graph-toolbar {
   display: flex;
+  flex-direction: column;
   align-items: flex-start;
   justify-content: flex-start;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 8px;
   width: 100%;
-  padding-left: 52px;
 }
 
 .graph-toolbar__select {
@@ -11730,30 +11797,32 @@ tr:hover .work-actions__trigger {
 
 .graph-toolbar__combobox-group {
   display: flex;
+  flex-direction: column;
   gap: 8px;
   align-items: flex-start;
-  flex-wrap: wrap;
   flex: 1;
   min-width: 0;
+  width: 100%;
 }
 
 .graph-control-group {
-  display: inline-flex;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
   gap: 6px;
   color: var(--text-muted);
   font-size: 12px;
-  white-space: nowrap;
+  width: 100%;
 }
 
 .graph-control-group__label {
-  width: auto;
-  padding-top: 10px;
+  width: 52px;
+  padding-top: 0;
 }
 
 .graph-token-select {
   position: relative;
-  width: clamp(220px, 28vw, 360px);
+  width: 100%;
 }
 
 .graph-token-select--disabled {
