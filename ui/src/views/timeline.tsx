@@ -4,6 +4,7 @@ import { marked } from 'marked';
 
 import { getProjectTimeline } from '../api';
 import { useRegisterAppRightSidebar } from '../app-shell';
+import { useSidebarResize } from '../hooks/useSidebarResize';
 import { sanitizeMarkdown } from '../sanitize';
 import type { WorkRepo } from './work';
 import {
@@ -768,6 +769,11 @@ function aggregateAccessibleLabel(interval: TimelineAggregateInterval): string {
 }
 
 export function TimelineView({ repos, params = {}, sidebarHidden = false }: TimelineViewProps): JSX.Element {
+  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
+    defaultWidth: 320,
+    minWidth: 260,
+    storageKey: 'mandible_timeline_sidebar_width:v1',
+  });
   const urlState = useMemo(() => parseUrlState(params), [params]);
   const initialProjectRef = defaultProjectRef(repos, urlState.projectRef);
   const [projectRef, setProjectRef] = useState(initialProjectRef);
@@ -1650,7 +1656,12 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     <section className="timeline-workspace" aria-label="Project timeline">
       <div className={`timeline-layout${sidebarHidden ? ' timeline-layout--sidebar-hidden' : ''}`}>
         {!sidebarHidden ? (
-          <aside className="timeline-sidebar" aria-label="Timeline controls">
+          <>
+            <aside
+              className="timeline-sidebar"
+              aria-label="Timeline controls"
+              style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
+            >
             <div className="timeline-toolbar">
               <label className="timeline-control">
                 <span>Project</span>
@@ -1772,7 +1783,9 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
                 ))}
               </div>
             ) : null}
-          </aside>
+            </aside>
+            <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
+          </>
         ) : null}
 
         <div className={`timeline-canvas${error ? ' timeline-canvas--with-banner' : ''}`}>
