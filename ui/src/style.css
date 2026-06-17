@@ -3749,19 +3749,23 @@ tr:last-child td {
 /* ── Sidebar drag-to-resize handle (Bug: d472f7f) ── */
 
 .sidebar-drag-handle {
-  width: 5px;
+  width: 0;
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
-  transition: background 0.15s ease;
   position: relative;
   z-index: 1;
-  /* Keep the handle above sidebar content so it's always clickable */
 }
 
-.sidebar-drag-handle:hover,
-.sidebar-drag-handle--active {
-  background: rgba(77, 163, 255, 0.3);
+.sidebar-drag-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 10px;
+  cursor: col-resize;
+  background: transparent;
 }
 
 /* ── Auth queue: sidebar + detail panel layout ── */
