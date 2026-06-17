@@ -958,8 +958,12 @@ a {
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
+}
+
+.timeline-canvas--with-banner {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .timeline-toolbar {
