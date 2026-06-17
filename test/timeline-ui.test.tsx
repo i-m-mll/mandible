@@ -1839,9 +1839,9 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.getByText('Coordination root event')).toBeTruthy());
     expect(screen.getByText('Coordination root')).toBeTruthy();
-    await waitFor(() => expect(screen.getByText('Residual issues')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Everything else')).toBeTruthy());
     expect(screen.getByRole('button', {
-      name: /residual Residual issues\. Collapsed group with 0 members\. Status residual/i,
+      name: /residual Everything else\. Collapsed group with 0 members\. Status residual/i,
     })).toBeTruthy();
     expect(window.location.hash).not.toContain('rows=');
     const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
@@ -1905,7 +1905,7 @@ describe('TimelineView', () => {
         name: /local-kind-coordination kind:coordination\. Expanded group with 1 member/i,
       })).toBeTruthy();
       expect(screen.getByRole('button', {
-        name: /residual Residual issues\. Collapsed group with 1 member/i,
+        name: /residual Everything else\. Collapsed group with 1 member/i,
       })).toBeTruthy();
     });
   });
@@ -1935,7 +1935,7 @@ describe('TimelineView', () => {
         name: /local-label-not-present label:not-present\. Expanded group with 0 members/i,
       })).toBeTruthy();
       expect(screen.getByRole('button', {
-        name: /residual Residual issues\. Collapsed group with 2 members/i,
+        name: /residual Everything else\. Collapsed group with 2 members/i,
       })).toBeTruthy();
       expect(screen.queryByText('label:not-present projected event')).toBeNull();
     });
