@@ -62,7 +62,7 @@ import { TimelineView } from './views/timeline';
 import { PresetsView } from './views/presets';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
-import { normalizeAppThemeMode, resolveAppThemeMode } from './theme';
+import { normalizeAppThemeMode, resolveAppThemeMode, type AppThemeMode } from './theme';
 import {
   ChatIcon,
   IssuesIcon,
@@ -70,6 +70,7 @@ import {
   AuthIcon,
   ArtifactsIcon,
   SettingsIcon,
+  MonitorIcon,
   PresetsIcon,
   GraphIcon,
   TimelineIcon,
@@ -85,6 +86,12 @@ const THEME_COLOR_BY_RESOLVED_THEME = {
   dark: '#0b0f14',
   light: '#f5f7fb',
 } as const;
+const APP_THEME_MODE_LABELS: Record<AppThemeMode, string> = {
+  system: 'System',
+  light: 'Light',
+  dark: 'Dark',
+};
+const APP_THEME_MODE_CYCLE: AppThemeMode[] = ['system', 'light', 'dark'];
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -152,6 +159,40 @@ type NavItem = {
 
 const VIEW_SIDEBAR_TABS = new Set<Route['tab']>(['auth', 'issues', 'artifacts', 'console']);
 
+function SunIcon({ size = 18 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" />
+      <path d="m19.07 4.93-1.41 1.41" />
+    </svg>
+  );
+}
+
+function MoonIcon({ size = 18 }: { size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3a6 6 0 0 0 9 7.4A9 9 0 1 1 12 3Z" />
+    </svg>
+  );
+}
+
+function AppThemeModeIcon({ mode, size = 18 }: { mode: AppThemeMode; size?: number }): JSX.Element {
+  if (mode === 'light') {
+    return <SunIcon size={size} />;
+  }
+  if (mode === 'dark') {
+    return <MoonIcon size={size} />;
+  }
+  return <MonitorIcon size={size} />;
+}
+
 function parseHashRoute(): Route {
   if (typeof window === 'undefined') {
     return { tab: 'graph', params: {} };
@@ -195,6 +236,7 @@ function App(): JSX.Element {
   const [rebuilding, setRebuilding] = useState(false);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [rightSidebar, setRightSidebar] = useState<AppRightSidebarDescriptor | null>(null);
+  const [themeModeSaving, setThemeModeSaving] = useState(false);
 
   const registerRightSidebar = useCallback((descriptor: AppRightSidebarDescriptor) => {
     setRightSidebar(descriptor);
@@ -766,6 +808,23 @@ function App(): JSX.Element {
     dispatch({ type: 'updateSetting', key, value });
   };
 
+  const handleRailThemeCycle = async () => {
+    if (themeModeSaving) {
+      return;
+    }
+    const currentMode = normalizeAppThemeMode(state.settings.app_theme);
+    const currentIndex = APP_THEME_MODE_CYCLE.indexOf(currentMode);
+    const nextMode = APP_THEME_MODE_CYCLE[(currentIndex + 1) % APP_THEME_MODE_CYCLE.length];
+    setThemeModeSaving(true);
+    try {
+      await handleSettingsSave('app_theme', nextMode);
+    } catch {
+      return;
+    } finally {
+      setThemeModeSaving(false);
+    }
+  };
+
   const handleAckContinuation = async (sessionId: string) => {
     try {
       await acknowledgeInboxItem('continuation', sessionId);
@@ -1051,6 +1110,12 @@ function App(): JSX.Element {
       ? `Collapse ${rightSidebar.title}`
       : `Show ${rightSidebar.title}`
     : 'Show details sidebar';
+  const appThemeMode = normalizeAppThemeMode(state.settings.app_theme);
+  const appThemeModeIndex = APP_THEME_MODE_CYCLE.indexOf(appThemeMode);
+  const nextAppThemeMode = APP_THEME_MODE_CYCLE[(appThemeModeIndex + 1) % APP_THEME_MODE_CYCLE.length];
+  const appThemeModeLabel = APP_THEME_MODE_LABELS[appThemeMode];
+  const nextAppThemeModeLabel = APP_THEME_MODE_LABELS[nextAppThemeMode];
+  const appThemeModeControlLabel = `App theme: ${appThemeModeLabel}. Switch to ${nextAppThemeModeLabel}.`;
 
   const startRightSidebarResize = useCallback((event: JSX.TargetedMouseEvent<HTMLDivElement>) => {
     if (!rightSidebar) {
@@ -1170,6 +1235,20 @@ function App(): JSX.Element {
                 </div>
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
+                <button
+                  type="button"
+                  className="app-rail__item"
+                  onClick={() => void handleRailThemeCycle()}
+                  disabled={themeModeSaving}
+                  aria-label={appThemeModeControlLabel}
+                  title={appThemeModeControlLabel}
+                >
+                  <span className="app-rail__icon">
+                    <AppThemeModeIcon mode={appThemeMode} size={18} />
+                  </span>
+                  {railDisplayMode === 'both' && <span className="app-rail__label">{appThemeModeLabel}</span>}
+                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{appThemeModeControlLabel}</span>}
+                </button>
                 {renderRailItem({
                   tab: 'settings',
                   href: '#/settings',
