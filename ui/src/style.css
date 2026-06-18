@@ -183,8 +183,8 @@
   --auth-result-problem-bg: rgba(180, 35, 24, 0.11);
   --auth-result-neutral: #5f6b7a;
   --auth-result-neutral-bg: rgba(95, 107, 122, 0.12);
-  --surface-app: var(--bg-primary);
-  --surface-app-glow: #e7eef8;
+  --surface-app: #ffffff;
+  --surface-app-glow: #ffffff;
   --surface-header: rgba(255, 255, 255, 0.96);
   --surface-rail: rgba(255, 255, 255, 0.94);
   --surface-sidebar: rgba(250, 252, 255, 0.96);
