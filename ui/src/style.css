@@ -242,9 +242,10 @@
 :root[data-theme='light'] .app-toast,
 :root[data-theme='light'] .timeline-main,
 :root[data-theme='light'] .timeline-axis__corner,
+:root[data-theme='light'] .timeline-axis__viewport,
 :root[data-theme='light'] .timeline-axis__track,
 :root[data-theme='light'] .timeline-gutter-column {
-  background: var(--surface-toolbar);
+  background: var(--bg-secondary);
 }
 
 :root[data-theme='light'] .timeline-main {
@@ -364,14 +365,16 @@
 :root[data-theme='light'] .session-event__payload,
 :root[data-theme='light'] .code-preview,
 :root[data-theme='light'] .diff-preview,
-:root[data-theme='light'] pre,
-:root[data-theme='light'] code {
+:root[data-theme='light'] pre {
   background: var(--surface-code);
 }
 
-:root[data-theme='light'] .spec-panel pre,
-:root[data-theme='light'] .artifact-preview {
+:root[data-theme='light'] .spec-panel pre {
   background: var(--surface-code);
+}
+
+:root[data-theme='light'] .artifact-preview {
+  background: transparent;
 }
 
 :root[data-theme='light'] .react-flow__minimap {
@@ -651,8 +654,6 @@ a {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
 }
 
 .app-rail__sidebar-toggle {
@@ -678,6 +679,9 @@ a {
 
 .app-rail__footer {
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding-top: 12px;
   border-top: 1px solid var(--neutral-alpha-06);
 }
@@ -1083,7 +1087,6 @@ a {
 }
 
 .timeline-toggle-group,
-.timeline-zoom-group,
 .timeline-action-row {
   display: inline-flex;
   align-items: center;
@@ -1091,19 +1094,13 @@ a {
   flex-wrap: wrap;
 }
 
-.timeline-sidebar .timeline-toggle-group,
-.timeline-sidebar .timeline-zoom-group {
+.timeline-sidebar .timeline-toggle-group {
   align-items: stretch;
 }
 
 .timeline-sidebar .timeline-toggle-group {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.timeline-sidebar .timeline-zoom-group {
-  display: grid;
-  grid-template-columns: 32px 32px minmax(0, 1fr);
 }
 
 .timeline-chip,
@@ -1136,9 +1133,21 @@ a {
 .timeline-icon-button {
   width: 32px;
   padding: 0;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
   font-size: 16px;
   font-weight: 700;
+}
+
+.timeline-icon-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .timeline-chip--active {
@@ -1275,17 +1284,22 @@ a {
   min-width: 0;
   display: grid;
   grid-template-columns: var(--timeline-row-list-width, 300px) minmax(0, 1fr);
+  grid-template-rows: 42px max-content;
+  align-content: start;
   overflow-x: hidden;
   overflow-y: auto;
   background: rgba(8, 12, 17, 0.62);
 }
 
 .timeline-gutter-column {
+  grid-column: 1;
+  grid-row: 2;
   position: sticky;
   left: 0;
   z-index: 6;
   min-width: 0;
-  background: rgba(14, 20, 28, 0.98);
+  align-self: start;
+  background: var(--bg-secondary);
   border-right: 1px solid var(--neutral-alpha-08);
 }
 
@@ -1299,17 +1313,50 @@ a {
 }
 
 .timeline-axis__corner {
+  grid-column: 1;
+  grid-row: 1;
   position: sticky;
   top: 0;
-  z-index: 6;
+  left: 0;
+  z-index: 9;
   display: flex;
   align-items: center;
+  min-width: 0;
   height: 42px;
-  background: rgba(12, 17, 24, 0.98);
+  padding: 0 8px;
+  background: var(--bg-secondary);
   border-bottom: 1px solid var(--neutral-alpha-08);
+  border-right: 1px solid var(--neutral-alpha-08);
+}
+
+.timeline-corner-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.timeline-corner-toolbar .timeline-icon-button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.timeline-corner-toolbar .timeline-icon-button:hover {
+  background: var(--neutral-alpha-06);
+  color: var(--text-primary);
+}
+
+.timeline-corner-toolbar .timeline-icon-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .timeline-time-scroll {
+  grid-column: 2;
+  grid-row: 2;
   min-height: 0;
   min-width: 0;
   overflow-x: auto;
@@ -1320,14 +1367,29 @@ a {
   min-width: 100%;
 }
 
-.timeline-axis__track {
+.timeline-axis__viewport {
+  grid-column: 2;
+  grid-row: 1;
   position: sticky;
   top: 0;
-  z-index: 5;
+  z-index: 7;
+  min-width: 0;
+  min-height: 42px;
+  overflow: hidden;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--neutral-alpha-08);
+}
+
+.timeline-axis__surface {
+  min-height: 42px;
+  will-change: transform;
+}
+
+.timeline-axis__track {
+  position: relative;
   min-height: 42px;
   width: 100%;
-  background: rgba(12, 17, 24, 0.97);
-  border-bottom: 1px solid var(--neutral-alpha-08);
+  background: var(--bg-secondary);
 }
 
 .timeline-axis__track::before {
@@ -1341,21 +1403,31 @@ a {
 
 .timeline-axis__tick {
   position: absolute;
-  top: 7px;
+  top: 0;
+  height: 42px;
   transform: translateX(-50%);
   display: grid;
+  grid-template-rows: 1fr 1fr;
+  align-items: center;
   justify-items: center;
-  gap: 1px;
+  gap: 0;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 11px;
   white-space: nowrap;
 }
 
-.timeline-axis__tick em {
+.timeline-axis__tick-context {
+  align-self: end;
   color: var(--text-muted);
-  font-size: 9px;
-  font-style: normal;
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+.timeline-axis__tick-label {
+  align-self: start;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1.15;
 }
 
 .timeline-axis__tick--major {
@@ -1518,22 +1590,6 @@ a {
 .timeline-gutter-row__actions span {
   display: inline-flex;
   align-items: center;
-}
-
-.timeline-add-row-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: calc(100% - 16px);
-  min-height: 34px;
-  margin: 8px;
-  border: 1px dashed rgba(154, 164, 178, 0.35);
-  border-radius: 7px;
-  background: var(--neutral-alpha-035);
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
 }
 
 .timeline-filter-composer {
@@ -5910,24 +5966,41 @@ tr:hover .work-actions__trigger {
   align-items: center;
   min-height: 36px;
   padding: 8px 10px;
-  background: var(--neutral-alpha-025);
+  background: var(--bg-primary);
 }
 
 .artifact-detail__list-item {
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
   color: inherit;
+  text-decoration: none;
+}
+
+.artifact-detail__list-item--backref {
+  grid-template-columns: minmax(0, 1fr) max-content max-content max-content;
 }
 
 .artifact-detail__kv span,
 .artifact-detail__list-item span {
   color: var(--text-muted);
   font-size: 12px;
+  min-width: 0;
+  max-width: 18ch;
+  overflow-wrap: anywhere;
 }
 
 .artifact-detail__kv code,
 .artifact-detail__list-item code {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  min-width: 0;
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+.artifact-preview > code,
+code.inbox-detail__meta-value {
+  background: transparent;
 }
 
 .artifact-preview {
@@ -5941,6 +6014,42 @@ tr:hover .work-actions__trigger {
 
 .artifact-detail__hint {
   color: var(--text-muted);
+  font-size: 12px;
+}
+
+.artifact-detail__warning {
+  padding: 10px 12px;
+  border: 1px solid var(--status-warning-border-soft);
+  border-radius: 8px;
+  background: var(--status-warning-bg-soft);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.artifact-preview--html {
+  display: block;
+  width: 100%;
+  min-height: min(72vh, 720px);
+  background: var(--bg-primary);
+}
+
+.artifact-preview-bundle {
+  display: grid;
+  gap: 10px;
+}
+
+.artifact-detail__list--bundle .artifact-detail__list-item {
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
+}
+
+.artifact-preview__details {
+  display: grid;
+  gap: 8px;
+}
+
+.artifact-preview__details summary {
+  color: var(--text-muted);
+  cursor: pointer;
   font-size: 12px;
 }
 
@@ -5972,6 +6081,10 @@ tr:hover .work-actions__trigger {
   .artifact-detail__header,
   .artifact-detail__kv > div,
   .artifact-detail__list-item {
+    grid-template-columns: 1fr;
+  }
+
+  .artifact-detail__list--bundle .artifact-detail__list-item {
     grid-template-columns: 1fr;
   }
 }

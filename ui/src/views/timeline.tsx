@@ -769,6 +769,51 @@ function aggregateAccessibleLabel(interval: TimelineAggregateInterval): string {
   return `Aggregate marker for ${interval.issue.display_id} ${interval.issue.title}, ${interval.eventCount} ${interval.eventCount === 1 ? 'event' : 'events'} ${range}`;
 }
 
+function ZoomOutIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="11" cy="11" r="7" />
+      <path d="M8 11h6" />
+      <path d="m16 16 4 4" />
+    </svg>
+  );
+}
+
+function ZoomInIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="11" cy="11" r="7" />
+      <path d="M8 11h6" />
+      <path d="M11 8v6" />
+      <path d="m16 16 4 4" />
+    </svg>
+  );
+}
+
+function FitTimelineIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4 9V4h5" />
+      <path d="M20 9V4h-5" />
+      <path d="M4 15v5h5" />
+      <path d="M20 15v5h-5" />
+      <path d="M8 12h8" />
+    </svg>
+  );
+}
+
+function AddTimelineRowIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M5 7h8" />
+      <path d="M5 12h8" />
+      <path d="M5 17h8" />
+      <path d="M18 9v6" />
+      <path d="M15 12h6" />
+    </svg>
+  );
+}
+
 export function TimelineView({ repos, params = {}, sidebarHidden = false }: TimelineViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
     defaultWidth: 320,
@@ -834,14 +879,16 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     const nextProjectRef = defaultProjectRef(repos, urlState.projectRef);
     if (nextProjectRef !== appliedRouteProjectRef.current) {
       appliedRouteProjectRef.current = nextProjectRef;
-      resetLoadedProjection();
-      setProjectRef(nextProjectRef);
-      setViewState(clearTimelineSelection(mergeTimelineState(
-        DEFAULT_TIMELINE_VIEW_STATE,
-        readStoredState(nextProjectRef),
-        urlState,
-      )));
-      return;
+      if (nextProjectRef !== projectRef) {
+        resetLoadedProjection();
+        setProjectRef(nextProjectRef);
+        setViewState(clearTimelineSelection(mergeTimelineState(
+          DEFAULT_TIMELINE_VIEW_STATE,
+          readStoredState(nextProjectRef),
+          urlState,
+        )));
+        return;
+      }
     }
     if (nextProjectRef === projectRef) {
       setViewState((current) => mergeTimelineState(current, {}, urlState));
@@ -1721,11 +1768,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
                   onChange={(event) => editDateBoundary('to', (event.currentTarget as HTMLInputElement).value)}
                 />
               </label>
-              <div className="timeline-zoom-group" aria-label="Timeline zoom">
-                <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(2)} aria-label="Zoom out" title="Zoom out">-</button>
-                <button type="button" className="timeline-icon-button" onClick={() => zoomTimeline(0.5)} aria-label="Zoom in" title="Zoom in">+</button>
-                <button type="button" className="timeline-button" onClick={fitProject}>Fit all</button>
-              </div>
               <div className="timeline-toggle-group" aria-label="Event types">
                 {EVENT_TYPES.map((kind) => {
                   const active = viewState.visibleEventTypes.includes(kind);
@@ -1797,8 +1839,77 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
             style={{ '--timeline-row-list-width': `${viewState.panes.rowListWidth}px` } as JSX.CSSProperties}
           >
         <div className="timeline-main" ref={timelineMainRef} role="grid" aria-rowcount={visibleRows.length}>
+          <div className="timeline-axis__corner">
+            <div className="timeline-corner-toolbar" aria-label="Timeline header controls">
+              <button
+                type="button"
+                className="timeline-icon-button"
+                onClick={() => zoomTimeline(2)}
+                aria-label="Zoom out"
+                title="Zoom out"
+              >
+                <ZoomOutIcon />
+              </button>
+              <button
+                type="button"
+                className="timeline-icon-button"
+                onClick={() => zoomTimeline(0.5)}
+                aria-label="Zoom in"
+                title="Zoom in"
+              >
+                <ZoomInIcon />
+              </button>
+              <button
+                type="button"
+                className="timeline-icon-button"
+                onClick={fitProject}
+                aria-label="Fit all"
+                title="Fit all"
+              >
+                <FitTimelineIcon />
+              </button>
+              <button
+                type="button"
+                className="timeline-icon-button"
+                onClick={openAddRowComposer}
+                aria-label="Add row"
+                title="Add row"
+              >
+                <AddTimelineRowIcon />
+              </button>
+            </div>
+          </div>
+          <div className="timeline-axis__viewport">
+            <div
+              className="timeline-axis__surface"
+              style={{
+                width: `${scrollMetrics.surfaceWidthPx}px`,
+                transform: `translateX(${-scrollMetrics.scrollLeftPx}px)`,
+              } as JSX.CSSProperties}
+            >
+              <div className="timeline-axis__track">
+                {axisTicks.map((tick) => (
+                  <span
+                    key={tick.timestamp}
+                    className={`timeline-axis__tick${tick.major ? ' timeline-axis__tick--major' : ''}`}
+                    style={{ left: `${tick.left}%` }}
+                  >
+                    {tick.upperLabel ? (
+                      <span className="timeline-axis__tick-context">{tick.upperLabel}</span>
+                    ) : (
+                      <span className="timeline-axis__tick-context" aria-hidden="true" />
+                    )}
+                    {tick.lowerLabel ? (
+                      <span className="timeline-axis__tick-label">{tick.lowerLabel}</span>
+                    ) : (
+                      <span className="timeline-axis__tick-label" aria-hidden="true" />
+                    )}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
           <div className="timeline-gutter-column" aria-label="Timeline rows">
-            <div className="timeline-axis__corner" aria-hidden="true" />
             <div className="timeline-gutter-stack">
               {visibleRows.map((row) => {
                 const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
@@ -1846,9 +1957,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
                   </div>
                 );
               })}
-              <button type="button" className="timeline-add-row-button" onClick={openAddRowComposer}>
-                + Add row
-              </button>
               {composerOpen ? (
                 <TimelineFilterComposer
                   chips={composerDraftChips}
@@ -1888,18 +1996,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
               className="timeline-time-surface"
               style={{ width: `${scrollMetrics.surfaceWidthPx}px` } as JSX.CSSProperties}
             >
-            <div className="timeline-axis__track">
-              {axisTicks.map((tick) => (
-                <span
-                  key={tick.timestamp}
-                  className={`timeline-axis__tick${tick.major ? ' timeline-axis__tick--major' : ''}`}
-                  style={{ left: `${tick.left}%` }}
-                >
-                  {tick.contextLabel ? <em>{tick.contextLabel}</em> : null}
-                  {tick.label}
-                </span>
-              ))}
-            </div>
             <div className="timeline-row-stack">
               {visibleRows.length === 0 ? (
                 <div className="timeline-empty">{emptyTimelineMessage}</div>

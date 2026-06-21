@@ -241,6 +241,18 @@ function stubAppShellFetch(): void {
         }),
       );
     }
+    if (url === '/api/inbox/global') {
+      return Promise.resolve(
+        new Response(JSON.stringify({
+          continuations: [],
+          auth_results: [],
+          open_issues: [],
+          total: 0,
+        }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
     return Promise.resolve(
       new Response(JSON.stringify([]), {
         headers: { 'content-type': 'application/json' },
@@ -457,15 +469,41 @@ describe('app shell', () => {
       '#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden',
     );
 
-    render(h(App, {}));
+    const { container } = render(h(App, {}));
 
     expect(screen.getByLabelText('Main navigation')).toBeTruthy();
     expect(screen.queryByPlaceholderText('Filter issues...')).toBeNull();
     const reveal = screen.getByLabelText('Show view sidebar');
+    const themeToggle = screen.getByLabelText(/^App theme:/);
+    const footer = container.querySelector('.app-rail__footer');
+    const sidebarControls = container.querySelector('.app-rail__sidebar-controls');
+
+    expect(footer).toBeTruthy();
+    expect(sidebarControls?.parentElement).toBe(footer);
+    expect(container.querySelector('.app-rail > .app-rail__sidebar-controls')).toBeNull();
+    expect(Boolean(reveal.compareDocumentPosition(themeToggle) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+
     fireEvent.click(reveal);
 
     await waitFor(() => expect(screen.getByPlaceholderText('Filter issues...')).toBeTruthy());
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
+  });
+
+  it('keeps the bottom rail sidebar toggle functional for Inbox', async () => {
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/inbox?sidebar=hidden');
+
+    const { container } = render(h(App, {}));
+
+    const reveal = screen.getByLabelText('Show view sidebar');
+    expect(reveal.closest('.app-rail__footer')).toBeTruthy();
+    expect(container.querySelector('.app-rail > .app-rail__sidebar-controls')).toBeNull();
+
+    fireEvent.click(reveal);
+
+    await waitFor(() => expect(screen.getByLabelText('Hide view sidebar')).toBeTruthy());
+    expect(window.location.hash).toBe('#/inbox');
   });
 
   it('renders Graph bottom detail without a registration loop', async () => {
@@ -1624,6 +1662,350 @@ describe('ArtifactsView', () => {
     expect(screen.getByText('Knowledge Backrefs')).toBeTruthy();
     expect(screen.getByText('claim')).toBeTruthy();
     expect(screen.getByText('indexed')).toBeTruthy();
+    const sectionHeadings = Array.from(document.querySelectorAll('.artifact-detail__section h3')).map((node) => node.textContent);
+    expect(sectionHeadings.slice(0, 3)).toEqual(['Identity', 'Custody', 'Preview']);
+    expect(sectionHeadings.indexOf('Preview')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
+  });
+
+  it('renders HTML artifact previews in a sandboxed iframe', async () => {
+    const artifact = {
+      id: 'artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      algorithm: 'sha256',
+      content_hash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      uri: 'artifact:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      media_type: 'text/html',
+      role: 'figure',
+      size_bytes: 100,
+      provider_id: null,
+      manifest_id: null,
+      metadata: {
+        title: 'plot.html',
+        filename: 'plot.html',
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: {},
+      availability: 'present',
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      aliases: [],
+      links: [],
+    };
+    const html = '<!doctype html><html><body><h1>Plot</h1><script>window.plotReady = true;</script></body></html>';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [artifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          content: {
+            artifact_id: artifact.id,
+            status: 'available',
+            kind: 'html',
+            media_type: 'text/html',
+            size_bytes: html.length,
+            source: { kind: 'managed_file', locator: 'artifact-storage' },
+            preview: { encoding: 'utf-8', text: html, truncated: false },
+            download: { available: true, media_type: 'text/html', size_bytes: html.length, filename: 'plot.html' },
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(artifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialArtifactId: artifact.id }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-preview--html')).toBeTruthy());
+    const iframe = document.querySelector('.artifact-preview--html') as HTMLIFrameElement | null;
+    expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
+  });
+
+  it('keeps the sidebar list mounted when artifact selection changes', async () => {
+    const makeArtifact = (hashChar: string, title: string) => ({
+      id: `artifact:sha256:${hashChar.repeat(64)}`,
+      algorithm: 'sha256',
+      content_hash: hashChar.repeat(64),
+      uri: `artifact:${hashChar.repeat(64)}`,
+      media_type: 'text/markdown',
+      role: 'report',
+      size_bytes: 42,
+      provider_id: 'feedbax',
+      manifest_id: null,
+      metadata: {
+        title,
+        filename: title,
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: {},
+      availability: 'present',
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      aliases: [],
+      links: [],
+    });
+    const firstArtifact = makeArtifact('1', 'one.md');
+    const secondArtifact = makeArtifact('2', 'two.md');
+    let listCalls = 0;
+    const contentCalls: string[] = [];
+    const mockFetch = vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        listCalls += 1;
+        if (listCalls > 1) {
+          return new Promise<Response>(() => undefined);
+        }
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [firstArtifact, secondArtifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        contentCalls.push(url);
+        const artifact = url.includes(encodeURIComponent(secondArtifact.id)) ? secondArtifact : firstArtifact;
+        return Promise.resolve(new Response(JSON.stringify({
+          content: {
+            artifact_id: artifact.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(firstArtifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact: firstArtifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(secondArtifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact: secondArtifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    render(h(ArtifactsView, { initialArtifactId: firstArtifact.id }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('one.md'));
+    expect(listCalls).toBe(1);
+    expect(screen.queryByText('Loading artifacts...')).toBeNull();
+
+    const secondButton = screen.getByRole('button', { name: /two\.md/ });
+    fireEvent.click(secondButton);
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('two.md'));
+    await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(secondArtifact.id)))).toBe(true));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(listCalls).toBe(1);
+    expect(screen.queryByText('Loading artifacts...')).toBeNull();
+    expect(screen.getByRole('button', { name: /one\.md/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /two\.md/ })).toBeTruthy();
+  });
+
+  it('resolves direct artifact refs without selecting the first sidebar item', async () => {
+    const listArtifact = {
+      id: 'artifact:sha256:3333333333333333333333333333333333333333333333333333333333333333',
+      algorithm: 'sha256',
+      content_hash: '3333333333333333333333333333333333333333333333333333333333333333',
+      uri: 'artifact:3333333333333333333333333333333333333333333333333333333333333333',
+      media_type: 'text/markdown',
+      role: 'report',
+      size_bytes: 42,
+      provider_id: 'feedbax',
+      manifest_id: null,
+      metadata: {
+        title: 'sidebar-first.md',
+        filename: 'sidebar-first.md',
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: {},
+      availability: 'present',
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      aliases: [],
+      links: [],
+    };
+    const linkedArtifact = {
+      ...listArtifact,
+      id: 'artifact:sha256:4444444444444444444444444444444444444444444444444444444444444444',
+      content_hash: '4444444444444444444444444444444444444444444444444444444444444444',
+      uri: 'artifact:4444444444444444444444444444444444444444444444444444444444444444',
+      metadata: {
+        title: 'deep-link.md',
+        filename: 'deep-link.md',
+      },
+    };
+    const ref = 'repo://mandible@main/results/deep-link.md';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [listArtifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          resolution: {
+            status: 'resolved',
+            ref,
+            scheme: 'repo',
+            normalized_ref: ref,
+            artifact: linkedArtifact,
+            alias: null,
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/content')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          content: {
+            artifact_id: linkedArtifact.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(linkedArtifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact: linkedArtifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialRef: ref }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('deep-link.md'));
+    expect(screen.getByText('sidebar-first.md')).toBeTruthy();
+    expect(screen.getByText(ref)).toBeTruthy();
+  });
+
+  it('renders bundle artifacts as member navigation before manifest JSON', async () => {
+    const bundleId = 'artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+    const memberId = 'artifact:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+    const artifact = {
+      id: bundleId,
+      algorithm: 'sha256',
+      content_hash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      uri: 'artifact:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      media_type: 'application/vnd.mandible.artifact-bundle+json',
+      role: 'artifact_bundle',
+      size_bytes: 160,
+      provider_id: null,
+      manifest_id: null,
+      metadata: {
+        title: 'run packet',
+        bundle: true,
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: {},
+      availability: 'present',
+      retention: {},
+      reference: { identity_kind: 'artifact_bundle' },
+      created_at: Date.now(),
+      aliases: [],
+      links: [],
+    };
+    const manifest = JSON.stringify({
+      schema_version: 'mandible.artifact_bundle.v1',
+      name: 'run packet',
+      members: [
+        { artifact_id: memberId, role: 'figure', order: 0, recoverability: 'repo_commit' },
+      ],
+    }, null, 2);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [artifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          content: {
+            artifact_id: artifact.id,
+            status: 'available',
+            kind: 'json',
+            media_type: 'application/vnd.mandible.artifact-bundle+json',
+            size_bytes: manifest.length,
+            source: { kind: 'managed_file', locator: 'artifact-storage' },
+            preview: { encoding: 'utf-8', text: manifest, truncated: false },
+            download: {
+              available: true,
+              media_type: 'application/vnd.mandible.artifact-bundle+json',
+              size_bytes: manifest.length,
+              filename: 'run-packet.json',
+            },
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(artifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialArtifactId: artifact.id }));
+
+    await waitFor(() => expect(screen.getByText(memberId)).toBeTruthy());
+    const memberLink = screen.getByText(memberId).closest('a') as HTMLAnchorElement | null;
+    expect(memberLink?.getAttribute('href')).toBe(`#/artifacts?artifact=${encodeURIComponent(memberId)}`);
+    expect(screen.getByText('figure')).toBeTruthy();
+    expect(screen.getByText('repo_commit')).toBeTruthy();
+    expect(screen.getByText('Manifest JSON')).toBeTruthy();
   });
 });
 

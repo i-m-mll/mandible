@@ -8,9 +8,10 @@ import { getArtifact } from "./provider-artifacts.js";
 import type { ArtifactMaterializationCheck, ArtifactRecord, ArtifactRecoverability } from "./types.js";
 
 const DEFAULT_PREVIEW_BYTES = 128 * 1024;
+const HTML_PREVIEW_BYTES = 8 * 1024 * 1024;
 
-export type ArtifactContentKind = "text" | "markdown" | "json" | "binary" | "unavailable";
-export type ArtifactContentSourceKind = "managed_file" | "repo_locator";
+export type ArtifactContentKind = "text" | "markdown" | "json" | "html" | "binary" | "unavailable";
+export type ArtifactContentSourceKind = "managed_file" | "repo_locator" | "local_file";
 
 export interface ArtifactContentPreview {
   encoding: "utf-8";
@@ -39,6 +40,7 @@ export interface ArtifactContentResult {
   preview: ArtifactContentPreview | null;
   download: ArtifactDownloadMetadata;
   reason?: string;
+  warnings?: string[];
 }
 
 export function checkArtifactMaterialization(
@@ -64,9 +66,41 @@ export function checkArtifactMaterialization(
     reasons.push(reasonCode(managedPath.reason));
   }
 
+  const localPath = resolveLinkFileArtifact(artifact);
+  if (isMutableLocalFileLink(artifact) && localPath.ok) {
+    return checkResolvedFile(artifact, localPath.path, "local_file", expected, recoverability, options.ref);
+  }
+  const aliasPath = isMutableLocalFileLink(artifact)
+    ? resolveLocalFileAliasArtifact(db, artifact)
+    : { ok: false as const, reason: "artifact has no resolved local file alias" };
+  if (isMutableLocalFileLink(artifact) && aliasPath.ok) {
+    return checkResolvedFile(artifact, aliasPath.path, "local_file", expected, recoverability, options.ref);
+  }
+  if (isMutableLocalFileLink(artifact)) {
+    reasons.push(reasonCode(aliasPath.ok ? "no_materializable_location" : aliasPath.reason));
+    if (artifact.availability === "remote_only") reasons.push("remote_only");
+    if (artifact.availability === "missing") reasons.push("missing");
+    warnings.push("local_only");
+    return {
+      artifact_id: artifact.id,
+      ref: options.ref,
+      materializable: false,
+      hash_matches: expected ? null : true,
+      expected_sha256: expected,
+      actual_sha256: null,
+      source: null,
+      recoverability,
+      reasons: Array.from(new Set(reasons)),
+      warnings: Array.from(new Set(warnings)),
+    };
+  }
+
   const repoBytes = readRepoArtifactBytes(db, artifact);
   if (repoBytes.ok) {
     const actual = crypto.createHash("sha256").update(repoBytes.bytes).digest("hex");
+    const mismatch = expected && actual !== expected;
+    const drift = mismatch && isMutableLocalDrift(recoverability);
+    const repoWarnings = repoBytes.warning ? [repoBytes.warning] : [];
     return {
       artifact_id: artifact.id,
       ref: options.ref,
@@ -76,12 +110,21 @@ export function checkArtifactMaterialization(
       actual_sha256: actual,
       source: repoBytes.source,
       recoverability,
-      reasons: expected && actual !== expected ? ["hash_mismatch"] : [],
-      warnings: repoBytes.warning ? [repoBytes.warning] : [],
+      reasons: mismatch ? [drift ? "local_file_drift" : "hash_mismatch"] : [],
+      warnings: drift
+        ? [...repoWarnings, "local_only artifact bytes differ from the registered sha256"]
+        : repoWarnings,
     };
   }
-  if (artifact.home_repo_id || Object.keys(artifact.repo_locator).length > 0) {
+  if (artifact.home_repo_id || Object.keys(artifact.repo_locator ?? {}).length > 0) {
     reasons.push(repoBytes.reason);
+  }
+
+  if (localPath.ok) {
+    return checkResolvedFile(artifact, localPath.path, "local_file", expected, recoverability, options.ref);
+  }
+  if (artifact.uri.startsWith("file://")) {
+    reasons.push(reasonCode(localPath.reason));
   }
 
   if (artifact.availability === "remote_only") reasons.push("remote_only");
@@ -147,9 +190,9 @@ export function getArtifactContent(
     return unresolvedDownload("artifact locator does not point to a regular file");
   }
 
-  const hashProblem = validateContentHash(artifact, resolved.path);
-  if (hashProblem) {
-    return unresolvedDownload(hashProblem);
+  const hashCheck = validateContentHash(artifact, resolved.path, recoverabilityForArtifact(artifact));
+  if (!hashCheck.ok) {
+    return unresolvedDownload(hashCheck.reason);
   }
 
   const sizeBytes = stat.size;
@@ -165,6 +208,7 @@ export function getArtifactContent(
       size_bytes: sizeBytes,
       filename,
     },
+    warnings: hashCheck.warnings,
   };
 
   const kind = previewKind(mediaType, filename);
@@ -176,7 +220,8 @@ export function getArtifactContent(
     };
   }
 
-  const preview = readTextPreview(resolved.path, previewBytes);
+  const textPreviewBytes = kind === "html" ? Math.max(previewBytes, HTML_PREVIEW_BYTES) : previewBytes;
+  const preview = readTextPreview(resolved.path, textPreviewBytes);
   if (kind === "json") {
     return {
       ...base,
@@ -202,8 +247,17 @@ function resolveRegisteredArtifactPath(
   const managedPath = resolveManagedFileArtifact(db, artifact);
   if (managedPath.ok) return managedPath;
 
+  const linkPath = resolveLinkFileArtifact(artifact);
+  if (isMutableLocalFileLink(artifact) && linkPath.ok) return linkPath;
+  if (isMutableLocalFileLink(artifact)) {
+    const aliasPath = resolveLocalFileAliasArtifact(db, artifact);
+    return aliasPath.ok ? aliasPath : linkPath;
+  }
+
   const repoPath = resolveRepoArtifact(db, artifact);
   if (repoPath.ok) return repoPath;
+
+  if (linkPath.ok) return linkPath;
 
   return { ok: false, reason: artifact.uri.startsWith("file://") ? managedPath.reason : repoPath.reason };
 }
@@ -238,6 +292,85 @@ function resolveManagedFileArtifact(
     ok: true,
     path: realPath,
     source: { kind: "managed_file", locator: "artifact-storage" },
+  };
+}
+
+function resolveLinkFileArtifact(
+  artifact: ArtifactRecord,
+): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
+  if (!artifact.uri.startsWith("file://")) {
+    return { ok: false, reason: "artifact has no registered local file URI" };
+  }
+  if (artifact.custody_mode !== "link") {
+    return { ok: false, reason: "local file URI is not link custody" };
+  }
+
+  let filePath: string;
+  try {
+    filePath = fileURLToPath(new URL(artifact.uri));
+  } catch {
+    return { ok: false, reason: "artifact file URI is invalid" };
+  }
+
+  const realPath = safeRealpath(filePath);
+  if (!realPath) {
+    return { ok: false, reason: "artifact bytes are not available on disk" };
+  }
+
+  return {
+    ok: true,
+    path: realPath,
+    source: { kind: "local_file", locator: artifact.uri },
+  };
+}
+
+function resolveLocalFileAliasArtifact(
+  db: Db,
+  artifact: ArtifactRecord,
+): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
+  if (!tableExists(db, "artifact_aliases")) {
+    return { ok: false, reason: "artifact has no resolved local file alias" };
+  }
+  const rows = db.prepare(
+    `SELECT normalized_ref
+       FROM artifact_aliases
+      WHERE artifact_id = ?
+        AND scheme = 'file'
+        AND resolution_status = 'resolved'
+      ORDER BY CASE WHEN normalized_ref = ? THEN 1 ELSE 0 END, updated_at DESC, normalized_ref`,
+  ).all(artifact.id, artifact.uri) as Array<{ normalized_ref: string }>;
+
+  for (const row of rows) {
+    const resolved = resolveFileUriPath(row.normalized_ref, row.normalized_ref);
+    if (resolved.ok) return resolved;
+  }
+  return { ok: false, reason: "artifact bytes are not available on disk" };
+}
+
+function resolveFileUriPath(
+  uri: string,
+  locator: string,
+): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
+  if (!uri.startsWith("file://")) {
+    return { ok: false, reason: "artifact has no registered local file URI" };
+  }
+
+  let filePath: string;
+  try {
+    filePath = fileURLToPath(new URL(uri));
+  } catch {
+    return { ok: false, reason: "artifact file URI is invalid" };
+  }
+
+  const realPath = safeRealpath(filePath);
+  if (!realPath) {
+    return { ok: false, reason: "artifact bytes are not available on disk" };
+  }
+
+  return {
+    ok: true,
+    path: realPath,
+    source: { kind: "local_file", locator },
   };
 }
 
@@ -306,6 +439,8 @@ function checkResolvedFile(
     };
   }
   const actual = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  const mismatch = expected && actual !== expected;
+  const drift = mismatch && isMutableLocalDrift(recoverability);
   return {
     artifact_id: artifact.id,
     ref,
@@ -315,8 +450,8 @@ function checkResolvedFile(
     actual_sha256: actual,
     source,
     recoverability,
-    reasons: expected && actual !== expected ? ["hash_mismatch"] : [],
-    warnings: [],
+    reasons: mismatch ? [drift ? "local_file_drift" : "hash_mismatch"] : [],
+    warnings: drift ? ["local_only artifact bytes differ from the registered sha256"] : [],
   };
 }
 
@@ -375,11 +510,18 @@ function recoverabilityForArtifact(artifact: ArtifactRecord): ArtifactRecoverabi
       break;
   }
   if (artifact.custody_mode === "copy" || artifact.custody_mode === "managed") return "mandible_cas";
+  if (isMutableLocalFileLink(artifact)) return "local_only";
   if (artifact.provider_id && artifact.custody_mode === "external") return "provider_store";
   if (artifact.custody_mode === "external") return "external_remote";
   if (artifact.home_repo_id && stringValue(artifact.repo_locator.commit)) return "repo_commit";
   if (artifact.home_repo_id) return "repo_worktree";
   return null;
+}
+
+function isMutableLocalFileLink(artifact: ArtifactRecord): boolean {
+  return artifact.custody_mode === "link"
+    && artifact.uri.startsWith("file://")
+    && !stringValue(artifact.repo_locator?.commit);
 }
 
 function reasonCode(reason: string): string {
@@ -417,14 +559,29 @@ function tableExists(db: Db, name: string): boolean {
   return Boolean(row);
 }
 
-function validateContentHash(artifact: ArtifactRecord, filePath: string): string | null {
+function validateContentHash(
+  artifact: ArtifactRecord,
+  filePath: string,
+  recoverability: ArtifactRecoverability | null,
+): { ok: true; warnings: string[] } | { ok: false; reason: string } {
   if (artifact.algorithm !== "sha256" || !/^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
-    return null;
+    return { ok: true, warnings: [] };
   }
   const actual = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-  return actual === artifact.content_hash.toLowerCase()
-    ? null
-    : "artifact bytes do not match registered sha256";
+  if (actual === artifact.content_hash.toLowerCase()) {
+    return { ok: true, warnings: [] };
+  }
+  if (isMutableLocalDrift(recoverability)) {
+    return {
+      ok: true,
+      warnings: ["local_only artifact bytes differ from the registered sha256; previewing current local bytes"],
+    };
+  }
+  return { ok: false, reason: "artifact bytes do not match registered sha256" };
+}
+
+function isMutableLocalDrift(recoverability: ArtifactRecoverability | null): boolean {
+  return recoverability === "local_only";
 }
 
 function safeStat(filePath: string): fs.Stats | null {
@@ -452,6 +609,7 @@ function previewKind(mediaType: string, filename: string | null): Exclude<Artifa
   const lowerMediaType = mediaType.toLowerCase();
   const lowerName = (filename ?? "").toLowerCase();
   if (lowerMediaType.includes("json") || lowerName.endsWith(".json")) return "json";
+  if (lowerMediaType.includes("html") || lowerName.endsWith(".html") || lowerName.endsWith(".htm")) return "html";
   if (lowerMediaType.includes("markdown") || lowerName.endsWith(".md") || lowerName.endsWith(".markdown")) {
     return "markdown";
   }
@@ -492,6 +650,7 @@ function inferMediaType(artifact: ArtifactRecord): string {
   const filename = artifactFilename(artifact);
   const lowerName = (filename ?? "").toLowerCase();
   if (lowerName.endsWith(".json")) return "application/json";
+  if (lowerName.endsWith(".html") || lowerName.endsWith(".htm")) return "text/html";
   if (lowerName.endsWith(".md") || lowerName.endsWith(".markdown")) return "text/markdown";
   if (lowerName.endsWith(".txt") || lowerName.endsWith(".log")) return "text/plain";
   return "application/octet-stream";

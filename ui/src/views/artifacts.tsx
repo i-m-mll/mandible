@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import {
   getArtifact,
@@ -44,6 +44,18 @@ const EMPTY_FILTERS: ArtifactFilters = {
   location: '',
 };
 
+type BundleMemberPreview = {
+  artifactId: string;
+  role: string;
+  recoverability: string;
+  order: number;
+};
+
+type ArtifactPreview =
+  | { kind: 'json' | 'markdown' | 'text' | 'html' | 'empty'; value: string }
+  | { kind: 'binary'; value: string }
+  | { kind: 'bundle'; manifestText: string; name: string; members: BundleMemberPreview[] };
+
 export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, sidebarHidden = false }: ArtifactsViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 320,
@@ -68,12 +80,23 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const initialRefRef = useRef(initialRef);
+  const listRequestIdRef = useRef(0);
 
   useEffect(() => {
-    setFilters((current) => ({ ...current, repo: initialRepo ?? current.repo }));
+    setFilters((current) => {
+      const repo = initialRepo ?? current.repo;
+      return current.repo === repo ? current : { ...current, repo };
+    });
   }, [initialRepo]);
 
+  useEffect(() => {
+    initialRefRef.current = initialRef;
+  }, [initialRef]);
+
   const loadArtifacts = useCallback(async () => {
+    const requestId = listRequestIdRef.current + 1;
+    listRequestIdRef.current = requestId;
     setLoading(true);
     setError(null);
     try {
@@ -88,16 +111,21 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
         location: filters.location || undefined,
         limit: 200,
       });
+      if (listRequestIdRef.current !== requestId) return;
       setArtifacts(next);
-      if (!selectedId && !initialRef && next[0]) {
-        setSelectedId(next[0].id);
-      }
+      setSelectedId((current) => (
+        current || initialRefRef.current || !next[0] ? current : next[0].id
+      ));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (listRequestIdRef.current === requestId) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setLoading(false);
+      if (listRequestIdRef.current === requestId) {
+        setLoading(false);
+      }
     }
-  }, [filters, selectedId, initialRef]);
+  }, [filters]);
 
   useEffect(() => {
     void loadArtifacts();
@@ -106,34 +134,55 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   useEffect(() => {
     if (!initialArtifactId) return;
     setSelectedId(initialArtifactId);
+    setSelectedArtifact((current) => (current?.id === initialArtifactId ? current : null));
     setResolution(null);
   }, [initialArtifactId]);
 
   useEffect(() => {
     if (!initialRef) return;
+    let cancelled = false;
     setDetailLoading(true);
     setError(null);
+    setResolution(null);
+    setSelectedArtifact(null);
     resolveArtifact(initialRef)
       .then((next) => {
+        if (cancelled) return;
         setResolution(next);
         setSelectedArtifact(next.artifact);
         setSelectedId(next.artifact?.id ?? null);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setDetailLoading(false));
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [initialRef]);
 
   useEffect(() => {
     if (!selectedId || initialRef) return;
+    let cancelled = false;
     setDetailLoading(true);
     setError(null);
     getArtifact(selectedId)
       .then((artifact) => {
+        if (cancelled) return;
         setSelectedArtifact(artifact);
         setResolution(null);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setDetailLoading(false));
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedId, initialRef]);
 
   useEffect(() => {
@@ -195,6 +244,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
 
   const selectArtifact = (artifact: ArtifactRecord) => {
     setSelectedId(artifact.id);
+    setSelectedArtifact(artifact);
     setResolution(null);
     const nextHash = artifactDetailHref(artifact.id);
     if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
@@ -259,7 +309,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
               </div>
             )}
             <div className="artifacts-sidebar__list">
-              {loading && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
+              {loading && artifacts.length === 0 && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
               {!loading && artifacts.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
               {artifacts.map((artifact) => (
                 <button
@@ -285,7 +335,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
       ) : null}
       <main className="artifacts-detail">
         {error && <div className="artifacts-error">{error}</div>}
-        {detailLoading && <div className="artifacts-empty">Loading artifact...</div>}
+        {detailLoading && !selectedArtifact && !resolution && <div className="artifacts-empty">Loading artifact...</div>}
         {!detailLoading && !selectedArtifact && !resolution && (
           <div className="artifacts-empty">Select an artifact or open an artifact URI.</div>
         )}
@@ -389,6 +439,12 @@ function ArtifactDetail({
           ['Created', formatTime(artifact.created_at)],
         ]} />
       </section>
+      <PreviewSection
+        preview={preview}
+        content={content}
+        contentLoading={contentLoading}
+        contentError={contentError}
+      />
       {artifact.aliases && artifact.aliases.length > 0 && (
         <section className="artifact-detail__section">
           <h3>Locators</h3>
@@ -425,7 +481,7 @@ function ArtifactDetail({
           {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
             <div className="artifact-detail__list">
               {knowledgeBackrefs.map((backref) => (
-                <div key={backref.id} className="artifact-detail__list-item">
+                <div key={backref.id} className="artifact-detail__list-item artifact-detail__list-item--backref">
                   <code>{backref.external_ref || backref.external_id}</code>
                   <span>{backref.ref_type}</span>
                   <span>{backref.provider_id}</span>
@@ -436,24 +492,85 @@ function ArtifactDetail({
           )}
         </section>
       )}
-      <section className="artifact-detail__section">
-        <h3>Preview</h3>
-        {contentLoading && <div className="artifacts-empty">Loading preview...</div>}
-        {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
-        {!contentLoading && !contentError && preview?.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
-        {!contentLoading && !contentError && preview?.kind === 'text' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
-        {!contentLoading && !contentError && preview?.kind === 'markdown' && <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />}
-        {!contentLoading && !contentError && preview?.kind === 'binary' && (
-          <div className="artifacts-empty">
-            Binary artifact available ({formatBytes(content?.download.size_bytes ?? 0) || content?.download.media_type}).
-          </div>
-        )}
-        {!contentLoading && !contentError && preview?.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
-        {!contentLoading && !contentError && content?.preview?.truncated && (
-          <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
-        )}
-      </section>
     </article>
+  );
+}
+
+function PreviewSection({
+  preview,
+  content,
+  contentLoading,
+  contentError,
+}: {
+  preview: ArtifactPreview | null;
+  content: ArtifactContentResult | null;
+  contentLoading: boolean;
+  contentError: string | null;
+}): JSX.Element {
+  return (
+    <section className="artifact-detail__section">
+      <h3>Preview</h3>
+      {contentLoading && <div className="artifacts-empty">Loading preview...</div>}
+      {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
+      {!contentLoading && !contentError && content?.warnings?.map((warning) => (
+        <div key={warning} className="artifact-detail__warning">{warning}</div>
+      ))}
+      {!contentLoading && !contentError && preview?.kind === 'bundle' && <BundlePreview preview={preview} />}
+      {!contentLoading && !contentError && preview?.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+      {!contentLoading && !contentError && preview?.kind === 'text' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+      {!contentLoading && !contentError && preview?.kind === 'html' && (
+        <iframe
+          className="artifact-preview artifact-preview--html"
+          sandbox="allow-scripts"
+          referrerPolicy="no-referrer"
+          srcDoc={preview.value}
+          title="Artifact HTML preview"
+        />
+      )}
+      {!contentLoading && !contentError && preview?.kind === 'markdown' && (
+        <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />
+      )}
+      {!contentLoading && !contentError && preview?.kind === 'binary' && (
+        <div className="artifacts-empty">
+          Binary artifact available ({formatBytes(content?.download.size_bytes ?? 0) || content?.download.media_type}).
+        </div>
+      )}
+      {!contentLoading && !contentError && preview?.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
+      {!contentLoading && !contentError && content?.preview?.truncated && (
+        <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
+      )}
+    </section>
+  );
+}
+
+function BundlePreview({ preview }: { preview: Extract<ArtifactPreview, { kind: 'bundle' }> }): JSX.Element {
+  return (
+    <div className="artifact-preview-bundle">
+      <div className="artifact-detail__hint">
+        {preview.name ? `${preview.name}: ` : ''}{preview.members.length} member{preview.members.length === 1 ? '' : 's'}
+      </div>
+      {preview.members.length > 0 ? (
+        <div className="artifact-detail__list artifact-detail__list--bundle">
+          {preview.members.map((member) => (
+            <a
+              key={`${member.artifactId}:${member.order}`}
+              className="artifact-detail__list-item artifact-detail__list-item--bundle"
+              href={artifactDetailHref(member.artifactId)}
+            >
+              <code>{member.artifactId}</code>
+              <span>{member.role || 'member'}</span>
+              <span>{member.recoverability || 'recoverability unknown'}</span>
+            </a>
+          ))}
+        </div>
+      ) : (
+        <div className="artifacts-empty">Bundle manifest has no members.</div>
+      )}
+      <details className="artifact-preview__details">
+        <summary>Manifest JSON</summary>
+        <pre className="artifact-preview"><code>{preview.manifestText}</code></pre>
+      </details>
+    </div>
   );
 }
 
@@ -557,9 +674,14 @@ function artifactTitleCandidate(value: string): string {
   return value && displayArtifactRef(value) === value ? value : '';
 }
 
-function artifactPreview(content: ArtifactContentResult): { kind: 'json' | 'markdown' | 'text' | 'binary' | 'empty'; value: string } {
+function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
   if (content.kind === 'json' && content.preview) {
+    const bundle = artifactBundlePreview(content.preview.text);
+    if (bundle) return bundle;
     return { kind: 'json', value: content.preview.text };
+  }
+  if (content.kind === 'html' && content.preview) {
+    return { kind: 'html', value: content.preview.text };
   }
   if (content.kind === 'markdown' && content.preview) {
     const parsed = marked.parse(content.preview.text, { async: false });
@@ -575,6 +697,41 @@ function artifactPreview(content: ArtifactContentResult): { kind: 'json' | 'mark
     return { kind: 'empty', value: content.reason };
   }
   return { kind: 'empty', value: 'No inline preview is available for this artifact.' };
+}
+
+function artifactBundlePreview(text: string): Extract<ArtifactPreview, { kind: 'bundle' }> | null {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isRecord(manifest) || manifest.schema_version !== 'mandible.artifact_bundle.v1') return null;
+  const members = Array.isArray(manifest.members) ? manifest.members : [];
+  return {
+    kind: 'bundle',
+    manifestText: text,
+    name: stringValue(manifest.name),
+    members: members.map((member, index): BundleMemberPreview | null => {
+      if (!isRecord(member)) return null;
+      const artifactId = stringValue(member.artifact_id);
+      if (!artifactId) return null;
+      return {
+        artifactId,
+        role: stringValue(member.role),
+        recoverability: stringValue(member.recoverability),
+        order: typeof member.order === 'number' ? member.order : index,
+      };
+    }).filter((member): member is BundleMemberPreview => Boolean(member)),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function formatBytes(value: number): string {
