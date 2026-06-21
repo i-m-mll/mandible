@@ -557,6 +557,10 @@ a {
   box-shadow: none;
 }
 
+.app-layout:not(.app-layout--view-sidebar-open) .app-rail {
+  box-shadow: none;
+}
+
 .app-layout--bottom-panel-open .app-rail {
   box-shadow: none;
 }
@@ -570,7 +574,8 @@ a {
   z-index: 31;
   width: 1px;
   pointer-events: none;
-  box-shadow: var(--shadow-rail);
+  background: var(--border-muted);
+  box-shadow: none;
 }
 
 .app-bottom-panel {
