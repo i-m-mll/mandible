@@ -1400,7 +1400,7 @@ describe("provider/artifact substrate", () => {
     expect(content?.preview?.text).toBe("not managed\n");
   });
 
-  it("treats local-only hash mismatches as mutable drift without weakening managed integrity", () => {
+  it("treats bare local file links as mutable drift without weakening managed integrity", () => {
     const outsidePath = path.join(tempDir, "mutable.txt");
     fs.writeFileSync(outsidePath, "original\n", "utf8");
     const local = ingestArtifact(db, {
@@ -1409,8 +1409,6 @@ describe("provider/artifact substrate", () => {
       uri: `file://${outsidePath}`,
       custody_mode: "link",
       availability: "present",
-      reference: { recoverability: "local_only" },
-      metadata: { recoverability: "local_only" },
     }, 1000, tempDir);
     const managed = ingestArtifact(db, {
       content: "managed original\n",
@@ -1429,6 +1427,7 @@ describe("provider/artifact substrate", () => {
     expect(localContent).toMatchObject({
       status: "available",
       kind: "text",
+      source: { kind: "local_file", locator: `file://${outsidePath}` },
       warnings: ["local_only artifact bytes differ from the registered sha256; previewing current local bytes"],
     });
     expect(localContent?.preview?.text).toBe("changed\n");

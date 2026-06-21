@@ -66,6 +66,29 @@ export function checkArtifactMaterialization(
     reasons.push(reasonCode(managedPath.reason));
   }
 
+  const localPath = resolveLinkFileArtifact(artifact);
+  if (isMutableLocalFileLink(artifact) && localPath.ok) {
+    return checkResolvedFile(artifact, localPath.path, "local_file", expected, recoverability, options.ref);
+  }
+  if (isMutableLocalFileLink(artifact)) {
+    reasons.push(reasonCode(localPath.ok ? "no_materializable_location" : localPath.reason));
+    if (artifact.availability === "remote_only") reasons.push("remote_only");
+    if (artifact.availability === "missing") reasons.push("missing");
+    warnings.push("local_only");
+    return {
+      artifact_id: artifact.id,
+      ref: options.ref,
+      materializable: false,
+      hash_matches: expected ? null : true,
+      expected_sha256: expected,
+      actual_sha256: null,
+      source: null,
+      recoverability,
+      reasons: Array.from(new Set(reasons)),
+      warnings: Array.from(new Set(warnings)),
+    };
+  }
+
   const repoBytes = readRepoArtifactBytes(db, artifact);
   if (repoBytes.ok) {
     const actual = crypto.createHash("sha256").update(repoBytes.bytes).digest("hex");
@@ -87,11 +110,10 @@ export function checkArtifactMaterialization(
         : repoWarnings,
     };
   }
-  if (artifact.home_repo_id || Object.keys(artifact.repo_locator).length > 0) {
+  if (artifact.home_repo_id || Object.keys(artifact.repo_locator ?? {}).length > 0) {
     reasons.push(repoBytes.reason);
   }
 
-  const localPath = resolveLinkFileArtifact(artifact);
   if (localPath.ok) {
     return checkResolvedFile(artifact, localPath.path, "local_file", expected, recoverability, options.ref);
   }
@@ -219,10 +241,13 @@ function resolveRegisteredArtifactPath(
   const managedPath = resolveManagedFileArtifact(db, artifact);
   if (managedPath.ok) return managedPath;
 
+  const linkPath = resolveLinkFileArtifact(artifact);
+  if (isMutableLocalFileLink(artifact) && linkPath.ok) return linkPath;
+  if (isMutableLocalFileLink(artifact)) return linkPath;
+
   const repoPath = resolveRepoArtifact(db, artifact);
   if (repoPath.ok) return repoPath;
 
-  const linkPath = resolveLinkFileArtifact(artifact);
   if (linkPath.ok) return linkPath;
 
   return { ok: false, reason: artifact.uri.startsWith("file://") ? managedPath.reason : repoPath.reason };
@@ -426,11 +451,18 @@ function recoverabilityForArtifact(artifact: ArtifactRecord): ArtifactRecoverabi
       break;
   }
   if (artifact.custody_mode === "copy" || artifact.custody_mode === "managed") return "mandible_cas";
+  if (isMutableLocalFileLink(artifact)) return "local_only";
   if (artifact.provider_id && artifact.custody_mode === "external") return "provider_store";
   if (artifact.custody_mode === "external") return "external_remote";
   if (artifact.home_repo_id && stringValue(artifact.repo_locator.commit)) return "repo_commit";
   if (artifact.home_repo_id) return "repo_worktree";
   return null;
+}
+
+function isMutableLocalFileLink(artifact: ArtifactRecord): boolean {
+  return artifact.custody_mode === "link"
+    && artifact.uri.startsWith("file://")
+    && !stringValue(artifact.repo_locator?.commit);
 }
 
 function reasonCode(reason: string): string {
