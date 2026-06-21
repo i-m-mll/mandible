@@ -1745,6 +1745,7 @@ export type ArtifactQueryParams = {
   location?: string;
   linked_entity?: string;
   limit?: number;
+  summary?: boolean;
 };
 
 export async function getArtifacts(params: ArtifactQueryParams = {}): Promise<ArtifactRecord[]> {

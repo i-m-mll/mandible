@@ -53,6 +53,14 @@ function queryNumber(req: RequestLike, key: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function queryBoolean(req: RequestLike, key: string): boolean | undefined {
+  const value = queryString(req, key);
+  if (!value) return undefined;
+  if (["1", "true", "yes"].includes(value.toLowerCase())) return true;
+  if (["0", "false", "no"].includes(value.toLowerCase())) return false;
+  return undefined;
+}
+
 function bodyStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
@@ -196,6 +204,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       linkedEntityId: linked.id,
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
+      summary: queryBoolean(req, "summary"),
     });
     sendJson(res, 200, { artifacts });
   });
