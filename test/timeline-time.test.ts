@@ -119,6 +119,45 @@ describe('timeline time helpers', () => {
     expect(ticks[4].contextLabel).toBe('2026-01-03');
   });
 
+  it('keeps date-like labels in the upper tick slot and time labels in the lower slot', () => {
+    const monthTicks = generateTimelineTicks(
+      {
+        from: Date.UTC(2026, 5, 1),
+        to: Date.UTC(2026, 8, 1),
+      },
+      900,
+      { interval: '1mo' },
+    );
+    expect(monthTicks[0].label).toBe('Jun 2026');
+    expect(monthTicks[0].upperLabel).toBe('Jun 2026');
+    expect(monthTicks[0].lowerLabel).toBeNull();
+    expect(monthTicks.every((tick) => tick.lowerLabel === null)).toBe(true);
+
+    const dayTicks = generateTimelineTicks(
+      {
+        from: Date.UTC(2026, 5, 1),
+        to: Date.UTC(2026, 5, 3),
+      },
+      900,
+      { interval: '1d' },
+    );
+    expect(dayTicks[0].upperLabel).toBe('Jun 01');
+    expect(dayTicks[0].lowerLabel).toBeNull();
+
+    const hourTicks = generateTimelineTicks(
+      {
+        from: Date.UTC(2026, 5, 1),
+        to: Date.UTC(2026, 5, 1, 12),
+      },
+      900,
+      { interval: '6h' },
+    );
+    expect(hourTicks[0].upperLabel).toBe('2026-06-01');
+    expect(hourTicks[0].lowerLabel).toBe('00:00');
+    expect(hourTicks[1].upperLabel).toBeNull();
+    expect(hourTicks[1].lowerLabel).toBe('06:00');
+  });
+
   it('falls back predictably for empty and single-event extents', () => {
     const fallbackNow = Date.UTC(2026, 6, 1);
     const empty = timelineExtentFromTimestamps([], {

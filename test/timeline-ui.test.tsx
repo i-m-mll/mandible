@@ -253,6 +253,30 @@ function projectProjection(
   });
 }
 
+function emptyProjectProjection(
+  projectRef: string,
+  title: string,
+): ProjectTimelineProjection {
+  const base = projectProjection(projectRef, title, `${title} event`);
+  return projection({
+    project: base.project,
+    inputs: base.inputs,
+    rows: base.rows,
+    events: [],
+    links: [],
+    time_axis: {
+      start: Date.UTC(2026, 0, 1),
+      end: Date.UTC(2026, 0, 2),
+      event_count: 0,
+    },
+    diagnostics: {
+      ...base.diagnostics,
+      root_count: base.rows.length,
+      reachable_from_roots_count: base.rows.length,
+    },
+  });
+}
+
 function stubTimelineFetch(...responses: Array<ProjectTimelineProjection | Promise<ProjectTimelineProjection>>): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
     const next = responses.shift() ?? projection();
@@ -1411,6 +1435,45 @@ describe('TimelineView', () => {
 
     resolveSecond(other);
     await waitFor(() => expect(screen.getByText('Load Humble coordination root')).toBeTruthy());
+  });
+
+  it('resolves a previously unseen project when route params catch up after selection', async () => {
+    const repos = [
+      { id: 'mandible', name: 'mandible' },
+      { id: 'mll.bio', name: 'mll.bio' },
+    ];
+    let resolveMllBio: (value: ProjectTimelineProjection) => void = () => undefined;
+    const mllBioResponse = new Promise<ProjectTimelineProjection>((resolve) => {
+      resolveMllBio = resolve;
+    });
+    const fetchMock = stubTimelineFetch(
+      projectProjection('mandible', 'Mandible coordination root', 'Mandible loaded root'),
+      mllBioResponse,
+    );
+    const view = render(h(TimelineView, {
+      repos,
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Mandible loaded root')).toBeTruthy());
+    changeSelect(screen.getByLabelText('Project'), 'mll.bio');
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+    expect(screen.getByText('Loading mll.bio timeline...')).toBeTruthy();
+
+    view.rerender(h(TimelineView, {
+      repos,
+      params: { project: 'mll.bio' },
+    }));
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(secondBody.project_ref).toBe('mll.bio');
+    expect(secondBody.root_specs).toEqual([]);
+    resolveMllBio(emptyProjectProjection('mll.bio', 'mll.bio residual root'));
+
+    await waitFor(() => expect(screen.getByText('mll.bio residual root')).toBeTruthy());
+    expect(screen.queryByText('Loading mll.bio timeline...')).toBeNull();
+    expect(screen.queryByText('Mandible loaded root')).toBeNull();
   });
 
   it('ignores stale prior-project responses that resolve after the selected project', async () => {

@@ -27,6 +27,8 @@ export type TimelineTick = {
   left: number;
   label: string;
   contextLabel: string | null;
+  upperLabel: string | null;
+  lowerLabel: string | null;
   interval: TimelineTickIntervalId;
   major: boolean;
 };
@@ -244,6 +246,15 @@ function tickContextLabel(
   return null;
 }
 
+function isDateLikeTickLabel(interval: TimelineTickInterval): boolean {
+  return (
+    interval.unit === 'year'
+    || interval.unit === 'month'
+    || interval.unit === 'week'
+    || interval.unit === 'day'
+  );
+}
+
 function isMajorTick(timestamp: number, interval: TimelineTickInterval): boolean {
   const parts = dateParts(timestamp);
   if (interval.unit === 'year') return true;
@@ -457,11 +468,16 @@ export function generateTimelineTicks(
   let previousTimestamp: number | null = null;
   let guard = 0;
   while (timestamp <= to && guard < 1000) {
+    const label = tickLabel(timestamp, interval);
+    const contextLabel = tickContextLabel(timestamp, previousTimestamp, interval);
+    const dateLikeLabel = isDateLikeTickLabel(interval);
     ticks.push({
       timestamp,
       left: ((timestamp - from) / span) * 100,
-      label: tickLabel(timestamp, interval),
-      contextLabel: tickContextLabel(timestamp, previousTimestamp, interval),
+      label,
+      contextLabel,
+      upperLabel: contextLabel ?? (dateLikeLabel ? label : null),
+      lowerLabel: dateLikeLabel ? null : label,
       interval: interval.id,
       major: isMajorTick(timestamp, interval),
     });

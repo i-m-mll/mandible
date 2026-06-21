@@ -879,14 +879,16 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     const nextProjectRef = defaultProjectRef(repos, urlState.projectRef);
     if (nextProjectRef !== appliedRouteProjectRef.current) {
       appliedRouteProjectRef.current = nextProjectRef;
-      resetLoadedProjection();
-      setProjectRef(nextProjectRef);
-      setViewState(clearTimelineSelection(mergeTimelineState(
-        DEFAULT_TIMELINE_VIEW_STATE,
-        readStoredState(nextProjectRef),
-        urlState,
-      )));
-      return;
+      if (nextProjectRef !== projectRef) {
+        resetLoadedProjection();
+        setProjectRef(nextProjectRef);
+        setViewState(clearTimelineSelection(mergeTimelineState(
+          DEFAULT_TIMELINE_VIEW_STATE,
+          readStoredState(nextProjectRef),
+          urlState,
+        )));
+        return;
+      }
     }
     if (nextProjectRef === projectRef) {
       setViewState((current) => mergeTimelineState(current, {}, urlState));
@@ -1892,12 +1894,16 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
                     className={`timeline-axis__tick${tick.major ? ' timeline-axis__tick--major' : ''}`}
                     style={{ left: `${tick.left}%` }}
                   >
-                    {tick.contextLabel ? (
-                      <span className="timeline-axis__tick-context">{tick.contextLabel}</span>
+                    {tick.upperLabel ? (
+                      <span className="timeline-axis__tick-context">{tick.upperLabel}</span>
                     ) : (
                       <span className="timeline-axis__tick-context" aria-hidden="true" />
                     )}
-                    <span className="timeline-axis__tick-label">{tick.label}</span>
+                    {tick.lowerLabel ? (
+                      <span className="timeline-axis__tick-label">{tick.lowerLabel}</span>
+                    ) : (
+                      <span className="timeline-axis__tick-label" aria-hidden="true" />
+                    )}
                   </span>
                 ))}
               </div>
