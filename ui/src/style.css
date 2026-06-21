@@ -369,9 +369,12 @@
   background: var(--surface-code);
 }
 
-:root[data-theme='light'] .spec-panel pre,
-:root[data-theme='light'] .artifact-preview {
+:root[data-theme='light'] .spec-panel pre {
   background: var(--surface-code);
+}
+
+:root[data-theme='light'] .artifact-preview {
+  background: transparent;
 }
 
 :root[data-theme='light'] .react-flow__minimap {
