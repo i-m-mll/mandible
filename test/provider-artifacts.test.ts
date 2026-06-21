@@ -20,6 +20,7 @@ import {
   ingestProviderManifest,
   listArtifacts,
   listProviders,
+  registerArtifactAlias,
   registerLocalArtifactPath,
   registerProvider,
   resolveAndLinkArtifact,
@@ -1398,6 +1399,44 @@ describe("provider/artifact substrate", () => {
       download: { available: true },
     });
     expect(content?.preview?.text).toBe("not managed\n");
+  });
+
+  it("falls back to a resolved local file alias when the primary local link path is missing", () => {
+    const missingPath = path.join(tempDir, "old-worktree", "detail.json");
+    const aliasPath = path.join(tempDir, "repo", "_artifacts", "detail.json");
+    fs.mkdirSync(path.dirname(aliasPath), { recursive: true });
+    fs.writeFileSync(aliasPath, '{"status":"current"}\n', "utf8");
+    const artifact = ingestArtifact(db, {
+      sha256: sha256('{"status":"registered"}\n'),
+      media_type: "text/plain",
+      uri: `file://${missingPath}`,
+      custody_mode: "link",
+      availability: "present",
+    }, 1000, tempDir);
+    registerArtifactAlias(db, {
+      artifactId: artifact.id,
+      ref: `file://${aliasPath}`,
+      source: "artifact_cli",
+      now: 1001,
+    });
+
+    const content = getArtifactContent(db, artifact.id);
+    const check = checkArtifactMaterialization(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "text",
+      source: { kind: "local_file", locator: `file://${aliasPath}` },
+      warnings: ["local_only artifact bytes differ from the registered sha256; previewing current local bytes"],
+    });
+    expect(content?.preview?.text).toBe('{"status":"current"}\n');
+    expect(check).toMatchObject({
+      materializable: true,
+      hash_matches: false,
+      source: "local_file",
+      reasons: ["local_file_drift"],
+      warnings: ["local_only artifact bytes differ from the registered sha256"],
+    });
   });
 
   it("treats bare local file links as mutable drift without weakening managed integrity", () => {

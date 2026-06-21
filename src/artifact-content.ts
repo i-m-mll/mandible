@@ -70,8 +70,14 @@ export function checkArtifactMaterialization(
   if (isMutableLocalFileLink(artifact) && localPath.ok) {
     return checkResolvedFile(artifact, localPath.path, "local_file", expected, recoverability, options.ref);
   }
+  const aliasPath = isMutableLocalFileLink(artifact)
+    ? resolveLocalFileAliasArtifact(db, artifact)
+    : { ok: false as const, reason: "artifact has no resolved local file alias" };
+  if (isMutableLocalFileLink(artifact) && aliasPath.ok) {
+    return checkResolvedFile(artifact, aliasPath.path, "local_file", expected, recoverability, options.ref);
+  }
   if (isMutableLocalFileLink(artifact)) {
-    reasons.push(reasonCode(localPath.ok ? "no_materializable_location" : localPath.reason));
+    reasons.push(reasonCode(aliasPath.ok ? "no_materializable_location" : aliasPath.reason));
     if (artifact.availability === "remote_only") reasons.push("remote_only");
     if (artifact.availability === "missing") reasons.push("missing");
     warnings.push("local_only");
@@ -243,7 +249,10 @@ function resolveRegisteredArtifactPath(
 
   const linkPath = resolveLinkFileArtifact(artifact);
   if (isMutableLocalFileLink(artifact) && linkPath.ok) return linkPath;
-  if (isMutableLocalFileLink(artifact)) return linkPath;
+  if (isMutableLocalFileLink(artifact)) {
+    const aliasPath = resolveLocalFileAliasArtifact(db, artifact);
+    return aliasPath.ok ? aliasPath : linkPath;
+  }
 
   const repoPath = resolveRepoArtifact(db, artifact);
   if (repoPath.ok) return repoPath;
@@ -312,6 +321,56 @@ function resolveLinkFileArtifact(
     ok: true,
     path: realPath,
     source: { kind: "local_file", locator: artifact.uri },
+  };
+}
+
+function resolveLocalFileAliasArtifact(
+  db: Db,
+  artifact: ArtifactRecord,
+): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
+  if (!tableExists(db, "artifact_aliases")) {
+    return { ok: false, reason: "artifact has no resolved local file alias" };
+  }
+  const rows = db.prepare(
+    `SELECT normalized_ref
+       FROM artifact_aliases
+      WHERE artifact_id = ?
+        AND scheme = 'file'
+        AND resolution_status = 'resolved'
+      ORDER BY CASE WHEN normalized_ref = ? THEN 1 ELSE 0 END, updated_at DESC, normalized_ref`,
+  ).all(artifact.id, artifact.uri) as Array<{ normalized_ref: string }>;
+
+  for (const row of rows) {
+    const resolved = resolveFileUriPath(row.normalized_ref, row.normalized_ref);
+    if (resolved.ok) return resolved;
+  }
+  return { ok: false, reason: "artifact bytes are not available on disk" };
+}
+
+function resolveFileUriPath(
+  uri: string,
+  locator: string,
+): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
+  if (!uri.startsWith("file://")) {
+    return { ok: false, reason: "artifact has no registered local file URI" };
+  }
+
+  let filePath: string;
+  try {
+    filePath = fileURLToPath(new URL(uri));
+  } catch {
+    return { ok: false, reason: "artifact file URI is invalid" };
+  }
+
+  const realPath = safeRealpath(filePath);
+  if (!realPath) {
+    return { ok: false, reason: "artifact bytes are not available on disk" };
+  }
+
+  return {
+    ok: true,
+    path: realPath,
+    source: { kind: "local_file", locator },
   };
 }
 
