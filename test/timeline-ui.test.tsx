@@ -932,6 +932,34 @@ describe('TimelineView', () => {
     });
   });
 
+  it('renders timeline header actions in the pinned corner with split axis labels', async () => {
+    stubTimelineFetch(projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    const corner = document.querySelector('.timeline-axis__corner') as HTMLElement;
+    expect(corner).toBeTruthy();
+    expect(corner.getAttribute('aria-hidden')).toBeNull();
+    expect(within(corner).getByRole('button', { name: 'Zoom out' }).getAttribute('title')).toBe('Zoom out');
+    expect(within(corner).getByRole('button', { name: 'Zoom in' }).getAttribute('title')).toBe('Zoom in');
+    expect(within(corner).getByRole('button', { name: 'Fit all' }).getAttribute('title')).toBe('Fit all');
+    expect(within(corner).getByRole('button', { name: 'Add row' }).getAttribute('title')).toBe('Add row');
+    expect(screen.queryByLabelText('Timeline zoom')).toBeNull();
+    expect(document.querySelector('.timeline-gutter-stack .timeline-add-row-button')).toBeNull();
+
+    const axisViewport = document.querySelector('.timeline-axis__viewport') as HTMLElement;
+    const axisSurface = document.querySelector('.timeline-axis__surface') as HTMLElement;
+    const tick = document.querySelector('.timeline-axis__tick') as HTMLElement;
+    expect(axisViewport).toBeTruthy();
+    expect(axisSurface).toBeTruthy();
+    expect(tick.querySelector('.timeline-axis__tick-context')).toBeTruthy();
+    expect(tick.querySelector('.timeline-axis__tick-label')).toBeTruthy();
+  });
+
   it('maps pinch-out wheel gestures to zoom in', async () => {
     const fetchMock = stubTimelineFetch(projection());
 
@@ -1039,7 +1067,7 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(screen.getByText('Recovery next day event')).toBeTruthy());
     const grid = screen.getByRole('grid');
-    fireEvent.click(screen.getByText('Fit all'));
+    fireEvent.click(screen.getByRole('button', { name: 'Fit all' }));
 
     let fittedSurfaceWidth = 0;
     await waitFor(() => {
@@ -1857,7 +1885,7 @@ describe('TimelineView', () => {
     }));
 
     await waitFor(() => expect(screen.getByText('Coordination root event')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add row' }));
     const filterInput = screen.getByLabelText('Filter');
     fireEvent.input(filterInput, { target: { value: 'label:coordination' } });
     fireEvent.keyDown(filterInput, { key: 'Enter' });
@@ -1887,7 +1915,7 @@ describe('TimelineView', () => {
       expect(JSON.parse(String(stored)).filterRows).toHaveLength(1);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add row' }));
     const secondInput = screen.getByLabelText('Filter');
     fireEvent.input(secondInput, { target: { value: 'kind:coordination' } });
     fireEvent.keyDown(secondInput, { key: 'Enter' });
@@ -1919,7 +1947,7 @@ describe('TimelineView', () => {
     }));
 
     await waitFor(() => expect(screen.getByText('Coordination root event')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add row' }));
     const filterInput = screen.getByLabelText('Filter');
     fireEvent.input(filterInput, { target: { value: 'label:not-present' } });
     fireEvent.keyDown(filterInput, { key: 'Enter' });
@@ -1950,7 +1978,7 @@ describe('TimelineView', () => {
     }));
 
     await waitFor(() => expect(screen.getByText('auth111 event')).toBeTruthy());
-    fireEvent.click(screen.getByRole('button', { name: '+ Add row' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add row' }));
     const input = screen.getByLabelText('Filter');
     fireEvent.input(input, { target: { value: 'referenced-by:auth222' } });
     fireEvent.keyDown(input, { key: 'Enter' });

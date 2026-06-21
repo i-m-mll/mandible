@@ -242,9 +242,10 @@
 :root[data-theme='light'] .app-toast,
 :root[data-theme='light'] .timeline-main,
 :root[data-theme='light'] .timeline-axis__corner,
+:root[data-theme='light'] .timeline-axis__viewport,
 :root[data-theme='light'] .timeline-axis__track,
 :root[data-theme='light'] .timeline-gutter-column {
-  background: var(--surface-toolbar);
+  background: var(--bg-secondary);
 }
 
 :root[data-theme='light'] .timeline-main {
@@ -1083,7 +1084,6 @@ a {
 }
 
 .timeline-toggle-group,
-.timeline-zoom-group,
 .timeline-action-row {
   display: inline-flex;
   align-items: center;
@@ -1091,19 +1091,13 @@ a {
   flex-wrap: wrap;
 }
 
-.timeline-sidebar .timeline-toggle-group,
-.timeline-sidebar .timeline-zoom-group {
+.timeline-sidebar .timeline-toggle-group {
   align-items: stretch;
 }
 
 .timeline-sidebar .timeline-toggle-group {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.timeline-sidebar .timeline-zoom-group {
-  display: grid;
-  grid-template-columns: 32px 32px minmax(0, 1fr);
 }
 
 .timeline-chip,
@@ -1136,9 +1130,21 @@ a {
 .timeline-icon-button {
   width: 32px;
   padding: 0;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
   font-size: 16px;
   font-weight: 700;
+}
+
+.timeline-icon-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .timeline-chip--active {
@@ -1275,17 +1281,22 @@ a {
   min-width: 0;
   display: grid;
   grid-template-columns: var(--timeline-row-list-width, 300px) minmax(0, 1fr);
+  grid-template-rows: 42px max-content;
+  align-content: start;
   overflow-x: hidden;
   overflow-y: auto;
   background: rgba(8, 12, 17, 0.62);
 }
 
 .timeline-gutter-column {
+  grid-column: 1;
+  grid-row: 2;
   position: sticky;
   left: 0;
   z-index: 6;
   min-width: 0;
-  background: rgba(14, 20, 28, 0.98);
+  align-self: start;
+  background: var(--bg-secondary);
   border-right: 1px solid var(--neutral-alpha-08);
 }
 
@@ -1299,17 +1310,32 @@ a {
 }
 
 .timeline-axis__corner {
+  grid-column: 1;
+  grid-row: 1;
   position: sticky;
   top: 0;
-  z-index: 6;
+  left: 0;
+  z-index: 9;
   display: flex;
   align-items: center;
+  min-width: 0;
   height: 42px;
-  background: rgba(12, 17, 24, 0.98);
+  padding: 0 8px;
+  background: var(--bg-secondary);
   border-bottom: 1px solid var(--neutral-alpha-08);
+  border-right: 1px solid var(--neutral-alpha-08);
+}
+
+.timeline-corner-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .timeline-time-scroll {
+  grid-column: 2;
+  grid-row: 2;
   min-height: 0;
   min-width: 0;
   overflow-x: auto;
@@ -1320,14 +1346,29 @@ a {
   min-width: 100%;
 }
 
-.timeline-axis__track {
+.timeline-axis__viewport {
+  grid-column: 2;
+  grid-row: 1;
   position: sticky;
   top: 0;
-  z-index: 5;
+  z-index: 7;
+  min-width: 0;
+  min-height: 42px;
+  overflow: hidden;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--neutral-alpha-08);
+}
+
+.timeline-axis__surface {
+  min-height: 42px;
+  will-change: transform;
+}
+
+.timeline-axis__track {
+  position: relative;
   min-height: 42px;
   width: 100%;
-  background: rgba(12, 17, 24, 0.97);
-  border-bottom: 1px solid var(--neutral-alpha-08);
+  background: var(--bg-secondary);
 }
 
 .timeline-axis__track::before {
@@ -1341,21 +1382,31 @@ a {
 
 .timeline-axis__tick {
   position: absolute;
-  top: 7px;
+  top: 0;
+  height: 42px;
   transform: translateX(-50%);
   display: grid;
+  grid-template-rows: 1fr 1fr;
+  align-items: center;
   justify-items: center;
-  gap: 1px;
+  gap: 0;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 11px;
   white-space: nowrap;
 }
 
-.timeline-axis__tick em {
+.timeline-axis__tick-context {
+  align-self: end;
   color: var(--text-muted);
-  font-size: 9px;
-  font-style: normal;
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+.timeline-axis__tick-label {
+  align-self: start;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1.15;
 }
 
 .timeline-axis__tick--major {
@@ -1518,22 +1569,6 @@ a {
 .timeline-gutter-row__actions span {
   display: inline-flex;
   align-items: center;
-}
-
-.timeline-add-row-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: calc(100% - 16px);
-  min-height: 34px;
-  margin: 8px;
-  border: 1px dashed rgba(154, 164, 178, 0.35);
-  border-radius: 7px;
-  background: var(--neutral-alpha-035);
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
 }
 
 .timeline-filter-composer {
