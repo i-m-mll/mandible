@@ -1230,24 +1230,6 @@ function App(): JSX.Element {
           } as JSX.CSSProperties : undefined}
         >
           <aside className="app-rail" data-tauri-drag-region>
-            {viewSidebarAvailable ? (
-              <div className="app-rail__sidebar-controls">
-                <button
-                  type="button"
-                  className={`app-rail__item app-rail__sidebar-toggle${viewSidebarHidden ? '' : ' app-rail__sidebar-toggle--active'}`}
-                  onClick={viewSidebarHidden ? showViewSidebar : hideViewSidebar}
-                  aria-label={viewSidebarToggleLabel}
-                  aria-pressed={!viewSidebarHidden}
-                  title={viewSidebarToggleLabel}
-                >
-                  <span className="app-rail__icon">
-                    <ViewSidebarIcon open={!viewSidebarHidden} size={18} />
-                  </span>
-                  {railDisplayMode === 'both' && <span className="app-rail__label">Sidebar</span>}
-                  {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{viewSidebarToggleLabel}</span>}
-                </button>
-              </div>
-            ) : null}
               <nav className="app-rail__nav" aria-label="Main navigation">
                 <div className="app-rail__group">
                   {primaryNavItems.map(renderRailItem)}
@@ -1257,6 +1239,24 @@ function App(): JSX.Element {
                 </div>
               </nav>
               <nav className="app-rail__footer" aria-label="Settings">
+                {viewSidebarAvailable ? (
+                  <div className="app-rail__sidebar-controls">
+                    <button
+                      type="button"
+                      className={`app-rail__item app-rail__sidebar-toggle${viewSidebarHidden ? '' : ' app-rail__sidebar-toggle--active'}`}
+                      onClick={viewSidebarHidden ? showViewSidebar : hideViewSidebar}
+                      aria-label={viewSidebarToggleLabel}
+                      aria-pressed={!viewSidebarHidden}
+                      title={viewSidebarToggleLabel}
+                    >
+                      <span className="app-rail__icon">
+                        <ViewSidebarIcon open={!viewSidebarHidden} size={18} />
+                      </span>
+                      {railDisplayMode === 'both' && <span className="app-rail__label">Sidebar</span>}
+                      {railDisplayMode !== 'both' && <span className="app-rail__tooltip">{viewSidebarToggleLabel}</span>}
+                    </button>
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   className={`app-rail__item app-rail__theme-toggle app-rail__theme-toggle--${appThemeMode}`}

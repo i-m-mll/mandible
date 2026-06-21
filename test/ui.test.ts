@@ -241,6 +241,18 @@ function stubAppShellFetch(): void {
         }),
       );
     }
+    if (url === '/api/inbox/global') {
+      return Promise.resolve(
+        new Response(JSON.stringify({
+          continuations: [],
+          auth_results: [],
+          open_issues: [],
+          total: 0,
+        }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    }
     return Promise.resolve(
       new Response(JSON.stringify([]), {
         headers: { 'content-type': 'application/json' },
@@ -457,15 +469,41 @@ describe('app shell', () => {
       '#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden',
     );
 
-    render(h(App, {}));
+    const { container } = render(h(App, {}));
 
     expect(screen.getByLabelText('Main navigation')).toBeTruthy();
     expect(screen.queryByPlaceholderText('Filter issues...')).toBeNull();
     const reveal = screen.getByLabelText('Show view sidebar');
+    const themeToggle = screen.getByLabelText(/^App theme:/);
+    const footer = container.querySelector('.app-rail__footer');
+    const sidebarControls = container.querySelector('.app-rail__sidebar-controls');
+
+    expect(footer).toBeTruthy();
+    expect(sidebarControls?.parentElement).toBe(footer);
+    expect(container.querySelector('.app-rail > .app-rail__sidebar-controls')).toBeNull();
+    expect(Boolean(reveal.compareDocumentPosition(themeToggle) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+
     fireEvent.click(reveal);
 
     await waitFor(() => expect(screen.getByPlaceholderText('Filter issues...')).toBeTruthy());
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
+  });
+
+  it('keeps the bottom rail sidebar toggle functional for Inbox', async () => {
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/inbox?sidebar=hidden');
+
+    const { container } = render(h(App, {}));
+
+    const reveal = screen.getByLabelText('Show view sidebar');
+    expect(reveal.closest('.app-rail__footer')).toBeTruthy();
+    expect(container.querySelector('.app-rail > .app-rail__sidebar-controls')).toBeNull();
+
+    fireEvent.click(reveal);
+
+    await waitFor(() => expect(screen.getByLabelText('Hide view sidebar')).toBeTruthy());
+    expect(window.location.hash).toBe('#/inbox');
   });
 
   it('renders Graph bottom detail without a registration loop', async () => {
