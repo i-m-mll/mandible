@@ -1769,8 +1769,9 @@ describe('ArtifactsView', () => {
     const mockFetch = vi.fn((input: RequestInfo) => {
       const url = String(input);
       if (url.startsWith('/api/artifacts?')) {
-        listCalls += 1;
-        if (listCalls > 1) {
+        const params = new URLSearchParams(url.split('?')[1] ?? '');
+        if (params.get('limit') === '200') listCalls += 1;
+        if (params.get('limit') === '200' && listCalls > 1) {
           return new Promise<Response>(() => undefined);
         }
         return Promise.resolve(new Response(JSON.stringify({ artifacts: [firstArtifact, secondArtifact] }), {
@@ -1923,6 +1924,102 @@ describe('ArtifactsView', () => {
     await waitFor(() => expect(screen.getByText('Locators')).toBeTruthy());
     expect(screen.getAllByText(summaryArtifact.uri).length).toBeGreaterThan(1);
     expect(screen.getByText('Loading preview...')).toBeTruthy();
+  });
+
+  it('keeps artifact facet options available after selecting a facet value', async () => {
+    const makeArtifact = (
+      hashChar: string,
+      title: string,
+      role: string,
+      repo: string,
+      provider: string,
+      custody: string,
+      availability: string,
+    ) => ({
+      id: `artifact:sha256:${hashChar.repeat(64)}`,
+      algorithm: 'sha256',
+      content_hash: hashChar.repeat(64),
+      uri: `repo://${repo}@main/results/${title}`,
+      media_type: 'text/markdown',
+      role,
+      size_bytes: 42,
+      provider_id: provider,
+      manifest_id: null,
+      metadata: {
+        title,
+        filename: title,
+      },
+      pinned: false,
+      custody_mode: custody,
+      home_repo_id: repo,
+      repo_locator: { repo_id: repo, ref: 'main', path: `results/${title}` },
+      availability,
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      alias_schemes: ['repo'],
+    });
+    const inputArtifact = makeArtifact('6', 'input.md', 'input', 'repo-a', 'provider-a', 'linked', 'present');
+    const outputArtifact = makeArtifact('7', 'output.md', 'output', 'repo-b', 'provider-b', 'managed', 'remote_only');
+    const artifacts = [inputArtifact, outputArtifact];
+    const listUrls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        listUrls.push(url);
+        const params = new URLSearchParams(url.split('?')[1] ?? '');
+        let rows = artifacts;
+        const role = params.get('role');
+        const repo = params.get('repo');
+        if (role) rows = rows.filter((artifact) => artifact.role === role);
+        if (repo) rows = rows.filter((artifact) => artifact.home_repo_id === repo);
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: rows }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        return new Promise<Response>(() => undefined);
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      for (const artifact of artifacts) {
+        if (url.includes(encodeURIComponent(artifact.id))) {
+          return Promise.resolve(new Response(JSON.stringify({ artifact }), {
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /input\.md/ })).toBeTruthy());
+    fireEvent.click(screen.getByLabelText('Artifact filters'));
+
+    const roleSelect = screen.getByLabelText('Role') as HTMLSelectElement;
+    const repoSelect = screen.getByLabelText('Repo') as HTMLSelectElement;
+    await waitFor(() => {
+      expect(Array.from(roleSelect.options).map((option) => option.value)).toEqual(['', 'input', 'output']);
+    });
+    expect(Array.from(repoSelect.options).map((option) => option.value)).toEqual(['', 'repo-a', 'repo-b']);
+
+    changeSelect(roleSelect, 'output');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /output\.md/ })).toBeTruthy());
+    await waitFor(() => expect(screen.queryByRole('button', { name: /input\.md/ })).toBeNull());
+    expect(Array.from(roleSelect.options).map((option) => option.value)).toEqual(['', 'input', 'output']);
+    expect(Array.from(repoSelect.options).map((option) => option.value)).toEqual(['', 'repo-a', 'repo-b']);
+
+    changeSelect(roleSelect, 'input');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /input\.md/ })).toBeTruthy());
+    await waitFor(() => expect(screen.queryByRole('button', { name: /output\.md/ })).toBeNull());
+    expect(listUrls.length).toBeGreaterThan(1);
+    expect(listUrls.every((url) => url.includes('summary=true'))).toBe(true);
   });
 
   it('resolves direct artifact refs without selecting the first sidebar item', async () => {
