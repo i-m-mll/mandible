@@ -1284,16 +1284,28 @@ a {
   min-width: 0;
   display: grid;
   grid-template-columns: var(--timeline-row-list-width, 300px) minmax(0, 1fr);
-  grid-template-rows: 42px max-content;
+  grid-template-rows: 42px minmax(0, 1fr);
+  overflow-x: hidden;
+  overflow-y: hidden;
+  background: rgba(8, 12, 17, 0.62);
+}
+
+.timeline-body-scroll {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: var(--timeline-row-list-width, 300px) minmax(0, 1fr);
   align-content: start;
   overflow-x: hidden;
   overflow-y: auto;
-  background: rgba(8, 12, 17, 0.62);
+  -webkit-overflow-scrolling: touch;
 }
 
 .timeline-gutter-column {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 1;
   position: sticky;
   left: 0;
   z-index: 6;
@@ -1356,7 +1368,7 @@ a {
 
 .timeline-time-scroll {
   grid-column: 2;
-  grid-row: 2;
+  grid-row: 1;
   min-height: 0;
   min-width: 0;
   overflow-x: auto;

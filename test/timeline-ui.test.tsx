@@ -977,11 +977,73 @@ describe('TimelineView', () => {
 
     const axisViewport = document.querySelector('.timeline-axis__viewport') as HTMLElement;
     const axisSurface = document.querySelector('.timeline-axis__surface') as HTMLElement;
+    const bodyScroll = document.querySelector('.timeline-body-scroll') as HTMLElement;
+    const timeScroll = document.querySelector('.timeline-time-scroll') as HTMLElement;
     const tick = document.querySelector('.timeline-axis__tick') as HTMLElement;
     expect(axisViewport).toBeTruthy();
     expect(axisSurface).toBeTruthy();
+    expect(bodyScroll).toBeTruthy();
+    expect(timeScroll).toBeTruthy();
+    expect(corner.parentElement?.classList.contains('timeline-main')).toBe(true);
+    expect(axisViewport.parentElement?.classList.contains('timeline-main')).toBe(true);
+    expect(bodyScroll.contains(corner)).toBe(false);
+    expect(bodyScroll.contains(axisViewport)).toBe(false);
+    expect(bodyScroll.contains(timeScroll)).toBe(true);
     expect(tick.querySelector('.timeline-axis__tick-context')).toBeTruthy();
     expect(tick.querySelector('.timeline-axis__tick-label')).toBeTruthy();
+  });
+
+  it('keeps the pinned axis horizontally synchronized with the time canvas', async () => {
+    const base = projection();
+    stubTimelineFetch(projection({
+      events: [
+        base.events[0],
+        {
+          ...base.events[0],
+          id: 'event-later-for-scroll-sync',
+          timestamp: Date.UTC(2026, 0, 3, 12),
+          ordinal: 1,
+          display_headline: 'Later scroll sync anchor',
+          link_ids: [],
+        },
+      ],
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: {
+        project: 'mandible',
+        from: String(Date.UTC(2026, 0, 1, 12)),
+        to: String(Date.UTC(2026, 0, 2, 12)),
+      },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    const bodyScroll = document.querySelector('.timeline-body-scroll') as HTMLElement;
+    const axisSurface = document.querySelector('.timeline-axis__surface') as HTMLElement;
+    const timeScroll = screen.getByLabelText('Timeline time canvas') as HTMLElement;
+    expect(bodyScroll.contains(axisSurface)).toBe(false);
+    expect(bodyScroll.contains(timeScroll)).toBe(true);
+
+    await waitFor(() => {
+      expect(timeScroll.scrollLeft).toBeGreaterThan(0);
+      expect(axisSurface.style.transform).toBe(`translateX(-${timeScroll.scrollLeft}px)`);
+    });
+
+    const nextScrollLeft = timeScroll.scrollLeft + 120;
+    await act(async () => {
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 180);
+      });
+    });
+    timeScroll.scrollLeft = nextScrollLeft;
+    fireEvent.scroll(timeScroll);
+
+    await waitFor(() => {
+      const match = axisSurface.style.transform.match(/translateX\((-?[0-9.]+)px\)/);
+      expect(match).toBeTruthy();
+      expect(Math.abs(Number(match?.[1]) + nextScrollLeft)).toBeLessThan(0.01);
+    });
   });
 
   it('maps pinch-out wheel gestures to zoom in', async () => {
