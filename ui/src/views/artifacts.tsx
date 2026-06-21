@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import {
   getArtifact,
@@ -80,12 +80,23 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const initialRefRef = useRef(initialRef);
+  const listRequestIdRef = useRef(0);
 
   useEffect(() => {
-    setFilters((current) => ({ ...current, repo: initialRepo ?? current.repo }));
+    setFilters((current) => {
+      const repo = initialRepo ?? current.repo;
+      return current.repo === repo ? current : { ...current, repo };
+    });
   }, [initialRepo]);
 
+  useEffect(() => {
+    initialRefRef.current = initialRef;
+  }, [initialRef]);
+
   const loadArtifacts = useCallback(async () => {
+    const requestId = listRequestIdRef.current + 1;
+    listRequestIdRef.current = requestId;
     setLoading(true);
     setError(null);
     try {
@@ -100,16 +111,21 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
         location: filters.location || undefined,
         limit: 200,
       });
+      if (listRequestIdRef.current !== requestId) return;
       setArtifacts(next);
-      if (!selectedId && !initialRef && next[0]) {
-        setSelectedId(next[0].id);
-      }
+      setSelectedId((current) => (
+        current || initialRefRef.current || !next[0] ? current : next[0].id
+      ));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (listRequestIdRef.current === requestId) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setLoading(false);
+      if (listRequestIdRef.current === requestId) {
+        setLoading(false);
+      }
     }
-  }, [filters, selectedId, initialRef]);
+  }, [filters]);
 
   useEffect(() => {
     void loadArtifacts();
@@ -118,34 +134,55 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   useEffect(() => {
     if (!initialArtifactId) return;
     setSelectedId(initialArtifactId);
+    setSelectedArtifact((current) => (current?.id === initialArtifactId ? current : null));
     setResolution(null);
   }, [initialArtifactId]);
 
   useEffect(() => {
     if (!initialRef) return;
+    let cancelled = false;
     setDetailLoading(true);
     setError(null);
+    setResolution(null);
+    setSelectedArtifact(null);
     resolveArtifact(initialRef)
       .then((next) => {
+        if (cancelled) return;
         setResolution(next);
         setSelectedArtifact(next.artifact);
         setSelectedId(next.artifact?.id ?? null);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setDetailLoading(false));
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [initialRef]);
 
   useEffect(() => {
     if (!selectedId || initialRef) return;
+    let cancelled = false;
     setDetailLoading(true);
     setError(null);
     getArtifact(selectedId)
       .then((artifact) => {
+        if (cancelled) return;
         setSelectedArtifact(artifact);
         setResolution(null);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setDetailLoading(false));
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedId, initialRef]);
 
   useEffect(() => {
@@ -207,6 +244,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
 
   const selectArtifact = (artifact: ArtifactRecord) => {
     setSelectedId(artifact.id);
+    setSelectedArtifact(artifact);
     setResolution(null);
     const nextHash = artifactDetailHref(artifact.id);
     if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
@@ -271,7 +309,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
               </div>
             )}
             <div className="artifacts-sidebar__list">
-              {loading && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
+              {loading && artifacts.length === 0 && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
               {!loading && artifacts.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
               {artifacts.map((artifact) => (
                 <button
@@ -297,7 +335,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
       ) : null}
       <main className="artifacts-detail">
         {error && <div className="artifacts-error">{error}</div>}
-        {detailLoading && <div className="artifacts-empty">Loading artifact...</div>}
+        {detailLoading && !selectedArtifact && !resolution && <div className="artifacts-empty">Loading artifact...</div>}
         {!detailLoading && !selectedArtifact && !resolution && (
           <div className="artifacts-empty">Select an artifact or open an artifact URI.</div>
         )}
