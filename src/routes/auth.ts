@@ -36,7 +36,7 @@ export function registerAuthRoutes(
     res.status(200).json({ check: report });
   });
 
-  app.post("/api/auth/request", (req, res) => {
+  app.post("/api/auth/request", async (req, res) => {
     const payload = parseAuthRequestPayload(readBody<Record<string, unknown>>(req));
     if (!payload) {
       res.status(400).json({ error: "Invalid auth request payload." });
@@ -53,18 +53,29 @@ export function registerAuthRoutes(
         payload.base_branch = resolved.baseBranch;
         payload.head_branch = resolved.headBranch;
         payload.merge_head_sha = payload.merge_head_sha ?? resolved.headSha;
-        const metadata = computeAuthMergeReviewMetadata(
+        const needsCounts =
+          payload.files_changed === undefined ||
+          payload.additions === undefined ||
+          payload.deletions === undefined;
+        const needsDiffSummary = payload.diff_summary == null;
+        const needsCommitMessage = payload.commit_message == null;
+        const metadata = await computeAuthMergeReviewMetadata(
           resolved.targetRepoRoot,
           resolved.baseBranch,
-          resolved.headBranch
+          resolved.headBranch,
+          {
+            counts: needsCounts,
+            diffSummary: needsDiffSummary,
+            commitMessage: needsCommitMessage,
+          }
         );
         payload.files_changed = payload.files_changed ?? metadata.filesChanged;
         payload.additions = payload.additions ?? metadata.additions;
         payload.deletions = payload.deletions ?? metadata.deletions;
-        if (!payload.diff_summary) {
+        if (payload.diff_summary == null) {
           payload.diff_summary = metadata.diffSummary;
         }
-        if (!payload.commit_message) {
+        if (payload.commit_message == null) {
           payload.commit_message = metadata.commitMessage;
         }
       } catch (error) {
