@@ -1736,6 +1736,194 @@ describe('ArtifactsView', () => {
     expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
   });
 
+  it('keeps the sidebar list mounted when artifact selection changes', async () => {
+    const makeArtifact = (hashChar: string, title: string) => ({
+      id: `artifact:sha256:${hashChar.repeat(64)}`,
+      algorithm: 'sha256',
+      content_hash: hashChar.repeat(64),
+      uri: `artifact:${hashChar.repeat(64)}`,
+      media_type: 'text/markdown',
+      role: 'report',
+      size_bytes: 42,
+      provider_id: 'feedbax',
+      manifest_id: null,
+      metadata: {
+        title,
+        filename: title,
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: {},
+      availability: 'present',
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      aliases: [],
+      links: [],
+    });
+    const firstArtifact = makeArtifact('1', 'one.md');
+    const secondArtifact = makeArtifact('2', 'two.md');
+    let listCalls = 0;
+    const contentCalls: string[] = [];
+    const mockFetch = vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        listCalls += 1;
+        if (listCalls > 1) {
+          return new Promise<Response>(() => undefined);
+        }
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [firstArtifact, secondArtifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        contentCalls.push(url);
+        const artifact = url.includes(encodeURIComponent(secondArtifact.id)) ? secondArtifact : firstArtifact;
+        return Promise.resolve(new Response(JSON.stringify({
+          content: {
+            artifact_id: artifact.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(firstArtifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact: firstArtifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(secondArtifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact: secondArtifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
+    render(h(ArtifactsView, { initialArtifactId: firstArtifact.id }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('one.md'));
+    expect(listCalls).toBe(1);
+    expect(screen.queryByText('Loading artifacts...')).toBeNull();
+
+    const secondButton = screen.getByRole('button', { name: /two\.md/ });
+    fireEvent.click(secondButton);
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('two.md'));
+    await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(secondArtifact.id)))).toBe(true));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(listCalls).toBe(1);
+    expect(screen.queryByText('Loading artifacts...')).toBeNull();
+    expect(screen.getByRole('button', { name: /one\.md/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /two\.md/ })).toBeTruthy();
+  });
+
+  it('resolves direct artifact refs without selecting the first sidebar item', async () => {
+    const listArtifact = {
+      id: 'artifact:sha256:3333333333333333333333333333333333333333333333333333333333333333',
+      algorithm: 'sha256',
+      content_hash: '3333333333333333333333333333333333333333333333333333333333333333',
+      uri: 'artifact:3333333333333333333333333333333333333333333333333333333333333333',
+      media_type: 'text/markdown',
+      role: 'report',
+      size_bytes: 42,
+      provider_id: 'feedbax',
+      manifest_id: null,
+      metadata: {
+        title: 'sidebar-first.md',
+        filename: 'sidebar-first.md',
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: {},
+      availability: 'present',
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      aliases: [],
+      links: [],
+    };
+    const linkedArtifact = {
+      ...listArtifact,
+      id: 'artifact:sha256:4444444444444444444444444444444444444444444444444444444444444444',
+      content_hash: '4444444444444444444444444444444444444444444444444444444444444444',
+      uri: 'artifact:4444444444444444444444444444444444444444444444444444444444444444',
+      metadata: {
+        title: 'deep-link.md',
+        filename: 'deep-link.md',
+      },
+    };
+    const ref = 'repo://mandible@main/results/deep-link.md';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [listArtifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          resolution: {
+            status: 'resolved',
+            ref,
+            scheme: 'repo',
+            normalized_ref: ref,
+            artifact: linkedArtifact,
+            alias: null,
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/content')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          content: {
+            artifact_id: linkedArtifact.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(linkedArtifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact: linkedArtifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialRef: ref }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('deep-link.md'));
+    expect(screen.getByText('sidebar-first.md')).toBeTruthy();
+    expect(screen.getByText(ref)).toBeTruthy();
+  });
+
   it('renders bundle artifacts as member navigation before manifest JSON', async () => {
     const bundleId = 'artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
     const memberId = 'artifact:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
