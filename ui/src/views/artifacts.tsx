@@ -110,11 +110,15 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
         scheme: filters.scheme || undefined,
         location: filters.location || undefined,
         limit: 200,
+        summary: true,
       });
       if (listRequestIdRef.current !== requestId) return;
       setArtifacts(next);
       setSelectedId((current) => (
         current || initialRefRef.current || !next[0] ? current : next[0].id
+      ));
+      setSelectedArtifact((current) => (
+        current || initialRefRef.current || !next[0] ? current : next[0]
       ));
     } catch (err) {
       if (listRequestIdRef.current === requestId) {
@@ -342,7 +346,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
         {!detailLoading && resolution && !resolution.artifact && (
           <UnresolvedArtifact resolution={resolution} />
         )}
-        {!detailLoading && selectedArtifact && (
+        {selectedArtifact && (
           <ArtifactDetail
             artifact={selectedArtifact}
             resolution={resolution}
@@ -635,6 +639,9 @@ function buildFacetOptions(artifacts: ArtifactRecord[]): {
     if (artifact.role) roles.add(artifact.role);
     for (const alias of artifact.aliases ?? []) {
       schemes.add(alias.scheme);
+    }
+    for (const scheme of artifact.alias_schemes ?? []) {
+      schemes.add(scheme);
     }
     const uriScheme = artifact.uri.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
     if (uriScheme) schemes.add(uriScheme.toLowerCase());

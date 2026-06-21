@@ -1833,6 +1833,98 @@ describe('ArtifactsView', () => {
     expect(screen.getByRole('button', { name: /two\.md/ })).toBeTruthy();
   });
 
+  it('uses lightweight list records and renders selected identity before preview content resolves', async () => {
+    const summaryArtifact = {
+      id: 'artifact:sha256:5555555555555555555555555555555555555555555555555555555555555555',
+      algorithm: 'sha256',
+      content_hash: '5555555555555555555555555555555555555555555555555555555555555555',
+      uri: 'repo://mandible@main/results/fast-summary.md',
+      media_type: 'text/markdown',
+      role: 'report',
+      size_bytes: 42,
+      provider_id: 'feedbax',
+      manifest_id: null,
+      metadata: {
+        title: 'fast-summary.md',
+        filename: 'fast-summary.md',
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: { repo_id: 'mandible', ref: 'main', path: 'results/fast-summary.md' },
+      availability: 'present',
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      alias_schemes: ['artifact', 'repo'],
+    };
+    const fullArtifact = {
+      ...summaryArtifact,
+      metadata: {
+        ...summaryArtifact.metadata,
+        nested: { full: true },
+      },
+      reference: { owner_system: 'repo' },
+      aliases: [
+        {
+          id: 'alias-1',
+          artifact_id: summaryArtifact.id,
+          scheme: 'repo',
+          alias: summaryArtifact.uri,
+          normalized_ref: summaryArtifact.uri,
+          locator: {},
+          resolution_status: 'resolved',
+          source: 'artifact_registry',
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ],
+      links: [],
+    };
+    let listUrl = '';
+    let resolveDetail: (response: Response) => void = () => undefined;
+    const detailPromise = new Promise<Response>((resolve) => {
+      resolveDetail = resolve;
+    });
+    const contentPromise = new Promise<Response>(() => undefined);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        listUrl = url;
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [summaryArtifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        return contentPromise;
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(summaryArtifact.id))) {
+        return detailPromise;
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(listUrl).toContain('summary=true'));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('fast-summary.md'));
+    await waitFor(() => expect(screen.getByText('Loading preview...')).toBeTruthy());
+    expect(screen.getByText('repo://mandible@main/results/fast-summary.md')).toBeTruthy();
+
+    resolveDetail(new Response(JSON.stringify({ artifact: fullArtifact }), {
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Locators')).toBeTruthy());
+    expect(screen.getAllByText(summaryArtifact.uri).length).toBeGreaterThan(1);
+    expect(screen.getByText('Loading preview...')).toBeTruthy();
+  });
+
   it('resolves direct artifact refs without selecting the first sidebar item', async () => {
     const listArtifact = {
       id: 'artifact:sha256:3333333333333333333333333333333333333333333333333333333333333333',

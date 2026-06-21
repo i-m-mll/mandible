@@ -352,6 +352,7 @@ export type ArtifactRecord = {
   retention: Record<string, unknown>;
   reference: Record<string, unknown>;
   created_at: number;
+  alias_schemes?: string[];
   aliases?: ArtifactAliasRecord[];
   links?: ArtifactLinkRecord[];
 };
