@@ -652,8 +652,6 @@ a {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
 }
 
 .app-rail__sidebar-toggle {
@@ -679,6 +677,9 @@ a {
 
 .app-rail__footer {
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   padding-top: 12px;
   border-top: 1px solid var(--neutral-alpha-06);
 }
