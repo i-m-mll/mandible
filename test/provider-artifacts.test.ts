@@ -1377,25 +1377,92 @@ describe("provider/artifact substrate", () => {
     });
   });
 
-  it("does not serve registered link file URIs outside managed storage", () => {
+  it("serves present link-custody local file URI previews", () => {
     const outsidePath = path.join(tempDir, "outside.txt");
-    fs.writeFileSync(outsidePath, "not managed", "utf8");
+    fs.writeFileSync(outsidePath, "not managed\n", "utf8");
     const artifact = ingestArtifact(db, {
-      sha256: sha256("not managed"),
+      sha256: sha256("not managed\n"),
       media_type: "text/plain",
       uri: `file://${outsidePath}`,
       custody_mode: "link",
       availability: "present",
+      reference: { recoverability: "local_only" },
     }, 1000, tempDir);
 
     const content = getArtifactContent(db, artifact.id);
 
     expect(content).toMatchObject({
-      status: "unavailable",
-      kind: "unavailable",
-      download: { available: false },
-      reason: "local file URI is not managed by Mandible",
+      status: "available",
+      kind: "text",
+      source: { kind: "local_file", locator: `file://${outsidePath}` },
+      download: { available: true },
     });
+    expect(content?.preview?.text).toBe("not managed\n");
+  });
+
+  it("treats local-only hash mismatches as mutable drift without weakening managed integrity", () => {
+    const outsidePath = path.join(tempDir, "mutable.txt");
+    fs.writeFileSync(outsidePath, "original\n", "utf8");
+    const local = ingestArtifact(db, {
+      sha256: sha256("original\n"),
+      media_type: "text/plain",
+      uri: `file://${outsidePath}`,
+      custody_mode: "link",
+      availability: "present",
+      reference: { recoverability: "local_only" },
+      metadata: { recoverability: "local_only" },
+    }, 1000, tempDir);
+    const managed = ingestArtifact(db, {
+      content: "managed original\n",
+      media_type: "text/plain",
+      filename: "managed.txt",
+    }, 1000, tempDir);
+    const managedPath = new URL(managed.uri);
+
+    fs.writeFileSync(outsidePath, "changed\n", "utf8");
+    fs.writeFileSync(managedPath, "managed changed\n", "utf8");
+
+    const localContent = getArtifactContent(db, local.id);
+    const localCheck = checkArtifactMaterialization(db, local.id);
+    const managedContent = getArtifactContent(db, managed.id);
+
+    expect(localContent).toMatchObject({
+      status: "available",
+      kind: "text",
+      warnings: ["local_only artifact bytes differ from the registered sha256; previewing current local bytes"],
+    });
+    expect(localContent?.preview?.text).toBe("changed\n");
+    expect(localCheck).toMatchObject({
+      materializable: true,
+      hash_matches: false,
+      reasons: ["local_file_drift"],
+      warnings: ["local_only artifact bytes differ from the registered sha256"],
+    });
+    expect(managedContent).toMatchObject({
+      status: "unavailable",
+      reason: "artifact bytes do not match registered sha256",
+      download: { available: false, reason: "artifact bytes do not match registered sha256" },
+    });
+  });
+
+  it("serves HTML artifacts as sandboxable inline previews", () => {
+    const html = "<!doctype html><html><body><h1>Plot</h1><script>window.plotReady = true;</script></body></html>";
+    const artifact = ingestArtifact(db, {
+      content: html,
+      media_type: "text/html",
+      filename: "plot.html",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "html",
+      media_type: "text/html",
+      source: { kind: "managed_file" },
+      download: { available: true, filename: "plot.html" },
+    });
+    expect(content?.preview?.text).toContain("<script>window.plotReady = true;</script>");
   });
 
   it("serves repo locator previews only under a registered checkout", () => {

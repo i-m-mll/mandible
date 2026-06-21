@@ -1700,7 +1700,7 @@ export type ArtifactContentResult = {
   media_type: string;
   size_bytes: number;
   source: {
-    kind: 'managed_file' | 'repo_locator';
+    kind: 'managed_file' | 'repo_locator' | 'local_file';
     locator: string;
   } | null;
   preview: {
@@ -1716,6 +1716,7 @@ export type ArtifactContentResult = {
     reason?: string;
   };
   reason?: string;
+  warnings?: string[];
 };
 
 export type KnowledgeBackrefRecord = {
