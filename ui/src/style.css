@@ -365,8 +365,7 @@
 :root[data-theme='light'] .session-event__payload,
 :root[data-theme='light'] .code-preview,
 :root[data-theme='light'] .diff-preview,
-:root[data-theme='light'] pre,
-:root[data-theme='light'] code {
+:root[data-theme='light'] pre {
   background: var(--surface-code);
 }
 
@@ -5993,6 +5992,11 @@ tr:hover .work-actions__trigger {
   min-width: 0;
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+.artifact-preview > code,
+code.inbox-detail__meta-value {
+  background: transparent;
 }
 
 .artifact-preview {
