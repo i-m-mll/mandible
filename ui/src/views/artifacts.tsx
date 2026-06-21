@@ -80,8 +80,10 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [facetArtifacts, setFacetArtifacts] = useState<ArtifactRecord[]>([]);
   const initialRefRef = useRef(initialRef);
   const listRequestIdRef = useRef(0);
+  const facetRequestIdRef = useRef(0);
 
   useEffect(() => {
     setFilters((current) => {
@@ -134,6 +136,27 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   useEffect(() => {
     void loadArtifacts();
   }, [loadArtifacts]);
+
+  const loadFacetArtifacts = useCallback(async () => {
+    const requestId = facetRequestIdRef.current + 1;
+    facetRequestIdRef.current = requestId;
+    try {
+      const next = await getArtifacts({
+        q: filters.q || undefined,
+        location: filters.location || undefined,
+        limit: 500,
+        summary: true,
+      });
+      if (facetRequestIdRef.current !== requestId) return;
+      setFacetArtifacts(next);
+    } catch {
+      // Keep the last successful option corpus so transient reload failures do not collapse selects.
+    }
+  }, [filters.q, filters.location]);
+
+  useEffect(() => {
+    void loadFacetArtifacts();
+  }, [loadFacetArtifacts]);
 
   useEffect(() => {
     if (!initialArtifactId) return;
@@ -244,7 +267,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
     };
   }, [selectedArtifact?.id]);
 
-  const facetOptions = useMemo(() => buildFacetOptions(artifacts), [artifacts]);
+  const facetOptions = useMemo(() => buildFacetOptions(facetArtifacts), [facetArtifacts]);
 
   const selectArtifact = (artifact: ArtifactRecord) => {
     setSelectedId(artifact.id);
@@ -377,12 +400,15 @@ function FacetSelect({ label, value, options, onChange }: {
   options: string[];
   onChange: (value: string) => void;
 }): JSX.Element {
+  const renderedOptions = value && !options.includes(value)
+    ? [...options, value].sort()
+    : options;
   return (
     <label className="artifacts-advanced__field">
       <span>{label}</span>
       <select value={value} onChange={(e) => onChange(e.currentTarget.value)}>
         <option value="">Any</option>
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        {renderedOptions.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
     </label>
   );
