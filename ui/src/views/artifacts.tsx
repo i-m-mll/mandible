@@ -443,7 +443,7 @@ function ArtifactDetail({
           {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
             <div className="artifact-detail__list">
               {knowledgeBackrefs.map((backref) => (
-                <div key={backref.id} className="artifact-detail__list-item">
+                <div key={backref.id} className="artifact-detail__list-item artifact-detail__list-item--backref">
                   <code>{backref.external_ref || backref.external_id}</code>
                   <span>{backref.ref_type}</span>
                   <span>{backref.provider_id}</span>

@@ -5949,9 +5949,13 @@ tr:hover .work-actions__trigger {
 }
 
 .artifact-detail__list-item {
-  grid-template-columns: minmax(180px, 1.3fr) minmax(112px, 0.48fr) minmax(112px, 0.48fr) minmax(92px, 0.36fr);
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
   color: inherit;
   text-decoration: none;
+}
+
+.artifact-detail__list-item--backref {
+  grid-template-columns: minmax(0, 1fr) max-content max-content max-content;
 }
 
 .artifact-detail__kv span,
@@ -5959,11 +5963,15 @@ tr:hover .work-actions__trigger {
   color: var(--text-muted);
   font-size: 12px;
   min-width: 0;
+  max-width: 18ch;
   overflow-wrap: anywhere;
 }
 
 .artifact-detail__kv code,
 .artifact-detail__list-item code {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
   min-width: 0;
   overflow-wrap: anywhere;
   white-space: normal;
@@ -6005,7 +6013,7 @@ tr:hover .work-actions__trigger {
 }
 
 .artifact-detail__list--bundle .artifact-detail__list-item {
-  grid-template-columns: minmax(220px, 1.4fr) minmax(120px, 0.45fr) minmax(150px, 0.55fr);
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
 }
 
 .artifact-preview__details {
