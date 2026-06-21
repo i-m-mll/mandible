@@ -44,6 +44,18 @@ const EMPTY_FILTERS: ArtifactFilters = {
   location: '',
 };
 
+type BundleMemberPreview = {
+  artifactId: string;
+  role: string;
+  recoverability: string;
+  order: number;
+};
+
+type ArtifactPreview =
+  | { kind: 'json' | 'markdown' | 'text' | 'html' | 'empty'; value: string }
+  | { kind: 'binary'; value: string }
+  | { kind: 'bundle'; manifestText: string; name: string; members: BundleMemberPreview[] };
+
 export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, sidebarHidden = false }: ArtifactsViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 320,
@@ -389,6 +401,12 @@ function ArtifactDetail({
           ['Created', formatTime(artifact.created_at)],
         ]} />
       </section>
+      <PreviewSection
+        preview={preview}
+        content={content}
+        contentLoading={contentLoading}
+        contentError={contentError}
+      />
       {artifact.aliases && artifact.aliases.length > 0 && (
         <section className="artifact-detail__section">
           <h3>Locators</h3>
@@ -436,24 +454,85 @@ function ArtifactDetail({
           )}
         </section>
       )}
-      <section className="artifact-detail__section">
-        <h3>Preview</h3>
-        {contentLoading && <div className="artifacts-empty">Loading preview...</div>}
-        {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
-        {!contentLoading && !contentError && preview?.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
-        {!contentLoading && !contentError && preview?.kind === 'text' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
-        {!contentLoading && !contentError && preview?.kind === 'markdown' && <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />}
-        {!contentLoading && !contentError && preview?.kind === 'binary' && (
-          <div className="artifacts-empty">
-            Binary artifact available ({formatBytes(content?.download.size_bytes ?? 0) || content?.download.media_type}).
-          </div>
-        )}
-        {!contentLoading && !contentError && preview?.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
-        {!contentLoading && !contentError && content?.preview?.truncated && (
-          <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
-        )}
-      </section>
     </article>
+  );
+}
+
+function PreviewSection({
+  preview,
+  content,
+  contentLoading,
+  contentError,
+}: {
+  preview: ArtifactPreview | null;
+  content: ArtifactContentResult | null;
+  contentLoading: boolean;
+  contentError: string | null;
+}): JSX.Element {
+  return (
+    <section className="artifact-detail__section">
+      <h3>Preview</h3>
+      {contentLoading && <div className="artifacts-empty">Loading preview...</div>}
+      {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
+      {!contentLoading && !contentError && content?.warnings?.map((warning) => (
+        <div key={warning} className="artifact-detail__warning">{warning}</div>
+      ))}
+      {!contentLoading && !contentError && preview?.kind === 'bundle' && <BundlePreview preview={preview} />}
+      {!contentLoading && !contentError && preview?.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+      {!contentLoading && !contentError && preview?.kind === 'text' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+      {!contentLoading && !contentError && preview?.kind === 'html' && (
+        <iframe
+          className="artifact-preview artifact-preview--html"
+          sandbox="allow-scripts"
+          referrerPolicy="no-referrer"
+          srcDoc={preview.value}
+          title="Artifact HTML preview"
+        />
+      )}
+      {!contentLoading && !contentError && preview?.kind === 'markdown' && (
+        <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />
+      )}
+      {!contentLoading && !contentError && preview?.kind === 'binary' && (
+        <div className="artifacts-empty">
+          Binary artifact available ({formatBytes(content?.download.size_bytes ?? 0) || content?.download.media_type}).
+        </div>
+      )}
+      {!contentLoading && !contentError && preview?.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
+      {!contentLoading && !contentError && content?.preview?.truncated && (
+        <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
+      )}
+    </section>
+  );
+}
+
+function BundlePreview({ preview }: { preview: Extract<ArtifactPreview, { kind: 'bundle' }> }): JSX.Element {
+  return (
+    <div className="artifact-preview-bundle">
+      <div className="artifact-detail__hint">
+        {preview.name ? `${preview.name}: ` : ''}{preview.members.length} member{preview.members.length === 1 ? '' : 's'}
+      </div>
+      {preview.members.length > 0 ? (
+        <div className="artifact-detail__list artifact-detail__list--bundle">
+          {preview.members.map((member) => (
+            <a
+              key={`${member.artifactId}:${member.order}`}
+              className="artifact-detail__list-item artifact-detail__list-item--bundle"
+              href={artifactDetailHref(member.artifactId)}
+            >
+              <code>{member.artifactId}</code>
+              <span>{member.role || 'member'}</span>
+              <span>{member.recoverability || 'recoverability unknown'}</span>
+            </a>
+          ))}
+        </div>
+      ) : (
+        <div className="artifacts-empty">Bundle manifest has no members.</div>
+      )}
+      <details className="artifact-preview__details">
+        <summary>Manifest JSON</summary>
+        <pre className="artifact-preview"><code>{preview.manifestText}</code></pre>
+      </details>
+    </div>
   );
 }
 
@@ -557,9 +636,14 @@ function artifactTitleCandidate(value: string): string {
   return value && displayArtifactRef(value) === value ? value : '';
 }
 
-function artifactPreview(content: ArtifactContentResult): { kind: 'json' | 'markdown' | 'text' | 'binary' | 'empty'; value: string } {
+function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
   if (content.kind === 'json' && content.preview) {
+    const bundle = artifactBundlePreview(content.preview.text);
+    if (bundle) return bundle;
     return { kind: 'json', value: content.preview.text };
+  }
+  if (content.kind === 'html' && content.preview) {
+    return { kind: 'html', value: content.preview.text };
   }
   if (content.kind === 'markdown' && content.preview) {
     const parsed = marked.parse(content.preview.text, { async: false });
@@ -575,6 +659,41 @@ function artifactPreview(content: ArtifactContentResult): { kind: 'json' | 'mark
     return { kind: 'empty', value: content.reason };
   }
   return { kind: 'empty', value: 'No inline preview is available for this artifact.' };
+}
+
+function artifactBundlePreview(text: string): Extract<ArtifactPreview, { kind: 'bundle' }> | null {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isRecord(manifest) || manifest.schema_version !== 'mandible.artifact_bundle.v1') return null;
+  const members = Array.isArray(manifest.members) ? manifest.members : [];
+  return {
+    kind: 'bundle',
+    manifestText: text,
+    name: stringValue(manifest.name),
+    members: members.map((member, index): BundleMemberPreview | null => {
+      if (!isRecord(member)) return null;
+      const artifactId = stringValue(member.artifact_id);
+      if (!artifactId) return null;
+      return {
+        artifactId,
+        role: stringValue(member.role),
+        recoverability: stringValue(member.recoverability),
+        order: typeof member.order === 'number' ? member.order : index,
+      };
+    }).filter((member): member is BundleMemberPreview => Boolean(member)),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function formatBytes(value: number): string {

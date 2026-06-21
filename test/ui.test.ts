@@ -1624,6 +1624,162 @@ describe('ArtifactsView', () => {
     expect(screen.getByText('Knowledge Backrefs')).toBeTruthy();
     expect(screen.getByText('claim')).toBeTruthy();
     expect(screen.getByText('indexed')).toBeTruthy();
+    const sectionHeadings = Array.from(document.querySelectorAll('.artifact-detail__section h3')).map((node) => node.textContent);
+    expect(sectionHeadings.slice(0, 3)).toEqual(['Identity', 'Custody', 'Preview']);
+    expect(sectionHeadings.indexOf('Preview')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
+  });
+
+  it('renders HTML artifact previews in a sandboxed iframe', async () => {
+    const artifact = {
+      id: 'artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      algorithm: 'sha256',
+      content_hash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      uri: 'artifact:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      media_type: 'text/html',
+      role: 'figure',
+      size_bytes: 100,
+      provider_id: null,
+      manifest_id: null,
+      metadata: {
+        title: 'plot.html',
+        filename: 'plot.html',
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: {},
+      availability: 'present',
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      aliases: [],
+      links: [],
+    };
+    const html = '<!doctype html><html><body><h1>Plot</h1><script>window.plotReady = true;</script></body></html>';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [artifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          content: {
+            artifact_id: artifact.id,
+            status: 'available',
+            kind: 'html',
+            media_type: 'text/html',
+            size_bytes: html.length,
+            source: { kind: 'managed_file', locator: 'artifact-storage' },
+            preview: { encoding: 'utf-8', text: html, truncated: false },
+            download: { available: true, media_type: 'text/html', size_bytes: html.length, filename: 'plot.html' },
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(artifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialArtifactId: artifact.id }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-preview--html')).toBeTruthy());
+    const iframe = document.querySelector('.artifact-preview--html') as HTMLIFrameElement | null;
+    expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
+  });
+
+  it('renders bundle artifacts as member navigation before manifest JSON', async () => {
+    const bundleId = 'artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+    const memberId = 'artifact:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
+    const artifact = {
+      id: bundleId,
+      algorithm: 'sha256',
+      content_hash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      uri: 'artifact:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      media_type: 'application/vnd.mandible.artifact-bundle+json',
+      role: 'artifact_bundle',
+      size_bytes: 160,
+      provider_id: null,
+      manifest_id: null,
+      metadata: {
+        title: 'run packet',
+        bundle: true,
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: {},
+      availability: 'present',
+      retention: {},
+      reference: { identity_kind: 'artifact_bundle' },
+      created_at: Date.now(),
+      aliases: [],
+      links: [],
+    };
+    const manifest = JSON.stringify({
+      schema_version: 'mandible.artifact_bundle.v1',
+      name: 'run packet',
+      members: [
+        { artifact_id: memberId, role: 'figure', order: 0, recoverability: 'repo_commit' },
+      ],
+    }, null, 2);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [artifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          content: {
+            artifact_id: artifact.id,
+            status: 'available',
+            kind: 'json',
+            media_type: 'application/vnd.mandible.artifact-bundle+json',
+            size_bytes: manifest.length,
+            source: { kind: 'managed_file', locator: 'artifact-storage' },
+            preview: { encoding: 'utf-8', text: manifest, truncated: false },
+            download: {
+              available: true,
+              media_type: 'application/vnd.mandible.artifact-bundle+json',
+              size_bytes: manifest.length,
+              filename: 'run-packet.json',
+            },
+          },
+        }), { headers: { 'content-type': 'application/json' } }));
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(artifact.id))) {
+        return Promise.resolve(new Response(JSON.stringify({ artifact }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialArtifactId: artifact.id }));
+
+    await waitFor(() => expect(screen.getByText(memberId)).toBeTruthy());
+    const memberLink = screen.getByText(memberId).closest('a') as HTMLAnchorElement | null;
+    expect(memberLink?.getAttribute('href')).toBe(`#/artifacts?artifact=${encodeURIComponent(memberId)}`);
+    expect(screen.getByText('figure')).toBeTruthy();
+    expect(screen.getByText('repo_commit')).toBeTruthy();
+    expect(screen.getByText('Manifest JSON')).toBeTruthy();
   });
 });
 
