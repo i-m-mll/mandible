@@ -1909,6 +1909,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
               </div>
             </div>
           </div>
+          <div className="timeline-body-scroll" aria-label="Timeline rows and events">
           <div className="timeline-gutter-column" aria-label="Timeline rows">
             <div className="timeline-gutter-stack">
               {visibleRows.map((row) => {
@@ -2173,6 +2174,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
               })}
             </div>
             </div>
+          </div>
           </div>
           </div>
         </div>
