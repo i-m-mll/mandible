@@ -1142,6 +1142,53 @@ describe('issue deep links', () => {
     expect(screen.getByText('Full detail comment')).toBeTruthy();
   });
 
+  it('does not refetch selected issue detail when repo summaries refresh', async () => {
+    const fetchCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url.includes('stage=initial')) {
+        return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+          displayId: '4c26383',
+          title: 'Stable initial detail',
+          comments: ['Visible before poll'],
+          stage: 'initial',
+        })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Stable full detail',
+        comments: ['Visible before poll', 'Still mounted after poll'],
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+
+    const { rerender } = render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: 'Stable full detail' })).toBeTruthy();
+    const detailFetchCount = () => fetchCalls
+      .filter((url) => url.includes('/api/issues/mandible/4c26383/ledger-detail'))
+      .length;
+    expect(detailFetchCount()).toBe(2);
+
+    await act(async () => {
+      rerender(h(IssuesView, {
+        repos: repos.map((repo) => ({ ...repo, issues: [...repo.issues] })),
+        onRescan: async () => undefined,
+        initialRepoId: 'mandible',
+        initialIssueId: '4c26383',
+      }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Still mounted after poll')).toBeTruthy();
+    expect(detailFetchCount()).toBe(2);
+  });
+
   it('ignores stale ledger detail responses after selecting a different issue', async () => {
     const multiRepos: IssueRepoSummary[] = [{
       ...repos[0],

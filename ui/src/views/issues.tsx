@@ -578,8 +578,8 @@ export function IssuesView({
       setDetailLoadFailed(false);
       return;
     }
-    const repoId = selectedRepoId ? resolveRepoId(selectedRepoId) ?? selectedRepoId : null;
-    const issueId = repoId ? resolveIssueId(repoId, selectedIssueId) : selectedIssueId;
+    const repoId = selectedRepoId;
+    const issueId = selectedIssueId;
     const requestSeq = detailRequestSeqRef.current + 1;
     detailRequestSeqRef.current = requestSeq;
     setDetailLoading(true);
@@ -614,7 +614,7 @@ export function IssuesView({
     return () => {
       if (detailRequestSeqRef.current === requestSeq) detailRequestSeqRef.current += 1;
     };
-  }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
+  }, [selectedRepoId, selectedIssueId]);
 
   const selectIssue = useCallback((repoId: string, issueId: string) => {
     const repo = repos.find((candidate) => candidate.repo_id === repoId);
