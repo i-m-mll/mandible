@@ -1,4 +1,19 @@
-# Mandible — Project / Manuscript Organizing Surface: Problem & Options
+# Mandible — Project / Document Organizing Surface: Problem & Options
+
+> **Status: ORIGINAL REVIEWER BRIEF — partially superseded.** This is the
+> point-in-time analysis sent to external reviewers; it is preserved as the
+> historical input the GPT‑5.5‑pro and Codex reviews responded to. Where its
+> details differ from the settled design, **the settled design wins**: see
+> [`UMBRELLA-PLAN.md`](./UMBRELLA-PLAN.md), [`DOCUMENT-CUSTODY-DESIGN.md`](./DOCUMENT-CUSTODY-DESIGN.md),
+> and [`CODEX-REVIEW-NOTES.md`](./CODEX-REVIEW-NOTES.md). In particular, this brief
+> predates: the **P1′** three-table schema (`space_items` / `space_occurrences` /
+> `space_blocks`) that replaces the `space_members` sketch below; the term
+> **"document"** (this brief says "manuscript"); the **MDX-in-band** serialization
+> (no sidecar); **RESTRICT** on `spaces.project_id`; **Mandible-custody-until-
+> explicit-commit** (no auto-track); the **HumbleB v1 = ingest-as-source** scope;
+> and the framing that **Spaces is complementary to Timeline, not a replacement.**
+> Read this brief for problem framing only, not for the current schema or
+> decisions.
 
 > **Reviewer prompt:** This document is a self-contained brief for an external
 > high-intelligence reviewer with no prior Mandible context. The repo clone

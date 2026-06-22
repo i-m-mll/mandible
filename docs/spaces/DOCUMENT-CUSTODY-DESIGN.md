@@ -1,146 +1,167 @@
 # Mandible Spaces — Document Custody, Export & Track Lifecycle
 
 > Companion to [`UMBRELLA-PLAN.md`](./UMBRELLA-PLAN.md). This doc designs the
-> manuscript serialization, the export-and-track lifecycle, custody transitions,
-> auto-track defaults, drift handling, and the auth tiers for document commits.
+> document serialization (canonical **MDX**), the export lifecycle and **export
+> dialog**, custody transitions (**Mandible custody until an explicit user
+> commit**), drift handling, and the auth tiers for document commits.
 > Code references verified against `/tmp/mandible-ux-review.EixOws/mandible-repo/`
 > and `/tmp/mandible-ux-review.EixOws/humbleb-repo/`.
 
+> **Terminology (settled).** The artifact is a **document** (not "manuscript"),
+> the renderer is the **document renderer**, and a **document** is either
+> authored-in-Mandible prose **or** an existing tracked repo file registered as a
+> canonical document (`UMBRELLA-PLAN.md` §3.5, issue 2dc97b8).
+
 This is the **foundation** for the Phase 3 document renderer, Phase 4 custody, and
-Phase 6 HumbleB bridge: the serialization is designed **once** and consumed by all
-three.
+the Phase 6 HumbleB ingest-as-source work: the serialization is designed **once**
+and consumed by all three.
 
 ---
 
 ## 1. Design order: serialization first
 
 The single most load-bearing decision is the **canonical serialization** of a
-manuscript (the prose in `space_blocks` plus its references) — a human-editable
-**Markdown** file paired with a machine-canonical **sidecar manifest** (not a
-single "lossless markdown" file; see §1.1 correction). Everything downstream —
-export, repo commits, HumbleB ingestion, drift detection — depends on it. Design
+document (the prose in `space_blocks` plus its references). **Decided: the
+canonical format is MDX — markdown plus custom directives.** Everything downstream
+— export, repo commits, HumbleB ingestion, drift detection — depends on it. Design
 it first.
+
+> **This supersedes the previous HTML-comment-anchor + mandatory-sidecar design
+> (Codex review A3).** That earlier design moved block identity, ordering, and
+> reference metadata into a separate machine-canonical **sidecar manifest** because
+> HTML-comment anchors in plain markdown could not carry `parent_id`/`sort_key`
+> reliably and were stripped/reflowed by external formatters. **MDX resolves the
+> root cause:** with MDX / `remark-directive` syntax, **block identity,
+> references, embeds, and structure are first-class AST / directive nodes living
+> IN the document text** — not strippable HTML comments. The document text is
+> therefore itself the **single lossless source of truth**, and **no separate
+> sidecar is required.** (See §1.3 for what survives of A3 and what is overridden.)
 
 ### 1.1 Requirements
 
-A manuscript Space (`space_blocks` tree + referenced `space_items`) has exactly
-two coupled serialized artifacts:
+A document Space (`space_blocks` tree + referenced `space_items`) serializes to a
+**single canonical MDX file** such that:
 
-- a **human-canonical Markdown** file (editable in a repo), and
-- a **sidecar manifest** (machine-canonical block tree + reference metadata)
-
-such that:
-
-1. **Faithful round-trip via the sidecar, not the prose alone.** `import(export(x)) == x`
-   for the block tree (`parent_id` + `sort_key`), `block_type`, `item_id`
-   embeds, and the markdown body. The **sidecar manifest is the source of truth**
-   for the exact block tree, ordering, and reference metadata; the Markdown is the
-   editable human projection. (Pure positional canvas layout is **not** serialized
-   into the document — it stays in `space_occurrences`; the manuscript is the
-   document projection, not the canvas projection.)
-2. **Portable inline reference syntax.** References survive **outside** Mandible
-   and round-trip back in. Canonical IDs:
+1. **Faithful round-trip from the text alone.** `import(export(x)) == x` for the
+   block tree (`parent_id` + `sort_key`), `block_type`, `item_id` embeds, and the
+   prose body — all carried as MDX directive attributes / AST structure in the
+   file itself. There is **no second authority** to reconcile against: the MDX AST
+   *is* the block tree. (Pure positional canvas layout is **not** serialized into
+   the document — it stays in `space_occurrences`; the document is the document
+   projection, not the canvas projection.)
+2. **First-class inline reference / embed syntax via directives.** References and
+   embeds are directive nodes, not comments. Canonical IDs (carried in directive
+   attributes or markdown-link hrefs):
    - Artifacts: `artifact:sha256:<hash>` (matches the repo's existing artifact ID
      form; see `artifact-links.ts` bracketed `[artifact:...]` convention).
    - Issues: `mandible://<repo>/issue/<id>` (matches the HumbleB source identity
      default `mandible://{repo_id}/issue/{issue_id}`,
      `humbleb-repo/humbleb/sources/mandible.py:158`).
-   - Repo resources: `repo://<...>` (resolved via `artifact_aliases`).
-3. **Stable anchors for backrefs.** Each block carries a stable `block_id` so an
-   external system (HumbleB) can attach a backref to a specific block, and so the
-   serialization can be re-imported without losing block identity.
+   - Repo resources: `repo://<repo>@<ref>/<path>` (resolved via `artifact_aliases`).
+3. **Stable in-band block identity for backrefs.** Each block carries a stable
+   `block_id` **as a directive attribute** so an external system (HumbleB, later /
+   deferred) can attach a backref to a specific block, and so the file re-imports
+   without losing block identity. No sidecar is needed to hold this.
 
-> **Correction (Codex review A3): "lossless markdown" was overclaimed.** The
-> earlier draft claimed a single Markdown file losslessly round-trips
-> (`serialize(deserialize(x)) == x`). It does **not**: an HTML-comment anchor line
-> cannot carry `parent_id` and `sort_key` reliably (deep trees, re-ordering), and
-> the format has no defined behavior for duplicate, missing, or malformed anchors,
-> nor for external formatters (Prettier, `mdformat`, GitHub rendering) that strip
-> or reflow HTML comments. The structure-bearing authority therefore moves to a
-> **sidecar manifest**; the Markdown carries human-readable anchors that are a
-> *hint*, reconciled against the manifest on import.
+### 1.2 Canonical serialization shape (MDX, in-band)
 
-### 1.2 Recommended serialization shape
+Each block is an MDX node. Block-bearing structure carries its identity and tree
+position as directive attributes (e.g. a container/leaf directive with
+`id` / `parent` / `sort` / `type` / `item`); references and embeds are directive
+nodes (or markdown links with canonical hrefs). Illustrative (the exact directive
+grammar is an open question — see §9 and `UMBRELLA-PLAN.md` §14 Q2):
 
-**Recommendation: human-canonical Markdown + a deterministic sidecar manifest.**
-
-The Markdown carries a strict-grammar anchor per block; the **sidecar manifest**
-at a deterministic path carries the authoritative block tree, order, and
-reference metadata.
-
-- **Sidecar manifest path (default):** `.mandible/spaces/<space-id>.json`,
-  alongside the exported Markdown. (Finalizing this path/format is an open
-  question — see §9.) It serializes the full `space_blocks` tree (`id`,
-  `parent_id`, `sort_key`, `block_type`, `item_id`, body hash) and the resolved
-  reference set.
-- **Anchor grammar (strict).** Each block is preceded by exactly one anchor of the
-  form:
-
-  ```
-  <!-- mb:block id=<block_id> parent=<parent_id|root> sort=<sort_key> type=<block_type> item=<item_id|-> hash=<body_sha256> -->
-  ```
-
-  All keys are required and order-fixed; the importer rejects anchors that do not
-  match the grammar.
-
-```markdown
+```mdx
 ---
 mandible_space: <space_id>
-mandible_serialization: mandible.manuscript.v1
-mandible_manifest: .mandible/spaces/<space_id>.json
+mandible_serialization: mandible.document.v1
 mandible_exported_at: <iso8601>
 ---
 
-<!-- mb:block id=b1 parent=root sort=a0 type=heading item=- hash=… -->
+:::block{id=b1 parent=root sort=a0 type=heading}
 # Results
+:::
 
-<!-- mb:block id=b2 parent=root sort=a1 type=paragraph item=- hash=… -->
-The oracle run produced [artifact:sha256:abc123] which resolves the question
-raised in [mandible://mandible/issue/e70757d].
+:::block{id=b2 parent=root sort=a1 type=paragraph}
+The oracle run produced :ref[abc123]{href="artifact:sha256:abc123"} which
+resolves the question raised in :ref[e70757d]{href="mandible://mandible/issue/e70757d"}.
+:::
 
-<!-- mb:block id=b3 parent=root sort=a2 type=todo item=- hash=… -->
+:::block{id=b3 parent=root sort=a2 type=todo}
 > TODO: decide whether the ablation belongs here.
+:::
 ```
 
-**Import-conflict policy (explicit; no silent merges).**
+Because identity and structure are directive nodes in the AST, a standard MDX
+parser reconstructs the block tree directly; there is no anchor/manifest
+reconciliation step.
+
+**Trade-off (state it honestly).** MDX is **not plain-markdown-portable**:
+GitHub, pandoc, and bare CommonMark renderers display the directive syntax as
+**raw text**, not rendered structure. The portability bar is therefore "renders
+correctly in an MDX-aware renderer," not "renders as clean markdown everywhere."
+Mandible's UI must adopt an **MDX / `remark-directive` renderer** in place of the
+current bare `marked` path (`ui/src/sanitize.ts`, `ui/src/views/artifacts.tsx`,
+`UMBRELLA-PLAN.md` §8); the shared resource-ref parser must recognize refs whether
+they appear as directive nodes or markdown links. This renderer-adoption cost is
+the price of dropping the sidecar.
+
+**Optional minimal sidecar (only if forced).** Keep at most an **optional**
+minimal sidecar, and **only** if some metadatum genuinely cannot be expressed
+in-band. We currently **believe none is needed** — block identity, tree position,
+references, and embeds all fit in directive attributes. If a future requirement
+surfaces a truly non-in-band metadatum, add a minimal optional sidecar then; do
+not add one preemptively.
+
+### 1.3 What survives of Codex review A3, and what is overridden
+
+A3 is **PARTIALLY OVERRIDDEN**:
+
+- **Overridden:** the **mandatory sidecar manifest** as the structure authority,
+  the HTML-comment `<!-- mb:block … -->` anchor grammar, and the framing that "a
+  single editable file cannot losslessly round-trip." MDX directives make the
+  single file lossless, so the round-trip fragility that motivated the sidecar is
+  **resolved in-band**.
+- **Still relevant (kept):** the **import-conflict policy** for externally-edited
+  files. Even with MDX, a repo file can be hand-edited, reformatted, or
+  partially corrupted between exports, so re-import must still define explicit,
+  no-silent-merge behavior:
 
 | Situation | Behavior |
 |---|---|
-| **Duplicate block ID** (same `id` twice) | **conflict** — surfaced for resolution; never silently merged |
-| **Missing anchor** (block of text with no `mb:block`) | imported as a **new generated-ID block**, marked `imported`/external-origin |
-| **Changed `hash`** (anchor present, body differs) | **external-edit detected** — block content updated from the file, flagged for review |
-| **Deleted anchor** (manifest has a block the file dropped) | **delete only after confirm/preview** — never auto-dropped |
-| **Unknown reference** (ref not resolvable) | **unresolved placeholder** retained — never dropped |
-
-**Trade-off vs. alternatives:**
-
-- **vs. raw markdown with no anchors:** raw markdown is more human-portable but
-  loses block identity, breaking re-import and block-level backrefs.
-- **vs. anchors-only "lossless markdown" (the rejected earlier claim):** anchors
-  alone cannot carry the full tree/order safely and break under external
-  formatters. The manifest restores faithful reconstruction without giving up the
-  editable Markdown surface.
-- **vs. a JSON/AST file as the *only* canonical form:** a JSON AST round-trips
-  perfectly but is not human-editable in a repo, defeating "export to a repo path
-  and edit there." We keep Markdown human-canonical and the manifest
-  machine-canonical, and treat the HumbleB packet
-  (`mandible.space_snapshot.v1`, `UMBRELLA-PLAN.md` §10.1 contract (2)) as a
-  separately versioned derived export.
-- **mdx** is supported as an output flavor when embeds need component syntax, but
-  the default canonical flavor is plain CommonMark + anchors + manifest for
-  maximum portability.
+| **Duplicate block `id`** (same `id` twice) | **conflict** — surfaced for resolution; never silently merged |
+| **Block node with no `id`** (new prose added externally) | imported as a **new generated-ID block**, marked `imported`/external-origin |
+| **Body changed under a known `id`** | **external-edit detected** — block content updated from the file, flagged for review |
+| **Known `id` dropped from the file** | **delete only after confirm/preview** — never auto-dropped |
+| **Unknown / unresolvable reference** | **unresolved placeholder** retained — never dropped |
 
 The reference parser that reads this back is the **shared resource-ref parser**
-called out in `UMBRELLA-PLAN.md` §8 (the current `ui/src/artifact-links.ts` only
-linkifies bracketed `[artifact:...]` text and rewrites existing anchors whose
-`href` is artifact-like; it does **not** linkify bare `repo://` / `mandible://`
-text — it must be replaced by the shared parser for this).
+(`UMBRELLA-PLAN.md` §8), extended to recognize MDX directive ref/embed nodes (the
+current `ui/src/artifact-links.ts` only linkifies bracketed `[artifact:...]` text
+and existing artifact-like anchor hrefs, not bare `repo://`/`mandible://` text or
+directives — it must be replaced by the shared parser).
+
+### 1.4 Existing repo files as documents (link custody)
+
+A document is not only authored-in-Mandible prose. An **existing tracked repo
+file** (README, design spec, whitepaper) can be **registered as a canonical
+document** with **link custody** and a `repo://<repo>@<ref>/<path>` source ref
+(`UMBRELLA-PLAN.md` §3.5, issue 2dc97b8). For such a document:
+
+- the **canonical bytes are the repo file**; Mandible does not own or rewrite them
+  (link custody, like a registered repo artifact);
+- it starts with `space_exports.authority='repo'` (§2.2) — there was never a
+  Mandible-custody phase to commit out of;
+- if the file is already MDX/markdown it renders directly; if it is some other
+  document format, the renderer treats it as a referenced source, not an editable
+  `space_blocks` tree, unless/until the user explicitly pulls it into authored
+  Mandible custody.
 
 ---
 
 ## 2. Custody model — immutable snapshots reuse artifacts; mutable tracking needs `space_exports`
 
-Mandible already has an artifact custody model, and the manuscript lifecycle
+Mandible already has an artifact custody model, and the document lifecycle
 reuses it **for immutable snapshots only**. The relevant columns on `artifacts`
 (set up in the v66/v67 post-migration helper at `src/db.ts:2602-2661`):
 
@@ -156,11 +177,11 @@ reuses it **for immutable snapshots only**. The relevant columns on `artifacts`
 > these must follow that existing pattern, and new custody-related columns must go
 > in **new `MIGRATIONS` entries** (project rule), never ad-hoc.
 
-### 2.0 Why `artifacts` alone cannot track a manuscript (Codex review A1)
+### 2.0 Why `artifacts` alone cannot track a document (Codex review A1)
 
 The `artifacts` table is **content-addressed and immutable**: it carries
 `UNIQUE(algorithm, content_hash)` (`src/db.ts:915`). A row *is* a specific byte
-sequence. A **mutable, tracked manuscript** — a file that keeps changing on a
+sequence. A **mutable, tracked document** — a file that keeps changing on a
 docs branch while Mandible records authority and drift against it — cannot be a
 single artifact row, because every edit is a different content hash and would be
 a different artifact identity.
@@ -169,7 +190,7 @@ So the design splits cleanly:
 
 - **Immutable snapshots** (pre-export history, finished renditions) stay as
   ordinary content-addressed `artifacts` rows.
-- **The mutable tracking relationship** (which Space is tracked at which
+- **The mutable tracking relationship** (which Space document is tracked at which
   repo/branch/path, current authority, current drift status) lives in a new
   first-class **`space_exports`** table.
 
@@ -213,18 +234,25 @@ CREATE UNIQUE INDEX idx_space_exports_identity
   record.
 - **Backup:** `space_exports` **MUST** be added to `METADATA_BACKUP_TABLES`
   (`src/ledger/backup.ts:36-66`) like the other Spaces tables — losing tracking
-  state on backup/restore would orphan tracked manuscripts.
+  state on backup/restore would orphan tracked documents.
 
 This table is part of the **document-custody child** (not the core `spaces_core`
 migration); it ships with the export-and-track work that needs it. See
 `UMBRELLA-PLAN.md` §12.
 
-### 2.2 Custody states for a manuscript
+### 2.2 Custody states for a document
+
+**Default custody is Mandible custody.** A newly authored document has **no
+`space_exports` row at all** — it is Mandible-owned, and it stays that way until
+the user **explicitly** requests a commit via the export dialog (§3, §5). There is
+**no auto-track and no silent auto-commit.** A document that originates as an
+existing repo file (§1.4) is the exception: it starts at `authority='repo'`.
 
 | State | `space_exports.authority` | `space_exports.status` | Who owns the bytes |
 |---|---|---|---|
-| **Working (in Mandible)** | `mandible` (or no `space_exports` row yet) | n/a | Mandible owns the bytes (the `space_blocks` rows are the source of truth) |
-| **Tracked on docs branch** | `repo` | `clean` / `stale` / `repo_changed` / `worktree_dirty` / `conflict` | the docs-branch git history is source of truth; Mandible holds an immutable pre-export snapshot artifact |
+| **Working (in Mandible)** — the default | no `space_exports` row yet (Mandible custody) | n/a | Mandible owns the bytes (the `space_blocks` rows are the source of truth) |
+| **Tracked on docs branch** (after an explicit user commit) | `repo` | `clean` / `stale` / `repo_changed` / `worktree_dirty` / `conflict` | the docs-branch git history is source of truth; Mandible holds an immutable pre-export snapshot artifact |
+| **Registered existing repo file** (§1.4) | `repo` | drift states as above | the repo file is source of truth from the start (link custody); no Mandible-custody phase preceded it |
 
 **`recoverability` stays a JSON convention for generic artifacts (Codex review
 A6).** The pre-export snapshot artifact may carry `recoverability=repo_commit`
@@ -233,16 +261,25 @@ inside its `repo_locator_json` / `reference_json` like any other artifact, but t
 `artifacts` column.** Do not add a `recoverability` column to `artifacts` for this
 feature.
 
+> The `space_exports.path` is the **repo-relative export path chosen in the export
+> dialog** (§5): a global default, optionally overridden per repo, and confirmable
+> per-export. It is no longer a slug-only / `<space-id>.md` identity scheme.
+
 ---
 
-## 3. Export-and-track operation (deterministic)
+## 3. Export-and-track operation (deterministic, always explicit)
 
-`export-and-track` is a **deterministic** operation. Given a manuscript Space and
-a target docs-branch path:
+**Committing a document to a repo is always an explicit user action.** It is
+triggered by the user through the **export dialog** (§5) — never automatically,
+never on a background tick. Given the dialog's confirmed/overridden target path:
 
-1. **Serialize** the manuscript to canonical Markdown + sidecar manifest (§1).
-2. **Write** both to the managed **docs-branch worktree** (default path governed
-   by the auto-track setting, §5).
+`export-and-track` is then a **deterministic** operation. Given a document Space
+and the chosen docs-branch path:
+
+1. **Serialize** the document to canonical **MDX** (§1) — a single in-band file,
+   no separate sidecar.
+2. **Write** it to the managed **docs-branch worktree** at the path the user
+   confirmed in the export dialog (§5).
 3. **Commit** with the **agent key** via the **linked-commit path**
    (`commit-linked` / `agent-commit` auto-discovery) — **not** plain
    `git commit`. This is routine agent-key git (the same key used for
@@ -257,7 +294,8 @@ a target docs-branch path:
 
 **After export, the docs-branch git history is the source of truth.** Mandible
 holds the `space_exports` tracking row plus the immutable pre-export snapshot
-artifact.
+artifact. **Before** the user takes this explicit action, the document remains in
+Mandible custody (§2.2) — no repo file, no `space_exports` row.
 
 ### 3.2 Linked commits are mandatory on the docs branch (Codex review A2)
 
@@ -273,11 +311,11 @@ export-and-track op: the commit it produces is a linked commit, never a bare
 
 ### 3.3 Untracked export-of-copy (one-shot, "local file export")
 
-Also support a plain **export-of-copy**: a one-shot rendered-Markdown write to a
+Also support a plain **export-of-copy**: a one-shot rendered-MDX write to a
 path with **no ongoing custody** — no `space_exports` row, no authority/drift
 tracking, no recovery snapshot (Codex review A8). This is a **local file
-export**: "give me a Markdown copy" without committing Mandible to tracking it.
-The manuscript stays Mandible-owned (no `space_exports` row).
+export**: "give me a copy" without committing Mandible to tracking it.
+The document stays Mandible-owned (no `space_exports` row).
 
 - It creates **no** custody, drift, or recovery relationship unless the file is
   **separately** snapshotted/registered as an artifact.
@@ -289,17 +327,23 @@ The manuscript stays Mandible-owned (no `space_exports` row).
 
 ## 4. Auth tiers for document commits
 
-### 4.0 Decision: manuscripts live on a docs branch, not protected `main`
+### 4.0 Decision: documents live on a docs branch, not protected `main`
 
-**Decided (was an open question).** Manuscripts live on a dedicated, long-lived
-**docs branch** (e.g. `docs/<...>`), **NOT** protected `main`. Concretely:
+**Decided (was an open question).** When a document **is** committed (an explicit
+user action, §3), it lands on a dedicated, long-lived **docs branch** (e.g.
+`docs/<...>`), **NOT** protected `main`. Concretely:
 
 - **Routine document commits are agent-key signed** and **never hit the auth
-  queue.** Writing, saving, and exporting a manuscript is ordinary agent-key git
+  queue.** Saving and exporting a committed document is ordinary agent-key git
   on the docs branch — no YubiKey in the writing loop.
 - **The auth queue is invoked ONLY when the user explicitly asks to promote the
   docs branch into protected `main`.** Promotion is a deliberate, user-initiated
   protected-branch merge through `mandible auth request`.
+
+Note this is **downstream of the custody default**: a document is Mandible-owned
+until the user explicitly commits it (§2.2, §3); the docs branch is where commits
+land *once that explicit action happens*, not a place documents are written to
+automatically.
 
 This replaces the previously open "main vs. docs branch" question. It is mirrored
 in `UMBRELLA-PLAN.md` (§9, §13 phasing) and the contract-reflection child, and it
@@ -310,7 +354,7 @@ Signing" and "Mandible Auth Requests" sections.
 
 | Action | Key | Mechanism |
 |---|---|---|
-| **Routine doc commits** (save → commit a tracked manuscript on the docs branch) | **agent key** (`id_ed25519_agents`) | direct agent-key **linked** commit (§3.2); **no YubiKey, never the auth queue** |
+| **Routine doc commits** (save → commit a tracked document on the docs branch) | **agent key** (`id_ed25519_agents`) | direct agent-key **linked** commit (§3.2); **no YubiKey, never the auth queue** |
 | **Promote docs branch → protected `main`** (explicit user request only) | **YubiKey (user)** | the existing **auth queue** (`mandible auth request <branch> ...`) |
 
 **Edits accumulate in Mandible working state and commit on an explicit
@@ -348,38 +392,51 @@ the target branch at merge time.
 
 ---
 
-## 5. Auto-track default (per-repo/project setting)
+## 5. Export location and the export dialog (no auto-track)
 
-A per-repo/project setting controls automatic tracking. Auto-track is
-**opt-in per repo/project** (Codex review A7) — never on by default for a repo
-that has not asked for it.
+**Decided: there is no auto-track feature.** The earlier "auto-track all documents
+for a repo by default" idea is **removed and superseded.** Default custody is
+**Mandible custody until the user explicitly requests a commit** (§2.2, §3), and
+**committing to a repo is always an explicit user action.** There is no
+`docs_auto_track` setting, no silent auto-commit, and no background tracking of
+documents a user has not chosen to commit.
 
-- **`docs_auto_track`** (bool, **default off**): when on, documents associated with
-  the repo are auto-tracked at a **configurable docs path** (`docs_path`, e.g.
-  `docs/`) on the docs branch (§4).
-- When off, manuscripts stay Mandible-owned until an explicit export-and-track or
-  export-of-copy.
+### 5.1 Document location on export
 
-**Stable path identity (Codex review A7).** The export path is
-`<space-id>.md` with the human title carried in the Markdown **frontmatter**, so
-renaming a Space never moves its file. If a human-readable slug is used instead,
-define explicit **collision and rename behavior** (slug clashes, title edits) —
-otherwise prefer the stable `<space-id>.md`.
+When the user does choose to commit/export, the **target location** is resolved
+from three layers:
 
-**Auto-track safety rules (Codex review A7):**
+1. **Global default repo-relative path.** A single global default (e.g. a
+   `docs/` location) used when nothing more specific is set.
+2. **Per-repo overrides.** If the user has set a per-repo export path for a repo,
+   it overrides the global default for that repo.
+3. **The export dialog.** On every commit/export, an **export dialog** opens
+   letting the user **confirm the resolved default or pick a different
+   location**. The chosen path is what `export-and-track` writes to and what
+   `space_exports.path` records (§2.1, §3).
 
-- **Commit only on an explicit save/export action**, never on every keystroke or
-  background tick.
-- **Block auto-track when the docs worktree has dirty unrelated changes** — do not
+This **replaces any slug-only / `<space-id>.md` path-identity scheme.** Path is a
+user-chosen, user-confirmable export location, not a derived slug. (The concrete
+default path string, per-repo override storage, and any collision/rename policy
+are not finalized — §9 and `UMBRELLA-PLAN.md` §14 Q5.)
+
+### 5.2 Export safety rules (Codex review A7, retained)
+
+These apply to the explicit export-and-track action (they are no longer
+"auto-track" rules, but the safety constraints still hold):
+
+- **Commit only on the explicit user save/export action**, never on every
+  keystroke or background tick.
+- **Block the commit when the docs worktree has dirty unrelated changes** — do not
   commit on top of unrelated uncommitted work; surface it instead.
 - **One managed docs worktree per repo/branch**, with **serialized writes / a
   lock** so concurrent exports cannot race on the same checkout.
 
-Store the setting on the project/repo settings surface (the existing `settings`
-table is in the backup list at `src/ledger/backup.ts:38`; project-scoped settings
-can hang off `ledger_projects` or a settings row). The path identity must be
-deterministic so re-export is idempotent (re-exporting the same Space writes the
-same path).
+Store the global default and per-repo override on the project/repo settings
+surface (the existing `settings` table is in the backup list at
+`src/ledger/backup.ts:38`; project-scoped settings can hang off `ledger_projects`
+or a settings row). Re-exporting the **same** document to the **same** confirmed
+path is idempotent.
 
 ---
 
@@ -426,7 +483,7 @@ Record `last_seen_commit` / `last_seen_content_sha256` on each check.
 
 ---
 
-## 7. HumbleB tie-in (serialization is shared)
+## 7. HumbleB tie-in (v1 = ingest-as-source via the existing bridge)
 
 The canonical serialization (§1) is **also** what HumbleB ingests. The HumbleB
 side already defines a document-provenance contract `humbleb.document_provenance.v1`
@@ -434,46 +491,57 @@ with `DocumentRecord` / `DocumentVersion` / `DocumentChunk` / `SourceSpan` /
 `ClaimSourceLink` (`humbleb-repo/docs/mandible_document_bridge.md:11-29`), keyed on
 a stable logical identity like `mandible://<repo>/issue/<id>`.
 
-Two ingestion paths (from `UMBRELLA-PLAN.md` §10.1):
+**v1 scope (SHRUNK, decided — `UMBRELLA-PLAN.md` §10.1).** v1 is **only**:
+a Space document can be **snapshotted/exported as a SOURCE that HumbleB ingests**,
+reusing the **existing** Mandible→HumbleB document bridge
+(`humbleb-repo/humbleb/sources/mandible.py`,
+`humbleb-repo/docs/mandible_document_bridge.md`), so the document's extracted
+triples enter RAG queries. This is path (1) below and is the **whole** of v1.
+It is coordinated under the **existing HumbleB umbrella a8fbc09**, reframed as
+"make Space documents ingestable as HumbleB sources."
 
-1. **Finished snapshot → Mandible artifact → HumbleB ingests the artifact.** Fits
-   `knowledge_backrefs.source_type='artifact'` (`src/db.ts:1629`). The exported
-   manuscript markdown, registered as an artifact, becomes a `DocumentVersion`
-   with deterministic chunks/spans. **Recommended for finished snapshots.**
-2. **Live-while-writing → `mandible.space_snapshot.v1` packet** carrying stable
-   `space_id` / `block_id` / `item_id` + rendered source spans, so HumbleB
-   `SourceSpan`/`ClaimSourceLink` backrefs land on **editable blocks**. The block
-   anchors from §1.2 supply the stable span identity. **Recommended for
-   live-while-writing backrefs.**
+1. **(v1) Finished snapshot → Mandible artifact / repo export → HumbleB ingests it
+   via the existing bridge.** Fits `knowledge_backrefs.source_type='artifact'`
+   (`src/db.ts:1629`). The exported document, registered as an artifact, becomes a
+   `DocumentVersion` with deterministic chunks/spans, fed through the same adapter
+   that already ingests `# Mandible Issue …` packets, generalized to accept a
+   Space document. **This is the v1 ingest-as-source path.**
+2. **(DEFERRED — not v1) Live-while-writing → `mandible.space_snapshot.v1` packet**
+   carrying stable `space_id` / `block_id` / `item_id` + rendered source spans, so
+   HumbleB `SourceSpan`/`ClaimSourceLink` backrefs land on **editable blocks**, and
+   the **live paragraph-level backref display** in the document renderer. The
+   in-band block `id` directive attributes from §1.2 would supply the stable span
+   identity. **Explicitly deferred to a later item; do not build in v1.**
 
 ### 7.1 HumbleB identity contract (Codex review A9)
 
-- **Use `source_type='artifact'` now.** Finished snapshots ingest as artifacts;
-  this is the path that works against the schema today
+- **Use `source_type='artifact'` now (v1).** Finished snapshots ingest as
+  artifacts; this is the path that works against the schema today
   (`source_type IN ('artifact','document')`, `src/db.ts:1627-1648`). There is
   **no Mandible `documents` table**.
 - **Allow `source_type='document'` only once a logical document identity
   exists.** That means a stable `mandible://<repo>/space/<space_id>` identity plus
   version metadata. Do not adopt `'document'` before that identity is defined.
-- **Define `mandible.space_snapshot.v1` before implementing live-writing
-  backrefs.** Its keys are `space_id`, `block_id`, `item_id`, character offsets,
-  text hash, and source version — this is the span identity HumbleB
-  `SourceSpan`/`ClaimSourceLink` rows attach to. Path (2) is blocked on this
-  packet being specified.
-- **Parameterize the hard-coded companion issue.** The adapter hard-codes
+- **`mandible.space_snapshot.v1` is part of the DEFERRED item, not v1.** When the
+  deferred live-backref work is taken up, **define `mandible.space_snapshot.v1`
+  before implementing** it. Its keys are `space_id`, `block_id`, `item_id`,
+  character offsets, text hash, and source version — the span identity HumbleB
+  `SourceSpan`/`ClaimSourceLink` rows attach to. The deferred path (2) is blocked
+  on this packet being specified.
+- **Parameterize the hard-coded companion issue (v1).** The adapter hard-codes
   `mandible_companion_issue = "d25bac5"` (`humbleb-repo/humbleb/sources/
   mandible.py:285`, also `:368`) and tests assert it
   (`humbleb-repo/tests/test_mandible_adapter.py`). Fine as a fixture; it **must be
-  parameterized** before generalized space/manuscript integration.
+  parameterized** as part of generalizing the bridge to Space-document sources.
 - **HumbleB ingests the repo-authoritative snapshot, not stale Mandible working
   state.** After export, authority is `'repo'` (§6); the bytes HumbleB ingests are
   the exported/committed docs-branch rendition, never an unexported in-progress
   Mandible buffer.
 
 The HumbleB return channel is `knowledge_backrefs` (`provider_id='humbleb'`,
-`source_type IN ('artifact','document')`, `src/db.ts:1627-1648`). Option (1)
-avoids needing a `documents` table; option (2) uses space/block IDs as the
-document identity without a new table.
+`source_type IN ('artifact','document')`, `src/db.ts:1627-1648`). The v1 path (1)
+avoids needing a `documents` table; the deferred path (2) would use space/block IDs
+as the document identity without a new table.
 
 ---
 
@@ -483,14 +551,14 @@ The user's design is, on balance, **best-practice**. Specific assessments:
 
 | Decision | Assessment |
 |---|---|
-| Prose starts in Mandible custody (Mandible-owned) | **Sound.** Local-first authoring with a clean later handoff to repo custody. |
-| Canonical serialization designed first | **Sound and the right priority.** Everything downstream depends on it. **Refined** from "lossless markdown" to Markdown + sidecar manifest after Codex review A3 (anchors alone are not lossless). |
-| Portable inline reference syntax with canonical IDs | **Sound.** Survival outside Mandible + round-trip is the correct portability bar. Block identity now rests on the **sidecar manifest** with anchors as a reconciliation hint, not on anchors alone. |
-| Mutable tracking via a first-class `space_exports` table | **Strong.** The content-addressed `artifacts` table (`UNIQUE(algorithm, content_hash)`) cannot model a mutable tracked manuscript; `space_exports` carries authority/drift while artifacts hold immutable snapshots (Codex review A1). |
+| Prose starts in Mandible custody, committed only on explicit user action | **Sound.** Local-first authoring; **default custody = Mandible until the user explicitly commits** (the export dialog), no auto-track. A clean, explicit handoff to repo custody. |
+| Canonical serialization designed first | **Sound and the right priority.** Everything downstream depends on it. **Decided as MDX (markdown + directives), in-band, single source of truth — no mandatory sidecar** (supersedes the A3 sidecar-manifest design; the in-band directives resolve the round-trip fragility that motivated the sidecar). |
+| Portable inline reference syntax with canonical IDs | **Sound.** Block identity, references, embeds, and structure are **first-class MDX/directive AST nodes in the document text**, so the text is itself lossless. Trade-off: MDX is not plain-markdown-portable (GitHub/pandoc show directives as raw text) and the UI must adopt an MDX/`remark-directive` renderer. |
+| Mutable tracking via a first-class `space_exports` table | **Strong.** The content-addressed `artifacts` table (`UNIQUE(algorithm, content_hash)`) cannot model a mutable tracked document; `space_exports` carries authority/drift while artifacts hold immutable snapshots (Codex review A1). |
 | Agent-key linked commits on a docs branch; auth queue only on explicit promotion | **Sound and consistent** with the existing two-key model. Linked commits are mandatory so promotion verification passes (§3.2). |
-| Auto-track (opt-in) + untracked export-of-copy as separate paths | **Sound.** Two genuinely different intents (durable tracking vs. one-shot local file export) deserve distinct operations. |
+| Export dialog (global default + per-repo override) + untracked export-of-copy as separate paths | **Sound.** Committing is an explicit user action with a confirmable location; the one-shot local file export is a genuinely different intent and stays distinct. |
 | Drift sets `space_exports.status` by inspecting the live worktree, repo wins post-export | **Sound.** Drift must read live repo/worktree state, not pinned artifact materialization (Codex review A5). Keeping a pre-export immutable snapshot is the right safety net. |
-| Serialization shared with HumbleB | **Sound.** Designing the serialization once for both export and ingestion avoids divergence; `source_type='artifact'` now, `'document'` only once a logical identity exists (§7.1). |
+| Serialization shared with HumbleB (v1 = ingest-as-source via existing bridge) | **Sound.** Designing the serialization once for both export and ingestion avoids divergence; v1 ingests the exported document as a `source_type='artifact'` source through the existing bridge; `'document'` and live block-level backrefs are deferred (§7). |
 
 **Caveats / refinements:**
 
@@ -498,46 +566,67 @@ The user's design is, on balance, **best-practice**. Specific assessments:
   encoded in the snapshot artifact's `repo_locator_json` / `reference_json`; the
   document lifecycle status is `space_exports.status`, not a new `artifacts`
   column.
-- **Idempotent re-export depends on a deterministic path identity** (§5). Default
-  `<space-id>.md` is collision-free; slug-based paths need an explicit policy.
+- **Idempotent re-export depends on a deterministic chosen path** (§5). The path
+  is user-confirmed in the export dialog (global default + per-repo override);
+  re-exporting the same document to the same path is idempotent.
 - **Pre-export snapshot storage.** Decide where the immutable pre-export history
   lives: `space_blocks` body-revisions (if blocks have revision history like
   `ledger_body_revisions`) vs. a snapshot artifact in custody. A snapshot artifact
   is simpler and reuses content-addressing (and is the `pre_export_snapshot_artifact_id`
   target in `space_exports`).
-- **Anchor + manifest leakage.** The `<!-- mb:block … -->` anchors are invisible
-  in rendered markdown but visible in raw source, and the sidecar manifest is a
-  committed file; confirm both are acceptable in repo-committed manuscripts (the
-  anchors are standard; the manifest path is an open question, §9).
+- **MDX directive visibility / portability.** The MDX block/ref directives are
+  rendered by an MDX-aware renderer but appear as **raw text** in GitHub, pandoc,
+  and bare CommonMark renderers (§1.2 trade-off). Confirm this is acceptable for
+  repo-committed documents, and that the chosen directive grammar is the one the
+  shared ref parser and the UI renderer both implement (§9, `UMBRELLA-PLAN.md`
+  §14 Q2). No sidecar file leaks into the repo because there is no mandatory
+  sidecar.
 
 ---
 
 ## 9. Open questions
 
-> **Resolved (no longer open):** manuscript branch placement — manuscripts live on
-> a **docs branch** with agent-key linked commits; the auth queue is invoked only
-> on explicit user-requested promotion to `main` (§4.0). Drift status now lives on
-> `space_exports.status`, not a new `artifacts` column (§2.2), so the former
-> "`recoverability` column vs. JSON" question is settled: `recoverability` stays a
-> generic-artifact JSON convention.
+> **Resolved (no longer open):**
+> - **Document branch placement** — documents live on a **docs branch** with
+>   agent-key linked commits; the auth queue is invoked only on explicit
+>   user-requested promotion to `main` (§4.0).
+> - **`recoverability`** — drift status lives on `space_exports.status`, not a new
+>   `artifacts` column (§2.2); `recoverability` stays a generic-artifact JSON
+>   convention.
+> - **Serialization format / sidecar** — canonical format is **MDX (markdown +
+>   directives)**, fully in-band; the HTML-comment-anchor + mandatory-sidecar
+>   design is **superseded** (§1, supersedes Codex A3). No sidecar is required (at
+>   most an optional minimal one, currently believed unnecessary).
+> - **Auto-track default** — **removed.** Default custody is **Mandible custody
+>   until an explicit user commit** via the export dialog (§2.2, §3, §5); no
+>   auto-track, no silent auto-commit.
 
-1. **Sidecar manifest path/format finalization.** Default is
-   `.mandible/spaces/<space-id>.json` (§1.2), but the exact on-disk schema, whether
-   it lives beside the `.md` or in a `.mandible/` tree, and how it is committed
-   relative to the Markdown are not finalized.
-2. **Does `space_snapshot.v1` ship in v1?** The HumbleB live-while-writing packet
-   (`mandible.space_snapshot.v1`, §7.1) is required only for path (2)
-   block-level backrefs. Whether it is in the first manuscript release or deferred
-   to the HumbleB phase is open.
-3. Pre-export snapshot storage: block body-revisions vs. snapshot artifact? — §8
+1. **Embed-on-delete behavior — DEFERRED (implementer must surface to user).**
+   What happens to a document embed/reference block when the embedded item is
+   deleted is **not decided now**; the document-renderer implementing agent **MUST
+   prompt the user** for this decision when it becomes relevant (`UMBRELLA-PLAN.md`
+   §14 Q1, §12). `space_blocks.item_id` is `ON DELETE RESTRICT` + `item_snapshot_json`
+   so a placeholder is always *possible*; the chosen behavior is the open part.
+2. **MDX vs. markdown-with-directives, and which renderer library.** Confirm
+   whether the canonical format is full **MDX** (JSX/component syntax) or
+   **`remark-directive`** CommonMark directives only, fix the concrete directive
+   grammar (block identity / ref / embed nodes), and pick the UI renderer/lib that
+   replaces the bare `marked` path (`ui/src/sanitize.ts`,
+   `ui/src/views/artifacts.tsx`). Trade-off: directive richness vs. portability
+   (GitHub/pandoc render directives as raw text). — cross-ref `UMBRELLA-PLAN.md`
+   §14 Q2.
+3. **Exact global/per-repo default export path scheme.** The export dialog (§5)
+   resolves a **global default repo-relative path** plus optional **per-repo
+   overrides**; the concrete default path string, per-repo override storage, and
+   any collision/rename policy are not finalized. — cross-ref `UMBRELLA-PLAN.md`
+   §14 Q5.
+4. Pre-export snapshot storage: block body-revisions vs. snapshot artifact? — §8
    (leaning snapshot artifact, reuses content-addressing).
-4. **Stable path identity if slugs are used.** Default is `<space-id>.md` with the
-   title in frontmatter (§5); if a human-readable slug is preferred, the
-   collision/rename policy is open.
 5. Does the canonical serialization need an `external_ref` alias mechanism so
    external references resolve deterministically on re-import? Note
    `ledger_external_refs` (`src/db.ts:1222`) exists but is an **adapter-sync**
    table (git-bug import), not a general external-URI registry — do not repurpose
    it without verifying fit. — cross-ref `UMBRELLA-PLAN.md` §14.
-6. For HumbleB contract (2), the canonical `space_snapshot.v1` schema and whether
-   it versions independently of `mandible.manuscript.v1` (the text serialization).
+6. **(DEFERRED item)** For the deferred HumbleB live-backref path, the canonical
+   `mandible.space_snapshot.v1` schema and whether it versions independently of
+   `mandible.document.v1` (the text serialization). Not a v1 question (§7).

@@ -13,7 +13,7 @@
 
 Mandible needs an authored surface for organizing heterogeneous references —
 issues, comments, artifacts, external docs — into logical project groups, leading
-ultimately to writing a **manuscript** that pulls results together. Two existing
+ultimately to writing a **document** that pulls results together. Two existing
 views fail this role: the auto-generated **Graph** (a derived node-link diagram of
 everything, "a big mess") and the **Timeline** (events on a global time axis).
 Full analysis, including the candidate-feature decomposition and the
@@ -22,10 +22,26 @@ Mandible-authors / HumbleB-associates boundary, is in
 review of that analysis is in `/Users/mll/Downloads/gpt-5.5-pro/review.md`; we
 adopt most of it, especially its schema critique.
 
-The central thesis (kept): **canvas, document/manuscript, board/kanban, and
+The central thesis (kept): **canvas, document, board/kanban, and
 collection/list are four renderers over one missing primitive — an authored
 `Space`** — not four independent features. Building them separately would
 duplicate membership, persistence, and ref-rendering logic three or four times.
+
+> **Spaces is COMPLEMENTARY to Timeline, not a replacement.** Spaces does **not**
+> replace or subsume the Timeline view. **Timeline** is the chronological / global
+> time-axis view; **Spaces** is the user/agent-structured organizing surface. They
+> are different products serving different intents and both remain primary. Any
+> cross-links to Timeline (issues 41d22a6, dc87eb3) are **shared-component /
+> related**, never "supersedes." The shared filter component (§6.1) is **reuse**,
+> not absorption: extracting a predicate/filter component for both surfaces does
+> not fold one into the other.
+
+> **Terminology.** Throughout these docs the renderer is the **document
+> renderer** and the exportable artifact is a **document** (formerly "manuscript",
+> which was too narrow). "Space" is the container; "document" is one of its
+> renderers / exportable artifact types. A **document** includes both
+> authored-in-Mandible prose **and** existing tracked repo files (READMEs, design
+> specs, whitepapers) registered as canonical documents — see §3.5 and §10.
 
 ---
 
@@ -35,7 +51,7 @@ These are decided. Encode them; do not reopen.
 
 1. **Build the authored `Space` primitive (P1) in the reviewer's refined form
    P1′.** P1′ separates the *referenced thing* (`space_items`) from its
-   *visual/document occurrence* (`space_occurrences`), and gives manuscript prose
+   *visual/document occurrence* (`space_occurrences`), and gives document prose
    first-class blocks (`space_blocks`). This avoids the highest-risk schema trap:
    one `space_members` row trying to be membership, canvas node, document block,
    annotation, and board card at once.
@@ -83,7 +99,7 @@ the `statements` array, mirroring `artifact_links` (migration 67) and
 > canvas node, document block, annotation, and board card into one row would be
 > "nullable soup" — most columns NULL most of the time, with no integrity story.
 > Separating `space_items` (canonical membership) from `space_occurrences` (visual
-> appearance) and `space_blocks` (manuscript structure) is the correct shape.
+> appearance) and `space_blocks` (document structure) is the correct shape.
 > **However** `space_blocks` is largely independent and ships with the document
 > renderer, not necessarily in the initial core migration (see §3.8 migration
 > strategy).
@@ -114,7 +130,7 @@ the `statements` array, mirroring `artifact_links` (migration 67) and
 ```sql
 CREATE TABLE spaces (
   id               TEXT PRIMARY KEY,
-  project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE CASCADE,
+  project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
   title            TEXT NOT NULL,
   default_renderer TEXT NOT NULL DEFAULT 'canvas'
                      CHECK(default_renderer IN ('canvas','document','board','collection')),
@@ -129,14 +145,24 @@ CREATE INDEX idx_spaces_project_updated
   ON spaces(project_id, updated_at DESC);
 ```
 
-**`ON DELETE` choice — CASCADE (decided).** Core ledger entities use
+**`ON DELETE` choice — RESTRICT (decided).** Core ledger entities use
 `ON DELETE RESTRICT` on `project_id` (e.g. `ledger_issues` at `src/db.ts:1031`,
 `ledger_project_checkouts` at `src/db.ts:1016`), while some lighter project-local
-tables use CASCADE (e.g. `src/db.ts:1061`). Spaces are **project-local authored
-surfaces**, not archival ledger entities; deleting a project should delete its
-Spaces. We choose **CASCADE**. State it explicitly in the migration comment so a
-future reader does not assume RESTRICT by analogy with issues. (If Spaces later
-become archival or cross-project, revisit — see Open Questions.)
+tables use CASCADE (e.g. `src/db.ts:1061`). **Spaces are precious authored
+state** — they carry the documents, canvas layouts, and organizing structure a
+user/agent built by hand. Deleting a project must **not** silently delete its
+Spaces. We choose **RESTRICT** on `spaces.project_id`, matching `ledger_issues`:
+a project with Spaces cannot be deleted until those Spaces are explicitly removed
+first, surfacing the data rather than discarding it. State it explicitly in the
+migration comment so a future reader does not assume CASCADE by analogy with
+lighter project-local tables.
+
+Note the asymmetry, and that it is intentional: **only the outer `project →
+spaces` FK is RESTRICT.** The space-internal cascade — `spaces → space_items /
+space_occurrences / space_edges / space_blocks` — stays `ON DELETE CASCADE`
+(deleting a Space deliberately tears down its own contents). RESTRICT protects
+the Space as a whole from incidental project deletion; CASCADE inside the Space
+is the intended cleanup when a user explicitly deletes that Space.
 
 ### 3.2 `space_items` — canonical "this thing is referenced in this space"
 
@@ -220,7 +246,7 @@ CREATE TABLE space_occurrences (
   z_index       INTEGER,
   sort_key      TEXT,            -- ordering within a list/board column/section
   section_id    TEXT,           -- board column / document section grouping
-  note          TEXT,           -- per-occurrence annotation (NOT the manuscript prose)
+  note          TEXT,           -- per-occurrence annotation (NOT the document prose)
   metadata_json TEXT NOT NULL DEFAULT '{}'
                   CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
   created_at    INTEGER NOT NULL,
@@ -314,11 +340,25 @@ queries in both directions (review B8).
 > Edges connect **occurrences**. If a future need arises to edge *items* directly,
 > add it as a separate authored relation rather than overloading `space_edges`.
 
-### 3.5 `space_blocks` — first-class manuscript prose/structure
+### 3.5 `space_blocks` — first-class document prose/structure
 
 Prose lives **here**, NOT only in `space_occurrences.note`. This is the foundation
-of the manuscript renderer (Phase 3) and what gets serialized/exported (Phase 4)
-and ingested by HumbleB (Phase 6).
+of the document renderer (Phase 3) and what gets serialized/exported (Phase 4)
+and ingested by HumbleB as a source (Phase 6).
+
+> **A document has two sources (decided; ties to issue 2dc97b8 "Project-canonical
+> artifacts and documents").** The document concept unifies (a) **authored-in-
+> Mandible** prose (a `space_blocks` tree, managed Mandible custody → an optional
+> *explicit* commit, custody doc §2/§3) and (b) an **existing tracked repo file**
+> (README, design spec, whitepaper) **registered as a canonical document** with
+> **link custody** and a `repo://<repo>@<ref>/<path>` source ref. Both are
+> "documents" in the document renderer. For source (b), the canonical bytes live
+> in the repo file (link custody, like a registered repo artifact), referenced via
+> a `repo://…` source on the document; Mandible does not own or rewrite those bytes
+> unless the user explicitly pulls the file into authored Mandible custody. The
+> document renderer (§12) must support registering an existing repo file as a
+> document; the custody model (custody doc §2) must support a document whose
+> `authority` is the repo file from the start.
 
 ```sql
 CREATE TABLE space_blocks (
@@ -407,7 +447,7 @@ All Spaces tables — `spaces`, `space_items`, `space_occurrences`, `space_edges
 `space_blocks`, and the later `space_exports` (custody child, §12) — **MUST** be
 added to `METADATA_BACKUP_TABLES` in `src/ledger/backup.ts:36-66` (the list that
 already includes `artifact_links` and `knowledge_backrefs`). Omitting them would
-be a **durability bug**: Spaces are the manuscript/project-organizing surface and
+be a **durability bug**: Spaces are the document/project-organizing surface and
 their bytes are canonical, agent-authored state. This is an explicit acceptance
 criterion on each schema-bearing child, with a test asserting the tables are
 present in the backup list.
@@ -517,7 +557,7 @@ space and link it to `<node>`"). Candidate subcommands:
 | `mandible space unlink <space> --edge <id>` | remove an edge |
 | `mandible space promote-edge <space> --edge <id> --type <link_type>` | promote a space_edge to a ledger relationship (explicit, §4) |
 | `mandible space seed-from-filter <space> --spec <json|->` | seed membership from a shared filter predicate (§6) |
-| `mandible space block add\|edit\|rm <space> ...` | manuscript block CRUD (Phase 3+) |
+| `mandible space block add\|edit\|rm <space> ...` | document block CRUD (Phase 3+) |
 
 These commands are **interface-contract additions** and imply updates to the
 Mandible Interface Contract and possibly the global `~/.claude/CLAUDE.md` — see
@@ -628,7 +668,7 @@ reconciliation inputs, not reasons to reset user-visible state.
 
 - **Empty-state seeding.** A blank infinite canvas is intimidating. The
   empty-state offers the "Create Space from …" menu (§6.2) plus "blank canvas",
-  "blank manuscript", "blank board".
+  "blank document", "blank board".
 - **One shared resource-ref parser (review A4).** The current linkifier
   `ui/src/artifact-links.ts` only linkifies **bracketed** `[artifact:...]` text
   (the `CUSTOM_URI_PATTERN` at `ui/src/artifact-links.ts:1`) and rewrites existing
@@ -649,10 +689,20 @@ reconciliation inputs, not reasons to reset user-visible state.
   placeholder + "resolve/fix" affordance) for refs that do not currently resolve —
   never silently dropped. This shared parser is **foundational for the document
   renderer**; it has its own Children row (§12).
+
+  > **MDX directive interplay.** With the canonical document format being **MDX
+  > (markdown + custom directives)** (custody doc §1), references / embeds /
+  > structure can also be **first-class directive nodes** in the document AST
+  > (e.g. `:ref[…]{href=…}` / `::embed{…}`), not only markdown links. The shared
+  > ref parser must therefore recognize canonical refs whether they arrive as
+  > markdown links **or** as directive nodes. Because the document renderer adopts
+  > an **MDX / `remark-directive` renderer** (replacing the bare `marked` path in
+  > `ui/src/sanitize.ts` / `ui/src/views/artifacts.tsx`, custody doc §1), the
+  > parser and that renderer must agree on the directive grammar.
 - **HTML artifact transclusion safety.** Artifact HTML preview currently uses an
   iframe with `sandbox="allow-scripts"` (`ui/src/views/artifacts.tsx`). Do **NOT**
-  inline arbitrary script-enabled HTML artifacts into a manuscript surface. For
-  in-manuscript embeds, render sanitized HTML (DOMPurify via `ui/src/sanitize.ts`)
+  inline arbitrary script-enabled HTML artifacts into a document surface. For
+  in-document embeds, render sanitized HTML (DOMPurify via `ui/src/sanitize.ts`)
   or a static rendition; reserve script-enabled iframes for the standalone
   artifact preview only.
 
@@ -667,13 +717,17 @@ mandate this must be reflected against the global conventions:
 - **New `mandible space ...` commands** are additions to the **Mandible Interface
   Contract** (the contract currently enumerates `mandible issue/auth/work-unit/...`
   but no `space` surface). The contract version and command list need updating.
-- **Document-commit auth flow (decided).** Manuscripts live on a dedicated
-  **docs branch**, not protected `main`. Routine document commits are **agent-key
-  signed linked commits** (`commit-linked` / `agent-commit`) and **never hit the
-  auth queue**; the auth queue is invoked **only** when the user explicitly asks to
-  promote the docs branch into protected `main`. Promotion goes through a
-  **short-lived `promote/docs/<ts>` proxy branch** so auth-merge cleanup does not
-  destroy the long-lived docs worktree (see `DOCUMENT-CUSTODY-DESIGN.md` §4.2,
+- **Document-commit auth flow (decided).** The **default custody of an authored
+  document is Mandible custody** — a document stays Mandible-owned until the user
+  **explicitly** requests a commit (the export dialog, custody doc §3/§5). There is
+  **no silent auto-commit and no "auto-track all documents for a repo" default.**
+  When the user *does* commit, the document lands on a dedicated **docs branch**,
+  not protected `main`. Routine document commits are **agent-key signed linked
+  commits** (`commit-linked` / `agent-commit`) and **never hit the auth queue**;
+  the auth queue is invoked **only** when the user explicitly asks to promote the
+  docs branch into protected `main`. Promotion goes through a **short-lived
+  `promote/docs/<ts>` proxy branch** so auth-merge cleanup does not destroy the
+  long-lived docs worktree (see `DOCUMENT-CUSTODY-DESIGN.md` §4.2,
   `cli/auth-merge.sh:410` `cleanup_merged_worktrees`). This interacts with the
   global "Branches, Worktrees, and Signing" and "Mandible Auth Requests" sections.
 - **Auth/merge infra change → protected-branch checkout.** The promotion-flow
@@ -687,52 +741,77 @@ mandate this must be reflected against the global conventions:
   child** (§12). Do not edit the compiled `~/.claude/CLAUDE.md` directly; it is a
   dotfiles change requiring its own feature worktree + auth.
 
+> **Architectural-reflection note (RESTRICT on `spaces.project_id`).** Because
+> deleting a project is now **blocked** while it has Spaces (RESTRICT, §3.1), any
+> project-deletion affordance in the dashboard or CLI must surface the blocking
+> Spaces and require the user to delete them first — it cannot quietly cascade. No
+> global `~/.claude/CLAUDE.md` change is implied (Spaces are local view/authoring
+> state, not ledger coordination state), but the UI/CLI delete paths inherit a new
+> failure mode to handle gracefully.
+
 ---
 
 ## 10. Document custody, export, and HumbleB
 
 These are large enough to warrant their own treatment:
 
-- **Document custody / export-and-track / auto-track / auth tiers** →
-  [`DOCUMENT-CUSTODY-DESIGN.md`](./DOCUMENT-CUSTODY-DESIGN.md).
-- **HumbleB bridge** is summarized below; the manuscript serialization it consumes
+- **Document custody / export dialog / custody-until-explicit-commit / auth tiers**
+  → [`DOCUMENT-CUSTODY-DESIGN.md`](./DOCUMENT-CUSTODY-DESIGN.md).
+- **HumbleB ingestion** is summarized below; the document serialization it consumes
   is designed once in the custody doc.
 
-### 10.1 HumbleB bridge (later phase) — boundary and contract
+### 10.1 HumbleB ingestion (v1 SHRUNK) — boundary and contract
 
-**Boundary:** Mandible **authors**; HumbleB **associates/retrieves/extracts**. The
-existing bridge (`humbleb-repo/humbleb/sources/mandible.py`,
-`humbleb-repo/docs/mandible_document_bridge.md`) is **issue-packet oriented** and
-not yet space/manuscript-aware: the adapter builds a `# Mandible Issue …` document
-with sections for body, comments, artifact/document refs, sessions, and provenance,
-and defaults source identity to `mandible://<repo>/issue/<issue_id>`.
-`knowledge_backrefs` (`src/db.ts:1627-1648`, `provider_id` default `'humbleb'`,
-`source_type IN ('artifact','document')`, `ref_type IN ('document','entity',
-'claim')`) is the **return channel**, but there is **no Mandible `documents`
-table** in the schema.
+**Boundary:** Mandible **authors**; HumbleB **associates/retrieves/extracts**.
 
-**Three candidate contracts, with trade-offs:**
+**v1 scope (shrunk, decided).** v1 is **only**: a Space document can be
+**snapshotted/exported as a SOURCE that HumbleB ingests**, reusing the **existing
+Mandible→HumbleB document bridge** (`humbleb-repo/humbleb/sources/mandible.py`,
+`humbleb-repo/docs/mandible_document_bridge.md`), so the document's extracted
+triples enter RAG queries. **Nothing more.** Concretely: render the document to a
+Mandible artifact (or repo-authoritative export), and feed it through the existing
+bridge as a source document — the same mechanism that already ingests
+`# Mandible Issue …` packets, generalized to accept a Space document. This is
+contract **(1)** below and is the whole of the v1 HumbleB story.
 
-| Option | What | Trade-off | Use when |
+**Coordination.** This work is reframed as **"make Space documents ingestable as
+HumbleB sources,"** coordinated under the **existing HumbleB umbrella a8fbc09**
+(the Spaces `spaces-humbleb` child is a child of, or linked under, a8fbc09 — it is
+not a standalone new HumbleB apparatus). It depends on the Spaces document
+renderer + serialization (custody doc §1) and the existing bridge; it does **not**
+require any new `space_snapshot` packet.
+
+**DEFERRED (explicitly out of v1).** The live, **paragraph-level backref display**
+in the document renderer and the `mandible.space_snapshot.v1` apparatus (stable
+`space_id`/`block_id`/`item_id` spans for block-level backrefs) are **deferred to a
+later, explicitly-deferred item** — not v1. Do not build them as part of the v1
+ingest-as-source work.
+
+**Candidate contracts (for context; only (1) is in v1):**
+
+| Option | What | Trade-off | Status |
 |---|---|---|---|
-| **(1)** Render manuscript as a **Mandible artifact**, HumbleB ingests it | Fits `knowledge_backrefs.source_type='artifact'` directly; simplest; clean content-addressed boundary | Backrefs land on the whole artifact snapshot, not on editable blocks | **Recommended for finished snapshots** |
-| **(2)** Define `mandible.space_snapshot.v1` export packet | Stable `space_id`/`block_id`/`item_id` + rendered source spans; backrefs land on editable blocks | More work; requires extending HumbleB's adapter beyond issue packets | **Recommended for live-while-writing backrefs** |
+| **(1)** Render document as a **Mandible artifact / repo export**, HumbleB ingests it via the existing bridge | Fits `knowledge_backrefs.source_type='artifact'` directly; simplest; reuses the shipped bridge; clean content-addressed boundary | Backrefs land on the whole source snapshot, not on editable blocks | **v1 — the entire v1 HumbleB scope** |
+| **(2)** Define `mandible.space_snapshot.v1` export packet + live paragraph-level backref display | Stable `space_id`/`block_id`/`item_id` + rendered source spans; backrefs land on editable blocks | More work; requires extending HumbleB's adapter beyond issue packets | **DEFERRED — later item, NOT v1** |
 | **(3)** `source_type='document'` | Requires defining a real Mandible **document identity** (no `documents` table today) | Highest schema cost; revisits whether Spaces or a documents table is the canonical doc | Only if a first-class document entity is independently warranted |
 
-**Recommendation: (1) for finished snapshots, (2) for live-while-writing
-backrefs.** Avoid (3) unless a document identity is needed for other reasons.
-Per `DOCUMENT-CUSTODY-DESIGN.md` §7.1: use `source_type='artifact'` now;
-`source_type='document'` only once a logical `mandible://<repo>/space/<space_id>`
-identity + version metadata exists; define `mandible.space_snapshot.v1` (space/
-block/item IDs, char offsets, text hash, source version) **before** implementing
-the live-writing backrefs; and HumbleB ingests the **repo-authoritative** exported
-snapshot, never stale Mandible working state.
+`knowledge_backrefs` (`src/db.ts:1627-1648`, `provider_id` default `'humbleb'`,
+`source_type IN ('artifact','document')`, `ref_type IN ('document','entity',
+'claim')`) remains the **return channel**; there is **no Mandible `documents`
+table** in the schema. Per `DOCUMENT-CUSTODY-DESIGN.md` §7.1: use
+`source_type='artifact'` now; `source_type='document'` only once a logical
+`mandible://<repo>/space/<space_id>` identity + version metadata exists; and
+HumbleB ingests the **repo-authoritative** exported snapshot, never stale Mandible
+working state. The deferred item (2) is what would later define
+`mandible.space_snapshot.v1` (space/block/item IDs, char offsets, text hash,
+source version) **before** implementing block-level backrefs.
 
-**Smell to fix:** the HumbleB adapter hard-codes
+**Smell to fix (still relevant for v1).** The HumbleB adapter hard-codes
 `mandible_companion_issue = d25bac5` and tests assert that fixture value
 (`humbleb-repo/humbleb/sources/mandible.py`, `humbleb-repo/tests/
 test_mandible_adapter.py`). Fine as a fixture; it **must not survive** generalized
-space/manuscript integration. The HumbleB child must parameterize this.
+space/document ingestion. The `spaces-humbleb` child parameterizes this as part of
+generalizing the bridge to Space-document sources.
 
 ---
 
@@ -748,7 +827,9 @@ overrides, with conflicts flagged.
   "Schema changes I would make".)
 - **No uniqueness on occurrences** — same item may appear many times.
 - **Composite-FK fix** so an edge cannot span two spaces.
-- **Explicit `ON DELETE`** on `spaces.project_id` (we choose CASCADE).
+- **Explicit `ON DELETE`** on `spaces.project_id` (the review left this open; we
+  choose **RESTRICT**, not CASCADE — Spaces are precious authored state and must
+  not be silently deleted with a project; §3.1).
 - **All new tables in metadata backup** (durability).
 - **Indexes** the review lists.
 - **`json_valid` CHECK** on `metadata_json`.
@@ -805,7 +886,7 @@ overrides, with conflicts flagged.
   Captured in `DOCUMENT-CUSTODY-DESIGN.md` §6.
 - **Codex review A1 verified:** `artifacts` carries `UNIQUE(algorithm,
   content_hash)` (`src/db.ts:915`) — content-addressed and immutable, so it cannot
-  represent a mutable tracked manuscript; hence the new `space_exports` table
+  represent a mutable tracked document; hence the new `space_exports` table
   (`DOCUMENT-CUSTODY-DESIGN.md` §2.1).
 - **Codex review B5 verified:** `ledger_external_refs` exists
   (`src/db.ts:1222-1240`) but is an adapter-sync table, **not** a general
@@ -822,25 +903,36 @@ scoped to independent worktree lanes where possible. Branches are
 
 | issue | scope | branch | state |
 |---|---|---|---|
-| TBD | **Core schema + backup (v83 `spaces_core`)**: one migration after 82 for `spaces`, `space_items`, `space_occurrences`, `space_edges` (DDL per §3 — inline `UNIQUE`s, composite FKs, object `json_valid` CHECKs, `ref_id`/`external_ref` CHECKs, renderer CHECK excluding `'document'`, CASCADE project FK); add all four to `METADATA_BACKUP_TABLES`; migration + backup tests (invalid JSON, dup items, cross-space refs, item-delete cascade). **AC: backup test asserts the four tables present; uniqueness is inline, not external-index-only.** `space_blocks` is NOT here (ships with document renderer). | `feature/spaces-schema` | TBD |
+| TBD | **Core schema + backup (v83 `spaces_core`)**: one migration after 82 for `spaces`, `space_items`, `space_occurrences`, `space_edges` (DDL per §3 — inline `UNIQUE`s, composite FKs, object `json_valid` CHECKs, `ref_id`/`external_ref` CHECKs, renderer CHECK excluding `'document'`, **RESTRICT** `project_id` FK with space-internal CASCADE); add all four to `METADATA_BACKUP_TABLES`; migration + backup tests (invalid JSON, dup items, cross-space refs, item-delete cascade). **AC: backup test asserts the four tables present; uniqueness is inline, not external-index-only.** `space_blocks` is NOT here (ships with document renderer). | `feature/spaces-schema` | TBD |
 | TBD | **Backend API + CLI + transport + SSE**: `/api/spaces*` CRUD incl. batch occurrences + `seed`; `mandible space ...` CLI (§5.2); add `/api/spaces*` and `/api/knowledge-backrefs` to file-RPC allowlist (`src/file-rpc-transport.ts`); broadcast `space:*` SSE; route tests. *Depends on core schema.* | `feature/spaces-backend` | TBD |
-| TBD | **Shared resource-ref parser** (foundational): one parser for `artifact:sha256:<hex>`, compact `artifact:<hex>`, `repo://<repo>@<ref>/<path>`, `mandible://<repo>/issue/<id>`, and markdown links with those hrefs; unresolved-ref UI; used by renderer, import, issue detail, and artifacts UI; replaces `ui/src/artifact-links.ts`'s bracket-only linkifier (review A4, §8). *Depends on backend; foundational for document renderer.* | `feature/spaces-ref-parser` | TBD |
+| TBD | **Shared resource-ref parser** (foundational): one parser for `artifact:sha256:<hex>`, compact `artifact:<hex>`, `repo://<repo>@<ref>/<path>`, `mandible://<repo>/issue/<id>`, markdown links with those hrefs, **and MDX/directive ref/embed nodes** (must agree on the directive grammar with the MDX renderer, §8); unresolved-ref UI; used by renderer, import, issue detail, and artifacts UI; replaces `ui/src/artifact-links.ts`'s bracket-only linkifier (review A4, §8). *Depends on backend; foundational for document renderer.* | `feature/spaces-ref-parser` | TBD |
 | TBD | **Shared filter extraction + seeding + Add-to-Space**: extract shared issue-predicate/filter component from Timeline (`TimelineFilterRowSpec`); wire seed endpoint; "Add to Space" in IssueDetail, artifacts, graph node detail. *Depends on backend.* | `feature/spaces-seed-filter` | TBD |
 | TBD | **Collection/list renderer**: membership list/tree with previews, add/remove, missing-ref handling, project scoping; first usable renderer. *Depends on backend.* | `feature/spaces-collection` | TBD |
 | TBD | **SpaceCanvas**: new React Flow editable canvas; persisted occurrences; shelf for unplaced; auto-arrange seed via `layoutGraph()`; freely-labeled `space_edges`; optimistic drag + autosave. *Depends on backend; parallel to collection.* | `feature/spaces-canvas` | TBD |
-| TBD | **Document renderer + serialization (+ `space_blocks` migration)**: ship the `space_blocks` table in its own migration (composite FKs, `item_snapshot_json`, added to `METADATA_BACKUP_TABLES`, block-delete-preserves-placeholder test); `space_blocks` editor; embedded previews; Markdown + **sidecar manifest** serialization (custody doc §1, not "lossless markdown"); uses the shared ref parser. *Depends on backend + ref parser; informs custody.* | `feature/spaces-document` | TBD |
-| TBD | **Document custody / export-and-track (+ `space_exports` migration)**: ship `space_exports` (custody doc §2.1, added to `METADATA_BACKUP_TABLES`); export-and-track op writing Markdown + manifest via **agent-key linked commits** on a docs branch; authority/drift via live worktree comparison (review A5); auto-track opt-in safety (review A7); untracked export-of-copy = local file export (review A8). *Depends on document renderer + serialization.* | `feature/spaces-doc-custody` | TBD |
+| TBD | **Document renderer + serialization (+ `space_blocks` migration)**: ship the `space_blocks` table in its own migration (composite FKs, `item_snapshot_json`, added to `METADATA_BACKUP_TABLES`, block-delete-preserves-placeholder test); `space_blocks` editor; embedded previews; **canonical MDX (markdown + custom directives) serialization — in-band, single source of truth, NO mandatory sidecar** (custody doc §1); **adopt an MDX / `remark-directive` renderer** in the UI (replacing the bare `marked` path in `ui/src/sanitize.ts` / `ui/src/views/artifacts.tsx`); support **registering an existing tracked repo file as a document** (link custody, `repo://<repo>@<ref>/<path>` source — ties to issue 2dc97b8, §3.5); uses the shared ref parser. **Embed-on-delete behavior is DEFERRED: the implementing agent MUST prompt the user for that decision when it becomes relevant — do not pick it unilaterally** (see §14). *Depends on backend + ref parser; informs custody.* | `feature/spaces-document` | TBD |
+| TBD | **Document custody / export (+ `space_exports` migration)**: ship `space_exports` (custody doc §2.1, added to `METADATA_BACKUP_TABLES`); **default custody = Mandible custody until the user explicitly requests a commit** — committing to a repo is always an explicit user action (the **export dialog**), **no auto-track / no silent auto-commit**; export dialog confirms or overrides the document location, driven by a **global default repo-relative path + per-repo overrides** (custody doc §5); export-and-track op writing canonical MDX via **agent-key linked commits** on a docs branch; authority/drift via live worktree comparison (review A5); untracked export-of-copy = local file export (review A8); a registered existing repo file (§3.5) is already repo-authoritative. *Depends on document renderer + serialization.* | `feature/spaces-doc-custody` | TBD |
 | TBD | **Auth-merge / docs-branch promotion flow** (**modifies auth/merge infra**): short-lived `promote/docs/<ts>` proxy branch cut from docs-branch head submitted to the auth queue, leaving the long-lived docs worktree intact; optional `--preserve-head-branch` to skip `cleanup_merged_worktrees` (`cli/auth-merge.sh:410`); verify routine docs commits carry `Mandible-Issue:` trailers so promotion verification passes. **Per global rule, submit its own auth request from the protected-`main` checkout.** *Depends on doc-custody.* | `feature/spaces-docs-promotion` | TBD |
-| TBD | **Board/kanban renderer**: real renderer (columns/swimlanes/WIP via `section_id`/`sort_key`), NOT a probe. *Depends on backend.* | `feature/spaces-board` | TBD |
-| TBD | **HumbleB bridge + backrefs**: contract (1)+(2) per §10.1 / custody §7.1; `source_type='artifact'` now, `'document'` only with a `mandible://<repo>/space/<id>` identity; `space_snapshot.v1` packet; surface `knowledge_backrefs`; parameterize hard-coded `d25bac5`; ingest repo-authoritative snapshot. *Depends on document custody + serialization.* | `feature/spaces-humbleb` | TBD |
+| TBD | **Board/kanban renderer**: real renderer (columns/swimlanes/WIP via `section_id`/`sort_key`), NOT a probe. **Default column dimension = reuse issue `worker_status`; PLUS allow custom columns defined either by a filter predicate (reusing the shared filter, §6.1) or by manually adding specific issues to a column.** *Depends on backend.* | `feature/spaces-board` | TBD |
+| TBD | **Make Space documents ingestable as HumbleB sources** (v1 SHRUNK, under umbrella **a8fbc09**): render/export a Space document as a SOURCE and feed it through the **existing** Mandible→HumbleB bridge (`humbleb-repo/humbleb/sources/mandible.py`, `docs/mandible_document_bridge.md`) so its extracted triples enter RAG queries — contract (1), `source_type='artifact'`, repo-authoritative snapshot; parameterize hard-coded `d25bac5`. **DEFER live paragraph-level backref display + `mandible.space_snapshot.v1` to a later item (§10.1).** *Depends on document custody + serialization; coordinated under a8fbc09.* | `feature/spaces-humbleb` | TBD |
 | TBD | **Graph demotion + Spaces nav**: add top-level `Spaces` nav; demote graph to on-demand drill-down; change default route after Spaces is useful. *Parallel-able once collection/canvas exist.* | `feature/spaces-graph-demotion` | TBD |
 | TBD | **CLAUDE.md / Interface-Contract reflection** (**dotfiles repo**): propose `mandible space` commands + the decided docs-branch document-commit flow. *Filed in dotfiles repo; parallel.* | `feature/spaces-contract-reflection` (dotfiles) | TBD |
 
 Dependency summary: core schema → backend → {ref-parser, seed-filter, collection,
 canvas, board}; document renderer depends on backend + ref-parser (and carries the
 `space_blocks` migration) and feeds custody; custody (carrying the `space_exports`
-migration) feeds both the docs-branch promotion-flow child and HumbleB;
-graph-demotion and contract-reflection are parallel-able.
+migration) feeds both the docs-branch promotion-flow child and the
+HumbleB-ingest-as-source child; graph-demotion and contract-reflection are
+parallel-able.
+
+**Cross-umbrella / cross-issue relationships** (typed links to record on the
+umbrella when filed):
+
+| Target | Relationship | Why |
+|---|---|---|
+| **a8fbc09** (HumbleB umbrella) | `parent_child` / linked-under | the `spaces-humbleb` ingest-as-source child is coordinated **under** the existing HumbleB umbrella, not a new HumbleB apparatus (§10.1) |
+| **de2f8ac** (graph-workspace spec) | `implements` / `references` | the Spaces work implements/refines that graph-workspace direction |
+| **2dc97b8** (Project-canonical artifacts and documents) | `related` / `implements` | registering an existing repo file as a canonical document realizes part of 2dc97b8 (§3.5) |
+| **41d22a6**, **dc87eb3** (Timeline) | `related` — **shared filter component, COMPLEMENTARY** | Spaces reuses the Timeline filter component (§6.1) and is complementary to Timeline; **never** "supersedes" (§1) |
 
 ---
 
@@ -850,53 +942,71 @@ graph-demotion and contract-reflection are parallel-able.
 |---|---|
 | **1** | Space P1′ schema + backend API + CLI + transport allowlist + SSE + backup inclusion; collection/list renderer; "Add to Space" + seed-from-filter (shared Timeline filter). The first usable whole's backbone. |
 | **2** | Canvas renderer (`SpaceCanvas`, React Flow editable, persisted positions, shelf, auto-arrange seed, freely-labeled `space_edges`). |
-| **3** | Shared resource-ref parser; document/manuscript renderer (`space_blocks` migration, embedded previews, unresolved-ref UI) + Markdown + sidecar-manifest serialization. |
-| **4** | Document custody / export-and-track (`space_exports`) on a **docs branch** with agent-key linked commits; auto-track opt-in; drift via live worktree; the auth-merge **docs-branch promotion flow** (proxy branch). |
-| **5** | Board/kanban renderer. |
-| **6** | HumbleB bridge/backrefs + parameterize hard-coded companion issue. |
+| **3** | Shared resource-ref parser; document renderer (`space_blocks` migration, embedded previews, unresolved-ref UI) + **canonical MDX (markdown + directives) serialization, in-band, no mandatory sidecar**; MDX/`remark-directive` renderer adoption; register-existing-repo-file-as-document. |
+| **4** | Document custody / export (`space_exports`): **Mandible custody until explicit commit**, **export dialog** with global/per-repo default paths (**no auto-track**), agent-key linked commits on a **docs branch**; drift via live worktree; the auth-merge **docs-branch promotion flow** (proxy branch). |
+| **5** | Board/kanban renderer (default `worker_status` columns + custom filter/manual columns). |
+| **6** | Make Space documents ingestable as HumbleB **sources** via the existing bridge (under a8fbc09) + parameterize hard-coded companion issue. *(Live paragraph-level backrefs + `space_snapshot.v1` deferred to a later item.)* |
 | **7** (parallel-able) | Graph demotion + Spaces nav + default-route change; CLAUDE.md / Interface-Contract reflection issue (dotfiles). |
 
 **Ship Phase 1 + Phase 2 together as the first thing the user evaluates** — per
 the user's "feature-complete before judging" point. Do not ask the user to judge
-Spaces on the collection renderer alone.
+Spaces on the collection renderer alone. **Spaces ships alongside Timeline as a
+complementary surface, not in place of it** (§1).
 
 ---
 
 ## 14. Open questions
 
-> **Resolved (no longer open):** manuscript branch/auth — manuscripts live on a
-> **docs branch** with agent-key linked commits; the auth queue is invoked only on
-> explicit user-requested promotion to `main` via a short-lived proxy branch (§9,
-> §13, `DOCUMENT-CUSTODY-DESIGN.md` §4).
+> **Resolved (no longer open):**
+> - **Document branch/auth** — documents live on a **docs branch** with agent-key
+>   linked commits; the auth queue is invoked only on explicit user-requested
+>   promotion to `main` via a short-lived proxy branch (§9, §13,
+>   `DOCUMENT-CUSTODY-DESIGN.md` §4).
+> - **`spaces.project_id` `ON DELETE`** — **RESTRICT** (Spaces are precious; a
+>   project with Spaces cannot be silently deleted; §3.1). Space-internal
+>   `spaces → items/occurrences/edges/blocks` stays CASCADE.
+> - **Serialization format / sidecar** — canonical format is **MDX (markdown +
+>   custom directives)**, fully in-band; the previous HTML-comment-anchor +
+>   mandatory sidecar design is **superseded** (custody doc §1). No sidecar is
+>   required (at most an optional minimal one, currently believed unnecessary).
+> - **Auto-track default** — **removed.** Default custody is **Mandible custody
+>   until an explicit user commit** (the export dialog); there is no
+>   "auto-track all documents for a repo" feature (custody doc §3/§5).
 
-1. **Spaces lifecycle vs. CASCADE.** We chose `ON DELETE CASCADE` for
-   `spaces.project_id` assuming Spaces are project-local. If Spaces ever become
-   archival or cross-project, revisit (RESTRICT). Confirm the single-project
-   assumption.
-2. **Sidecar-manifest path/format finalization.** Default
-   `.mandible/spaces/<space-id>.json` (custody doc §1.2); the exact on-disk schema
-   and commit relationship to the Markdown are not finalized.
-3. **Does `space_snapshot.v1` ship in v1?** The HumbleB live-while-writing packet
-   is required only for path (2) block-level backrefs (§10.1, custody §7.1);
-   whether it lands in the first manuscript release or defers to the HumbleB phase
-   is open.
-4. **Auto-track default on/off and path identity.** Default is **off**, opt-in
-   per repo/project, with stable `<space-id>.md` + title in frontmatter (custody
-   §5); confirm the default and any slug-based collision/rename policy.
-5. **Occurrence vs. item identity in the document renderer.** Should a manuscript
-   embed reference an `item_id` (canonical thing) or its own block? P1′ uses
-   `space_blocks.item_id` + `item_snapshot_json`; confirm this granularity for
-   HumbleB backrefs (contract (2) needs `block_id` + `item_id` span IDs).
-6. **External-ref canonicalization.** What is the canonical `ref_uri`/`ref_id`
+1. **Embed-on-delete behavior — DEFERRED (implementer must surface to user).**
+   What happens to a document **embed/reference block** when the embedded item is
+   deleted (block the delete? degrade to a placeholder from `item_snapshot_json`?
+   offer both?). **Not decided now.** The document-renderer implementing agent
+   **MUST prompt the user for this decision** when it becomes relevant rather than
+   choosing unilaterally (§12). (`space_blocks.item_id` is `ON DELETE RESTRICT` +
+   `item_snapshot_json` so a resolvable placeholder is always *possible*; the
+   chosen behavior is the open part.)
+2. **MDX vs. markdown-with-directives, and which renderer library.** The canonical
+   format is "markdown + custom directives"; confirm whether that is full **MDX**
+   (JSX/component syntax) or **`remark-directive`** CommonMark directives only, and
+   pick the concrete UI renderer/lib that replaces the bare `marked` path
+   (`ui/src/sanitize.ts` / `ui/src/views/artifacts.tsx`). Trade-off: directive
+   richness vs. portability (GitHub/pandoc render directives as raw text).
+3. **External-ref canonicalization.** What is the canonical `ref_uri`/`ref_id`
    scheme for `external_ref` items, and does it need a first-class alias mechanism?
    (`ledger_external_refs` exists but is adapter-sync-specific, §3.2/§11.3 — not a
    general URI registry.)
+4. **Board custom-column persistence model.** Default columns reuse issue
+   `worker_status`; custom columns can be **filter-defined** (a shared-filter
+   predicate, §6.1) or **manual** (specific issues added by hand). Where/how is a
+   custom column set persisted — per-Space metadata, a column-definition record,
+   `section_id` values? (Pick a model; `section_id` can hold the column key.)
+5. **Exact global/per-repo default document path scheme.** The export dialog
+   (custody doc §5) confirms a location from a **global default repo-relative
+   path** plus optional **per-repo overrides**; the concrete default path string,
+   per-repo override storage, and any collision/rename policy are not finalized.
+6. **Occurrence vs. item identity in the document renderer.** Should a document
+   embed reference an `item_id` (canonical thing) or its own block? P1′ uses
+   `space_blocks.item_id` + `item_snapshot_json`; confirm this granularity (it also
+   feeds the deferred block-level HumbleB backrefs, §10.1).
 7. **Promote-to-ledger UX.** When a `space_edge` is promoted, what `link_type`
    mapping and confirmation does the user see, given endpoints must be
    issues/comments (artifacts can't be ledger endpoints)?
 8. **Seed predicate scope.** The shared filter predicate targets issues; how are
    an issue's **artifacts** pulled in on "issue + its artifacts" seeds — via
    `artifact_links` join at seed time?
-9. **Board column model.** Is the board column dimension a per-Space definition,
-   `worker_status`, or a label? (`section_id` can hold any of these; pick a
-   default.)
