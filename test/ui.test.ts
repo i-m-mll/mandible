@@ -1578,10 +1578,10 @@ describe('ArtifactsView', () => {
         title: 'demo-report.md',
         filename: 'demo-report.md',
       },
-      pinned: false,
+      pinned: true,
       custody_mode: 'managed',
       home_repo_id: 'mandible',
-      repo_locator: {},
+      repo_locator: { repo_id: 'mandible', path: 'reports/demo-report.md' },
       availability: 'present',
       retention: {},
       reference: {},
@@ -1655,7 +1655,18 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(screen.getByText('humbleb://claims/claim_1')).toBeTruthy());
     expect(screen.getAllByText('demo-report.md').length).toBeGreaterThan(0);
+    const detailHeader = document.querySelector('.artifact-detail__header');
     expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('demo-report.md');
+    expect(detailHeader?.textContent).not.toContain('present');
+    expect(detailHeader?.textContent).not.toContain('pinned');
+    const sidebarItem = screen.getByRole('button', { name: /demo-report\.md/ });
+    expect(sidebarItem.textContent).not.toContain('present');
+    expect(sidebarItem.textContent).not.toContain('pinned');
+    expect(sidebarItem.querySelector('.artifacts-sidebar__badges')).toBeNull();
+    const sidebarMeta = sidebarItem.querySelector('.artifacts-sidebar__meta');
+    expect(sidebarMeta?.textContent).toContain('mandible');
+    expect(sidebarMeta?.textContent).toContain('reports/demo-report.md');
+    expect(sidebarMeta?.textContent).toContain('report');
     const filterButton = screen.getByLabelText('Artifact filters');
     expect(filterButton.textContent).not.toContain('⋯');
     expect(filterButton.querySelector('svg')).toBeTruthy();

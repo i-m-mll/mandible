@@ -403,6 +403,12 @@
   box-shadow: var(--shadow-header);
 }
 
+:root[data-theme='light'] .artifact-detail__header {
+  background: var(--surface-popover);
+  border-bottom-color: var(--neutral-alpha-08);
+  box-shadow: var(--shadow-header);
+}
+
 :root[data-theme='light'] .new-session-dialog-overlay,
 :root[data-theme='light'] .settings-view__confirm-overlay,
 :root[data-theme='light'] .modal-backdrop,
@@ -5841,9 +5847,9 @@ tr:hover .work-actions__trigger {
 
 .artifacts-sidebar__item {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   width: 100%;
-  padding: 10px;
+  padding: 8px 10px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
@@ -5867,6 +5873,9 @@ tr:hover .work-actions__trigger {
 }
 
 .artifacts-sidebar__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5874,24 +5883,21 @@ tr:hover .work-actions__trigger {
   font-size: 12px;
 }
 
-.artifacts-sidebar__badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
+.artifacts-sidebar__meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.artifacts-sidebar__badges em,
-.artifact-detail__status span {
-  display: inline-flex;
-  align-items: center;
-  min-height: 20px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--neutral-alpha-07);
+.artifacts-sidebar__meta em {
+  flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 11px;
   font-style: normal;
-  line-height: 1.3;
+}
+
+.artifacts-sidebar__meta em::before {
+  content: "· ";
+  color: var(--text-muted);
 }
 
 .artifacts-sidebar__empty,
@@ -5928,8 +5934,13 @@ tr:hover .work-actions__trigger {
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  padding-bottom: 14px;
+  position: sticky;
+  top: -24px;
+  z-index: 8;
+  margin: -24px -24px 0;
+  padding: 24px 24px 14px;
   border-bottom: 1px solid var(--neutral-alpha-08);
+  background: #0b0f14;
 }
 
 .artifact-detail__header h2 {
@@ -5944,13 +5955,6 @@ tr:hover .work-actions__trigger {
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-}
-
-.artifact-detail__status {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
 }
 
 .artifact-detail__section {
