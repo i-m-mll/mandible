@@ -347,11 +347,8 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
                 >
                   <span className="artifacts-sidebar__name">{artifactTitle(artifact)}</span>
                   <span className="artifacts-sidebar__meta">
-                    {artifact.home_repo_id || artifact.provider_id || artifact.custody_mode}
-                  </span>
-                  <span className="artifacts-sidebar__badges">
+                    <span>{artifactSidebarLocation(artifact)}</span>
                     <em>{artifact.role || artifact.media_type || 'artifact'}</em>
-                    <em>{artifact.availability}</em>
                   </span>
                 </button>
               ))}
@@ -449,10 +446,6 @@ function ArtifactDetail({
         <div>
           <div className="artifact-detail__type">{artifact.custody_mode} artifact</div>
           <h2>{artifactTitle(artifact)}</h2>
-        </div>
-        <div className="artifact-detail__status">
-          <span>{artifact.availability}</span>
-          {artifact.pinned && <span>pinned</span>}
         </div>
       </header>
       <section className="artifact-detail__section">
@@ -612,9 +605,6 @@ function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolveResult 
           <div className="artifact-detail__type">unresolved reference</div>
           <h2>{resolution.normalized_ref}</h2>
         </div>
-        <div className="artifact-detail__status">
-          <span>{resolution.status}</span>
-        </div>
       </header>
       <section className="artifact-detail__section">
         <h3>Resolver</h3>
@@ -701,6 +691,17 @@ function artifactRepoLocator(artifact: ArtifactRecord): string {
   if (!repoId || !repoPath) return '';
   const ref = typeof artifact.repo_locator.ref === 'string' ? artifact.repo_locator.ref : '';
   return `repo://${repoId}${ref ? `@${ref}` : ''}/${repoPath.replace(/^\/+/, '')}`;
+}
+
+function artifactSidebarLocation(artifact: ArtifactRecord): string {
+  const repoId = typeof artifact.repo_locator.repo_id === 'string'
+    ? artifact.repo_locator.repo_id
+    : artifact.home_repo_id || '';
+  const repoPath = typeof artifact.repo_locator.path === 'string'
+    ? artifact.repo_locator.path.replace(/^\/+/, '')
+    : '';
+  if (repoId && repoPath) return `${repoId}/${repoPath}`;
+  return artifact.home_repo_id || artifact.provider_id || artifact.custody_mode;
 }
 
 function artifactTitleCandidate(value: string): string {
