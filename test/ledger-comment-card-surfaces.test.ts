@@ -88,8 +88,11 @@ describe("ledger comment card surfaces", () => {
   });
 
   it("keeps the issue detail shell off the content surface", () => {
+    const lightRoot = cssRuleBody(":root[data-theme='light']");
     const body = cssRuleBody(".issues-detail");
 
+    expect(lightRoot).toContain("--issues-detail-bg: #e8edf4");
+    expect(body).toContain("background: var(--issues-detail-bg)");
     expect(body).not.toContain("background: var(--surface-content)");
     expect(body).not.toContain("background: var(--bg-card)");
   });
