@@ -690,15 +690,23 @@ reconciliation inputs, not reasons to reset user-visible state.
   never silently dropped. This shared parser is **foundational for the document
   renderer**; it has its own Children row (§12).
 
-  > **MDX directive interplay.** With the canonical document format being **MDX
-  > (markdown + custom directives)** (custody doc §1), references / embeds /
-  > structure can also be **first-class directive nodes** in the document AST
-  > (e.g. `:ref[…]{href=…}` / `::embed{…}`), not only markdown links. The shared
-  > ref parser must therefore recognize canonical refs whether they arrive as
-  > markdown links **or** as directive nodes. Because the document renderer adopts
-  > an **MDX / `remark-directive` renderer** (replacing the bare `marked` path in
-  > `ui/src/sanitize.ts` / `ui/src/views/artifacts.tsx`, custody doc §1), the
-  > parser and that renderer must agree on the directive grammar.
+  > **`spaces-doc.v1` directive interplay.** With the canonical document format
+  > being **Markdown + non-executable `spaces-doc.v1` directives (NOT full MDX)**
+  > (custody doc §1), references / embeds / structure can also be **first-class
+  > directive nodes** in the document AST (e.g. `:::figure{artifact="…"}` /
+  > `::figure[caption]{…}`), not only markdown links. The shared ref parser must
+  > therefore recognize canonical refs whether they arrive as markdown links **or**
+  > as directive nodes. Because the document renderer adopts a **remark-directive /
+  > micromark renderer** (NOT an MDX compiler/runtime; replacing the bare `marked`
+  > path in `ui/src/sanitize.ts` / `ui/src/views/artifacts.tsx`, custody doc §1),
+  > the parser and that renderer must agree on the directive grammar.
+  >
+  > **Linkifier gotcha (explicit requirement).** The current
+  > `ui/src/artifact-links.ts` linkifier matches `artifact:<hex>` but NOT
+  > `artifact:sha256:<hash>`, and treats many non-HTTP `://` schemes as
+  > artifact-like — the new typed document ref parser must handle
+  > `artifact:sha256:<hash>`, `repo://`, and `mandible://` correctly and not
+  > misroute them.
 - **HTML artifact transclusion safety.** Artifact HTML preview currently uses an
   iframe with `sandbox="allow-scripts"` (`ui/src/views/artifacts.tsx`). Do **NOT**
   inline arbitrary script-enabled HTML artifacts into a document surface. For
@@ -905,12 +913,12 @@ scoped to independent worktree lanes where possible. Branches are
 |---|---|---|---|
 | TBD | **Core schema + backup (v83 `spaces_core`)**: one migration after 82 for `spaces`, `space_items`, `space_occurrences`, `space_edges` (DDL per §3 — inline `UNIQUE`s, composite FKs, object `json_valid` CHECKs, `ref_id`/`external_ref` CHECKs, renderer CHECK excluding `'document'`, **RESTRICT** `project_id` FK with space-internal CASCADE); add all four to `METADATA_BACKUP_TABLES`; migration + backup tests (invalid JSON, dup items, cross-space refs, item-delete cascade). **AC: backup test asserts the four tables present; uniqueness is inline, not external-index-only.** `space_blocks` is NOT here (ships with document renderer). | `feature/spaces-schema` | TBD |
 | TBD | **Backend API + CLI + transport + SSE**: `/api/spaces*` CRUD incl. batch occurrences + `seed`; `mandible space ...` CLI (§5.2); add `/api/spaces*` and `/api/knowledge-backrefs` to file-RPC allowlist (`src/file-rpc-transport.ts`); broadcast `space:*` SSE; route tests. *Depends on core schema.* | `feature/spaces-backend` | TBD |
-| TBD | **Shared resource-ref parser** (foundational): one parser for `artifact:sha256:<hex>`, compact `artifact:<hex>`, `repo://<repo>@<ref>/<path>`, `mandible://<repo>/issue/<id>`, markdown links with those hrefs, **and MDX/directive ref/embed nodes** (must agree on the directive grammar with the MDX renderer, §8); unresolved-ref UI; used by renderer, import, issue detail, and artifacts UI; replaces `ui/src/artifact-links.ts`'s bracket-only linkifier (review A4, §8). *Depends on backend; foundational for document renderer.* | `feature/spaces-ref-parser` | TBD |
+| TBD | **Shared resource-ref parser** (foundational): one parser for `artifact:sha256:<hex>`, compact `artifact:<hex>`, `repo://<repo>@<ref>/<path>`, `mandible://<repo>/issue/<id>`, markdown links with those hrefs, **and `spaces-doc.v1` directive ref/embed nodes** (must agree on the directive grammar with the remark-directive renderer, §8); handles `artifact:sha256:<hash>` (not just compact `artifact:<hex>`), `repo://`, and `mandible://` without misrouting — the current `ui/src/artifact-links.ts` linkifier fails on all three; unresolved-ref UI; used by renderer, import, issue detail, and artifacts UI; replaces `ui/src/artifact-links.ts`'s bracket-only linkifier (review A4, §8). *Depends on backend; foundational for document renderer.* | `feature/spaces-ref-parser` | TBD |
 | TBD | **Shared filter extraction + seeding + Add-to-Space**: extract shared issue-predicate/filter component from Timeline (`TimelineFilterRowSpec`); wire seed endpoint; "Add to Space" in IssueDetail, artifacts, graph node detail. *Depends on backend.* | `feature/spaces-seed-filter` | TBD |
 | TBD | **Collection/list renderer**: membership list/tree with previews, add/remove, missing-ref handling, project scoping; first usable renderer. *Depends on backend.* | `feature/spaces-collection` | TBD |
 | TBD | **SpaceCanvas**: new React Flow editable canvas; persisted occurrences; shelf for unplaced; auto-arrange seed via `layoutGraph()`; freely-labeled `space_edges`; optimistic drag + autosave. *Depends on backend; parallel to collection.* | `feature/spaces-canvas` | TBD |
-| TBD | **Document renderer + serialization (+ `space_blocks` migration)**: ship the `space_blocks` table in its own migration (composite FKs, `item_snapshot_json`, added to `METADATA_BACKUP_TABLES`, block-delete-preserves-placeholder test); `space_blocks` editor; embedded previews; **canonical MDX (markdown + custom directives) serialization — in-band, single source of truth, NO mandatory sidecar** (custody doc §1); **adopt an MDX / `remark-directive` renderer** in the UI (replacing the bare `marked` path in `ui/src/sanitize.ts` / `ui/src/views/artifacts.tsx`); support **registering an existing tracked repo file as a document** (link custody, `repo://<repo>@<ref>/<path>` source — ties to issue 2dc97b8, §3.5); uses the shared ref parser. **Embed-on-delete behavior is DEFERRED: the implementing agent MUST prompt the user for that decision when it becomes relevant — do not pick it unilaterally** (see §14). *Depends on backend + ref parser; informs custody.* | `feature/spaces-document` | TBD |
-| TBD | **Document custody / export (+ `space_exports` migration)**: ship `space_exports` (custody doc §2.1, added to `METADATA_BACKUP_TABLES`); **default custody = Mandible custody until the user explicitly requests a commit** — committing to a repo is always an explicit user action (the **export dialog**), **no auto-track / no silent auto-commit**; export dialog confirms or overrides the document location, driven by a **global default repo-relative path + per-repo overrides** (custody doc §5); export-and-track op writing canonical MDX via **agent-key linked commits** on a docs branch; authority/drift via live worktree comparison (review A5); untracked export-of-copy = local file export (review A8); a registered existing repo file (§3.5) is already repo-authoritative. *Depends on document renderer + serialization.* | `feature/spaces-doc-custody` | TBD |
+| TBD | **Document renderer + serialization (+ `space_blocks` migration)**: ship the `space_blocks` table in its own migration (composite FKs, `item_snapshot_json`, added to `METADATA_BACKUP_TABLES`, block-delete-preserves-placeholder test); `space_blocks` editor; embedded previews; **canonical `spaces-doc.v1` serialization (Markdown + non-executable directives) — in-band, single source of truth, NO mandatory sidecar, NOT full MDX** (custody doc §1; full MDX rejected on security grounds); **adopt a remark-directive / micromark renderer** in the UI (NOT an MDX compiler/runtime; replaces the bare `marked` path in `ui/src/sanitize.ts` / `ui/src/views/artifacts.tsx`); support **registering an existing tracked repo file as a document** (link custody, `repo://<repo>@<ref>/<path>` source — ties to issue 2dc97b8, §3.5); uses the shared ref parser. **Embed-on-delete behavior is DEFERRED: the implementing agent MUST prompt the user for that decision when it becomes relevant — do not pick it unilaterally** (see §14). *Depends on backend + ref parser; informs custody.* | `feature/spaces-document` | TBD |
+| TBD | **Document custody / export (+ `space_exports` migration)**: ship `space_exports` (custody doc §2.1, added to `METADATA_BACKUP_TABLES`); **default custody = Mandible custody until the user explicitly requests a commit** — committing to a repo is always an explicit user action (the **export dialog**), **no auto-track / no silent auto-commit**; export dialog confirms or overrides the document location, driven by a **global default repo-relative path + per-repo overrides** (custody doc §5); export-and-track op writing canonical `spaces-doc.v1` (Markdown + non-executable directives) via **agent-key linked commits** on a docs branch; authority/drift via live worktree comparison (review A5); untracked export-of-copy = local file export (review A8); a registered existing repo file (§3.5) is already repo-authoritative. *Depends on document renderer + serialization.* | `feature/spaces-doc-custody` | TBD |
 | TBD | **Auth-merge / docs-branch promotion flow** (**modifies auth/merge infra**): short-lived `promote/docs/<ts>` proxy branch cut from docs-branch head submitted to the auth queue, leaving the long-lived docs worktree intact; optional `--preserve-head-branch` to skip `cleanup_merged_worktrees` (`cli/auth-merge.sh:410`); verify routine docs commits carry `Mandible-Issue:` trailers so promotion verification passes. **Per global rule, submit its own auth request from the protected-`main` checkout.** *Depends on doc-custody.* | `feature/spaces-docs-promotion` | TBD |
 | TBD | **Board/kanban renderer**: real renderer (columns/swimlanes/WIP via `section_id`/`sort_key`), NOT a probe. **Default column dimension = reuse issue `worker_status`; PLUS allow custom columns defined either by a filter predicate (reusing the shared filter, §6.1) or by manually adding specific issues to a column.** *Depends on backend.* | `feature/spaces-board` | TBD |
 | TBD | **Make Space documents ingestable as HumbleB sources** (v1 SHRUNK, under umbrella **a8fbc09**): render/export a Space document as a SOURCE and feed it through the **existing** Mandible→HumbleB bridge (`humbleb-repo/humbleb/sources/mandible.py`, `docs/mandible_document_bridge.md`) so its extracted triples enter RAG queries — contract (1), `source_type='artifact'`, repo-authoritative snapshot; parameterize hard-coded `d25bac5`. **DEFER live paragraph-level backref display + `mandible.space_snapshot.v1` to a later item (§10.1).** *Depends on document custody + serialization; coordinated under a8fbc09.* | `feature/spaces-humbleb` | TBD |
@@ -942,7 +950,7 @@ umbrella when filed):
 |---|---|
 | **1** | Space P1′ schema + backend API + CLI + transport allowlist + SSE + backup inclusion; collection/list renderer; "Add to Space" + seed-from-filter (shared Timeline filter). The first usable whole's backbone. |
 | **2** | Canvas renderer (`SpaceCanvas`, React Flow editable, persisted positions, shelf, auto-arrange seed, freely-labeled `space_edges`). |
-| **3** | Shared resource-ref parser; document renderer (`space_blocks` migration, embedded previews, unresolved-ref UI) + **canonical MDX (markdown + directives) serialization, in-band, no mandatory sidecar**; MDX/`remark-directive` renderer adoption; register-existing-repo-file-as-document. |
+| **3** | Shared resource-ref parser; document renderer (`space_blocks` migration, embedded previews, unresolved-ref UI) + **canonical `spaces-doc.v1` serialization (Markdown + non-executable directives, NOT full MDX), in-band, no mandatory sidecar**; remark-directive / micromark renderer adoption (NOT an MDX compiler/runtime); register-existing-repo-file-as-document. |
 | **4** | Document custody / export (`space_exports`): **Mandible custody until explicit commit**, **export dialog** with global/per-repo default paths (**no auto-track**), agent-key linked commits on a **docs branch**; drift via live worktree; the auth-merge **docs-branch promotion flow** (proxy branch). |
 | **5** | Board/kanban renderer (default `worker_status` columns + custom filter/manual columns). |
 | **6** | Make Space documents ingestable as HumbleB **sources** via the existing bridge (under a8fbc09) + parameterize hard-coded companion issue. *(Live paragraph-level backrefs + `space_snapshot.v1` deferred to a later item.)* |
@@ -965,10 +973,13 @@ complementary surface, not in place of it** (§1).
 > - **`spaces.project_id` `ON DELETE`** — **RESTRICT** (Spaces are precious; a
 >   project with Spaces cannot be silently deleted; §3.1). Space-internal
 >   `spaces → items/occurrences/edges/blocks` stays CASCADE.
-> - **Serialization format / sidecar** — canonical format is **MDX (markdown +
->   custom directives)**, fully in-band; the previous HTML-comment-anchor +
->   mandatory sidecar design is **superseded** (custody doc §1). No sidecar is
->   required (at most an optional minimal one, currently believed unnecessary).
+> - **Serialization format / sidecar** — canonical format is **Markdown +
+>   non-executable `spaces-doc.v1` directives (NOT full MDX)**, fully in-band;
+>   the previous HTML-comment-anchor + mandatory sidecar design is **superseded**
+>   (custody doc §1). Full MDX was rejected on security grounds (compiles to and
+>   executes JavaScript; violates `marked` + DOMPurify + sandboxed-iframe security
+>   model). No sidecar is required (at most an optional minimal one, currently
+>   believed unnecessary).
 > - **Auto-track default** — **removed.** Default custody is **Mandible custody
 >   until an explicit user commit** (the export dialog); there is no
 >   "auto-track all documents for a repo" feature (custody doc §3/§5).
@@ -981,12 +992,13 @@ complementary surface, not in place of it** (§1).
    choosing unilaterally (§12). (`space_blocks.item_id` is `ON DELETE RESTRICT` +
    `item_snapshot_json` so a resolvable placeholder is always *possible*; the
    chosen behavior is the open part.)
-2. **MDX vs. markdown-with-directives, and which renderer library.** The canonical
-   format is "markdown + custom directives"; confirm whether that is full **MDX**
-   (JSX/component syntax) or **`remark-directive`** CommonMark directives only, and
-   pick the concrete UI renderer/lib that replaces the bare `marked` path
-   (`ui/src/sanitize.ts` / `ui/src/views/artifacts.tsx`). Trade-off: directive
-   richness vs. portability (GitHub/pandoc render directives as raw text).
+2. **Which specific remark/micromark library.** The format is resolved: Markdown +
+   non-executable `spaces-doc.v1` directives rendered via **remark-directive /
+   micromark** (NOT a full MDX compiler/runtime; full MDX rejected on security
+   grounds). The open part is which concrete remark/micromark library and plugin
+   combination replaces the bare `marked` path (`ui/src/sanitize.ts` /
+   `ui/src/views/artifacts.tsx`), and the finalized `spaces-doc.v1` directive
+   grammar (block identity / ref / embed node forms).
 3. **External-ref canonicalization.** What is the canonical `ref_uri`/`ref_id`
    scheme for `external_ref` items, and does it need a first-class alias mechanism?
    (`ledger_external_refs` exists but is adapter-sync-specific, §3.2/§11.3 — not a

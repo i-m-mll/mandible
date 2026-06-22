@@ -1,7 +1,8 @@
 # Mandible Spaces — Document Custody, Export & Track Lifecycle
 
 > Companion to [`UMBRELLA-PLAN.md`](./UMBRELLA-PLAN.md). This doc designs the
-> document serialization (canonical **MDX**), the export lifecycle and **export
+> document serialization (canonical format: **Markdown + a small non-executable
+> directive grammar (`spaces-doc.v1`)**), the export lifecycle and **export
 > dialog**, custody transitions (**Mandible custody until an explicit user
 > commit**), drift handling, and the auth tiers for document commits.
 > Code references verified against `/tmp/mandible-ux-review.EixOws/mandible-repo/`
@@ -22,36 +23,50 @@ and consumed by all three.
 
 The single most load-bearing decision is the **canonical serialization** of a
 document (the prose in `space_blocks` plus its references). **Decided: the
-canonical format is MDX — markdown plus custom directives.** Everything downstream
-— export, repo commits, HumbleB ingestion, drift detection — depends on it. Design
-it first.
+canonical format is Markdown + a small non-executable directive grammar
+(`spaces-doc.v1`) — NOT full/executable MDX.** Everything downstream — export,
+repo commits, HumbleB ingestion, drift detection — depends on it. Design it first.
+
+> **Security rationale for rejecting full MDX.** Full MDX compiles directives to
+> JavaScript and executes them inside the renderer. That would move executable
+> content into Mandible's trusted UI tree, violating the app's security model
+> (`marked` + DOMPurify + sanitized HTML, with HTML artifacts isolated in a
+> sandboxed iframe). A recent `next-mdx-remote` RCE CVE is the cited failure
+> mode. The `spaces-doc.v1` directives are rendered as **DATA nodes through fixed
+> Mandible Preact components** — no code execution.
 
 > **This supersedes the previous HTML-comment-anchor + mandatory-sidecar design
 > (Codex review A3).** That earlier design moved block identity, ordering, and
 > reference metadata into a separate machine-canonical **sidecar manifest** because
 > HTML-comment anchors in plain markdown could not carry `parent_id`/`sort_key`
-> reliably and were stripped/reflowed by external formatters. **MDX resolves the
-> root cause:** with MDX / `remark-directive` syntax, **block identity,
-> references, embeds, and structure are first-class AST / directive nodes living
-> IN the document text** — not strippable HTML comments. The document text is
-> therefore itself the **single lossless source of truth**, and **no separate
-> sidecar is required.** (See §1.3 for what survives of A3 and what is overridden.)
+> reliably and were stripped/reflowed by external formatters. **The non-executable
+> directive grammar resolves the root cause:** with `remark-directive` / CommonMark
+> generic directive syntax, **block identity, references, embeds, and structure are
+> first-class AST / directive nodes living IN the document text** — not strippable
+> HTML comments. The document text is therefore itself the **single lossless source
+> of truth**, and **no separate sidecar is required.** (See §1.3 for what survives
+> of A3 and what is overridden.)
 
 ### 1.1 Requirements
 
 A document Space (`space_blocks` tree + referenced `space_items`) serializes to a
-**single canonical MDX file** such that:
+**single canonical `spaces-doc.v1` file** (CommonMark/GFM prose + YAML
+frontmatter + a whitelisted non-executable directive profile) such that:
 
 1. **Faithful round-trip from the text alone.** `import(export(x)) == x` for the
    block tree (`parent_id` + `sort_key`), `block_type`, `item_id` embeds, and the
-   prose body — all carried as MDX directive attributes / AST structure in the
-   file itself. There is **no second authority** to reconcile against: the MDX AST
-   *is* the block tree. (Pure positional canvas layout is **not** serialized into
-   the document — it stays in `space_occurrences`; the document is the document
-   projection, not the canvas projection.)
-2. **First-class inline reference / embed syntax via directives.** References and
-   embeds are directive nodes, not comments. Canonical IDs (carried in directive
-   attributes or markdown-link hrefs):
+   prose body — all carried as `spaces-doc.v1` directive attributes / AST structure
+   in the file itself. There is **no second authority** to reconcile against: the
+   parsed AST *is* the block tree. (Pure positional canvas layout is **not**
+   serialized into the document — it stays in `space_occurrences`; the document is
+   the document projection, not the canvas projection.)
+2. **First-class inline reference / embed syntax via non-executable directives.**
+   References and embeds are directive nodes in the whitelisted profile (e.g.
+   `:::figure{artifact="…"}` or `::figure[caption]{…}`), not comments. Each
+   directive contains **normal-markdown fallback content** (image/link/caption) so
+   the file degrades to something readable on GitHub/pandoc without a
+   `spaces-doc.v1` renderer. Canonical IDs (carried in directive attributes or
+   markdown-link hrefs):
    - Artifacts: `artifact:sha256:<hash>` (matches the repo's existing artifact ID
      form; see `artifact-links.ts` bracketed `[artifact:...]` convention).
    - Issues: `mandible://<repo>/issue/<id>` (matches the HumbleB source identity
@@ -63,16 +78,30 @@ A document Space (`space_blocks` tree + referenced `space_items`) serializes to 
    deferred) can attach a backref to a specific block, and so the file re-imports
    without losing block identity. No sidecar is needed to hold this.
 
-### 1.2 Canonical serialization shape (MDX, in-band)
+### 1.2 Canonical serialization shape (`spaces-doc.v1`, in-band)
 
-Each block is an MDX node. Block-bearing structure carries its identity and tree
-position as directive attributes (e.g. a container/leaf directive with
-`id` / `parent` / `sort` / `type` / `item`); references and embeds are directive
-nodes (or markdown links with canonical hrefs). Illustrative (the exact directive
-grammar is an open question — see §9 and `UMBRELLA-PLAN.md` §14 Q2):
+The format is:
+- **CommonMark/GFM prose** as the base layer.
+- **YAML frontmatter** for document-level fields, with a `mandible_format:
+  spaces-doc.v1` marker identifying the format version.
+- A **whitelisted inline directive profile** (remark-directive / CommonMark
+  generic directives, e.g. `:::figure{artifact="…"}` or `::figure[caption]{…}`)
+  for structured embeds. Each directive contains **normal-markdown fallback
+  content** (image/link/caption) so the file degrades gracefully on
+  GitHub/pandoc.
+- **Canonical-URI links** for every Mandible reference:
+  `mandible://<repo>/issue/<id>`, `repo://<repo>@<ref>/<path>`,
+  `artifact:sha256:<hash>`.
 
-```mdx
+Block-bearing structure carries its identity and tree position as directive
+attributes (e.g. a container/leaf directive with `id` / `parent` / `sort` /
+`type` / `item`); references and embeds are directive nodes (or markdown links
+with canonical hrefs). Illustrative (the exact directive grammar is an open
+question — see §9 and `UMBRELLA-PLAN.md` §14 Q2):
+
+```markdown
 ---
+mandible_format: spaces-doc.v1
 mandible_space: <space_id>
 mandible_serialization: mandible.document.v1
 mandible_exported_at: <iso8601>
@@ -92,40 +121,47 @@ resolves the question raised in :ref[e70757d]{href="mandible://mandible/issue/e7
 :::
 ```
 
-Because identity and structure are directive nodes in the AST, a standard MDX
-parser reconstructs the block tree directly; there is no anchor/manifest
-reconciliation step.
+Because identity and structure are directive nodes in the AST, a remark-directive
+/ micromark parser reconstructs the block tree directly; there is no
+anchor/manifest reconciliation step.
 
-**Trade-off (state it honestly).** MDX is **not plain-markdown-portable**:
-GitHub, pandoc, and bare CommonMark renderers display the directive syntax as
-**raw text**, not rendered structure. The portability bar is therefore "renders
-correctly in an MDX-aware renderer," not "renders as clean markdown everywhere."
-Mandible's UI must adopt an **MDX / `remark-directive` renderer** in place of the
-current bare `marked` path (`ui/src/sanitize.ts`, `ui/src/views/artifacts.tsx`,
-`UMBRELLA-PLAN.md` §8); the shared resource-ref parser must recognize refs whether
-they appear as directive nodes or markdown links. This renderer-adoption cost is
-the price of dropping the sidecar.
+**Renderer/implementation note.** The UI adopts a **remark-directive /
+micromark parse path** feeding sanitized HTML + fixed Preact components, **NOT**
+an MDX compiler/runtime. This is lower cost than full MDX and eliminates the
+JavaScript execution surface. The `marked` path in `ui/src/sanitize.ts` /
+`ui/src/views/artifacts.tsx` is replaced by this remark-directive renderer. The
+specific remark/micromark library is TBD (see §9 Q2).
 
-**Optional minimal sidecar (only if forced).** Keep at most an **optional**
-minimal sidecar, and **only** if some metadatum genuinely cannot be expressed
-in-band. We currently **believe none is needed** — block identity, tree position,
-references, and embeds all fit in directive attributes. If a future requirement
-surfaces a truly non-in-band metadatum, add a minimal optional sidecar then; do
-not add one preemptively.
+**Portability trade-off (state it honestly).** `spaces-doc.v1` directives render
+correctly in a `spaces-doc.v1`-aware renderer. In GitHub, pandoc, and bare
+CommonMark renderers, the directive containers appear as raw text — but the
+mandatory **markdown fallback content inside each directive** (image/link/caption)
+ensures the file remains readable and navigable even without a `spaces-doc.v1`
+renderer. This is meaningfully better portability than full MDX (which would show
+raw JSX).
+
+**In-band / no sidecar (kept).** Directives are in-band, so the single tracked
+file remains the source of truth; no canonical sidecar. Out-of-band data (parsed
+ref index, render cache, HumbleB ingestion snapshots) is only derived/cache state
+— rebuildable from the tracked file. Keep at most an **optional** minimal sidecar,
+and **only** if some metadatum genuinely cannot be expressed in-band. We currently
+**believe none is needed.**
 
 ### 1.3 What survives of Codex review A3, and what is overridden
 
-A3 is **PARTIALLY OVERRIDDEN**:
+A3 is **PARTIALLY OVERRIDDEN** (format: Markdown + non-executable `spaces-doc.v1` directives; full MDX rejected on security grounds):
 
 - **Overridden:** the **mandatory sidecar manifest** as the structure authority,
   the HTML-comment `<!-- mb:block … -->` anchor grammar, and the framing that "a
-  single editable file cannot losslessly round-trip." MDX directives make the
-  single file lossless, so the round-trip fragility that motivated the sidecar is
-  **resolved in-band**.
+  single editable file cannot losslessly round-trip." Non-executable `spaces-doc.v1`
+  directives make the single file lossless, so the round-trip fragility that
+  motivated the sidecar is **resolved in-band**. Full MDX was also rejected on
+  security grounds: it compiles to and executes JavaScript, violating Mandible's
+  `marked` + DOMPurify + sandboxed-iframe security model.
 - **Still relevant (kept):** the **import-conflict policy** for externally-edited
-  files. Even with MDX, a repo file can be hand-edited, reformatted, or
-  partially corrupted between exports, so re-import must still define explicit,
-  no-silent-merge behavior:
+  files. Even with `spaces-doc.v1` directives, a repo file can be hand-edited,
+  reformatted, or partially corrupted between exports, so re-import must still
+  define explicit, no-silent-merge behavior:
 
 | Situation | Behavior |
 |---|---|
@@ -136,10 +172,13 @@ A3 is **PARTIALLY OVERRIDDEN**:
 | **Unknown / unresolvable reference** | **unresolved placeholder** retained — never dropped |
 
 The reference parser that reads this back is the **shared resource-ref parser**
-(`UMBRELLA-PLAN.md` §8), extended to recognize MDX directive ref/embed nodes (the
-current `ui/src/artifact-links.ts` only linkifies bracketed `[artifact:...]` text
-and existing artifact-like anchor hrefs, not bare `repo://`/`mandible://` text or
-directives — it must be replaced by the shared parser).
+(`UMBRELLA-PLAN.md` §8), extended to recognize `spaces-doc.v1` directive ref/embed
+nodes (the current `ui/src/artifact-links.ts` only linkifies bracketed
+`[artifact:...]` text and existing artifact-like anchor hrefs, not bare
+`repo://`/`mandible://` text or directives — it must be replaced by the shared
+parser). The parser must handle `artifact:sha256:<hash>`, `repo://`, and
+`mandible://` correctly and not misroute them (the current linkifier treats many
+non-HTTP `://` schemes as artifact-like — the typed ref parser must be precise).
 
 ### 1.4 Existing repo files as documents (link custody)
 
@@ -152,10 +191,10 @@ document** with **link custody** and a `repo://<repo>@<ref>/<path>` source ref
   (link custody, like a registered repo artifact);
 - it starts with `space_exports.authority='repo'` (§2.2) — there was never a
   Mandible-custody phase to commit out of;
-- if the file is already MDX/markdown it renders directly; if it is some other
-  document format, the renderer treats it as a referenced source, not an editable
-  `space_blocks` tree, unless/until the user explicitly pulls it into authored
-  Mandible custody.
+- if the file is already `spaces-doc.v1` or plain Markdown it renders directly;
+  if it is some other document format, the renderer treats it as a referenced
+  source, not an editable `space_blocks` tree, unless/until the user explicitly
+  pulls it into authored Mandible custody.
 
 ---
 
@@ -276,8 +315,8 @@ never on a background tick. Given the dialog's confirmed/overridden target path:
 `export-and-track` is then a **deterministic** operation. Given a document Space
 and the chosen docs-branch path:
 
-1. **Serialize** the document to canonical **MDX** (§1) — a single in-band file,
-   no separate sidecar.
+1. **Serialize** the document to canonical **`spaces-doc.v1`** format (§1) — a
+   single in-band Markdown + non-executable directive file, no separate sidecar.
 2. **Write** it to the managed **docs-branch worktree** at the path the user
    confirmed in the export dialog (§5).
 3. **Commit** with the **agent key** via the **linked-commit path**
@@ -311,10 +350,11 @@ export-and-track op: the commit it produces is a linked commit, never a bare
 
 ### 3.3 Untracked export-of-copy (one-shot, "local file export")
 
-Also support a plain **export-of-copy**: a one-shot rendered-MDX write to a
-path with **no ongoing custody** — no `space_exports` row, no authority/drift
-tracking, no recovery snapshot (Codex review A8). This is a **local file
-export**: "give me a copy" without committing Mandible to tracking it.
+Also support a plain **export-of-copy**: a one-shot rendered `spaces-doc.v1`
+write to a path with **no ongoing custody** — no `space_exports` row, no
+authority/drift tracking, no recovery snapshot (Codex review A8). This is a
+**local file export**: "give me a copy" without committing Mandible to tracking
+it.
 The document stays Mandible-owned (no `space_exports` row).
 
 - It creates **no** custody, drift, or recovery relationship unless the file is
@@ -552,8 +592,8 @@ The user's design is, on balance, **best-practice**. Specific assessments:
 | Decision | Assessment |
 |---|---|
 | Prose starts in Mandible custody, committed only on explicit user action | **Sound.** Local-first authoring; **default custody = Mandible until the user explicitly commits** (the export dialog), no auto-track. A clean, explicit handoff to repo custody. |
-| Canonical serialization designed first | **Sound and the right priority.** Everything downstream depends on it. **Decided as MDX (markdown + directives), in-band, single source of truth — no mandatory sidecar** (supersedes the A3 sidecar-manifest design; the in-band directives resolve the round-trip fragility that motivated the sidecar). |
-| Portable inline reference syntax with canonical IDs | **Sound.** Block identity, references, embeds, and structure are **first-class MDX/directive AST nodes in the document text**, so the text is itself lossless. Trade-off: MDX is not plain-markdown-portable (GitHub/pandoc show directives as raw text) and the UI must adopt an MDX/`remark-directive` renderer. |
+| Canonical serialization designed first | **Sound and the right priority.** Everything downstream depends on it. **Decided as Markdown + non-executable `spaces-doc.v1` directives (NOT full MDX), in-band, single source of truth — no mandatory sidecar** (supersedes the A3 sidecar-manifest design; in-band non-executable directives resolve the round-trip fragility that motivated the sidecar; full MDX rejected on security grounds). |
+| Portable inline reference syntax with canonical IDs | **Sound.** Block identity, references, embeds, and structure are **first-class `spaces-doc.v1` directive AST nodes in the document text**, so the text is itself lossless. Trade-off: the directive containers appear as raw text in GitHub/pandoc — mitigated by mandatory markdown fallback content inside each directive. The UI adopts a remark-directive / micromark renderer (NOT an MDX compiler/runtime). |
 | Mutable tracking via a first-class `space_exports` table | **Strong.** The content-addressed `artifacts` table (`UNIQUE(algorithm, content_hash)`) cannot model a mutable tracked document; `space_exports` carries authority/drift while artifacts hold immutable snapshots (Codex review A1). |
 | Agent-key linked commits on a docs branch; auth queue only on explicit promotion | **Sound and consistent** with the existing two-key model. Linked commits are mandatory so promotion verification passes (§3.2). |
 | Export dialog (global default + per-repo override) + untracked export-of-copy as separate paths | **Sound.** Committing is an explicit user action with a confirmable location; the one-shot local file export is a genuinely different intent and stays distinct. |
@@ -574,13 +614,13 @@ The user's design is, on balance, **best-practice**. Specific assessments:
   `ledger_body_revisions`) vs. a snapshot artifact in custody. A snapshot artifact
   is simpler and reuses content-addressing (and is the `pre_export_snapshot_artifact_id`
   target in `space_exports`).
-- **MDX directive visibility / portability.** The MDX block/ref directives are
-  rendered by an MDX-aware renderer but appear as **raw text** in GitHub, pandoc,
-  and bare CommonMark renderers (§1.2 trade-off). Confirm this is acceptable for
-  repo-committed documents, and that the chosen directive grammar is the one the
-  shared ref parser and the UI renderer both implement (§9, `UMBRELLA-PLAN.md`
-  §14 Q2). No sidecar file leaks into the repo because there is no mandatory
-  sidecar.
+- **Directive visibility / portability.** The `spaces-doc.v1` block/ref
+  directives are rendered by the remark-directive renderer but appear as **raw
+  text** in GitHub, pandoc, and bare CommonMark renderers — mitigated by the
+  mandatory markdown fallback content inside each directive (§1.2). Confirm the
+  chosen directive grammar is the one the shared ref parser and the UI renderer
+  both implement (§9, `UMBRELLA-PLAN.md` §14 Q2). No sidecar file leaks into the
+  repo because there is no mandatory sidecar.
 
 ---
 
@@ -593,10 +633,12 @@ The user's design is, on balance, **best-practice**. Specific assessments:
 > - **`recoverability`** — drift status lives on `space_exports.status`, not a new
 >   `artifacts` column (§2.2); `recoverability` stays a generic-artifact JSON
 >   convention.
-> - **Serialization format / sidecar** — canonical format is **MDX (markdown +
->   directives)**, fully in-band; the HTML-comment-anchor + mandatory-sidecar
->   design is **superseded** (§1, supersedes Codex A3). No sidecar is required (at
->   most an optional minimal one, currently believed unnecessary).
+> - **Serialization format / sidecar** — canonical format is **Markdown +
+>   non-executable `spaces-doc.v1` directives (NOT full MDX)**, fully in-band; the
+>   HTML-comment-anchor + mandatory-sidecar design is **superseded** (§1, supersedes
+>   Codex A3). Full MDX rejected on security grounds (executes JavaScript; violates
+>   `marked` + DOMPurify security model). No sidecar is required (at most an
+>   optional minimal one, currently believed unnecessary).
 > - **Auto-track default** — **removed.** Default custody is **Mandible custody
 >   until an explicit user commit** via the export dialog (§2.2, §3, §5); no
 >   auto-track, no silent auto-commit.
@@ -607,14 +649,13 @@ The user's design is, on balance, **best-practice**. Specific assessments:
    prompt the user** for this decision when it becomes relevant (`UMBRELLA-PLAN.md`
    §14 Q1, §12). `space_blocks.item_id` is `ON DELETE RESTRICT` + `item_snapshot_json`
    so a placeholder is always *possible*; the chosen behavior is the open part.
-2. **MDX vs. markdown-with-directives, and which renderer library.** Confirm
-   whether the canonical format is full **MDX** (JSX/component syntax) or
-   **`remark-directive`** CommonMark directives only, fix the concrete directive
-   grammar (block identity / ref / embed nodes), and pick the UI renderer/lib that
-   replaces the bare `marked` path (`ui/src/sanitize.ts`,
-   `ui/src/views/artifacts.tsx`). Trade-off: directive richness vs. portability
-   (GitHub/pandoc render directives as raw text). — cross-ref `UMBRELLA-PLAN.md`
-   §14 Q2.
+2. **Which specific remark/micromark library.** The format is resolved: Markdown
+   + non-executable `spaces-doc.v1` directives rendered via **remark-directive /
+   micromark** (NOT a full MDX compiler/runtime). The open part is which concrete
+   remark/micromark library and plugin combination replaces the bare `marked` path
+   (`ui/src/sanitize.ts`, `ui/src/views/artifacts.tsx`), and the finalized
+   `spaces-doc.v1` directive grammar (block identity / ref / embed node forms). —
+   cross-ref `UMBRELLA-PLAN.md` §14 Q2.
 3. **Exact global/per-repo default export path scheme.** The export dialog (§5)
    resolves a **global default repo-relative path** plus optional **per-repo
    overrides**; the concrete default path string, per-repo override storage, and
