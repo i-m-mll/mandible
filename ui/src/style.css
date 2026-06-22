@@ -409,6 +409,10 @@
   background: #ffffff;
 }
 
+:root[data-theme='light'] .ledger-comment-card__body.spec-panel {
+  background: #ffffff;
+}
+
 :root[data-theme='light'] .artifact-detail__header {
   background: var(--surface-popover);
   border-bottom-color: var(--neutral-alpha-08);
@@ -13962,6 +13966,10 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   border-radius: 8px;
   background: var(--surface-content);
   padding: 10px;
+}
+
+.ledger-comment-card__body.spec-panel {
+  background: var(--surface-content);
 }
 
 .ledger-timeline-event {
