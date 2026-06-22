@@ -630,6 +630,20 @@ function TimelineEntryCard({
       </div>
     );
   }
+  if (entry.kind === 'event') {
+    return (
+      <div className="ledger-timeline-event ledger-timeline-event--state">
+        <span className="ledger-timeline-event__dot" aria-hidden="true" />
+        <span className="ledger-timeline-event__text">
+          <strong>{timelineEventLabel(entry)}</strong>
+        </span>
+        <time>{formatRelativeTime(entry.created_at)}</time>
+        <MetadataDisclosure label="Timeline metadata">
+          <MetadataRows rows={eventMetadataRows(entry)} />
+        </MetadataDisclosure>
+      </div>
+    );
+  }
   const isBody = entry.kind === 'body';
   return (
     <div
@@ -1130,6 +1144,19 @@ function stateMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'sta
   ].filter(([, value]) => Boolean(value));
 }
 
+function eventMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'event' }>): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ['Event ID', entry.id],
+    ['Event type', entry.event_type],
+    ['Author type', entry.author.type.replace(/_/g, ' ')],
+    ['Source', entry.source || 'unknown'],
+    ['Created', formatAbsoluteTime(entry.created_at)],
+    ['Payload', formatJsonValue(entry.payload)],
+  ];
+  if (entry.author.id) rows.push(['Author ID', entry.author.id]);
+  return rows.filter(([, value]) => Boolean(value));
+}
+
 function checkpointMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'checkpoint' }>): Array<[string, string]> {
   const rows: Array<[string, string]> = [
     ['Checkpoint ID', entry.checkpoint_id],
@@ -1147,6 +1174,12 @@ function stateEntryLabel(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state
   if (entry.status === 'closed') return entry.resolution ? `Closed: ${entry.resolution}` : 'Closed';
   if (entry.status === 'open') return 'Reopened';
   return 'State updated';
+}
+
+function timelineEventLabel(entry: Extract<LedgerIssueTimelineEntry, { kind: 'event' }>): string {
+  if (entry.event_type === 'relationship.added') return 'Relationship added';
+  if (entry.event_type === 'relationship.removed') return 'Relationship removed';
+  return entry.event_type;
 }
 
 function checkpointEntryLabel(kind: string): string {

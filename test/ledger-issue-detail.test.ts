@@ -6,6 +6,7 @@ import { openDb, type Db } from "../src/db.js";
 import {
   buildLedgerIssueDetailInitialProjection,
   buildLedgerIssueDetailProjection,
+  buildLedgerIssueDetailProjectionWithProfile,
 } from "../src/ledger/issue-detail.js";
 import {
   linkAuthRequestToLedgerIssue,
@@ -110,7 +111,7 @@ describe("ledger issue detail projection", () => {
     store.addIssueBranch(child.id, "feature/detail");
     store.setIssueStatus(child.id, "closed", "merged");
     store.setIssueStatus(child.id, "open", null);
-    store.upsertIssueRelationship({
+    const relationship = store.upsertIssueRelationship({
       source_issue_id: parent.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -122,10 +123,10 @@ describe("ledger issue detail projection", () => {
         id, entity_type, entity_id, event_type, actor_type, source,
         payload_json, occurred_at, observed_at
       ) VALUES (
-        'relationship_event_1', 'issue_relationship', 'relationship_1',
+        'relationship_event_1', 'issue_relationship', ?,
         'relationship.added', 'agent', 'mandible', ?, ?, ?
       )`,
-    ).run(JSON.stringify({ source_issue_id: parent.id, target_issue_id: child.id }), Date.now(), Date.now());
+    ).run(relationship.id, JSON.stringify({ source_issue_id: parent.id, target_issue_id: child.id }), Date.now(), Date.now());
 
     insertSession("sess_live", "active");
     db.prepare(
@@ -380,6 +381,50 @@ describe("ledger issue detail projection", () => {
     expect(sourceAfterUnlink.relationships.map((relationship) => relationship.id)).not.toContain(edge.id);
     expect(targetAfterUnlink.relationships.map((relationship) => relationship.id)).not.toContain(edge.id);
     expect(sourceAfterUnlink.relationships.map((relationship) => relationship.id)).toContain(derived.id);
+  });
+
+  it("builds relationship timeline events from indexed relationship entities", () => {
+    const sourceCheckout = createProject("source-repo");
+    const targetCheckout = createProject("target-repo");
+    const store = new LedgerStore(db);
+    const source = store.createIssue({
+      project_id: sourceCheckout.project.id,
+      title: "Source",
+      body: "Source body",
+      kind: "feature",
+    });
+    const target = store.createIssue({
+      project_id: targetCheckout.project.id,
+      title: "Target",
+      body: "Target body",
+      kind: "feature",
+    });
+    store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+      link_type: "related",
+      provenance: "manual",
+      occurred_at: 1000,
+    });
+    store.unlinkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+      link_type: "related",
+      occurred_at: 2000,
+    });
+
+    const { projection, profile } = buildLedgerIssueDetailProjectionWithProfile(db, source.id, {
+      includeProfile: true,
+    });
+
+    expect(projection.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "event", event_type: "relationship.added" }),
+      expect.objectContaining({ kind: "event", event_type: "relationship.removed" }),
+    ]));
+    const phaseNames = profile?.phases.map((phase) => phase.name) ?? [];
+    expect(phaseNames).toContain("timeline:relationship_event_keys");
+    expect(phaseNames).toContain("timeline:relationship_events");
+    expect(phaseNames).not.toContain("timeline:relationship_event_filter");
   });
 
   it("projects associated artifacts from explicit links and markdown refs", () => {

@@ -1003,7 +1003,8 @@ describe('issue deep links', () => {
     }));
 
     expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
-    expect(screen.getByText('Loading full issue detail...')).toBeTruthy();
+    expect(screen.getByLabelText('Issue metadata')).toBeTruthy();
+    expect(screen.getByText('Loading full issue detail; more timeline entries may appear.')).toBeTruthy();
     expect(screen.queryByText('Loading...')).toBeNull();
 
     await act(async () => {
@@ -1034,6 +1035,7 @@ describe('issue deep links', () => {
     }));
 
     expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    expect(screen.getByLabelText('Issue metadata')).toBeTruthy();
     const card = document.querySelector('.ledger-comment-card.ledger-timeline-card');
     expect(card).toBeTruthy();
     expect(card?.getAttribute('id')).toBe('comment-0');
