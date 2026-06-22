@@ -3,6 +3,7 @@ import { marked } from 'marked';
 import {
   addLedgerIssueComment,
   getLedgerIssueDetailByRef,
+  getLedgerIssueInitialDetailByRef,
   patchLedgerIssue,
   resolveLedgerConflict,
   spawnIssueAgent,
@@ -239,6 +240,17 @@ function ledgerDetailMatchesSelection(
     if (alias.external_id) refs.add(alias.external_id);
   }
   return [...refs].some((ref) => ref === issueId || ref.startsWith(issueId) || issueId.startsWith(ref));
+}
+
+function shouldAcceptInitialLedgerDetail(
+  current: LedgerIssueDetailProjection | null,
+  initial: LedgerIssueDetailProjection,
+  repoId: string,
+  issueId: string,
+): boolean {
+  if (!ledgerDetailMatchesSelection(initial, repoId, issueId)) return false;
+  if (!current || !ledgerDetailMatchesSelection(current, repoId, issueId)) return true;
+  return current.detail_stage === 'initial' || current.timeline_partial === true;
 }
 
 function issueRouteHash(repoId: string, issueId: string, commentId?: string | null): string {
@@ -492,6 +504,16 @@ export function IssuesView({
     detailRequestSeqRef.current = requestSeq;
     setDetailLoading(true);
     setDetailLoadFailed(false);
+    getLedgerIssueInitialDetailByRef(repoId, issueId)
+      .then((detail) => {
+        if (detailRequestSeqRef.current !== requestSeq) return;
+        setLedgerIssueDetail((current) => (
+          shouldAcceptInitialLedgerDetail(current, detail, repoId, issueId) ? detail : current
+        ));
+      })
+      .catch(() => {
+        // The full projection fetch below remains authoritative.
+      });
     getLedgerIssueDetailByRef(repoId, issueId)
       .then((detail) => {
         if (detailRequestSeqRef.current !== requestSeq) return;
@@ -838,6 +860,8 @@ export function IssuesView({
           <div className="issues-detail__content">
             <LedgerIssueDetail
               detail={visibleLedgerIssueDetail}
+              hydrating={detailLoading}
+              fullLoadFailed={detailLoadFailed}
               actionInFlight={actionInFlight}
               onAddComment={handleAddCommentBody}
               onSetStatus={(status) => status === 'open' ? handleReopenIssue() : handleCloseIssue()}

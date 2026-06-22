@@ -852,6 +852,8 @@ export type LedgerIssueDetailProjection = {
       updated_at: number;
     }>;
   };
+  detail_stage?: 'initial' | 'full';
+  timeline_partial?: boolean;
 };
 
 export type LedgerBodyRevision = {
@@ -909,6 +911,16 @@ export async function getLedgerIssueDetailByRef(
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
     `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail`
+  );
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function getLedgerIssueInitialDetailByRef(
+  repoId: string,
+  issueId: string,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail?stage=initial`
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
