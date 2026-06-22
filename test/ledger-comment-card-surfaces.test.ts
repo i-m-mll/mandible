@@ -74,14 +74,15 @@ describe("ledger comment card surfaces", () => {
     expect(body).not.toMatch(/background:\s*var\(--neutral-alpha/);
   });
 
-  it("keeps code affordances narrower than the normal prose body", () => {
+  it("keeps comment inline code clear while preserving code-block affordances", () => {
     const inlineCode = cssRuleBody(".spec-panel code");
     const codeBlock = cssRuleBody(".spec-panel pre");
     const codeInsidePre = cssRuleBody(".spec-panel pre code");
     const commentInlineCode = cssRuleBody(".ledger-comment-card__body.spec-panel code:not(pre code)");
 
     expect(inlineCode).toContain("background: var(--neutral-alpha-06)");
-    expect(commentInlineCode).toContain("box-decoration-break: clone");
+    expect(commentInlineCode).toContain("background: transparent");
+    expect(commentInlineCode).not.toMatch(/background:\s*var\(--neutral-alpha/);
     expect(codeBlock).toMatch(/background:\s*rgba\(0,\s*0,\s*0,\s*0\.3\)/);
     expect(codeInsidePre).toContain("background: none");
   });
@@ -104,7 +105,7 @@ describe("ledger comment card surfaces", () => {
     expect(lightCommentBody).toContain("background: #ffffff");
   });
 
-  it("renders the issue body surface white while cloning wrapped inline-code decoration", () => {
+  it("renders the issue body surface white with transparent inline code", () => {
     const document = createRenderedCommentFixture();
     const view = document.defaultView;
     expect(view).toBeTruthy();
@@ -126,8 +127,8 @@ describe("ledger comment card surfaces", () => {
     expect(view!.getComputedStyle(comment!).backgroundColor).toBe("rgb(255, 255, 255)");
     expect(view!.getComputedStyle(body!).backgroundColor).toBe("rgb(255, 255, 255)");
     expect(view!.getComputedStyle(prose!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
-    expect(view!.getComputedStyle(inlineCode!).backgroundColor).toBe("rgba(15, 23, 42, 0.06)");
-    expect(view!.getComputedStyle(inlineCode!).boxDecorationBreak).toBe("clone");
+    expect(view!.getComputedStyle(inlineCode!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    expect(view!.getComputedStyle(inlineCode!).padding).toBe("0px");
     expect(view!.getComputedStyle(codeBlock!).backgroundColor).toBe("rgba(0, 0, 0, 0.3)");
     expect(view!.getComputedStyle(codeInsidePre!).backgroundColor).toBe("rgba(0, 0, 0, 0)");
   });
