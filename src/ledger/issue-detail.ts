@@ -5,6 +5,7 @@ import { mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "./store.js";
 import type {
   LedgerActorType,
+  LedgerComment,
   LedgerConflict,
   LedgerEvent,
   LedgerEventSource,
@@ -300,17 +301,68 @@ export interface LedgerIssueDetailProjection {
   associated_artifacts: LedgerIssueDetailAssociatedArtifact[];
   conflicts: LedgerIssueDetailConflict[];
   sync: LedgerIssueDetailSyncSummary;
+  detail_stage?: "initial" | "full";
+  timeline_partial?: boolean;
 }
 
-export function buildLedgerIssueDetailProjection(
+export interface LedgerIssueDetailBuildProfile {
+  stage: "initial" | "full";
+  total_ms: number;
+  phases: Array<{ name: string; ms: number }>;
+  counts: Record<string, number>;
+}
+
+export function buildLedgerIssueDetailProjection(db: Db, issueId: string): LedgerIssueDetailProjection {
+  return buildLedgerIssueDetailProjectionWithProfile(db, issueId).projection;
+}
+
+export function buildLedgerIssueDetailInitialProjection(
   db: Db,
   issueId: string,
+  options: { commentLimit?: number } = {},
 ): LedgerIssueDetailProjection {
+  return buildLedgerIssueDetailProjectionWithProfile(db, issueId, {
+    stage: "initial",
+    commentLimit: options.commentLimit,
+  }).projection;
+}
+
+export function buildLedgerIssueDetailProjectionWithProfile(
+  db: Db,
+  issueId: string,
+  options: {
+    stage?: "initial" | "full";
+    commentLimit?: number;
+    includeProfile?: boolean;
+  } = {},
+): { projection: LedgerIssueDetailProjection; profile?: LedgerIssueDetailBuildProfile } {
+  const stage = options.stage ?? "full";
+  const phases: Array<{ name: string; ms: number }> = [];
+  const started = performance.now();
+  const measure = <T>(name: string, fn: () => T): T => {
+    const phaseStarted = performance.now();
+    try {
+      return fn();
+    } finally {
+      if (options.includeProfile) {
+        phases.push({ name, ms: roundMs(performance.now() - phaseStarted) });
+      }
+    }
+  };
+
   const store = new LedgerStore(db);
-  const detail = store.getIssueDetail(issueId);
-  const aliases = detail.aliases.map(mapAlias);
-  const labels = activeLabels(detail.labels);
-  const comments = detail.comments
+  const issue = measure("issue", () => store.getIssue(issueId));
+  const aliases = measure("aliases", () => store.listAliases(issueId));
+  const labels = measure("labels", () => (
+    db.prepare("SELECT * FROM ledger_labels WHERE issue_id = ? ORDER BY label").all(issueId) as LedgerLabel[]
+  ));
+  const branches = measure("branches", () => store.listIssueBranches(issueId));
+  const rawComments = stage === "initial"
+    ? measure("comments", () => listInitialComments(db, issueId, options.commentLimit ?? 50))
+    : measure("comments", () => (
+        db.prepare("SELECT * FROM ledger_comments WHERE issue_id = ? ORDER BY created_at").all(issueId) as LedgerComment[]
+      ));
+  const comments = rawComments
     .filter((comment) => comment.deleted_at === null)
     .map((comment) => ({
       id: comment.id,
@@ -325,48 +377,173 @@ export function buildLedgerIssueDetailProjection(
       created_at: comment.created_at,
       updated_at: comment.updated_at,
     }));
-  const checkpoints = detail.checkpoints.map(mapCheckpoint);
-  const relationships = buildRelationships(db, detail);
-  const author = {
-    id: detail.author_actor_id,
-    type: detail.author_actor_type,
-    display: detail.author_display || actorTypeLabel(detail.author_actor_type),
-  };
-  const timeline = buildTimeline(db, detail, comments, checkpoints, author);
-  const conflicts = listIssueConflicts(db, detail.id, comments.map((comment) => comment.id), relationships.map((rel) => rel.id));
-  const sync = buildSyncSummary(db, detail, comments.map((comment) => comment.id), relationships.map((rel) => rel.id), conflicts.length);
-  const associatedArtifacts = listAssociatedArtifacts(db, detail.id, detail.body, comments);
-
-  return {
-    id: detail.id,
-    display_id: displayIssueId(detail, detail.aliases),
-    project: getProjectInfo(db, detail.project_id),
-    title: detail.title,
-    body: detail.body,
-    status: detail.status,
-    worker_status: detail.worker_status,
-    resolution: detail.resolution,
-    kind: detail.kind,
-    priority: detail.priority,
-    source: detail.source,
-    author,
-    created_at: detail.created_at,
-    updated_at: detail.updated_at,
-    closed_at: detail.closed_at,
+  const rawCheckpoints = stage === "initial"
+    ? []
+    : measure("checkpoints", () => store.listIssueCheckpoints(issueId));
+  const checkpoints = rawCheckpoints.map(mapCheckpoint);
+  const relationshipInputs = stage === "initial"
+    ? { outgoing: [], incoming: [] }
+    : measure("relationship_rows", () => ({
+        outgoing: db.prepare(
+          "SELECT * FROM ledger_issue_relationships WHERE source_issue_id = ? ORDER BY created_at",
+        ).all(issueId) as LedgerIssueRelationship[],
+        incoming: db.prepare(
+          "SELECT * FROM ledger_issue_relationships WHERE target_issue_id = ? ORDER BY created_at",
+        ).all(issueId) as LedgerIssueRelationship[],
+      }));
+  const detail = {
+    ...issue,
     aliases,
+    comments: rawComments,
+    checkpoints: rawCheckpoints,
     labels,
-    issue_branches: detail.branches.map(mapIssueBranch),
+    branches,
+    outgoing_relationships: relationshipInputs.outgoing,
+    incoming_relationships: relationshipInputs.incoming,
+  };
+  const mappedAliases = aliases.map(mapAlias);
+  const activeIssueLabels = activeLabels(labels);
+  const relationships = stage === "initial" ? [] : measure("relationships", () => buildRelationships(db, detail));
+  const author = {
+    id: issue.author_actor_id,
+    type: issue.author_actor_type,
+    display: issue.author_display || actorTypeLabel(issue.author_actor_type),
+  };
+  const timeline = stage === "initial"
+    ? buildInitialTimeline(issue, comments, author)
+    : measure("timeline", () => buildTimeline(db, issue, comments, checkpoints, author, measure));
+  const conflicts = stage === "initial"
+    ? []
+    : measure("conflicts", () => listIssueConflicts(
+        db,
+        issue.id,
+        comments.map((comment) => comment.id),
+        relationships.map((rel) => rel.id),
+      ));
+  const sync = stage === "initial"
+    ? emptySyncSummary()
+    : measure("sync", () => buildSyncSummary(
+        db,
+        issue,
+        comments.map((comment) => comment.id),
+        relationships.map((rel) => rel.id),
+        conflicts.length,
+      ));
+  const associatedArtifacts = stage === "initial"
+    ? []
+    : measure("associated_artifacts", () => listAssociatedArtifacts(db, issue.id, issue.body, comments));
+  const workUnits = stage === "initial" ? [] : measure("work_units", () => listWorkUnits(db, issue.id));
+  const sessions = stage === "initial" ? [] : measure("sessions", () => listSessions(db, issue.id));
+  const authRequests = stage === "initial" ? [] : measure("auth_requests", () => listAuthRequests(db, issue.id));
+  const timelinePartial = stage === "initial" && (options.commentLimit ?? 50) > 0 && comments.length >= (options.commentLimit ?? 50);
+
+  const projection: LedgerIssueDetailProjection = {
+    id: issue.id,
+    display_id: displayIssueId(issue, aliases),
+    project: measure("project", () => getProjectInfo(db, issue.project_id)),
+    title: issue.title,
+    body: issue.body,
+    status: issue.status,
+    worker_status: issue.worker_status,
+    resolution: issue.resolution,
+    kind: issue.kind,
+    priority: issue.priority,
+    source: issue.source,
+    author,
+    created_at: issue.created_at,
+    updated_at: issue.updated_at,
+    closed_at: issue.closed_at,
+    aliases: mappedAliases,
+    labels: activeIssueLabels,
+    issue_branches: branches.map(mapIssueBranch),
     comments,
     checkpoints,
     timeline,
     relationships,
-    work_units: listWorkUnits(db, detail.id),
-    sessions: listSessions(db, detail.id),
-    auth_requests: listAuthRequests(db, detail.id),
+    work_units: workUnits,
+    sessions,
+    auth_requests: authRequests,
     associated_artifacts: associatedArtifacts,
     conflicts,
     sync,
+    detail_stage: stage,
+    timeline_partial: timelinePartial,
   };
+
+  return {
+    projection,
+    profile: options.includeProfile
+      ? {
+          stage,
+          total_ms: roundMs(performance.now() - started),
+          phases,
+          counts: {
+            comments: comments.length,
+            checkpoints: checkpoints.length,
+            timeline: timeline.length,
+            relationships: relationships.length,
+            work_units: workUnits.length,
+            sessions: sessions.length,
+            auth_requests: authRequests.length,
+            associated_artifacts: associatedArtifacts.length,
+            conflicts: conflicts.length,
+          },
+        }
+      : undefined,
+  };
+}
+
+function listInitialComments(db: Db, issueId: string, limit: number): LedgerComment[] {
+  if (limit <= 0) return [];
+  return db.prepare(
+    `SELECT * FROM ledger_comments
+     WHERE issue_id = ? AND deleted_at IS NULL
+     ORDER BY created_at
+     LIMIT ?`,
+  ).all(issueId, limit) as LedgerComment[];
+}
+
+function buildInitialTimeline(
+  issue: LedgerIssue,
+  comments: LedgerIssueDetailComment[],
+  issueAuthor: LedgerIssueDetailActor,
+): LedgerIssueTimelineEntry[] {
+  return [
+    {
+      id: `${issue.id}:body`,
+      kind: "body",
+      ordinal: 0,
+      body: issue.body,
+      author: issueAuthor,
+      source: issue.source,
+      created_at: issue.created_at,
+      updated_at: issue.updated_at,
+    },
+    ...comments.map((comment) => ({
+      id: comment.id,
+      kind: "comment" as const,
+      comment_id: comment.id,
+      ordinal: comment.ordinal,
+      body: comment.body,
+      author: comment.author,
+      source: comment.source,
+      created_at: comment.created_at,
+      updated_at: comment.updated_at,
+    })),
+  ];
+}
+
+function emptySyncSummary(): LedgerIssueDetailSyncSummary {
+  return {
+    state: "clean",
+    outbox: {},
+    open_conflicts: 0,
+    latest_jobs: [],
+  };
+}
+
+function roundMs(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
 function mapIssueBranch(branch: LedgerIssueBranch): LedgerIssueDetailBranch {
@@ -625,6 +802,7 @@ function buildTimeline(
   comments: LedgerIssueDetailComment[],
   checkpoints: LedgerIssueDetailCheckpoint[],
   issueAuthor: LedgerIssueDetailActor,
+  measure: <T>(name: string, fn: () => T) => T = (_name, fn) => fn(),
 ): LedgerIssueTimelineEntry[] {
   const entries: LedgerIssueTimelineEntry[] = [{
     id: `${issue.id}:body`,
@@ -664,13 +842,13 @@ function buildTimeline(
     });
   }
 
-  const events = db.prepare(
+  const events = measure("timeline:issue_events", () => db.prepare(
     `SELECT * FROM ledger_events
      WHERE entity_type = 'issue'
        AND entity_id = ?
        AND event_type IN ('issue.updated', 'issue.closed', 'issue.reopened')
      ORDER BY occurred_at, observed_at`,
-  ).all(issue.id) as LedgerEvent[];
+  ).all(issue.id) as LedgerEvent[]);
   for (const event of events) {
     const payload = parseJsonObject(event.payload_json);
     const patch = parsePatch(payload);
@@ -696,28 +874,30 @@ function buildTimeline(
     });
   }
 
-  const relationshipEvents = db.prepare(
+  const relationshipEvents = measure("timeline:relationship_events", () => db.prepare(
     `SELECT * FROM ledger_events
      WHERE event_type IN ('relationship.added', 'relationship.removed')
      ORDER BY occurred_at, observed_at`,
-  ).all() as LedgerEvent[];
-  for (const event of relationshipEvents) {
-    const payload = parseJsonObject(event.payload_json);
-    if (payload.source_issue_id !== issue.id && payload.target_issue_id !== issue.id) continue;
-    entries.push({
-      id: event.id,
-      kind: "event",
-      event_type: event.event_type,
-      author: {
-        id: event.actor_id,
-        type: event.actor_type,
-        display: actorTypeLabel(event.actor_type),
-      },
-      source: event.source,
-      created_at: event.occurred_at,
-      payload,
-    });
-  }
+  ).all() as LedgerEvent[]);
+  measure("timeline:relationship_event_filter", () => {
+    for (const event of relationshipEvents) {
+      const payload = parseJsonObject(event.payload_json);
+      if (payload.source_issue_id !== issue.id && payload.target_issue_id !== issue.id) continue;
+      entries.push({
+        id: event.id,
+        kind: "event",
+        event_type: event.event_type,
+        author: {
+          id: event.actor_id,
+          type: event.actor_type,
+          display: actorTypeLabel(event.actor_type),
+        },
+        source: event.source,
+        created_at: event.occurred_at,
+        payload,
+      });
+    }
+  });
 
   return entries.sort((a, b) => {
     if (a.created_at !== b.created_at) return a.created_at - b.created_at;

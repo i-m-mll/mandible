@@ -26,6 +26,8 @@ type RenderTimelineEntry =
 export type LedgerIssueDetailProps = {
   detail: LedgerIssueDetailProjection;
   compact?: boolean;
+  hydrating?: boolean;
+  fullLoadFailed?: boolean;
   actionInFlight?: boolean;
   onAddComment?: (body: string) => Promise<void> | void;
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
@@ -38,6 +40,8 @@ export type LedgerIssueDetailProps = {
 export function LedgerIssueDetail({
   detail,
   compact = false,
+  hydrating = false,
+  fullLoadFailed = false,
   actionInFlight = false,
   onAddComment,
   onSetStatus,
@@ -65,9 +69,10 @@ export function LedgerIssueDetail({
   const associatedArtifacts = detail.associated_artifacts ?? [];
   const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
+  const isInitialDetail = detail.detail_stage === 'initial';
   const hasIssueActions = Boolean(
-    liveSession ||
-    onStartAgent ||
+    (!isInitialDetail && liveSession) ||
+    (!isInitialDetail && onStartAgent) ||
     onSetStatus ||
     onAddComment ||
     detail.auth_requests.length > 0 ||
@@ -112,7 +117,10 @@ export function LedgerIssueDetail({
   };
 
   return (
-    <article className={`ledger-issue-detail${compact ? ' ledger-issue-detail--compact' : ''}`}>
+    <article
+      className={`ledger-issue-detail${compact ? ' ledger-issue-detail--compact' : ''}`}
+      aria-busy={hydrating ? 'true' : 'false'}
+    >
       <header className="ledger-issue-detail__header">
         <div className="ledger-issue-detail__heading">
           <div className="ledger-issue-detail__eyebrow">
@@ -135,7 +143,7 @@ export function LedgerIssueDetail({
                 primaryWorkUnit={primaryWorkUnit}
                 onToggle={() => setActionsOpen((prev) => !prev)}
                 onClose={() => setActionsOpen(false)}
-                onStartAgent={onStartAgent}
+                onStartAgent={isInitialDetail ? undefined : onStartAgent}
                 onSetStatus={onSetStatus}
                 onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
                 onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
@@ -177,6 +185,15 @@ export function LedgerIssueDetail({
             <TimelineEntryCard key={entry.id} entry={entry} detail={detail} onOpenEntity={onOpenEntity} />
           ))}
         </div>
+        {(isInitialDetail || hydrating || fullLoadFailed) && (
+          <p className="text-muted">
+            {fullLoadFailed
+              ? 'Full issue detail failed to load.'
+              : detail.timeline_partial
+                ? 'Loading full issue detail; more timeline entries may appear.'
+                : 'Loading full issue detail...'}
+          </p>
+        )}
         {onAddComment && (
           <div className="ledger-comment-composer">
             {!showComposer ? (

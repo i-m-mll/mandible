@@ -1041,6 +1041,46 @@ describe('issue deep links', () => {
     expect(card?.querySelector('.ledger-comment-card__body.spec-panel')?.textContent).toContain('Pending issue body');
   });
 
+  it('renders initial-stage comments before full ledger detail resolves', async () => {
+    let resolveFullDetail: (response: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('stage=initial')) {
+        return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+          displayId: '4c26383',
+          title: 'Initial detail title',
+          comments: ['First visible comment'],
+          stage: 'initial',
+        })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return new Promise<Response>((resolve) => {
+        resolveFullDetail = resolve;
+      });
+    }));
+
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByText('First visible comment')).toBeTruthy();
+    expect(screen.getByText('Loading full issue detail; more timeline entries may appear.')).toBeTruthy();
+    expect(screen.queryByText('Full detail comment')).toBeNull();
+
+    await act(async () => {
+      resolveFullDetail(new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Full detail title',
+        comments: ['First visible comment', 'Full detail comment'],
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Full detail title' })).toBeTruthy();
+    expect(screen.getByText('Full detail comment')).toBeTruthy();
+  });
+
   it('ignores stale ledger detail responses after selecting a different issue', async () => {
     const multiRepos: IssueRepoSummary[] = [{
       ...repos[0],
@@ -1078,14 +1118,30 @@ describe('issue deep links', () => {
     await act(async () => {
       pending[0](new Response(JSON.stringify(issueDetailProjection({
         displayId: '4c26383',
+        title: 'Stale first initial detail',
+        stage: 'initial',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      pending[1](new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
         title: 'Stale first detail',
       })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
     });
 
     expect(screen.queryByRole('heading', { name: 'Stale first detail' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Stale first initial detail' })).toBeNull();
 
     await act(async () => {
-      pending[1](new Response(JSON.stringify(issueDetailProjection({
+      pending[2](new Response(JSON.stringify(issueDetailProjection({
+        displayId: '9f0e111',
+        title: 'Second initial detail',
+        stage: 'initial',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Second initial detail' })).toBeTruthy();
+
+    await act(async () => {
+      pending[3](new Response(JSON.stringify(issueDetailProjection({
         displayId: '9f0e111',
         title: 'Second hydrated detail',
       })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
@@ -1098,10 +1154,25 @@ describe('issue deep links', () => {
 function issueDetailProjection({
   displayId,
   title,
+  comments = [],
+  stage = 'full',
 }: {
   displayId: string;
   title: string;
+  comments?: string[];
+  stage?: 'initial' | 'full';
 }) {
+  const now = Date.now();
+  const author = { id: null, type: 'mandible_user', display: 'MLL' };
+  const commentEntries = comments.map((body, index) => ({
+    id: `${displayId}-comment-${index + 1}`,
+    ordinal: index + 1,
+    body,
+    author,
+    source: 'mandible',
+    created_at: now + index + 1,
+    updated_at: null,
+  }));
   return {
     id: displayId,
     display_id: displayId,
@@ -1122,13 +1193,13 @@ function issueDetailProjection({
     kind: 'bug',
     priority: 'normal',
     source: 'mandible',
-    author: { id: null, type: 'mandible_user', display: 'MLL' },
-    created_at: Date.now(),
-    updated_at: Date.now(),
+    author,
+    created_at: now,
+    updated_at: now,
     closed_at: null,
     aliases: [],
     labels: ['error'],
-    comments: [],
+    comments: commentEntries,
     checkpoints: [],
     timeline: [
       {
@@ -1136,11 +1207,22 @@ function issueDetailProjection({
         kind: 'body',
         ordinal: 0,
         body: 'Hydrated body',
-        author: { id: null, type: 'mandible_user', display: 'MLL' },
+        author,
         source: 'mandible',
-        created_at: Date.now(),
+        created_at: now,
         updated_at: null,
       },
+      ...commentEntries.map((comment) => ({
+        id: comment.id,
+        kind: 'comment',
+        comment_id: comment.id,
+        ordinal: comment.ordinal,
+        body: comment.body,
+        author: comment.author,
+        source: comment.source,
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+      })),
     ],
     relationships: [],
     work_units: [],
@@ -1154,6 +1236,8 @@ function issueDetailProjection({
       open_conflicts: 0,
       latest_jobs: [],
     },
+    detail_stage: stage,
+    timeline_partial: stage === 'initial',
   };
 }
 
