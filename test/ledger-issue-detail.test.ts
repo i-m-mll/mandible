@@ -8,6 +8,7 @@ import {
   buildLedgerIssueDetailProjection,
   buildLedgerIssueDetailProjectionWithProfile,
 } from "../src/ledger/issue-detail.js";
+import { resolveLedgerIssueIdForRoute } from "../src/ledger/issue-migration.js";
 import {
   linkAuthRequestToLedgerIssue,
   linkSessionToLedgerIssue,
@@ -519,5 +520,32 @@ describe("ledger issue detail projection", () => {
     expect(states).toMatchObject([
       { event_type: "issue.closed", status: "closed", resolution: "merged" },
     ]);
+  });
+
+  it("resolves route issue ids without enumerating all scanner repos", () => {
+    const checkout = createProject("repo");
+    const issue = new LedgerStore(db).createIssue({
+      project_id: checkout.project.id,
+      title: "Route detail",
+      body: "Route detail body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "rou1234", is_primary: true }],
+    });
+    const workScanner = {
+      getRepoById: () => {
+        throw new Error("route detail should not read scanner repo state");
+      },
+      getRepos: () => {
+        throw new Error("route detail should not enumerate scanner repos");
+      },
+    };
+
+    expect(resolveLedgerIssueIdForRoute(db, workScanner, "repo", "rou1234")).toMatchObject({
+      ok: true,
+      issue_id: issue.id,
+      project_id: checkout.project.id,
+      repo_id: "repo",
+    });
   });
 });

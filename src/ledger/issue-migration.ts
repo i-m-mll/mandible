@@ -393,6 +393,60 @@ function listCheckouts(db: Db, repos: RepoInfo[]): CheckoutProjection[] {
   });
 }
 
+function checkoutFromRow(row: {
+  checkout_id: string;
+  project_id: string;
+  work_repo_id: string | null;
+  root: string;
+  name: string;
+  display_name: string;
+}, repo?: RepoInfo): CheckoutProjection {
+  return {
+    project_id: row.project_id,
+    checkout_id: row.checkout_id,
+    repo_id: repo?.id ?? row.work_repo_id ?? row.project_id,
+    repo_name: repo?.name ?? row.name ?? row.display_name,
+    repo_root: repo?.root ?? row.root,
+    last_scanned_at: repo?.last_scanned_at ?? null,
+  };
+}
+
+function findCheckoutByRepoRef(
+  db: Db,
+  repoRef: string,
+  repo?: RepoInfo,
+): CheckoutProjection | null {
+  const candidates = new Set<string>([repoRef]);
+  if (repo) {
+    candidates.add(repo.id);
+    candidates.add(repo.name);
+    candidates.add(repo.root);
+  }
+  const values = [...candidates].filter((value) => value.trim() !== "");
+  if (values.length === 0) return null;
+  const placeholders = values.map(() => "?").join(", ");
+  const row = db.prepare(
+    `SELECT c.id AS checkout_id, c.project_id, c.work_repo_id, c.root, c.name, p.display_name
+     FROM ledger_project_checkouts c
+     JOIN ledger_projects p ON p.id = c.project_id
+     WHERE c.work_repo_id IN (${placeholders})
+        OR c.root IN (${placeholders})
+        OR c.name IN (${placeholders})
+        OR c.project_id IN (${placeholders})
+        OR p.display_name IN (${placeholders})
+     ORDER BY c.updated_at DESC, c.name, c.root
+     LIMIT 1`,
+  ).get(...values, ...values, ...values, ...values, ...values) as {
+    checkout_id: string;
+    project_id: string;
+    work_repo_id: string | null;
+    root: string;
+    name: string;
+    display_name: string;
+  } | undefined;
+  return row ? checkoutFromRow(row, repo) : null;
+}
+
 function representativeCheckouts(checkouts: CheckoutProjection[]): CheckoutProjection[] {
   const byProject = new Map<string, CheckoutProjection>();
   for (const checkout of checkouts) {
@@ -464,7 +518,11 @@ function resolveCheckout(
   workScanner: Pick<WorkScanner, "getRepos" | "getRepoById">,
   repoRef: string,
 ): CheckoutProjection | null {
+  const direct = findCheckoutByRepoRef(db, repoRef);
+  if (direct) return direct;
   const repo = workScanner.getRepoById(repoRef);
+  const scannerDirect = repo ? findCheckoutByRepoRef(db, repoRef, repo) : null;
+  if (scannerDirect) return scannerDirect;
   const checkouts = listCheckouts(db, workScanner.getRepos());
   return checkouts.find((checkout) =>
     checkout.repo_id === repoRef ||
