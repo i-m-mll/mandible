@@ -3347,6 +3347,11 @@ tr:last-child td {
   border-radius: 4px;
 }
 
+.ledger-comment-card__body.spec-panel code:not(pre code) {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
 .spec-panel pre {
   background: rgba(0, 0, 0, 0.3);
   padding: 12px;
