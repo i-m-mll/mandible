@@ -924,12 +924,30 @@ export async function getLedgerIssueDetailByRef(
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
 
+export async function getLedgerIssueDetailByIssueId(
+  issueId: string,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(
+    `/api/ledger/issues/${encodeURIComponent(issueId)}`
+  );
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
 export async function getLedgerIssueInitialDetailByRef(
   repoId: string,
   issueId: string,
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
     `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail?stage=initial`
+  );
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function getLedgerIssueInitialDetailByIssueId(
+  issueId: string,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(
+    `/api/ledger/issues/${encodeURIComponent(issueId)}?stage=initial`
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
