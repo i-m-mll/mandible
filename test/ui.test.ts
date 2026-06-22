@@ -35,6 +35,7 @@ import { getInstructionMessageMeta } from '../ui/src/views/conversations';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
 import { useSidebarResize } from '../ui/src/hooks/useSidebarResize';
 import {
+  IssuesView,
   resolveIssueIdDeepLink,
   resolveIssueRepoDeepLink,
   type IssueRepoSummary,
@@ -987,7 +988,149 @@ describe('issue deep links', () => {
 
     expect(repoId).toBe('dotfiles');
   });
+
+  it('renders selected issue metadata while ledger detail is still loading', async () => {
+    let resolveDetail: (response: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => {
+      resolveDetail = resolve;
+    })));
+
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    expect(screen.getByText('Loading full issue detail...')).toBeTruthy();
+    expect(screen.queryByText('Loading...')).toBeNull();
+
+    await act(async () => {
+      resolveDetail(new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Hydrated detail title',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Hydrated detail title' })).toBeTruthy();
+  });
+
+  it('ignores stale ledger detail responses after selecting a different issue', async () => {
+    const multiRepos: IssueRepoSummary[] = [{
+      ...repos[0],
+      issues: [
+        repos[0].issues[0],
+        {
+          id: '9f0e111',
+          repo_id: 'mandible',
+          repo_name: 'mandible',
+          title: 'Second issue',
+          status: 'open',
+          labels: ['feature'],
+          author: 'MLL',
+          created_at: '2026-05-31T12:00:00.000Z',
+          description: 'Second body',
+        },
+      ],
+    }];
+    const pending: Array<(response: Response) => void> = [];
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => {
+      pending.push(resolve);
+    })));
+
+    render(h(IssuesView, {
+      repos: multiRepos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Second issue' }));
+    expect(await screen.findByRole('heading', { name: 'Second issue' })).toBeTruthy();
+
+    await act(async () => {
+      pending[0](new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Stale first detail',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(screen.queryByRole('heading', { name: 'Stale first detail' })).toBeNull();
+
+    await act(async () => {
+      pending[1](new Response(JSON.stringify(issueDetailProjection({
+        displayId: '9f0e111',
+        title: 'Second hydrated detail',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Second hydrated detail' })).toBeTruthy();
+  });
 });
+
+function issueDetailProjection({
+  displayId,
+  title,
+}: {
+  displayId: string;
+  title: string;
+}) {
+  return {
+    id: displayId,
+    display_id: displayId,
+    project: {
+      id: 'proj_1',
+      display_name: 'mandible',
+      remote_identity: '',
+      upstream_identity: '',
+      repo_id: 'mandible',
+      repo_name: 'mandible',
+      repo_root: '/repo',
+      default_branch: 'main',
+    },
+    title,
+    body: 'Hydrated body',
+    status: 'open',
+    resolution: null,
+    kind: 'bug',
+    priority: 'normal',
+    source: 'mandible',
+    author: { id: null, type: 'mandible_user', display: 'MLL' },
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    closed_at: null,
+    aliases: [],
+    labels: ['error'],
+    comments: [],
+    checkpoints: [],
+    timeline: [
+      {
+        id: `${displayId}:body`,
+        kind: 'body',
+        ordinal: 0,
+        body: 'Hydrated body',
+        author: { id: null, type: 'mandible_user', display: 'MLL' },
+        source: 'mandible',
+        created_at: Date.now(),
+        updated_at: null,
+      },
+    ],
+    relationships: [],
+    work_units: [],
+    sessions: [],
+    auth_requests: [],
+    associated_artifacts: [],
+    conflicts: [],
+    sync: {
+      state: 'clean',
+      outbox: {},
+      open_conflicts: 0,
+      latest_jobs: [],
+    },
+  };
+}
 
 describe('useSidebarResize', () => {
   function stubLocalStorage(initial: Record<string, string> = {}): void {

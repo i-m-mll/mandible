@@ -129,6 +129,12 @@ function renderInlineMarkdown(src: string): string {
   return sanitizeInlineHtml(stripped);
 }
 
+function renderBlockMarkdown(src: string): string {
+  if (!src) return '';
+  const result = marked.parse(src, { async: false });
+  return sanitizeHtml(typeof result === 'string' ? result : '');
+}
+
 // Reverse map: display name → internal label (for filter pills)
 const LABEL_INTERNAL_NAMES: Record<string, string> = {
   bug: 'error',
@@ -281,11 +287,13 @@ export function IssuesView({
   const [sortField] = useState<SortField>('created_at');
   const [ledgerIssueDetail, setLedgerIssueDetail] = useState<LedgerIssueDetailProjection | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailLoadFailed, setDetailLoadFailed] = useState(false);
   const [actionInFlight, setActionInFlight] = useState(false);
 
   // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
   const lastScrolledCommentRef = useRef<string | null>(null);
+  const detailRequestSeqRef = useRef(0);
   const filterEditedRef = useRef(false);
 
   useEffect(() => {
@@ -455,30 +463,48 @@ export function IssuesView({
     [ledgerIssueDetail, selectedRepoId, selectedIssueId],
   );
 
+  const selectedIssueSummary = useMemo(() => {
+    if (!selectedRepoId || !selectedIssueId) return null;
+    const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
+    const repo = repos.find((candidate) => candidate.repo_id === repoId);
+    if (!repo) return null;
+    const issueId = resolveIssueId(repoId, selectedIssueId);
+    const issue = repo.issues.find((candidate) => (
+      candidate.id === issueId ||
+      candidate.id.startsWith(issueId) ||
+      issueId.startsWith(candidate.id)
+    ));
+    return issue ? { repo, issue } : null;
+  }, [repos, selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
+
   // Fetch canonical ledger detail when selection changes.
   useEffect(() => {
     if (!selectedRepoId || !selectedIssueId) {
+      detailRequestSeqRef.current += 1;
       setLedgerIssueDetail(null);
       setDetailLoading(false);
+      setDetailLoadFailed(false);
       return;
     }
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
     const issueId = resolveIssueId(repoId, selectedIssueId);
-    let cancelled = false;
+    const requestSeq = detailRequestSeqRef.current + 1;
+    detailRequestSeqRef.current = requestSeq;
     setDetailLoading(true);
+    setDetailLoadFailed(false);
     getLedgerIssueDetailByRef(repoId, issueId)
       .then((detail) => {
-        if (cancelled) return;
+        if (detailRequestSeqRef.current !== requestSeq) return;
         setLedgerIssueDetail(detail);
       })
       .catch(() => {
-        if (!cancelled) setLedgerIssueDetail(null);
+        if (detailRequestSeqRef.current === requestSeq) setDetailLoadFailed(true);
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (detailRequestSeqRef.current === requestSeq) setDetailLoading(false);
       });
     return () => {
-      cancelled = true;
+      if (detailRequestSeqRef.current === requestSeq) detailRequestSeqRef.current += 1;
     };
   }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
 
@@ -494,11 +520,14 @@ export function IssuesView({
 
   const refreshLedgerIssueDetail = useCallback(async () => {
     if (!selectedRepoId || !selectedIssueId) return;
+    const requestSeq = detailRequestSeqRef.current + 1;
+    detailRequestSeqRef.current = requestSeq;
+    setDetailLoadFailed(false);
     try {
       const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
-      setLedgerIssueDetail(detail);
+      if (detailRequestSeqRef.current === requestSeq) setLedgerIssueDetail(detail);
     } catch {
-      setLedgerIssueDetail(null);
+      if (detailRequestSeqRef.current === requestSeq) setDetailLoadFailed(true);
     }
   }, [selectedRepoId, selectedIssueId]);
 
@@ -824,6 +853,15 @@ export function IssuesView({
               }}
             />
           </div>
+        ) : selectedIssueSummary ? (
+          <div className="issues-detail__content">
+            <PendingIssueDetail
+              issue={selectedIssueSummary.issue}
+              repo={selectedIssueSummary.repo}
+              failed={detailLoadFailed}
+              loading={detailLoading}
+            />
+          </div>
         ) : detailLoading ? (
           <div className="issues-detail__empty">
             <p className="text-muted">Loading...</p>
@@ -835,6 +873,65 @@ export function IssuesView({
         )}
       </div>
     </div>
+  );
+}
+
+function PendingIssueDetail({
+  issue,
+  repo,
+  loading,
+  failed,
+}: {
+  issue: IssueSummary;
+  repo: IssueRepoSummary;
+  loading: boolean;
+  failed: boolean;
+}): JSX.Element {
+  const displayLabels = (issue.labels ?? []).filter((label) => !label.startsWith('mandible:'));
+  const descriptionHtml = renderBlockMarkdown(issue.description ?? '');
+
+  return (
+    <article className="ledger-issue-detail" aria-busy={loading ? 'true' : 'false'}>
+      <header className="ledger-issue-detail__header">
+        <div className="ledger-issue-detail__heading">
+          <div className="ledger-issue-detail__eyebrow">
+            <span>{repo.repo_name}</span>
+            <code>{issue.id}</code>
+          </div>
+          <div className="ledger-issue-detail__title-row">
+            <h2 dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issue.title) }} />
+          </div>
+          <div className="ledger-issue-detail__meta">
+            <span className="ledger-issue-detail__byline-author">{issue.author}</span>
+            <time>{issue.created_at}</time>
+            {displayLabels.length > 0 && (
+              <>
+                <span className="ledger-issue-detail__meta-separator" aria-hidden="true" />
+                <span className="ledger-issue-detail__label-row">
+                  {displayLabels.map((label) => (
+                    <span key={label} className="ledger-label">{label}</span>
+                  ))}
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="ledger-issue-detail__header-actions">
+          <span className="ledger-label">{issue.status}</span>
+        </div>
+      </header>
+      <section className="ledger-issue-detail__section">
+        {descriptionHtml ? (
+          <div
+            className="ledger-comment-card__body spec-panel"
+            dangerouslySetInnerHTML={{ __html: descriptionHtml }}
+          />
+        ) : null}
+        <p className="text-muted">
+          {failed ? 'Full issue detail failed to load.' : 'Loading full issue detail...'}
+        </p>
+      </section>
+    </article>
   );
 }
 
