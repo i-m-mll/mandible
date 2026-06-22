@@ -67,6 +67,7 @@
   --surface-sidebar: rgba(13, 18, 25, 0.96);
   --surface-toolbar: rgba(11, 15, 20, 0.92);
   --surface-popover: rgba(12, 17, 24, 0.96);
+  --surface-content: var(--bg-card);
   --surface-code: rgba(0, 0, 0, 0.3);
   --scrim-modal: rgba(0, 0, 0, 0.6);
   --bg-inset: rgba(8, 12, 17, 0.88);
@@ -190,6 +191,7 @@
   --surface-sidebar: rgba(250, 252, 255, 0.96);
   --surface-toolbar: rgba(250, 252, 255, 0.92);
   --surface-popover: rgba(255, 255, 255, 0.98);
+  --surface-content: var(--bg-card);
   --surface-code: rgba(15, 23, 42, 0.06);
   --scrim-modal: rgba(15, 23, 42, 0.34);
   --bg-inset: rgba(241, 245, 249, 0.9);
@@ -13939,12 +13941,18 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   gap: 8px;
 }
 
-.ledger-comment-card,
 .ledger-kv-card,
 .ledger-conflict-card {
   border: 1px solid var(--neutral-alpha-06);
   border-radius: 8px;
   background: var(--neutral-alpha-03);
+  padding: 10px;
+}
+
+.ledger-comment-card {
+  border: 1px solid var(--neutral-alpha-06);
+  border-radius: 8px;
+  background: var(--surface-content);
   padding: 10px;
 }
 
