@@ -3348,8 +3348,9 @@ tr:last-child td {
 }
 
 .ledger-comment-card__body.spec-panel code:not(pre code) {
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
 }
 
 .spec-panel pre {
