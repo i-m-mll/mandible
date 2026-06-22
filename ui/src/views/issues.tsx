@@ -130,12 +130,6 @@ function renderInlineMarkdown(src: string): string {
   return sanitizeInlineHtml(stripped);
 }
 
-function renderBlockMarkdown(src: string): string {
-  if (!src) return '';
-  const result = marked.parse(src, { async: false });
-  return sanitizeHtml(typeof result === 'string' ? result : '');
-}
-
 // Reverse map: display name → internal label (for filter pills)
 const LABEL_INTERNAL_NAMES: Record<string, string> = {
   bug: 'error',
@@ -251,6 +245,79 @@ function shouldAcceptInitialLedgerDetail(
   if (!ledgerDetailMatchesSelection(initial, repoId, issueId)) return false;
   if (!current || !ledgerDetailMatchesSelection(current, repoId, issueId)) return true;
   return current.detail_stage === 'initial' || current.timeline_partial === true;
+}
+
+function synthesizeLedgerIssueDetail(
+  repo: IssueRepoSummary,
+  issue: IssueSummary,
+): LedgerIssueDetailProjection {
+  const createdAt = Date.parse(issue.created_at);
+  const timestamp = Number.isFinite(createdAt) ? createdAt : Date.now();
+  const author = { id: null, type: 'mandible_user' as const, display: issue.author || 'Mandible' };
+  const labels = issue.labels ?? [];
+  const kind = labels.includes('umbrella')
+    ? 'umbrella'
+    : labels.some((label) => label === 'error' || label === 'bug')
+      ? 'bug'
+      : labels.includes('deferred')
+        ? 'deferred'
+        : labels.includes('coordination')
+          ? 'coordination'
+          : 'feature';
+  const priority = labels.includes('important')
+    ? 'important'
+    : labels.includes('user-action-required')
+      ? 'user-action-required'
+      : 'normal';
+  const resolution = issue.status === 'closed' && labels.includes('merged') ? 'merged' : null;
+  return {
+    id: issue.id,
+    display_id: issue.id,
+    project: {
+      id: repo.repo_id,
+      display_name: repo.repo_name,
+      remote_identity: '',
+      upstream_identity: '',
+      repo_id: repo.repo_id,
+      repo_name: repo.repo_name,
+      repo_root: repo.repo_root ?? null,
+      default_branch: null,
+    },
+    title: issue.title,
+    body: issue.description ?? '',
+    status: issue.status,
+    resolution,
+    kind,
+    priority,
+    source: 'mandible',
+    author,
+    created_at: timestamp,
+    updated_at: timestamp,
+    closed_at: null,
+    aliases: [],
+    labels,
+    comments: [],
+    checkpoints: [],
+    timeline: [{
+      id: `${issue.id}:body`,
+      kind: 'body',
+      ordinal: 0,
+      body: issue.description ?? '',
+      author,
+      source: 'mandible',
+      created_at: timestamp,
+      updated_at: null,
+    }],
+    relationships: [],
+    work_units: [],
+    sessions: [],
+    auth_requests: [],
+    associated_artifacts: [],
+    conflicts: [],
+    sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
+    detail_stage: 'initial',
+    timeline_partial: true,
+  };
 }
 
 function issueRouteHash(repoId: string, issueId: string, commentId?: string | null): string {
@@ -468,13 +535,6 @@ export function IssuesView({
     [repos],
   );
 
-  const visibleLedgerIssueDetail = useMemo(
-    () => ledgerDetailMatchesSelection(ledgerIssueDetail, selectedRepoId, selectedIssueId)
-      ? ledgerIssueDetail
-      : null,
-    [ledgerIssueDetail, selectedRepoId, selectedIssueId],
-  );
-
   const selectedIssueSummary = useMemo(() => {
     if (!selectedRepoId || !selectedIssueId) return null;
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
@@ -488,6 +548,20 @@ export function IssuesView({
     ));
     return issue ? { repo, issue } : null;
   }, [repos, selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
+
+  const synthesizedLedgerIssueDetail = useMemo(
+    () => selectedIssueSummary
+      ? synthesizeLedgerIssueDetail(selectedIssueSummary.repo, selectedIssueSummary.issue)
+      : null,
+    [selectedIssueSummary],
+  );
+
+  const visibleLedgerIssueDetail = useMemo(
+    () => ledgerDetailMatchesSelection(ledgerIssueDetail, selectedRepoId, selectedIssueId)
+      ? ledgerIssueDetail
+      : synthesizedLedgerIssueDetail,
+    [ledgerIssueDetail, selectedRepoId, selectedIssueId, synthesizedLedgerIssueDetail],
+  );
 
   // Fetch canonical ledger detail when selection changes.
   useEffect(() => {
@@ -531,6 +605,13 @@ export function IssuesView({
   }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
 
   const selectIssue = useCallback((repoId: string, issueId: string) => {
+    const repo = repos.find((candidate) => candidate.repo_id === repoId);
+    const issue = repo?.issues.find((candidate) => candidate.id === issueId);
+    if (repo && issue) {
+      setLedgerIssueDetail(synthesizeLedgerIssueDetail(repo, issue));
+      setDetailLoading(true);
+      setDetailLoadFailed(false);
+    }
     const nextHash = issueRouteHash(repoId, issueId);
     if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
       window.history.pushState(null, '', nextHash);
@@ -538,7 +619,7 @@ export function IssuesView({
     }
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
-  }, []);
+  }, [repos]);
 
   const refreshLedgerIssueDetail = useCallback(async () => {
     if (!selectedRepoId || !selectedIssueId) return;
@@ -877,15 +958,6 @@ export function IssuesView({
               }}
             />
           </div>
-        ) : selectedIssueSummary ? (
-          <div className="issues-detail__content">
-            <PendingIssueDetail
-              issue={selectedIssueSummary.issue}
-              repo={selectedIssueSummary.repo}
-              failed={detailLoadFailed}
-              loading={detailLoading}
-            />
-          </div>
         ) : detailLoading ? (
           <div className="issues-detail__empty">
             <p className="text-muted">Loading...</p>
@@ -897,75 +969,6 @@ export function IssuesView({
         )}
       </div>
     </div>
-  );
-}
-
-function PendingIssueDetail({
-  issue,
-  repo,
-  loading,
-  failed,
-}: {
-  issue: IssueSummary;
-  repo: IssueRepoSummary;
-  loading: boolean;
-  failed: boolean;
-}): JSX.Element {
-  const displayLabels = (issue.labels ?? []).filter((label) => !label.startsWith('mandible:'));
-  const descriptionHtml = renderBlockMarkdown(issue.description ?? '');
-
-  return (
-    <article className="ledger-issue-detail" aria-busy={loading ? 'true' : 'false'}>
-      <header className="ledger-issue-detail__header">
-        <div className="ledger-issue-detail__heading">
-          <div className="ledger-issue-detail__eyebrow">
-            <span>{repo.repo_name}</span>
-            <code>{issue.id}</code>
-          </div>
-          <div className="ledger-issue-detail__title-row">
-            <h2 dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(issue.title) }} />
-          </div>
-          <div className="ledger-issue-detail__meta">
-            <span className="ledger-issue-detail__byline-author">{issue.author}</span>
-            <time>{issue.created_at}</time>
-            {displayLabels.length > 0 && (
-              <>
-                <span className="ledger-issue-detail__meta-separator" aria-hidden="true" />
-                <span className="ledger-issue-detail__label-row">
-                  {displayLabels.map((label) => (
-                    <span key={label} className="ledger-label">{label}</span>
-                  ))}
-                </span>
-              </>
-            )}
-          </div>
-        </div>
-        <div className="ledger-issue-detail__header-actions">
-          <span className="ledger-label">{issue.status}</span>
-        </div>
-      </header>
-      <section className="ledger-issue-detail__section">
-        {descriptionHtml ? (
-          <div
-            className="ledger-comment-card ledger-timeline-card"
-            id="comment-0"
-            data-comment-ordinal="0"
-          >
-            <div className="ledger-comment-card__header">
-              <span>{issue.author}</span>
-              <time>{issue.created_at}</time>
-            </div>
-            <div
-              className="ledger-comment-card__body spec-panel"
-              dangerouslySetInnerHTML={{ __html: descriptionHtml }}
-            />
-          </div>
-        ) : null}
-        <p className="text-muted">
-          {failed ? 'Full issue detail failed to load.' : 'Loading full issue detail...'}
-        </p>
-      </section>
-    </article>
   );
 }
 

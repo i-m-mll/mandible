@@ -874,36 +874,93 @@ function buildTimeline(
     });
   }
 
-  const relationshipEvents = measure("timeline:relationship_events", () => db.prepare(
-    `SELECT * FROM ledger_events
-     WHERE event_type IN ('relationship.added', 'relationship.removed')
-     ORDER BY occurred_at, observed_at`,
-  ).all() as LedgerEvent[]);
-  measure("timeline:relationship_event_filter", () => {
-    for (const event of relationshipEvents) {
-      const payload = parseJsonObject(event.payload_json);
-      if (payload.source_issue_id !== issue.id && payload.target_issue_id !== issue.id) continue;
-      entries.push({
-        id: event.id,
-        kind: "event",
-        event_type: event.event_type,
-        author: {
-          id: event.actor_id,
-          type: event.actor_type,
-          display: actorTypeLabel(event.actor_type),
-        },
-        source: event.source,
-        created_at: event.occurred_at,
-        payload,
-      });
-    }
-  });
+  const relationshipEntityKeys = measure("timeline:relationship_event_keys", () => (
+    listRelationshipTimelineEntityKeys(db, issue.id)
+  ));
+  const relationshipEvents = measure("timeline:relationship_events", () => (
+    listRelationshipTimelineEvents(db, relationshipEntityKeys)
+  ));
+  for (const event of relationshipEvents) {
+    entries.push({
+      id: event.id,
+      kind: "event",
+      event_type: event.event_type,
+      author: {
+        id: event.actor_id,
+        type: event.actor_type,
+        display: actorTypeLabel(event.actor_type),
+      },
+      source: event.source,
+      created_at: event.occurred_at,
+      payload: parseJsonObject(event.payload_json),
+    });
+  }
 
   return entries.sort((a, b) => {
     if (a.created_at !== b.created_at) return a.created_at - b.created_at;
     const order = { body: 0, comment: 1, state: 2, event: 3, checkpoint: 4 };
     return order[a.kind] - order[b.kind];
   });
+}
+
+function listRelationshipTimelineEntityKeys(
+  db: Db,
+  issueId: string,
+): Array<{ entity_type: "relationship_edge" | "issue_relationship"; entity_id: string }> {
+  const keys: Array<{ entity_type: "relationship_edge" | "issue_relationship"; entity_id: string }> = [];
+  if (tableExists(db, "ledger_relationship_edges")) {
+    const rows = db.prepare(
+      `SELECT id FROM ledger_relationship_edges
+       WHERE source_issue_id = ? OR target_issue_id = ?`,
+    ).all(issueId, issueId) as Array<{ id: string }>;
+    for (const row of rows) keys.push({ entity_type: "relationship_edge", entity_id: row.id });
+  }
+  if (tableExists(db, "ledger_issue_relationships")) {
+    const rows = db.prepare(
+      `SELECT id FROM ledger_issue_relationships
+       WHERE source_issue_id = ? OR target_issue_id = ?`,
+    ).all(issueId, issueId) as Array<{ id: string }>;
+    for (const row of rows) keys.push({ entity_type: "issue_relationship", entity_id: row.id });
+  }
+  return keys;
+}
+
+function listRelationshipTimelineEvents(
+  db: Db,
+  keys: Array<{ entity_type: "relationship_edge" | "issue_relationship"; entity_id: string }>,
+): LedgerEvent[] {
+  if (keys.length === 0) return [];
+  const events: LedgerEvent[] = [];
+  const byType = new Map<"relationship_edge" | "issue_relationship", string[]>();
+  for (const key of keys) {
+    const ids = byType.get(key.entity_type) ?? [];
+    ids.push(key.entity_id);
+    byType.set(key.entity_type, ids);
+  }
+  for (const [entityType, ids] of byType) {
+    for (const chunk of chunkStrings([...new Set(ids)], 400)) {
+      const placeholders = chunk.map(() => "?").join(", ");
+      events.push(...db.prepare(
+        `SELECT * FROM ledger_events
+         WHERE entity_type = ?
+           AND entity_id IN (${placeholders})
+           AND event_type IN ('relationship.added', 'relationship.removed')
+         ORDER BY occurred_at, observed_at`,
+      ).all(entityType, ...chunk) as LedgerEvent[]);
+    }
+  }
+  return events.sort((a, b) => {
+    if (a.occurred_at !== b.occurred_at) return a.occurred_at - b.occurred_at;
+    return a.observed_at - b.observed_at;
+  });
+}
+
+function chunkStrings(values: string[], size: number): string[][] {
+  const chunks: string[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function parsePatch(payload: Record<string, unknown>): Record<string, unknown> {

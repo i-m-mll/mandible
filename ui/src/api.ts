@@ -645,6 +645,15 @@ export type LedgerIssueTimelineEntry =
     }
   | {
       id: string;
+      kind: 'event';
+      event_type: string;
+      author: LedgerIssueDetailActor;
+      source: string;
+      created_at: number;
+      payload: Record<string, unknown>;
+    }
+  | {
+      id: string;
       kind: 'checkpoint';
       checkpoint_id: string;
       checkpoint_kind: string;
