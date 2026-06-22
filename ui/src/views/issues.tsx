@@ -923,9 +923,19 @@ function PendingIssueDetail({
       <section className="ledger-issue-detail__section">
         {descriptionHtml ? (
           <div
-            className="ledger-comment-card__body spec-panel"
-            dangerouslySetInnerHTML={{ __html: descriptionHtml }}
-          />
+            className="ledger-comment-card ledger-timeline-card"
+            id="comment-0"
+            data-comment-ordinal="0"
+          >
+            <div className="ledger-comment-card__header">
+              <span>{issue.author}</span>
+              <time>{issue.created_at}</time>
+            </div>
+            <div
+              className="ledger-comment-card__body spec-panel"
+              dangerouslySetInnerHTML={{ __html: descriptionHtml }}
+            />
+          </div>
         ) : null}
         <p className="text-muted">
           {failed ? 'Full issue detail failed to load.' : 'Loading full issue detail...'}

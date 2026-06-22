@@ -405,6 +405,10 @@
   box-shadow: var(--shadow-header);
 }
 
+:root[data-theme='light'] .ledger-comment-card {
+  background: #ffffff;
+}
+
 :root[data-theme='light'] .artifact-detail__header {
   background: var(--surface-popover);
   border-bottom-color: var(--neutral-alpha-08);

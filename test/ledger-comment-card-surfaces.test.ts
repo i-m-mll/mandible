@@ -5,7 +5,7 @@ const stylesheet = readFileSync("ui/src/style.css", "utf8");
 
 function cssRuleBody(selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = stylesheet.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`));
+  const match = stylesheet.match(new RegExp(`(?:^|})\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
   return match?.[1] ?? "";
 }
 
@@ -26,8 +26,10 @@ describe("ledger comment card surfaces", () => {
 
   it("maps light content surfaces to primary card white", () => {
     const lightRoot = cssRuleBody(":root[data-theme='light']");
+    const lightCommentCard = cssRuleBody(":root[data-theme='light'] .ledger-comment-card");
 
     expect(lightRoot).toContain("--bg-card: #ffffff");
     expect(lightRoot).toContain("--surface-content: var(--bg-card)");
+    expect(lightCommentCard).toContain("background: #ffffff");
   });
 });

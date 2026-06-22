@@ -1016,6 +1016,31 @@ describe('issue deep links', () => {
     expect(await screen.findByRole('heading', { name: 'Hydrated detail title' })).toBeTruthy();
   });
 
+  it('renders the pending issue body inside the normal comment card box', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const pendingRepos: IssueRepoSummary[] = [{
+      ...repos[0],
+      issues: [{
+        ...repos[0].issues[0],
+        description: 'Pending issue **body**',
+      }],
+    }];
+
+    render(h(IssuesView, {
+      repos: pendingRepos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    const card = document.querySelector('.ledger-comment-card.ledger-timeline-card');
+    expect(card).toBeTruthy();
+    expect(card?.getAttribute('id')).toBe('comment-0');
+    expect(card?.getAttribute('data-comment-ordinal')).toBe('0');
+    expect(card?.querySelector('.ledger-comment-card__body.spec-panel')?.textContent).toContain('Pending issue body');
+  });
+
   it('ignores stale ledger detail responses after selecting a different issue', async () => {
     const multiRepos: IssueRepoSummary[] = [{
       ...repos[0],
