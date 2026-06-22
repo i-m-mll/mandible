@@ -490,6 +490,65 @@ describe('app shell', () => {
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
   });
 
+  it('renders a deep-linked issue detail while the global issue list is pending', async () => {
+    stubEventSource();
+    if (typeof window.localStorage.removeItem === 'function') {
+      window.localStorage.removeItem('mandible_state_cache');
+    }
+    window.history.replaceState(
+      null,
+      '',
+      '#/issues?repo=mandible&issue=4c26383&sidebar=hidden',
+    );
+    const fetchCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url === '/api/issues') {
+        return new Promise<Response>(() => undefined);
+      }
+      if (
+        url === '/api/issues/mandible/4c26383/ledger-detail?stage=initial' ||
+        url === '/api/issues/mandible/4c26383/ledger-detail'
+      ) {
+        return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+          displayId: '4c26383',
+          title: 'Route detail before list',
+          comments: ['Detail loaded before sidebar list'],
+          stage: url.includes('stage=initial') ? 'initial' : 'full',
+        })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url === '/api/inbox/global') {
+        return Promise.resolve(new Response(JSON.stringify({
+          continuations: [],
+          auth_results: [],
+          open_issues: [],
+          total: 0,
+        }), { headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url.startsWith('/api/conversations')) {
+        return Promise.resolve(new Response(JSON.stringify({ conversations: [], total: 0 }), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url === '/api/settings') {
+        return Promise.resolve(new Response(JSON.stringify({}), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }));
+
+    render(h(App, {}));
+
+    expect(await screen.findByRole('heading', { name: 'Route detail before list' })).toBeTruthy();
+    expect(screen.getByText('Detail loaded before sidebar list')).toBeTruthy();
+    expect(fetchCalls).toContain('/api/issues');
+    expect(fetchCalls).toContain('/api/issues/mandible/4c26383/ledger-detail?stage=initial');
+  });
+
   it('keeps the bottom rail sidebar toggle functional for Inbox', async () => {
     stubAppShellFetch();
     stubEventSource();

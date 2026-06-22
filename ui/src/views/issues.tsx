@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { marked } from 'marked';
 import {
   addLedgerIssueComment,
+  getLedgerIssueDetailByIssueId,
   getLedgerIssueDetailByRef,
+  getLedgerIssueInitialDetailByIssueId,
   getLedgerIssueInitialDetailByRef,
   patchLedgerIssue,
   resolveLedgerConflict,
@@ -221,12 +223,14 @@ function ledgerDetailMatchesSelection(
   repoId: string | null,
   issueId: string | null,
 ): detail is LedgerIssueDetailProjection {
-  if (!detail || !repoId || !issueId) return false;
-  const repoMatches =
-    detail.project.repo_id === repoId ||
-    detail.project.repo_name === repoId ||
-    detail.project.display_name === repoId;
-  if (!repoMatches) return false;
+  if (!detail || !issueId) return false;
+  if (repoId) {
+    const repoMatches =
+      detail.project.repo_id === repoId ||
+      detail.project.repo_name === repoId ||
+      detail.project.display_name === repoId;
+    if (!repoMatches) return false;
+  }
 
   const refs = new Set<string>([detail.id, detail.display_id]);
   for (const alias of detail.aliases) {
@@ -239,7 +243,7 @@ function ledgerDetailMatchesSelection(
 function shouldAcceptInitialLedgerDetail(
   current: LedgerIssueDetailProjection | null,
   initial: LedgerIssueDetailProjection,
-  repoId: string,
+  repoId: string | null,
   issueId: string,
 ): boolean {
   if (!ledgerDetailMatchesSelection(initial, repoId, issueId)) return false;
@@ -407,6 +411,8 @@ export function IssuesView({
       setSelectedRepoId(canonicalRepoId);
       setSelectedIssueId(canonicalIssueId);
     } else {
+      setSelectedRepoId(null);
+      setSelectedIssueId(initialIssueId);
       const found = repos
         .flatMap((repo) => repo.issues.map((issue) => ({ repo, issue })))
         .find(({ issue }) => issue.id === initialIssueId || issue.id.startsWith(initialIssueId));
@@ -565,20 +571,26 @@ export function IssuesView({
 
   // Fetch canonical ledger detail when selection changes.
   useEffect(() => {
-    if (!selectedRepoId || !selectedIssueId) {
+    if (!selectedIssueId) {
       detailRequestSeqRef.current += 1;
       setLedgerIssueDetail(null);
       setDetailLoading(false);
       setDetailLoadFailed(false);
       return;
     }
-    const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
-    const issueId = resolveIssueId(repoId, selectedIssueId);
+    const repoId = selectedRepoId ? resolveRepoId(selectedRepoId) ?? selectedRepoId : null;
+    const issueId = repoId ? resolveIssueId(repoId, selectedIssueId) : selectedIssueId;
     const requestSeq = detailRequestSeqRef.current + 1;
     detailRequestSeqRef.current = requestSeq;
     setDetailLoading(true);
     setDetailLoadFailed(false);
-    getLedgerIssueInitialDetailByRef(repoId, issueId)
+    const initialDetail = repoId
+      ? getLedgerIssueInitialDetailByRef(repoId, issueId)
+      : getLedgerIssueInitialDetailByIssueId(issueId);
+    const fullDetail = repoId
+      ? getLedgerIssueDetailByRef(repoId, issueId)
+      : getLedgerIssueDetailByIssueId(issueId);
+    initialDetail
       .then((detail) => {
         if (detailRequestSeqRef.current !== requestSeq) return;
         setLedgerIssueDetail((current) => (
@@ -588,7 +600,7 @@ export function IssuesView({
       .catch(() => {
         // The full projection fetch below remains authoritative.
       });
-    getLedgerIssueDetailByRef(repoId, issueId)
+    fullDetail
       .then((detail) => {
         if (detailRequestSeqRef.current !== requestSeq) return;
         setLedgerIssueDetail(detail);
