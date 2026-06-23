@@ -39,6 +39,13 @@ export type LedgerIssueDetailProps = {
   onOpenEntity?: (type: EntityType, id: string, repoId?: string) => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
   onResolveConflict?: (conflictId: string, resolution: string, status?: 'resolved' | 'dismissed') => Promise<void> | void;
+  // Add-to-Space affordance (umbrella de56ffa, child 08c312a). When provided,
+  // the issue-actions menu surfaces an "Add to Space" item even on otherwise
+  // read-only panes — hence it is part of the `hasIssueActions` gate below, not
+  // just a menu addition. The host wires the actual Space picker (it owns the
+  // project scope + ref); IssueDetail only renders the entry point so the
+  // graph/issue surfaces stay pickers rather than Space editors.
+  onAddToSpace?: () => void;
 };
 
 export function LedgerIssueDetail({
@@ -51,6 +58,7 @@ export function LedgerIssueDetail({
   onOpenEntity,
   onShowChildren,
   onResolveConflict,
+  onAddToSpace,
 }: LedgerIssueDetailProps): JSX.Element {
   const [commentText, setCommentText] = useState('');
   const [showComposer, setShowComposer] = useState(false);
@@ -76,6 +84,7 @@ export function LedgerIssueDetail({
     onStartAgent ||
     onSetStatus ||
     onAddComment ||
+    onAddToSpace ||
     detail.auth_requests.length > 0 ||
     (detail.labels.includes('umbrella') && onShowChildren)
   );
@@ -144,6 +153,7 @@ export function LedgerIssueDetail({
                 onStartAgent={onStartAgent}
                 onSetStatus={onSetStatus}
                 onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
+                onAddToSpace={onAddToSpace}
                 onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
                 onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
               />
@@ -315,6 +325,7 @@ function IssueActionsMenu({
   onStartAgent,
   onSetStatus,
   onAddComment,
+  onAddToSpace,
   onShowAuthEvidence,
   onShowChildren,
 }: {
@@ -329,6 +340,7 @@ function IssueActionsMenu({
   onStartAgent?: () => Promise<void> | void;
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
   onAddComment?: () => void;
+  onAddToSpace?: () => void;
   onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
 }): JSX.Element {
@@ -381,6 +393,19 @@ function IssueActionsMenu({
               onClick={() => closeAfter(onAddComment)}
             >
               Add Comment
+            </button>
+          )}
+          {/* Add-to-Space region (child 08c312a) — disjoint from and after C6's
+              linkify call-site region (which lives in MarkdownBlock, below). */}
+          {onAddToSpace && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(onAddToSpace)}
+            >
+              Add to Space
             </button>
           )}
           {onShowChildren && (

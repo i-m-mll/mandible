@@ -5,6 +5,7 @@ import {
   getArtifactContent,
   getArtifactKnowledgeBackrefs,
   getArtifacts,
+  getLedgerIssueDetail,
   resolveArtifact,
   type ArtifactContentResult,
   type ArtifactRecord,
@@ -14,6 +15,7 @@ import {
 import { artifactDetailHref, compactArtifactRef, displayResourceRef } from '../resource-refs';
 import { sanitizeMarkdown } from '../sanitize';
 import { useSidebarResize } from '../hooks/useSidebarResize';
+import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -404,6 +406,19 @@ function ArtifactDetail({
   knowledgeError: string | null;
 }): JSX.Element {
   const preview = content ? artifactPreview(content) : null;
+  // Resolve a project scope for the Add-to-Space picker. Artifacts are not
+  // project-scoped in the data model, but an issue-linked artifact (the common
+  // case) lets us derive the owning project from that issue. When no issue link
+  // exists the picker self-disables with an explanatory tooltip (child 08c312a).
+  const spaceProjectId = useArtifactSpaceProject(artifact);
+  const spaceTargets: AddToSpaceTarget[] = [
+    {
+      ref_type: 'artifact',
+      ref_id: artifact.id,
+      ref_uri: artifact.uri,
+      title: artifactTitle(artifact),
+    },
+  ];
   const locatorRows = [
     ['URI', artifact.uri],
     ['Content hash', artifact.content_hash],
@@ -421,6 +436,11 @@ function ArtifactDetail({
           <h2>{artifactTitle(artifact)}</h2>
         </div>
         <div className="artifact-detail__status">
+          <AddToSpace
+            projectId={spaceProjectId}
+            targets={spaceTargets}
+            label="Add to Space"
+          />
           <span>{artifact.availability}</span>
           {artifact.pinned && <span>pinned</span>}
         </div>
@@ -494,6 +514,39 @@ function ArtifactDetail({
       )}
     </article>
   );
+}
+
+/**
+ * Resolve the project scope for an artifact's Add-to-Space picker from its first
+ * issue link. Artifacts carry repo-scoped links, not a project id; an issue link
+ * is the durable bridge to a `ledger_projects.id`. Returns `null` when the
+ * artifact has no issue link (the picker then self-disables).
+ */
+function useArtifactSpaceProject(artifact: ArtifactRecord): string | null {
+  const issueLink = (artifact.links ?? []).find((link) => link.entity_type === 'issue');
+  const issueEntityId = issueLink?.entity_id ?? null;
+  const [projectId, setProjectId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!issueEntityId) {
+      setProjectId(null);
+      return undefined;
+    }
+    let active = true;
+    setProjectId(null);
+    getLedgerIssueDetail(issueEntityId)
+      .then((detail) => {
+        if (active) setProjectId(detail.project.id);
+      })
+      .catch(() => {
+        if (active) setProjectId(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [issueEntityId]);
+
+  return projectId;
 }
 
 function PreviewSection({
