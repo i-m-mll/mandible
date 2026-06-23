@@ -1007,14 +1007,6 @@ a {
   flex-direction: column;
 }
 
-.app-content--timeline {
-  padding: 0;
-}
-
-.app-content--graph {
-  padding: 0;
-}
-
 /* Any tab that hosts a split/rail layout is full-bleed: the inner layout owns
    its own gutters. Added by app.tsx for the resize-rail view-sidebar tabs
    (issues, graph, timeline, spaces). A new full-bleed view can never forget it.
@@ -1077,12 +1069,8 @@ a {
 
 .app-layout--view-sidebar-open .auth-sidebar,
 .app-layout--view-sidebar-open .inbox-sidebar,
-.app-layout--view-sidebar-open .issues-tree,
 .app-layout--view-sidebar-open .artifacts-sidebar,
 .app-layout--view-sidebar-open .chat-history-sidebar,
-.app-layout--view-sidebar-open .graph-sidebar,
-.app-layout--view-sidebar-open .spaces-tree,
-.app-layout--view-sidebar-open .timeline-sidebar,
 .app-layout--view-sidebar-open .view-sidebar {
   position: relative;
   z-index: 2;
@@ -5801,14 +5789,6 @@ tr:hover .work-actions__trigger {
   background: var(--bg-secondary);
 }
 
-.issues-tree__resize-handle {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 3;
-}
-
 .issues-detail {
   flex: 1;
   overflow-y: auto;
@@ -6840,7 +6820,6 @@ code.inbox-detail__meta-value {
     border-bottom: 1px solid var(--neutral-alpha-06);
   }
 
-  .issues-tree__resize-handle,
   .view-sidebar__resize-handle {
     display: none;
   }
