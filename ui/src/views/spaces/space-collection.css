@@ -1,0 +1,187 @@
+/*
+ * Collection renderer styles (umbrella de56ffa, C8).
+ *
+ * Per the Spaces per-component CSS convention (./README.md §1): this component
+ * owns its OWN stylesheet, imported directly from space-collection.tsx, and
+ * scopes every selector under `.space-collection` so co-bundled Spaces
+ * component stylesheets never collide. Colors come from existing theme tokens
+ * via CSS custom properties — no hard-coded palette.
+ */
+
+.space-collection {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.space-collection__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+
+.space-collection__filter {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: inherit;
+  background: var(--bg-subtle, transparent);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+}
+
+.space-collection__add {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.space-collection__add-ref {
+  width: 14rem;
+  max-width: 40vw;
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: inherit;
+  background: var(--bg-subtle, transparent);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+}
+
+.space-collection__button {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.55rem;
+  cursor: pointer;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+}
+
+.space-collection__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.space-collection__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.5rem 0.25rem 1rem;
+}
+
+.space-collection__section-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #888);
+  padding: 0.4rem 0.75rem 0.2rem;
+}
+
+.space-collection__tree,
+.space-collection__shelf-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.space-collection__node {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  cursor: default;
+}
+
+.space-collection__node[data-selected='true'] {
+  background: var(--bg-selected, rgba(120, 160, 255, 0.18));
+}
+
+.space-collection__twisty {
+  width: 1.1rem;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text-muted, #888);
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.space-collection__twisty--placeholder {
+  visibility: hidden;
+}
+
+.space-collection__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.space-collection__remove {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0 0.35rem;
+  cursor: pointer;
+  color: var(--text-muted, #888);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+
+.space-collection__node:hover .space-collection__remove {
+  border-color: var(--border, #2a2a2a);
+}
+
+.space-collection__shelf {
+  margin-top: 0.5rem;
+  border-top: 1px dashed var(--border, #2a2a2a);
+}
+
+.space-collection__dangling {
+  margin-top: 0.5rem;
+  border-top: 1px dashed var(--border-warn, #b08010);
+}
+
+.space-collection__empty,
+.space-collection__loading,
+.space-collection__error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-muted, #888);
+  font-size: 0.85rem;
+}
+
+.space-collection__error {
+  color: var(--text-danger, #d05050);
+}
+
+/*
+ * The C6 unresolved-ref UI (ui/src/resource-refs.ts) emits `.resource-ref`
+ * placeholder spans into the label container. We give them a minimal inline
+ * affordance; the global stylesheet owns the rich `.resource-ref` styling, so
+ * these rules only ensure the placeholder reads as a ref inside a tree row.
+ */
+.space-collection__ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}

@@ -25,6 +25,7 @@ import {
   type LedgerIssueDetailProjection,
 } from '../api';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
+import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { appColors } from '../theme';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { useRegisterAppBottomPanel } from '../app-shell';
@@ -725,6 +726,16 @@ function DetailPane({
   const [ledgerDetail, setLedgerDetail] = useState<LedgerIssueDetailProjection | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [ledgerError, setLedgerError] = useState<string | null>(null);
+  // Add-to-Space picker visibility for the selected ledger issue (child 08c312a).
+  // The graph stays a *picker*: it sends the selected node to a Space the user
+  // chooses, never opening the Space editor here.
+  const [spacePickerOpen, setSpacePickerOpen] = useState(false);
+
+  useEffect(() => {
+    // Reset the picker whenever the selected node changes so it never leaks
+    // across selections.
+    setSpacePickerOpen(false);
+  }, [ledgerIssueId]);
 
   useEffect(() => {
     let active = true;
@@ -782,19 +793,38 @@ function DetailPane({
         ) : ledgerError && !ledgerDetail ? (
           <div className="graph-detail-pane__empty">{ledgerError}</div>
         ) : ledgerDetail ? (
-          <LedgerIssueDetail
-            compact
-            detail={ledgerDetail}
-            onOpenEntity={openLedgerEntity}
-            onAddComment={async (body) => {
-              const next = await addLedgerIssueComment(ledgerIssueId, body);
-              setLedgerDetail(next);
-            }}
-            onResolveConflict={async (conflictId, resolution, status) => {
-              await resolveLedgerConflict(conflictId, resolution, status);
-              setLedgerDetail(await getLedgerIssueDetail(ledgerIssueId));
-            }}
-          />
+          <>
+            <LedgerIssueDetail
+              compact
+              detail={ledgerDetail}
+              onOpenEntity={openLedgerEntity}
+              onAddComment={async (body) => {
+                const next = await addLedgerIssueComment(ledgerIssueId, body);
+                setLedgerDetail(next);
+              }}
+              onAddToSpace={() => setSpacePickerOpen(true)}
+              onResolveConflict={async (conflictId, resolution, status) => {
+                await resolveLedgerConflict(conflictId, resolution, status);
+                setLedgerDetail(await getLedgerIssueDetail(ledgerIssueId));
+              }}
+            />
+            {spacePickerOpen && (
+              <div className="graph-detail-pane__space-picker">
+                <AddToSpace
+                  projectId={ledgerDetail.project.id}
+                  targets={[
+                    {
+                      ref_type: 'issue',
+                      ref_id: ledgerDetail.id,
+                      title: ledgerDetail.title,
+                    } satisfies AddToSpaceTarget,
+                  ]}
+                  label="Add to Space"
+                  onAdded={() => setSpacePickerOpen(false)}
+                />
+              </div>
+            )}
+          </>
         ) : (
           <div className="graph-detail-pane__empty">No ledger detail</div>
         )}

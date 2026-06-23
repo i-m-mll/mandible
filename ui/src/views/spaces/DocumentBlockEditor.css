@@ -1,0 +1,212 @@
+/* Spaces document block editor (umbrella de56ffa, C14c / issue cef3eac).
+ * Owned by the C14c lane; never edits the global ui/src/style.css. */
+
+.spaces-block-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  overflow: auto;
+  min-height: 0;
+}
+
+.spaces-block-editor--empty,
+.spaces-block-editor__status {
+  color: var(--muted, #888);
+  font-size: 0.9rem;
+}
+
+.spaces-block-editor--empty {
+  font-style: italic;
+}
+
+.spaces-block-editor__error {
+  color: var(--danger, #c0392b);
+  font-size: 0.9rem;
+}
+
+/* --- read-only / stale custody banner ------------------------------------ */
+
+.spaces-block-editor__banner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--warning, #d8a219);
+  border-radius: 6px;
+  background: var(--warning-bg, rgba(216, 162, 25, 0.1));
+}
+
+.spaces-block-editor__bannertext {
+  font-size: 0.9rem;
+}
+
+.spaces-block-editor__banneractions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.spaces-block-editor__affordance {
+  font: inherit;
+  font-size: 0.85rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  background: var(--panel, rgba(127, 127, 127, 0.05));
+  border-radius: 4px;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+
+.spaces-block-editor__affordance:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- toolbar (add prose / embed) ----------------------------------------- */
+
+.spaces-block-editor__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+}
+
+.spaces-block-editor__add,
+.spaces-block-editor__embed {
+  font: inherit;
+  font-size: 0.85rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  background: transparent;
+  border-radius: 4px;
+  padding: 0.15rem 0.55rem;
+  cursor: pointer;
+}
+
+.spaces-block-editor__add:disabled,
+.spaces-block-editor__embed:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.spaces-block-editor__embeds {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-left: 0.5rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+}
+
+/* --- rendered document (C14b renderer body) ------------------------------ */
+
+.spaces-block-editor__doc {
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- per-block edit controls --------------------------------------------- */
+
+.spaces-block-editor__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.spaces-block-editor__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+  border-radius: 4px;
+}
+
+.spaces-block-editor__rowtype {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+  color: var(--muted, #888);
+  min-width: 6.5em;
+}
+
+.spaces-block-editor__rowctl {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+.spaces-block-editor__rowctl button {
+  font: inherit;
+  font-size: 0.8rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  background: transparent;
+  border-radius: 3px;
+  padding: 0 0.4em;
+  cursor: pointer;
+}
+
+.spaces-block-editor__rowctl button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.spaces-block-editor__editbox {
+  display: flex;
+  flex-basis: 100%;
+  gap: 0.4rem;
+  align-items: flex-start;
+}
+
+.spaces-block-editor__textarea {
+  flex: 1 1 auto;
+  min-height: 3.5rem;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  border-radius: 4px;
+  resize: vertical;
+}
+
+/* --- deferred embed-on-delete decision ----------------------------------- */
+
+.spaces-block-editor__embeddelete {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--danger, #c0392b);
+  border-radius: 6px;
+  background: var(--danger-bg, rgba(192, 57, 43, 0.08));
+}
+
+.spaces-block-editor__embeddeletetext {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.spaces-block-editor__embeddeleteactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.spaces-block-editor__embeddeleteactions button {
+  font: inherit;
+  font-size: 0.85rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  background: var(--panel, rgba(127, 127, 127, 0.05));
+  border-radius: 4px;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+
+.spaces-block-editor__embeddeleteactions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

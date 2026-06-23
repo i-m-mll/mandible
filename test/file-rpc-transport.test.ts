@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FileRpcTransport, isAllowedFileRpcRoute } from "../src/file-rpc-transport.js";
 import { Router } from "../src/server.js";
+import { readFileSync } from "node:fs";
 
 let tempDir = "";
 
@@ -168,5 +169,61 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("DELETE", "/api/sessions/session-1/issues")).toBe(false);
     expect(isAllowedFileRpcRoute("PUT", "/api/settings/auto_close_issues_on_merge")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/issues/scan")).toBe(false);
+  });
+
+  it("allowlists the knowledge-backrefs return channel (read + write) but nothing else under it", () => {
+    expect(isAllowedFileRpcRoute("GET", "/api/knowledge-backrefs")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/knowledge-backrefs")).toBe(true);
+    // Per-route, not prefix-wide: parameterized / unrelated shapes stay denied
+    // until their owner enumerates them.
+    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/art-1/knowledge-backrefs")).toBe(false);
+    expect(isAllowedFileRpcRoute("DELETE", "/api/knowledge-backrefs")).toBe(false);
+    expect(isAllowedFileRpcRoute("PATCH", "/api/knowledge-backrefs")).toBe(false);
+  });
+
+  it("denies the knowledge-backrefs return channel through the transport when method differs", async () => {
+    const router = new Router();
+    router.put("/api/knowledge-backrefs", (_req, res) => {
+      res.json({ ok: true });
+    });
+    const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
+    fs.writeFileSync(
+      path.join(tempDir, "req-kb.request.json"),
+      JSON.stringify({ id: "req-kb", method: "PUT", path: "/api/knowledge-backrefs" }),
+      "utf8",
+    );
+    await transport.processOnce();
+    const response = JSON.parse(fs.readFileSync(path.join(tempDir, "req-kb.response.json"), "utf8"));
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ error: "file_rpc_route_denied" });
+  });
+});
+
+describe("file RPC per-route allowlist convention", () => {
+  const source = readFileSync(
+    path.join(process.cwd(), "src", "file-rpc-transport.ts"),
+    "utf8",
+  );
+
+  it("never blanket-allows the /api/spaces prefix (each route is enumerated by its owner)", () => {
+    // A space route that nobody has enumerated must be rejected — proves there
+    // is no catch-all prefix match.
+    expect(isAllowedFileRpcRoute("GET", "/api/spaces/spc-1/not-a-real-route")).toBe(false);
+    expect(isAllowedFileRpcRoute("POST", "/api/spaces/spc-1/unknown")).toBe(false);
+    expect(isAllowedFileRpcRoute("DELETE", "/api/spaces")).toBe(false);
+
+    // And the allowlist body must not contain a blanket prefix construct: no
+    // `startsWith("/api/spaces"...)` and no unanchored `/^\/api\/spaces/` catch-all
+    // (every enumerated spaces regex is anchored with a trailing `$`).
+    const allowFn = source.slice(source.indexOf("export function isAllowedFileRpcRoute"));
+    expect(allowFn).not.toMatch(/startsWith\(\s*["'`]\/api\/spaces/);
+    expect(allowFn).not.toMatch(/\/\^\\\/api\\\/spaces\\\/\.\*\//);
+    expect(allowFn).not.toMatch(/\/\^\\\/api\\\/spaces\/\.test/);
+  });
+
+  it("documents the per-route self-allowlist convention", () => {
+    expect(source).toMatch(/per-route file-RPC allowlist/i);
+    expect(source).toMatch(/self-allowlist/i);
+    expect(source).toMatch(/does NOT blanket-allow/);
   });
 });

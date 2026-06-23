@@ -40,16 +40,20 @@ import {
   type TimelineEvent,
   type TimelineEventKind,
   type TimelineFilterChip,
-  type TimelineFilterField,
   type TimelineFilterRowSpec,
   type TimelineIssueRef,
-  type TimelineIssuePredicate,
   type TimelineLink,
   type TimelineRootPolicy,
   type TimelineRowOccurrence,
   type TimelineRowSpecInput,
   type TimelineViewState,
 } from '../types/timeline';
+import {
+  isFilterField,
+  parseFilterToken,
+  rowSpecFromChips,
+} from './filters/issue-predicate-filter';
+import { IssuePredicateFilter } from './filters/IssuePredicateFilter';
 
 const STORAGE_PREFIX = 'mandible_timeline_view_state:v1';
 const EVENT_TYPES: TimelineEventKind[] = ['body', 'comment', 'state'];
@@ -82,8 +86,6 @@ const EMPTY_TIMELINE_EVENTS: TimelineEvent[] = [];
 const EMPTY_TIMELINE_LINKS: TimelineLink[] = [];
 const EMPTY_TIMELINE_ROWS: TimelineRowOccurrence[] = [];
 const FILTER_ROW_URL_PARAM = 'rows';
-const FILTER_FIELDS: TimelineFilterField[] = ['label', 'kind', 'referenced-by', 'subtree'];
-const FILTER_FIELD_PREFIXES = ['label:', 'kind:', 'referenced-by:', 'subtree:'];
 
 export type TimelineViewProps = {
   repos: WorkRepo[];
@@ -144,99 +146,9 @@ function parseBool(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
-function isFilterField(value: string): value is TimelineFilterField {
-  return FILTER_FIELDS.includes(value as TimelineFilterField);
-}
-
-function cleanFilterValue(value: string): string {
-  return value.trim().replace(/\s+/g, ' ');
-}
-
-function normalizeFilterChips(chips: TimelineFilterChip[]): TimelineFilterChip[] {
-  return chips
-    .map((chip) => ({
-      field: chip.field,
-      negated: chip.negated === true,
-      values: unique(chip.values.map(cleanFilterValue)),
-    }))
-    .filter((chip) => isFilterField(chip.field) && chip.values.length > 0);
-}
-
-function predicateForChip(chip: TimelineFilterChip): TimelineIssuePredicate | null {
-  const predicates = chip.values.map<TimelineIssuePredicate | null>((value) => {
-    if (chip.field === 'label') return { type: 'label', name: value };
-    if (chip.field === 'kind') return { type: 'kind', kind: value };
-    if (chip.field === 'referenced-by') return { type: 'referenced_by', issue_id: value };
-    if (chip.field === 'subtree') return { type: 'parent_subtree', issue_id: value };
-    return null;
-  }).filter((predicate): predicate is TimelineIssuePredicate => Boolean(predicate));
-  if (predicates.length === 0) return null;
-  const predicate = predicates.length === 1 ? predicates[0] : { type: 'or' as const, predicates };
-  return chip.negated ? { type: 'not', predicate } : predicate;
-}
-
-function predicateForChips(chips: TimelineFilterChip[]): TimelineIssuePredicate | null {
-  const predicates = normalizeFilterChips(chips)
-    .map(predicateForChip)
-    .filter((predicate): predicate is TimelineIssuePredicate => Boolean(predicate));
-  if (predicates.length === 0) return null;
-  return predicates.length === 1 ? predicates[0] : { type: 'and', predicates };
-}
-
-function chipLabel(chip: TimelineFilterChip): string {
-  const prefix = chip.negated ? '-' : '';
-  return `${prefix}${chip.field}:${chip.values.join(',')}`;
-}
-
-function filterRowTitle(chips: TimelineFilterChip[]): string {
-  const label = normalizeFilterChips(chips).map(chipLabel).join(' ');
-  return label || 'Custom filter';
-}
-
-function filterRowId(chips: TimelineFilterChip[], existing: readonly TimelineFilterRowSpec[] = []): string {
-  const base = filterRowTitle(chips)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 42) || 'filter';
-  const used = new Set(existing.map((row) => row.id));
-  let candidate = `local-${base}`;
-  let suffix = 2;
-  while (used.has(candidate)) {
-    candidate = `local-${base}-${suffix}`;
-    suffix += 1;
-  }
-  return candidate;
-}
-
-function rowSpecFromChips(
-  chips: TimelineFilterChip[],
-  existing: readonly TimelineFilterRowSpec[] = [],
-  id?: string,
-): TimelineFilterRowSpec | null {
-  const normalized = normalizeFilterChips(chips);
-  const scope = predicateForChips(normalized);
-  if (!scope) return null;
-  return {
-    id: id ?? filterRowId(normalized, existing),
-    title: filterRowTitle(normalized),
-    chips: normalized,
-    scope,
-  };
-}
-
-function parseFilterToken(rawToken: string): TimelineFilterChip | null {
-  const raw = rawToken.trim();
-  if (!raw) return null;
-  const negated = raw.startsWith('-');
-  const token = negated ? raw.slice(1) : raw;
-  const separator = token.indexOf(':');
-  if (separator <= 0) return null;
-  const field = token.slice(0, separator);
-  if (!isFilterField(field)) return null;
-  const values = unique(token.slice(separator + 1).split(',').map(cleanFilterValue));
-  return values.length > 0 ? { field, values, negated } : null;
-}
+// Chip/predicate logic now lives in the shared filter module
+// (`./filters/issue-predicate-filter`) so the Timeline and the Spaces seed
+// dialog build identical predicate ASTs; see the imports at the top of file.
 
 function parseFilterRows(value: string | undefined): TimelineFilterRowSpec[] | undefined {
   if (!value) return undefined;
@@ -1958,11 +1870,23 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
                 );
               })}
               {composerOpen ? (
-                <TimelineFilterComposer
+                <IssuePredicateFilter
+                  classPrefix="timeline-filter-composer"
+                  ariaLabel={
+                    composerEditingRowId !== null
+                      ? 'Edit timeline filter row'
+                      : 'Add timeline filter row'
+                  }
                   chips={composerDraftChips}
                   editing={composerEditingRowId !== null}
                   projecting={Boolean(composerPreviewSpec)}
                   previewTitle={composerPreviewSpec?.title ?? 'Custom filter'}
+                  projectingLabel="Projection row"
+                  previewDetail={
+                    composerPreviewSpec
+                      ? 'Membership is resolved by the project timeline projection.'
+                      : 'Empty rows are allowed.'
+                  }
                   labelOptions={labelOptions}
                   kindOptions={kindOptions}
                   issueOptions={issueValueOptions}
@@ -2179,115 +2103,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
       </div>
       </div>
     </section>
-  );
-}
-
-type TimelineFilterComposerProps = {
-  chips: TimelineFilterChip[];
-  editing: boolean;
-  projecting: boolean;
-  previewTitle: string;
-  labelOptions: string[];
-  kindOptions: string[];
-  issueOptions: string[];
-  onAddToken: (token: string) => boolean;
-  onRemoveChip: (index: number) => void;
-  onCancel: () => void;
-  onSave: () => void;
-  canSave: boolean;
-};
-
-function TimelineFilterComposer({
-  chips,
-  editing,
-  projecting,
-  previewTitle,
-  labelOptions,
-  kindOptions,
-  issueOptions,
-  onAddToken,
-  onRemoveChip,
-  onCancel,
-  onSave,
-  canSave,
-}: TimelineFilterComposerProps): JSX.Element {
-  const [draftToken, setDraftToken] = useState('');
-  const optionValues = useMemo(() => {
-    const labels = labelOptions.map((value) => `label:${value}`);
-    const kinds = kindOptions.map((value) => `kind:${value}`);
-    const refs = issueOptions.map((value) => `referenced-by:${value}`);
-    const subtrees = issueOptions.map((value) => `subtree:${value}`);
-    return unique([...FILTER_FIELD_PREFIXES, ...labels, ...kinds, ...refs, ...subtrees]);
-  }, [issueOptions, kindOptions, labelOptions]);
-
-  const submitToken = useCallback(() => {
-    if (onAddToken(draftToken)) {
-      setDraftToken('');
-    }
-  }, [draftToken, onAddToken]);
-
-  return (
-    <form
-      className="timeline-filter-composer"
-      aria-label={editing ? 'Edit timeline filter row' : 'Add timeline filter row'}
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (draftToken.trim()) {
-          submitToken();
-          return;
-        }
-        if (canSave) onSave();
-      }}
-    >
-      <div className="timeline-filter-composer__chips" aria-label="Filter chips">
-        {chips.length === 0 ? <span>No filters</span> : chips.map((chip, index) => (
-          <button
-            key={`${chipLabel(chip)}:${index}`}
-            type="button"
-            className="timeline-filter-composer__chip"
-            onClick={() => onRemoveChip(index)}
-            aria-label={`Remove ${chipLabel(chip)}`}
-          >
-            {chipLabel(chip)}
-          </button>
-        ))}
-      </div>
-      <label className="timeline-filter-composer__input">
-        <span>Filter</span>
-        <input
-          value={draftToken}
-          onInput={(event) => setDraftToken((event.currentTarget as HTMLInputElement).value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && draftToken.trim()) {
-              event.preventDefault();
-              submitToken();
-            } else if (event.key === 'Backspace' && !draftToken && chips.length > 0) {
-              onRemoveChip(chips.length - 1);
-            }
-          }}
-          list="timeline-filter-token-options"
-          placeholder="label:auth -kind:question"
-          autoFocus
-        />
-      </label>
-      <datalist id="timeline-filter-token-options">
-        {optionValues.map((value) => <option key={value} value={value} />)}
-      </datalist>
-      <div className="timeline-filter-composer__preview" aria-live="polite">
-        <strong>{previewTitle}</strong>
-        <span>{projecting ? 'Projection row' : 'Add at least one chip'}</span>
-        {projecting ? (
-          <em>Membership is resolved by the project timeline projection.</em>
-        ) : (
-          <em>Empty rows are allowed.</em>
-        )}
-      </div>
-      <div className="timeline-filter-composer__actions">
-        <button type="button" onClick={submitToken} disabled={!draftToken.trim()}>Add chip</button>
-        <button type="button" onClick={onSave} disabled={!canSave}>{editing ? 'Save row' : 'Add as row'}</button>
-        <button type="button" onClick={onCancel}>Cancel</button>
-      </div>
-    </form>
   );
 }
 
