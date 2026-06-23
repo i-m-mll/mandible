@@ -1,0 +1,575 @@
+// Collection / list renderer (umbrella de56ffa, child C8 / issue fa83ec7).
+//
+// The first usable Spaces renderer: a list/tree view over collection
+// OCCURRENCES (`space_occurrences` with renderer='collection'), ordered by
+// `parent_id`/`sort_key`/`section_id`. Item-only membership (a `space_item`
+// with no collection occurrence) surfaces on an UNPLACED SHELF — never lost
+// (review2 C7 [Warning]: ordering/tree state lives on occurrences, not items).
+//
+// Data: assembled from the single `GET /api/spaces/:id` fact packet
+// (`getSpaceFactPacket`) via the pure helpers in ./collectionModel. Mutations go
+// through the frozen C2/C3 typed client (`addSpaceItem`, `deleteSpaceItem`,
+// `deleteSpaceOccurrence`) — this view writes ONLY through those audited routes.
+//
+// Missing/unresolved refs render through the shared C6 unresolved-ref UI
+// (ui/src/resource-refs.ts): every item ref is linkified into a `.resource-ref`
+// placeholder with a resolve affordance, never silently dropped.
+//
+// View-state (filter, selection, collapse) is browser-local (./collectionViewState)
+// and follows the Timeline localStorage pattern; canonical state stays in SQLite.
+// SSE `space:*` events are RECONCILIATION inputs — they refetch the packet but
+// never reset selection/filter/collapse (Dataful-UX contract).
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+
+import {
+  addSpaceItem,
+  deleteSpaceItem,
+  deleteSpaceOccurrence,
+  getSpaceFactPacket,
+  type SpaceItem,
+  type SpaceItemRefType,
+} from '../../api';
+import { SPACE_ITEM_REF_TYPES } from '../../../../src/contracts';
+import {
+  parseResourceRef,
+  resolveResourceRef,
+  resourceRefHref,
+  displayResourceRef,
+  type ResolverResult,
+} from '../../resource-refs';
+import { createSSEClient } from '../../sse-client';
+import type { SpaceRendererMountProps } from './SpacesViewShell';
+import type { SpaceViewModel } from './types';
+import {
+  buildSpaceViewModel,
+  projectCollection,
+  itemDisplayLabel,
+  itemRefString,
+  type CollectionTreeNode,
+} from './collectionModel';
+import {
+  readCollectionViewState,
+  writeCollectionViewState,
+  reconcileCollectionViewState,
+  EMPTY_COLLECTION_VIEW_STATE,
+  type CollectionViewState,
+} from './collectionViewState';
+import './space-collection.css';
+
+const SPACE_EVENT_PREFIX = 'space:';
+
+type LoadState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready'; model: SpaceViewModel }
+  | { status: 'error'; message: string };
+
+/** Collapse the case-insensitive filter once per render pass. */
+function matchesFilter(label: string, ref: string, filter: string): boolean {
+  if (!filter.trim()) return true;
+  const needle = filter.trim().toLowerCase();
+  return label.toLowerCase().includes(needle) || ref.toLowerCase().includes(needle);
+}
+
+/**
+ * Inline unresolved-ref affordance for one item ref, using the shared C6 UI.
+ * The ref starts UNRESOLVED with a `resolve` button; clicking resolves it
+ * against the read-only C2 resolver and updates the placeholder state. No raw
+ * ref text is ever injected as HTML.
+ */
+function ItemRef({ item }: { item: SpaceItem }): JSX.Element {
+  const ref = itemRefString(item);
+  const parsed = useMemo(() => parseResourceRef(ref), [ref]);
+  const [state, setState] = useState<'unresolved' | 'resolving' | 'resolved' | 'error'>(
+    'unresolved',
+  );
+  const [detail, setDetail] = useState<string>('');
+
+  const onResolve = useCallback(async () => {
+    setState('resolving');
+    try {
+      const result: ResolverResult = await resolveResourceRef(ref);
+      if (result.resolved) {
+        setState('resolved');
+        setDetail(`Resolved ${ref} (${result.kind})`);
+      } else {
+        setState('error');
+        setDetail(result.error ? `Unresolved: ${result.error}` : `Unresolved: ${ref}`);
+      }
+    } catch (error) {
+      setState('error');
+      setDetail(`Resolve failed: ${String(error)}`);
+    }
+  }, [ref]);
+
+  // Prefer the item's human label (title) as the visible text; the ref remains
+  // the resolve authority. A ref the C6 grammar does not recognize still renders
+  // as a labelled placeholder so it is never dropped.
+  const label = itemDisplayLabel(item) || (parsed ? parsed.display : displayResourceRef(ref));
+  const href = parsed ? resourceRefHref(parsed.canonical) : undefined;
+
+  return (
+    <span
+      className={`space-collection__ref resource-ref resource-ref--${state === 'unresolved' || state === 'resolving' ? 'unresolved' : state}`}
+      data-resource-ref={parsed ? parsed.canonical : ref}
+      data-resource-kind={parsed ? parsed.kind : 'unknown'}
+      data-ref-state={state}
+      title={detail || `Resource reference ${ref} (${state})`}
+    >
+      {href ? (
+        <a className="artifact-xref resource-ref__link" href={href}>
+          {label}
+        </a>
+      ) : (
+        <span className="resource-ref__link">{label}</span>
+      )}
+      {state === 'unresolved' || state === 'error' ? (
+        <button
+          type="button"
+          className="resource-ref__resolve"
+          data-resolve-ref={parsed ? parsed.canonical : ref}
+          onClick={onResolve}
+          title={`Resolve ${ref}`}
+        >
+          resolve
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+type RowProps = {
+  node: CollectionTreeNode;
+  selectedIds: ReadonlySet<string>;
+  collapsed: Record<string, boolean>;
+  filter: string;
+  onToggle: (occurrenceId: string) => void;
+  onSelect: (occurrenceId: string) => void;
+  onRemove: (occurrenceId: string) => void;
+};
+
+/** Whether a node or any descendant passes the active filter (so parents of a hit stay visible). */
+function subtreeMatches(node: CollectionTreeNode, filter: string): boolean {
+  const item = node.occurrence.item;
+  const label = item ? itemDisplayLabel(item) : node.occurrence.occurrence.note ?? '(occurrence)';
+  const ref = item ? itemRefString(item) : '';
+  if (matchesFilter(label, ref, filter)) return true;
+  return node.children.some((child) => subtreeMatches(child, filter));
+}
+
+function CollectionRow({
+  node,
+  selectedIds,
+  collapsed,
+  filter,
+  onToggle,
+  onSelect,
+  onRemove,
+}: RowProps): JSX.Element | null {
+  if (filter.trim() && !subtreeMatches(node, filter)) return null;
+
+  const occId = node.occurrence.occurrence.id;
+  const item = node.occurrence.item;
+  const hasChildren = node.children.length > 0;
+  const isCollapsed = !!collapsed[occId] && !filter.trim();
+  const selected = selectedIds.has(occId);
+
+  return (
+    <li role="treeitem" aria-level={node.depth + 1} aria-selected={selected} aria-expanded={hasChildren ? !isCollapsed : undefined}>
+      <div
+        className="space-collection__node"
+        data-selected={selected ? 'true' : 'false'}
+        data-occurrence-id={occId}
+        style={{ paddingLeft: `${0.5 + node.depth * 1.1}rem` }}
+        onClick={() => onSelect(occId)}
+      >
+        {hasChildren ? (
+          <button
+            type="button"
+            className="space-collection__twisty"
+            aria-label={isCollapsed ? 'Expand' : 'Collapse'}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle(occId);
+            }}
+          >
+            {isCollapsed ? '▶' : '▼'}
+          </button>
+        ) : (
+          <span className="space-collection__twisty space-collection__twisty--placeholder" aria-hidden="true" />
+        )}
+        <span className="space-collection__label">
+          {item ? (
+            <ItemRef item={item} />
+          ) : node.occurrence.occurrence.item_id ? (
+            // item_id set but the backing item is missing from the packet: a
+            // dangling occurrence. Surface it as an unresolved placeholder.
+            <span className="space-collection__ref resource-ref resource-ref--error" data-ref-state="error" title="Backing item missing">
+              <span className="resource-ref__link">missing item ({node.occurrence.occurrence.item_id})</span>
+            </span>
+          ) : (
+            <span>{node.occurrence.occurrence.note ?? '(section)'}</span>
+          )}
+        </span>
+        <button
+          type="button"
+          className="space-collection__remove"
+          aria-label="Remove from collection"
+          title="Remove occurrence from this collection"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(occId);
+          }}
+        >
+          {'×'}
+        </button>
+      </div>
+      {hasChildren && !isCollapsed ? (
+        <ul className="space-collection__tree" role="group">
+          {node.children.map((child) => (
+            <CollectionRow
+              key={child.occurrence.occurrence.id}
+              node={child}
+              selectedIds={selectedIds}
+              collapsed={collapsed}
+              filter={filter}
+              onToggle={onToggle}
+              onSelect={onSelect}
+              onRemove={onRemove}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMountProps): JSX.Element {
+  const [load, setLoad] = useState<LoadState>({ status: 'idle' });
+  const [viewState, setViewState] = useState<CollectionViewState>(EMPTY_COLLECTION_VIEW_STATE);
+  const [addRef, setAddRef] = useState('');
+  const [addType, setAddType] = useState<SpaceItemRefType>('issue');
+  const [busy, setBusy] = useState(false);
+  // The latest live id set, so view-state reconciliation can drop vanished ids
+  // without resetting surviving selection/collapse on every refetch.
+  const liveIdsRef = useRef<Set<string>>(new Set());
+
+  // Hydrate persisted view-state when the active Space changes. This is the
+  // ONLY place we replace view-state wholesale, and it is driven by the Space
+  // identity (an explicit navigation), never by a data refetch.
+  useEffect(() => {
+    if (!spaceId) {
+      setViewState(EMPTY_COLLECTION_VIEW_STATE);
+      return;
+    }
+    setViewState(readCollectionViewState(projectId, spaceId));
+  }, [projectId, spaceId]);
+
+  // Persist view-state on change (filter/selection/collapse) so it survives
+  // tab switches and refreshes.
+  useEffect(() => {
+    if (!spaceId) return;
+    writeCollectionViewState(projectId, spaceId, viewState);
+  }, [projectId, spaceId, viewState]);
+
+  const loadPacket = useCallback(
+    async (reconcile: boolean) => {
+      if (!spaceId) {
+        setLoad({ status: 'idle' });
+        return;
+      }
+      if (!reconcile) setLoad({ status: 'loading' });
+      try {
+        const packet = await getSpaceFactPacket(spaceId);
+        const model = buildSpaceViewModel(packet);
+        // Build the live id set (occurrences + items) for reconciliation.
+        const liveIds = new Set<string>();
+        for (const o of model.occurrences) liveIds.add(o.occurrence.id);
+        for (const id of Object.keys(model.itemsById)) liveIds.add(id);
+        liveIdsRef.current = liveIds;
+        setLoad({ status: 'ready', model });
+        // Reconcile (not reset) view-state against live ids: drop only entities
+        // that vanished; keep filter and surviving selection/collapse.
+        setViewState((prior) => reconcileCollectionViewState(prior, liveIds));
+      } catch (error) {
+        if (!reconcile) setLoad({ status: 'error', message: String(error) });
+      }
+    },
+    [spaceId],
+  );
+
+  // Initial / on-space-change load.
+  useEffect(() => {
+    void loadPacket(false);
+  }, [loadPacket]);
+
+  // SSE reconciliation: any `space:*` event for the open Space refetches the
+  // packet as a reconciliation input. Selection/filter/collapse are preserved.
+  useEffect(() => {
+    if (!spaceId) return;
+    const client = createSSEClient();
+    const unsubscribe = client.on('*', (payload) => {
+      if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
+        void loadPacket(true);
+      }
+    });
+    client.connect();
+    return () => {
+      unsubscribe();
+      client.close();
+    };
+  }, [spaceId, loadPacket]);
+
+  const projection = useMemo(
+    () => (load.status === 'ready' ? projectCollection(load.model) : null),
+    [load],
+  );
+
+  const selectedIds = useMemo(() => new Set(viewState.selection.ids), [viewState.selection.ids]);
+
+  const onToggle = useCallback((occurrenceId: string) => {
+    setViewState((prior) => ({
+      ...prior,
+      collapsed: { ...prior.collapsed, [occurrenceId]: !prior.collapsed[occurrenceId] },
+    }));
+  }, []);
+
+  const onSelectOccurrence = useCallback((occurrenceId: string) => {
+    setViewState((prior) => ({
+      ...prior,
+      selection: { kind: 'occurrence', ids: [occurrenceId] },
+    }));
+  }, []);
+
+  const onSelectItem = useCallback((itemId: string) => {
+    setViewState((prior) => ({ ...prior, selection: { kind: 'item', ids: [itemId] } }));
+  }, []);
+
+  const onRemoveOccurrence = useCallback(
+    async (occurrenceId: string) => {
+      if (!spaceId) return;
+      setBusy(true);
+      try {
+        await deleteSpaceOccurrence(spaceId, occurrenceId);
+        await loadPacket(true);
+      } catch (error) {
+        setLoad({ status: 'error', message: String(error) });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [spaceId, loadPacket],
+  );
+
+  const onRemoveItem = useCallback(
+    async (itemId: string) => {
+      if (!spaceId) return;
+      setBusy(true);
+      try {
+        await deleteSpaceItem(spaceId, itemId);
+        await loadPacket(true);
+      } catch (error) {
+        setLoad({ status: 'error', message: String(error) });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [spaceId, loadPacket],
+  );
+
+  const onAddItem = useCallback(async () => {
+    if (!spaceId || !addRef.trim()) return;
+    setBusy(true);
+    try {
+      await addSpaceItem(spaceId, { ref_type: addType, ref_id: addRef.trim() });
+      setAddRef('');
+      await loadPacket(true);
+    } catch (error) {
+      setLoad({ status: 'error', message: String(error) });
+    } finally {
+      setBusy(false);
+    }
+  }, [spaceId, addRef, addType, loadPacket]);
+
+  if (!spaceId) {
+    return (
+      <div className="space-collection" data-testid="space-collection">
+        <div className="space-collection__empty" data-testid="space-collection-empty">
+          Select a Space to view its collection.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-collection" data-testid="space-collection">
+      <div className="space-collection__toolbar">
+        <input
+          className="space-collection__filter"
+          type="search"
+          placeholder="Filter items…"
+          aria-label="Filter collection items"
+          value={viewState.itemFilter}
+          onInput={(event) =>
+            setViewState((prior) => ({ ...prior, itemFilter: (event.target as HTMLInputElement).value }))
+          }
+        />
+        <div className="space-collection__add">
+          <select
+            className="space-collection__button"
+            aria-label="Reference type"
+            value={addType}
+            onChange={(event) => setAddType((event.target as HTMLSelectElement).value as SpaceItemRefType)}
+          >
+            {SPACE_ITEM_REF_TYPES.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </select>
+          <input
+            className="space-collection__add-ref"
+            type="text"
+            placeholder="ref id / uri"
+            aria-label="Reference id"
+            value={addRef}
+            onInput={(event) => setAddRef((event.target as HTMLInputElement).value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void onAddItem();
+            }}
+          />
+          <button
+            type="button"
+            className="space-collection__button"
+            disabled={busy || !addRef.trim()}
+            onClick={() => void onAddItem()}
+          >
+            Add
+          </button>
+        </div>
+      </div>
+
+      <div className="space-collection__body" data-testid="space-collection-body">
+        {load.status === 'loading' ? (
+          <div className="space-collection__loading">Loading collection…</div>
+        ) : load.status === 'error' ? (
+          <div className="space-collection__error" role="alert">
+            Failed to load collection: {load.message}
+          </div>
+        ) : projection ? (
+          <CollectionBody
+            projection={projection}
+            selectedIds={selectedIds}
+            collapsed={viewState.collapsed}
+            filter={viewState.itemFilter}
+            onToggle={onToggle}
+            onSelectOccurrence={onSelectOccurrence}
+            onSelectItem={onSelectItem}
+            onRemoveOccurrence={onRemoveOccurrence}
+            onRemoveItem={onRemoveItem}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+type BodyProps = {
+  projection: NonNullable<ReturnType<typeof projectCollection>>;
+  selectedIds: ReadonlySet<string>;
+  collapsed: Record<string, boolean>;
+  filter: string;
+  onToggle: (id: string) => void;
+  onSelectOccurrence: (id: string) => void;
+  onSelectItem: (id: string) => void;
+  onRemoveOccurrence: (id: string) => void;
+  onRemoveItem: (id: string) => void;
+};
+
+function CollectionBody({
+  projection,
+  selectedIds,
+  collapsed,
+  filter,
+  onToggle,
+  onSelectOccurrence,
+  onSelectItem,
+  onRemoveOccurrence,
+  onRemoveItem,
+}: BodyProps): JSX.Element {
+  const visibleUnplaced = projection.unplaced.filter((item) =>
+    matchesFilter(itemDisplayLabel(item), itemRefString(item), filter),
+  );
+  const hasTree = projection.roots.length > 0;
+  const isEmpty = !hasTree && visibleUnplaced.length === 0 && projection.danglingOccurrences.length === 0;
+
+  if (isEmpty) {
+    return (
+      <div className="space-collection__empty" data-testid="space-collection-empty">
+        {filter.trim() ? 'No items match the filter.' : 'This collection is empty.'}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {hasTree ? (
+        <ul className="space-collection__tree" role="tree" aria-label="Collection" data-testid="space-collection-tree">
+          {projection.roots.map((node) => (
+            <CollectionRow
+              key={node.occurrence.occurrence.id}
+              node={node}
+              selectedIds={selectedIds}
+              collapsed={collapsed}
+              filter={filter}
+              onToggle={onToggle}
+              onSelect={onSelectOccurrence}
+              onRemove={onRemoveOccurrence}
+            />
+          ))}
+        </ul>
+      ) : null}
+
+      {visibleUnplaced.length > 0 ? (
+        <div className="space-collection__shelf" data-testid="space-collection-shelf">
+          <div className="space-collection__section-title">Unplaced ({visibleUnplaced.length})</div>
+          <ul className="space-collection__shelf-list" role="list">
+            {visibleUnplaced.map((item) => {
+              const selected = selectedIds.has(item.id);
+              return (
+                <li key={item.id} role="listitem">
+                  <div
+                    className="space-collection__node"
+                    data-selected={selected ? 'true' : 'false'}
+                    data-item-id={item.id}
+                    onClick={() => onSelectItem(item.id)}
+                  >
+                    <span className="space-collection__twisty space-collection__twisty--placeholder" aria-hidden="true" />
+                    <span className="space-collection__label">
+                      <ItemRef item={item} />
+                    </span>
+                    <button
+                      type="button"
+                      className="space-collection__remove"
+                      aria-label="Remove item from space"
+                      title="Remove item from this Space"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onRemoveItem(item.id);
+                      }}
+                    >
+                      {'×'}
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+export default SpaceCollectionRenderer;
