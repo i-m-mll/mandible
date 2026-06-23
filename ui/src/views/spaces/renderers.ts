@@ -13,7 +13,9 @@
 import type { SpaceRendererMountPoint } from './SpacesViewShell';
 import type { SpaceRenderer } from '../../api';
 import { SpaceCollectionRenderer } from './space-collection';
+import { SpaceBoardRenderer } from './SpaceBoard';
 
 export const SPACE_RENDERERS_REGISTRY: Partial<Record<SpaceRenderer, SpaceRendererMountPoint>> = {
   collection: SpaceCollectionRenderer,
+  board: SpaceBoardRenderer,
 };
