@@ -111,6 +111,20 @@ function makeFakeSse(): { client: SSEClient; emit: (type: string, data: unknown)
   return { client, emit };
 }
 
+// Drive a controlled preact `<select>` the way its `onChange` binding expects.
+// `fireEvent.change` alone sets the DOM value but does NOT dispatch the `input`
+// event preact's controlled inputs listen on, so the component's state never
+// updates and `handleCreate` / the link-type override early-return. Dispatching
+// both `input` and `change` (the established repo pattern, cf.
+// `test/timeline-ui.test.tsx`) updates the controlled value.
+function changeSelect(select: HTMLElement, value: string): void {
+  act(() => {
+    (select as HTMLSelectElement).value = value;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
 // ============================================================================
 // Pure model: link-type mapping + promotability (C4 promote-edge semantics)
 // ============================================================================
@@ -300,8 +314,8 @@ describe('SpaceEdgeLayer create edge with free label', () => {
       h(SpaceEdgeLayer, { spaceId: 'sp1', initialModel: model, createEdge }),
     );
 
-    fireEvent.change(screen.getByTestId('space-edge-create-source'), { target: { value: 'a' } });
-    fireEvent.change(screen.getByTestId('space-edge-create-target'), { target: { value: 'b' } });
+    changeSelect(screen.getByTestId('space-edge-create-source'), 'a');
+    changeSelect(screen.getByTestId('space-edge-create-target'), 'b');
     fireEvent.input(screen.getByTestId('space-edge-create-label'), {
       target: { value: 'depends on' },
     });
@@ -326,9 +340,13 @@ describe('SpaceEdgeLayer edit label', () => {
     render(h(SpaceEdgeLayer, { spaceId: 'sp1', initialModel: model, updateEdge }));
 
     const input = screen.getByTestId('space-edge-label-input') as HTMLInputElement;
+    // Focus the input first: jsdom only routes a `blur` to the element's
+    // listener when it is the active element, so a bare `fireEvent.blur` on an
+    // unfocused input never fires the component's `onBlur` handler.
+    input.focus();
     fireEvent.input(input, { target: { value: 'now blocks' } });
     await act(async () => {
-      fireEvent.blur(input);
+      input.blur();
     });
     expect(updateEdge).toHaveBeenCalledWith('sp1', 'e1', { label: 'now blocks' });
   });
@@ -364,7 +382,7 @@ describe('SpaceEdgeLayer promote-to-ledger', () => {
     const promote = vi.fn().mockResolvedValue({});
     render(h(SpaceEdgeLayer, { spaceId: 'sp1', initialModel: model, promote }));
 
-    fireEvent.change(screen.getByTestId('space-edge-link-type'), { target: { value: 'related' } });
+    changeSelect(screen.getByTestId('space-edge-link-type'), 'related');
     await act(async () => {
       fireEvent.click(screen.getByTestId('space-edge-promote-btn'));
     });
