@@ -173,6 +173,28 @@ export class FileRpcTransport {
   }
 }
 
+/**
+ * Per-route file-RPC allowlist (issue 511506d, standing AC #1).
+ *
+ * The sandboxed file transport can only reach routes that are enumerated here
+ * by an exact method + path match (literal path or an anchored `^…$` regex for
+ * a single parameterized shape). This is the deliberate convention:
+ *
+ * 1. Every allowlisted route is method-specific and path-specific. There is no
+ *    blanket prefix allow (no `pathname.startsWith("/api/spaces")`,
+ *    `/^\/api\/spaces/`, or any other catch-all). A new route is unreachable
+ *    over the file transport until its owner adds an explicit entry.
+ * 2. Each route-adding child self-allowlists ONLY its own routes. For the
+ *    Spaces feature, C5 (this file) lands the base `/api/knowledge-backrefs`
+ *    entry and this documented convention; C2/C11/C13b add their own
+ *    `/api/spaces…` entries in their own branches. C5 does NOT blanket-allow
+ *    `/api/spaces*`.
+ * 3. Write routes must stay within the file transport's write/auth boundary:
+ *    approval, merge, admin, and config routes are never allowlisted (auth
+ *    approval/merge remain user/dashboard actions). Only narrow, non-privileged
+ *    writes (ledger mutations, work-unit mechanism calls, knowledge backrefs,
+ *    spaces CRUD) are exposed.
+ */
 export function isAllowedFileRpcRoute(method: string, pathname: string): boolean {
   const normalizedMethod = method.toUpperCase();
   if (normalizedMethod === "GET" && pathname === "/api/conversations") return true;
@@ -224,6 +246,13 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/link") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/check") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/snapshot") return true;
+  // Knowledge backrefs (C5, issue 511506d): the Phase-6 HumbleB return channel.
+  // GET reads existing backrefs; POST is the return-channel write that records a
+  // knowledge backref. Both are narrow, non-privileged surfaces — no approval,
+  // merge, admin, or config authority — so they stay within the file-transport
+  // write boundary (standing AC #1).
+  if (normalizedMethod === "GET" && pathname === "/api/knowledge-backrefs") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/knowledge-backrefs") return true;
   // Spaces (C2, issue f108bba): self-allowlisted per the per-route convention
   // (§5.3). Reads + writes for spaces / items / occurrences / edges / seed and
   // the unified ref resolver; destructive DELETE ops are listed explicitly.
