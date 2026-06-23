@@ -49,6 +49,7 @@ Usage:
   mandible space link <space-id> --source <occ-id> --target <occ-id> [--label <text>] [--style <text>] [--json]
   mandible space unlink <space-id> <edge-id> [--json]
   mandible space promote-edge --source <ref> --target <ref> [--link-type <type>] [--space <id>] [--edge <id>] [--note <text>] [--json]
+  mandible space promote-docs --issue <id> [--branch <docs-branch>] [--title <text>] [--json]
   mandible space seed-from-filter <space-id> --predicate <json> [--with-shelf] [--no-artifacts] [--json]
   mandible space block add <space-id> --type <block-type> [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]
   mandible space block edit <space-id> <block-id> [--type <block-type>] [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]
@@ -399,6 +400,85 @@ cmd_promote_edge() {
   emit "$result" "$json" '"promoted \(.source_ref) -[\(.link_type)]-> \(.target_ref)"'
 }
 
+# promote-docs: promote the long-lived Spaces docs branch into the protected
+# branch WITHOUT destroying the managed docs worktree. The docs worktree
+# (provisioned under <repoRoot>/.git/mandible-docs-worktrees/<branch> by the
+# export backend) must survive promotion, but the post-merge cleanup in
+# cli/auth-merge.sh tears down the merged source branch's worktree. So instead
+# of submitting the docs branch itself, we cut a throwaway
+# `promote/docs/<ts>` branch from the docs-branch head and submit THAT to the
+# auth queue. After the merge, cleanup only tears down the disposable proxy.
+# See child issue 8921e84.
+DEFAULT_DOCS_BRANCH="docs/spaces"
+
+cmd_promote_docs() {
+  local docs_branch="$DEFAULT_DOCS_BRANCH" issue="" title="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --branch) docs_branch="$2"; shift 2 ;;
+      --issue|--ref-issue) issue="$2"; shift 2 ;;
+      --title) title="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) die "Unexpected argument: $1" 2 ;;
+    esac
+  done
+  [[ -n "$issue" ]] || die "Usage: mandible space promote-docs --issue <id> [--branch <docs-branch>] [--title <text>] [--json]" 2
+  command -v git >/dev/null 2>&1 || die "git not found." 1
+  command -v jq >/dev/null 2>&1 || die "jq not found." 1
+
+  git rev-parse --git-dir >/dev/null 2>&1 || die "Not a git repository." 1
+
+  # The docs branch must exist (the export backend provisions it on first
+  # export). Without it there is nothing to promote.
+  git show-ref --verify --quiet "refs/heads/${docs_branch}" \
+    || die "Docs branch '${docs_branch}' does not exist. Export a document first." 1
+
+  local head_sha
+  head_sha="$(git rev-parse "refs/heads/${docs_branch}")" \
+    || die "Failed to resolve head of '${docs_branch}'." 1
+
+  # Disposable proxy branch cut from the docs-branch head. The timestamp keeps
+  # successive promotions from colliding.
+  local ts proxy
+  ts="$(date +%Y%m%d%H%M%S)"
+  proxy="promote/docs/${ts}"
+  if git show-ref --verify --quiet "refs/heads/${proxy}"; then
+    die "Proxy branch '${proxy}' already exists; retry." 1
+  fi
+  git branch "$proxy" "$head_sha" \
+    || die "Failed to create proxy branch '${proxy}'." 1
+
+  [[ -n "$title" ]] || title="Promote ${docs_branch} (${ts})"
+
+  # Submit the PROXY branch — never the long-lived docs branch — to the auth
+  # queue. The auth merge tears down only the proxy worktree on success; the
+  # docs branch and its managed worktree survive.
+  local cli_dir auth_request
+  cli_dir="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+  auth_request="${cli_dir}/auth-request.sh"
+
+  if (( json )); then
+    jq -n \
+      --arg docs_branch "$docs_branch" \
+      --arg proxy "$proxy" \
+      --arg head_sha "$head_sha" \
+      --arg issue "$issue" \
+      --arg title "$title" \
+      '{status:"proxy_submitted", docs_branch:$docs_branch, proxy_branch:$proxy,
+        head_sha:$head_sha, issue:$issue, title:$title}'
+  else
+    err "Cut proxy branch ${proxy} from ${docs_branch}@${head_sha:0:12}"
+    err "Submitting auth request for ${proxy} (docs branch + worktree preserved)…"
+  fi
+
+  # Delegate submission to the standard auth-request CLI. The proxy carries the
+  # docs-branch commits, each of which is an agent-key linked commit with a
+  # Mandible-Issue trailer (export backend contract), so the auth.ts trailer
+  # gate passes; a bare-commit docs branch would be rejected.
+  "$auth_request" "$proxy" --title "$title" --issue "$issue" --no-watch
+}
+
 cmd_seed_from_filter() {
   local id="" predicate="" with_shelf=0 no_artifacts=0 json=0
   while (( $# > 0 )); do
@@ -588,6 +668,7 @@ case "$cmd" in
   link) cmd_link "$@" ;;
   unlink) cmd_unlink "$@" ;;
   promote-edge) cmd_promote_edge "$@" ;;
+  promote-docs) cmd_promote_docs "$@" ;;
   seed-from-filter) cmd_seed_from_filter "$@" ;;
   block) cmd_block "$@" ;;
   *) die "Unknown space subcommand: $cmd" 2 ;;

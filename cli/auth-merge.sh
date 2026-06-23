@@ -37,9 +37,27 @@ usage() {
 Usage:
   mandible auth merge <source-branch>
   mandible auth merge <source-branch> --into <target>
+  mandible auth merge <source-branch> --preserve-head-branch
   mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
+
+Options:
+  --into <target>          Target/base branch (default: protected branch)
+  --hierarchical           Merge multiple sources in order into one target
+  --preserve-head-branch   Do not tear down the merged source branch/worktree
+                           after a successful merge. Used when the source is a
+                           long-lived branch (e.g. the Spaces docs branch) that
+                           must survive promotion. Promotion normally cuts a
+                           throwaway promote/docs/<ts> proxy branch instead, so
+                           this flag is a defensive belt-and-suspenders guard.
 USAGE
 }
+
+# Promotion proxy branches (promote/docs/<ts>) are deliberately disposable: a
+# proxy is cut from the long-lived docs-branch head purely to feed the auth
+# queue, so the post-merge worktree cleanup tears down only the proxy, never the
+# long-lived docs worktree. The proxy therefore takes the NORMAL cleanup path
+# (no preserve flag); the guards below exist to protect the docs worktree if a
+# docs branch is ever merged directly. See child issue 8921e84.
 
 strip_ansi() {
   printf "%s" "$1" | sed -E 's/\x1B\[[0-9;]*m//g'
@@ -407,8 +425,43 @@ preflight_signing_check() {
   fi
 }
 
+# Resolve the on-disk worktree path linked to a branch, if any.
+branch_worktree_path() {
+  local branch="$1"
+  local current_path="" found_path=""
+  while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+      current_path="${line#worktree }"
+    elif [[ "$line" == branch\ refs/heads/* ]]; then
+      local b="${line#branch refs/heads/}"
+      [[ "$b" == "$branch" ]] && found_path="$current_path"
+    fi
+  done < <(git worktree list --porcelain 2>/dev/null)
+  printf "%s" "$found_path"
+}
+
+# The Spaces export backend provisions the long-lived docs worktree under
+# `<repoRoot>/.git/mandible-docs-worktrees/<branch>` (see src/spaces/export.ts).
+# That worktree (and its branch) must NEVER be destroyed by post-merge cleanup:
+# promotion is supposed to run through a disposable proxy branch. This is a
+# defensive guard so that even a misdirected direct docs-branch merge cannot
+# tear down the managed docs worktree.
+is_managed_docs_worktree_branch() {
+  local branch="$1"
+  local wt
+  wt="$(branch_worktree_path "$branch")"
+  [[ -n "$wt" ]] || return 1
+  case "$wt" in
+    */.git/mandible-docs-worktrees/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# $1 = merged source branch
+# $2 = preserve flag ("1" to skip tearing down the merged branch itself)
 cleanup_merged_worktrees() {
   local branch="$1"
+  local preserve_head="${2:-0}"
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   # dwt is vendored alongside this script in cli/
@@ -417,10 +470,21 @@ cleanup_merged_worktrees() {
   # Only attempt cleanup if dwt exists (absent = broken Mandible install, not a normal skip)
   [[ -x "$dwt" ]] || { err "warning: vendored dwt not found at ${dwt}; skipping worktree cleanup"; return 0; }
 
-  # Clean the merged branch's worktree (if it has one)
-  "$dwt" "$branch" 2>/dev/null || true
+  # Never destroy a long-lived branch the caller asked to preserve, and never
+  # destroy the managed Spaces docs worktree even if a docs branch was merged
+  # directly. Promotion of the docs branch is supposed to go through a
+  # disposable promote/docs/<ts> proxy branch instead.
+  if [[ "$preserve_head" == "1" ]]; then
+    err "${DIM_WHITE}--preserve-head-branch: leaving ${branch} and its worktree in place.${RESET}"
+  elif is_managed_docs_worktree_branch "$branch"; then
+    err "${DIM_WHITE}Refusing to tear down managed docs worktree for ${branch}; promote via a proxy branch instead.${RESET}"
+  else
+    # Clean the merged branch's worktree (if it has one)
+    "$dwt" "$branch" 2>/dev/null || true
+  fi
 
-  # Clean __-delimited child branches
+  # Clean __-delimited child branches (these are always disposable feature
+  # sub-branches; the preserve guard only applies to the merged head branch).
   local prefix="${branch}__"
   local child
   git for-each-ref --format='%(refname:short)' 'refs/heads/' | while IFS= read -r child; do
@@ -536,6 +600,7 @@ main() {
 
   local hierarchical=false
   local target=""
+  local preserve_head=0
   local -a sources=()
 
   while (( $# > 0 )); do
@@ -546,6 +611,10 @@ main() {
         ;;
       --hierarchical)
         hierarchical=true
+        shift
+        ;;
+      --preserve-head-branch)
+        preserve_head=1
         shift
         ;;
       --into)
@@ -627,7 +696,7 @@ main() {
       verify_merge_not_empty
       if [[ ${#sources[@]} -gt 0 ]]; then
         record_auth_merge_result "$pre_merge_head"
-        cleanup_merged_worktrees "${sources[0]}"
+        cleanup_merged_worktrees "${sources[0]}" "$preserve_head"
       fi
       # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
@@ -741,7 +810,7 @@ main() {
     if git merge --no-ff --no-edit -S "$source"; then
       verify_merge_not_empty
       record_auth_merge_result "$pre_merge_head"
-      cleanup_merged_worktrees "$source"
+      cleanup_merged_worktrees "$source" "$preserve_head"
       # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
     fi
@@ -754,7 +823,7 @@ main() {
         if git -c commit.gpgsign=true merge --continue; then
           verify_merge_not_empty
           record_auth_merge_result "$pre_merge_head"
-          cleanup_merged_worktrees "$source"
+          cleanup_merged_worktrees "$source" "$preserve_head"
           # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
           exit 0
         else
@@ -804,9 +873,13 @@ main() {
   record_auth_merge_result "$pre_merge_head"
 
   for source in "${succeeded[@]}"; do
-    cleanup_merged_worktrees "$source"
+    cleanup_merged_worktrees "$source" "$preserve_head"
   done
   # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
 }
 
-main "$@"
+# Allow tests to source this script for unit-testing individual helpers
+# (e.g. cleanup_merged_worktrees) without running the full merge flow.
+if [[ "${MANDIBLE_AUTH_MERGE_SOURCE_ONLY:-}" != "1" ]]; then
+  main "$@"
+fi

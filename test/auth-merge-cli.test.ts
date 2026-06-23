@@ -249,3 +249,129 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).not.toContain("Mandible merge preflight failed");
   });
 });
+
+// Child issue 8921e84: docs-branch promotion via a short-lived proxy branch.
+// The post-merge worktree cleanup (cleanup_merged_worktrees) must never destroy
+// the long-lived managed docs worktree. Promotion submits a disposable
+// promote/docs/<ts> proxy branch; cleanup tears down only that proxy.
+const AUTH_MERGE_SH = path.join(process.cwd(), "cli", "auth-merge.sh");
+
+// Source auth-merge.sh (without running its main flow) and run one helper.
+function runCleanupHelper(
+  snippet: string,
+  cwd: string,
+): { status: number | null; stdout: string; stderr: string } {
+  const script = [
+    "set -u",
+    "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
+    `source ${JSON.stringify(AUTH_MERGE_SH)}`,
+    snippet,
+  ].join("\n");
+  const result = spawnSync("bash", ["-c", script], {
+    cwd,
+    encoding: "utf8",
+    env: {
+      HOME: homeDir,
+      PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
+      ZELLIJ: "",
+      TMUX: "",
+    },
+  });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+function provisionManagedDocsWorktree(branch: string): string {
+  const safe = branch.replace(/[^A-Za-z0-9._-]+/g, "_");
+  const worktreeDir = path.join(tempDir, ".git", "mandible-docs-worktrees", safe);
+  fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
+  // Provision the docs branch + managed worktree the way the export backend does.
+  git(["worktree", "add", "-b", branch, worktreeDir, "main"]);
+  // A docs commit carrying the export-backend linked-commit trailer.
+  fs.writeFileSync(path.join(worktreeDir, "doc.md"), "# doc\n", "utf8");
+  git(["add", "doc.md"], worktreeDir);
+  git(["commit", "-m", "doc export\n\nMandible-Issue: docs123"], worktreeDir);
+  return worktreeDir;
+}
+
+describe("auth merge worktree cleanup preserves the docs branch", () => {
+  it("tears down a promote/docs proxy worktree but leaves the docs worktree", () => {
+    const docsBranch = "docs/spaces";
+    const docsWorktree = provisionManagedDocsWorktree(docsBranch);
+
+    // Cut a disposable proxy branch + its own throwaway worktree from the docs head.
+    const proxy = "promote/docs/20260101000000";
+    const proxyWorktree = path.join(tempDir, "worktrees", "promote__docs__20260101000000");
+    git(["worktree", "add", "-b", proxy, proxyWorktree, docsBranch]);
+
+    expect(fs.existsSync(proxyWorktree)).toBe(true);
+    expect(fs.existsSync(docsWorktree)).toBe(true);
+
+    const result = runCleanupHelper(
+      `cleanup_merged_worktrees ${JSON.stringify(proxy)} 0`,
+      tempDir,
+    );
+    expect(result.status).toBe(0);
+
+    // The disposable proxy worktree is gone (dwt removes the worktree; the
+    // branch ref is best-effort and only force-deleted when merged).
+    expect(fs.existsSync(proxyWorktree)).toBe(false);
+    const proxyRegistered = spawnSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: tempDir,
+      encoding: "utf8",
+    }).stdout;
+    expect(proxyRegistered).not.toContain(proxyWorktree);
+
+    // The long-lived docs branch + managed worktree survive untouched.
+    expect(fs.existsSync(docsWorktree)).toBe(true);
+    const docsExists = spawnSync(
+      "git",
+      ["show-ref", "--verify", "--quiet", `refs/heads/${docsBranch}`],
+      { cwd: tempDir },
+    ).status;
+    expect(docsExists).toBe(0);
+  });
+
+  it("refuses to tear down the managed docs worktree even on a direct docs-branch merge", () => {
+    const docsBranch = "docs/spaces";
+    const docsWorktree = provisionManagedDocsWorktree(docsBranch);
+
+    const result = runCleanupHelper(
+      `cleanup_merged_worktrees ${JSON.stringify(docsBranch)} 0`,
+      tempDir,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Refusing to tear down managed docs worktree");
+
+    // Docs branch + managed worktree must still be present.
+    expect(fs.existsSync(docsWorktree)).toBe(true);
+    const docsExists = spawnSync(
+      "git",
+      ["show-ref", "--verify", "--quiet", `refs/heads/${docsBranch}`],
+      { cwd: tempDir },
+    ).status;
+    expect(docsExists).toBe(0);
+  });
+
+  it("honors --preserve-head-branch by leaving the merged branch worktree in place", () => {
+    // A plain feature worktree the cleanup would normally remove.
+    const branch = "feature/keep-me";
+    const worktree = path.join(tempDir, "worktrees", "feature__keep-me");
+    git(["worktree", "add", "-b", branch, worktree, "main"]);
+    expect(fs.existsSync(worktree)).toBe(true);
+
+    const result = runCleanupHelper(
+      `cleanup_merged_worktrees ${JSON.stringify(branch)} 1`,
+      tempDir,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("--preserve-head-branch");
+
+    expect(fs.existsSync(worktree)).toBe(true);
+    const branchExists = spawnSync(
+      "git",
+      ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+      { cwd: tempDir },
+    ).status;
+    expect(branchExists).toBe(0);
+  });
+});
