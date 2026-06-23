@@ -57,10 +57,15 @@ export const SPACE_EVENTS = {
   //   the SSE payload rather than minting per-verb topic names).
   SPACE_BLOCK_CHANGED: "space:block:changed",
 
-  // --- C13b (export/drift): export + document snapshots ---
-  //   Append here, e.g.:
-  //   SPACE_EXPORT_STARTED: "space:export:started",
-  //   SPACE_DOCUMENT_UPDATED: "space:document:updated",
+  // --- C13b (export/custody, issue 8730bf9): export + document snapshots ---
+  //   `space:export:tracked` fires after a successful export-and-track (a
+  //   `space_exports` row was created/refreshed and an agent-key linked commit
+  //   landed on the docs branch). `space:export:copied` fires after a one-shot
+  //   untracked export-of-copy (no `space_exports` row). `space:document:*`
+  //   carries settings/default changes that affect future exports.
+  SPACE_EXPORT_TRACKED: "space:export:tracked",
+  SPACE_EXPORT_COPIED: "space:export:copied",
+  SPACE_DOCUMENT_SETTINGS_UPDATED: "space:document:settings-updated",
 } as const;
 
 export type SpaceEventKey = keyof typeof SPACE_EVENTS;

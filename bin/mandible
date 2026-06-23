@@ -63,6 +63,7 @@ Commands:
   work-unit <subcommand>           Policy-free work-unit lifecycle client
   issue-file <subcommand>          Read/write the .issue helper file
   commit trailer [issue...]        Render Mandible-Issue trailers
+  commit linked --issue <id> ...   Agent-key linked commit (Mandible-Issue trailers)
   session link-issue <id> ...      Link sessions to issues
   search "<query>" [opts]          Search chat history across providers
   help                             Show this help
