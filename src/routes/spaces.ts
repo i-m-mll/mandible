@@ -33,6 +33,20 @@ import {
   type SpaceRecord,
   type SpaceRenderer,
 } from "../ledger/spaces.js";
+import {
+  createSpaceBlock,
+  deleteSpaceBlock,
+  detachItemFromBlocks,
+  getSpaceBlock,
+  isBlockType,
+  isEmbedBlockType,
+  listSpaceBlocks,
+  updateSpaceBlock,
+  BlockValidationError,
+  BLOCK_TYPES,
+  type BlockItemSnapshot,
+  type BlockType,
+} from "../ledger/space-blocks.js";
 import { SPACE_EVENTS, type SpaceEvent } from "../spaces/events.js";
 import { broadcastSpaceEvent } from "../sse.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
@@ -626,6 +640,190 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       handleError(res, error);
     }
   });
+
+  // --- blocks (C11, issue d2a8e77) ---
+  // The document/canvas block tree. Block identity (`id`/`parent`/`sort`/`type`/
+  // `item`) agrees with the C12 `spaces-doc.v1` serialization; the helper layer
+  // (src/ledger/space-blocks.ts) owns sort-key generation, parent-cycle
+  // rejection, the snapshot invariant, and detach/degrade. All mutations emit
+  // the frozen `space:block:changed` event.
+  router.get("/api/spaces/:id/blocks", (req, res) => {
+    try {
+      const db = getDb();
+      loadSpaceOr404(db, req.params.id);
+      sendJson(res, 200, { blocks: listSpaceBlocks(db, req.params.id) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  router.post("/api/spaces/:id/blocks", (req, res) => {
+    try {
+      const db = getDb();
+      const space = loadSpaceOr404(db, req.params.id);
+      const body = bodyRecord(req);
+      const input = parseBlockCreateInput(db, space.id, body);
+      const block = createSpaceBlock(db, space.id, input);
+      emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, space.id);
+      sendJson(res, 201, { block });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  router.patch("/api/spaces/:id/blocks/:block_id", (req, res) => {
+    try {
+      const db = getDb();
+      const space = loadSpaceOr404(db, req.params.id);
+      if (!getSpaceBlock(db, space.id, req.params.block_id)) {
+        throw new HttpError(404, "block not found");
+      }
+      const input = parseBlockUpdateInput(db, space.id, bodyRecord(req));
+      const block = updateSpaceBlock(db, space.id, req.params.block_id, input);
+      emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, space.id);
+      sendJson(res, 200, { block });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  router.delete("/api/spaces/:id/blocks/:block_id", (req, res) => {
+    try {
+      const db = getDb();
+      loadSpaceOr404(db, req.params.id);
+      if (!deleteSpaceBlock(db, req.params.id, req.params.block_id)) {
+        throw new HttpError(404, "block not found");
+      }
+      emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, req.params.id);
+      sendJson(res, 200, { ok: true, id: req.params.block_id });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  // Detach/degrade: drop the item_id embed from every block in the Space that
+  // embeds it (preserving item_snapshot_json as a placeholder) so the item can
+  // then be deleted without hitting the ON DELETE RESTRICT guard.
+  router.post("/api/spaces/:id/items/:item_id/detach-blocks", (req, res) => {
+    try {
+      const db = getDb();
+      const space = loadSpaceOr404(db, req.params.id);
+      if (!getSpaceItem(db, space.id, req.params.item_id)) {
+        throw new HttpError(404, "item not found");
+      }
+      const result = detachItemFromBlocks(db, space.id, req.params.item_id);
+      if (result.detached.length > 0) emit(SPACE_EVENTS.SPACE_BLOCK_CHANGED, space.id);
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+}
+
+// --- block input parsing -----------------------------------------------------
+
+function requireBlockType(value: unknown): BlockType {
+  if (!isBlockType(value)) {
+    throw new HttpError(400, `block_type must be one of: ${BLOCK_TYPES.join(", ")}`);
+  }
+  return value;
+}
+
+function optionalSnapshot(body: Record<string, unknown>): BlockItemSnapshot | null | undefined {
+  const value = body.item_snapshot;
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "item_snapshot must be a JSON object");
+  }
+  return value as BlockItemSnapshot;
+}
+
+/**
+ * Validate that `parent_id`/`item_id` reference rows that exist in THIS space.
+ * Cross-space refs are impossible at the DB level (composite FKs are scoped to
+ * `space_id`), but validating here returns a clean 400 instead of a raw SQLite
+ * constraint error.
+ */
+function requireBlockParentInSpace(db: Db, spaceId: string, parentId: string): void {
+  if (!getSpaceBlock(db, spaceId, parentId)) {
+    throw new HttpError(400, `parent_id not found in space: ${parentId}`);
+  }
+}
+
+function requireItemInSpace(db: Db, spaceId: string, itemId: string): void {
+  if (!getSpaceItem(db, spaceId, itemId)) {
+    throw new HttpError(400, `item_id not found in space: ${itemId}`);
+  }
+}
+
+function parseBlockCreateInput(db: Db, spaceId: string, body: Record<string, unknown>) {
+  const blockType = requireBlockType(body.block_type);
+  const parentId = optionalString(body, "parent_id");
+  if (typeof parentId === "string" && parentId) {
+    requireBlockParentInSpace(db, spaceId, parentId);
+  }
+  const itemId = optionalString(body, "item_id");
+  if (typeof itemId === "string" && itemId) {
+    requireItemInSpace(db, spaceId, itemId);
+  }
+  const snapshot = optionalSnapshot(body);
+  enforceEmbedShape(blockType, itemId, snapshot);
+  return {
+    parent_id: parentId,
+    block_type: blockType,
+    item_id: itemId,
+    item_snapshot: snapshot,
+    sort_key: optionalString(body, "sort_key"),
+    markdown: optionalString(body, "markdown"),
+    metadata: optionalMetadata(body),
+  };
+}
+
+function parseBlockUpdateInput(db: Db, spaceId: string, body: Record<string, unknown>) {
+  const blockType =
+    body.block_type === undefined ? undefined : requireBlockType(body.block_type);
+  const parentId = optionalString(body, "parent_id");
+  if (typeof parentId === "string" && parentId) {
+    requireBlockParentInSpace(db, spaceId, parentId);
+  }
+  const itemId = optionalString(body, "item_id");
+  if (typeof itemId === "string" && itemId) {
+    requireItemInSpace(db, spaceId, itemId);
+  }
+  const snapshot = optionalSnapshot(body);
+  return {
+    parent_id: parentId,
+    block_type: blockType,
+    item_id: itemId,
+    item_snapshot: snapshot,
+    sort_key: optionalString(body, "sort_key"),
+    markdown: optionalString(body, "markdown"),
+    metadata: optionalMetadata(body),
+  };
+}
+
+/**
+ * On create, a `*_embed` / `reference` block that carries an `item_id` must also
+ * carry an `item_snapshot` (the placeholder that survives item deletion). The DB
+ * CHECK enforces this too; this gives a clearer 400 at the route boundary.
+ */
+function enforceEmbedShape(
+  blockType: BlockType,
+  itemId: string | null | undefined,
+  snapshot: BlockItemSnapshot | null | undefined,
+): void {
+  if (typeof itemId === "string" && itemId) {
+    if (!snapshot) {
+      throw new HttpError(400, "assigning item_id requires item_snapshot");
+    }
+    if (!isEmbedBlockType(blockType)) {
+      throw new HttpError(
+        400,
+        `block_type "${blockType}" cannot embed an item_id (embed types: reference, artifact_embed, issue_embed, comment_embed)`,
+      );
+    }
+  }
 }
 
 /** Read-only convenience: full Space fact packet (items/occurrences/edges). */

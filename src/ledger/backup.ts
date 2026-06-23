@@ -65,11 +65,16 @@ export const METADATA_BACKUP_TABLES = [
   // Spaces P1' core four (issue b395083 / umbrella de56ffa). Parent-before-child
   // order; the metadata backup emits inline UNIQUE/composite-FK constraints as
   // part of each table's own DDL, so uniqueness survives backup/restore.
-  // space_blocks / space_exports are NOT here (later serial-chain children).
+  // space_exports is NOT here yet (later serial-chain child C13a).
   "spaces",
   "space_items",
   "space_occurrences",
   "space_edges",
+  // Spaces document/canvas blocks (issue d2a8e77 / umbrella de56ffa). Child of
+  // spaces + space_items (composite FKs), so it MUST follow both in this list;
+  // the metadata backup emits inline UNIQUE/composite-FK + CHECK constraints as
+  // part of the table's own DDL, so they survive backup/restore.
+  "space_blocks",
   ...LEDGER_BACKUP_TABLES,
 ] as const;
 
