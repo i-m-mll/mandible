@@ -1,0 +1,297 @@
+# Codex Review Integration — Changelog
+
+Changelog of the two Codex review passes (A: custody/export/auth lifecycle; B: P1′
+schema) plus one resolved decision, integrated into `UMBRELLA-PLAN.md` and
+`DOCUMENT-CUSTODY-DESIGN.md`. Code claims were verified against the clone at
+`/tmp/mandible-ux-review.EixOws/mandible-repo/`.
+
+Legend: **Accepted** / **Partially** / **Rejected**.
+
+---
+
+## Resolved decision (was Open Question)
+
+**Documents live on a docs branch, not protected `main`.** Routine document
+commits are agent-key-signed linked commits and never hit the auth queue; the auth
+queue is invoked only on explicit user-requested promotion of the docs branch into
+`main`. **Applied** as a stated decision in `DOCUMENT-CUSTODY-DESIGN.md` §4.0/§4.1,
+removed from both docs' Open Questions, and reflected in `UMBRELLA-PLAN.md` §9
+(auth flow), §13 (phasing), §14 (resolved note).
+
+---
+
+## Settled design decisions (post-review revision)
+
+These were baked into both planning docs after the reviews, superseding earlier
+draft choices where noted:
+
+1. **`spaces.project_id` FK = RESTRICT** (was CASCADE / open). Deleting a project
+   must not silently delete its Spaces — Spaces are precious authored state. The
+   space-internal cascade (`spaces → items/occurrences/edges/blocks`) stays
+   CASCADE. `UMBRELLA-PLAN.md` §3.1, §11.1, §14 (resolved); removed from Open
+   Questions.
+2. **"manuscript" → "document" everywhere.** The renderer is the **document
+   renderer**; the artifact is a **document**. "Space" stays the container term.
+3. **Canonical format = Markdown + non-executable `spaces-doc.v1` directives
+   (NOT full MDX), in-band, no mandatory sidecar** — **supersedes** the A3
+   sidecar-manifest design. Block identity, refs, embeds, and structure are
+   first-class directive/AST nodes in the text, so the text is the single lossless
+   source of truth. **Full MDX rejected on security grounds:** it compiles to and
+   executes JavaScript, which would move executable content into Mandible's trusted
+   UI tree, violating the `marked` + DOMPurify + sandboxed-iframe security model
+   (a recent `next-mdx-remote` RCE CVE is the cited failure mode). The
+   `spaces-doc.v1` directives are rendered as DATA nodes through fixed Mandible
+   Preact components — no code execution. The UI adopts a **remark-directive /
+   micromark renderer** (NOT an MDX compiler/runtime) to replace the `marked` path
+   (`ui/src/sanitize.ts`, `ui/src/views/artifacts.tsx`). Trade-off recorded:
+   directive containers appear as raw text in GitHub/pandoc, mitigated by mandatory
+   markdown fallback content inside each directive. Custody §1; A3 marked
+   PARTIALLY OVERRIDDEN (format: Markdown + non-executable directives; full MDX
+   rejected).
+4. **Document location on export** = global default repo-relative path + per-repo
+   overrides + an **export dialog** that confirms/overrides the location on
+   commit/export. Replaces the slug-only `<space-id>.md` scheme. Custody §5.
+5. **Custody default = Mandible custody until an explicit user commit.** The
+   "auto-track all documents for a repo" feature is **removed**; committing is
+   always an explicit user action (the export dialog). Custody §2.2/§3/§5.
+6. **HumbleB v1 SHRUNK** = a Space document can be ingested as a HumbleB **source**
+   via the existing bridge (contract (1)), under existing umbrella **a8fbc09**.
+   Live paragraph-level backrefs + `mandible.space_snapshot.v1` **DEFERRED** to a
+   later item. A9 re-scoped; UMBRELLA §10.1, custody §7.
+7. **Board columns** = default reuse issue `worker_status`, **plus** custom columns
+   defined by a filter predicate or by manually adding specific issues. UMBRELLA
+   §12 board child, §14 Q4.
+8. **Embed-on-delete behavior = DEFERRED** — not decided now; the document-renderer
+   implementer **must prompt the user** when it becomes relevant. UMBRELLA §12
+   document child + §14 Q1, custody §9 Q1.
+9. **"Document" includes existing repo files** (READMEs, design specs, whitepapers)
+   registered as canonical documents (link custody, `repo://<repo>@<ref>/<path>`
+   source), not only Mandible-authored prose. Ties to issue **2dc97b8**.
+   UMBRELLA §3.5, custody §1.4/§2.2.
+10. **Spaces is COMPLEMENTARY to Timeline, not a replacement.** Timeline =
+    chronological/time-axis; Spaces = user/agent-structured organizing surface.
+    Cross-links to Timeline (41d22a6, dc87eb3) are shared-component/related, never
+    "supersedes." UMBRELLA §1, §12 relationships.
+
+---
+
+## Codex Review A — custody / export / auth lifecycle (accept all)
+
+| # | Finding | Verdict | Rationale / doc section |
+|---|---|---|---|
+| **A1** | Add first-class `space_exports` table; `artifacts` (`UNIQUE(algorithm, content_hash)`) can't model a mutable tracked manuscript | **Accepted** | Verified `artifacts` has `UNIQUE(algorithm, content_hash)` at `src/db.ts:915`. Added `space_exports` DDL (custody §2.1) adapted to Mandible conventions (id/created_at/updated_at, json CHECKs, indexes, explicit ON DELETE, `UNIQUE(repo_id, branch, path)`); added to `METADATA_BACKUP_TABLES`; folded into the document-custody child. UMBRELLA §3.7/§12. |
+| **A2** | Docs-branch promotion conflicts with auth-merge branch cleanup; promote via short-lived proxy branch + require linked docs commits | **Accepted** | Verified `cleanup_merged_worktrees` runs after every successful merge (`cli/auth-merge.sh:410`, called at `:630,:744,:757,:807`) and tears down the merged branch's worktree via `dwt`. Specified `promote/docs/<ts>` proxy branch + `--preserve-head-branch` alternative; mandated linked-commit docs commits so promotion trailer verification passes. Added a dedicated promotion-flow child (modifies auth/merge infra → auth request from protected-`main` checkout). Custody §3.2/§4.2, UMBRELLA §9/§12. |
+| **A3** | "Lossless markdown" is not lossless; replace with human-canonical Markdown + sidecar manifest; strict anchor grammar; explicit import-conflict policy | **PARTIALLY OVERRIDDEN** (format: Markdown + non-executable `spaces-doc.v1` directives; full MDX rejected on security grounds) | **Superseded in part by the `spaces-doc.v1` format decision.** The canonical format is **Markdown + non-executable `spaces-doc.v1` directives (NOT full MDX)**, fully in-band: block identity, references, embeds, and structure are first-class directive AST nodes living IN the document text, so the text is itself the single lossless source of truth and **no mandatory sidecar is required** (custody §1/§1.2/§1.3). **Full MDX was rejected on security grounds:** full MDX compiles to and executes JavaScript, which would move executable content into Mandible's trusted UI tree; the app's security model is `marked` + DOMPurify + sanitized HTML, with HTML artifacts isolated in a sandboxed iframe; a recent `next-mdx-remote` RCE CVE is the cited failure mode; `spaces-doc.v1` directives are rendered as DATA nodes through fixed Mandible Preact components with no code execution. The **mandatory sidecar manifest** and the `<!-- mb:block … -->` HTML-comment anchor grammar are **overridden** — the round-trip fragility that motivated the sidecar is resolved by in-band non-executable directives. **Still kept:** A3's **import-conflict policy** for externally-edited files (dup id → conflict; new external node → imported block; changed body → external-edit; dropped id → confirm/preview; unknown ref → placeholder), restated against `spaces-doc.v1` in custody §1.3. |
+| **A4** | One shared resource-ref parser (renderer/import/issue-detail/artifacts), supporting `artifact:sha256:`, compact `artifact:`, `repo://`, `mandible://`, markdown links; prefer markdown links with canonical hrefs | **Accepted** | Verified `ui/src/artifact-links.ts` linkifies only bracketed `[artifact:...]` text (`CUSTOM_URI_PATTERN`, line 1) and rewrites existing artifact-like anchor hrefs (`isArtifactLikeRef`, lines 14-22/42-63); does **not** linkify bare `repo://`/`mandible://` text. Specified the shared parser (UMBRELLA §8) and added a foundational `feature/spaces-ref-parser` child (§12). |
+| **A5** | Drift detection must check the docs-branch worktree/HEAD/path directly, not reuse commit-pinned artifact materialization | **Accepted** | Verified `src/artifact-content.ts:473` uses `git show <commit>:<path>` for a 40-64-hex pinned ref — returns export-time bytes, never live edits. Rewrote custody §6 with the 4-step live comparison and `space_exports.status` mapping. |
+| **A6** | `recoverability` stays a JSON convention; document lifecycle status lives on `space_exports`, not a new artifacts column | **Accepted** | Custody §2.2 states `recoverability` stays in the snapshot artifact's `repo_locator_json`/`reference_json`; lifecycle status is `space_exports.status`. Removed the "first-class `recoverability` column?" open question. |
+| **A7** | Auto-track safety: opt-in per repo/project; stable `<space-id>.md` + title in frontmatter; commit only on explicit save/export; block when docs worktree dirty; one managed worktree per repo/branch with serialized writes/lock | **Accepted** | Custody §5 made auto-track opt-in (default off), stable path identity, the three safety rules, and slug collision/rename caveat. |
+| **A8** | Untracked export-of-copy = "local file export"; no custody/drift/recovery unless separately snapshotted; `local_only` warning if untracked inside a repo | **Accepted** | Custody §3.3 retitled and restated: no `space_exports` row, `local_only`-style warning for untracked-in-repo. |
+| **A9** | HumbleB identity contract: `source_type='artifact'` now, `'document'` only with a logical identity; define `space_snapshot.v1` before live backrefs; parameterize `d25bac5`; ingest repo-authoritative snapshot | **Accepted (v1 scope SHRUNK)** | Custody §7/§7.1 + UMBRELLA §10.1 updated. **v1 HumbleB scope is now SHRUNK** (decided): v1 is **only** "make Space documents ingestable as HumbleB **sources**" through the **existing** Mandible→HumbleB bridge (`humbleb-repo/humbleb/sources/mandible.py`, `docs/mandible_document_bridge.md`) so extracted triples enter RAG queries — contract (1), `source_type='artifact'`, repo-authoritative snapshot, parameterize `d25bac5`; coordinated under the **existing HumbleB umbrella a8fbc09**. The **live paragraph-level backref display** and the `mandible.space_snapshot.v1` apparatus (path (2)) are **DEFERRED to a later, explicitly-deferred item — NOT v1.** A9's identity guidance still holds for that deferred work. Verified `mandible_companion_issue` hard-coded at `humbleb-repo/humbleb/sources/mandible.py:285,:368`. |
+
+---
+
+## Codex Review B — P1′ schema (accept all)
+
+| # | Finding | Verdict | Rationale / doc section |
+|---|---|---|---|
+| **B1** | Three-table split is justified, not over-engineered; but `space_blocks` ships with the document renderer, not the core migration | **Accepted** | UMBRELLA §3 preamble (verdict block) + §3.8 migration strategy: `space_blocks` deferred to the document-renderer child. |
+| **B2** | Apply the same cross-space integrity fix to item/parent refs: composite FKs + inline `UNIQUE(space_id, id)` on items, occurrences, blocks | **Accepted** | UMBRELLA §3.2/§3.3/§3.5: inline `UNIQUE(space_id, id)` on all three; composite FKs `(space_id, item_id)` and self-FK `(space_id, parent_id)` on occurrences and blocks. |
+| **B3** | Use INLINE/table-level `UNIQUE` for composite-FK targets, not external `CREATE UNIQUE INDEX` — backup emits table DDL + data but not index DDL | **Accepted** | **Verified** `src/ledger/backup.ts:153-184`: per table it emits only `sqlite_master.sql` (CREATE TABLE, line 155/172) + INSERTs; no standalone index DDL. Converted all uniqueness to inline `UNIQUE(...)`; kept non-unique perf indexes as separate `CREATE INDEX`. UMBRELLA §3 preamble, §3.6, §11.3. |
+| **B4** | `space_items` `UNIQUE(space_id, ref_type, ref_id)` so canonical membership can't duplicate | **Accepted** | UMBRELLA §3.2 inline UNIQUE; multiple appearances go via `space_occurrences`. |
+| **B5** | `ref_id NOT NULL CHECK(!='')` for all types; external_ref uses normalized URI string (or existing external-ref table IF one exists — verify, don't invent); `CHECK(external_ref ⇒ ref_uri NOT NULL)` | **Accepted (no table repurposed)** | **Verified** `ledger_external_refs` exists (`src/db.ts:1222-1240`) but is an **adapter-sync** table (git-bug import: `entity_type`/`external_id`/`adapter`), not a general external-URI registry. Per the brief's "verify, do NOT invent," I did **not** repurpose it: `external_ref` stores a normalized URI in `ref_id`. Added `CHECK(ref_id != '')` and `CHECK(ref_type != 'external_ref' OR ref_uri IS NOT NULL)`. UMBRELLA §3.2, §11.3, §14 Q6. |
+| **B6** | Restrict `space_occurrences.renderer` to `('canvas','board','collection')`; `space_blocks` is the sole document structure; `spaces.default_renderer` may still be `'document'` | **Accepted** | UMBRELLA §3.3 renderer CHECK dropped `'document'`; doc layout goes on `space_blocks.metadata_json`. |
+| **B7** | Block item deletion: `ON DELETE RESTRICT` + required `item_snapshot_json` so embeds degrade to resolvable placeholders, not bare SET NULL | **Accepted** | UMBRELLA §3.5: `item_id` FK is `ON DELETE RESTRICT`; added `item_snapshot_json` (object CHECK) populated by the API on embed; replaces the prior `ON DELETE SET NULL`. |
+| **B8** | Add query-shaped indexes: `space_items(ref_type, ref_id, space_id)`; partial `(space_id, item_id) WHERE item_id IS NOT NULL` on occurrences/blocks; parent/sort indexes; `space_edges(space_id, source)`/`(space_id, target)` | **Accepted** | UMBRELLA §3.2/§3.3/§3.4/§3.5 + §3.6 index table. Replaced bare `(source)`/`(target)` edge indexes with composite `(space_id, source)`/`(space_id, target)`. |
+| **B9** | JSON checks `CHECK(json_valid(x) AND json_type(x)='object')` where metadata is an object | **Accepted** | Applied to every `metadata_json` column and to `item_snapshot_json`. UMBRELLA §3 preamble + all DDL. |
+| **B10** | Migration strategy: v83 `spaces_core` (spaces, items, occurrences, edges) together; `space_blocks` in a later migration; all in `METADATA_BACKUP_TABLES`; backup test fails if omitted; add migration tests | **Accepted** | UMBRELLA §3.8 (new) + §12 children: core-four in v83; `space_blocks` with the document child; `space_exports` with custody; migration tests (invalid JSON, dup items, cross-space refs, item-delete cascade, block-delete placeholder, backup classification). |
+
+---
+
+## Codex security review — MDX format rejection
+
+| Finding | Verdict |
+|---|---|
+| Full/executable MDX rejected as canonical document format | **Accepted — format changed to Markdown + non-executable `spaces-doc.v1` directives** |
+
+**Context.** An earlier revision of these planning docs specified the canonical
+document format as "MDX (markdown + directives)." A Codex security review
+rejected full MDX and recommended **Markdown + a small, validated,
+non-executable directive grammar** instead.
+
+**Security rationale.** Full MDX compiles directives to JavaScript and executes
+them inside the renderer. This would move executable content into Mandible's
+trusted UI tree, directly violating the app's security model (`marked` +
+DOMPurify + sanitized HTML; HTML artifacts isolated in a sandboxed iframe).
+A recent `next-mdx-remote` RCE CVE is the cited failure mode for executable MDX.
+
+**Resolution.** The canonical format is now **Markdown + non-executable
+`spaces-doc.v1` directives**:
+- CommonMark/GFM prose base.
+- YAML frontmatter with `mandible_format: spaces-doc.v1` marker.
+- Whitelisted inline directive profile (remark-directive / CommonMark generic
+  directives, e.g. `:::figure{artifact="…"}` / `::figure[caption]{…}`).
+- Canonical-URI links: `mandible://<repo>/issue/<id>`, `repo://<repo>@<ref>/<path>`,
+  `artifact:sha256:<hash>`.
+- Each directive contains **normal-markdown fallback content** (image/link/caption)
+  for graceful degradation on GitHub/pandoc.
+- Directives are rendered as **DATA nodes through fixed Mandible Preact
+  components** — no code execution.
+
+**Implementation path.** Adopt a remark-directive / micromark parse path feeding
+sanitized HTML + fixed Preact components, NOT an MDX compiler/runtime. This is
+lower cost than full MDX and eliminates the JavaScript execution surface. The
+specific remark/micromark library is TBD (UMBRELLA §14 Q2, custody §9 Q2).
+
+**Applied in:** UMBRELLA §8, §12 (ref-parser and document renderer children),
+§13 (Phase 3), §14 (resolved format, open Q2 narrowed to library selection);
+custody §1, §1.2, §1.3, §3, §8 (best-practice table), §9 (resolved format,
+Q2 narrowed); settled decisions entry 3 above; A3 verdict updated.
+
+---
+
+## Claims found inaccurate / nuanced against the clone
+
+Nothing was outright wrong, but two findings were **refined** by verification:
+
+- **B5 — "existing external-ref table."** `ledger_external_refs` *does* exist
+  (`src/db.ts:1222-1240`), but it is an **adapter-sync** table, not a general
+  external-URI registry. Per the brief, I did **not** repurpose it; `external_ref`
+  items store the normalized URI directly in `ref_id`. Recorded as an open question
+  (UMBRELLA §14 Q6) rather than an assumed dependency.
+- **A4 — linkifier scope.** The doc's phrasing "only handles bracketed
+  `[artifact:...]` + existing anchors" is accurate. Note that `isArtifactLikeRef`
+  (`ui/src/artifact-links.ts:14-22`) *would* accept a `repo://`/`mandible://` href
+  **inside an existing anchor**, but **bare** `repo://`/`mandible://` text is never
+  linkified — so the shared-parser need stands as stated.
+
+All other code claims (A1 `UNIQUE(algorithm, content_hash)` at `src/db.ts:915`;
+A2 `cleanup_merged_worktrees` at `cli/auth-merge.sh:410`; A5 `git show <commit>:<path>`
+at `src/artifact-content.ts:473`; A9 hard-coded `d25bac5` at
+`humbleb-repo/humbleb/sources/mandible.py:285,:368`; B3 backup emits table DDL + data
+only at `src/ledger/backup.ts:153-184`) were **verified true**.
+
+---
+
+## Round-4 reconciliation (review2 + codex + Opus)
+
+A third external review (`review2.md`, GPT‑5.5‑pro, grounded with file:line) plus
+a fresh codex+Opus critique and the coordinator's resolution decisions were folded
+into `UMBRELLA-DECOMPOSITION.md`, `UMBRELLA-PLAN.md`, and `DOCUMENT-CUSTODY-DESIGN.md`.
+The child count grows **19 → 28**. Claims were re-verified against the clone at
+`/tmp/spaces-umbrella-review.EevMg7/mandible-repo/`.
+
+### From review2 (incorporated)
+
+- **[Blocker] C10 lacked the render shell.** C10 now owns `SpacesViewShell` + the
+  `route.tab === 'spaces'` render branch (`ui/src/app.tsx:1375-1391` had Graph/
+  Timeline but no Spaces branch), plus `VIEW_SIDEBAR_TABS` (`:160-168`) and the
+  content-class (`:1285`) — not just route union + nav.
+- **[Blocker] C2/C6 predicate drift.** Verified backend `TimelineIssuePredicate`
+  has `label.membership` + typed `kind` (`src/types.ts:292-300`); UI lacks both
+  (`ui/src/types/timeline.ts:6-14`); `evaluatePredicate` is private
+  (`src/ledger/timeline-projection.ts:890`). New child **C7a** extracts a shared
+  `src/ledger/issue-predicate.ts` and reconciles the contract; C2 `/seed` and the
+  seed dialog consume it.
+- **[Blocker] C13 too large / missing routes & repo identity.** Split into C13a
+  (schema+identity+backup), C13b (export backend+worktree+linked-commit+routes),
+  C13c (drift), C13d (dialog+repo-file UI). `repo_id` now keys
+  `ledger_project_checkouts.id` (backed up, `src/db.ts:1014-1024`), not
+  `work_repos.id` (excluded, `src/ledger/backup.ts:70-77`).
+- **[Blocker] C14 too large / missing package ownership.** Split into C14a
+  (parser/sanitizer pipeline + `package.json`/`package-lock.json` for
+  `remark-directive`/`unified`), C14b (read-only renderer), C14c (block editor).
+- **[Blocker] C11 snapshot CHECK not in DDL.** Added
+  `CHECK(item_id IS NULL OR item_snapshot_json IS NOT NULL)` to the `space_blocks`
+  DDL (UMBRELLA-PLAN §3.5 + §3.6).
+- **[Blocker] C17 open column model.** Resolved: custom columns persist in
+  `spaces.metadata_json` (no new table); defaults = `worker_status`.
+- **[Blocker] C18 owned-surface misses + C10 collision.** C18 now owns all
+  default-`graph` fallbacks (`routing.ts:14/23/35/37/54`) + the Graph nav demote
+  (`app.tsx:990-1044`), co-owning `app.tsx`/`routing.ts` with C10 via disjoint
+  regions (C10 = Spaces ADDs; C18 = Graph demote + default flip).
+- **[Blocker] Missing shared contract surfaces.** New child **C3** owns
+  `src/contracts.ts` Spaces types, `ui/src/api.ts` helpers, `ui/src/views/spaces/
+  types.ts`, and the per-component CSS convention (no edits to the global
+  `ui/src/style.css`).
+- **[Blocker] Unified resolver unassigned.** The `mandible://`/`repo://`/artifact/
+  issue/comment resolver endpoint is assigned to **C2** (reusing
+  `/api/artifacts/resolve`, `src/routes/providers.ts:203`); C6's unresolved-ref UI
+  consumes it. C6's hard C2 dependency is now *only* this resolver endpoint.
+- **[Blocker] Migration versioning not worker-safe.** Resolved as a **strict
+  serial chain** C1 → C11 → C13a (main at v82, `src/db.ts:2010`;
+  `assertMigrationSequence`, `:2020`), not slot reservation.
+- **[Warning, incorporated]** C6 IssueDetail gating flip (`onAddToSpace` prop +
+  `hasIssueActions` at `:26-36`/`:68-75`, now owned by C7c); C7 renders collection
+  occurrences with an unplaced shelf, not item state alone (C8); C5 likely doesn't
+  need new `sse.ts` infra (already broadcasts arbitrary strings, `:185-204`); C4
+  per-route allowlisting (every route-owner self-allowlists); C2 seed idempotency
+  + project-scoping; deleting items embedded in blocks needs a detach/degrade path
+  (C11); block/occurrence parent-cycle + sort-key generation assigned (C11);
+  custody state affects editor UX — read-only/stale on `authority='repo'`+non-clean
+  drift (C13d defines, C14c implements); C16 depends on C13b's commit contract, not
+  all of C13.
+
+### From this round's codex + Opus (not in review2)
+
+- **routing.ts line drift.** Verified: union `:2`; allow-array at `:52` (not `:35`);
+  default fallbacks at `:14/:23/:35/:37/:54`. C10/C18 owned-surfaces and the §5
+  collision matrix corrected; the phantom `:35` same-line C10/C18 collision removed
+  (they touch disjoint sites).
+- **C3↔C8b cycle removed.** The promote-edge helper is owned by the CLI child (C4)
+  and **reuses the existing `POST /api/ledger/relationships`**
+  (`src/routes/issues.ts:1160-1216`); both C4 and canvas-edges (C9b) are independent
+  consumers of that route — no bidirectional DAG edge. Ledger edges allow only
+  issue/comment endpoints + the 9 `link_type` values (`src/db.ts:1148-1173`), so
+  promotion is **disabled/skipped** when a `space_edge` endpoint is an artifact/URI.
+- **C14 marked-swap target corrected.** `ui/src/sanitize.ts` is **pure DOMPurify
+  (no `marked`)**; the `marked.parse` to replace is **`ui/src/views/artifacts.tsx:687`**
+  (C14b); the ~13 other `marked` callers are out of scope. The decomposition no
+  longer claims a `sanitize.ts` `marked` swap.
+- **C16 auth.ts is a TEST, not code.** The `Mandible-Issue:` gate
+  (`src/routes/auth.ts` `git log --no-merges` ~871, trailer scan ~893) **already**
+  rejects bare-commit branches. C16's auth.ts deliverable is a **regression test**;
+  the real code change is the `cli/auth-merge.sh:410` proxy/cleanup half, with
+  promotion via a `cli/space.sh promote-docs` subcommand.
+- **Plan §12 "13 rows" / row-count.** Corrected: §12 is the post-split Children
+  table; it is now **28 rows**, and the §3.6 perf-index table no longer
+  mis-lists `UNIQUE(repo_id, branch, path)` as a performance index (it is an inline
+  constraint).
+
+### Coordinator resolution decisions applied
+
+A foundational **spaces-contracts** child (C3); strict **migration serialization**
+(C1→C11→C13a); `space_exports.repo_id → ledger_project_checkouts.id`; **C6→C6a/b/c**
+(here C7a/C7b/C7c); **C13→C13a/b/c/d**; **C14→C14a/b/c**; **C12 narrowed to
+grammar/serializer**; **C11↔C12 HARD edge**; **C17** board model in
+`spaces.metadata_json`; **C18** default-fallback ownership + C10 co-ownership;
+**C4** per-route allowlist rule (each route-owner self-allowlists); **C5** drops the
+C2 dependency to a resolver-only edge; the event-enum extension convention (C2 owns,
+later route children append); **C2** seed idempotency + project scoping; **C7**
+collection occurrences with unplaced shelf; **C11** block CHECK + cycle/sort-key +
+detach/degrade; **C16** promote-docs subcommand + auth.ts regression test; the
+custody-aware read-only/stale editor UX (C13d/C14c); and **C3** split into core
+`mandible space` CLI (C4, early) + a block-CLI sub-child (C4b, after C11).
+
+### Review2 findings judged inapplicable (with why)
+
+- **review2 [Info] "C4 probably doesn't need to edit `src/sse.ts`."** Treated as a
+  scoping nuance, not a removal: C5 still owns the `space:*` broadcast **wiring**
+  (calling the existing `broadcast` helper on mutations) + emission tests; we did
+  not delete the SSE child, because *something* must wire the event family and
+  assert reconciliation. The finding is reflected (the child's real work is wiring
+  + tests + the allowlist convention, not new SSE infrastructure), not actioned as
+  "drop the file."
+- **review2 [Warning] "C15 not fully reviewable from this packet" / clone excludes
+  HumbleB source.** Acknowledged but **not actioned as a structural change**: C15 is
+  explicitly deferred/coordinated under the existing HumbleB umbrella a8fbc09 and is
+  cross-repo; the packet correctly does not dispatch it standalone. No edit needed
+  beyond the existing "under a8fbc09, read HumbleB CLAUDE.md first" framing.
+- **review2 [Info] "non-unique perf indexes lost by metadata backup."** Already
+  stated in the plan (§3.6/§3.7: only inline constraints survive; perf-index loss
+  is a perf regression, not correctness). No change — it was already acknowledged.
+- **review2's `--preserve-head-branch` vs proxy-branch framing.** The proxy branch
+  is kept as the **primary** mechanism (it needs no auth-merge code change to the
+  cleanup logic beyond the proxy); `--preserve-head-branch` stays a recorded
+  alternative. Not a disagreement — both were already on record; we did not promote
+  the flag to primary.
