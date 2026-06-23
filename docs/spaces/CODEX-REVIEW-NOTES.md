@@ -170,3 +170,128 @@ A2 `cleanup_merged_worktrees` at `cli/auth-merge.sh:410`; A5 `git show <commit>:
 at `src/artifact-content.ts:473`; A9 hard-coded `d25bac5` at
 `humbleb-repo/humbleb/sources/mandible.py:285,:368`; B3 backup emits table DDL + data
 only at `src/ledger/backup.ts:153-184`) were **verified true**.
+
+---
+
+## Round-4 reconciliation (review2 + codex + Opus)
+
+A third external review (`review2.md`, GPT‑5.5‑pro, grounded with file:line) plus
+a fresh codex+Opus critique and the coordinator's resolution decisions were folded
+into `UMBRELLA-DECOMPOSITION.md`, `UMBRELLA-PLAN.md`, and `DOCUMENT-CUSTODY-DESIGN.md`.
+The child count grows **19 → 28**. Claims were re-verified against the clone at
+`/tmp/spaces-umbrella-review.EevMg7/mandible-repo/`.
+
+### From review2 (incorporated)
+
+- **[Blocker] C10 lacked the render shell.** C10 now owns `SpacesViewShell` + the
+  `route.tab === 'spaces'` render branch (`ui/src/app.tsx:1375-1391` had Graph/
+  Timeline but no Spaces branch), plus `VIEW_SIDEBAR_TABS` (`:160-168`) and the
+  content-class (`:1285`) — not just route union + nav.
+- **[Blocker] C2/C6 predicate drift.** Verified backend `TimelineIssuePredicate`
+  has `label.membership` + typed `kind` (`src/types.ts:292-300`); UI lacks both
+  (`ui/src/types/timeline.ts:6-14`); `evaluatePredicate` is private
+  (`src/ledger/timeline-projection.ts:890`). New child **C7a** extracts a shared
+  `src/ledger/issue-predicate.ts` and reconciles the contract; C2 `/seed` and the
+  seed dialog consume it.
+- **[Blocker] C13 too large / missing routes & repo identity.** Split into C13a
+  (schema+identity+backup), C13b (export backend+worktree+linked-commit+routes),
+  C13c (drift), C13d (dialog+repo-file UI). `repo_id` now keys
+  `ledger_project_checkouts.id` (backed up, `src/db.ts:1014-1024`), not
+  `work_repos.id` (excluded, `src/ledger/backup.ts:70-77`).
+- **[Blocker] C14 too large / missing package ownership.** Split into C14a
+  (parser/sanitizer pipeline + `package.json`/`package-lock.json` for
+  `remark-directive`/`unified`), C14b (read-only renderer), C14c (block editor).
+- **[Blocker] C11 snapshot CHECK not in DDL.** Added
+  `CHECK(item_id IS NULL OR item_snapshot_json IS NOT NULL)` to the `space_blocks`
+  DDL (UMBRELLA-PLAN §3.5 + §3.6).
+- **[Blocker] C17 open column model.** Resolved: custom columns persist in
+  `spaces.metadata_json` (no new table); defaults = `worker_status`.
+- **[Blocker] C18 owned-surface misses + C10 collision.** C18 now owns all
+  default-`graph` fallbacks (`routing.ts:14/23/35/37/54`) + the Graph nav demote
+  (`app.tsx:990-1044`), co-owning `app.tsx`/`routing.ts` with C10 via disjoint
+  regions (C10 = Spaces ADDs; C18 = Graph demote + default flip).
+- **[Blocker] Missing shared contract surfaces.** New child **C3** owns
+  `src/contracts.ts` Spaces types, `ui/src/api.ts` helpers, `ui/src/views/spaces/
+  types.ts`, and the per-component CSS convention (no edits to the global
+  `ui/src/style.css`).
+- **[Blocker] Unified resolver unassigned.** The `mandible://`/`repo://`/artifact/
+  issue/comment resolver endpoint is assigned to **C2** (reusing
+  `/api/artifacts/resolve`, `src/routes/providers.ts:203`); C6's unresolved-ref UI
+  consumes it. C6's hard C2 dependency is now *only* this resolver endpoint.
+- **[Blocker] Migration versioning not worker-safe.** Resolved as a **strict
+  serial chain** C1 → C11 → C13a (main at v82, `src/db.ts:2010`;
+  `assertMigrationSequence`, `:2020`), not slot reservation.
+- **[Warning, incorporated]** C6 IssueDetail gating flip (`onAddToSpace` prop +
+  `hasIssueActions` at `:26-36`/`:68-75`, now owned by C7c); C7 renders collection
+  occurrences with an unplaced shelf, not item state alone (C8); C5 likely doesn't
+  need new `sse.ts` infra (already broadcasts arbitrary strings, `:185-204`); C4
+  per-route allowlisting (every route-owner self-allowlists); C2 seed idempotency
+  + project-scoping; deleting items embedded in blocks needs a detach/degrade path
+  (C11); block/occurrence parent-cycle + sort-key generation assigned (C11);
+  custody state affects editor UX — read-only/stale on `authority='repo'`+non-clean
+  drift (C13d defines, C14c implements); C16 depends on C13b's commit contract, not
+  all of C13.
+
+### From this round's codex + Opus (not in review2)
+
+- **routing.ts line drift.** Verified: union `:2`; allow-array at `:52` (not `:35`);
+  default fallbacks at `:14/:23/:35/:37/:54`. C10/C18 owned-surfaces and the §5
+  collision matrix corrected; the phantom `:35` same-line C10/C18 collision removed
+  (they touch disjoint sites).
+- **C3↔C8b cycle removed.** The promote-edge helper is owned by the CLI child (C4)
+  and **reuses the existing `POST /api/ledger/relationships`**
+  (`src/routes/issues.ts:1160-1216`); both C4 and canvas-edges (C9b) are independent
+  consumers of that route — no bidirectional DAG edge. Ledger edges allow only
+  issue/comment endpoints + the 9 `link_type` values (`src/db.ts:1148-1173`), so
+  promotion is **disabled/skipped** when a `space_edge` endpoint is an artifact/URI.
+- **C14 marked-swap target corrected.** `ui/src/sanitize.ts` is **pure DOMPurify
+  (no `marked`)**; the `marked.parse` to replace is **`ui/src/views/artifacts.tsx:687`**
+  (C14b); the ~13 other `marked` callers are out of scope. The decomposition no
+  longer claims a `sanitize.ts` `marked` swap.
+- **C16 auth.ts is a TEST, not code.** The `Mandible-Issue:` gate
+  (`src/routes/auth.ts` `git log --no-merges` ~871, trailer scan ~893) **already**
+  rejects bare-commit branches. C16's auth.ts deliverable is a **regression test**;
+  the real code change is the `cli/auth-merge.sh:410` proxy/cleanup half, with
+  promotion via a `cli/space.sh promote-docs` subcommand.
+- **Plan §12 "13 rows" / row-count.** Corrected: §12 is the post-split Children
+  table; it is now **28 rows**, and the §3.6 perf-index table no longer
+  mis-lists `UNIQUE(repo_id, branch, path)` as a performance index (it is an inline
+  constraint).
+
+### Coordinator resolution decisions applied
+
+A foundational **spaces-contracts** child (C3); strict **migration serialization**
+(C1→C11→C13a); `space_exports.repo_id → ledger_project_checkouts.id`; **C6→C6a/b/c**
+(here C7a/C7b/C7c); **C13→C13a/b/c/d**; **C14→C14a/b/c**; **C12 narrowed to
+grammar/serializer**; **C11↔C12 HARD edge**; **C17** board model in
+`spaces.metadata_json`; **C18** default-fallback ownership + C10 co-ownership;
+**C4** per-route allowlist rule (each route-owner self-allowlists); **C5** drops the
+C2 dependency to a resolver-only edge; the event-enum extension convention (C2 owns,
+later route children append); **C2** seed idempotency + project scoping; **C7**
+collection occurrences with unplaced shelf; **C11** block CHECK + cycle/sort-key +
+detach/degrade; **C16** promote-docs subcommand + auth.ts regression test; the
+custody-aware read-only/stale editor UX (C13d/C14c); and **C3** split into core
+`mandible space` CLI (C4, early) + a block-CLI sub-child (C4b, after C11).
+
+### Review2 findings judged inapplicable (with why)
+
+- **review2 [Info] "C4 probably doesn't need to edit `src/sse.ts`."** Treated as a
+  scoping nuance, not a removal: C5 still owns the `space:*` broadcast **wiring**
+  (calling the existing `broadcast` helper on mutations) + emission tests; we did
+  not delete the SSE child, because *something* must wire the event family and
+  assert reconciliation. The finding is reflected (the child's real work is wiring
+  + tests + the allowlist convention, not new SSE infrastructure), not actioned as
+  "drop the file."
+- **review2 [Warning] "C15 not fully reviewable from this packet" / clone excludes
+  HumbleB source.** Acknowledged but **not actioned as a structural change**: C15 is
+  explicitly deferred/coordinated under the existing HumbleB umbrella a8fbc09 and is
+  cross-repo; the packet correctly does not dispatch it standalone. No edit needed
+  beyond the existing "under a8fbc09, read HumbleB CLAUDE.md first" framing.
+- **review2 [Info] "non-unique perf indexes lost by metadata backup."** Already
+  stated in the plan (§3.6/§3.7: only inline constraints survive; perf-index loss
+  is a perf regression, not correctness). No change — it was already acknowledged.
+- **review2's `--preserve-head-branch` vs proxy-branch framing.** The proxy branch
+  is kept as the **primary** mechanism (it needs no auth-merge code change to the
+  cleanup logic beyond the proxy); `--preserve-head-branch` stays a recorded
+  alternative. Not a disagreement — both were already on record; we did not promote
+  the flag to primary.

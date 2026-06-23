@@ -239,7 +239,12 @@ So the design splits cleanly:
 CREATE TABLE space_exports (
   id                            TEXT PRIMARY KEY,
   space_id                      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
-  repo_id                       TEXT NOT NULL,
+  -- repo_id is the BACKED-UP project-checkout identity, NOT work_repos.id.
+  -- ledger_project_checkouts (src/db.ts:1014-1024) is project-scoped and carries
+  -- root/name/default_branch/remote_url, and is NOT in REPRODUCIBLE_OR_RUNTIME_TABLES
+  -- (src/ledger/backup.ts:70-77), so the tracking identity survives backup/restore.
+  -- work_repos.id IS excluded from backup and must NOT be used here (review2 Blocker).
+  repo_id                       TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT,
   branch                        TEXT NOT NULL,    -- the docs branch (see §4)
   path                          TEXT NOT NULL,    -- repo-relative export path
   authority                     TEXT NOT NULL DEFAULT 'mandible'
@@ -276,6 +281,15 @@ CREATE INDEX idx_space_exports_repo    ON space_exports(repo_id, branch, path);
 - `last_export_artifact_id` / `pre_export_snapshot_artifact_id` point at the
   immutable `artifacts` rows; `space_exports` itself is the mutable authority/drift
   record.
+- **Repo identity (Round-4 fix).** `repo_id` references
+  **`ledger_project_checkouts.id`** (`src/db.ts:1014-1024`), a project-scoped,
+  backed-up identity carrying root/name/default-branch/remote-url — **NOT**
+  `work_repos.id`, which is excluded from backup as reproducible/runtime state
+  (`src/ledger/backup.ts:70-77`, `REPRODUCIBLE_OR_RUNTIME_TABLES`). Keying tracking
+  rows to a non-backed-up table would orphan them on restore even though the
+  `space_exports` row itself survives. (Storing the full repo locator inline is the
+  alternative; the checkout FK is preferred here because it is the existing
+  backed-up project-scoped identity.)
 - **Backup:** `space_exports` **MUST** be added to `METADATA_BACKUP_TABLES`
   (`src/ledger/backup.ts:36-66`) like the other Spaces tables — losing tracking
   state on backup/restore would orphan tracked documents.
