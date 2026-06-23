@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { sanitizeHtml, sanitizeMarkdown } from '../../sanitize';
-import { artifactDetailHref, compactArtifactRef, displayArtifactRef, linkifyArtifactRefs } from '../../artifact-links';
+import {
+  artifactDetailHref,
+  attachResourceRefResolution,
+  compactArtifactRef,
+  displayResourceRef,
+  linkifyResourceRefs,
+} from '../../resource-refs';
 import type {
   LedgerIssueDetailAssociatedArtifact,
   LedgerIssueDetailAuthRequest,
@@ -276,8 +282,8 @@ function artifactSourceLabel(artifact: LedgerIssueDetailAssociatedArtifact): str
 
 function artifactTitle(artifact: LedgerIssueDetailAssociatedArtifact): string {
   const ref = artifact.refs[0];
-  if (ref) return displayArtifactRef(ref);
-  return artifactFileLabel(artifact.uri) || displayArtifactRef(artifact.uri) || compactArtifactRef(artifact.content_hash);
+  if (ref) return displayResourceRef(ref);
+  return artifactFileLabel(artifact.uri) || displayResourceRef(artifact.uri) || compactArtifactRef(artifact.content_hash);
 }
 
 function artifactMetaLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
@@ -929,12 +935,18 @@ function MarkdownBlock({
     if (!source) return '';
     const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
     const sanitized = sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
-    return linkifyArtifactRefs(linkifyLedgerRefs(sanitized, detail));
+    return linkifyResourceRefs(linkifyLedgerRefs(sanitized, detail));
   }, [source, detail.id, detail.display_id, detail.project.repo_id]);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node || !html) return undefined;
+    return attachResourceRefResolution(node);
+  }, [html]);
   if (!html) {
     return <div className={`${className} spec-panel--empty`}>{empty}</div>;
   }
-  return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div ref={containerRef} className={className} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 function normalizeMarkdownSource(source: string): string {
