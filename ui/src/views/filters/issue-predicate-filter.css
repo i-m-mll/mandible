@@ -1,0 +1,105 @@
+/*
+ * Owned styles for the shared issue-predicate filter editor (child 27a5026).
+ *
+ * Scoped under `.issue-predicate-filter` (the default class prefix). The
+ * Timeline passes `classPrefix="timeline-filter-composer"` and keeps its
+ * existing global `ui/src/style.css` rules, so this file styles only the
+ * Spaces-side default prefix and never collides with Timeline. Uses the shared
+ * theme tokens (`var(--border)`, `var(--text-muted)`, …) rather than hardcoded
+ * colors.
+ */
+
+.issue-predicate-filter {
+  display: grid;
+  gap: 8px;
+}
+
+.issue-predicate-filter__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-height: 26px;
+  align-items: center;
+}
+
+.issue-predicate-filter__chips > span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.issue-predicate-filter__chip {
+  min-height: 24px;
+  border: 1px solid var(--neutral-alpha-12, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  padding: 0 7px;
+  background: var(--neutral-alpha-06, rgba(255, 255, 255, 0.06));
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.issue-predicate-filter__input {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.issue-predicate-filter__input input {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--neutral-alpha-12, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  padding: 0 8px;
+  background: var(--neutral-alpha-04, rgba(0, 0, 0, 0.2));
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.issue-predicate-filter__preview {
+  display: grid;
+  gap: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.issue-predicate-filter__preview strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.issue-predicate-filter__preview em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+}
+
+.issue-predicate-filter__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.issue-predicate-filter__actions button {
+  min-height: 28px;
+  border: 1px solid var(--neutral-alpha-10, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  padding: 0 8px;
+  background: var(--neutral-alpha-06, rgba(255, 255, 255, 0.06));
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.issue-predicate-filter__actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
