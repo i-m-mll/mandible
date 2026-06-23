@@ -98,8 +98,10 @@ describe("spaces core schema (issue b395083)", () => {
     expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(83);
   });
 
-  it("does NOT create space_blocks or space_exports (later serial-chain children)", () => {
-    for (const table of ["space_blocks", "space_exports"]) {
+  it("does NOT create space_exports (later serial-chain child C13a)", () => {
+    // space_blocks now exists once the C11 migration (issue d2a8e77) lands in the
+    // integration branch; only space_exports remains a later serial-chain child.
+    for (const table of ["space_exports"]) {
       const row = db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get(table) as { name: string } | undefined;

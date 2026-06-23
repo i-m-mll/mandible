@@ -52,8 +52,10 @@ export const SPACE_EVENTS = {
   SPACE_SEEDED: "space:seeded",
 
   // --- C11 (feature/spaces-canvas__blocks): document/canvas blocks ---
-  //   Append here, e.g.:
-  //   SPACE_BLOCK_CHANGED: "space:block:changed",
+  //   Issue d2a8e77 — block create/update/delete/detach all emit this single
+  //   `space:block:changed` topic (the C11 route layer carries finer detail in
+  //   the SSE payload rather than minting per-verb topic names).
+  SPACE_BLOCK_CHANGED: "space:block:changed",
 
   // --- C13b (export/drift): export + document snapshots ---
   //   Append here, e.g.:

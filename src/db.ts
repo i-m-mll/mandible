@@ -2140,6 +2140,81 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_space_edges_source ON space_edges(space_id, source)`,
       `CREATE INDEX IF NOT EXISTS idx_space_edges_target ON space_edges(space_id, target)`
     ]
+  },
+  {
+    version: 84,
+    name: "space_blocks",
+    // Issue: d2a8e77 (umbrella de56ffa) — Spaces document/canvas blocks, per
+    // docs/spaces/UMBRELLA-PLAN.md §3.5. SECOND link of the serial migration
+    // chain (C1 spaces_core → C11 space_blocks → C13a space_exports); this table
+    // is intentionally separate from the core-four migration.
+    //
+    // The block tree is the storage backing for the `spaces-doc.v1` document
+    // serialization (C12, src/spaces/serialize.ts): the round-tripped columns
+    // (id, parent_id, sort_key, block_type, item_id, markdown) are exactly the
+    // C12 DocBlock fields, and `block_type` is kept in lockstep with the C12
+    // BLOCK_TYPES list. Do NOT diverge the CHECK set from that list.
+    //
+    // FK / cascade semantics (review-frozen):
+    //   - space_id → spaces(id) ON DELETE CASCADE: deleting a Space tears down
+    //     its blocks (same as the core-four space-internal cascade).
+    //   - (space_id, parent_id) → space_blocks(space_id, id) ON DELETE CASCADE:
+    //     a self-referential block tree, scoped to one Space so cross-space
+    //     parent refs are impossible. Parent-CYCLE rejection is enforced in the
+    //     route/helper layer (SQLite FKs cannot detect cycles).
+    //   - (space_id, item_id) → space_items(space_id, id) ON DELETE RESTRICT:
+    //     an item embedded in a block CANNOT be silently deleted. The detach/
+    //     degrade operation (drop item_id, preserve item_snapshot_json as a
+    //     placeholder) is the only way to remove the embed; see src/ledger/
+    //     space-blocks.ts.
+    //
+    // Snapshot invariant (review2 + codex [Blocker], precedent at the work_units
+    // trigger guards above): assigning an item_id REQUIRES a non-null
+    // item_snapshot_json so a placeholder always survives the item's deletion.
+    // The CHECK(item_id IS NULL OR item_snapshot_json IS NOT NULL) enforces this
+    // at the DB level — the Round-3 DDL only validated the snapshot WHEN present,
+    // which let item_id be assigned with no snapshot at all.
+    //
+    // Inline UNIQUE(space_id, id) + composite FKs are intentional (same rationale
+    // as the core four): the metadata backup (src/ledger/backup.ts) emits table
+    // DDL + rows only and NO standalone CREATE INDEX DDL, so a uniqueness rule
+    // that lived only as an external CREATE UNIQUE INDEX would be LOST on
+    // backup/restore. Only the non-unique tree-walk performance index stays as a
+    // separate CREATE INDEX statement.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS space_blocks (
+        id                 TEXT NOT NULL,
+        space_id           TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        parent_id          TEXT,
+        block_type         TEXT NOT NULL
+                             CHECK(block_type IN (
+                               'heading','paragraph','reference','artifact_embed',
+                               'issue_embed','comment_embed','todo'
+                             )),
+        item_id            TEXT,
+        item_snapshot_json TEXT
+                             CHECK(item_snapshot_json IS NULL
+                               OR (json_valid(item_snapshot_json)
+                                   AND json_type(item_snapshot_json)='object')),
+        sort_key           TEXT NOT NULL,
+        markdown           TEXT NOT NULL DEFAULT '',
+        metadata_json      TEXT NOT NULL DEFAULT '{}'
+                             CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE (space_id, id),
+        CHECK (item_id IS NULL OR item_snapshot_json IS NOT NULL),
+        FOREIGN KEY (space_id, parent_id)
+          REFERENCES space_blocks(space_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (space_id, item_id)
+          REFERENCES space_items(space_id, id) ON DELETE RESTRICT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_blocks_tree
+        ON space_blocks(space_id, parent_id, sort_key)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_blocks_item
+        ON space_blocks(space_id, item_id) WHERE item_id IS NOT NULL`
+    ]
   }
 ];
 

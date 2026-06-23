@@ -274,6 +274,16 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/edges\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/edges\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/seed$/.test(pathname)) return true;
+  // Spaces blocks (C11, issue d2a8e77): the document/canvas block tree.
+  // Reads + narrow non-privileged writes (block CRUD + item detach/degrade);
+  // no approval/merge/admin/config authority, so within the file-transport
+  // write boundary (standing AC #1). Self-allowlisted per the per-route
+  // convention — no blanket `/api/spaces*` allow.
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/blocks$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/blocks$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/blocks\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/blocks\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/items\/[^/]+\/detach-blocks$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/claim") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/activate") return true;
