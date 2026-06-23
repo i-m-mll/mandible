@@ -273,6 +273,70 @@ describe('SpacesSidebar create flow', () => {
   });
 });
 
+describe('SpacesSidebar empty projects (compact, Stage 3)', () => {
+  function groupsWithEmptyProject(): SpaceGroup[] {
+    return [
+      {
+        project_id: 'proj-a',
+        project_name: 'Alpha',
+        spaces: [makeSpace('a1', 'Roadmap', 'proj-a')],
+      },
+      // Empty project: listSpacesGrouped emits ALL projects so users can create
+      // under any. It must render as a compact header row, NOT "No spaces yet".
+      { project_id: 'proj-empty', project_name: 'Empty', spaces: [] },
+    ];
+  }
+
+  it('renders an empty project as a compact header with no "No spaces yet" filler', async () => {
+    const loadGroups = vi.fn().mockResolvedValue(groupsWithEmptyProject());
+    render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
+    await screen.findByText('Roadmap');
+
+    // The empty project header is present (so the user can create under it)…
+    expect(screen.getByTestId('spaces-group-header-proj-empty')).toBeTruthy();
+    expect(screen.getByText('Empty')).toBeTruthy();
+    // …but no per-project "No spaces yet" filler line anywhere.
+    expect(screen.queryByText('No spaces yet')).toBeNull();
+    // The project WITH a space still shows its space line.
+    expect(screen.getByText('Roadmap')).toBeTruthy();
+  });
+
+  it('still shows the overall empty state when there are zero projects/spaces', async () => {
+    const loadGroups = vi.fn().mockResolvedValue([] as SpaceGroup[]);
+    render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
+    expect(await screen.findByTestId('spaces-tree-empty')).toBeTruthy();
+  });
+});
+
+describe('SpacesSidebar create popover outside-click (containerRef)', () => {
+  it('closes on a click outside the sidebar but stays on a click inside', async () => {
+    const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
+    render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
+    await screen.findByText('Roadmap');
+
+    fireEvent.click(screen.getByTestId('create-top-level'));
+    expect(screen.getByTestId('space-create-chooser')).toBeTruthy();
+
+    // The outside-click handler listens on `document` for capture-phase
+    // `pointerdown`. jsdom does not deliver testing-library's synthetic
+    // PointerEvent to a document-level capture listener, so dispatch a real
+    // bubbling event (matching the production `pointerdown` path) on the node.
+    const firePointerDown = (node: Node) =>
+      node.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+
+    // Click INSIDE the chooser (still within the sidebar containerRef): stays.
+    firePointerDown(screen.getByTestId('space-create-title'));
+    expect(screen.getByTestId('space-create-chooser')).toBeTruthy();
+
+    // Click OUTSIDE the sidebar entirely: closes.
+    const outside = document.createElement('div');
+    document.body.appendChild(outside);
+    firePointerDown(outside);
+    await waitFor(() => expect(screen.queryByTestId('space-create-chooser')).toBeNull());
+    outside.remove();
+  });
+});
+
 describe('SpacesSidebar selection', () => {
   it('marks the active space and navigates on click with project + renderer', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());

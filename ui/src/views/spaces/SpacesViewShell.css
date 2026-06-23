@@ -14,16 +14,12 @@
  */
 
 /*
- * Full-bleed layout for the Spaces tab — mirrors `.app-content--graph` /
- * `.app-content--timeline` (padding removed) so the shell's own header/body
- * frame fills the content area. This is the ONE intentionally non-`.spaces-`
- * scoped rule: it is the content-class modifier for `route.tab === 'spaces'`
- * (added in app.tsx) and is co-bundled here rather than in the global
- * `ui/src/style.css` per the Spaces per-component CSS convention.
+ * Full-bleed padding for the Spaces tab is now handled by the global
+ * `.app-content--view-sidebar { padding: 0 }` rule (issue e29a8c5), added by
+ * app.tsx for every resize-rail view-sidebar tab. The former
+ * `.app-content--spaces { padding: 0 }` override lived here and is removed as
+ * dead/duplicate.
  */
-.app-content--spaces {
-  padding: 0;
-}
 
 /*
  * Row layout: the home sidebar sits beside a column holding the header + body.
@@ -50,12 +46,12 @@
   gap: 0.5rem;
   min-height: 2.25rem;
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--border, #2a2a2a);
+  border-bottom: 1px solid var(--border);
 }
 
 .spaces-shell__renderer {
   font-size: 0.75rem;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   text-transform: capitalize;
 }
 
@@ -64,8 +60,8 @@
   display: inline-flex;
   gap: 2px;
   padding: 2px;
-  background: var(--surface-raised, #1e1e1e);
-  border: 1px solid var(--border, #2a2a2a);
+  background: var(--neutral-alpha-035);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 
@@ -73,7 +69,7 @@
   padding: 0.2rem 0.6rem;
   font-size: 0.75rem;
   text-transform: capitalize;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   background: none;
   border: none;
   border-radius: 4px;
@@ -81,12 +77,12 @@
 }
 
 .spaces-shell__switcher-btn:hover {
-  color: var(--text-primary, #e8e8e8);
+  color: var(--text-primary);
 }
 
 .spaces-shell__switcher-btn[data-active='true'] {
-  color: var(--text-primary, #e8e8e8);
-  background: var(--accent-soft, rgba(74, 141, 240, 0.18));
+  color: var(--text-primary);
+  background: var(--overlay-selected);
   font-weight: 600;
 }
 
@@ -102,6 +98,15 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--text-muted, #888);
+  color: var(--text-muted);
   font-size: 0.875rem;
+}
+
+/* The message itself is a single inline-flow block (NOT a flex item), so normal
+   inline whitespace around the inline <strong>+</strong> renders correctly
+   ("with the + in the sidebar", not "with the+in the sidebar"). */
+.spaces-shell__empty-text {
+  margin: 0;
+  max-width: 32rem;
+  text-align: center;
 }

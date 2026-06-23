@@ -126,6 +126,9 @@ export function SpacesViewShell({
       data-active-renderer={activeRenderer}
       aria-label="Spaces"
     >
+      {/* The shared <ViewSidebar> inside SpacesSidebar owns the hidden contract
+          (renders null + drops the resize handle when hidden) and the width
+          persistence (`sidebar-width:spaces`). The shell just threads hidden. */}
       <SpacesSidebar
         hidden={sidebarHidden}
         selectedSpaceId={spaceId}
@@ -166,13 +169,17 @@ export function SpacesViewShell({
         <div className="spaces-shell__body" data-testid="spaces-shell-body">
           {!spaceId ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
-              Select a space, or create one with the <strong>+</strong> in the sidebar.
+              <p className="spaces-shell__empty-text">
+                Select a space, or create one with the <strong>+</strong> in the sidebar.
+              </p>
             </div>
           ) : MountPoint ? (
             <MountPoint projectId={projectId} spaceId={spaceId} renderer={activeRenderer} />
           ) : (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
-              No <strong>{activeRenderer}</strong> renderer is available yet.
+              <p className="spaces-shell__empty-text">
+                No <strong>{activeRenderer}</strong> renderer is available yet.
+              </p>
             </div>
           )}
         </div>

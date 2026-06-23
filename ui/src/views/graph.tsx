@@ -27,7 +27,7 @@ import {
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { appColors } from '../theme';
-import { useSidebarResize } from '../hooks/useSidebarResize';
+import { ViewSidebar } from '../components/ViewSidebar';
 import { useRegisterAppBottomPanel } from '../app-shell';
 
 type GraphFetchParams = {
@@ -946,11 +946,6 @@ export function GraphView({
   initialFocus,
   sidebarHidden = false,
 }: GraphViewProps): JSX.Element {
-  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
-    defaultWidth: 320,
-    minWidth: 260,
-    storageKey: 'mandible_graph_sidebar_width:v1',
-  });
   const routeMode = coerceGraphMode(initialMode);
   const [payload, setPayload] = useState<GraphPayload>({ nodes: [], edges: [], mode: DEFAULT_GRAPH_PRESET });
   const [loading, setLoading] = useState(true);
@@ -1172,13 +1167,14 @@ export function GraphView({
 
   return (
     <div className={`graph-view${sidebarHidden ? ' graph-view--sidebar-hidden' : ''}`}>
-      {!sidebarHidden ? (
-        <>
-          <aside
-            className="graph-sidebar"
-            aria-label="Graph controls"
-            style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
-          >
+      <ViewSidebar
+        hidden={sidebarHidden}
+        storageKey="mandible_graph_sidebar_width:v1"
+        defaultWidth={320}
+        minWidth={260}
+        ariaLabel="Graph controls"
+        className="graph-sidebar"
+      >
             <div className="graph-spec-row graph-spec-row--scope">
               <span className="graph-spec-row__label">Scope</span>
               <div className="graph-toolbar__combobox-group">
@@ -1287,10 +1283,7 @@ export function GraphView({
               <span>{graphDisplaySummary}</span>
               {graphLimitSummary && <span>{graphLimitSummary}</span>}
             </div>
-          </aside>
-          <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
-        </>
-      ) : null}
+      </ViewSidebar>
 
       <div className="graph-workspace">
         <div className="graph-canvas-wrap">

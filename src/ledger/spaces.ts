@@ -317,21 +317,21 @@ export interface SpaceGroup {
 /**
  * Grouped Spaces list for the home view (issue 812df41): every Space across all
  * projects, partitioned into one group per owning project plus a single top-level
- * group (`project_id: null`). The top-level group sorts FIRST; project groups
- * follow ordered by project display name (then id). Within each group, Spaces
- * keep the canonical updated_at DESC, id ASC order. A group is emitted only when
- * it has at least one Space, so empty projects do not appear.
+ * group (`project_id: null`). The top-level group sorts FIRST (when non-empty);
+ * project groups follow for EVERY row in `ledger_projects`, ordered by project
+ * display name (then id), with `spaces: []` for projects that have no spaces yet.
+ * Within each group, Spaces keep the canonical updated_at DESC, id ASC order.
  */
 export function listSpacesGrouped(db: Db): SpaceGroup[] {
   const all = listAllSpaces(db);
-  const projectNameById = new Map<string, string | null>();
   const projectRows = db
     .prepare("SELECT id, display_name FROM ledger_projects")
     .all() as Array<{ id: string; display_name: string | null }>;
-  for (const row of projectRows) projectNameById.set(row.id, row.display_name);
 
   const topLevel: SpaceRecord[] = [];
   const byProject = new Map<string, SpaceRecord[]>();
+  // Pre-populate every known project so empty projects still get a group.
+  for (const row of projectRows) byProject.set(row.id, []);
   for (const space of all) {
     if (space.project_id === null) {
       topLevel.push(space);
@@ -341,6 +341,9 @@ export function listSpacesGrouped(db: Db): SpaceGroup[] {
       byProject.set(space.project_id, list);
     }
   }
+
+  const projectNameById = new Map<string, string | null>();
+  for (const row of projectRows) projectNameById.set(row.id, row.display_name);
 
   const groups: SpaceGroup[] = [];
   if (topLevel.length > 0) {

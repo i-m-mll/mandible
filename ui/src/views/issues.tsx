@@ -12,7 +12,7 @@ import {
   type LedgerIssueDetailProjection,
 } from '../api';
 import { sanitizeHtml } from '../sanitize';
-import { useSidebarResize } from '../hooks/useSidebarResize';
+import { ViewSidebar } from '../components/ViewSidebar';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 
 // --- Types ---
@@ -722,17 +722,17 @@ export function IssuesView({
     }
   }, [selectedRepoId, selectIssue]);
 
-  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 420,
-    minWidth: 280,
-    storageKey: 'sidebar-width:issues',
-  });
-
   return (
     <div className="issues-view">
-      {!sidebarHidden ? (
-        <div className="issues-tree" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-          <div className="sidebar-drag-handle issues-tree__resize-handle" onMouseDown={handleMouseDown} />
+      <ViewSidebar
+        hidden={sidebarHidden}
+        storageKey="sidebar-width:issues"
+        defaultWidth={420}
+        minWidth={280}
+        ariaLabel="Issues"
+        className="issues-tree"
+        as="div"
+      >
           <div
             className="issues-filter"
             onBlur={(event) => {
@@ -940,8 +940,7 @@ export function IssuesView({
             ))}
           </div>
         )}
-      </div>
-      ) : null}
+      </ViewSidebar>
 
       {/* Right detail panel */}
       <div className="issues-detail">

@@ -31,9 +31,9 @@ import {
   type Space,
   type SpaceGroup,
 } from '../../api';
-import { useSidebarResize } from '../../hooks/useSidebarResize';
 import { SpaceSeedDialog } from './SpaceSeedDialog';
 import type { SeedSpaceResult } from '../../api';
+import { ViewSidebar } from '../../components/ViewSidebar';
 import './SpacesSidebar.css';
 
 const COLLAPSE_STORAGE_KEY = 'spaces-tree:collapsed';
@@ -193,13 +193,7 @@ export function SpacesSidebar({
   const [creating, setCreating] = useState(false);
   const [internalRefresh, setInternalRefresh] = useState(0);
 
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 300,
-    minWidth: 220,
-    storageKey: 'sidebar-width:spaces',
-  });
+  const containerRef = useRef<HTMLElement>(null);
 
   // --- data load (grouped read) ---
   useEffect(() => {
@@ -394,8 +388,6 @@ export function SpacesSidebar({
     refresh();
   }, [refresh]);
 
-  if (hidden) return null;
-
   const renderSpaceRow = (space: Space): JSX.Element => {
     const active = selectedSpaceId === space.id;
     return (
@@ -502,31 +494,39 @@ export function SpacesSidebar({
     );
   };
 
+  // FIXED header row (the container renders it as `.view-sidebar__header`,
+  // outside the single scroll owner `.view-sidebar__body`).
+  const header = (
+    <div className="spaces-tree__header" data-testid="spaces-sidebar">
+      <input
+        type="text"
+        className="spaces-tree__filter-input"
+        placeholder="Filter spaces…"
+        aria-label="Filter spaces"
+        value={filter}
+        data-testid="spaces-filter-input"
+        onInput={(event) => setFilter((event.currentTarget as HTMLInputElement).value)}
+      />
+      {createButton({ kind: 'top-level' }, 'Create top-level space', 'create-top-level')}
+    </div>
+  );
+
   return (
-    <div
+    <ViewSidebar
+      hidden={hidden}
+      storageKey="sidebar-width:spaces"
+      defaultWidth={300}
+      minWidth={220}
+      ariaLabel="Spaces"
       className="spaces-tree"
-      ref={containerRef}
-      data-testid="spaces-sidebar"
-      style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}
+      as="div"
+      containerRef={containerRef}
+      header={header}
     >
-      <div className="sidebar-drag-handle spaces-tree__resize-handle" onMouseDown={handleMouseDown} />
-
-      {/* FIXED header row (outside the scroll region) */}
-      <div className="spaces-tree__header">
-        <input
-          type="text"
-          className="spaces-tree__filter-input"
-          placeholder="Filter spaces…"
-          aria-label="Filter spaces"
-          value={filter}
-          data-testid="spaces-filter-input"
-          onInput={(event) => setFilter((event.currentTarget as HTMLInputElement).value)}
-        />
-        {createButton({ kind: 'top-level' }, 'Create top-level space', 'create-top-level')}
-      </div>
-
-      {/* SCROLLING region */}
+      {/* SCROLLING region — the `.view-sidebar__body` owns overflow; this just
+          carries the test-id + content padding (no own scroll, no double bar). */}
       <div className="spaces-tree__scroll" data-testid="spaces-tree-scroll">
+        {/* keep test-id + content; scroll lives on .view-sidebar__body */}
         {loading && groups.length === 0 ? (
           <p className="spaces-tree__status">Loading spaces…</p>
         ) : null}
@@ -587,13 +587,12 @@ export function SpacesSidebar({
                   `create-in-${kg.key}`,
                 )}
               </div>
-              {!isCollapsed ? (
+              {/* Empty projects render as a compact foldable header row only —
+                  no per-project "No spaces yet" filler. Projects WITH spaces
+                  show their space lines here. (Stage 3 polish, issue e29a8c5.) */}
+              {!isCollapsed && kg.group.spaces.length > 0 ? (
                 <div className="spaces-tree__group-spaces">
-                  {kg.group.spaces.length === 0 ? (
-                    <p className="spaces-tree__empty-group">No spaces yet</p>
-                  ) : (
-                    kg.group.spaces.map(renderSpaceRow)
-                  )}
+                  {kg.group.spaces.map(renderSpaceRow)}
                 </div>
               ) : null}
             </div>
@@ -610,9 +609,11 @@ export function SpacesSidebar({
         ) : null}
       </div>
 
+      {/* Popover/overlay stay INSIDE the frame so the containerRef-based
+          outside-click handler treats clicks within them as "inside". */}
       {renderChooser()}
       {renderSeedDialog()}
-    </div>
+    </ViewSidebar>
   );
 }
 

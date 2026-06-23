@@ -170,6 +170,12 @@ const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
   'spaces',
 ]);
 
+// Tabs that use the shared resize-rail layout (<ViewSidebar>) and therefore want
+// full-bleed content (no .app-content gutters). Deliberately NARROWER than
+// VIEW_SIDEBAR_TABS, which also includes console/auth/inbox/artifacts — those use
+// other breakout mechanisms. Issue e29a8c5.
+const RESIZE_RAIL_TABS = new Set<Route['tab']>(['issues', 'graph', 'timeline', 'spaces']);
+
 function SpacesIcon({ size = 18 }: { size?: number }): JSX.Element {
   // Lucide-style "layout-grid": Spaces are an authored grid of surfaces.
   return (
@@ -1328,7 +1334,7 @@ function App(): JSX.Element {
               </nav>
           </aside>
         <main
-          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}`}
+          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
         >
         {route.tab === 'auth' && (
           <AuthQueueView

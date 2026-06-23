@@ -231,14 +231,35 @@ describe("spaces grouped + top-level listing (issue 812df41)", () => {
     }
   });
 
-  it("omits empty groups (a project with no Spaces does not appear)", () => {
+  it("includes projects with zero spaces as empty groups", () => {
     const db = openDb(path.join(tempDir, "empty-group.db"));
     try {
       seedProject(db, "proj-a", "Alpha");
       seedProject(db, "proj-empty", "Empty");
       createSpace(db, { project_id: "proj-a", title: "Only Space" });
       const groups = listSpacesGrouped(db);
-      expect(groups.map((g) => g.project_id)).toEqual(["proj-a"]);
+      // Both projects appear: Alpha (has a space), Empty (zero spaces).
+      expect(groups.map((g) => g.project_id)).toEqual(["proj-a", "proj-empty"]);
+      const emptyGroup = groups.find((g) => g.project_id === "proj-empty");
+      expect(emptyGroup).toBeDefined();
+      expect(emptyGroup!.spaces).toEqual([]);
+      expect(emptyGroup!.project_name).toBe("Empty");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("includes ALL projects as empty groups when no spaces exist", () => {
+    const db = openDb(path.join(tempDir, "all-empty.db"));
+    try {
+      seedProject(db, "proj-b", "Beta");
+      seedProject(db, "proj-a", "Alpha");
+      const groups = listSpacesGrouped(db);
+      // No top-level group (no top-level spaces). Both projects appear with empty spaces.
+      expect(groups).toHaveLength(2);
+      expect(groups.map((g) => g.project_id)).toEqual(["proj-a", "proj-b"]);
+      expect(groups[0].spaces).toEqual([]);
+      expect(groups[1].spaces).toEqual([]);
     } finally {
       db.close();
     }
@@ -326,7 +347,7 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
     expect(artifactResolution.entity?.id).toBe(artifactId);
   });
 
-  it("still rejects a cross-project issue ref on a PROJECT-SCOPED Space", async () => {
+  it("accepts a cross-project issue ref on a PROJECT-SCOPED Space (cross-project membership is universal)", async () => {
     seedProject(db, "proj-a", "Alpha");
     seedProject(db, "proj-b", "Beta");
     const store = new LedgerStore(db);
@@ -341,12 +362,14 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
     });
     const bRes = await call("POST", "/api/spaces", { project_id: "proj-b", title: "B Space" });
     const bId = (bRes.body as { space: { id: string } }).space.id;
-    // A project-scoped Space still enforces same-project issue refs.
+    // Cross-project membership is universal: project_id only governs sidebar placement.
+    // A project-B-scoped Space accepts issue refs from project A.
     const add = await call("POST", `/api/spaces/${bId}/items`, {
       ref_type: "issue",
       ref_id: issueA.id,
     });
-    expect(add.status).toBe(400);
+    expect(add.status).toBe(201);
+    expect((add.body as { created: boolean }).created).toBe(true);
   });
 
   it("lists top-level Spaces via ?scope=top-level and grouped via no query", async () => {

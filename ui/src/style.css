@@ -21,6 +21,12 @@
   --accent-red: #f26b6b;
   --accent-blue: #4da3ff;
   --accent-purple: #a855f7;
+  /* Named accent aliases. Several Spaces dialogs reference `var(--accent ...)` /
+     `var(--accent-soft ...)`; defining them here (issue e29a8c5) makes those
+     resolve to themed tokens instead of falling back to a fixed blue, so both
+     light and dark themes track. */
+  --accent: var(--accent-blue);
+  --accent-soft: var(--status-info-bg);
   --status-success: var(--accent-green);
   --status-warning: var(--accent-yellow);
   --status-danger: var(--accent-red);
@@ -1001,22 +1007,71 @@ a {
   flex-direction: column;
 }
 
-.app-content--timeline {
+/* Any tab that hosts a split/rail layout is full-bleed: the inner layout owns
+   its own gutters. Added by app.tsx for the resize-rail view-sidebar tabs
+   (issues, graph, timeline, spaces). A new full-bleed view can never forget it.
+   Shared container refactor — issue e29a8c5. */
+.app-content--view-sidebar {
   padding: 0;
 }
 
-.app-content--graph {
-  padding: 0;
+/* ── Shared view-sidebar container (issue e29a8c5) ──
+   One owner for every resize-rail view sidebar. Coexists with the per-view
+   selectors during migration; views opt in via <ViewSidebar>. */
+.view-sidebar {
+  position: relative;        /* anchor for the absolute resize handle */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Headerless variant (issues/graph/timeline): the frame is the single scroll
+   owner. The per-view content class provides overflow-y:auto (e.g.
+   `.issues-tree { overflow-y:auto }`). */
+
+/* Header variant (spaces, later stage): fixed header, body is the single
+   scroll owner. */
+.view-sidebar__header {
+  flex: 0 0 auto;
+}
+
+.view-sidebar__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/*
+ * Resize handle. The element carries BOTH `.sidebar-drag-handle` and
+ * `.view-sidebar__resize-handle`. The two-class selector below RAISES
+ * specificity so it always beats the single-class `.sidebar-drag-handle`
+ * (`position:relative; width:0`) regardless of source order — the original
+ * `.issues-tree__resize-handle` only won by being defined later, which broke
+ * when the rule moved earlier in the refactor (issue e29a8c5).
+ *
+ * It replicates the original working mechanism exactly: a 0-width absolutely
+ * positioned line pinned to the frame's right edge (`right:0`), with the
+ * actual ~10px clickable/hover hit strip painted by `.sidebar-drag-handle::before`
+ * (`left:-5px; width:10px`), so the strip straddles the right edge and is not
+ * doubled. Same frame-relative right edge serves the header/body (Spaces)
+ * variant too.
+ */
+.view-sidebar__resize-handle.sidebar-drag-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 0;
+  cursor: col-resize;
+  z-index: 3;
 }
 
 .app-layout--view-sidebar-open .auth-sidebar,
 .app-layout--view-sidebar-open .inbox-sidebar,
-.app-layout--view-sidebar-open .issues-tree,
 .app-layout--view-sidebar-open .artifacts-sidebar,
 .app-layout--view-sidebar-open .chat-history-sidebar,
-.app-layout--view-sidebar-open .graph-sidebar,
-.app-layout--view-sidebar-open .spaces-tree,
-.app-layout--view-sidebar-open .timeline-sidebar {
+.app-layout--view-sidebar-open .view-sidebar {
   position: relative;
   z-index: 2;
   box-shadow: var(--shadow-rail);
@@ -5720,10 +5775,9 @@ tr:hover .work-actions__trigger {
 
 .issues-view {
   display: flex;
-  height: calc(100% + 76px);
+  height: 100%;
   min-height: 0;
   gap: 0;
-  margin: -28px -32px -48px;
   overflow: hidden;
 }
 
@@ -5733,14 +5787,6 @@ tr:hover .work-actions__trigger {
   overflow-y: auto;
   padding: 12px;
   background: var(--bg-secondary);
-}
-
-.issues-tree__resize-handle {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 3;
 }
 
 .issues-detail {
@@ -6774,7 +6820,7 @@ code.inbox-detail__meta-value {
     border-bottom: 1px solid var(--neutral-alpha-06);
   }
 
-  .issues-tree__resize-handle {
+  .view-sidebar__resize-handle {
     display: none;
   }
 
