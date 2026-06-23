@@ -48,6 +48,16 @@ import {
   type BlockType,
 } from "../ledger/space-blocks.js";
 import { SPACE_EVENTS, type SpaceEvent } from "../spaces/events.js";
+import {
+  exportAndTrack,
+  exportUntrackedCopy,
+  listSpaceExportsForSpace,
+  resolveCheckoutForSpace,
+  resolveDocsSettings,
+  setGlobalDocsDefault,
+  setRepoDocsOverride,
+  ExportError,
+} from "../spaces/export.js";
 import { broadcastSpaceEvent } from "../sse.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
@@ -730,6 +740,139 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       handleError(res, error);
     }
   });
+
+  // --- export / custody (C13b, issue 8730bf9) ---
+  // The deterministic export-and-track op, untracked export-of-copy, the
+  // tracking-row read surface, and the docs-path settings surface. Writes are
+  // narrow, non-privileged (agent-key docs-branch commits — never the auth
+  // queue), so they stay within the file-transport write boundary (standing
+  // AC #1). All emit frozen `space:export:*` / `space:document:*` events.
+
+  // Read the current tracking rows + resolved export settings for a Space.
+  router.get("/api/spaces/:id/exports", (req, res) => {
+    try {
+      const db = getDb();
+      const space = loadSpaceOr404(db, req.params.id);
+      const checkout = resolveCheckoutForSpace(db, space, queryString(req, "repo_id") ?? null);
+      sendJson(res, 200, {
+        exports: listSpaceExportsForSpace(db, space.id),
+        repo_id: checkout.id,
+        settings: resolveDocsSettings(db, checkout.id, space.id),
+      });
+    } catch (error) {
+      handleExportError(res, error);
+    }
+  });
+
+  // Export-and-track: the explicit user commit that moves a document into repo
+  // custody (creates/refreshes a `space_exports` row + agent-key linked commit).
+  router.post("/api/spaces/:id/exports", async (req, res) => {
+    try {
+      const db = getDb();
+      const space = loadSpaceOr404(db, req.params.id);
+      const body = bodyRecord(req);
+      const result = await exportAndTrack(db, {
+        spaceId: space.id,
+        repoId: optionalString(body, "repo_id") ?? null,
+        path: optionalString(body, "path") ?? null,
+        branch: optionalString(body, "branch") ?? null,
+        issues: requireIssueRefs(body),
+        message: optionalString(body, "message") ?? null,
+      });
+      broadcastSpaceEvent(SPACE_EVENTS.SPACE_EXPORT_TRACKED, {
+        space_id: space.id,
+        export_id: result.export.id,
+        repo_id: result.export.repo_id,
+        branch: result.export.branch,
+        path: result.export.path,
+        commit: result.commit,
+      });
+      sendJson(res, 201, result);
+    } catch (error) {
+      handleExportError(res, error);
+    }
+  });
+
+  // Untracked export-of-copy: a one-shot local file export with no custody.
+  router.post("/api/spaces/:id/exports/untracked", (req, res) => {
+    try {
+      const db = getDb();
+      const space = loadSpaceOr404(db, req.params.id);
+      const body = bodyRecord(req);
+      const result = exportUntrackedCopy(db, {
+        spaceId: space.id,
+        destPath: requireString(body, "dest_path"),
+        repoId: optionalString(body, "repo_id") ?? null,
+      });
+      broadcastSpaceEvent(SPACE_EVENTS.SPACE_EXPORT_COPIED, {
+        space_id: space.id,
+        path: result.path,
+        warning: result.warning,
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleExportError(res, error);
+    }
+  });
+
+  // Register/update the docs-path export settings (global default or per-repo
+  // override). This is the settings storage backing the export dialog (§5.1).
+  router.post("/api/spaces/exports/settings", (req, res) => {
+    try {
+      const db = getDb();
+      const body = bodyRecord(req);
+      const repoId = optionalString(body, "repo_id");
+      const path = optionalString(body, "path") ?? undefined;
+      const branch = optionalString(body, "branch") ?? undefined;
+      if (path === undefined && branch === undefined) {
+        throw new HttpError(400, "path or branch is required");
+      }
+      if (typeof repoId === "string" && repoId) {
+        setRepoDocsOverride(db, repoId, { path, branch });
+      } else {
+        setGlobalDocsDefault(db, { path, branch });
+      }
+      broadcastSpaceEvent(SPACE_EVENTS.SPACE_DOCUMENT_SETTINGS_UPDATED, {
+        scope: repoId ? "repo" : "global",
+        repo_id: repoId ?? null,
+      });
+      sendJson(res, 200, { ok: true, scope: repoId ? "repo" : "global", repo_id: repoId ?? null });
+    } catch (error) {
+      handleExportError(res, error);
+    }
+  });
+}
+
+/** Parse a required non-empty `issues: string[]` (or single `issue`) field. */
+function requireIssueRefs(body: Record<string, unknown>): string[] {
+  const raw = body.issues ?? body.issue;
+  const list = Array.isArray(raw) ? raw : raw === undefined || raw === null ? [] : [raw];
+  const issues = list
+    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+    .map((v) => v.trim());
+  if (issues.length === 0) {
+    throw new HttpError(400, "issues (or issue) is required for a tracked export's linked commit");
+  }
+  return issues;
+}
+
+/** Map an {@link ExportError} machine code to a clean HTTP status. */
+function handleExportError(res: ResponseLike, error: unknown): void {
+  if (error instanceof ExportError) {
+    const status =
+      error.code === "space_not_found"
+        ? 404
+        : error.code === "checkout_not_found"
+          ? 404
+          : error.code === "worktree_dirty" || error.code === "locked"
+            ? 409
+            : error.code === "invalid_path"
+              ? 400
+              : 500;
+    sendJson(res, status, { error: error.message, code: error.code });
+    return;
+  }
+  handleError(res, error);
 }
 
 // --- block input parsing -----------------------------------------------------

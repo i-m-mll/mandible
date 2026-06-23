@@ -284,6 +284,16 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/blocks\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/blocks\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/items\/[^/]+\/detach-blocks$/.test(pathname)) return true;
+  // Spaces export / custody (C13b, issue 8730bf9): export-and-track,
+  // untracked export-of-copy, the tracking-row read surface, and the docs-path
+  // settings surface. The tracked-export write produces an AGENT-KEY docs-branch
+  // linked commit — routine agent-key git, NOT an auth/approval/merge action —
+  // so it stays within the file-transport write boundary (standing AC #1). No
+  // blanket `/api/spaces*` allow; each route is self-allowlisted explicitly.
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/exports$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/exports\/untracked$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && pathname === "/api/spaces/exports/settings") return true;
   if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/claim") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/activate") return true;
