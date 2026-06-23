@@ -19,6 +19,7 @@
 #   logs <subcommand>                Inspect provider-native source logs
 #   conversations <subcommand>       Inspect DB-backed conversations
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
+#   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
 #   instructions <subcommand>        Install or diff the Mandible instruction fragment
 #   work-unit <subcommand>           Policy-free work-unit lifecycle client
 #   issue-file <subcommand>          Read/write the .issue helper file
@@ -57,6 +58,7 @@ Commands:
   logs <subcommand>                Inspect provider-native source logs
   conversations <subcommand>       Inspect DB-backed conversations
   artifact <subcommand>            Register, resolve, link, and check artifacts
+  space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
   instructions <subcommand>        Install or diff the Mandible instruction fragment
   work-unit <subcommand>           Policy-free work-unit lifecycle client
   issue-file <subcommand>          Read/write the .issue helper file
@@ -104,6 +106,7 @@ case "${1:-}" in
   logs)    shift; exec "$MANDIBLE_CLI_DIR/logs.sh" "$@" ;;
   conversations) shift; exec "$MANDIBLE_CLI_DIR/conversations.sh" "$@" ;;
   artifact) shift; exec "$MANDIBLE_CLI_DIR/artifact.sh" "$@" ;;
+  space) shift; exec "$MANDIBLE_CLI_DIR/space.sh" "$@" ;;
   instructions) shift; exec "$MANDIBLE_CLI_DIR/instructions.sh" "$@" ;;
   work-unit) shift; exec "$MANDIBLE_CLI_DIR/work-unit.sh" "$@" ;;
   issue-file) shift; exec "$MANDIBLE_CLI_DIR/issue-file.sh" "$@" ;;
