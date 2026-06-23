@@ -23,6 +23,11 @@ RED=$'\033[31m'
 # constrains --link-type to this set before calling the route.
 LEDGER_LINK_TYPES=(parent_child blocks duplicate_of related references fixed_by caused_by implements tests)
 
+# The 7 block types accepted by the C11 space_blocks.block_type CHECK set
+# (see src/spaces/serialize.ts BLOCK_TYPES). `block add|edit` constrain --type
+# to this set before calling the route.
+BLOCK_TYPES=(heading paragraph reference artifact_embed issue_embed comment_embed todo)
+
 err() {
   printf "%b\n" "$*" >&2
 }
@@ -45,6 +50,13 @@ Usage:
   mandible space unlink <space-id> <edge-id> [--json]
   mandible space promote-edge --source <ref> --target <ref> [--link-type <type>] [--space <id>] [--edge <id>] [--note <text>] [--json]
   mandible space seed-from-filter <space-id> --predicate <json> [--with-shelf] [--no-artifacts] [--json]
+  mandible space block add <space-id> --type <block-type> [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]
+  mandible space block edit <space-id> <block-id> [--type <block-type>] [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]
+  mandible space block rm <space-id> <block-id> [--json]
+
+Block types (block add|edit --type):
+  heading paragraph reference artifact_embed issue_embed comment_embed todo
+  (embed types reference|artifact_embed|issue_embed|comment_embed require --item with --snapshot)
 
 Refs (add-item, promote-edge):
   issue:<id>                  ref_type=issue
@@ -411,6 +423,154 @@ cmd_seed_from_filter() {
   emit "$response" "$json" '"seeded matched:\(.matched_issue_ids|length) created:\(.items_created) existing:\(.items_existing) occurrences:\(.occurrences|length)"'
 }
 
+# --- block subcommands (C4b, issue d83d540) ---------------------------------
+# The document/canvas block tree, consuming the C11 (issue d2a8e77)
+# /api/spaces/:id/blocks* routes. These are a disjoint region from C4's core
+# subcommands above; they never touch the DB directly. The route layer owns
+# sort-key generation, parent-cycle rejection, and the embed/snapshot invariant
+# (an embed `--item` REQUIRES a `--snapshot`); the CLI only constrains --type to
+# the frozen block-type set before the call.
+
+# Validate a --type value against the C11 block-type set.
+block_validate_type() {
+  local candidate want="$1"
+  for candidate in "${BLOCK_TYPES[@]}"; do
+    [[ "$candidate" == "$want" ]] && return 0
+  done
+  die "Invalid --type '${want}'. Valid: ${BLOCK_TYPES[*]}" 2
+}
+
+# Build the block-mutation payload shared by add/edit. `$1` = create|update.
+# On create, --type is required and emitted as block_type. On update, every
+# field is optional and only provided flags are included so unset fields are
+# left untouched server-side. --snapshot/--metadata must be valid JSON objects.
+block_build_payload() {
+  local mode="$1"
+  local block_type="$2" parent="$3" item="$4" snapshot="$5" sort_key="$6" markdown="$7" metadata="$8"
+  local have_type="$9" have_parent="${10}" have_item="${11}" have_snapshot="${12}"
+  local have_sort="${13}" have_markdown="${14}" have_metadata="${15}"
+
+  if [[ -n "$snapshot" ]]; then
+    printf '%s' "$snapshot" | jq -e 'type == "object"' >/dev/null 2>&1 \
+      || die "--snapshot must be a JSON object." 2
+  fi
+  if [[ -n "$metadata" ]]; then
+    printf '%s' "$metadata" | jq -e 'type == "object"' >/dev/null 2>&1 \
+      || die "--metadata must be a JSON object." 2
+  fi
+
+  jq -n \
+    --arg block_type "$block_type" --arg parent "$parent" --arg item "$item" \
+    --arg sort_key "$sort_key" --arg markdown "$markdown" \
+    --argjson snapshot "${snapshot:-null}" --argjson metadata "${metadata:-null}" \
+    --argjson have_type "$have_type" --argjson have_parent "$have_parent" \
+    --argjson have_item "$have_item" --argjson have_snapshot "$have_snapshot" \
+    --argjson have_sort "$have_sort" --argjson have_markdown "$have_markdown" \
+    --argjson have_metadata "$have_metadata" \
+    '{}
+     + (if $have_type == 1 then {block_type:$block_type} else {} end)
+     + (if $have_parent == 1 then {parent_id:$parent} else {} end)
+     + (if $have_item == 1 then {item_id:$item} else {} end)
+     + (if $have_snapshot == 1 then {item_snapshot:$snapshot} else {} end)
+     + (if $have_sort == 1 then {sort_key:$sort_key} else {} end)
+     + (if $have_markdown == 1 then {markdown:$markdown} else {} end)
+     + (if $have_metadata == 1 then {metadata:$metadata} else {} end)'
+}
+
+cmd_block_add() {
+  local id="" block_type="" parent="" item="" snapshot="" sort_key="" markdown="" metadata="" json=0
+  local have_parent=0 have_item=0 have_snapshot=0 have_sort=0 have_markdown=0 have_metadata=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --type) block_type="$2"; shift 2 ;;
+      --parent) parent="$2"; have_parent=1; shift 2 ;;
+      --item) item="$2"; have_item=1; shift 2 ;;
+      --snapshot) snapshot="$2"; have_snapshot=1; shift 2 ;;
+      --sort-key) sort_key="$2"; have_sort=1; shift 2 ;;
+      --markdown) markdown="$2"; have_markdown=1; shift 2 ;;
+      --metadata) metadata="$2"; have_metadata=1; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
+    esac
+  done
+  [[ -n "$id" && -n "$block_type" ]] || die "Usage: mandible space block add <space-id> --type <block-type> [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]" 2
+  require_tools
+  block_validate_type "$block_type"
+  local payload response
+  payload="$(block_build_payload create \
+    "$block_type" "$parent" "$item" "$snapshot" "$sort_key" "$markdown" "$metadata" \
+    1 "$have_parent" "$have_item" "$have_snapshot" "$have_sort" "$have_markdown" "$have_metadata")"
+  response="$(api_post "/api/spaces/$(urlencode "$id")/blocks" "$payload")" || die "${RED}Failed to add block.${RESET}" 1
+  emit "$response" "$json" '.block | "added \(.id) \(.block_type) parent:\(.parent_id // "-") item:\(.item_id // "-")"'
+}
+
+cmd_block_edit() {
+  local id="" block_id="" block_type="" parent="" item="" snapshot="" sort_key="" markdown="" metadata="" json=0
+  local have_type=0 have_parent=0 have_item=0 have_snapshot=0 have_sort=0 have_markdown=0 have_metadata=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --type) block_type="$2"; have_type=1; shift 2 ;;
+      --parent) parent="$2"; have_parent=1; shift 2 ;;
+      --item) item="$2"; have_item=1; shift 2 ;;
+      --snapshot) snapshot="$2"; have_snapshot=1; shift 2 ;;
+      --sort-key) sort_key="$2"; have_sort=1; shift 2 ;;
+      --markdown) markdown="$2"; have_markdown=1; shift 2 ;;
+      --metadata) metadata="$2"; have_metadata=1; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$id" ]]; then id="$1";
+        elif [[ -z "$block_id" ]]; then block_id="$1";
+        else die "Unexpected argument: $1" 2; fi
+        shift ;;
+    esac
+  done
+  [[ -n "$id" && -n "$block_id" ]] || die "Usage: mandible space block edit <space-id> <block-id> [--type <block-type>] [--parent <block-id>] [--item <item-id>] [--snapshot <json>] [--sort-key <key>] [--markdown <text>] [--metadata <json>] [--json]" 2
+  require_tools
+  (( have_type )) && block_validate_type "$block_type"
+  local payload response
+  payload="$(block_build_payload update \
+    "$block_type" "$parent" "$item" "$snapshot" "$sort_key" "$markdown" "$metadata" \
+    "$have_type" "$have_parent" "$have_item" "$have_snapshot" "$have_sort" "$have_markdown" "$have_metadata")"
+  response="$(api_send PATCH "/api/spaces/$(urlencode "$id")/blocks/$(urlencode "$block_id")" "$payload")" \
+    || die "${RED}Failed to edit block.${RESET}" 1
+  emit "$response" "$json" '.block | "edited \(.id) \(.block_type) parent:\(.parent_id // "-") item:\(.item_id // "-")"'
+}
+
+cmd_block_rm() {
+  local id="" block_id="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *)
+        if [[ -z "$id" ]]; then id="$1";
+        elif [[ -z "$block_id" ]]; then block_id="$1";
+        else die "Unexpected argument: $1" 2; fi
+        shift ;;
+    esac
+  done
+  [[ -n "$id" && -n "$block_id" ]] || die "Usage: mandible space block rm <space-id> <block-id> [--json]" 2
+  require_tools
+  local response
+  response="$(api_send DELETE "/api/spaces/$(urlencode "$id")/blocks/$(urlencode "$block_id")" "")" \
+    || die "${RED}Failed to remove block.${RESET}" 1
+  emit "$response" "$json" '"removed \(.id)"'
+}
+
+cmd_block() {
+  local sub="${1:-}"
+  [[ -n "$sub" ]] || die "Usage: mandible space block <add|edit|rm> ..." 2
+  shift
+  case "$sub" in
+    add) cmd_block_add "$@" ;;
+    edit) cmd_block_edit "$@" ;;
+    rm) cmd_block_rm "$@" ;;
+    *) die "Unknown block subcommand: $sub. Valid: add, edit, rm" 2 ;;
+  esac
+}
+
 if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
   usage
   [[ $# -eq 0 ]] && exit 2 || exit 0
@@ -429,8 +589,6 @@ case "$cmd" in
   unlink) cmd_unlink "$@" ;;
   promote-edge) cmd_promote_edge "$@" ;;
   seed-from-filter) cmd_seed_from_filter "$@" ;;
-  block)
-    die "The 'block' subcommands are owned by C4b and are not yet available in this CLI." 2
-    ;;
+  block) cmd_block "$@" ;;
   *) die "Unknown space subcommand: $cmd" 2 ;;
 esac
