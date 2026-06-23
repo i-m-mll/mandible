@@ -294,6 +294,12 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/exports$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/exports\/untracked$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && pathname === "/api/spaces/exports/settings") return true;
+  // C13c (drift/status detection, issue 21f36cb): read-only LIVE drift re-checks
+  // that refresh `status` + `last_seen_*` on the tracking row (custody-doc §6).
+  // GET reads with a tracking-row refresh side effect — no repo mutation, no auth
+  // queue — so they stay within the file-transport read boundary (standing AC #1).
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports\/drift$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports\/[^/]+\/drift$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/claim") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/activate") return true;
