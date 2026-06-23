@@ -56,8 +56,10 @@ import {
   resolveDocsSettings,
   setGlobalDocsDefault,
   setRepoDocsOverride,
+  getSpaceExport,
   ExportError,
 } from "../spaces/export.js";
+import { checkExportDrift, checkSpaceDrift } from "../spaces/drift.js";
 import { broadcastSpaceEvent } from "../sse.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
@@ -837,6 +839,39 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
         repo_id: repoId ?? null,
       });
       sendJson(res, 200, { ok: true, scope: repoId ? "repo" : "global", repo_id: repoId ?? null });
+    } catch (error) {
+      handleExportError(res, error);
+    }
+  });
+
+  // --- drift / status detection (C13c, issue 21f36cb) ---
+  // Read-only status reads that inspect the LIVE docs-branch worktree/HEAD/path
+  // (NOT pinned artifact bytes, custody-doc §6) and refresh each row's `status`
+  // + `last_seen_*` observation columns. These are GET reads with a tracking-row
+  // refresh side effect — they never mutate the repo, never touch the auth queue
+  // — so they stay within the file-transport read boundary (standing AC #1).
+
+  // Re-check drift for every tracked export of a Space.
+  router.get("/api/spaces/:id/exports/drift", (req, res) => {
+    try {
+      const db = getDb();
+      const space = loadSpaceOr404(db, req.params.id);
+      sendJson(res, 200, { space_id: space.id, drift: checkSpaceDrift(db, space.id) });
+    } catch (error) {
+      handleExportError(res, error);
+    }
+  });
+
+  // Re-check drift for one tracked export row.
+  router.get("/api/spaces/:id/exports/:export_id/drift", (req, res) => {
+    try {
+      const db = getDb();
+      const space = loadSpaceOr404(db, req.params.id);
+      const row = getSpaceExport(db, req.params.export_id);
+      if (!row || row.space_id !== space.id) {
+        throw new HttpError(404, `space export not found: ${req.params.export_id}`);
+      }
+      sendJson(res, 200, checkExportDrift(db, row.id));
     } catch (error) {
       handleExportError(res, error);
     }
