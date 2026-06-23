@@ -9,12 +9,10 @@
  * theme.
  */
 
+/* Content-only styling. Layout/position/resize/scroll structure is owned by the
+   shared `.view-sidebar` container (issue e29a8c5); this class only carries the
+   Spaces visual chrome. */
 .spaces-tree {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  height: 100%;
   border-right: 1px solid var(--neutral-alpha-08);
   background: var(--bg-secondary);
   overflow: hidden;
@@ -67,10 +65,9 @@
   background: var(--neutral-alpha-06);
 }
 
+/* The single scroll owner is `.view-sidebar__body`; this wrapper must NOT also
+   scroll (no double scrollbar). It only carries the content padding. */
 .spaces-tree__scroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
   padding: 0.35rem 0;
 }
 
@@ -165,20 +162,13 @@
 }
 
 .spaces-tree__space--active {
-  background: rgba(77, 163, 255, 0.14);
+  background: var(--overlay-selected);
   color: var(--text-primary);
   font-weight: 600;
 }
 
 .spaces-tree__group--top .spaces-tree__space {
   padding-left: 1.2rem;
-}
-
-.spaces-tree__empty-group {
-  padding: 0.25rem 0.75rem 0.25rem 1.6rem;
-  font-size: 0.74rem;
-  color: var(--text-muted);
-  font-style: italic;
 }
 
 /* Create chooser popover. */

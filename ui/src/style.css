@@ -21,6 +21,12 @@
   --accent-red: #f26b6b;
   --accent-blue: #4da3ff;
   --accent-purple: #a855f7;
+  /* Named accent aliases. Several Spaces dialogs reference `var(--accent ...)` /
+     `var(--accent-soft ...)`; defining them here (issue e29a8c5) makes those
+     resolve to themed tokens instead of falling back to a fixed blue, so both
+     light and dark themes track. */
+  --accent: var(--accent-blue);
+  --accent-soft: var(--status-info-bg);
   --status-success: var(--accent-green);
   --status-warning: var(--accent-yellow);
   --status-danger: var(--accent-red);

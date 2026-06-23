@@ -24,7 +24,6 @@ import type { SpaceRenderer } from '../../api';
 // records from `../../../src/contracts`).
 import { SPACE_RENDERERS } from '../../../../src/contracts';
 import { SpacesSidebar } from './SpacesSidebar';
-import { useSidebarResize } from '../../hooks/useSidebarResize';
 import './SpacesViewShell.css';
 
 /**
@@ -120,15 +119,6 @@ export function SpacesViewShell({
     [renderers],
   );
 
-  // Sidebar resize: the hook lives here so the drag handle can be a flex sibling
-  // of .spaces-tree (matching the graph-view sidebar pattern). Width + handler
-  // are passed down to SpacesSidebar which applies the inline width to its root.
-  const { width: sidebarWidth, handleMouseDown: handleResizeMouseDown } = useSidebarResize({
-    defaultWidth: 300,
-    minWidth: 220,
-    storageKey: 'sidebar-width:spaces',
-  });
-
   return (
     <section
       className="spaces-shell"
@@ -136,19 +126,16 @@ export function SpacesViewShell({
       data-active-renderer={activeRenderer}
       aria-label="Spaces"
     >
-      {!sidebarHidden && (
-        <>
-          <SpacesSidebar
-            hidden={false}
-            selectedSpaceId={spaceId}
-            width={sidebarWidth}
-            onSelectSpace={(args) =>
-              onNavigate?.({ projectId: args.projectId, spaceId: args.spaceId, renderer: args.renderer })
-            }
-          />
-          <div className="sidebar-drag-handle" onMouseDown={handleResizeMouseDown} />
-        </>
-      )}
+      {/* The shared <ViewSidebar> inside SpacesSidebar owns the hidden contract
+          (renders null + drops the resize handle when hidden) and the width
+          persistence (`sidebar-width:spaces`). The shell just threads hidden. */}
+      <SpacesSidebar
+        hidden={sidebarHidden}
+        selectedSpaceId={spaceId}
+        onSelectSpace={(args) =>
+          onNavigate?.({ projectId: args.projectId, spaceId: args.spaceId, renderer: args.renderer })
+        }
+      />
       <div className="spaces-shell__main">
         <header className="spaces-shell__header">
           {spaceId ? (
@@ -182,13 +169,17 @@ export function SpacesViewShell({
         <div className="spaces-shell__body" data-testid="spaces-shell-body">
           {!spaceId ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
-              Select a space, or create one with the <strong>+</strong> in the sidebar.
+              <p className="spaces-shell__empty-text">
+                Select a space, or create one with the <strong>+</strong> in the sidebar.
+              </p>
             </div>
           ) : MountPoint ? (
             <MountPoint projectId={projectId} spaceId={spaceId} renderer={activeRenderer} />
           ) : (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
-              No <strong>{activeRenderer}</strong> renderer is available yet.
+              <p className="spaces-shell__empty-text">
+                No <strong>{activeRenderer}</strong> renderer is available yet.
+              </p>
             </div>
           )}
         </div>

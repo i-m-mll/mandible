@@ -14,16 +14,12 @@
  */
 
 /*
- * Full-bleed layout for the Spaces tab — mirrors `.app-content--graph` /
- * `.app-content--timeline` (padding removed) so the shell's own header/body
- * frame fills the content area. This is the ONE intentionally non-`.spaces-`
- * scoped rule: it is the content-class modifier for `route.tab === 'spaces'`
- * (added in app.tsx) and is co-bundled here rather than in the global
- * `ui/src/style.css` per the Spaces per-component CSS convention.
+ * Full-bleed padding for the Spaces tab is now handled by the global
+ * `.app-content--view-sidebar { padding: 0 }` rule (issue e29a8c5), added by
+ * app.tsx for every resize-rail view-sidebar tab. The former
+ * `.app-content--spaces { padding: 0 }` override lived here and is removed as
+ * dead/duplicate.
  */
-.app-content--spaces {
-  padding: 0;
-}
 
 /*
  * Row layout: the home sidebar sits beside a column holding the header + body.
@@ -86,7 +82,7 @@
 
 .spaces-shell__switcher-btn[data-active='true'] {
   color: var(--text-primary);
-  background: rgba(77, 163, 255, 0.14);
+  background: var(--overlay-selected);
   font-weight: 600;
 }
 
@@ -104,4 +100,13 @@
   height: 100%;
   color: var(--text-muted);
   font-size: 0.875rem;
+}
+
+/* The message itself is a single inline-flow block (NOT a flex item), so normal
+   inline whitespace around the inline <strong>+</strong> renders correctly
+   ("with the + in the sidebar", not "with the+in the sidebar"). */
+.spaces-shell__empty-text {
+  margin: 0;
+  max-width: 32rem;
+  text-align: center;
 }
